@@ -404,15 +404,12 @@ class PathPreviewClient:
         """Create a target marker for a move that failed (out of range, IK failure).
 
         Extracts the intended pose from the move arguments so the user can
-        see where the unreachable target is and drag it to a valid position.
+        at least see where the unreachable target is. Targets from non-literal
+        source (e.g. computed expressions) are still rendered red but won't
+        back-edit on drag — drag interaction is a separate concern.
         """
-        source_line = self._get_source_line(line_no)
-        if not source_line:
-            return
-        if not self._has_literal_list_args(source_line):
-            return  # Variable args — not editable
-
-        # Extract intended pose from args/kwargs
+        # Extract intended pose from args/kwargs (runtime values, regardless
+        # of whether the source line is a literal or computed expression)
         pose: list[float] | None = None
         pose_kwarg = kwargs.get("pose")
         if pose_kwarg is not None:
@@ -568,7 +565,20 @@ class PathPreviewClient:
                         # Result returned (single dispatch or flushed composite)
                         mt = self._blend_move_type or move_type
                         self._blend_move_type = ""
-                        self._collect_from_result(result, mt)
+                        # IK failure with no trajectory: dry run returns an
+                        # empty-poses DryRunResult with .error set. Without this
+                        # branch, _collect_from_result silently drops it and
+                        # nothing renders — no segment, no marker.
+                        if result.tcp_poses.shape[0] == 0 and result.error is not None:
+                            line_no = self._get_caller_line_number()
+                            self.accumulated_errors.append(
+                                f"Line {line_no}: {result.error.title}"
+                            )
+                            self._collect_failed_target(
+                                line_no, move_type, args, kwargs
+                            )
+                        else:
+                            self._collect_from_result(result, mt)
                     return True
                 except Exception as e:
                     self._first_motion_seen = True
