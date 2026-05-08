@@ -1245,9 +1245,10 @@ class ControlPanel:
     def _handle_tcp_cartesian_move(self, pose: list[float]) -> None:
         """Handle TCP Cartesian move events from TransformControls drag operations.
 
-        This sets the latest target pose and ensures the movement timer sends it.
-        Recording starts on first drag event and ends on drag-end.
-        Used for WRF (World Reference Frame) mode.
+        Drag-start setup (arming _tcp_drag_active and the recorder) lives in
+        _handle_tcp_cartesian_move_start, which is fired by transform_start.
+        Stale pose updates that arrive after drag-end are ignored — the timer
+        is already deactivated and the cached pose isn't streamed.
         """
         if not self._movement_allowed(notify=False):
             return
@@ -1256,18 +1257,11 @@ class ControlPanel:
             logger.warning("Invalid pose length for Cartesian move: %d", len(pose))
             return
 
-        # Cache latest target pose (x,y,z in mm, rx,ry,rz in deg)
+        if not self._tcp_drag_active:
+            return
+
         self._tcp_latest_pose = list(pose[:6])
 
-        # Start drag session (once) and recorder
-        if not self._tcp_drag_active:
-            logger.debug("TCP Drag: Move received while inactive (implicit start)")
-            self._tcp_drag_active = True
-            # Implicit start: force reset last sent pose to ensure first move is sent
-            self._tcp_last_sent_pose = None
-            motion_recorder.on_jog_start("cartesian", "TCP")
-
-        # Ensure movement timer is active
         t = ui_state.cart_jog_timer
         if t and not t.active:
             self._cart_cadence.reset()

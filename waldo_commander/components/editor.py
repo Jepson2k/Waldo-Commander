@@ -11,6 +11,12 @@ from typing import Any, Callable
 
 import numpy as np
 from nicegui import ui, context, Client
+from nicegui.elements.codemirror.codemirror import (
+    CompletionItem,
+    DecorationSpec,
+    Diagnostic,
+    LineAnchor,
+)
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import REPO_ROOT, config
 from waldo_commander.state import (
@@ -143,23 +149,20 @@ def discover_robot_commands() -> dict:
     return commands
 
 
-def generate_completions_from_commands() -> list[dict]:
+def generate_completions_from_commands() -> list[CompletionItem]:
     """Generate CodeMirror completion items from discovered robot commands."""
     all_commands = discover_robot_commands()
-    completions = []
+    completions: list[CompletionItem] = []
 
     for name, cmd in all_commands.items():
-        # Parse signature to create a useful apply text
         sig = cmd["signature"]
-        # Remove 'self' from signature if present
         sig_clean = sig.replace("(self, ", "(").replace("(self)", "()")
 
-        # Create the completion item
-        completion = {
+        completion: CompletionItem = {
             "label": f"rbt.{name}",
             "detail": sig_clean,
             "info": cmd["docstring"],
-            "apply": f"rbt.{name}",  # Just insert the method name, user will add args
+            "apply": f"rbt.{name}",
             "type": "function",
         }
         completions.append(completion)
@@ -230,11 +233,6 @@ class EditorPanel(FileOperationsMixin):
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
-
-        # Python-side mirror of CM6 StateField target positions.
-        # Updated via target-positions events emitted by JS on document changes.
-        # Maps target index → current 1-indexed line number.
-        self._target_positions: dict[str, int] = {}
 
         # Recording notification
         self._recording_notification: ui.notification | None = None
@@ -353,7 +351,9 @@ print(f"Robot status: {{status}}")
             logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
-        line_number = self._target_positions.get(target_id)
+        line_number = self.program_textarea.line_anchor_positions.get(
+            "targets", {}
+        ).get(target_id)
         if line_number is None:
             logger.warning("Sync failed: Target %s not found", target_id)
             return
@@ -415,7 +415,9 @@ print(f"Robot status: {{status}}")
         if not self.program_textarea:
             return
 
-        line_number = self._target_positions.get(target_id)
+        line_number = self.program_textarea.line_anchor_positions.get(
+            "targets", {}
+        ).get(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
@@ -501,12 +503,17 @@ print(f"Robot status: {{status}}")
 
         # Check if editor panel is visible (not collapsed)
         if self._is_editor_panel_visible():
-            # Use NiceGUI CodeMirror's highlight_lines method
-            # Auto-removal is handled by the decorations system
-            self.program_textarea.highlight_lines(
-                line_numbers,
-                css_class="cm-line-flash",
-                duration_ms=1500,
+            specs: list[DecorationSpec] = [
+                {"kind": "line", "line": ln, "class": "cm-line-flash"}
+                for ln in line_numbers
+            ]
+            self.program_textarea.set_decorations(specs, set_name="flash")
+            self.program_textarea.reveal_line(max(line_numbers))
+            ui.timer(
+                1.5,
+                lambda: self.program_textarea
+                and self.program_textarea.clear_decorations(set_name="flash"),
+                once=True,
             )
         else:
             # Flash the editor tab instead
@@ -1387,14 +1394,15 @@ print(f"Robot status: {{status}}")
                         on_change=lambda e, t=tab: self._on_tab_content_change(
                             t, e.value
                         ),
-                        on_cursor_line=lambda e, t=tab: self._on_cursor_line(t, e),
-                        on_save=lambda _e, t=tab: self._save_tab(t),
-                        custom_completions=completions,
+                        on_selection_change=lambda e, t=tab: self._on_cursor_line(t, e),
+                        completions=completions,
+                        keybindings={
+                            "Mod-s": lambda _e, t=tab: self._save_tab(t),
+                        },
                     )
                     .classes("w-full h-full")
                     .style("min-height: 100%;")
                 )
-                textarea.on("anchor-positions", self._on_anchor_positions)
 
                 # Initialize theme
                 try:
@@ -1414,21 +1422,9 @@ print(f"Robot status: {{status}}")
         """Handle cursor line change from CodeMirror."""
         if tab.id != editor_tabs_state.active_tab_id:
             return
-        simulation_state.active_cursor_line = e.args.get("line", 0)
+        simulation_state.active_cursor_line = e.line
         if ui_state.urdf_scene and simulation_state.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
-
-    def _on_anchor_positions(self, e) -> None:
-        """Handle anchor position updates from CM6.
-
-        Called when document edits remap tracked line anchors.
-        Updates the Python-side mirror so sync_code_from_target can
-        find the correct line without an async JS round-trip.
-        """
-        args = e.args if isinstance(e.args, dict) else {}
-        anchors = args.get("anchors", {})
-        # anchors is {id: line_number} — store as {id: line}
-        self._target_positions = {k: v for k, v in anchors.items()}
 
     def _push_line_metadata(self) -> None:
         """Push per-line metadata to CM6 for hover tooltips.
@@ -1438,43 +1434,37 @@ print(f"Robot status: {{status}}")
         """
         if not self.program_textarea:
             return
-        metadata: dict[int, dict] = {}
+        tooltips: dict[int, str] = {}
         for seg in simulation_state.path_segments:
             if seg.line_number <= 0 or not seg.points:
                 continue
             end = seg.points[-1]
-            # Position in mm for display (segments store meters)
             pos_str = f"x: {end[0] * 1000:.1f}, y: {end[1] * 1000:.1f}, z: {end[2] * 1000:.1f} mm"
-            dur_str = f"{seg.estimated_duration:.2f}s" if seg.estimated_duration else ""
-            warnings = []
+            parts = [f"<div>{pos_str}</div>"]
+            if seg.estimated_duration:
+                parts.append(f"<div>Duration: {seg.estimated_duration:.2f}s</div>")
             if not seg.is_valid:
-                warnings.append("Unreachable position")
+                parts.append('<div style="color:#f87171">Unreachable position</div>')
             if not seg.timing_feasible and seg.estimated_duration is not None:
-                warnings.append(
-                    f"Duration too short (min: {seg.estimated_duration:.2f}s)"
+                parts.append(
+                    f'<div style="color:#fbbf24">Duration too short (min: {seg.estimated_duration:.2f}s)</div>'
                 )
+            tooltips[seg.line_number] = "".join(parts)
 
-            entry: dict = {"position": pos_str}
-            if dur_str:
-                entry["duration"] = dur_str
-            if warnings:
-                entry["warnings"] = warnings
-            metadata[seg.line_number] = entry
-
-        self.program_textarea.set_line_tooltips(metadata, set_name="simulation")
+        # cm-line-tooltips exposes `line_tooltips` as a mutable property; mutating it syncs to the client.
+        self.program_textarea.line_tooltips.clear()
+        self.program_textarea.line_tooltips.update(tooltips)
 
     def _push_target_positions(self) -> None:
         """Push current target positions to CM6 line anchors for edit tracking."""
         if not self.program_textarea:
             return
-        anchors = [
+        anchors: list[LineAnchor] = [
             {"id": t.id, "line": t.line_number}
             for t in simulation_state.targets
             if t.line_number > 0
         ]
         self.program_textarea.set_line_anchors(anchors, set_name="targets")
-        # Also update Python-side mirror
-        self._target_positions = {str(a["id"]): int(a["line"]) for a in anchors}
 
     def _on_tab_content_change(self, tab: EditorTab, new_value: str) -> None:
         """Handle content change for a tab."""
@@ -1507,28 +1497,26 @@ print(f"Robot status: {{status}}")
             segment = simulation_state.path_segments[step_index]
             line_number = segment.line_number
             if line_number > 0:
-                self.program_textarea.run_method(
-                    "setDecorations",
+                executing_specs: list[DecorationSpec] = [
                     {
-                        "executing": [
-                            {
-                                "kind": "line",
-                                "line": line_number,
-                                "class": "cm-highlighted",
-                            }
-                        ]
-                    },
+                        "kind": "line",
+                        "line": line_number,
+                        "class": "cm-highlighted",
+                    }
+                ]
+                self.program_textarea.set_decorations(
+                    executing_specs, set_name="executing"
                 )
-                self.program_textarea.run_method("revealLine", line_number)
+                self.program_textarea.reveal_line(line_number)
                 return
 
         # Clear highlight if no valid line found
-        self.program_textarea.run_method("setDecorations", {"executing": []})
+        self.program_textarea.clear_decorations(set_name="executing")
 
     def clear_executing_line_highlight(self) -> None:
         """Clear the executing line highlight decoration."""
         if self.program_textarea:
-            self.program_textarea.run_method("setDecorations", {"executing": []})
+            self.program_textarea.clear_decorations(set_name="executing")
 
     _ERROR_LINE_RE = re.compile(
         r'(?:File "simulation_script\.py", line (\d+))|(?:^Line (\d+):)',
@@ -1540,7 +1528,7 @@ print(f"Robot status: {{status}}")
         if not self.program_textarea:
             return
 
-        diagnostics: list[dict] = []
+        diagnostics: list[Diagnostic] = []
 
         # Error diagnostics from simulation
         if error:

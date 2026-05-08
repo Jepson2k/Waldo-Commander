@@ -182,9 +182,6 @@ class TCPControlsMixin:
         # Store mode
         self._tcp_transform_mode = mode.lower()
 
-        # Get the jog ball object ID
-        tcp_object_id = str(self._tcp_ball.id)
-
         # Sync jog ball to current TCP via FK before enabling (like joint edit)
         self._update_jog_ball_from_robot_state()
 
@@ -203,38 +200,39 @@ class TCPControlsMixin:
             self._tcp_enable_in_progress = False
             return
 
-        # Enable TransformControls with a short Python-side retry until the object exists on JS
+        # Enable TransformControls with a short Python-side retry until the JS object exists.
+        # The per-object wrapper just dispatches `scene.run_method('enable_transform_controls', id, ...)`
+        # once; if the JS side hasn't received the init_objects payload yet, the call silently no-ops.
+        # `has_transform_controls` on the scene is the only way to confirm attach succeeded.
+        # 5s timeout (vs run_method's 1s default) — first JS response after page load can lag.
         async def _enable_with_retry():
+            ball = self._tcp_ball
+            if ball is None:
+                return
             try:
+                tcp_object_id = str(ball.id)
                 attempts = 20  # ~1s total at 50ms intervals
                 for _ in range(attempts):
-                    # Try to enable now
-                    self.scene.run_method(
-                        "enable_transform_controls",
-                        tcp_object_id,
-                        self._tcp_transform_mode,
-                        0.8,
-                        None,
-                        True,
+                    ball.enable_transform_controls(
+                        mode=self._tcp_transform_mode,
+                        size=0.8,
+                        space="local",
                     )
                     await asyncio.sleep(0.05)
                     ok = await self.scene.run_method(
-                        "has_transform_controls", tcp_object_id
+                        "has_transform_controls", tcp_object_id, timeout=5.0
                     )
                     if ok:
-                        if self._tcp_ball:
-                            self._tcp_ball.visible(True)
+                        ball.visible(True)
                         self._tcp_transform_enabled = True
                         logger.debug("Enabled TCP TransformControls in %s mode", mode)
                         return
                 logger.warning("Failed to enable TCP TransformControls after retries")
             except (TimeoutError, asyncio.CancelledError):
-                # Scene is shutting down, bail out gracefully
                 logger.debug("TCP TransformControls enablement cancelled (shutdown)")
             finally:
                 self._tcp_enable_in_progress = False
 
-        # Use explicit scene context to avoid stale slot errors
         with self.scene:
             ui.timer(0.0, _enable_with_retry, once=True)
 
@@ -243,13 +241,10 @@ class TCPControlsMixin:
         if not self.scene or not self._tcp_ball:
             return
 
-        tcp_object_id = str(self._tcp_ball.id)
-
-        self.scene.disable_transform_controls(tcp_object_id)
+        self._tcp_ball.disable_transform_controls()
 
         # Hide jog ball when controls are disabled
-        if self._tcp_ball:
-            self._tcp_ball.visible(False)
+        self._tcp_ball.visible(False)
 
         self._tcp_transform_enabled = False
         self._tcp_enable_in_progress = False  # Reset guard on disable
@@ -268,13 +263,12 @@ class TCPControlsMixin:
             return
 
         self._tcp_transform_mode = mode.lower()
-        tcp_object_id = str(self._tcp_ball.id)
 
         # Sync ball position/rotation from FK before switching modes
         # This ensures rotate mode starts from the correct orientation
         self._update_tcp_ball_position()
 
-        self.scene.set_transform_mode(tcp_object_id, self._tcp_transform_mode)
+        self._tcp_ball.set_transform_mode(self._tcp_transform_mode)
 
         logger.debug("Changed TCP TransformControls mode to %s", mode)
 
@@ -355,7 +349,7 @@ class TCPControlsMixin:
             or self._tcp_ball.z != p[2]
         ):
             self._tcp_ball.move(p[0], p[1], p[2])
-            self._tcp_ball.rotate_euler(p[3], p[4], p[5], "XYZ")
+            self._tcp_ball.rotate(p[3], p[4], p[5], order="XYZ")
 
     def _update_jog_ball_from_robot_state(self) -> None:
         """Position the TCP ball using live robot state (LIVE/SIMULATOR modes)."""
@@ -367,6 +361,9 @@ class TCPControlsMixin:
         """Handle TCP transform events - behavior depends on appearance mode.
 
         Called from _handle_transform_continuous when TCP ball is being transformed.
+        Drag-start side effects (capturing rotation, notifying consumers) live in
+        UrdfScene._handle_transform_start since on_transform_start now fires before
+        the first on_transform event.
         - LIVE/SIMULATOR: Sends direct Cartesian move commands via callback
         - EDITING: Solves IK to update editing angles
         """
@@ -377,18 +374,6 @@ class TCPControlsMixin:
         if object_name not in ("tcp:ball", "tcp:jog_ball", "tcp:offset"):
             return
 
-        # Record starting rotation on first event of drag session
-        if not self._tcp_ball_dragging:
-            # Get starting rotation from robot state (pre-computed degrees)
-            self._tcp_drag_start_rot_deg = tuple(robot_state.orientation.deg)
-            # Mark that TCP ball is being dragged - prevents FK from overwriting position
-            self._tcp_ball_dragging = True
-            # Notify drag-start to consumers (for jogging mode)
-            if self._appearance_mode != RobotAppearanceMode.EDITING:
-                if self._tcp_cartesian_move_start_callback:
-                    self._tcp_cartesian_move_start_callback()
-
-        # Route to mode-specific handler
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             self._handle_tcp_transform_for_ik(e)
         else:

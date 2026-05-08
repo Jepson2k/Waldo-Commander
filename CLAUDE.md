@@ -164,6 +164,8 @@ waldoctl (ABC/types) ← parol6 (backend) ← waldo-commander (frontend)
 - `parol6` — PAROL6 backend, installed from git tag by CI
 - `waldo-commander` — the frontend, depends on both via git URLs
 
+WC also depends on a vendored fork of NiceGUI; see [NiceGUI fork](#nicegui-fork) below.
+
 ### Versioning
 
 All packages use semver (`MAJOR.MINOR.PATCH`). Pre-1.0 packages bump minor for breaking changes. Version is set in each package's `pyproject.toml` and read at runtime via `importlib.metadata`.
@@ -233,3 +235,11 @@ The `compat` mode falls back to the older `.pth`/develop-style install
 where `files("parol6")` correctly returns the source tree path. waldoctl
 and waldo_commander don't need this flag (waldoctl has no package data,
 and waldo_commander happens to resolve correctly even in strict mode).
+
+### NiceGUI fork
+
+WC pins NiceGUI to a SHA on `Jepson2k/nicegui`'s `combo-all-prs` branch — a synthetic branch that merges all of our open upstream PRs together so WC can use them as one unit. SHA pin (not branch ref) for reproducibility.
+
+When an underlying PR branch changes, combo goes stale. Refresh it with `/nicegui-combo-bump`, which rebuilds combo and re-pins WC's `pyproject.toml`.
+
+**Never commit directly to `combo-all-prs`** — it's regenerated each cycle and direct commits get clobbered. Anything that needs to persist must land on a feature branch first.

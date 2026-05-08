@@ -964,6 +964,13 @@ html, body {
   animation: cm-line-flash 1.5s ease-out forwards;
 }
 
+/* Persistent highlight applied to the currently-executing script line.
+   Matches the rgba(255, 255, 0, 0.3) yellow used by the original
+   highlight_lines() built-in style. */
+.cm-line.cm-highlighted {
+  background-color: rgba(255, 255, 0, 0.3);
+}
+
 
 /* Fade CodeMirror content at bottom using mask - fades to transparent */
 .editor-tab-panel {

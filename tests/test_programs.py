@@ -6,6 +6,7 @@ This catches IK failures, missing imports, and API misuse before
 the user hits them in the UI.
 """
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,15 +14,22 @@ import pytest
 from parol6.client.dry_run_client import DryRunRobotClient
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
 
-PROGRAMS_DIR = Path(__file__).resolve().parents[1] / "programs"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PROGRAMS_DIR = REPO_ROOT / "programs"
 
-# Programs that are actual demos (not test scaffolding or empty files)
+# Only test programs tracked in git — `programs/` also contains user-local
+# scripts (gitignored) that may bypass the RobotClient abstraction and can't
+# run under the dry-run simulator.
+_tracked = subprocess.check_output(
+    ["git", "ls-files", "programs/*.py"], cwd=REPO_ROOT, text=True
+).splitlines()
+
 PROGRAMS = sorted(
-    p.name
-    for p in PROGRAMS_DIR.glob("*.py")
-    if not p.name.startswith("test_")
-    and not p.name.startswith("__")
-    and p.stat().st_size > 10
+    Path(rel).name
+    for rel in _tracked
+    if (REPO_ROOT / rel).exists()
+    and (REPO_ROOT / rel).stat().st_size > 10
+    and not Path(rel).name.startswith(("test_", "__"))
 )
 
 
