@@ -556,7 +556,7 @@ class EditingMixin:
 
         if not self._edit_bar_container:
             parent: Any = self._scene_wrapper if self._scene_wrapper else ui
-            with parent:  # ty: ignore[invalid-context-manager]
+            with parent:
                 self._edit_bar_container = ui.element("div").classes(
                     "absolute bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-auto"
                 )
