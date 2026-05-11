@@ -34,6 +34,7 @@ from waldo_commander.common.theme import (
     get_color_for_move_type,
 )
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
+from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import simulation_state, robot_state, ui_state
 
 from .config import RobotAppearanceMode, ToolPose, UrdfSceneConfig
@@ -628,7 +629,23 @@ class UrdfScene(
             raise
 
     def _do_update_simulation_view(self) -> None:
-        """Internal implementation of simulation view update."""
+        """Internal implementation of simulation view update.
+
+        All scene mutations during one reconciliation cycle (segment rendering,
+        tool-action markers, waypoint/target reconcile, playback opacity) get
+        batched into a single WS frame via :func:`batch_scene`. A single path
+        redraw with N segments × ~10 cones each can otherwise issue 100+
+        separate WS messages — without batching the browser may render a
+        partial scene mid-update (some markers reorganized, others still in
+        old positions).
+        """
+        if not self.scene:
+            return
+        with batch_scene(self.scene):
+            self._do_update_simulation_view_body()
+
+    def _do_update_simulation_view_body(self) -> None:
+        """Body of the simulation view update (run inside a batch_scene)."""
         # Visibility check for paths and targets
         if not simulation_state.paths_visible:
             if self.path_group is not None:
@@ -1287,6 +1304,11 @@ class UrdfScene(
         Applies opacity to ALL element types: segments, tool actions,
         non-editable waypoints, and editable targets.
         Only touches items whose opacity actually changed.
+
+        All ``obj.material(...)`` calls are batched into one WS frame via
+        :func:`batch_scene` — a segment crossing during fast playback can
+        otherwise issue up to ~11 separate frames (polyline + cones for a
+        long move), which can render half-faded if interleaved with three.js.
         """
         step = simulation_state.current_step_index
         prev = self._rendered_playback_step
@@ -1300,76 +1322,79 @@ class UrdfScene(
         if step == prev or not has_any:
             return
         self._rendered_playback_step = step
+        if not self.scene:
+            return
 
-        # --- Segments: only update indices that transitioned ---
-        if n_rendered > 0:
+        with batch_scene(self.scene):
+            # --- Segments: only update indices that transitioned ---
+            if n_rendered > 0:
+                if prev >= 0:
+                    lo, hi = min(prev, step), max(prev, step)
+                    for i in range(lo, min(hi, n_rendered)):
+                        rs = self._rendered_segments[i]
+                        if rs is None or not rs.objects:
+                            continue
+                        opacity = 0.5 if (step > 0 and i < step) else 1.0
+                        for j, obj in enumerate(rs.objects):
+                            if j == 0 and rs.uses_vc:
+                                obj.material(None, opacity)
+                            else:
+                                c = rs.colors[j] if j < len(rs.colors) else ""
+                                obj.material(c, opacity)
+                else:
+                    # First update — apply all segments
+                    for i in range(n_rendered):
+                        rs = self._rendered_segments[i]
+                        if rs is None or not rs.objects:
+                            continue
+                        opacity = 0.5 if (step > 0 and i < step) else 1.0
+                        for j, obj in enumerate(rs.objects):
+                            if j == 0 and rs.uses_vc:
+                                obj.material(None, opacity)
+                            else:
+                                c = rs.colors[j] if j < len(rs.colors) else ""
+                                obj.material(c, opacity)
+
+            # --- Tool actions, waypoints, targets: only update items that transitioned ---
+            # An item at segment_index=s changed opacity iff it crossed the step boundary.
             if prev >= 0:
                 lo, hi = min(prev, step), max(prev, step)
-                for i in range(lo, min(hi, n_rendered)):
-                    rs = self._rendered_segments[i]
-                    if rs is None or not rs.objects:
-                        continue
-                    opacity = 0.5 if (step > 0 and i < step) else 1.0
-                    for j, obj in enumerate(rs.objects):
-                        if j == 0 and rs.uses_vc:
-                            obj.material(None, opacity)
-                        else:
-                            c = rs.colors[j] if j < len(rs.colors) else ""
-                            obj.material(c, opacity)
             else:
-                # First update — apply all segments
-                for i in range(n_rendered):
-                    rs = self._rendered_segments[i]
-                    if rs is None or not rs.objects:
-                        continue
-                    opacity = 0.5 if (step > 0 and i < step) else 1.0
-                    for j, obj in enumerate(rs.objects):
-                        if j == 0 and rs.uses_vc:
-                            obj.material(None, opacity)
-                        else:
-                            c = rs.colors[j] if j < len(rs.colors) else ""
-                            obj.material(c, opacity)
+                lo, hi = 0, n_rendered  # first update — touch all
 
-        # --- Tool actions, waypoints, targets: only update items that transitioned ---
-        # An item at segment_index=s changed opacity iff it crossed the step boundary.
-        if prev >= 0:
-            lo, hi = min(prev, step), max(prev, step)
-        else:
-            lo, hi = 0, n_rendered  # first update — touch all
+            for ri in self._rendered_tool_actions:
+                if ri is None or not ri.objects or ri.segment_index < 0:
+                    continue
+                if prev >= 0 and not (lo <= ri.segment_index < hi):
+                    continue
+                opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
+                for obj in ri.objects:
+                    obj.material(PathColors.TOOL_ACTION, opacity)
 
-        for ri in self._rendered_tool_actions:
-            if ri is None or not ri.objects or ri.segment_index < 0:
-                continue
-            if prev >= 0 and not (lo <= ri.segment_index < hi):
-                continue
-            opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
-            for obj in ri.objects:
-                obj.material(PathColors.TOOL_ACTION, opacity)
+            for ri in self._rendered_waypoints:
+                if ri is None or not ri.objects or ri.segment_index < 0:
+                    continue
+                if prev >= 0 and not (lo <= ri.segment_index < hi):
+                    continue
+                opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
+                color = ri.fingerprint[2] if len(ri.fingerprint) > 2 else ""
+                for obj in ri.objects:
+                    obj.material(color, opacity)
 
-        for ri in self._rendered_waypoints:
-            if ri is None or not ri.objects or ri.segment_index < 0:
-                continue
-            if prev >= 0 and not (lo <= ri.segment_index < hi):
-                continue
-            opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
-            color = ri.fingerprint[2] if len(ri.fingerprint) > 2 else ""
-            for obj in ri.objects:
-                obj.material(color, opacity)
-
-        for td in self._target_objects.values():
-            seg_idx = td.get("segment_index", -1)
-            if seg_idx < 0:
-                continue
-            if prev >= 0 and not (lo <= seg_idx < hi):
-                continue
-            opacity = 0.5 if (step > 0 and seg_idx < step) else 1.0
-            color = td.get("color", "")
-            marker = td.get("marker")
-            if marker is not None:
-                try:
-                    marker.material(color, opacity)
-                except (RuntimeError, KeyError):
-                    pass
+            for td in self._target_objects.values():
+                seg_idx = td.get("segment_index", -1)
+                if seg_idx < 0:
+                    continue
+                if prev >= 0 and not (lo <= seg_idx < hi):
+                    continue
+                opacity = 0.5 if (step > 0 and seg_idx < step) else 1.0
+                color = td.get("color", "")
+                marker = td.get("marker")
+                if marker is not None:
+                    try:
+                        marker.material(color, opacity)
+                    except (RuntimeError, KeyError):
+                        pass
 
     # --------- Public API ---------
 
@@ -1402,16 +1427,24 @@ class UrdfScene(
         Note:
             This method is guarded - it will not update the robot during editing mode
             to prevent live updates from overwriting user manipulations.
+
+            Joint transforms are flushed as a single WS frame via
+            :func:`batch_scene` so three.js can't render a frame with only
+            a subset of the 12 joint updates applied (which manifests as
+            visible wrist "shake" at high update rates).
         """
         # Don't update robot joints during editing mode - user is manipulating them
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             return
+        if not self.scene:
+            return
 
-        for joint_name, q in zip(self.joint_names, val):
-            joint_TF = self.joint_trafos[joint_name]
-            joint_i = self.joint_groups[joint_name]
-            t, r = joint_TF(q)
-            joint_i.move(*t).rotate(*r)
+        with batch_scene(self.scene):
+            for joint_name, q in zip(self.joint_names, val):
+                joint_TF = self.joint_trafos[joint_name]
+                joint_i = self.joint_groups[joint_name]
+                t, r = joint_TF(q)
+                joint_i.move(*t).rotate(*r)
 
     def _apply_joint_angles(self, angles_rad: list[float]) -> None:
         """Apply joint angles to the main robot joint groups.
@@ -1617,57 +1650,69 @@ class UrdfScene(
         Also applies activated color: moving-part meshes get the "moving" color
         only when ``tool_status.engaged`` is True.  Binary tools without motions
         apply activated color to all tool meshes.
+
+        Mesh mutations (move/rotate/material across all moving meshes) are
+        batched into one WS frame via :func:`batch_scene` so symmetric jaws
+        can't render with one side updated and the other stale.
         """
-        # Update engaged color state (applies to all tools, not just those with motions)
-        engaged = robot_state.tool_status.engaged
-        if (
-            engaged != self._last_tool_engaged
-            and self._appearance_mode != RobotAppearanceMode.EDITING
-        ):
-            self._last_tool_engaged = engaged
-            self._apply_tool_engaged_color(engaged)
-
-        if not self._tool_motions:
+        if not self.scene:
             return
 
-        positions = robot_state.tool_status.positions
-        if positions == self._tool_motion_last:
-            return
-        self._tool_motion_last = positions
+        with batch_scene(self.scene):
+            # Update engaged color state (applies to all tools, not just those with motions)
+            engaged = robot_state.tool_status.engaged
+            if (
+                engaged != self._last_tool_engaged
+                and self._appearance_mode != RobotAppearanceMode.EDITING
+            ):
+                self._last_tool_engaged = engaged
+                self._apply_tool_engaged_color(engaged)
 
-        for idx, motion in enumerate(self._tool_motions):
-            meshes = self._tool_motion_meshes.get(motion.role)
-            if not meshes:
-                continue
+            if not self._tool_motions:
+                return
 
-            frac = positions[idx] if idx < len(positions) else 0.0
-            frac = max(0.0, min(1.0, frac))
+            positions = robot_state.tool_status.positions
+            if positions == self._tool_motion_last:
+                return
+            self._tool_motion_last = positions
 
-            origins = self._tool_motion_origins.get(motion.role, [])
+            for idx, motion in enumerate(self._tool_motions):
+                meshes = self._tool_motion_meshes.get(motion.role)
+                if not meshes:
+                    continue
 
-            if isinstance(motion, LinearMotion):
-                travel = motion.travel_m * -frac
-                ax = motion.axis
-                for i, mesh in enumerate(meshes):
-                    sign = (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
-                    ox, oy, oz = origins[i] if i < len(origins) else (0.0, 0.0, 0.0)
-                    mesh.move(
-                        ox + ax[0] * travel * sign,
-                        oy + ax[1] * travel * sign,
-                        oz + ax[2] * travel * sign,
-                    )
-            elif isinstance(motion, RotaryMotion):
-                angle = motion.travel_rad * frac
-                ax = motion.axis
-                rots = self._tool_motion_rotations.get(motion.role, [])
-                for i, mesh in enumerate(meshes):
-                    sign = (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
-                    r0x, r0y, r0z = rots[i] if i < len(rots) else (0.0, 0.0, 0.0)
-                    mesh.rotate(
-                        r0x + ax[0] * angle * sign,
-                        r0y + ax[1] * angle * sign,
-                        r0z + ax[2] * angle * sign,
-                    )
+                frac = positions[idx] if idx < len(positions) else 0.0
+                frac = max(0.0, min(1.0, frac))
+
+                origins = self._tool_motion_origins.get(motion.role, [])
+
+                if isinstance(motion, LinearMotion):
+                    travel = motion.travel_m * -frac
+                    ax = motion.axis
+                    for i, mesh in enumerate(meshes):
+                        sign = (
+                            (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
+                        )
+                        ox, oy, oz = origins[i] if i < len(origins) else (0.0, 0.0, 0.0)
+                        mesh.move(
+                            ox + ax[0] * travel * sign,
+                            oy + ax[1] * travel * sign,
+                            oz + ax[2] * travel * sign,
+                        )
+                elif isinstance(motion, RotaryMotion):
+                    angle = motion.travel_rad * frac
+                    ax = motion.axis
+                    rots = self._tool_motion_rotations.get(motion.role, [])
+                    for i, mesh in enumerate(meshes):
+                        sign = (
+                            (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
+                        )
+                        r0x, r0y, r0z = rots[i] if i < len(rots) else (0.0, 0.0, 0.0)
+                        mesh.rotate(
+                            r0x + ax[0] * angle * sign,
+                            r0y + ax[1] * angle * sign,
+                            r0z + ax[2] * angle * sign,
+                        )
 
     def _apply_tool_engaged_color(self, engaged: bool) -> None:
         """Apply activated color to tool meshes based on engaged state."""
