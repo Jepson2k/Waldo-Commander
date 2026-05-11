@@ -96,7 +96,7 @@ class MotionRecorder:
         textarea = ui_state.editor_panel.program_textarea
         if not textarea:
             return
-        val: str = str(textarea.value or "")
+        val = str(textarea.value or "")
         lines: list[str] = val.split("\n")
 
         if variant_key:
