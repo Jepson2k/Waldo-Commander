@@ -427,8 +427,8 @@ class UrdfScene(
                 # so the legacy "first event" detection inside
                 # _handle_tcp_transform_for_jog never triggers.
                 self._tcp_drag_start_rot_deg = tuple(robot_state.orientation.deg)
-                cb = getattr(self, "_tcp_cartesian_move_start_callback", None)
-                if callable(cb):
+                cb = self._tcp_cartesian_move_start_callback
+                if cb is not None:
                     try:
                         cb()
                     except Exception as err:

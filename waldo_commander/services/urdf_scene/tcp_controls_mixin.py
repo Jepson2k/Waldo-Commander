@@ -200,34 +200,43 @@ class TCPControlsMixin:
             self._tcp_enable_in_progress = False
             return
 
-        # Enable TransformControls with a short Python-side retry until the JS object exists.
-        # The per-object wrapper just dispatches `scene.run_method('enable_transform_controls', id, ...)`
+        # Enable TransformControls with a Python-side retry until the JS object exists.
+        # The per-object wrapper dispatches `scene.run_method('enable_transform_controls', id, ...)`
         # once; if the JS side hasn't received the init_objects payload yet, the call silently no-ops.
         # `has_transform_controls` on the scene is the only way to confirm attach succeeded.
-        # 5s timeout (vs run_method's 1s default) — first JS response after page load can lag.
+        # Total budget bounded by a wall-clock deadline: the first probe absorbs page-load latency
+        # (up to the full deadline); subsequent probes clamp to 1s so a stuck JS side can't tie up
+        # the enablement guard for the full 5s × N times.
         async def _enable_with_retry():
             ball = self._tcp_ball
             if ball is None:
                 return
             try:
                 tcp_object_id = str(ball.id)
-                attempts = 20  # ~1s total at 50ms intervals
-                for _ in range(attempts):
+                loop = asyncio.get_event_loop()
+                deadline = loop.time() + 5.0
+                first = True
+                while loop.time() < deadline:
                     ball.enable_transform_controls(
                         mode=self._tcp_transform_mode,
                         size=0.8,
                         space="local",
                     )
                     await asyncio.sleep(0.05)
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    probe_timeout = remaining if first else min(remaining, 1.0)
+                    first = False
                     ok = await self.scene.run_method(
-                        "has_transform_controls", tcp_object_id, timeout=5.0
+                        "has_transform_controls", tcp_object_id, timeout=probe_timeout
                     )
                     if ok:
                         ball.visible(True)
                         self._tcp_transform_enabled = True
                         logger.debug("Enabled TCP TransformControls in %s mode", mode)
                         return
-                logger.warning("Failed to enable TCP TransformControls after retries")
+                logger.warning("Failed to enable TCP TransformControls within 5s")
             except (TimeoutError, asyncio.CancelledError):
                 logger.debug("TCP TransformControls enablement cancelled (shutdown)")
             finally:
