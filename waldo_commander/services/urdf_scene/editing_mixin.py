@@ -230,12 +230,13 @@ class EditingMixin:
                 continue
             group.with_name(f"edit_joint_group:{i}")
             axis = axes[i] if i < len(axes) else "Z"
-            group_id = str(group.id)
-            self.scene.enable_transform_controls(
-                group_id, mode="rotate", size=0.6, visible_axes=[axis]
+            group.enable_transform_controls(
+                mode="rotate",
+                size=0.6,
+                visible_axes=[axis],
+                space="local",
+                rotation_snap=rotation_snap,
             )
-            self.scene.set_transform_space(group_id, "local")
-            self.scene.set_transform_rotation_snap(group_id, rotation_snap)
             self._joint_control_groups[i] = group
 
     def _disable_joint_transform_controls(self) -> None:
@@ -243,7 +244,7 @@ class EditingMixin:
         if not self.scene or not self._joint_control_groups:
             return
         for _, group in list(self._joint_control_groups.items()):
-            self.scene.disable_transform_controls(str(group.id))
+            group.disable_transform_controls()
         self._joint_control_groups.clear()
 
     def _on_joint_group_transform(self, e) -> None:

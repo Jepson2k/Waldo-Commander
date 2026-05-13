@@ -157,7 +157,7 @@ class PathRendererMixin:
             wireframe=False,
         )
         cone.move(*position)
-        cone.rotate(*rpy)
+        cone.rotate(rpy[0], rpy[1], rpy[2])
         cone.material(color, opacity)
 
         return cone

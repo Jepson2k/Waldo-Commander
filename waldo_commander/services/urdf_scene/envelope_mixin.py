@@ -665,23 +665,21 @@ class EnvelopeMixin:
             self._envelope_visible = True
 
         if self.envelope_object and self.scene:
-            eid = str(self.envelope_object.id)
             if clipped and approaching_positions:
                 planes = self._calculate_envelope_clipping_planes(
                     approaching_positions, workspace_envelope.max_reach
                 )
                 if planes:
-                    self.scene.set_clipping_planes(eid, planes)
+                    self.envelope_object.set_clipping_planes(planes)
             else:
-                self.scene.clear_clipping_planes(eid)
+                self.envelope_object.clear_clipping_planes()
 
     def _hide_envelope(self) -> None:
         """Hide envelope and clear clipping planes."""
         if self.envelope_object and self._envelope_visible:
             self.envelope_object.visible(False)
             self._envelope_visible = False
-            if self.scene:
-                self.scene.clear_clipping_planes(str(self.envelope_object.id))
+            self.envelope_object.clear_clipping_planes()
 
     def _calculate_envelope_clipping_planes(
         self,
