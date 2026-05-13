@@ -236,6 +236,10 @@ where `files("parol6")` correctly returns the source tree path. waldoctl
 and waldo_commander don't need this flag (waldoctl has no package data,
 and waldo_commander happens to resolve correctly even in strict mode).
 
+#### Advanced: editing the vendored nicegui fork in place
+
+To make `nicegui/` edits live in WC's running process, run `pip install -e nicegui/ --no-deps` **after** the `.[dev]` pass — its setuptools-scm version differs from the URL install's, so any later `pip install -e ".[dev]"` will clobber the editable mode and need this command again. `dist/` bundles still require `npm run build` after editing the source.
+
 ### NiceGUI fork
 
 WC pins NiceGUI to a SHA on `Jepson2k/nicegui`'s `combo-all-prs` branch — a synthetic branch that merges all of our open upstream PRs together so WC can use them as one unit. SHA pin (not branch ref) for reproducibility.
