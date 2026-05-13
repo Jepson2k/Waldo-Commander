@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import html
 import inspect
 import logging
 import re
@@ -241,6 +242,12 @@ class EditorPanel(FileOperationsMixin):
         self._record_btn_tooltip: ui.tooltip | None = None
         self._log_toggle_btn_tooltip: ui.tooltip | None = None
 
+        # Decoration state — flash + executing-line share `editor.decorations`,
+        # so both subsystems route through _apply_decorations() to merge.
+        self._active_flashes: list[tuple[int, set[int]]] = []
+        self._flash_token: int = 0
+        self._executing_line: int | None = None
+
     def _default_python_snippet(self) -> str:
         """Generate the initial pre-filled Python code with inlined controller host/port."""
         backend = ui_state.active_robot.backend_package
@@ -351,9 +358,7 @@ print(f"Robot status: {{status}}")
             logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
-        line_number = self.program_textarea.line_anchor_positions.get(
-            "targets", {}
-        ).get(target_id)
+        line_number = self.program_textarea.line_anchor_positions.get(target_id)
         if line_number is None:
             logger.warning("Sync failed: Target %s not found", target_id)
             return
@@ -415,9 +420,7 @@ print(f"Robot status: {{status}}")
         if not self.program_textarea:
             return
 
-        line_number = self.program_textarea.line_anchor_positions.get(
-            "targets", {}
-        ).get(target_id)
+        line_number = self.program_textarea.line_anchor_positions.get(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
@@ -501,23 +504,47 @@ print(f"Robot status: {{status}}")
         if not self.program_textarea or not line_numbers:
             return
 
-        # Check if editor panel is visible (not collapsed)
         if self._is_editor_panel_visible():
-            specs: list[DecorationSpec] = [
-                {"kind": "line", "line": ln, "class": "cm-line-flash"}
-                for ln in line_numbers
-            ]
-            self.program_textarea.set_decorations(specs, set_name="flash")
+            self._flash_token += 1
+            token = self._flash_token
+            self._active_flashes.append((token, set(line_numbers)))
+            self._apply_decorations()
             self.program_textarea.reveal_line(max(line_numbers))
-            ui.timer(
-                1.5,
-                lambda: self.program_textarea
-                and self.program_textarea.clear_decorations(set_name="flash"),
-                once=True,
-            )
+            ui.timer(1.5, lambda t=token: self._expire_flash(t), once=True)
         else:
-            # Flash the editor tab instead
             self._flash_editor_tab()
+
+    def _apply_decorations(self) -> None:
+        """Single source of truth for editor decorations.
+
+        Aggregates flash + executing-line state into one list and assigns to
+        the flat ``decorations`` property in a single round-trip.
+        """
+        if not self.program_textarea:
+            return
+        specs: list[DecorationSpec] = []
+        flash_lines: set[int] = set()
+        for _, lines in self._active_flashes:
+            flash_lines.update(lines)
+        for ln in sorted(flash_lines):
+            specs.append({"kind": "line", "line": ln, "class": "cm-line-flash"})
+        if self._executing_line is not None:
+            specs.append(
+                {
+                    "kind": "line",
+                    "line": self._executing_line,
+                    "class": "cm-highlighted",
+                }
+            )
+        self.program_textarea.decorations[:] = specs
+
+    def _expire_flash(self, token: int) -> None:
+        before = len(self._active_flashes)
+        self._active_flashes = [
+            (t, lns) for t, lns in self._active_flashes if t != token
+        ]
+        if len(self._active_flashes) != before:
+            self._apply_decorations()
 
     def _flash_editor_tab(self) -> None:
         """Flash the editor tab to indicate new content when panel is collapsed."""
@@ -1399,6 +1426,7 @@ print(f"Robot status: {{status}}")
                         keybindings={
                             "Mod-s": lambda _e, t=tab: self._save_tab(t),
                         },
+                        line_tooltip_html=True,
                     )
                     .classes("w-full h-full")
                     .style("min-height: 100%;")
@@ -1439,21 +1467,25 @@ print(f"Robot status: {{status}}")
             if seg.line_number <= 0 or not seg.points:
                 continue
             end = seg.points[-1]
-            pos_str = f"x: {end[0] * 1000:.1f}, y: {end[1] * 1000:.1f}, z: {end[2] * 1000:.1f} mm"
+            pos_str = html.escape(
+                f"x: {end[0] * 1000:.1f}, y: {end[1] * 1000:.1f}, z: {end[2] * 1000:.1f} mm"
+            )
             parts = [f"<div>{pos_str}</div>"]
             if seg.estimated_duration:
-                parts.append(f"<div>Duration: {seg.estimated_duration:.2f}s</div>")
+                parts.append(
+                    f"<div>Duration: {html.escape(f'{seg.estimated_duration:.2f}s')}</div>"
+                )
             if not seg.is_valid:
                 parts.append('<div style="color:#f87171">Unreachable position</div>')
             if not seg.timing_feasible and seg.estimated_duration is not None:
                 parts.append(
-                    f'<div style="color:#fbbf24">Duration too short (min: {seg.estimated_duration:.2f}s)</div>'
+                    f'<div style="color:#fbbf24">Duration too short (min: {html.escape(f"{seg.estimated_duration:.2f}s")})</div>'
                 )
             tooltips[seg.line_number] = "".join(parts)
 
-        # cm-line-tooltips exposes `line_tooltips` as a mutable property; mutating it syncs to the client.
-        self.program_textarea.line_tooltips.clear()
-        self.program_textarea.line_tooltips.update(tooltips)
+        # Direct prop assignment routes through Props.__setitem__ once; mutating
+        # the returned dict instead would fire two ObservableDict syncs.
+        self.program_textarea._props["line-tooltips"] = tooltips
 
     def _push_target_positions(self) -> None:
         """Push current target positions to CM6 line anchors for edit tracking."""
@@ -1464,7 +1496,7 @@ print(f"Robot status: {{status}}")
             for t in simulation_state.targets
             if t.line_number > 0
         ]
-        self.program_textarea.set_line_anchors(anchors, set_name="targets")
+        self.program_textarea.line_anchors[:] = anchors
 
     def _on_tab_content_change(self, tab: EditorTab, new_value: str) -> None:
         """Handle content change for a tab."""
@@ -1482,7 +1514,6 @@ print(f"Robot status: {{status}}")
         """Highlight the source line corresponding to the current step.
 
         Uses path_segments line_number to look up which line to highlight.
-        Uses persistent decorations (not flash animations) that update with each step.
 
         Args:
             step_index: The current step index (0-indexed)
@@ -1490,33 +1521,24 @@ print(f"Robot status: {{status}}")
         if not self.program_textarea:
             return
 
-        # Look up line number from path_segments if available
         if simulation_state.path_segments and 0 <= step_index < len(
             simulation_state.path_segments
         ):
             segment = simulation_state.path_segments[step_index]
-            line_number = segment.line_number
-            if line_number > 0:
-                executing_specs: list[DecorationSpec] = [
-                    {
-                        "kind": "line",
-                        "line": line_number,
-                        "class": "cm-highlighted",
-                    }
-                ]
-                self.program_textarea.set_decorations(
-                    executing_specs, set_name="executing"
-                )
-                self.program_textarea.reveal_line(line_number)
+            if segment.line_number > 0:
+                self._executing_line = segment.line_number
+                self._apply_decorations()
+                self.program_textarea.reveal_line(segment.line_number)
                 return
 
-        # Clear highlight if no valid line found
-        self.program_textarea.clear_decorations(set_name="executing")
+        self._executing_line = None
+        self._apply_decorations()
 
     def clear_executing_line_highlight(self) -> None:
         """Clear the executing line highlight decoration."""
-        if self.program_textarea:
-            self.program_textarea.clear_decorations(set_name="executing")
+        if self._executing_line is not None:
+            self._executing_line = None
+            self._apply_decorations()
 
     _ERROR_LINE_RE = re.compile(
         r'(?:File "simulation_script\.py", line (\d+))|(?:^Line (\d+):)',
@@ -1566,7 +1588,7 @@ print(f"Robot status: {{status}}")
                     }
                 )
 
-        self.program_textarea.set_diagnostics(diagnostics)
+        self.program_textarea.diagnostics = diagnostics
 
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""

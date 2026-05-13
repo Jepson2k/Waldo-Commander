@@ -317,7 +317,7 @@ class UrdfScene(
                     # ~0.2 opacity halo at 2x the source geometry's footprint.
                     hover_color="#ffffff",
                     hover_opacity=0.2,
-                    hover_scale=2.0,
+                    hover_scale=1.5,
                     on_click=self._handle_scene_click,
                     click_events=[
                         "mousedown",
@@ -428,8 +428,8 @@ class UrdfScene(
                 # so the legacy "first event" detection inside
                 # _handle_tcp_transform_for_jog never triggers.
                 self._tcp_drag_start_rot_deg = tuple(robot_state.orientation.deg)
-                cb = getattr(self, "_tcp_cartesian_move_start_callback", None)
-                if callable(cb):
+                cb = self._tcp_cartesian_move_start_callback
+                if cb is not None:
                     try:
                         cb()
                     except Exception as err:

@@ -106,8 +106,8 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
     ui_state.joint_step_deg = 3.0
     initial_j1 = await wait_for_motion_stable(lambda: robot_state.angles[0])
 
-    # Click J1 minus button
-    user.find(marker="btn-j1-minus").click()
+    # Click J1 minus button (mousedown/mouseup pair — jog buttons don't listen for raw click)
+    await simulate_click(user, "btn-j1-minus")
     await wait_for_motion_start(robot_state)
     final_j1 = await wait_for_motion_stable(lambda: robot_state.angles[0])
 
@@ -147,7 +147,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     )
     initial_z = float(robot_state.z)
 
-    user.find(marker="axis-zplus").click()
+    await simulate_click(user, "axis-zplus")
     await wait_for_motion_start(robot_state)
     final_z = await wait_for_motion_stable(lambda: float(robot_state.z), tolerance=0.1)
 
@@ -163,7 +163,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     )
     initial_z = float(robot_state.z)
 
-    user.find(marker="axis-zminus").click()
+    await simulate_click(user, "axis-zminus")
     await wait_for_motion_start(robot_state)
     final_z = await wait_for_motion_stable(lambda: float(robot_state.z), tolerance=0.1)
 
@@ -177,7 +177,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     )
     initial_rz = float(robot_state.rz)
 
-    user.find(marker="axis-rzplus").click()
+    await simulate_click(user, "axis-rzplus")
     await wait_for_motion_start(robot_state)
     final_rz = await wait_for_motion_stable(
         lambda: float(robot_state.rz), tolerance=0.1

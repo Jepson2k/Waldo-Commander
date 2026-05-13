@@ -1300,7 +1300,14 @@ class ControlPanel:
             logger.warning("Jog: wait_motion failed: %s", e)
         finally:
             self._jog_end_wait_task = None
-        motion_recorder.on_jog_end()
+        # asyncio.create_task spawns this without a slot stack; on_jog_end touches
+        # the editor via motion_recorder (`flash_editor_lines` → `ui.timer`), so
+        # re-enter the panel's client context before any UI access.
+        if self._ui_client is not None:
+            with self._ui_client:
+                motion_recorder.on_jog_end()
+        else:
+            motion_recorder.on_jog_end()
 
     async def move_joint_to_angle(self, joint_index: int, target_deg: float) -> None:
         """Move a single joint to the specified angle (deg) while holding others."""
