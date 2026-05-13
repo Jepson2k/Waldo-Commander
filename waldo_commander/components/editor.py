@@ -1588,7 +1588,7 @@ print(f"Robot status: {{status}}")
                     }
                 )
 
-        self.program_textarea.set_diagnostics(diagnostics)
+        self.program_textarea.diagnostics = diagnostics
 
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""
