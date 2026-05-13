@@ -316,7 +316,7 @@ class UrdfScene(
                     # ~0.2 opacity halo at 2x the source geometry's footprint.
                     hover_color="#ffffff",
                     hover_opacity=0.2,
-                    hover_scale=2.0,
+                    hover_scale=1.5,
                     on_click=self._handle_scene_click,
                     click_events=[
                         "mousedown",
