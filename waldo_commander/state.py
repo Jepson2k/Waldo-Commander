@@ -8,7 +8,7 @@ from typing import Any, Callable, TYPE_CHECKING
 
 import numpy as np
 from nicegui import binding
-from waldoctl import ActionState, ToolStatus
+from waldoctl import ActionState, Panel, ToolStatus
 
 from waldo_commander.common.loop_timer import PhaseTimer
 
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from typing import dataclass_transform
 
     from waldo_commander.services.urdf_scene import UrdfScene
-    from waldoctl import Robot
+    from waldoctl import Robot, RobotClient
 
     @dataclass_transform(field_specifiers=(field,))
     def bindable_dataclass(cls=None, /, **kwargs):
@@ -433,6 +433,10 @@ class UiState:
     # Unified robot instance (set at startup, required)
     robot: "Robot | None" = None
 
+    # Robot client (set at startup, required). Stored here so plugin panels
+    # can construct a PanelContext without depending on main.py globals.
+    client: "RobotClient | None" = None
+
     # URDF scene instance (holds UrdfSceneConfig)
     urdf_scene: "UrdfScene | None" = None
     urdf_joint_names: list[str] | None = None
@@ -478,6 +482,10 @@ class UiState:
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
 
+    # Plugin panels discovered via the `waldoctl.panels` entry-point group.
+    # Populated once per page build; ordered by (slot, order, id).
+    plugin_panels: list[Panel] = field(default_factory=list)
+
     # Post-init required fields (assert on access, set via assignment)
     editor_panel = _RequiredField()
     control_panel = _RequiredField()
@@ -496,6 +504,9 @@ class UiState:
         """Reset UI state. Does not reset robot (set once at startup)."""
         self.urdf_scene = None
         self.active_client_id = None
+        self.plugin_panels = []
+        if hasattr(self, "_plugin_panels_started"):
+            self._plugin_panels_started = False
 
 
 @dataclass(slots=True)

@@ -15,7 +15,15 @@ from pathlib import Path
 
 import numpy as np
 from nicegui import Client, app as ng_app, ui
-from waldoctl import GripperTool, LinearMotion, RobotClient
+from waldoctl import (
+    GripperTool,
+    LinearMotion,
+    Panel,
+    PanelContext,
+    PanelSlot,
+    RobotClient,
+    iter_plugin_panels,
+)
 
 from waldo_commander.common.logging_config import (
     attach_ui_log,
@@ -465,11 +473,53 @@ def update_ui_from_status() -> None:
         robot_state.notify_changed()
 
 
+def _make_panel_context() -> PanelContext:
+    """Build a fresh PanelContext for plugin hooks.
+
+    Pulls ``robot`` and ``client`` from ``ui_state`` rather than module
+    globals so the context survives across module-instance boundaries
+    (e.g. when NiceGUI's test fixture executes ``main.py`` via ``runpy``
+    with its own namespace).
+    """
+    assert ui_state.client is not None, "ui_state.client not initialized"
+    return PanelContext(
+        robot=ui_state.active_robot,
+        client=ui_state.client,
+        ui_state=ui_state,
+        robot_state=robot_state,
+        simulation_state=simulation_state,
+    )
+
+
+def _discover_plugin_panels() -> None:
+    """Populate ``ui_state.plugin_panels`` from the ``waldoctl.panels`` group.
+
+    Idempotent: skips work if already populated.  Plugins whose
+    ``applies_to(ctx)`` returns ``False`` are filtered out.  Survivors are
+    sorted by ``(slot, order, id)`` so tab order is deterministic.
+    """
+    if ui_state.plugin_panels:
+        return
+    ctx = _make_panel_context()
+    panels: list[Panel] = []
+    for cls in iter_plugin_panels():
+        try:
+            p = cls()
+            if p.applies_to(ctx):
+                panels.append(p)
+        except Exception as e:
+            logger.warning("Plugin panel %s init failed: %s", cls, e)
+    panels.sort(key=lambda p: (p.slot.value, p.order, p.id))
+    ui_state.plugin_panels = panels
+
+
 def _build_left_panels(panels_wrap: ui.element) -> dict:
     """Build top (program/io/gripper) and bottom (log/help) panel groups.
 
     Returns a dict of references needed by _setup_panel_persistence().
     """
+    _discover_plugin_panels()
+    ctx = _make_panel_context()
     # ---- Top tab bar ----
     with (
         ui.tabs()
@@ -488,6 +538,13 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         gripper_tab.props("disable")
         gripper_tab.mark("tab-gripper")
         ui_state._gripper_tab = gripper_tab
+
+        for p in ui_state.plugin_panels:
+            if p.slot is PanelSlot.LEFT_TOP_TAB:
+                _tab = ui.tab(name=p.id, label="", icon=p.tab_icon or "extension")
+                if p.tab_tooltip:
+                    _tab.tooltip(p.tab_tooltip)
+                _tab.mark(f"tab-{p.id}")
 
     # ---- Top panels container ----
     with (
@@ -582,6 +639,13 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
 
             ui_state._build_gripper_content = _build_gripper_content
 
+        for p in ui_state.plugin_panels:
+            if p.slot is PanelSlot.LEFT_TOP_TAB:
+                with ui.tab_panel(p.id).classes(
+                    "gap-2 overlay-card overflow-hidden"
+                ):
+                    p.build(ctx)
+
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
             ui_state.program_panel_visible = new_tab == "program"
@@ -607,6 +671,13 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         help_tab = ui.tab(name="help", label="", icon="help_outline")
         help_tab.tooltip("Help")
         help_tab.mark("tab-help")
+
+        for p in ui_state.plugin_panels:
+            if p.slot is PanelSlot.LEFT_BOTTOM_TAB:
+                _tab = ui.tab(name=p.id, label="", icon=p.tab_icon or "extension")
+                if p.tab_tooltip:
+                    _tab.tooltip(p.tab_tooltip)
+                _tab.mark(f"tab-{p.id}")
 
     # ---- Bottom panels container ----
     with (
@@ -641,6 +712,13 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui.element("div").classes("resize-handle-top")
             ui.element("div").classes("resize-handle-right")
             ui.element("div").classes("resize-handle-corner")
+
+        for p in ui_state.plugin_panels:
+            if p.slot is PanelSlot.LEFT_BOTTOM_TAB:
+                with ui.tab_panel(p.id).classes(
+                    "gap-2 overlay-card overflow-hidden"
+                ):
+                    p.build(ctx)
 
         def update_bottom_layout():
             is_open = bool(bottom_tabs.value)
@@ -868,6 +946,43 @@ def _quiet_shutdown_exception_handler(
     loop.default_exception_handler(context)
 
 
+async def _start_plugin_panels() -> None:
+    """Run ``Panel.start`` for every discovered plugin panel.
+
+    Called once per session, after the page has been built so plugin UI
+    references are valid.  Errors in one plugin's ``start`` do not stop the
+    others.  Idempotent via ``ui_state._plugin_panels_started`` so tab
+    reloads don't restart already-running tasks.
+    """
+    if getattr(ui_state, "_plugin_panels_started", False):
+        return
+    _discover_plugin_panels()
+    ctx = _make_panel_context()
+    results = await asyncio.gather(
+        *(p.start(ctx) for p in ui_state.plugin_panels),
+        return_exceptions=True,
+    )
+    ui_state._plugin_panels_started = True
+    for p, r in zip(ui_state.plugin_panels, results):
+        if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+            logger.warning("Plugin panel %r start failed: %s", p.id, r)
+
+
+async def _stop_plugin_panels() -> None:
+    """Run ``Panel.stop`` for every discovered plugin panel.
+
+    Each ``stop`` is bounded by a 2-second timeout so a misbehaving plugin
+    cannot block app shutdown.  Errors are logged, never raised.
+    """
+    for p in ui_state.plugin_panels:
+        try:
+            await asyncio.wait_for(p.stop(), timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.warning("Plugin panel %r stop timed out", p.id)
+        except Exception as e:
+            logger.warning("Plugin panel %r stop failed: %s", p.id, e)
+
+
 def _register_handlers() -> None:
     """Register startup/shutdown handlers only once.
 
@@ -1016,6 +1131,11 @@ def _register_handlers() -> None:
             ui_state.gripper_page.cleanup()
         if editor_panel is not None:
             editor_panel.cleanup()
+
+        # Stop plugin panels before the controller goes away so they can
+        # cancel any in-flight requests against the live client.
+        await _stop_plugin_panels()
+
         if ui_state.urdf_scene is not None:
             ui_state.urdf_scene.cleanup()
 
@@ -1219,6 +1339,9 @@ async def index_page():
 
     # Build UI
     build_page_content()
+
+    # Plugin panels: kick off their long-running tasks now that UI is ready.
+    asyncio.create_task(_start_plugin_panels())
 
     # Reflect startup-determined mode in UI; update connectivity only upward
     # (don't downgrade connected→disconnected from a transient ping failure;
@@ -1466,6 +1589,7 @@ def main():
     client = robot.create_async_client(
         host=config.controller_host, port=config.controller_port, timeout=5.0
     )
+    ui_state.client = client
     control_panel = ControlPanel(client)
     readout_panel = ReadoutPanel()
     editor_panel = EditorPanel()
