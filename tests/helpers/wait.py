@@ -222,8 +222,8 @@ async def wait_for_urdf_ready(timeout_s: float = 5.0) -> None:
 
 async def wait_for_motion_start(
     robot_state,
-    timeout_s: float = 2.0,
-    require_detection: bool = False,
+    timeout_s: float = 5.0,
+    require_detection: bool = True,
 ) -> bool:
     """Wait for motion to begin after a command is issued.
 
@@ -238,14 +238,20 @@ async def wait_for_motion_start(
 
     Args:
         robot_state: The RobotState instance to check
-        timeout_s: Maximum time to wait
-        require_detection: If True, raises TimeoutError if motion not detected
+        timeout_s: Maximum time to wait. Default 5.0s, generous enough for
+            slow CI runners (Windows in particular). Override for unit tests
+            that intentionally check no-motion scenarios.
+        require_detection: If True (default), raises TimeoutError if motion
+            isn't detected — surfaces "no motion" as a clear failure rather
+            than letting the subsequent assertion fail with a confusing
+            "moved 0.00mm" message. Set False for tests that expect no motion.
 
     Returns:
-        True if motion was detected, False otherwise (unless require_detection=True)
+        True if motion was detected.
 
     Raises:
-        TimeoutError: If require_detection=True and no motion detected
+        TimeoutError: If require_detection=True and no motion detected within
+            timeout_s.
     """
     import time
 
