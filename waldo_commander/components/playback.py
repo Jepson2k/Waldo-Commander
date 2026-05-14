@@ -11,6 +11,7 @@ import numpy as np
 from nicegui import ui, context
 
 from waldo_commander.common.theme import PathColors
+from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.state import (
     robot_state,
@@ -311,14 +312,14 @@ class PlaybackController:
                 self._sim_timer.active = True
             simulation_state.current_step_index = step
             self._highlight_current_segment()
-            self._editor.highlight_executing_line(step)
+            decorations.highlight_executing_line(step)
 
     def on_script_step_complete(self, step: int, ui_client: Any) -> None:
         """Called when a script command completes."""
         with ui_client:
             simulation_state.current_step_index = step
             self._highlight_current_segment()
-            self._editor.highlight_executing_line(step)
+            decorations.highlight_executing_line(step)
             # Snap slider to segment end
             if self._timeline and self._scrub_slider:
                 end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
@@ -391,7 +392,7 @@ class PlaybackController:
         if sample.segment_index != simulation_state.current_step_index:
             simulation_state.current_step_index = sample.segment_index
             self._highlight_current_segment()
-            self._editor.highlight_executing_line(sample.segment_index)
+            decorations.highlight_executing_line(sample.segment_index)
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.update_playback_opacity()
 
