@@ -42,6 +42,9 @@ class LogPanelController:
 
     def build_toggle_button(self) -> ui.button:
         """Create the show/hide toggle button. Call inside the playback bar."""
+        # Reset transient state for a fresh page build (new client / test).
+        self._log_expanded = False
+        self._last_script_running = simulation_state.script_running
         self.log_toggle_btn = (
             ui.button(icon="expand_more", on_click=self.toggle)
             .props("round dense flat")
