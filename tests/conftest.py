@@ -293,6 +293,44 @@ def class_screen(
 
 
 @pytest.fixture(autouse=True)
+def reset_editor_singletons() -> Generator[None, None, None]:
+    """Reset module-level editor singletons between tests.
+
+    EditorDecorations, LogPanelController, SimulationEngine, and
+    ScriptExecutionController are constructed once at import time and
+    survive across tests. Clear their transient state so each test starts
+    from a clean baseline (matches the post-page-load state).
+    """
+    yield
+    from waldo_commander.components.editor_decorations import decorations
+    from waldo_commander.components.log_panel import log_panel
+    from waldo_commander.components.simulation_engine import simulation
+    from waldo_commander.components.script_execution import script_exec
+
+    decorations._active_flashes.clear()
+    decorations._flash_token = 0
+    decorations._executing_line = None
+    decorations._last_script_running = False
+    decorations._ui_client = None
+
+    log_panel._log_expanded = False
+    log_panel._last_script_running = False
+    log_panel.program_log = None
+    log_panel.log_toggle_btn = None
+    log_panel.log_toggle_btn_tooltip = None
+    log_panel.editor_splitter = None
+
+    simulation._simulation_debounce_timer = None
+    simulation._ui_client = None
+    simulation._default_snippet_provider = None
+
+    script_exec.script_handle = None
+    script_exec._step_session_id = None
+    script_exec._step_controller = None
+    script_exec._event_watcher_task = None
+
+
+@pytest.fixture(autouse=True)
 def restore_process_pool_after_nicegui_fixtures(
     request: pytest.FixtureRequest,
 ) -> Generator[None, None, None]:
