@@ -8,6 +8,7 @@ metadata collection (path segments, targets, colors).
 import inspect
 import linecache
 import logging
+import math
 import re
 from typing import Any
 
@@ -59,10 +60,12 @@ class _ToolCollectionProxy:
 
     def __getattr__(self, name: str) -> Any:
         dry_run_tool = self._preview._client.tool
+        attr = getattr(dry_run_tool, name)
+        if not callable(attr):
+            return attr
 
         def interceptor(*args: Any, **kwargs: Any) -> Any:
-            method = getattr(dry_run_tool, name)
-            result = method(*args, **kwargs)
+            result = attr(*args, **kwargs)
             self._preview._record_tool_action(name, args, kwargs, result)
             return result
 
@@ -427,7 +430,7 @@ class PathPreviewClient:
             pose[0] / 1000.0,
             pose[1] / 1000.0,
             pose[2] / 1000.0,
-            *pose[3:],
+            *(math.radians(v) for v in pose[3:]),
         ]
 
         target_id = f"auto_{line_no}"
@@ -703,6 +706,5 @@ class AsyncPathPreviewClient:
             async def wrapper(*args: Any, **kwargs: Any) -> Any:
                 return attr(*args, **kwargs)
 
-            object.__setattr__(self, name, wrapper)
             return wrapper
         return attr

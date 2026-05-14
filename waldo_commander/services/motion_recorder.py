@@ -346,15 +346,15 @@ class MotionRecorder:
                 duration,
             )
 
-        self._flush_pending_actions()
+        self._flush_pending_actions(self._active_jog.start_time)
         self._active_jog = None
 
-    def _flush_pending_actions(self) -> None:
+    def _flush_pending_actions(self, jog_start_time: float) -> None:
         """Flush actions queued during a jog, inserting time.sleep delays."""
-        if not self._pending_actions or not self._active_jog:
+        if not self._pending_actions:
             return
 
-        last_t = self._active_jog.start_time
+        last_t = jog_start_time
         for action_type, params, queued_at in self._pending_actions:
             delay = queued_at - last_t
             if delay > 0.05:
