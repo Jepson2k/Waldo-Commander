@@ -570,70 +570,60 @@ class TestEditorAutoSimulation:
     """Tests for editor auto-simulation on code change."""
 
     def test_debounce_defaults(self):
-        """EditorPanel should have correct debounce defaults."""
-        from waldo_commander.components.editor import EditorPanel
+        """SimulationEngine should have correct debounce defaults."""
+        from waldo_commander.components.simulation_engine import simulation
 
-        panel = EditorPanel()
-
-        assert panel._debounce_delay == 1.0
-        # Timer starts as None
-        assert panel._simulation_debounce_timer is None
+        assert simulation._debounce_delay == 1.0
 
     def testschedule_debounced_simulation_creates_timer(self):
         """schedule_debounced_simulation should create a timer."""
-        from waldo_commander.components.editor import EditorPanel
+        from waldo_commander.components.simulation_engine import simulation
         from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui") as mock_ui:
+        with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer = MagicMock()
             mock_ui.timer.return_value = mock_timer
 
-            # Set up active tab so scheduling doesn't return early
             editor_tabs_state.active_tab_id = "test-tab"
+            simulation._simulation_debounce_timer = None
 
-            panel = EditorPanel()
-            panel.schedule_debounced_simulation()
+            simulation.schedule_debounced_simulation()
 
-            # Verify timer was created with correct parameters
             mock_ui.timer.assert_called_once()
             call_args = mock_ui.timer.call_args
-            assert call_args[0][0] == 1.0  # debounce delay
+            assert call_args[0][0] == 1.0
             assert call_args[1]["once"] is True
 
     def testschedule_debounced_simulation_cancels_previous_timer(self):
         """Calling schedule_debounced_simulation again should cancel previous timer."""
-        from waldo_commander.components.editor import EditorPanel
+        from waldo_commander.components.simulation_engine import simulation
         from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui") as mock_ui:
+        with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer1 = MagicMock()
             mock_timer2 = MagicMock()
             mock_ui.timer.side_effect = [mock_timer1, mock_timer2]
 
-            # Set up active tab so scheduling doesn't return early
             editor_tabs_state.active_tab_id = "test-tab"
+            simulation._simulation_debounce_timer = None
 
-            panel = EditorPanel()
+            simulation.schedule_debounced_simulation()
+            assert simulation._simulation_debounce_timer == mock_timer1
 
-            # First call creates timer1
-            panel.schedule_debounced_simulation()
-            assert panel._simulation_debounce_timer == mock_timer1
-
-            # Second call should cancel timer1 (including running callback) and create timer2
-            panel.schedule_debounced_simulation()
+            simulation.schedule_debounced_simulation()
             mock_timer1.cancel.assert_called_once_with(with_current_invocation=True)
-            assert panel._simulation_debounce_timer == mock_timer2
+            assert simulation._simulation_debounce_timer == mock_timer2
 
     @pytest.mark.asyncio
     async def test_run_simulation_calls_path_visualizer(self):
-        """_run_simulation should call path_visualizer.update_path_visualization."""
-        from waldo_commander.components.editor import EditorPanel
+        """run_simulation should call path_visualizer.update_path_visualization."""
+        from waldo_commander.components.simulation_engine import simulation
+        from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui"):
+        with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
-                "waldo_commander.components.editor.path_visualizer"
+                "waldo_commander.components.simulation_engine.path_visualizer"
             ) as mock_visualizer:
-                # Track if update was called
                 update_called = False
                 update_content = None
 
@@ -644,23 +634,24 @@ class TestEditorAutoSimulation:
 
                 mock_visualizer.update_path_visualization = mock_update
 
-                panel = EditorPanel()
-                panel.program_textarea = MagicMock()
-                panel.program_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
+                mock_textarea = MagicMock()
+                mock_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
+                editor_tabs_state.active_textarea = mock_textarea
 
-                await panel._run_simulation()
+                await simulation.run_simulation()
 
                 assert update_called is True
                 assert update_content == "rbt.move_j([0,0,0,0,0,0])"
 
     @pytest.mark.asyncio
     async def test_run_simulation_empty_content_skips_visualization(self):
-        """_run_simulation should skip visualization when content is empty."""
-        from waldo_commander.components.editor import EditorPanel
+        """run_simulation should skip visualization when content is empty."""
+        from waldo_commander.components.simulation_engine import simulation
+        from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui"):
+        with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
-                "waldo_commander.components.editor.path_visualizer"
+                "waldo_commander.components.simulation_engine.path_visualizer"
             ) as mock_visualizer:
                 update_called = False
 
@@ -670,13 +661,12 @@ class TestEditorAutoSimulation:
 
                 mock_visualizer.update_path_visualization = mock_update
 
-                panel = EditorPanel()
-                panel.program_textarea = MagicMock()
-                panel.program_textarea.value = ""  # Empty content
+                mock_textarea = MagicMock()
+                mock_textarea.value = ""
+                editor_tabs_state.active_textarea = mock_textarea
 
-                await panel._run_simulation()
+                await simulation.run_simulation()
 
-                # Should NOT call update_path_visualization for empty content
                 assert update_called is False
 
 

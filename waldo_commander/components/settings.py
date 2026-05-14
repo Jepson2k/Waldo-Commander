@@ -118,9 +118,11 @@ class SettingsContent:
 
     def _notify_and_resimulate(self) -> None:
         """Notify simulation state changed and trigger debounced re-simulation."""
+        from waldo_commander.components.simulation_engine import simulation
+
         simulation_state.notify_changed()
         try:
-            ui_state.editor_panel.schedule_debounced_simulation()
+            simulation.schedule_debounced_simulation()
         except RuntimeError:
             pass
 

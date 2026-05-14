@@ -523,7 +523,9 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     tab.content = test_script
 
     # Run simulation to populate steps
-    await editor._run_simulation()
+    from waldo_commander.components.simulation_engine import simulation as _sim
+
+    await _sim.run_simulation()
     await asyncio.sleep(0.1)
 
     # Step button should be visible after simulation
@@ -584,7 +586,9 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     editor.program_textarea.value = test_script
     tab.content = test_script
 
-    await editor._run_simulation()
+    from waldo_commander.components.simulation_engine import simulation as _sim
+
+    await _sim.run_simulation()
     await asyncio.sleep(0.1)
 
     # Targets should be created from literal move args
