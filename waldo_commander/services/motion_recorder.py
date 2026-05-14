@@ -93,7 +93,7 @@ class MotionRecorder:
         If an existing select_tool line is found, update it. Otherwise insert one
         before the first motion command (home, move_j, move_l, etc.).
         """
-        textarea = ui_state.editor_panel.program_textarea
+        textarea = editor_tabs_state.active_textarea
         if not textarea:
             return
         val: str = str(textarea.value or "")
@@ -382,8 +382,8 @@ class MotionRecorder:
     def _insert_snippet(self, snippet: str) -> None:
         """Insert code snippet into the editor and flash the new line."""
 
-        if ui_state.editor_panel.program_textarea:
-            textarea = ui_state.editor_panel.program_textarea
+        if editor_tabs_state.active_textarea:
+            textarea = editor_tabs_state.active_textarea
             val = textarea.value or ""
 
             # Count lines before insertion for flash highlighting

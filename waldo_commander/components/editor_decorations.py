@@ -127,9 +127,14 @@ class EditorDecorations:
         """
         try:
             ui.run_javascript(js_code)
-        except RuntimeError:
+        except (RuntimeError, AssertionError):
+            # No active client context — try the stored page client; if none,
+            # we're likely in a unit test where the JS hook is moot.
             if self._ui_client:
-                self._ui_client.run_javascript(js_code)
+                try:
+                    self._ui_client.run_javascript(js_code)
+                except (RuntimeError, AssertionError):
+                    pass
             else:
                 logger.debug("Cannot flash editor tab: no client available")
 

@@ -153,15 +153,19 @@ def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
 @pytest.fixture
 def mock_editor():
     """Create mock editor for motion recorder tests."""
+    from waldo_commander.state import editor_tabs_state
+
     mock_editor = MagicMock()
     mock_textarea = MagicMock()
     mock_textarea.value = "# Initial code\n"
     mock_editor.program_textarea = mock_textarea
+    editor_tabs_state.active_textarea = mock_textarea
     ui_state.editor_panel = mock_editor
     old_robot = ui_state.robot
     ui_state.robot = get_robot()
     yield mock_editor
     ui_state.editor_panel = None
+    editor_tabs_state.active_textarea = None
     ui_state.robot = old_robot
 
 
@@ -233,10 +237,12 @@ class TestMotionRecorder:
 
     def test_jog_events_ignored_when_not_recording(self):
         """Jog start and end events should be ignored when not recording."""
+        from waldo_commander.state import editor_tabs_state
+
         recorder = MotionRecorder()
-        ui_state.editor_panel = MagicMock()
-        ui_state.editor_panel.program_textarea = MagicMock()
-        ui_state.editor_panel.program_textarea.value = ""
+        mock_textarea = MagicMock()
+        mock_textarea.value = ""
+        editor_tabs_state.active_textarea = mock_textarea
 
         # Not recording - jog start should be ignored
         recorder.on_jog_start("joint", "J1+")
@@ -244,9 +250,9 @@ class TestMotionRecorder:
 
         # Not recording - jog end should also be ignored
         recorder.on_jog_end()
-        assert ui_state.editor_panel.program_textarea.value == ""
+        assert mock_textarea.value == ""
 
-        ui_state.editor_panel = None
+        editor_tabs_state.active_textarea = None
 
     def test_record_action_home_generates_code(self, mock_editor):
         """record_action for home should generate home code."""

@@ -7,8 +7,8 @@ editor delegate to this singleton instead of holding the state themselves.
 Cross-controller side effects are kept narrow: the singleton mutates
 ``simulation_state.script_running`` / ``is_playing`` and notifies, then
 external listeners (decorations, log_panel) react. Playback transitions
-still go through ``ui_state.editor_panel.playback`` until commit 10
-absorbs them into the state-listener path.
+(on_script_start / on_script_step_start / on_script_step_complete /
+on_script_stop) reach into ``ui_state.editor_panel.playback`` directly.
 """
 
 from __future__ import annotations
