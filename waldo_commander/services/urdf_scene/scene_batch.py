@@ -25,11 +25,11 @@ Constraints:
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from nicegui import json
 from nicegui.awaitable_response import AwaitableResponse
 
 
@@ -99,6 +99,9 @@ def batch_scene(scene: Any) -> Iterator[None]:
     original = scene.run_method
 
     def _enqueue(name: str, *args: Any, timeout: float = 1) -> AwaitableResponse:
+        # `timeout` mirrors nicegui's run_method signature so callers using
+        # the kwarg don't TypeError; ignored because batched calls are
+        # fire-and-forget.
         queued.append((name, args))
         return _BATCHED_NULL
 
