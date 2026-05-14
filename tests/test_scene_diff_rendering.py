@@ -362,8 +362,11 @@ class TestCollectFailedTarget:
         finally:
             linecache.cache.pop("simulation_script.py", None)
 
-    def test_variable_args_no_target(self):
-        """Lines with variable args (not literal lists) are not editable."""
+    def test_variable_args_creates_target(self):
+        """Computed/variable-arg pose calls (e.g. move_l(circle_pt(...))) still
+        produce a red marker so the user can see WHERE a failed IK was attempted.
+        Drag-edit-back-to-source isn't supported for non-literal sources, but
+        that's a UI concern — the marker should still render."""
         client, targets = self._make_client()
         import linecache
 
@@ -380,6 +383,7 @@ class TestCollectFailedTarget:
                 args=([100, 200, 300, 0, 0, 0],),
                 kwargs={},
             )
-            assert len(targets) == 0
+            assert len(targets) == 1
+            assert targets[0]["is_valid"] is False
         finally:
             linecache.cache.pop("simulation_script.py", None)
