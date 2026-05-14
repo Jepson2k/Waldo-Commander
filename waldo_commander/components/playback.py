@@ -12,6 +12,7 @@ from nicegui import ui, context
 
 from waldo_commander.common.theme import PathColors
 from waldo_commander.components.editor_decorations import decorations
+from waldo_commander.components.log_panel import log_panel
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.state import (
     robot_state,
@@ -185,14 +186,7 @@ class PlaybackController:
             )
 
             # 8. Log show/hide
-            self._editor.log_toggle_btn = (
-                ui.button(icon="expand_more", on_click=self._editor._toggle_log)
-                .props("round dense flat")
-                .classes("text-white")
-            )
-            with self._editor.log_toggle_btn:
-                self._editor._log_toggle_btn_tooltip = ui.tooltip("Show Output")
-            self._editor.log_toggle_btn.mark("editor-log-toggle")
+            log_panel.build_toggle_button()
 
     def setup_timers(self) -> None:
         """Create timers and register listeners. Must be called within client context."""

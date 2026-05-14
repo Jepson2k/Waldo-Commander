@@ -34,6 +34,7 @@ from waldo_commander.services.command_discovery import (
     generate_completions_from_commands,
 )
 from waldo_commander.components.editor_decorations import decorations
+from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.playback import PlaybackController
 from waldo_commander.components.file_operations import FileOperationsMixin
 
@@ -69,21 +70,12 @@ class EditorPanel(FileOperationsMixin):
         # Active tab's widgets (updated on tab switch for backward compatibility)
         self.program_filename_input: ui.input | None = None
         self.program_textarea: ui.codemirror | None = None
-        self.program_log: ui.log | None = None
         self.run_btn: ui.button | None = None
-        self.log_toggle_btn: ui.button | None = None
         self.record_btn: ui.button | None = None
         self._capture_btn: ui.button | None = None
 
         # Playback controller (owns bottom bar UI and playback logic)
         self.playback = PlaybackController(self)
-
-        # Shared log area (below play bar)
-        self._log_expanded: bool = False
-        self.editor_splitter: ui.splitter | None = None
-        self._splitter_value_when_expanded: float = (
-            70.0  # Remember user's preferred split
-        )
 
         # Script execution via subprocess
         self.script_handle: ScriptProcessHandle | None = None
@@ -113,7 +105,6 @@ class EditorPanel(FileOperationsMixin):
 
         # Tooltip references (to update text without recreating)
         self._record_btn_tooltip: ui.tooltip | None = None
-        self._log_toggle_btn_tooltip: ui.tooltip | None = None
 
     def _default_python_snippet(self) -> str:
         """Generate the initial pre-filled Python code with inlined controller host/port."""
@@ -452,8 +443,7 @@ print(f"Robot status: {{status}}")
                 self.program_filename_input.value = filename
 
             # Clear program log
-            if self.program_log:
-                self.program_log.clear()
+            log_panel.clear()
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))
 
@@ -463,13 +453,11 @@ print(f"Robot status: {{status}}")
             # Start the script process with log callbacks directed to program_log
             def on_stdout(line: str):
                 with ui_client:
-                    if self.program_log:
-                        self.program_log.push(line)
+                    log_panel.push(line)
 
             def on_stderr(line: str):
                 with ui_client:
-                    if self.program_log:
-                        self.program_log.push(f"[ERR] {line}")
+                    log_panel.push(f"[ERR] {line}")
 
             # Initialize stepping controller with unique session ID
             self._step_session_id = uuid.uuid4().hex[:8]
@@ -486,8 +474,9 @@ print(f"Robot status: {{status}}")
             self._step_controller.signal_play()
             self.playback.on_script_start()
 
-            # Auto-expand log
-            self._expand_log()
+            # Auto-expand log (state listener also handles this on script_running edge,
+            # but call directly here to avoid relying on the order of mutations below).
+            log_panel.expand()
 
             # Capture UI client context BEFORE creating background task
             ui_client = context.client
@@ -710,8 +699,8 @@ print(f"Robot status: {{status}}")
                         logger.debug("select_tool sync failed: %s", e)
 
         # Show error in program log
-        if error and self.program_log:
-            self.program_log.push(f"[SIM ERROR] {error}")
+        if error:
+            log_panel.push(f"[SIM ERROR] {error}")
 
         # Apply diagnostics (errors + timing warnings) via CM6 lint system
         decorations.apply_diagnostics(error)
@@ -861,54 +850,6 @@ print(f"Robot status: {{status}}")
                 except RuntimeError:
                     pass  # No client context available
                 self._recording_notification = None
-
-    def _toggle_log(self) -> None:
-        """Toggle shared log panel visibility via splitter position."""
-        if self._log_expanded:
-            self._collapse_log()
-        else:
-            self._expand_log()
-
-    def _expand_log(self) -> None:
-        """Expand the shared log panel by adjusting splitter."""
-        self._log_expanded = True
-        if self.editor_splitter:
-            self.editor_splitter.set_value(self._splitter_value_when_expanded)
-        if self.log_toggle_btn:
-            self.log_toggle_btn.props("icon=expand_less")
-            if self._log_toggle_btn_tooltip:
-                self._log_toggle_btn_tooltip.text = "Hide Output"
-
-    def _collapse_log(self) -> None:
-        """Collapse the shared log panel by adjusting splitter."""
-        self._log_expanded = False
-        if self.editor_splitter:
-            self.editor_splitter.set_value(94)  # 94% to editor (collapsed)
-        if self.log_toggle_btn:
-            self.log_toggle_btn.props("icon=expand_more")
-            if self._log_toggle_btn_tooltip:
-                self._log_toggle_btn_tooltip.text = "Show Output"
-
-    def _on_splitter_change(self, e) -> None:
-        """Handle splitter drag changes to update log expanded state."""
-        value = e.value
-        if value is None:
-            return
-
-        # If user drags to near-bottom (>90%), treat as collapsed
-        if value > 90:
-            self._log_expanded = False
-            if self.log_toggle_btn:
-                self.log_toggle_btn.props("icon=expand_more")
-                if self._log_toggle_btn_tooltip:
-                    self._log_toggle_btn_tooltip.text = "Show Output"
-        else:
-            self._log_expanded = True
-            self._splitter_value_when_expanded = value  # Remember user's preference
-            if self.log_toggle_btn:
-                self.log_toggle_btn.props("icon=expand_less")
-                if self._log_toggle_btn_tooltip:
-                    self._log_toggle_btn_tooltip.text = "Hide Output"
 
     # ---- Tab Management Methods ----
 
@@ -1076,10 +1017,9 @@ print(f"Robot status: {{status}}")
         self._load_simulation_context(tab)
 
         # Swap log content: load new tab's log entries into shared log
-        if self.program_log:
-            self.program_log.clear()
-            for entry in tab.output_log:
-                self.program_log.push(entry)
+        log_panel.clear()
+        for entry in tab.output_log:
+            log_panel.push(entry)
 
         # Update references for backward compatibility
         widgets = self._tab_widgets.get(tab_id, {})
@@ -1345,12 +1285,12 @@ print(f"Robot status: {{status}}")
                     horizontal=True,
                     value=94,  # Start collapsed (94% to editor, leaves room for playbar)
                     limits=(50, 94),
-                    on_change=self._on_splitter_change,
+                    on_change=log_panel.on_splitter_change,
                 )
                 .classes("w-full flex-1 editor-splitter")
                 .style("overflow: hidden;") as splitter
             ):
-                self.editor_splitter = splitter
+                log_panel.attach_splitter(splitter)
 
                 # ---- Tab Panels Area (CodeMirror) in splitter.before ----
                 with splitter.before:
@@ -1368,11 +1308,7 @@ print(f"Robot status: {{status}}")
 
                 # ---- Shared Log Area in splitter.after ----
                 with splitter.after:
-                    self.program_log = (
-                        ui.log(max_lines=1000)
-                        .classes("w-full h-full whitespace-pre-wrap break-words")
-                        .style("min-height: 0;")
-                    )
+                    log_panel.build_log_area()
 
         # Set up playback timers and listeners
         self.playback.setup_timers()
