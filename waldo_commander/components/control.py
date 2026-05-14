@@ -1455,11 +1455,12 @@ class ControlPanel:
         """Toggle between robot and simulator modes and update URDF appearance."""
         try:
             # Stop any running user script before mode switch (safety)
-            editor_panel = ui_state.editor_panel
-            if editor_panel and simulation_state.script_running:
+            if simulation_state.script_running:
+                from waldo_commander.components.script_execution import script_exec
+
                 logger.info("Stopping running script before mode switch")
                 try:
-                    await editor_panel._stop_script_process()
+                    await script_exec.stop()
                 except Exception as e:
                     logger.warning("Failed to stop script before mode switch: %s", e)
 

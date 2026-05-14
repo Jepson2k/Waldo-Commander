@@ -1,14 +1,13 @@
 """Program editor component with script execution and command palette."""
 
 import asyncio
-import contextlib
 import logging
 import re
 import time
 import uuid
 from typing import Any, Callable
 
-from nicegui import ui, context, Client
+from nicegui import context, ui, Client
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import REPO_ROOT, config
 from waldo_commander.state import (
@@ -19,14 +18,7 @@ from waldo_commander.state import (
     editor_tabs_state,
     recording_state,
 )
-from waldo_commander.services.script_runner import (
-    ScriptProcessHandle,
-    run_script,
-    create_default_config,
-    stop_script,
-)
 from waldo_commander.services.motion_recorder import motion_recorder
-from waldo_commander.services.stepping_client import GUIStepController
 from waldo_commander.services.command_discovery import (
     discover_robot_commands,
     generate_completions_from_commands,
@@ -34,6 +26,7 @@ from waldo_commander.services.command_discovery import (
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.simulation_engine import simulation
+from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.playback import PlaybackController
 from waldo_commander.components.file_operations import FileOperationsMixin
 
@@ -58,6 +51,7 @@ class EditorPanel(FileOperationsMixin):
         if not self.PROGRAM_DIR.exists():
             self.PROGRAM_DIR = REPO_ROOT / "programs"
             self.PROGRAM_DIR.mkdir(parents=True, exist_ok=True)
+        script_exec.set_program_dir(self.PROGRAM_DIR)
 
         # Multi-tab management
         self.tabs_container: ui.tabs | None = None
@@ -75,14 +69,6 @@ class EditorPanel(FileOperationsMixin):
 
         # Playback controller (owns bottom bar UI and playback logic)
         self.playback = PlaybackController(self)
-
-        # Script execution via subprocess
-        self.script_handle: ScriptProcessHandle | None = None
-
-        # Stepping control for GUI-controlled script execution
-        self._step_session_id: str | None = None
-        self._step_controller: GUIStepController | None = None
-        self._event_watcher_task: asyncio.Task | None = None
 
         # Drawer element reference
         self.drawer: ui.element | None = None
@@ -392,227 +378,11 @@ print(f"Robot status: {{status}}")
 
     async def _toggle_run_script(self) -> None:
         """Toggle start/stop script."""
-        if simulation_state.script_running:
-            await self._stop_script_process()
-        else:
-            await self._start_script_process()
-
-    async def _start_script_process(self) -> None:
-        """Start the current editor content as a Python subprocess.
-
-        Writes to a scratch file under ``PROGRAM_DIR/.runtime/`` so the user's
-        named file is only modified by explicit save.
-        """
-        self.playback.stop_playback()
-
-        if simulation_state.script_running:
-            ui.notify("Script already running", color="warning")
-            return
-
-        try:
-            # Get filename, default to program.py if empty
-            filename = (
-                self.program_filename_input.value.strip()
-                if self.program_filename_input
-                else ""
-            ) or "program.py"
-
-            # Ensure .py extension
-            if not filename.endswith(".py"):
-                filename += ".py"
-
-            # Write to scratch location — do not overwrite the user's saved file
-            content = self.program_textarea.value if self.program_textarea else ""
-            runtime_dir = self.PROGRAM_DIR / ".runtime"
-            runtime_dir.mkdir(parents=True, exist_ok=True)
-            script_path = runtime_dir / filename
-            script_path.write_text(content, encoding="utf-8")
-
-            # Update filename input
-            if self.program_filename_input:
-                self.program_filename_input.value = filename
-
-            # Clear program log
-            log_panel.clear()
-
-            script_config = create_default_config(str(script_path), str(REPO_ROOT))
-
-            # Capture UI client context for the callbacks
-            ui_client = context.client
-
-            # Start the script process with log callbacks directed to program_log
-            def on_stdout(line: str):
-                with ui_client:
-                    log_panel.push(line)
-
-            def on_stderr(line: str):
-                with ui_client:
-                    log_panel.push(f"[ERR] {line}")
-
-            # Initialize stepping controller with unique session ID
-            self._step_session_id = uuid.uuid4().hex[:8]
-            self._step_controller = GUIStepController(self._step_session_id)
-            self._step_controller.initialize()
-
-            self.script_handle = await run_script(
-                script_config, on_stdout, on_stderr, session_id=self._step_session_id
-            )
-            simulation_state.script_running = True
-
-            # Start in playing mode (not paused) so user doesn't need to press play twice
-            simulation_state.is_playing = True
-            self._step_controller.signal_play()
-            self.playback.on_script_start()
-
-            # Auto-expand log (state listener also handles this on script_running edge,
-            # but call directly here to avoid relying on the order of mutations below).
-            log_panel.expand()
-
-            # Capture UI client context BEFORE creating background task
-            ui_client = context.client
-
-            # Launch event watcher task to update visualization as commands complete
-            self._event_watcher_task = asyncio.create_task(
-                self._watch_script_events(ui_client)
-            )
-
-            # Launch monitor task to reset state when script finishes
-            h = self.script_handle  # capture
-            asyncio.create_task(self._monitor_script_completion(h, filename, ui_client))
-
-            ui.notify(f"Started script: {filename}", color="positive")
-            logger.info("Started script: %s", filename)
-
-        except Exception as e:
-            ui.notify(f"Failed to start script: {e}", color="negative")
-            logger.error("Failed to start script: %s", e)
-            simulation_state.script_running = False
-            self._step_session_id = None
-            if self._step_controller:
-                self._step_controller.cleanup()
-                self._step_controller = None
-            simulation_state.is_playing = False
-            self.playback._update_play_button()
-
-    async def _watch_script_events(self, ui_client: Any) -> None:
-        """Poll for script events and update visualization.
-
-        Args:
-            ui_client: The NiceGUI client context for UI updates
-        """
-        try:
-            while simulation_state.script_running and self._step_controller:
-                # Poll for new events
-                events = self._step_controller.poll_events()
-
-                for event in events:
-                    event_type = event.get("event")
-                    method = event.get("method", "")
-                    step = event.get("step", 0)
-
-                    if event_type == "start":
-                        self.playback.on_script_step_start(step, ui_client)
-
-                    elif event_type == "complete":
-                        self.playback.on_script_step_complete(step, ui_client)
-                        logger.debug(
-                            "Script event: %s completed (step %d)", method, step
-                        )
-
-                # Poll interval - 50ms for responsive updates
-                await asyncio.sleep(0.05)
-
-        except asyncio.CancelledError:
-            logger.debug("Event watcher task cancelled")
-        except Exception as e:
-            logger.error("Error in event watcher: %s", e)
-
-    async def _monitor_script_completion(
-        self, handle: ScriptProcessHandle, filename: str, ui_client: Any
-    ) -> None:
-        """Monitor script subprocess completion and reset state when it finishes.
-
-        Args:
-            handle: The script process handle to monitor
-            filename: Name of the script file for logging
-            ui_client: The NiceGUI client context (must be captured before task creation)
-        """
-
-        try:
-            rc = await handle["proc"].wait()
-            # Let stream reader tasks finish
-            for t in (handle["stdout_task"], handle["stderr_task"]):
-                with contextlib.suppress(Exception):
-                    await t
-            # Only reset state if this handle is still the active one
-            if self.script_handle is handle:
-                with ui_client:
-                    self._reset_script_state(handle, ui_client)
-                    logger.info("Script %s finished with code %s", filename, rc)
-        except Exception as e:
-            logger.error("Error monitoring script process: %s", e)
-            with ui_client:
-                if self.script_handle is handle:
-                    self._reset_script_state(handle, ui_client)
-
-    def _reset_script_state(
-        self, handle: ScriptProcessHandle, ui_client: Client
-    ) -> None:
-        """Reset all script-related state after a script finishes or errors."""
-        self.script_handle = None
-        simulation_state.script_running = False
-        simulation_state.is_playing = False
-        simulation_state.sim_pose_override = False
-        self.playback.on_script_stop(ui_client)
-        self._cleanup_stepping()
+        await script_exec.toggle()
 
     def cleanup(self) -> None:
         """Remove listeners registered by this panel."""
         self.playback.cleanup()
-
-    def _cleanup_stepping(self) -> None:
-        """Clean up stepping controller and event watcher."""
-        # Cancel event watcher task
-        if self._event_watcher_task and not self._event_watcher_task.done():
-            self._event_watcher_task.cancel()
-        self._event_watcher_task = None
-
-        # Clean up IPC files
-        if self._step_controller:
-            self._step_controller.cleanup()
-            self._step_controller = None
-        self._step_session_id = None
-
-        # Clear executing line highlight
-        decorations.clear_executing_line_highlight()
-
-    async def _stop_script_process(self) -> None:
-        """Stop the running script process."""
-        if not simulation_state.script_running or not self.script_handle:
-            ui.notify("No script running", color="warning")
-            return
-
-        try:
-            handle = self.script_handle  # capture
-            # Clear UI state up-front; monitor will see this and stay silent
-            self.script_handle = None
-            simulation_state.script_running = False
-            simulation_state.is_playing = False
-            self.playback._update_play_button()
-
-            # Clean up stepping controller
-            self._cleanup_stepping()
-
-            if handle:
-                await stop_script(handle)
-
-            ui.notify("Script stopped", color="warning")
-            logger.info("Script stopped by user")
-
-        except Exception as e:
-            ui.notify(f"Error stopping script: {e}", color="negative")
-            logger.error("Error stopping script: %s", e)
-            # State already cleared above
 
     def _toggle_recording(self) -> None:
         """Toggle motion recording on/off."""

@@ -13,6 +13,7 @@ from nicegui import ui, context
 from waldo_commander.common.theme import PathColors
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
+from waldo_commander.components.script_execution import script_exec
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.state import (
     robot_state,
@@ -88,7 +89,7 @@ class PlaybackController:
 
             # 2. Stop button
             self._stop_btn = (
-                ui.button(icon="stop", on_click=self._editor._stop_script_process)
+                ui.button(icon="stop", on_click=lambda: script_exec.stop())
                 .props("round dense color=negative unelevated")
                 .tooltip("Stop")
             )
@@ -202,14 +203,17 @@ class PlaybackController:
     async def toggle_play(self) -> None:
         """Toggle play/pause for script execution or simulation playback."""
         if simulation_state.script_running:
+            from waldo_commander.components.script_execution import script_exec
+
+            stepper = script_exec._step_controller
             if simulation_state.is_playing:
-                if self._editor._step_controller:
-                    self._editor._step_controller.signal_pause()
+                if stepper:
+                    stepper.signal_pause()
                 simulation_state.is_playing = False
                 logger.debug("Script paused")
             else:
-                if self._editor._step_controller:
-                    self._editor._step_controller.signal_play()
+                if stepper:
+                    stepper.signal_play()
                 simulation_state.is_playing = True
                 logger.debug("Script playing")
             self._update_play_button()
@@ -219,12 +223,16 @@ class PlaybackController:
             else:
                 self._start_sim_playback()
         else:
-            await self._editor._start_script_process()
+            from waldo_commander.components.script_execution import script_exec
+
+            await script_exec.start()
 
     def step_forward(self) -> None:
         """Step forward one segment."""
-        if simulation_state.script_running and self._editor._step_controller:
-            self._editor._step_controller.signal_step()
+        from waldo_commander.components.script_execution import script_exec
+
+        if simulation_state.script_running and script_exec._step_controller:
+            script_exec._step_controller.signal_step()
             logger.debug("Step forward signal sent to script")
         elif self._timeline and simulation_state.total_steps > 0:
             next_idx = min(

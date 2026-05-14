@@ -996,19 +996,16 @@ def _register_handlers() -> None:
 
         # Stop any running script processes first
         try:
-            if (
-                editor_panel
-                and simulation_state.script_running
-                and editor_panel.script_handle
-            ):
+            from waldo_commander.components.script_execution import script_exec
+
+            if simulation_state.script_running and script_exec.script_handle:
                 logger.debug("Stopping running script process during shutdown...")
                 from waldo_commander.services.script_runner import stop_script
 
-                await stop_script(editor_panel.script_handle, timeout=2.0)
-                editor_panel.script_handle = None
+                await stop_script(script_exec.script_handle, timeout=2.0)
+                script_exec.script_handle = None
                 simulation_state.script_running = False
-                # Clean up stepping controller if active
-                editor_panel._cleanup_stepping()
+                script_exec._cleanup_stepping()
         except Exception as e:
             logger.warning("Error stopping script during shutdown: %s", e)
 
@@ -1081,8 +1078,10 @@ def _cleanup_script_processes_sync() -> None:
     This is called from atexit and signal handlers as a last-resort cleanup.
     """
     try:
-        if editor_panel and editor_panel.script_handle:
-            proc = editor_panel.script_handle.get("proc")
+        from waldo_commander.components.script_execution import script_exec
+
+        if script_exec.script_handle:
+            proc = script_exec.script_handle.get("proc")
             if proc and proc.returncode is None:
                 logger.info("Killing orphaned script process (PID: %s)", proc.pid)
                 try:
