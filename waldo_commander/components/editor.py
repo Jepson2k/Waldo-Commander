@@ -92,7 +92,6 @@ class EditorPanel(FileOperationsMixin):
 
         # Script execution via subprocess
         self.script_handle: ScriptProcessHandle | None = None
-        self.script_running: bool = False
 
         # Stepping control for GUI-controlled script execution
         self._step_session_id: str | None = None
@@ -504,7 +503,7 @@ print(f"Robot status: {{status}}")
 
     async def _toggle_run_script(self) -> None:
         """Toggle start/stop script."""
-        if self.script_running:
+        if simulation_state.script_running:
             await self._stop_script_process()
         else:
             await self._start_script_process()
@@ -517,7 +516,7 @@ print(f"Robot status: {{status}}")
         """
         self.playback.stop_playback()
 
-        if self.script_running:
+        if simulation_state.script_running:
             ui.notify("Script already running", color="warning")
             return
 
@@ -572,7 +571,7 @@ print(f"Robot status: {{status}}")
             self.script_handle = await run_script(
                 script_config, on_stdout, on_stderr, session_id=self._step_session_id
             )
-            self.script_running = True
+            simulation_state.script_running = True
 
             # Start in playing mode (not paused) so user doesn't need to press play twice
             simulation_state.is_playing = True
@@ -600,7 +599,7 @@ print(f"Robot status: {{status}}")
         except Exception as e:
             ui.notify(f"Failed to start script: {e}", color="negative")
             logger.error("Failed to start script: %s", e)
-            self.script_running = False
+            simulation_state.script_running = False
             self._step_session_id = None
             if self._step_controller:
                 self._step_controller.cleanup()
@@ -615,7 +614,7 @@ print(f"Robot status: {{status}}")
             ui_client: The NiceGUI client context for UI updates
         """
         try:
-            while self.script_running and self._step_controller:
+            while simulation_state.script_running and self._step_controller:
                 # Poll for new events
                 events = self._step_controller.poll_events()
 
@@ -674,7 +673,7 @@ print(f"Robot status: {{status}}")
     ) -> None:
         """Reset all script-related state after a script finishes or errors."""
         self.script_handle = None
-        self.script_running = False
+        simulation_state.script_running = False
         simulation_state.is_playing = False
         simulation_state.sim_pose_override = False
         self.playback.on_script_stop(ui_client)
@@ -702,7 +701,7 @@ print(f"Robot status: {{status}}")
 
     async def _stop_script_process(self) -> None:
         """Stop the running script process."""
-        if not self.script_running or not self.script_handle:
+        if not simulation_state.script_running or not self.script_handle:
             ui.notify("No script running", color="warning")
             return
 
@@ -710,7 +709,7 @@ print(f"Robot status: {{status}}")
             handle = self.script_handle  # capture
             # Clear UI state up-front; monitor will see this and stay silent
             self.script_handle = None
-            self.script_running = False
+            simulation_state.script_running = False
             simulation_state.is_playing = False
             self.playback._update_play_button()
 
@@ -891,7 +890,7 @@ print(f"Robot status: {{status}}")
         """Periodically check if robot position changed and re-run path preview."""
         # Skip if script running, editing, scrubbing/playing, or sim already pending
         if (
-            self.script_running
+            simulation_state.script_running
             or robot_state.editing_mode
             or self._simulation_debounce_timer is not None
             or simulation_state.sim_pose_override
@@ -1132,7 +1131,7 @@ print(f"Robot status: {{status}}")
             if self.tabs_container and editor_tabs_state.active_tab_id:
                 self.tabs_container.set_value(editor_tabs_state.active_tab_id)
             return
-        if self.script_running and simulation_state.is_playing:
+        if simulation_state.script_running and simulation_state.is_playing:
             ui.notify("Cannot switch tabs during script playback", color="warning")
             if self.tabs_container and editor_tabs_state.active_tab_id:
                 self.tabs_container.set_value(editor_tabs_state.active_tab_id)

@@ -52,7 +52,7 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     When paused:
     - Play button icon changes back to play_arrow
     """
-    from waldo_commander.state import ui_state
+    from waldo_commander.state import simulation_state, ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -63,7 +63,9 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
 
     editor = ui_state.editor_panel
     assert editor is not None, "Editor panel should exist"
-    assert editor.script_running is False, "Script should not be running initially"
+    assert simulation_state.script_running is False, (
+        "Script should not be running initially"
+    )
 
     # Initially: play button visible, stop button hidden
     play_btn = user.find(marker="editor-play-btn")
@@ -80,7 +82,9 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     await asyncio.sleep(0.3)
 
     # Script should now be running
-    assert editor.script_running is True, "Script should be running after clicking play"
+    assert simulation_state.script_running is True, (
+        "Script should be running after clicking play"
+    )
 
     # Stop button should now be visible
     assert stop_btn.visible is True, "Stop button should be visible when script running"
@@ -90,7 +94,9 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     await asyncio.sleep(0.2)
 
     # Script still running but paused
-    assert editor.script_running is True, "Script should still be running (paused)"
+    assert simulation_state.script_running is True, (
+        "Script should still be running (paused)"
+    )
 
     # Stop the script for cleanup
     stop_btn_element = user.find(marker="editor-stop-btn")
@@ -532,7 +538,7 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     assert simulation_state.sim_playback_active is True, (
         "Play should start simulation playback when steps exist"
     )
-    assert editor.script_running is False, (
+    assert simulation_state.script_running is False, (
         "Script should not be running during sim playback"
     )
 

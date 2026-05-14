@@ -250,6 +250,11 @@ class SimulationState(ChangeNotifierMixin):
         False  # True while scrubbing/playing — suppresses status-loop URDF updates
     )
     last_teleport_ts: float = 0.0  # monotonic time of last teleport send; used by status loop to delay handback
+    script_running: bool = False  # True while a user script is executing
+    is_loading: bool = False  # True while a path-preview simulation is running
+    last_sim_error: str | None = (
+        None  # Most recent simulation error (for diagnostics push)
+    )
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
@@ -272,6 +277,9 @@ class SimulationState(ChangeNotifierMixin):
         self.sim_playback_active = False
         self.sim_pose_override = False
         self.last_teleport_ts = 0.0
+        self.script_running = False
+        self.is_loading = False
+        self.last_sim_error = None
 
 
 @bindable_dataclass
@@ -532,6 +540,11 @@ class EditorTabsState(ChangeNotifierMixin):
 
     tabs: list[EditorTab] = field(default_factory=list)
     active_tab_id: str | None = None
+    # Widget refs for the currently active tab. EditorPanel updates these on
+    # tab switch so sub-controllers can read the active textarea/filename
+    # without going through EditorPanel.
+    active_textarea: Any = None  # ui.codemirror | None at runtime
+    active_filename_input: Any = None  # ui.input | None at runtime
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
@@ -567,6 +580,8 @@ class EditorTabsState(ChangeNotifierMixin):
     def reset(self) -> None:
         self.tabs = []
         self.active_tab_id = None
+        self.active_textarea = None
+        self.active_filename_input = None
 
 
 @dataclass

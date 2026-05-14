@@ -998,7 +998,7 @@ def _register_handlers() -> None:
         try:
             if (
                 editor_panel
-                and editor_panel.script_running
+                and simulation_state.script_running
                 and editor_panel.script_handle
             ):
                 logger.debug("Stopping running script process during shutdown...")
@@ -1006,7 +1006,7 @@ def _register_handlers() -> None:
 
                 await stop_script(editor_panel.script_handle, timeout=2.0)
                 editor_panel.script_handle = None
-                editor_panel.script_running = False
+                simulation_state.script_running = False
                 # Clean up stepping controller if active
                 editor_panel._cleanup_stepping()
         except Exception as e:

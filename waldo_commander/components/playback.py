@@ -206,7 +206,7 @@ class PlaybackController:
 
     async def toggle_play(self) -> None:
         """Toggle play/pause for script execution or simulation playback."""
-        if self._editor.script_running:
+        if simulation_state.script_running:
             if simulation_state.is_playing:
                 if self._editor._step_controller:
                     self._editor._step_controller.signal_pause()
@@ -228,7 +228,7 @@ class PlaybackController:
 
     def step_forward(self) -> None:
         """Step forward one segment."""
-        if self._editor.script_running and self._editor._step_controller:
+        if simulation_state.script_running and self._editor._step_controller:
             self._editor._step_controller.signal_step()
             logger.debug("Step forward signal sent to script")
         elif self._timeline and simulation_state.total_steps > 0:
@@ -525,7 +525,7 @@ class PlaybackController:
             return
 
         # Script execution mode: smooth slider tracking (no URDF control)
-        if self._editor.script_running and self._exec_step_index >= 0:
+        if simulation_state.script_running and self._exec_step_index >= 0:
             self._script_slider_tick()
             return
 
@@ -591,7 +591,7 @@ class PlaybackController:
         """Update play/pause button icon and stop/step button visibility."""
         if self._play_btn:
             playing = (
-                self._editor.script_running and simulation_state.is_playing
+                simulation_state.script_running and simulation_state.is_playing
             ) or simulation_state.sim_playback_active
             if playing:
                 self._play_btn.props("icon=pause color=warning")
@@ -603,7 +603,7 @@ class PlaybackController:
                     self._play_btn_tooltip.text = "Play (Space)"
 
         if self._stop_btn:
-            self._stop_btn.set_visibility(self._editor.script_running)
+            self._stop_btn.set_visibility(simulation_state.script_running)
 
         if self._next_btn:
             has_steps = simulation_state.total_steps > 0
@@ -616,7 +616,7 @@ class PlaybackController:
                 if has_steps
                 else True
             )
-            if at_last and not self._editor.script_running:
+            if at_last and not simulation_state.script_running:
                 self._next_btn.disable()
             else:
                 self._next_btn.enable()
