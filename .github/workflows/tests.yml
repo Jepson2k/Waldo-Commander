@@ -29,7 +29,7 @@ jobs:
           if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
             pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
           else
-            pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.5"
+            pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.7"
           fi
           pip install -e ".[dev]"
           mkdir -p PAROL6-python-API
@@ -69,7 +69,7 @@ jobs:
           if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
             pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
           else
-            pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.5"
+            pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.7"
           fi
 
       - name: Install package
