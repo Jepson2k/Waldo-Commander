@@ -48,7 +48,7 @@ from .loader import (
 )
 from .editing_mixin import EditingMixin
 from .tcp_controls_mixin import TCPControlsMixin
-from .envelope_mixin import EnvelopeMixin
+from .envelope_renderer import EnvelopeRenderer
 from .path_renderer import PathRenderer
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
@@ -147,7 +147,7 @@ def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
 class UrdfScene(
     EditingMixin,
     TCPControlsMixin,
-    EnvelopeMixin,
+    EnvelopeRenderer,
 ):
     """Load a URDF file as a NiceGUI Scene
 

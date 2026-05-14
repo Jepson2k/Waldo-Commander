@@ -572,12 +572,17 @@ workspace_envelope = WorkspaceEnvelope()
 
 
 # -----------------------------------------------------------------------------
-# EnvelopeMixin class
+# EnvelopeRenderer mixin
 # -----------------------------------------------------------------------------
 
 
-class EnvelopeMixin:
-    """Mixin providing envelope visualization functionality for UrdfScene."""
+class EnvelopeRenderer:
+    """Renderer mixin providing envelope visualization for UrdfScene.
+
+    Kept as a mixin (not full composition) because the per-Object3D APIs
+    (envelope_object.set_clipping_planes etc.) act on owned state that the
+    renderer already manages — no external scene references need threading.
+    """
 
     # These attributes are defined in the main UrdfScene class
     scene: Any

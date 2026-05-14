@@ -52,7 +52,7 @@ from waldo_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
-from waldo_commander.services.urdf_scene.envelope_mixin import workspace_envelope
+from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
     action_log,
     robot_state,

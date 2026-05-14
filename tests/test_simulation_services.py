@@ -20,7 +20,7 @@ from parol6.client.dry_run_client import DryRunRobotClient
 from waldo_commander.services.path_preview_client import PathPreviewClient
 from waldo_commander.services.motion_recorder import MotionRecorder
 from waldo_commander.services.path_visualizer import PathVisualizer
-from waldo_commander.services.urdf_scene.envelope_mixin import WorkspaceEnvelope
+from waldo_commander.services.urdf_scene.envelope_renderer import WorkspaceEnvelope
 
 
 # ============================================================================

@@ -100,7 +100,7 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
     screen.open("/")
     screen_wait_for_scene_ready(screen)
 
-    from waldo_commander.services.urdf_scene.envelope_mixin import workspace_envelope
+    from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 
     for _ in range(150):  # Up to 15 seconds
         if workspace_envelope._generated and workspace_envelope.stl_url:
