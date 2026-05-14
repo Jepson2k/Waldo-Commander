@@ -251,10 +251,11 @@ class SimulationState(ChangeNotifierMixin):
     )
     last_teleport_ts: float = 0.0  # monotonic time of last teleport send; used by status loop to delay handback
     script_running: bool = False  # True while a user script is executing
-    is_loading: bool = False  # True while a path-preview simulation is running
-    last_sim_error: str | None = (
-        None  # Most recent simulation error (for diagnostics push)
-    )
+    # Step-lifecycle phase from the running script's IPC events. Together,
+    # these let playback's state listener distinguish "step N just started"
+    # from "step N just completed" without a direct call from script_exec.
+    executing_step_index: int = -1  # segment currently executing (-1 = idle)
+    executing_step_at_end: bool = False  # False = at start of segment, True = at end
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
@@ -278,8 +279,8 @@ class SimulationState(ChangeNotifierMixin):
         self.sim_pose_override = False
         self.last_teleport_ts = 0.0
         self.script_running = False
-        self.is_loading = False
-        self.last_sim_error = None
+        self.executing_step_index = -1
+        self.executing_step_at_end = False
 
 
 @bindable_dataclass

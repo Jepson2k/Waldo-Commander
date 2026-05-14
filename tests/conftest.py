@@ -360,7 +360,11 @@ def reset_editor_singletons(
     playback._timeline = None
     playback._exec_step_index = -1
     playback._last_highlighted_index = -1
+    playback._last_slider_update = 0.0
     playback._last_tool_selection = None
+    playback._last_script_running = False
+    playback._last_executing_step_index = -1
+    playback._last_executing_step_at_end = False
     playback.record_btn = None
     playback._record_btn_tooltip = None
     playback._capture_btn = None
@@ -371,8 +375,8 @@ def reset_editor_singletons(
     # a test that leaves script_running=True (e.g. crash mid-start) poisons gating
     # checks in the next test.
     simulation_state.script_running = False
-    simulation_state.is_loading = False
-    simulation_state.last_sim_error = None
+    simulation_state.executing_step_index = -1
+    simulation_state.executing_step_at_end = False
 
 
 @pytest.fixture(autouse=True)

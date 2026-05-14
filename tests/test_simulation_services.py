@@ -1345,3 +1345,34 @@ class TestScriptExecutionLifecycle:
                 from waldo_commander.services.script_runner import stop_script
 
                 await stop_script(handle)
+
+    def test_import_order_script_execution_first(self):
+        """script_execution must be importable before playback (no module cycle).
+
+        Regression guard: pre-fix, ``playback.py`` did
+        ``from waldo_commander.components.script_execution import script_exec``
+        at module level, and ``script_execution.py`` reached for ``playback``
+        via a module-alias import. Importing ``script_execution`` first raised
+        ``ImportError: cannot import name 'script_exec' from partially
+        initialized module``. Other imports happened to load ``playback`` first
+        in normal runs, masking the bug. Run this in a fresh subprocess so the
+        ambient ``sys.modules`` cache can't paper over a re-introduced cycle.
+        """
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from waldo_commander.components.script_execution import script_exec; "
+                "assert script_exec is not None",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"Importing script_execution first failed:\nstdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )

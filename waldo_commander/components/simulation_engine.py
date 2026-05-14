@@ -89,7 +89,6 @@ class SimulationEngine:
         if not content:
             return None
 
-        simulation_state.is_loading = True
         loading = playback.sim_loading_progress
         if loading:
             loading.visible = True
@@ -98,7 +97,6 @@ class SimulationEngine:
                 content, tab_id=tab_id
             )
         finally:
-            simulation_state.is_loading = False
             if loading:
                 loading.visible = False
 
@@ -144,7 +142,6 @@ class SimulationEngine:
         if error:
             log_panel.push(f"[SIM ERROR] {error}")
 
-        simulation_state.last_sim_error = error
         decorations.apply_diagnostics(error)
         decorations.push_line_metadata()
         decorations.push_target_positions()
