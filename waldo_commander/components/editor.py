@@ -877,7 +877,7 @@ print(f"Robot status: {{status}}")
                 # ---- Playbar in splitter.separator (acts as handle) ----
                 with splitter.separator:
                     self.playback.build_bar()
-                    self.run_btn = self.playback._play_btn
+                    self.run_btn = self.playback.play_btn
 
                 # ---- Shared Log Area in splitter.after ----
                 with splitter.after:

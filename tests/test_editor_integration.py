@@ -70,7 +70,7 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     # Initially: play button visible, stop button hidden
     play_btn = user.find(marker="editor-play-btn")
     assert play_btn is not None
-    assert editor.playback._play_btn is not None, "Play button reference should exist"
+    assert editor.playback.play_btn is not None, "Play button reference should exist"
 
     # Stop button should be hidden initially
     stop_btn = editor.playback._stop_btn

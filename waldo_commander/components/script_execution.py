@@ -145,7 +145,7 @@ class ScriptExecutionController:
                 self._step_controller = None
             simulation_state.is_playing = False
             if playback:
-                playback._update_play_button()
+                playback.update_play_button()
 
     async def stop(self) -> None:
         """Stop the running script process."""
@@ -161,7 +161,7 @@ class ScriptExecutionController:
             simulation_state.script_running = False
             simulation_state.is_playing = False
             if playback:
-                playback._update_play_button()
+                playback.update_play_button()
             self._cleanup_stepping()
             if handle:
                 await stop_script(handle)

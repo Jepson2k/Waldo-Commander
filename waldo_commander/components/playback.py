@@ -36,8 +36,8 @@ class PlaybackController:
 
         # Bottom playback bar elements
         self.playback_bar: ui.element | None = None
-        self._play_btn: ui.button | None = None
-        self._play_btn_tooltip: ui.tooltip | None = None
+        self.play_btn: ui.button | None = None
+        self.play_btn_tooltip: ui.tooltip | None = None
         self._stop_btn: ui.button | None = None
         self._next_btn: ui.button | None = None
         self._scrub_parent: ui.element | None = None
@@ -80,12 +80,12 @@ class PlaybackController:
             self.playback_bar = bar
 
             # 1. Play/Pause button
-            self._play_btn = ui.button(
+            self.play_btn = ui.button(
                 icon="play_arrow", on_click=self.toggle_play
             ).props("round dense color=positive unelevated")
-            with self._play_btn:
-                self._play_btn_tooltip = ui.tooltip("Play (Space)")
-            self._play_btn.mark("editor-play-btn")
+            with self.play_btn:
+                self.play_btn_tooltip = ui.tooltip("Play (Space)")
+            self.play_btn.mark("editor-play-btn")
 
             # 2. Stop button
             self._stop_btn = (
@@ -191,12 +191,12 @@ class PlaybackController:
 
     def setup_timers(self) -> None:
         """Create timers and register listeners. Must be called within client context."""
-        simulation_state.add_change_listener(self._update_play_button)
+        simulation_state.add_change_listener(self.update_play_button)
         self._sim_timer = ui.timer(1.0 / 50, self._sim_playback_tick, active=False)
 
     def cleanup(self) -> None:
         """Remove listeners registered by this controller."""
-        simulation_state.remove_change_listener(self._update_play_button)
+        simulation_state.remove_change_listener(self.update_play_button)
 
     # ---- Public actions ----
 
@@ -216,7 +216,7 @@ class PlaybackController:
                     stepper.signal_play()
                 simulation_state.is_playing = True
                 logger.debug("Script playing")
-            self._update_play_button()
+            self.update_play_button()
         elif robot_state.simulator_active and simulation_state.total_steps > 0:
             if simulation_state.sim_playback_active:
                 self._pause_sim_playback()
@@ -288,7 +288,7 @@ class PlaybackController:
 
     def set_enabled(self, enabled: bool) -> None:
         """Enable or disable playback controls (except record button)."""
-        buttons = [self._play_btn, self._next_btn, self.speed_fab]
+        buttons = [self.play_btn, self._next_btn, self.speed_fab]
         for btn in buttons:
             if btn:
                 if enabled:
@@ -302,7 +302,7 @@ class PlaybackController:
         """Called when a script starts running."""
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
-        self._update_play_button()
+        self.update_play_button()
 
     def on_script_step_start(self, step: int, ui_client: Any) -> None:
         """Called when a script command starts executing."""
@@ -344,7 +344,7 @@ class PlaybackController:
                 self._scrub_slider.value = t
                 text = self._format_time(t, t)
                 self._scrub_slider.props(f'label-value="{text}"')
-            self._update_play_button()
+            self.update_play_button()
 
     # ---- Scrub / slider ----
 
@@ -499,7 +499,7 @@ class PlaybackController:
             self._sim_timer.active = True
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
-        self._update_play_button()
+        self.update_play_button()
 
     def _pause_sim_playback(self) -> None:
         """Pause simulation playback.
@@ -518,7 +518,7 @@ class PlaybackController:
         self._snapshot_joints()
         if self._scrub_slider:
             self._scrub_slider.props(remove="label-always")
-        self._update_play_button()
+        self.update_play_button()
 
     def _sim_playback_tick(self) -> None:
         """30Hz tick for simulation playback or script execution slider tracking."""
@@ -590,20 +590,20 @@ class PlaybackController:
 
     # ---- Play button state ----
 
-    def _update_play_button(self) -> None:
+    def update_play_button(self) -> None:
         """Update play/pause button icon and stop/step button visibility."""
-        if self._play_btn:
+        if self.play_btn:
             playing = (
                 simulation_state.script_running and simulation_state.is_playing
             ) or simulation_state.sim_playback_active
             if playing:
-                self._play_btn.props("icon=pause color=warning")
-                if self._play_btn_tooltip:
-                    self._play_btn_tooltip.text = "Pause (Space)"
+                self.play_btn.props("icon=pause color=warning")
+                if self.play_btn_tooltip:
+                    self.play_btn_tooltip.text = "Pause (Space)"
             else:
-                self._play_btn.props("icon=play_arrow color=positive")
-                if self._play_btn_tooltip:
-                    self._play_btn_tooltip.text = "Play (Space)"
+                self.play_btn.props("icon=play_arrow color=positive")
+                if self.play_btn_tooltip:
+                    self.play_btn_tooltip.text = "Play (Space)"
 
         if self._stop_btn:
             self._stop_btn.set_visibility(simulation_state.script_running)
