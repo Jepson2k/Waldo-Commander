@@ -9,6 +9,7 @@ import os
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from importlib.resources import files as pkg_files
 from pathlib import Path
 
@@ -74,9 +75,6 @@ client: RobotClient
 
 # Multicast-driven status consumer (runs once per app)
 status_consumer_task: asyncio.Task | None = None
-# Connectivity ping timer (1Hz)
-ping_timer: ui.timer | None = None
-last_ping_ok: bool = False
 # Set during _on_shutdown so the asyncio exception handler can swallow
 # expected cancellation/connection errors that fire as tasks unwind.
 _shutting_down: bool = False
@@ -86,11 +84,18 @@ control_panel: ControlPanel = None  # ty: ignore[invalid-assignment]
 readout_panel: ReadoutPanel = None  # ty: ignore[invalid-assignment]
 editor_panel: EditorPanel = None  # ty: ignore[invalid-assignment]
 
-# Persistent connection warning notification
-_connection_notification: ui.notification | None = None
 
-# Current page client (for checking validity in background tasks)
-_page_client: Client | None = None
+@dataclass
+class _PageState:
+    """Per-browser-connection state.  Set to None atomically on disconnect."""
+
+    page_client: Client
+    connection_notification: ui.notification | None = None
+    ping_timer: ui.timer | None = None
+    last_ping_ok: bool = False
+
+
+_page_state: _PageState | None = None
 
 # Pre-allocated buffers for numba pipelines (scratch space)
 _rotation_matrix_buffer: np.ndarray = np.zeros((3, 3), dtype=np.float64)
@@ -108,7 +113,9 @@ _startup_complete: asyncio.Event = asyncio.Event()
 
 def _update_connection_notification() -> None:
     """Show or dismiss persistent notification based on robot connection state."""
-    global _connection_notification
+    ps = _page_state
+    if ps is None:
+        return
 
     # Skip if app not ready - avoid modifying elements during page serialization
     if not readiness_state.app_ready.is_set():
@@ -116,16 +123,16 @@ def _update_connection_notification() -> None:
 
     needs_warning = not robot_state.simulator_active and not robot_state.connected
 
-    if needs_warning and _connection_notification is None:
-        _connection_notification = ui.notification(
+    if needs_warning and ps.connection_notification is None:
+        ps.connection_notification = ui.notification(
             message="Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
             type="negative",
             close_button=True,
             timeout=0,
         )
-    elif not needs_warning and _connection_notification is not None:
-        _connection_notification.dismiss()
-        _connection_notification = None
+    elif not needs_warning and ps.connection_notification is not None:
+        ps.connection_notification.dismiss()
+        ps.connection_notification = None
 
 
 # --------------- URDF Scene Functions ---------------
@@ -292,9 +299,10 @@ async def start_controller(com_port: str | None) -> None:
             )
 
     # enable ping timer now that we are connected
-    global ping_timer, status_consumer_task
-    if ping_timer:
-        ping_timer.active = True
+    global status_consumer_task
+    ps = _page_state
+    if ps is not None and ps.ping_timer is not None:
+        ps.ping_timer.active = True
     # start multicast consumer
     if status_consumer_task is None or status_consumer_task.done():
         status_consumer_task = asyncio.create_task(_status_consumer())
@@ -303,7 +311,7 @@ async def start_controller(com_port: str | None) -> None:
 
 
 async def stop_controller() -> None:
-    global ping_timer, status_consumer_task
+    global status_consumer_task
     try:
         robot = ui_state.robot
         if robot is not None:
@@ -311,8 +319,9 @@ async def stop_controller() -> None:
             await asyncio.to_thread(robot.stop)
 
         # Disable ping timer and stop multicast consumer on disconnect
-        if ping_timer is not None:
-            ping_timer.active = False
+        ps = _page_state
+        if ps is not None and ps.ping_timer is not None:
+            ps.ping_timer.active = False
         if status_consumer_task is not None and not status_consumer_task.done():
             status_consumer_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -333,8 +342,6 @@ async def check_ping() -> None:
     decides whether this tab is the active controller; shadow tabs short-
     circuit before touching any panel state.
     """
-    global last_ping_ok
-
     # Multi-tab arbitration. ui.timer fires the callback inside the timer's
     # owning client context, so ui.context.client.id is this tab's id.
     this_id = ui.context.client.id
@@ -352,29 +359,33 @@ async def check_ping() -> None:
         _build_takeover_overlay("Session was taken over by another tab")
         return
 
+    ps = _page_state
+    if ps is None:
+        return
+
     try:
         result = await client.ping()
         new_ok = result.hardware_connected if result else False
-        if new_ok != last_ping_ok:
+        if new_ok != ps.last_ping_ok:
             logger.debug(
                 "ping: connected %s → %s (hw_connected=%s, result=%s)",
-                last_ping_ok,
+                ps.last_ping_ok,
                 new_ok,
                 getattr(result, "hardware_connected", "N/A"),
                 result,
             )
-        last_ping_ok = new_ok
+        ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
-        if last_ping_ok:
+        if ps.last_ping_ok:
             logger.debug("ping: connected True → False (exception)")
-        last_ping_ok = False
+        ps.last_ping_ok = False
 
     # Update robot connectivity status. The multicast status consumer drives
     # the joint/cartesian button sync at status rate; the two calls below
     # cover the "stream went silent" path that the consumer cannot, since
     # they read robot_state.connected directly.
-    robot_state.connected = last_ping_ok
+    robot_state.connected = ps.last_ping_ok
     if readout_panel is not None:
         readout_panel.update_conn_io()
     if control_panel is not None:
@@ -1006,8 +1017,8 @@ def _register_handlers() -> None:
             ui_state._joint_jog_timer.cancel()
         if ui_state._cart_jog_timer is not None:
             ui_state._cart_jog_timer.cancel()
-        if ping_timer is not None:
-            ping_timer.cancel()
+        if _page_state is not None and _page_state.ping_timer is not None:
+            _page_state.ping_timer.cancel()
 
         # Cleanup component timers and listeners
         if control_panel is not None:
@@ -1167,9 +1178,9 @@ def _build_takeover_overlay(message: str) -> None:
 
 @ui.page("/")
 async def index_page():
-    global ping_timer, _page_client
+    global _page_state
     this_client = ui.context.client
-    # Don't set _page_client yet — wait until panels are built so the
+    # Don't set _page_state yet — wait until panels are built so the
     # status consumer never touches stale panel references from a
     # previous (deleted) client.
 
@@ -1188,13 +1199,13 @@ async def index_page():
         # during NiceGUI's handle_disconnect() — async handlers are scheduled
         # as background tasks and would let the new client see a stale slot
         # on refresh.
-        global _page_client, _connection_notification
+        global _page_state
         if ui_state.active_client_id == this_client.id:
             ui_state.active_client_id = None
-        # Only clear if this is still the active client (avoid race on refresh)
-        if _page_client is this_client:
-            _page_client = None
-        _connection_notification = None
+        # Atomically clear all per-connection state if this is still the
+        # active client (avoid race on refresh).
+        if _page_state is not None and _page_state.page_client is this_client:
+            _page_state = None
 
     this_client.on_disconnect(_on_disconnect)
 
@@ -1209,7 +1220,7 @@ async def index_page():
         apply_theme("dark")
         inject_layout_css()
         _build_takeover_overlay("Session active in another tab")
-        ping_timer = ui.timer(interval=1.0, callback=check_ping, active=True)
+        ui.timer(interval=1.0, callback=check_ping, active=True)
         return
 
     # Theme and layout
@@ -1247,11 +1258,12 @@ async def index_page():
     if ui_state.response_log:
         attach_ui_log(ui_state.response_log)
 
-    # All panels built — now allow the status consumer to update UI
-    _page_client = this_client
-
-    # Page-scoped connectivity check (1 Hz)
-    ping_timer = ui.timer(interval=1.0, callback=check_ping, active=True)
+    # All panels built — now allow the status consumer to update UI.
+    # Page-scoped connectivity check (1 Hz) is stored in the state too.
+    _page_state = _PageState(
+        page_client=this_client,
+        ping_timer=ui.timer(interval=1.0, callback=check_ping, active=True),
+    )
 
     # Mark page as ready for tests
     async def _mark_page_done():
@@ -1336,7 +1348,8 @@ async def _status_consumer() -> None:
                     # Both checks needed: _deleted guards the brief window
                     # between NiceGUI marking the client dead and removing it
                     # from Client.instances.
-                    pc = _page_client
+                    ps = _page_state
+                    pc = ps.page_client if ps is not None else None
                     if pc is not None and not pc._deleted and pc.id in Client.instances:
                         with pc:
                             # Update UI from status
