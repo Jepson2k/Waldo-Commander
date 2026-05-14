@@ -38,9 +38,14 @@ class BatchedAwaitError(RuntimeError):
 
 
 class _BatchedNullResponse(AwaitableResponse):
-    """Fire-and-forget response that loudly rejects awaits."""
+    """Fire-and-forget response that loudly rejects awaits.
 
-    def __init__(self) -> None:  # pylint: disable=super-init-not-called
+    Mirrors ``nicegui.awaitable_response.NullResponse``'s pattern of
+    skipping ``super().__init__()`` (which would schedule a background
+    task we don't want); see nicegui's class for precedent.
+    """
+
+    def __init__(self) -> None:
         self._is_fired = True
         self._is_awaited = False
 
@@ -50,6 +55,12 @@ class _BatchedNullResponse(AwaitableResponse):
             "Batched calls are fire-and-forget. Move calls that need a return value "
             "outside the batch."
         )
+
+
+# Module-level singleton — `_BatchedNullResponse` has no per-instance
+# mutable state, so every `_enqueue` call can return the same object
+# instead of allocating a fresh one at ~600/sec hot-path rates.
+_BATCHED_NULL = _BatchedNullResponse()
 
 
 @contextmanager
@@ -70,6 +81,12 @@ def batch_scene(scene: Any) -> Iterator[None]:
         ...         joint_groups[name].move(*t).rotate(*r)
         # On exit: all 12 transforms applied atomically before three.js
         # renders its next frame.
+
+    Note:
+        Body must stay synchronous. Awaiting inside the block lets
+        another task observe the patched ``scene.run_method`` and the
+        marker attribute, which can corrupt state when the inner task
+        also enters ``batch_scene`` on the same scene.
     """
     # Check if we're already batching on this scene (nested batch_scene).
     # If so, the outer one owns the queue; we no-op.
@@ -83,7 +100,7 @@ def batch_scene(scene: Any) -> Iterator[None]:
 
     def _enqueue(name: str, *args: Any, timeout: float = 1) -> AwaitableResponse:
         queued.append((name, args))
-        return _BatchedNullResponse()
+        return _BATCHED_NULL
 
     scene.run_method = _enqueue
     try:
