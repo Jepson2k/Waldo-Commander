@@ -28,8 +28,6 @@ jobs:
           fi
           if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
             pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
-          else
-            pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.7"
           fi
           pip install -e ".[dev]"
           mkdir -p PAROL6-python-API
@@ -61,15 +59,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          # waldoctl: try matching branch, fall back to tagged version
+          # waldoctl: install from matching branch if one exists; otherwise pyproject's pin handles it
           if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
             pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
           fi
-          # parol6: try matching branch, fall back to tagged version
+          # parol6: install from matching branch if one exists; otherwise pyproject's pin handles it
           if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
             pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
-          else
-            pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.7"
           fi
 
       - name: Install package
