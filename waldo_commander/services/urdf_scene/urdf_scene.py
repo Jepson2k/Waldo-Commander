@@ -49,7 +49,7 @@ from .loader import (
 from .editing_mixin import EditingMixin
 from .tcp_controls_mixin import TCPControlsMixin
 from .envelope_mixin import EnvelopeMixin
-from .path_renderer_mixin import PathRendererMixin
+from .path_renderer import PathRenderer
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
@@ -148,7 +148,6 @@ class UrdfScene(
     EditingMixin,
     TCPControlsMixin,
     EnvelopeMixin,
-    PathRendererMixin,
 ):
     """Load a URDF file as a NiceGUI Scene
 
@@ -279,6 +278,7 @@ class UrdfScene(
         self._init_editing_state()
         self._init_tcp_controls_state()
         self._init_envelope_state()
+        self.path_renderer = PathRenderer()
 
         # Register as listener for simulation state changes (event-driven updates)
         simulation_state.add_change_listener(self._update_simulation_view)
@@ -832,7 +832,7 @@ class UrdfScene(
                 if self.path_group and self.scene:
                     with self.scene:
                         with self.path_group:
-                            objs = self.render_tool_action(action)
+                            objs = self.path_renderer.render_tool_action(action)
                     self._rendered_tool_actions[i] = RenderedItem(
                         objects=objs,
                         fingerprint=fp,
@@ -848,7 +848,7 @@ class UrdfScene(
                     if self.path_group and self.scene:
                         with self.scene:
                             with self.path_group:
-                                objs = self.render_tool_action(action)
+                                objs = self.path_renderer.render_tool_action(action)
                         self._rendered_tool_actions.append(
                             RenderedItem(
                                 objects=objs,
@@ -899,7 +899,7 @@ class UrdfScene(
             with self.path_group:
                 segment = all_segments[seg_index]
                 pp_colors = self._gradient_colors(all_segments, seg_index)
-                objs, obj_colors, uses_vc = self._render_path_segment(
+                objs, obj_colors, uses_vc = self.path_renderer.render_path_segment(
                     segment,
                     pp_colors,
                 )
