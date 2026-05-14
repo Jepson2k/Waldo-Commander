@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "waldo-commander"
-version = "2.0.3"
+dynamic = ["version"]
 description = "A web interface for controlling robotic arms"
 requires-python = ">=3.12"
 dependencies = [
@@ -77,22 +77,8 @@ waldo_commander = ["static/**/*"]
 [tool.ty.environment]
 extra-paths = ["PAROL6-python-API"]
 
-# Release tooling: `tbump <new_version>` edits pyproject.toml, commits, tags
-# and pushes (main + tag) in one shot. Install with `pip install tbump`.
-[tool.tbump]
-github_url = "https://github.com/Jepson2k/Waldo-Commander"
-
-[tool.tbump.version]
-current = "2.0.3"
-regex = '''(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)'''
-
-[tool.tbump.git]
-message_template = "bump version to {new_version}"
-tag_template = "v{new_version}"
-
-[[tool.tbump.file]]
-src = "pyproject.toml"
-search = 'version = "{current_version}"'
+[tool.setuptools_scm]
+# Version comes from the latest git tag reachable from HEAD.
 
 # ---- Pytest configuration ----
 [tool.pytest.ini_options]
