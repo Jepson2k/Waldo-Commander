@@ -78,7 +78,7 @@ class MotionRecorder:
     @staticmethod
     def _get_motion_cmd_names() -> frozenset[str]:
         """Get motion command names from the command palette discovery."""
-        from waldo_commander.components.editor import discover_robot_commands
+        from waldo_commander.services.command_discovery import discover_robot_commands
 
         commands = discover_robot_commands()
         return frozenset(

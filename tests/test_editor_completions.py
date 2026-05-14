@@ -4,7 +4,7 @@ import pytest
 
 from waldo_commander.profiles import get_robot
 from waldo_commander.state import ui_state
-import waldo_commander.components.editor as _editor_mod
+import waldo_commander.services.command_discovery as _editor_mod
 
 
 @pytest.fixture(autouse=True)
