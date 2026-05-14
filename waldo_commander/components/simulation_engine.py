@@ -2,14 +2,15 @@
 
 Reads the active textarea from ``editor_tabs_state.active_textarea``, mutates
 ``simulation_state``, and drives the path-visualizer service. Diagnostics,
-line-tooltips, and target anchors are pushed directly to the
-``decorations`` singleton (the strings are consumed by exactly one
-listener, so a state round-trip would be ceremony).
+line-tooltips, and target anchors are pushed directly to the ``decorations``
+singleton (the strings are consumed by exactly one listener, so a state
+round-trip would be ceremony).
 
-Loading and timeline-invalidate hooks currently call through to the
-``EditorPanel.playback`` instance via ``ui_state.editor_panel`` — commit 10
-moves these onto the state-listener path so simulation_engine no longer
-needs to know about PlaybackController.
+Calls into ``playback`` are direct, not listener-based, because
+``bindable_dataclass`` field assignment doesn't fire
+``ChangeNotifierMixin._change_listeners``. Loading-progress visibility,
+timeline invalidation, and scrub-segment rebuilds therefore call
+``playback.X(...)`` explicitly after the simulation completes.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from nicegui import context, ui
 
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
+from waldo_commander.components.playback import playback
 from waldo_commander.services.path_visualizer import path_visualizer
 from waldo_commander.state import (
     editor_tabs_state,
@@ -88,11 +90,7 @@ class SimulationEngine:
             return None
 
         simulation_state.is_loading = True
-        # _editor_panel is the descriptor-backed attribute; it's None pre-init
-        # without raising (unlike the `editor_panel` property).
-        ep = getattr(ui_state, "_editor_panel", None)
-        playback = ep.playback if ep is not None else None
-        loading = playback.sim_loading_progress if playback else None
+        loading = playback.sim_loading_progress
         if loading:
             loading.visible = True
         try:
@@ -115,16 +113,9 @@ class SimulationEngine:
         if error == _UNCHANGED:
             return None
 
-        # Reread playback in case editor_panel finished initialization between
-        # the start of the run and now.
-        ep = getattr(ui_state, "_editor_panel", None)
-        playback = ep.playback if ep is not None else None
-
-        if playback:
-            playback.invalidate_timeline()
+        playback.invalidate_timeline()
         simulation_state.sim_playback_time = 0.0
-        if playback:
-            playback.update_scrub_segments()
+        playback.update_scrub_segments()
 
         # Apply initial tool selection from script to scene and controller
         if simulation_state.tool_selections and ui_state.urdf_scene:
@@ -199,9 +190,7 @@ class SimulationEngine:
                         simulation_state.notify_changed()
                 except RuntimeError:
                     simulation_state.notify_changed()
-                ep = getattr(ui_state, "_editor_panel", None)
-                if ep is not None:
-                    ep.playback.update_scrub_segments()
+                playback.update_scrub_segments()
             return
 
         async def run_simulation_quietly():

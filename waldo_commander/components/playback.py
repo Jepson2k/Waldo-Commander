@@ -5,25 +5,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
-from nicegui import ui, context
+from nicegui import Client, ui, context
 
 from waldo_commander.common.theme import PathColors
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
+from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.state import (
+    editor_tabs_state,
+    recording_state,
     robot_state,
     simulation_state,
     ui_state,
-    editor_tabs_state,
 )
-
-if TYPE_CHECKING:
-    from waldo_commander.components.editor import EditorPanel
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +30,7 @@ logger = logging.getLogger(__name__)
 class PlaybackController:
     """Owns the bottom playback bar UI and all simulation/script playback logic."""
 
-    def __init__(self, editor: EditorPanel) -> None:
-        self._editor = editor
-
+    def __init__(self) -> None:
         # Bottom playback bar elements
         self.playback_bar: ui.element | None = None
         self.play_btn: ui.button | None = None
@@ -59,6 +56,19 @@ class PlaybackController:
         self._last_slider_update: float = 0.0  # throttle slider visual updates
         self._last_tool_selection: tuple[str, str] | None = None
 
+        # Recording widgets — the record button and its tooltip live in the
+        # playback bar so PlaybackController owns them. Notification reference
+        # is kept across toggles so it can be dismissed.
+        self.record_btn: ui.button | None = None
+        self._record_btn_tooltip: ui.tooltip | None = None
+        self._capture_btn: ui.button | None = None
+        self._recording_notification: ui.notification | None = None
+        self._ui_client: Client | None = None
+
+    def set_ui_client(self, client: Client | None) -> None:
+        """Store the page client for background-task UI operations."""
+        self._ui_client = client
+
     @property
     def sim_loading_progress(self) -> ui.element | None:
         return self._sim_loading_progress
@@ -70,8 +80,6 @@ class PlaybackController:
 
         Order: Play | Stop | Next | Slider | Speed FAB | Record | Capture | Log toggle
         """
-        from waldo_commander.services.motion_recorder import motion_recorder
-
         with (
             ui.row()
             .classes("w-full items-center gap-2 bottom-playback-bar")
@@ -89,7 +97,7 @@ class PlaybackController:
 
             # 2. Stop button
             self._stop_btn = (
-                ui.button(icon="stop", on_click=lambda: script_exec.stop())
+                ui.button(icon="stop", on_click=script_exec.stop)
                 .props("round dense color=negative unelevated")
                 .tooltip("Stop")
             )
@@ -170,15 +178,15 @@ class PlaybackController:
                 )
 
             # 6. Record button
-            self._editor.record_btn = ui.button(
-                icon="fiber_manual_record", on_click=self._editor._toggle_recording
+            self.record_btn = ui.button(
+                icon="fiber_manual_record", on_click=self._toggle_recording
             ).props("round dense color=negative unelevated")
-            with self._editor.record_btn:
-                self._editor._record_btn_tooltip = ui.tooltip("Start Recording")
-            self._editor.record_btn.mark("editor-record-btn")
+            with self.record_btn:
+                self._record_btn_tooltip = ui.tooltip("Start Recording")
+            self.record_btn.mark("editor-record-btn")
 
             # 7. Capture position
-            self._editor._capture_btn = (
+            self._capture_btn = (
                 ui.button(
                     icon="camera_alt", on_click=motion_recorder.capture_current_pose
                 )
@@ -188,6 +196,46 @@ class PlaybackController:
 
             # 8. Log show/hide
             log_panel.build_toggle_button()
+
+    # ---- Recording lifecycle ----
+
+    def _toggle_recording(self) -> None:
+        """Toggle motion recording on/off and update the record button visual."""
+        motion_recorder.toggle_recording()
+        if recording_state.is_recording:
+            if self.record_btn:
+                self.record_btn.props("color=warning")
+            if self._record_btn_tooltip:
+                self._record_btn_tooltip.text = "Stop Recording"
+            self.set_enabled(False)
+            try:
+                ui_client = self._ui_client or context.client
+                with ui_client:
+                    self._recording_notification = ui.notification(
+                        message="Recording",
+                        type="negative",
+                        icon="fiber_manual_record",
+                        position="top",
+                        timeout=0,
+                        close_button=False,
+                        classes="recording-notification",
+                    )
+            except RuntimeError:
+                pass
+        else:
+            if self.record_btn:
+                self.record_btn.props("color=negative")
+            if self._record_btn_tooltip:
+                self._record_btn_tooltip.text = "Start Recording"
+            self.set_enabled(True)
+            if self._recording_notification is not None:
+                try:
+                    client = self._ui_client or context.client
+                    with client:
+                        self._recording_notification.dismiss()
+                except RuntimeError:
+                    pass
+                self._recording_notification = None
 
     def setup_timers(self) -> None:
         """Create timers and register listeners. Must be called within client context."""
@@ -203,8 +251,6 @@ class PlaybackController:
     async def toggle_play(self) -> None:
         """Toggle play/pause for script execution or simulation playback."""
         if simulation_state.script_running:
-            from waldo_commander.components.script_execution import script_exec
-
             stepper = script_exec._step_controller
             if simulation_state.is_playing:
                 if stepper:
@@ -223,14 +269,10 @@ class PlaybackController:
             else:
                 self._start_sim_playback()
         else:
-            from waldo_commander.components.script_execution import script_exec
-
             await script_exec.start()
 
     def step_forward(self) -> None:
         """Step forward one segment."""
-        from waldo_commander.components.script_execution import script_exec
-
         if simulation_state.script_running and script_exec._step_controller:
             script_exec._step_controller.signal_step()
             logger.debug("Step forward signal sent to script")
@@ -784,3 +826,6 @@ class PlaybackController:
             return f"{int(m)}:{s:04.1f}"
 
         return f"{fmt(current)} / {fmt(total)}"
+
+
+playback: PlaybackController = PlaybackController()

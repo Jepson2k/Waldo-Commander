@@ -1247,3 +1247,101 @@ class TestSimPoseOverrideAutoClear:
             and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
         )
         assert not should_clear
+
+
+# ============================================================================
+# ScriptExecutionController Lifecycle Tests
+# ============================================================================
+
+
+class TestScriptExecutionLifecycle:
+    """Tests for ScriptExecutionController subprocess lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_start_reaps_subprocess_on_late_exception(
+        self, tmp_path, monkeypatch
+    ):
+        """If start() raises *after* run_script succeeds, the subprocess must be killed.
+
+        Without this guarantee, exceptions in the post-run_script section of start()
+        (signal_play, log_panel.expand, task creation) leak a process group.
+        """
+        from waldo_commander.components import script_execution as se
+        from waldo_commander.state import editor_tabs_state
+
+        # Long-running script: only `stop_script` (i.e. our cleanup path) can end it.
+        script_path = tmp_path / "long_running.py"
+        script_path.write_text("import time\nwhile True:\n    time.sleep(0.1)\n")
+
+        # Capture the real handle as it's returned by run_script so we can verify
+        # the subprocess gets reaped.
+        captured: dict = {}
+        real_run_script = se.run_script
+
+        async def capturing_run_script(*args, **kwargs):
+            handle = await real_run_script(*args, **kwargs)
+            captured["handle"] = handle
+            return handle
+
+        monkeypatch.setattr(se, "run_script", capturing_run_script)
+
+        # Stub UI-coupled imports so start() doesn't need a NiceGUI client context.
+        fake_client = MagicMock()
+        monkeypatch.setattr(
+            se,
+            "context",
+            type("FakeCtx", (), {"client": fake_client})(),
+        )
+        monkeypatch.setattr(se.ui, "notify", lambda *a, **k: None)
+        monkeypatch.setattr(se.log_panel, "clear", lambda: None)
+        monkeypatch.setattr(se.log_panel, "push", lambda line: None)
+
+        # Force log_panel.expand() to raise — this fires after run_script returns
+        # successfully, exercising the late-exception path.
+        def raise_expand():
+            raise RuntimeError("simulated UI failure after subprocess started")
+
+        monkeypatch.setattr(se.log_panel, "expand", raise_expand)
+
+        # Provide the active-tab widget refs start() reads from.
+        fake_textarea = MagicMock()
+        fake_textarea.value = script_path.read_text()
+        fake_filename_input = MagicMock()
+        fake_filename_input.value = script_path.name
+        editor_tabs_state.active_textarea = fake_textarea
+        editor_tabs_state.active_filename_input = fake_filename_input
+
+        # run_script reads ui_state.active_robot.backend_package; ensure it's set
+        # (matches the mock_editor fixture's pattern).
+        old_robot = ui_state.robot
+        ui_state.robot = get_robot()
+
+        se.script_exec.set_program_dir(tmp_path)
+
+        try:
+            await se.script_exec.start()
+
+            # Contract: handle cleared, state reset.
+            assert se.script_exec.script_handle is None
+            assert simulation_state.script_running is False
+            assert simulation_state.is_playing is False
+
+            # The subprocess must be dead — this is the regression guard.
+            assert "handle" in captured, "run_script did not run; test setup is wrong"
+            proc = captured["handle"]["proc"]
+            # stop_script awaits proc.wait() after termination, so by the time
+            # start()'s except clause returns, returncode must be set.
+            assert proc.returncode is not None, (
+                f"Subprocess was leaked! PID {proc.pid} still running."
+            )
+        finally:
+            editor_tabs_state.active_textarea = None
+            editor_tabs_state.active_filename_input = None
+            ui_state.robot = old_robot
+            # Belt-and-suspenders: if the test ever ran without the fix, ensure
+            # the subprocess is killed so it doesn't leak into the next test.
+            handle = captured.get("handle")
+            if handle and handle["proc"].returncode is None:
+                from waldo_commander.services.script_runner import stop_script
+
+                await stop_script(handle)

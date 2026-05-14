@@ -536,13 +536,20 @@ class EditorTab:
 
 @bindable_dataclass
 class EditorTabsState(ChangeNotifierMixin):
-    """State for multi-tab editor."""
+    """State for multi-tab editor.
+
+    Holds both pure tab data (``tabs``, ``active_tab_id``) and the widget
+    references for the active tab (``active_textarea``,
+    ``active_filename_input``). Mixing widget refs with data here is
+    intentional: the refs' lifecycle is tied directly to tab switching, and
+    consolidating them on the tab-state object lets sub-controllers
+    (decorations, simulation engine, motion recorder, script execution) read
+    the active tab's widgets without back-references into EditorPanel.
+    """
 
     tabs: list[EditorTab] = field(default_factory=list)
     active_tab_id: str | None = None
-    # Widget refs for the currently active tab. EditorPanel updates these on
-    # tab switch so sub-controllers can read the active textarea/filename
-    # without going through EditorPanel.
+    # Updated by EditorPanel on every tab switch / initial build.
     active_textarea: Any = None  # ui.codemirror | None at runtime
     active_filename_input: Any = None  # ui.input | None at runtime
     _change_listeners: list[Callable[[], None]] = field(

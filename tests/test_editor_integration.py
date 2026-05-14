@@ -204,7 +204,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
 
     # Initially not recording with red color
     assert recording_state.is_recording is False
-    record_btn_ref = editor.record_btn
+    record_btn_ref = editor.playback.record_btn
     assert record_btn_ref is not None, "Record button reference should exist"
     initial_color = record_btn_ref._props.get("color", "")
     assert initial_color == "negative", (
@@ -260,7 +260,7 @@ async def test_recording_notification_appears_and_disappears(
 
     # Initially no recording notification
     assert recording_state.is_recording is False
-    assert editor._recording_notification is None
+    assert editor.playback._recording_notification is None
 
     # Click record to start
     record_btn = user.find(marker="editor-record-btn")
@@ -269,7 +269,7 @@ async def test_recording_notification_appears_and_disappears(
 
     # Recording notification should appear
     assert recording_state.is_recording is True
-    assert editor._recording_notification is not None, (
+    assert editor.playback._recording_notification is not None, (
         "Recording notification should exist"
     )
     await user.should_see("Recording")
@@ -280,7 +280,7 @@ async def test_recording_notification_appears_and_disappears(
 
     # Recording notification should be dismissed
     assert recording_state.is_recording is False
-    assert editor._recording_notification is None, (
+    assert editor.playback._recording_notification is None, (
         "Recording notification should be dismissed"
     )
 

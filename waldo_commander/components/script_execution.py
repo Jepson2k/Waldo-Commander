@@ -4,11 +4,15 @@ Owns the python-subprocess script handle, the GUI step controller, and the
 event-watcher / completion-monitor tasks. Sub-controller call sites in the
 editor delegate to this singleton instead of holding the state themselves.
 
-Cross-controller side effects are kept narrow: the singleton mutates
-``simulation_state.script_running`` / ``is_playing`` and notifies, then
-external listeners (decorations, log_panel) react. Playback transitions
-(on_script_start / on_script_step_start / on_script_step_complete /
-on_script_stop) reach into ``ui_state.editor_panel.playback`` directly.
+Cross-controller calls into ``playback`` are direct, not listener-based:
+``bindable_dataclass`` field assignment propagates to UI bindings but does
+NOT fire ``ChangeNotifierMixin._change_listeners``. Mutating
+``simulation_state.script_running`` therefore does not call
+``playback.update_play_button`` automatically — every state transition that
+should redraw the playback bar calls the relevant ``playback.X(...)`` method
+explicitly. Step lifecycle hooks (``on_script_step_*``, ``on_script_stop``)
+also need to be direct because they pass a captured ``ui_client`` for
+background-task UI updates.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from pathlib import Path
 
 from nicegui import Client, context, ui
 
+from waldo_commander.components import playback as _playback_mod
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.services.script_runner import (
@@ -30,7 +35,11 @@ from waldo_commander.services.script_runner import (
     stop_script,
 )
 from waldo_commander.services.stepping_client import GUIStepController
-from waldo_commander.state import editor_tabs_state, simulation_state, ui_state
+from waldo_commander.state import editor_tabs_state, simulation_state
+
+# Module-as-alias import: importing `playback as ...` would cycle (playback.py
+# imports this module). Resolving the singleton at call time via attribute
+# access on the module object lets both modules finish loading first.
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +72,8 @@ class ScriptExecutionController:
 
     async def start(self) -> None:
         """Start the current editor content as a Python subprocess."""
-        ep = getattr(ui_state, "_editor_panel", None)
-        playback = ep.playback if ep is not None else None
-        if playback:
-            playback.stop_playback()
+        playback = _playback_mod.playback
+        playback.stop_playback()
 
         if simulation_state.script_running:
             ui.notify("Script already running", color="warning")
@@ -117,12 +124,10 @@ class ScriptExecutionController:
 
             simulation_state.is_playing = True
             self._step_controller.signal_play()
-            if playback:
-                playback.on_script_start()
+            playback.on_script_start()
 
             log_panel.expand()
 
-            ui_client = context.client
             self._event_watcher_task = asyncio.create_task(
                 self._watch_script_events(ui_client)
             )
@@ -138,14 +143,25 @@ class ScriptExecutionController:
         except Exception as e:
             ui.notify(f"Failed to start script: {e}", color="negative")
             logger.error("Failed to start script: %s", e)
+            # Reap the subprocess if run_script succeeded before the exception
+            # — otherwise the process group outlives the failed start.
+            leaked_handle = self.script_handle
+            self.script_handle = None
+            if leaked_handle is not None:
+                try:
+                    await stop_script(leaked_handle)
+                except Exception as stop_err:
+                    logger.error(
+                        "Failed to stop leaked subprocess after start error: %s",
+                        stop_err,
+                    )
             simulation_state.script_running = False
             self._step_session_id = None
             if self._step_controller:
                 self._step_controller.cleanup()
                 self._step_controller = None
             simulation_state.is_playing = False
-            if playback:
-                playback.update_play_button()
+            playback.update_play_button()
 
     async def stop(self) -> None:
         """Stop the running script process."""
@@ -153,15 +169,13 @@ class ScriptExecutionController:
             ui.notify("No script running", color="warning")
             return
 
-        ep = getattr(ui_state, "_editor_panel", None)
-        playback = ep.playback if ep is not None else None
+        playback = _playback_mod.playback
         try:
             handle = self.script_handle
             self.script_handle = None
             simulation_state.script_running = False
             simulation_state.is_playing = False
-            if playback:
-                playback.update_play_button()
+            playback.update_play_button()
             self._cleanup_stepping()
             if handle:
                 await stop_script(handle)
@@ -175,18 +189,17 @@ class ScriptExecutionController:
 
     async def _watch_script_events(self, ui_client: Client) -> None:
         """Poll for script events and update visualization."""
+        playback = _playback_mod.playback
         try:
             while simulation_state.script_running and self._step_controller:
                 events = self._step_controller.poll_events()
-                ep = getattr(ui_state, "_editor_panel", None)
-                playback = ep.playback if ep is not None else None
                 for event in events:
                     event_type = event.get("event")
                     method = event.get("method", "")
                     step = event.get("step", 0)
-                    if event_type == "start" and playback:
+                    if event_type == "start":
                         playback.on_script_step_start(step, ui_client)
-                    elif event_type == "complete" and playback:
+                    elif event_type == "complete":
                         playback.on_script_step_complete(step, ui_client)
                         logger.debug(
                             "Script event: %s completed (step %d)", method, step
@@ -225,10 +238,7 @@ class ScriptExecutionController:
         simulation_state.script_running = False
         simulation_state.is_playing = False
         simulation_state.sim_pose_override = False
-        ep = getattr(ui_state, "_editor_panel", None)
-        playback = ep.playback if ep is not None else None
-        if playback:
-            playback.on_script_stop(ui_client)
+        _playback_mod.playback.on_script_stop(ui_client)
         self._cleanup_stepping()
 
     def _cleanup_stepping(self) -> None:

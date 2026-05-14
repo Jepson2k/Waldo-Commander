@@ -18,7 +18,6 @@ from waldo_commander.state import (
     editor_tabs_state,
     recording_state,
 )
-from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.command_discovery import (
     discover_robot_commands,
     generate_completions_from_commands,
@@ -27,7 +26,7 @@ from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.playback import PlaybackController
+from waldo_commander.components.playback import playback
 from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
@@ -64,23 +63,17 @@ class EditorPanel(FileOperationsMixin):
         self.program_filename_input: ui.input | None = None
         self.program_textarea: ui.codemirror | None = None
         self.run_btn: ui.button | None = None
-        self.record_btn: ui.button | None = None
-        self._capture_btn: ui.button | None = None
 
-        # Playback controller (owns bottom bar UI and playback logic)
-        self.playback = PlaybackController(self)
+        # Playback singleton (owns bottom bar UI, playback logic, and recording).
+        # Kept as an instance attribute so external callers (and tests) can
+        # still read editor.playback.X.
+        self.playback = playback
 
         # Drawer element reference
         self.drawer: ui.element | None = None
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
-
-        # Recording notification
-        self._recording_notification: ui.notification | None = None
-
-        # Tooltip references (to update text without recreating)
-        self._record_btn_tooltip: ui.tooltip | None = None
 
     def _default_python_snippet(self) -> str:
         """Generate the initial pre-filled Python code with inlined controller host/port."""
@@ -383,49 +376,6 @@ print(f"Robot status: {{status}}")
     def cleanup(self) -> None:
         """Remove listeners registered by this panel."""
         self.playback.cleanup()
-
-    def _toggle_recording(self) -> None:
-        """Toggle motion recording on/off."""
-        motion_recorder.toggle_recording()
-        # Update button visual
-        if recording_state.is_recording:
-            if self.record_btn:
-                self.record_btn.props("color=warning")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Stop Recording"
-            # Disable playback controls during recording
-            self.playback.set_enabled(False)
-            # Show recording notification at top of screen
-            try:
-                ui_client = self._ui_client or context.client
-                with ui_client:
-                    self._recording_notification = ui.notification(
-                        message="Recording",
-                        type="negative",
-                        icon="fiber_manual_record",
-                        position="top",
-                        timeout=0,  # Persistent until dismissed
-                        close_button=False,
-                        classes="recording-notification",
-                    )
-            except RuntimeError:
-                pass  # No client context available
-        else:
-            if self.record_btn:
-                self.record_btn.props("color=negative")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Start Recording"
-            # Re-enable playback controls
-            self.playback.set_enabled(True)
-            # Dismiss recording notification
-            if self._recording_notification is not None:
-                try:
-                    client = self._ui_client or context.client
-                    with client:
-                        self._recording_notification.dismiss()
-                except RuntimeError:
-                    pass  # No client context available
-                self._recording_notification = None
 
     # ---- Tab Management Methods ----
 
@@ -773,6 +723,7 @@ print(f"Robot status: {{status}}")
         decorations.set_ui_client(self._ui_client)
         simulation.set_ui_client(self._ui_client)
         simulation.set_default_snippet_provider(self._default_python_snippet)
+        playback.set_ui_client(self._ui_client)
 
         # Periodic check: re-run path preview when robot position changes
         ui.timer(1.0, simulation.check_position_changed)

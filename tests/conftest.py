@@ -293,19 +293,31 @@ def class_screen(
 
 
 @pytest.fixture(autouse=True)
-def reset_editor_singletons() -> Generator[None, None, None]:
+def reset_editor_singletons(
+    request: pytest.FixtureRequest,
+) -> Generator[None, None, None]:
     """Reset module-level editor singletons between tests.
 
-    EditorDecorations, LogPanelController, SimulationEngine, and
-    ScriptExecutionController are constructed once at import time and
+    EditorDecorations, LogPanelController, PlaybackController, SimulationEngine,
+    and ScriptExecutionController are constructed once at import time and
     survive across tests. Clear their transient state so each test starts
     from a clean baseline (matches the post-page-load state).
+
+    Skips reset for class_screen tests — those keep the same page alive
+    across tests in the class, so wiping the singletons' widget refs would
+    desynchronize Python from the still-mounted DOM (button.props() calls
+    silently no-op because the field is None).
     """
+    if "class_screen" in request.fixturenames:
+        yield
+        return
     yield
     from waldo_commander.components.editor_decorations import decorations
     from waldo_commander.components.log_panel import log_panel
+    from waldo_commander.components.playback import playback
     from waldo_commander.components.simulation_engine import simulation
     from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.state import simulation_state
 
     decorations._active_flashes.clear()
     decorations._flash_token = 0
@@ -328,6 +340,39 @@ def reset_editor_singletons() -> Generator[None, None, None]:
     script_exec._step_session_id = None
     script_exec._step_controller = None
     script_exec._event_watcher_task = None
+
+    # Playback widget refs are stale after a page disconnect; reset so the next
+    # test's build creates fresh ones.
+    playback.playback_bar = None
+    playback.play_btn = None
+    playback.play_btn_tooltip = None
+    playback._stop_btn = None
+    playback._next_btn = None
+    playback._scrub_parent = None
+    playback._scrub_container = None
+    playback._segment_elements.clear()
+    playback._checkpoint_markers.clear()
+    playback._tool_markers.clear()
+    playback.speed_fab = None
+    playback._scrub_slider = None
+    playback._sim_loading_progress = None
+    playback._sim_timer = None
+    playback._timeline = None
+    playback._exec_step_index = -1
+    playback._last_highlighted_index = -1
+    playback._last_tool_selection = None
+    playback.record_btn = None
+    playback._record_btn_tooltip = None
+    playback._capture_btn = None
+    playback._recording_notification = None
+    playback._ui_client = None
+
+    # Script/sim flags added alongside the singleton decomposition. Without this,
+    # a test that leaves script_running=True (e.g. crash mid-start) poisons gating
+    # checks in the next test.
+    simulation_state.script_running = False
+    simulation_state.is_loading = False
+    simulation_state.last_sim_error = None
 
 
 @pytest.fixture(autouse=True)
