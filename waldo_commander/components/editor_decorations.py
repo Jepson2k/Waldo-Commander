@@ -160,18 +160,23 @@ class EditorDecorations:
         if not textarea:
             return
 
+        new_line: int | None = None
         if simulation_state.path_segments and 0 <= step_index < len(
             simulation_state.path_segments
         ):
             segment = simulation_state.path_segments[step_index]
             if segment.line_number > 0:
-                self._executing_line = segment.line_number
-                self._apply_decorations()
-                textarea.reveal_line(segment.line_number)
-                return
+                new_line = segment.line_number
 
-        self._executing_line = None
+        if new_line == self._executing_line:
+            if new_line is not None:
+                textarea.reveal_line(new_line)
+            return
+
+        self._executing_line = new_line
         self._apply_decorations()
+        if new_line is not None:
+            textarea.reveal_line(new_line)
 
     def clear_executing_line_highlight(self) -> None:
         """Clear the executing line highlight decoration."""

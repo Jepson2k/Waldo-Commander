@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from nicegui import context, ui, Client
 from waldo_commander.common.theme import get_theme
-from waldo_commander.constants import REPO_ROOT, config
+from waldo_commander.constants import REPO_ROOT
 from waldo_commander.state import (
     robot_state,
     simulation_state,
@@ -24,17 +24,17 @@ from waldo_commander.services.command_discovery import (
 )
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
-from waldo_commander.components.simulation_engine import simulation
+from waldo_commander.components.simulation_engine import (
+    _default_python_snippet,
+    _get_home_joints_rad,
+    _is_default_script,
+    simulation,
+)
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.playback import playback
 from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
-
-
-def _get_home_joints_rad() -> list[float]:
-    """Get home position in radians from the active robot."""
-    return ui_state.active_robot.joints.home.rad.tolist()
 
 
 class EditorPanel(FileOperationsMixin):
@@ -57,12 +57,11 @@ class EditorPanel(FileOperationsMixin):
         self.tab_panels_container: ui.tab_panels | None = None
         self._tab_widgets: dict[
             str, dict
-        ] = {}  # tab_id -> {textarea, log, splitter, filename_input, ...}
+        ] = {}  # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
 
         # Active tab's widgets (updated on tab switch for backward compatibility)
         self.program_filename_input: ui.input | None = None
         self.program_textarea: ui.codemirror | None = None
-        self.run_btn: ui.button | None = None
 
         # Playback singleton (owns bottom bar UI, playback logic, and recording).
         # Kept as an instance attribute so external callers (and tests) can
@@ -74,37 +73,6 @@ class EditorPanel(FileOperationsMixin):
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
-
-    def _default_python_snippet(self) -> str:
-        """Generate the initial pre-filled Python code with inlined controller host/port."""
-        backend = ui_state.active_robot.backend_package
-        return f"""import time
-from {backend} import RobotClient
-
-rbt = RobotClient(host={config.controller_host!r}, port={config.controller_port})
-
-print("Moving to home position...")
-rbt.home()
-
-status = rbt.status()
-print(f"Robot status: {{status}}")
-"""
-
-    def _is_default_script(self, content: str) -> bool:
-        """Check if content matches the default script template.
-
-        Used to skip simulation for the default script since it just homes
-        the robot (final position = home position).
-        """
-        if not content:
-            return False
-        default = self._default_python_snippet()
-
-        # Normalize both for comparison (strip whitespace)
-        def normalize(s: str) -> str:
-            return "".join(s.split())
-
-        return normalize(content) == normalize(default)
 
     def _insert_python_snippet(self, key: str) -> str:
         """Get Python code snippet for the given key."""
@@ -377,6 +345,8 @@ print(f"Robot status: {{status}}")
         """Per-page cleanup — remove listeners and cancel timers registered
         during ``build()``. Idempotent: safe to call from both
         ``_on_disconnect`` and ``_on_shutdown``."""
+        # playback first: removes its per-page simulation_state listener
+        # before the other singletons touch shared simulation_state.
         self.playback.cleanup()
         decorations.cleanup()
         log_panel.cleanup()
@@ -393,10 +363,8 @@ print(f"Robot status: {{status}}")
             id=uuid.uuid4().hex[:8],
             filename=filename,
             file_path=None,
-            content=content if content is not None else self._default_python_snippet(),
-            saved_content=content
-            if content is not None
-            else self._default_python_snippet(),
+            content=content if content is not None else _default_python_snippet(),
+            saved_content=content if content is not None else _default_python_snippet(),
             output_log=[],
             path_segments=[],
             targets=[],
@@ -409,11 +377,10 @@ print(f"Robot status: {{status}}")
         self._switch_to_tab(tab.id)
 
         # Trigger simulation at tab creation (with default script optimization)
-        if self._is_default_script(tab.content):
-            # Default script ends at home position - set directly, skip simulation
+        if _is_default_script(tab.content):
+            # Default script ends at home position - skip simulation;
+            # other tab list fields default to [] so no further reset needed.
             tab.final_joints_rad = list(_get_home_joints_rad())
-            tab.path_segments = []
-            tab.targets = []
         elif tab.content.strip():
             simulation.schedule_debounced_simulation(tab_id=tab.id)
 
@@ -728,7 +695,6 @@ print(f"Robot status: {{status}}")
             pass  # No client context during build (shouldn't happen)
         decorations.set_ui_client(self._ui_client)
         simulation.set_ui_client(self._ui_client)
-        simulation.set_default_snippet_provider(self._default_python_snippet)
         playback.set_ui_client(self._ui_client)
 
         # Periodic check: re-run path preview when robot position changes
@@ -834,7 +800,6 @@ print(f"Robot status: {{status}}")
                 # ---- Playbar in splitter.separator (acts as handle) ----
                 with splitter.separator:
                     self.playback.build_bar()
-                    self.run_btn = self.playback.play_btn
 
                 # ---- Shared Log Area in splitter.after ----
                 with splitter.after:

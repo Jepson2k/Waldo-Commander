@@ -367,7 +367,7 @@ def _register_default_keybindings() -> None:
 
     # Cartesian Jog - WASD + Q/E
     # These are holdable: click = single step, hold = continuous jog
-    _register_cartesian_jog_keybindings(cp, ep)
+    _register_cartesian_jog_keybindings(cp)
 
     # Speed Control — delegated to control panel so the rating widget,
     # icon color, tooltip, and persisted storage stay in sync.
@@ -407,7 +407,7 @@ def _register_default_keybindings() -> None:
     )
 
 
-def _register_cartesian_jog_keybindings(cp: Any, ep: Any) -> None:
+def _register_cartesian_jog_keybindings(cp: Any) -> None:
     """Register WASD + Q/E keybindings for cartesian jogging."""
     # Map keys to axes: W/S = Y, A/D = X, Q/E = Z
     jog_key_map = {

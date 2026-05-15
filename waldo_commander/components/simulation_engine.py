@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
 
 import numpy as np
-from nicegui import context, ui
+from nicegui import Client, context, ui
 
+from waldo_commander.constants import config
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.playback import playback
@@ -41,10 +41,28 @@ def _get_home_joints_rad() -> list[float]:
     return ui_state.active_robot.joints.home.rad.tolist()
 
 
-def _is_default_script(content: str, default: str) -> bool:
+def _default_python_snippet() -> str:
+    """Initial pre-filled Python code with inlined controller host/port."""
+    backend = ui_state.active_robot.backend_package
+    return f"""import time
+from {backend} import RobotClient
+
+rbt = RobotClient(host={config.controller_host!r}, port={config.controller_port})
+
+print("Moving to home position...")
+rbt.home()
+
+status = rbt.status()
+print(f"Robot status: {{status}}")
+"""
+
+
+def _is_default_script(content: str, default: str | None = None) -> bool:
     """Check if content matches the default script template (whitespace-insensitive)."""
     if not content:
         return False
+    if default is None:
+        default = _default_python_snippet()
 
     def normalize(s: str) -> str:
         return "".join(s.split())
@@ -63,10 +81,7 @@ class SimulationEngine:
     def __init__(self) -> None:
         self._simulation_debounce_timer: ui.timer | None = None
         self._debounce_delay: float = 1.0  # seconds of idle before running
-        self._ui_client: Any | None = None
-        # External hook supplied by EditorPanel.build() to compute the
-        # current tab's default script body (depends on backend selection).
-        self._default_snippet_provider: Any | None = None
+        self._ui_client: Client | None = None
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel any pending debounced simulation so it
@@ -82,12 +97,8 @@ class SimulationEngine:
 
     # ---- Wiring ----
 
-    def set_ui_client(self, client: Any) -> None:
+    def set_ui_client(self, client: Client | None) -> None:
         self._ui_client = client
-
-    def set_default_snippet_provider(self, provider: Any) -> None:
-        """``provider()`` should return the default snippet string for the active backend."""
-        self._default_snippet_provider = provider
 
     # ---- Core simulation run ----
 
@@ -180,18 +191,17 @@ class SimulationEngine:
 
         # Default-script optimization: skip simulation if content is the default snippet
         tab = editor_tabs_state.find_tab_by_id(tab_id)
-        default_snippet = (
-            self._default_snippet_provider() if self._default_snippet_provider else ""
-        )
-        if tab and _is_default_script(tab.content, default_snippet):
+        if tab and _is_default_script(tab.content):
             tab.final_joints_rad = list(_get_home_joints_rad())
             tab.path_segments = []
             tab.targets = []
             tab.tool_actions = []
+            tab.tool_selections = []
             if tab_id == editor_tabs_state.active_tab_id:
                 simulation_state.path_segments = []
                 simulation_state.targets = []
                 simulation_state.tool_actions = []
+                simulation_state.tool_selections = []
                 simulation_state.total_steps = 0
                 try:
                     ui_client = self._ui_client or context.client

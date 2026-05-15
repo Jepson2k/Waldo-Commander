@@ -695,18 +695,19 @@ class TestSimulationCaching:
 
     def test_default_script_detected(self):
         """_is_default_script returns True for default content, skipping simulation."""
-        from waldo_commander.components.editor import EditorPanel
+        from waldo_commander.components.simulation_engine import (
+            _default_python_snippet,
+            _is_default_script,
+        )
 
-        panel = EditorPanel()
-
-        default_content = panel._default_python_snippet()
-        assert panel._is_default_script(default_content) is True
+        default_content = _default_python_snippet()
+        assert _is_default_script(default_content) is True
 
         # Whitespace variations should still match
-        assert panel._is_default_script(default_content + "\n\n  \n") is True
+        assert _is_default_script(default_content + "\n\n  \n") is True
 
         # Non-default content should not match
-        assert panel._is_default_script("rbt.move_j([0,0,0,0,0,0])") is False
+        assert _is_default_script("rbt.move_j([0,0,0,0,0,0])") is False
 
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):

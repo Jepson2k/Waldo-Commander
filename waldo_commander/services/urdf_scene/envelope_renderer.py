@@ -1,11 +1,14 @@
-"""
-Envelope Mixin for UrdfScene.
+"""Workspace envelope renderer for UrdfScene.
 
 Provides workspace envelope visualization:
 - Convex hull mesh rendering (cached as STL)
 - Proximity clipping planes
 - Tool offset adjustments
 - Workspace envelope calculation with caching
+
+Kept as a mixin (not full composition) because the per-Object3D APIs act on
+owned state the renderer already manages — no external scene references need
+threading. See ``EnvelopeRenderer`` for details.
 """
 
 import hashlib
