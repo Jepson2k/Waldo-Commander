@@ -519,7 +519,7 @@ rbt = RobotClient()
 rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
 """
-    editor.program_textarea.value = test_script
+    editor_tabs_state.active_textarea.value = test_script
     tab.content = test_script
 
     # Run simulation to populate steps
@@ -582,8 +582,8 @@ async def test_simulation_creates_targets_for_literal_moves(
 rbt = RobotClient()
 rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 """
-    assert editor.program_textarea is not None
-    editor.program_textarea.value = test_script
+    assert editor_tabs_state.active_textarea is not None
+    editor_tabs_state.active_textarea.value = test_script
     tab.content = test_script
 
     from waldo_commander.components.simulation_engine import simulation as _sim
@@ -602,7 +602,7 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     assert target.line_number > 0, "Target should have a valid line number"
 
     # Source code should NOT contain any TARGET markers
-    updated_content = editor.program_textarea.value
+    updated_content = editor_tabs_state.active_textarea.value
     assert "# TARGET:" not in updated_content, (
         "Source code should not contain TARGET markers"
     )

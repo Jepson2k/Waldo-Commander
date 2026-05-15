@@ -59,9 +59,9 @@ class EditorPanel(FileOperationsMixin):
             str, dict
         ] = {}  # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
 
-        # Active tab's widgets (updated on tab switch for backward compatibility)
-        self.program_filename_input: ui.input | None = None
-        self.program_textarea: ui.codemirror | None = None
+        # Active tab's widgets live on editor_tabs_state.active_textarea /
+        # active_filename_input — sub-controllers (decorations, simulation,
+        # motion recorder, script execution) read them from there directly.
 
         # Playback singleton (owns bottom bar UI, playback logic, and recording).
         # Kept as an instance attribute so external callers (and tests) can
@@ -111,12 +111,13 @@ class EditorPanel(FileOperationsMixin):
 
     def _insert_command(self, method_name: str, use_current_position: bool) -> None:
         """Generate and insert command snippet into editor."""
-        if self.program_textarea:
+        textarea = editor_tabs_state.active_textarea
+        if textarea:
             snippet = self._generate_snippet(method_name, use_current_position)
-            val = self.program_textarea.value
+            val = textarea.value
             if val and not val.endswith("\n"):
                 val += "\n"
-            self.program_textarea.value = val + snippet + "\n"
+            textarea.value = val + snippet + "\n"
             logger.info("Added Python snippet: %s", snippet)
 
     def sync_code_from_target(
@@ -140,12 +141,13 @@ class EditorPanel(FileOperationsMixin):
         converted (move_l→move_j or vice versa). joint_angles_deg must be
         provided when converting to move_j.
         """
-        if not self.program_textarea:
+        textarea = editor_tabs_state.active_textarea
+        if not textarea:
             return
 
         # Check if codemirror is properly initialized
         try:
-            current_value = self.program_textarea.value
+            current_value = textarea.value
             if current_value is None:
                 logger.debug("Sync skipped: codemirror value is None")
                 return
@@ -153,7 +155,7 @@ class EditorPanel(FileOperationsMixin):
             logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
-        line_number = self.program_textarea.line_anchor_positions.get(target_id)
+        line_number = textarea.line_anchor_positions.get(target_id)
         if line_number is None:
             logger.warning("Sync failed: Target %s not found", target_id)
             return
@@ -195,7 +197,7 @@ class EditorPanel(FileOperationsMixin):
                 new_line = line[: match.start()] + new_values_str + line[match.end() :]
 
             lines[found_line_idx] = new_line
-            self.program_textarea.value = "\n".join(lines)
+            textarea.value = "\n".join(lines)
             logger.info(
                 "Synced code for target %s at line %d: %s",
                 target_id,
@@ -212,21 +214,22 @@ class EditorPanel(FileOperationsMixin):
 
         Uses CM6 StateField position tracking to find the line.
         """
-        if not self.program_textarea:
+        textarea = editor_tabs_state.active_textarea
+        if not textarea:
             return
 
-        line_number = self.program_textarea.line_anchor_positions.get(target_id)
+        line_number = textarea.line_anchor_positions.get(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
 
-        content = self.program_textarea.value or ""
+        content = textarea.value or ""
         lines = content.splitlines()
         line_idx = line_number - 1
 
         if 0 <= line_idx < len(lines):
             del lines[line_idx]
-            self.program_textarea.value = "\n".join(lines)
+            textarea.value = "\n".join(lines)
             logger.info("Deleted target %s from code (line %d)", target_id, line_number)
             # Re-simulation will trigger automatically via debounced on_change
         else:
@@ -246,7 +249,8 @@ class EditorPanel(FileOperationsMixin):
         Returns:
             1-indexed line number of the new line, or None on failure.
         """
-        if not self.program_textarea:
+        textarea = editor_tabs_state.active_textarea
+        if not textarea:
             return None
 
         speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
@@ -259,7 +263,7 @@ class EditorPanel(FileOperationsMixin):
         else:
             code_line = f"rbt.move_l({pose_str}, speed={speed}, accel={accel})"
 
-        content = self.program_textarea.value or ""
+        content = textarea.value or ""
 
         # Count lines before adding
         lines_before = len(content.splitlines()) if content else 0
@@ -270,7 +274,7 @@ class EditorPanel(FileOperationsMixin):
 
         # Append new code (will trigger debounced simulation)
         new_content = content + code_line + "\n"
-        self.program_textarea.value = new_content
+        textarea.value = new_content
 
         # Flash the newly added line
         new_line_number = lines_before + 1
@@ -515,12 +519,9 @@ class EditorPanel(FileOperationsMixin):
         for entry in tab.output_log:
             log_panel.push(entry)
 
-        # Update references for backward compatibility
         widgets = self._tab_widgets.get(tab_id, {})
-        self.program_textarea = widgets.get("textarea")
-        self.program_filename_input = widgets.get("filename_input")
-        editor_tabs_state.active_textarea = self.program_textarea
-        editor_tabs_state.active_filename_input = self.program_filename_input
+        editor_tabs_state.active_textarea = widgets.get("textarea")
+        editor_tabs_state.active_filename_input = widgets.get("filename_input")
 
     def _save_simulation_context(self, tab: EditorTab) -> None:
         """Save current simulation state to tab."""
@@ -696,6 +697,7 @@ class EditorPanel(FileOperationsMixin):
         decorations.set_ui_client(self._ui_client)
         simulation.set_ui_client(self._ui_client)
         playback.set_ui_client(self._ui_client)
+        script_exec.set_ui_client(self._ui_client)
 
         # Periodic check: re-run path preview when robot position changes
         ui.timer(1.0, simulation.check_position_changed)
@@ -829,10 +831,8 @@ class EditorPanel(FileOperationsMixin):
             if self.tabs_container:
                 self.tabs_container.set_value(active_id)
             widgets = self._tab_widgets.get(active_id, {})
-            self.program_textarea = widgets.get("textarea")
-            self.program_filename_input = widgets.get("filename_input")
-            editor_tabs_state.active_textarea = self.program_textarea
-            editor_tabs_state.active_filename_input = self.program_filename_input
+            editor_tabs_state.active_textarea = widgets.get("textarea")
+            editor_tabs_state.active_filename_input = widgets.get("filename_input")
 
             # Restore simulation state from active tab
             active_tab = editor_tabs_state.get_active_tab()

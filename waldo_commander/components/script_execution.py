@@ -50,6 +50,7 @@ class ScriptExecutionController:
         self._step_session_id: str | None = None
         self._step_controller: GUIStepController | None = None
         self._event_watcher_task: asyncio.Task | None = None
+        self._ui_client: Client | None = None
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel the event watcher and step controller
@@ -66,6 +67,9 @@ class ScriptExecutionController:
 
     def set_program_dir(self, program_dir: Path) -> None:
         self._program_dir = program_dir
+
+    def set_ui_client(self, client: Client | None) -> None:
+        self._ui_client = client
 
     # ---- Public lifecycle ----
 
@@ -105,7 +109,7 @@ class ScriptExecutionController:
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))
 
-            ui_client = context.client
+            ui_client = self._ui_client or context.client
 
             def on_stdout(line: str) -> None:
                 with ui_client:

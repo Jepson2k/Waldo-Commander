@@ -278,7 +278,7 @@ class PlaybackController:
                 script_exec.signal_play()
                 simulation_state.is_playing = True
                 logger.debug("Script playing")
-            self.update_play_button()
+            simulation_state.notify_changed()
         elif robot_state.simulator_active and simulation_state.total_steps > 0:
             if simulation_state.sim_playback_active:
                 self._pause_sim_playback()
