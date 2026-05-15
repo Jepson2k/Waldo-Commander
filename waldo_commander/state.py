@@ -63,9 +63,10 @@ class ChangeNotifierMixin:
             self._change_listeners = [*listeners, callback]
 
     def remove_change_listener(self, callback: Callable[[], None]) -> None:
-        self._change_listeners = [
-            cb for cb in self._get_listeners() if cb is not callback
-        ]
+        # Use != (not `is not`) so bound methods removable by their func: each
+        # access of `obj.method` creates a fresh bound-method object that fails
+        # `is`, but bound methods compare equal by (instance, func).
+        self._change_listeners = [cb for cb in self._get_listeners() if cb != callback]
 
     def notify_changed(self) -> None:
         for cb in self._get_listeners():
