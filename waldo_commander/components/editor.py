@@ -349,6 +349,9 @@ class EditorPanel(FileOperationsMixin):
         """Per-page cleanup — remove listeners and cancel timers registered
         during ``build()``. Idempotent: safe to call from both
         ``_on_disconnect`` and ``_on_shutdown``."""
+        if self._tab_switch_render_task is not None:
+            self._tab_switch_render_task.cancel()
+            self._tab_switch_render_task = None
         # playback first: removes its per-page simulation_state listener
         # before the other singletons touch shared simulation_state.
         self.playback.cleanup()

@@ -262,8 +262,18 @@ class PlaybackController:
         self._sim_timer = ui.timer(1.0 / 50, self._sim_playback_tick, active=False)
 
     def cleanup(self) -> None:
-        """Remove listeners registered by this controller."""
+        """Remove listeners and cancel any async tasks owned by this controller."""
         simulation_state.remove_change_listener(self._on_state_change)
+        if self._teleport_task and not self._teleport_task.done():
+            self._teleport_task.cancel()
+            self._teleport_task = None
+
+    def on_simulation_complete(self) -> None:
+        """Called by SimulationEngine after a successful run. Owns timeline +
+        scrub-segment + sim_playback_time reset."""
+        self.invalidate_timeline()
+        simulation_state.sim_playback_time = 0.0
+        self.update_scrub_segments()
 
     # ---- Public actions ----
 

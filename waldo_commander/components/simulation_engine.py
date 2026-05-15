@@ -130,9 +130,7 @@ class SimulationEngine:
         if error == UNCHANGED:
             return None
 
-        playback.invalidate_timeline()
-        simulation_state.sim_playback_time = 0.0
-        playback.update_scrub_segments()
+        playback.on_simulation_complete()
 
         # Apply initial tool selection from script to scene and controller
         if simulation_state.tool_selections and ui_state.urdf_scene:

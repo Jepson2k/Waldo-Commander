@@ -215,6 +215,7 @@ class ScriptExecutionController:
 
     async def _watch_script_events(self, ui_client: Client) -> None:
         """Poll for script events and publish step transitions to simulation_state."""
+        watcher_crashed = False
         try:
             while simulation_state.script_running and self._step_controller:
                 events = self._step_controller.poll_events()
@@ -240,8 +241,19 @@ class ScriptExecutionController:
                 await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             logger.debug("Event watcher task cancelled")
+            raise
         except Exception as e:
             logger.error("Error in event watcher: %s", e)
+            watcher_crashed = True
+        finally:
+            # If the watcher died unexpectedly while the script is still flagged
+            # as running, fire a stop edge so playback unstalls instead of waiting
+            # for the subprocess-completion monitor to notice.
+            if watcher_crashed and simulation_state.script_running:
+                with ui_client:
+                    simulation_state.script_running = False
+                    simulation_state.is_playing = False
+                    simulation_state.notify_changed()
 
     async def _monitor_script_completion(
         self,
