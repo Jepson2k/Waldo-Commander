@@ -16,6 +16,12 @@ from waldo_commander.state import simulation_state
 
 logger = logging.getLogger(__name__)
 
+# Splitter values: the editor-vs-log splitter is sized as % to the editor side.
+# Collapsed pins the log to a thin strip; the threshold determines whether a
+# user drag should be treated as a collapse vs an expand.
+LOG_COLLAPSED_VALUE: float = 94.0
+LOG_EXPAND_THRESHOLD: float = 90.0
+
 
 class LogPanelController:
     """Owns the editor log widget + splitter + toggle button."""
@@ -80,6 +86,17 @@ class LogPanelController:
 
     # ---- Toggle semantics ----
 
+    def _set_toggle_visual(self, expanded: bool) -> None:
+        if not self.log_toggle_btn:
+            return
+        self.log_toggle_btn.props(
+            f"icon={'expand_less' if expanded else 'expand_more'}"
+        )
+        if self.log_toggle_btn_tooltip:
+            self.log_toggle_btn_tooltip.text = (
+                "Hide Output" if expanded else "Show Output"
+            )
+
     def toggle(self) -> None:
         if self._log_expanded:
             self.collapse()
@@ -90,38 +107,26 @@ class LogPanelController:
         self._log_expanded = True
         if self.editor_splitter:
             self.editor_splitter.set_value(self._splitter_value_when_expanded)
-        if self.log_toggle_btn:
-            self.log_toggle_btn.props("icon=expand_less")
-            if self.log_toggle_btn_tooltip:
-                self.log_toggle_btn_tooltip.text = "Hide Output"
+        self._set_toggle_visual(True)
 
     def collapse(self) -> None:
         self._log_expanded = False
         if self.editor_splitter:
-            self.editor_splitter.set_value(94)  # 94% to editor (collapsed)
-        if self.log_toggle_btn:
-            self.log_toggle_btn.props("icon=expand_more")
-            if self.log_toggle_btn_tooltip:
-                self.log_toggle_btn_tooltip.text = "Show Output"
+            self.editor_splitter.set_value(LOG_COLLAPSED_VALUE)
+        self._set_toggle_visual(False)
 
     def on_splitter_change(self, e) -> None:
         """Update expanded state when user drags the splitter directly."""
         value = e.value
         if value is None:
             return
-        if value > 90:
+        if value > LOG_EXPAND_THRESHOLD:
             self._log_expanded = False
-            if self.log_toggle_btn:
-                self.log_toggle_btn.props("icon=expand_more")
-                if self.log_toggle_btn_tooltip:
-                    self.log_toggle_btn_tooltip.text = "Show Output"
+            self._set_toggle_visual(False)
         else:
             self._log_expanded = True
             self._splitter_value_when_expanded = value
-            if self.log_toggle_btn:
-                self.log_toggle_btn.props("icon=expand_less")
-                if self.log_toggle_btn_tooltip:
-                    self.log_toggle_btn_tooltip.text = "Hide Output"
+            self._set_toggle_visual(True)
 
     # ---- Log content ----
 

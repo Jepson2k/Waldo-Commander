@@ -23,7 +23,7 @@ from waldo_commander.services.command_discovery import (
     generate_completions_from_commands,
 )
 from waldo_commander.components.editor_decorations import decorations
-from waldo_commander.components.log_panel import log_panel
+from waldo_commander.components.log_panel import LOG_COLLAPSED_VALUE, log_panel
 from waldo_commander.components.simulation_engine import (
     default_python_snippet,
     get_home_joints_rad,
@@ -779,8 +779,8 @@ class EditorPanel(FileOperationsMixin):
             with (
                 ui.splitter(
                     horizontal=True,
-                    value=94,  # Start collapsed (94% to editor, leaves room for playbar)
-                    limits=(50, 94),
+                    value=LOG_COLLAPSED_VALUE,
+                    limits=(50, LOG_COLLAPSED_VALUE),
                     on_change=log_panel.on_splitter_change,
                 )
                 .classes("w-full flex-1 editor-splitter")
