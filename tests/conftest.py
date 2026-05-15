@@ -319,61 +319,17 @@ def reset_editor_singletons(
     from waldo_commander.components.script_execution import script_exec
     from waldo_commander.state import simulation_state
 
-    decorations._active_flashes.clear()
-    decorations._flash_token = 0
-    decorations._executing_line = None
-    decorations._last_script_running = False
-    decorations._ui_client = None
+    # playback first: cleanup() removes its per-page-build listener before the
+    # others' reset_for_test() touches shared simulation_state state.
+    playback.reset_for_test()
+    decorations.reset_for_test()
+    log_panel.reset_for_test()
+    simulation.reset_for_test()
+    script_exec.reset_for_test()
 
-    log_panel._log_expanded = False
-    log_panel._last_script_running = False
-    log_panel.program_log = None
-    log_panel.log_toggle_btn = None
-    log_panel.log_toggle_btn_tooltip = None
-    log_panel.editor_splitter = None
-
-    simulation._simulation_debounce_timer = None
-    simulation._ui_client = None
-    simulation._default_snippet_provider = None
-
-    script_exec.script_handle = None
-    script_exec._step_session_id = None
-    script_exec._step_controller = None
-    script_exec._event_watcher_task = None
-
-    # Playback widget refs are stale after a page disconnect; reset so the next
-    # test's build creates fresh ones.
-    playback.playback_bar = None
-    playback.play_btn = None
-    playback.play_btn_tooltip = None
-    playback._stop_btn = None
-    playback._next_btn = None
-    playback._scrub_parent = None
-    playback._scrub_container = None
-    playback._segment_elements.clear()
-    playback._checkpoint_markers.clear()
-    playback._tool_markers.clear()
-    playback.speed_fab = None
-    playback._scrub_slider = None
-    playback._sim_loading_progress = None
-    playback._sim_timer = None
-    playback._timeline = None
-    playback._exec_step_index = -1
-    playback._last_highlighted_index = -1
-    playback._last_slider_update = 0.0
-    playback._last_tool_selection = None
-    playback._last_script_running = False
-    playback._last_executing_step_index = -1
-    playback._last_executing_step_at_end = False
-    playback.record_btn = None
-    playback._record_btn_tooltip = None
-    playback._capture_btn = None
-    playback._recording_notification = None
-    playback._ui_client = None
-
-    # Script/sim flags added alongside the singleton decomposition. Without this,
-    # a test that leaves script_running=True (e.g. crash mid-start) poisons gating
-    # checks in the next test.
+    # Script/sim flags live on simulation_state, not on a singleton. Without
+    # resetting, a test that leaves script_running=True (e.g. crash mid-start)
+    # poisons gating checks in the next test.
     simulation_state.script_running = False
     simulation_state.executing_step_index = -1
     simulation_state.executing_step_at_end = False

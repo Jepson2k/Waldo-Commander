@@ -51,6 +51,14 @@ class ScriptExecutionController:
         self._step_controller: GUIStepController | None = None
         self._event_watcher_task: asyncio.Task | None = None
 
+    def reset_for_test(self) -> None:
+        """Reset transient state to post-import baseline. Keeps ``_program_dir``
+        since it's set once at editor build time, not per-test."""
+        self.script_handle = None
+        self._step_session_id = None
+        self._step_controller = None
+        self._event_watcher_task = None
+
     def set_program_dir(self, program_dir: Path) -> None:
         self._program_dir = program_dir
 

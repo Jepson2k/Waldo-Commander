@@ -74,6 +74,46 @@ class PlaybackController:
         """Store the page client for background-task UI operations."""
         self._ui_client = client
 
+    def reset_for_test(self) -> None:
+        """Reset transient state to post-import baseline.
+
+        Calls ``cleanup()`` first to remove the change listener registered by
+        ``setup_timers()`` — otherwise listeners accumulate on
+        ``simulation_state`` across tests (every page build re-adds one).
+        """
+        self.cleanup()
+        self.playback_bar = None
+        self.play_btn = None
+        self.play_btn_tooltip = None
+        self._stop_btn = None
+        self._next_btn = None
+        self._scrub_parent = None
+        self._scrub_container = None
+        self._segment_elements.clear()
+        self._checkpoint_markers.clear()
+        self._tool_markers.clear()
+        self.speed_fab = None
+        self._scrub_slider = None
+        self._sim_loading_progress = None
+        self._sim_timer = None
+        self._timeline = None
+        self._updating_slider = False
+        self._last_tick_time = 0.0
+        self._exec_start_time = 0.0
+        self._exec_step_index = -1
+        self._teleport_task = None
+        self._last_highlighted_index = -1
+        self._last_slider_update = 0.0
+        self._last_tool_selection = None
+        self.record_btn = None
+        self._record_btn_tooltip = None
+        self._capture_btn = None
+        self._recording_notification = None
+        self._ui_client = None
+        self._last_script_running = False
+        self._last_executing_step_index = -1
+        self._last_executing_step_at_end = False
+
     @property
     def sim_loading_progress(self) -> ui.element | None:
         return self._sim_loading_progress

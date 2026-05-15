@@ -30,6 +30,17 @@ class LogPanelController:
         self._last_script_running: bool = False
         simulation_state.add_change_listener(self._on_state_change)
 
+    def reset_for_test(self) -> None:
+        """Reset transient state to post-import baseline. Listener stays
+        registered (it was added in __init__ and survives across tests)."""
+        self.program_log = None
+        self.log_toggle_btn = None
+        self.log_toggle_btn_tooltip = None
+        self.editor_splitter = None
+        self._log_expanded = False
+        self._splitter_value_when_expanded = 70.0
+        self._last_script_running = simulation_state.script_running
+
     # ---- State listener: auto-expand on script start ----
 
     def _on_state_change(self) -> None:

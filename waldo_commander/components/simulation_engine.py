@@ -68,6 +68,13 @@ class SimulationEngine:
         # current tab's default script body (depends on backend selection).
         self._default_snippet_provider: Any | None = None
 
+    def reset_for_test(self) -> None:
+        """Reset transient state to post-import baseline."""
+        self._simulation_debounce_timer = None
+        self._debounce_delay = 1.0
+        self._ui_client = None
+        self._default_snippet_provider = None
+
     # ---- Wiring ----
 
     def set_ui_client(self, client: Any) -> None:

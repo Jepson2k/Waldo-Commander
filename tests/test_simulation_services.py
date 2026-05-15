@@ -1376,3 +1376,31 @@ class TestScriptExecutionLifecycle:
             f"Importing script_execution first failed:\nstdout: {result.stdout}\n"
             f"stderr: {result.stderr}"
         )
+
+
+# ============================================================================
+# Singleton listener-leak regression
+# ============================================================================
+
+
+def test_playback_reset_for_test_clears_listener():
+    """``PlaybackController.setup_timers()`` runs once per page build and
+    registers a ``simulation_state`` change listener. ``reset_for_test()``
+    must call ``cleanup()`` so listeners don't accumulate across tests.
+    """
+    from waldo_commander.components.playback import playback
+
+    # Baseline: number of listeners after import (decorations/log_panel
+    # register in __init__ and stay registered).
+    baseline = len(simulation_state._change_listeners)
+
+    # Simulate N page builds by calling setup_timers() in a clean client
+    # context isn't necessary — only the add_change_listener call matters.
+    for _ in range(3):
+        simulation_state.add_change_listener(playback._on_state_change)
+        playback.reset_for_test()
+
+    assert len(simulation_state._change_listeners) == baseline, (
+        f"Listeners leaked: baseline={baseline}, "
+        f"now={len(simulation_state._change_listeners)}"
+    )
