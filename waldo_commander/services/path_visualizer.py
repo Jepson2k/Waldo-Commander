@@ -39,7 +39,7 @@ MAX_PATH_SEGMENTS = 10000
 SIMULATION_TIMEOUT_S = 5.0
 
 # Sentinel returned by update_path_visualization when results are unchanged
-_UNCHANGED = "__unchanged__"
+UNCHANGED = "__unchanged__"
 
 
 def _warm_worker(backend_package: str = "parol6") -> bool:
@@ -567,7 +567,7 @@ class PathVisualizer:
                         "Simulation results unchanged (sim_id=%d), skipping update",
                         sim_id,
                     )
-                    return _UNCHANGED
+                    return UNCHANGED
 
                 # Store simulation results in the tab
                 target_tab.path_segments = new_segments

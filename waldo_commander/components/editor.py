@@ -25,9 +25,9 @@ from waldo_commander.services.command_discovery import (
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.simulation_engine import (
-    _default_python_snippet,
-    _get_home_joints_rad,
-    _is_default_script,
+    default_python_snippet,
+    get_home_joints_rad,
+    is_default_script,
     simulation,
 )
 from waldo_commander.components.script_execution import script_exec
@@ -363,8 +363,8 @@ class EditorPanel(FileOperationsMixin):
             id=uuid.uuid4().hex[:8],
             filename=filename,
             file_path=None,
-            content=content if content is not None else _default_python_snippet(),
-            saved_content=content if content is not None else _default_python_snippet(),
+            content=content if content is not None else default_python_snippet(),
+            saved_content=content if content is not None else default_python_snippet(),
             output_log=[],
             path_segments=[],
             targets=[],
@@ -377,10 +377,10 @@ class EditorPanel(FileOperationsMixin):
         self._switch_to_tab(tab.id)
 
         # Trigger simulation at tab creation (with default script optimization)
-        if _is_default_script(tab.content):
+        if is_default_script(tab.content):
             # Default script ends at home position - skip simulation;
             # other tab list fields default to [] so no further reset needed.
-            tab.final_joints_rad = list(_get_home_joints_rad())
+            tab.final_joints_rad = list(get_home_joints_rad())
         elif tab.content.strip():
             simulation.schedule_debounced_simulation(tab_id=tab.id)
 

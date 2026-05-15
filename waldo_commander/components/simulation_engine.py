@@ -25,7 +25,7 @@ from waldo_commander.constants import config
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.playback import playback
-from waldo_commander.services.path_visualizer import path_visualizer
+from waldo_commander.services.path_visualizer import UNCHANGED, path_visualizer
 from waldo_commander.state import (
     editor_tabs_state,
     robot_state,
@@ -36,12 +36,12 @@ from waldo_commander.state import (
 logger = logging.getLogger(__name__)
 
 
-def _get_home_joints_rad() -> list[float]:
+def get_home_joints_rad() -> list[float]:
     """Get home position in radians from the active robot."""
     return ui_state.active_robot.joints.home.rad.tolist()
 
 
-def _default_python_snippet() -> str:
+def default_python_snippet() -> str:
     """Initial pre-filled Python code with inlined controller host/port."""
     backend = ui_state.active_robot.backend_package
     return f"""import time
@@ -57,17 +57,15 @@ print(f"Robot status: {{status}}")
 """
 
 
-def _is_default_script(content: str, default: str | None = None) -> bool:
+def is_default_script(content: str) -> bool:
     """Check if content matches the default script template (whitespace-insensitive)."""
     if not content:
         return False
-    if default is None:
-        default = _default_python_snippet()
 
     def normalize(s: str) -> str:
         return "".join(s.split())
 
-    return normalize(content) == normalize(default)
+    return normalize(content) == normalize(default_python_snippet())
 
 
 class SimulationEngine:
@@ -124,14 +122,12 @@ class SimulationEngine:
                 loading.visible = False
 
         # Snapshot robot position so check_position_changed doesn't re-trigger.
-        from waldo_commander.services.path_visualizer import _UNCHANGED
-
         tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
-        if tab and (error is None or error == _UNCHANGED):
+        if tab and (error is None or error == UNCHANGED):
             n = ui_state.active_robot.joints.count
             tab.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
 
-        if error == _UNCHANGED:
+        if error == UNCHANGED:
             return None
 
         playback.invalidate_timeline()
@@ -191,8 +187,8 @@ class SimulationEngine:
 
         # Default-script optimization: skip simulation if content is the default snippet
         tab = editor_tabs_state.find_tab_by_id(tab_id)
-        if tab and _is_default_script(tab.content):
-            tab.final_joints_rad = list(_get_home_joints_rad())
+        if tab and is_default_script(tab.content):
+            tab.final_joints_rad = list(get_home_joints_rad())
             tab.path_segments = []
             tab.targets = []
             tab.tool_actions = []

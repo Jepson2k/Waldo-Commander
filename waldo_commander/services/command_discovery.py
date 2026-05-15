@@ -21,7 +21,6 @@ _EXAMPLE_RE = re.compile(r"^\s*Examples?:\s*$", re.MULTILINE)
 # Cached robot commands (populated lazily, never invalidated — backend
 # switching requires an app restart).
 _robot_commands_cache: dict | None = None
-_completions_cache: list[CompletionItem] | None = None
 
 
 def _parse_docstring_category(doc: str) -> str | None:
@@ -115,11 +114,7 @@ def discover_robot_commands() -> dict:
 
 
 def generate_completions_from_commands() -> list[CompletionItem]:
-    """Generate CodeMirror completion items from discovered robot commands (cached)."""
-    global _completions_cache
-    if _completions_cache is not None:
-        return _completions_cache
-
+    """Generate CodeMirror completion items from discovered robot commands."""
     all_commands = discover_robot_commands()
     completions: list[CompletionItem] = []
 
@@ -136,5 +131,4 @@ def generate_completions_from_commands() -> list[CompletionItem]:
         }
         completions.append(completion)
 
-    _completions_cache = completions
     return completions
