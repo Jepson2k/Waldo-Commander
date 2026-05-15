@@ -68,12 +68,17 @@ class SimulationEngine:
         # current tab's default script body (depends on backend selection).
         self._default_snippet_provider: Any | None = None
 
+    def cleanup(self) -> None:
+        """Per-page cleanup — cancel any pending debounced simulation so it
+        doesn't fire against a dead client."""
+        if self._simulation_debounce_timer is not None:
+            self._simulation_debounce_timer.cancel(with_current_invocation=True)
+            self._simulation_debounce_timer = None
+
     def reset_for_test(self) -> None:
-        """Reset transient state to post-import baseline."""
-        self._simulation_debounce_timer = None
-        self._debounce_delay = 1.0
-        self._ui_client = None
-        self._default_snippet_provider = None
+        """Restore field defaults by replaying ``__init__`` on this instance."""
+        self.cleanup()
+        type(self).__init__(self)
 
     # ---- Wiring ----
 

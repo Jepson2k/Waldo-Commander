@@ -1205,6 +1205,11 @@ async def index_page():
         # active client (avoid race on refresh).
         if _page_state is not None and _page_state.page_client is this_client:
             _page_state = None
+        # Per-page cleanup: remove listeners/timers registered during build()
+        # so they don't leak across page reloads (otherwise every reload
+        # piles another listener onto simulation_state).
+        if editor_panel is not None:
+            editor_panel.cleanup()
 
     this_client.on_disconnect(_on_disconnect)
 

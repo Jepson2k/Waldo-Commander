@@ -1404,3 +1404,39 @@ def test_playback_reset_for_test_clears_listener():
         f"Listeners leaked: baseline={baseline}, "
         f"now={len(simulation_state._change_listeners)}"
     )
+
+
+def test_editor_panel_cleanup_removes_playback_listener():
+    """Production regression guard: ``EditorPanel.cleanup()`` (now called from
+    ``_on_disconnect``) must remove the per-page playback listener so a user
+    reloading the browser tab doesn't leak one listener per reload.
+    """
+    from waldo_commander.components.playback import playback
+    from waldo_commander.components.editor import EditorPanel
+
+    baseline = len(simulation_state._change_listeners)
+    simulation_state.add_change_listener(playback._on_state_change)
+    assert len(simulation_state._change_listeners) == baseline + 1
+
+    # Build a panel so cleanup() has something to delegate to. We only need
+    # cleanup() to fire, not build() — the playback singleton is module-level.
+    panel = EditorPanel()
+    panel.cleanup()
+
+    assert len(simulation_state._change_listeners) == baseline, (
+        f"editor_panel.cleanup() leaked: baseline={baseline}, "
+        f"now={len(simulation_state._change_listeners)}"
+    )
+
+
+def test_editor_panel_cleanup_is_idempotent():
+    """``_on_disconnect`` fires per-page; ``_on_shutdown`` also calls
+    ``editor_panel.cleanup()``. The composition must tolerate being called
+    twice without raising (Timer.cancel, Task.cancel, and
+    remove_change_listener are all expected idempotent).
+    """
+    from waldo_commander.components.editor import EditorPanel
+
+    panel = EditorPanel()
+    panel.cleanup()
+    panel.cleanup()  # second call must not raise

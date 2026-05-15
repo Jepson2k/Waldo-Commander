@@ -51,13 +51,18 @@ class ScriptExecutionController:
         self._step_controller: GUIStepController | None = None
         self._event_watcher_task: asyncio.Task | None = None
 
+    def cleanup(self) -> None:
+        """Per-page cleanup — cancel the event watcher and step controller
+        bound to this page. Does NOT touch ``script_handle``: the user's
+        subprocess outlives the page (``_on_shutdown`` reaps it)."""
+        self._cleanup_stepping()
+
     def reset_for_test(self) -> None:
-        """Reset transient state to post-import baseline. Keeps ``_program_dir``
-        since it's set once at editor build time, not per-test."""
-        self.script_handle = None
-        self._step_session_id = None
-        self._step_controller = None
-        self._event_watcher_task = None
+        """Restore field defaults by replaying ``__init__`` on this instance.
+        Nulls ``_program_dir``; ``EditorPanel.__init__`` re-sets it on next
+        page build via ``set_program_dir()``."""
+        self.cleanup()
+        type(self).__init__(self)
 
     def set_program_dir(self, program_dir: Path) -> None:
         self._program_dir = program_dir

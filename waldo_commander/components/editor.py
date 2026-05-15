@@ -374,8 +374,14 @@ print(f"Robot status: {{status}}")
         await script_exec.toggle()
 
     def cleanup(self) -> None:
-        """Remove listeners registered by this panel."""
+        """Per-page cleanup — remove listeners and cancel timers registered
+        during ``build()``. Idempotent: safe to call from both
+        ``_on_disconnect`` and ``_on_shutdown``."""
         self.playback.cleanup()
+        decorations.cleanup()
+        log_panel.cleanup()
+        simulation.cleanup()
+        script_exec.cleanup()
 
     # ---- Tab Management Methods ----
 

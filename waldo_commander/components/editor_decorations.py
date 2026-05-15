@@ -44,14 +44,19 @@ class EditorDecorations:
         self._last_script_running: bool = False
         simulation_state.add_change_listener(self._on_state_change)
 
+    def cleanup(self) -> None:
+        """Per-page cleanup. No-op: the change listener was registered in
+        ``__init__`` (process-wide, single instance), not in ``setup_timers``
+        per-page, so there's nothing to deregister. Method exists for
+        symmetry with the other singletons so ``EditorPanel.cleanup()`` can
+        iterate uniformly."""
+
     def reset_for_test(self) -> None:
-        """Reset transient state to post-import baseline. Listener stays
-        registered (it was added in __init__ and survives across tests)."""
-        self._active_flashes.clear()
-        self._flash_token = 0
-        self._executing_line = None
-        self._ui_client = None
-        self._last_script_running = simulation_state.script_running
+        """Restore field defaults by replaying ``__init__`` on this instance.
+        Listener re-registration is idempotent via ``add_change_listener``'s
+        ``not in`` check (bound-method equality fixed in state.py)."""
+        self.cleanup()
+        type(self).__init__(self)
 
     # ---- Wiring ----
 

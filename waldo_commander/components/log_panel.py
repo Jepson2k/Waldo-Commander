@@ -30,16 +30,16 @@ class LogPanelController:
         self._last_script_running: bool = False
         simulation_state.add_change_listener(self._on_state_change)
 
+    def cleanup(self) -> None:
+        """Per-page cleanup. No-op: the change listener was registered in
+        ``__init__`` (process-wide, single instance), not in a per-page
+        setup, so there's nothing to deregister. Method exists for symmetry
+        with the other singletons."""
+
     def reset_for_test(self) -> None:
-        """Reset transient state to post-import baseline. Listener stays
-        registered (it was added in __init__ and survives across tests)."""
-        self.program_log = None
-        self.log_toggle_btn = None
-        self.log_toggle_btn_tooltip = None
-        self.editor_splitter = None
-        self._log_expanded = False
-        self._splitter_value_when_expanded = 70.0
-        self._last_script_running = simulation_state.script_running
+        """Restore field defaults by replaying ``__init__`` on this instance."""
+        self.cleanup()
+        type(self).__init__(self)
 
     # ---- State listener: auto-expand on script start ----
 
