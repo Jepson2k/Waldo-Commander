@@ -1508,6 +1508,18 @@ class UrdfScene(
         self.swap_tool_mesh(tool_key, variant_key=variant_key)
         self.invalidate_fk_cache()
 
+    def apply_tool_everywhere(
+        self, tool_key: str, variant_key: str | None = None
+    ) -> None:
+        """Apply a tool to the robot model, scene meshes/TCP, and TCP ball.
+
+        Caller is responsible for syncing to the controller (``select_tool``)
+        — that's I/O and depends on the caller's async/sync context.
+        """
+        ui_state.active_robot.set_active_tool(tool_key, variant_key=variant_key)
+        self.apply_tool(tool_key, variant_key=variant_key)
+        self.refresh_tcp_ball()
+
     def update_tcp_pose_from_tool(
         self,
         tool: str,

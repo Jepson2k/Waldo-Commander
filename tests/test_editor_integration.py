@@ -73,7 +73,7 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     assert editor.playback.play_btn is not None, "Play button reference should exist"
 
     # Stop button should be hidden initially
-    stop_btn = editor.playback._stop_btn
+    stop_btn = editor.playback.stop_btn
     assert stop_btn is not None, "Stop button reference should exist"
     assert stop_btn.visible is False, "Stop button should be hidden initially"
 
@@ -506,8 +506,8 @@ async def test_step_button_enabled_after_simulation(user: User, robot_state) -> 
     assert editor is not None, "Editor panel should exist"
 
     # Step button should be hidden before simulation
-    assert editor.playback._next_btn is not None, "Step button reference should exist"
-    assert editor.playback._next_btn.visible is False, (
+    assert editor.playback.next_btn is not None, "Step button reference should exist"
+    assert editor.playback.next_btn.visible is False, (
         "Step button should be hidden before simulation"
     )
 
@@ -529,10 +529,10 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     await asyncio.sleep(0.1)
 
     # Step button should be visible after simulation
-    assert editor.playback._next_btn.visible is True, (
+    assert editor.playback.next_btn.visible is True, (
         "Step button should be visible when simulation has steps"
     )
-    assert editor.playback._next_btn._props.get("disable") is not True, (
+    assert editor.playback.next_btn._props.get("disable") is not True, (
         "Step button should be enabled"
     )
     assert simulation_state.total_steps > 0, "Should have simulation steps"

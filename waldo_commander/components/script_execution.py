@@ -51,6 +51,9 @@ class ScriptExecutionController:
         self._step_controller: GUIStepController | None = None
         self._event_watcher_task: asyncio.Task | None = None
         self._ui_client: Client | None = None
+        # Tab whose content was launched. Output is appended to that tab's
+        # output_log so switching tabs preserves the originating tab's log.
+        self._script_tab_id: str | None = None
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel the event watcher and step controller
@@ -70,6 +73,33 @@ class ScriptExecutionController:
 
     def set_ui_client(self, client: Client | None) -> None:
         self._ui_client = client
+
+    def _record_line(self, line: str, ui_client: Client | None = None) -> None:
+        """Append a log line to the launching tab's output_log; push to the
+        visible log_panel only when the launching tab is currently active.
+
+        ``ui_client`` is the page client captured at ``start()`` so the
+        push runs in the right NiceGUI context when called from a script
+        subprocess callback. Callers in an already-active client context
+        (e.g. SIM ERROR routing) can pass ``None``.
+        """
+        tab = (
+            editor_tabs_state.find_tab_by_id(self._script_tab_id)
+            if self._script_tab_id
+            else None
+        )
+        if tab is not None:
+            tab.output_log.append(line)
+            # Match ui.log(max_lines=1000) cap so rehydrate doesn't outgrow
+            # the display.
+            if len(tab.output_log) > 1000:
+                del tab.output_log[: len(tab.output_log) - 1000]
+        if tab is not None and tab.id == editor_tabs_state.active_tab_id:
+            if ui_client is not None:
+                with ui_client:
+                    log_panel.push(line)
+            else:
+                log_panel.push(line)
 
     # ---- Public lifecycle ----
 
@@ -105,6 +135,12 @@ class ScriptExecutionController:
             if filename_input:
                 filename_input.value = filename
 
+            # Remember the launching tab so output is appended to its log
+            # even after the user switches tabs while the script runs.
+            launching_tab = editor_tabs_state.get_active_tab()
+            self._script_tab_id = launching_tab.id if launching_tab else None
+            if launching_tab is not None:
+                launching_tab.output_log.clear()
             log_panel.clear()
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))
@@ -112,12 +148,10 @@ class ScriptExecutionController:
             ui_client = self._ui_client or context.client
 
             def on_stdout(line: str) -> None:
-                with ui_client:
-                    log_panel.push(line)
+                self._record_line(line, ui_client)
 
             def on_stderr(line: str) -> None:
-                with ui_client:
-                    log_panel.push(f"[ERR] {line}")
+                self._record_line(f"[ERR] {line}", ui_client)
 
             self._step_session_id = uuid.uuid4().hex[:8]
             self._step_controller = GUIStepController(self._step_session_id)

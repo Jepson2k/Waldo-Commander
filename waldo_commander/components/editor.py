@@ -68,9 +68,6 @@ class EditorPanel(FileOperationsMixin):
         # still read editor.playback.X.
         self.playback = playback
 
-        # Drawer element reference
-        self.drawer: ui.element | None = None
-
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
 
@@ -341,10 +338,6 @@ class EditorPanel(FileOperationsMixin):
                                     "max-width: 300px; white-space: pre-wrap;"
                                 )
 
-    async def _toggle_run_script(self) -> None:
-        """Toggle start/stop script."""
-        await script_exec.toggle()
-
     def cleanup(self) -> None:
         """Per-page cleanup — remove listeners and cancel timers registered
         during ``build()``. Idempotent: safe to call from both
@@ -352,8 +345,9 @@ class EditorPanel(FileOperationsMixin):
         if self._tab_switch_render_task is not None:
             self._tab_switch_render_task.cancel()
             self._tab_switch_render_task = None
-        # playback first: removes its per-page simulation_state listener
-        # before the other singletons touch shared simulation_state.
+        # Only playback owns a per-page simulation_state listener; remove it
+        # first. The other cleanups are independent (decorations / log_panel
+        # are no-ops, simulation/script_exec only cancel their own resources).
         self.playback.cleanup()
         decorations.cleanup()
         log_panel.cleanup()
@@ -495,12 +489,12 @@ class EditorPanel(FileOperationsMixin):
         if not tab:
             return
 
-        # Save current tab's simulation context and log content
+        # Save current tab's simulation context. The log doesn't need saving
+        # here — script_execution / simulation_engine append to the owning
+        # tab's output_log incrementally during writes.
         current_tab = editor_tabs_state.get_active_tab()
         if current_tab and current_tab.id != tab_id:
             self._save_simulation_context(current_tab)
-            # Save current log content to tab
-            # (log content is stored in tab.output_log by script runner callbacks)
 
         # Update active tab
         editor_tabs_state.active_tab_id = tab_id

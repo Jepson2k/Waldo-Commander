@@ -8,6 +8,7 @@ from nicegui import ui
 
 from waldoctl import RobotClient
 
+from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
@@ -118,8 +119,6 @@ class SettingsContent:
 
     def _notify_and_resimulate(self) -> None:
         """Notify simulation state changed and trigger debounced re-simulation."""
-        from waldo_commander.components.simulation_engine import simulation
-
         simulation_state.notify_changed()
         try:
             simulation.schedule_debounced_simulation()

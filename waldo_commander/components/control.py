@@ -23,8 +23,9 @@ from waldo_commander.state import (
     ui_state,
     global_phase_timer,
 )
-from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import SettingsContent
+from waldo_commander.services.motion_recorder import motion_recorder
 
 logger = logging.getLogger(__name__)
 
@@ -1456,8 +1457,6 @@ class ControlPanel:
         try:
             # Stop any running user script before mode switch (safety)
             if simulation_state.script_running:
-                from waldo_commander.components.script_execution import script_exec
-
                 logger.info("Stopping running script before mode switch")
                 try:
                     await script_exec.stop()

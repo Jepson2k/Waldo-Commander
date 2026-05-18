@@ -319,8 +319,9 @@ def reset_editor_singletons(
     from waldo_commander.components.script_execution import script_exec
     from waldo_commander.state import simulation_state
 
-    # playback first: cleanup() removes its per-page-build listener before the
-    # others' reset_for_test() touches shared simulation_state state.
+    # Only playback owns a per-page simulation_state listener; reset it first
+    # so its cleanup() removes that listener before the other resets run.
+    # The other singletons' resets only re-init their own state.
     playback.reset_for_test()
     decorations.reset_for_test()
     log_panel.reset_for_test()

@@ -34,8 +34,8 @@ class PlaybackController:
         self.playback_bar: ui.element | None = None
         self.play_btn: ui.button | None = None
         self.play_btn_tooltip: ui.tooltip | None = None
-        self._stop_btn: ui.button | None = None
-        self._next_btn: ui.button | None = None
+        self.stop_btn: ui.button | None = None
+        self.next_btn: ui.button | None = None
         self._scrub_parent: ui.element | None = None
         self._scrub_container: ui.element | None = None
         self._segment_elements: list[ui.element] = []
@@ -109,22 +109,22 @@ class PlaybackController:
             self.play_btn.mark("editor-play-btn")
 
             # 2. Stop button
-            self._stop_btn = (
+            self.stop_btn = (
                 ui.button(icon="stop", on_click=script_exec.stop)
                 .props("round dense color=negative unelevated")
                 .tooltip("Stop")
             )
-            self._stop_btn.mark("editor-stop-btn")
-            self._stop_btn.set_visibility(False)
+            self.stop_btn.mark("editor-stop-btn")
+            self.stop_btn.set_visibility(False)
 
             # 3. Next step button
-            self._next_btn = (
+            self.next_btn = (
                 ui.button(icon="skip_next", on_click=self.step_forward)
                 .props("round dense flat color=white")
                 .tooltip("Next step (S)")
             )
-            self._next_btn.mark("editor-step-next")
-            self._next_btn.set_visibility(False)
+            self.next_btn.mark("editor-step-next")
+            self.next_btn.set_visibility(False)
 
             # 4. Timeline scrub area — layered: segments + loading + slider
             with ui.element("div").classes("flex-1"):
@@ -356,7 +356,7 @@ class PlaybackController:
 
     def set_enabled(self, enabled: bool) -> None:
         """Enable or disable playback controls (except record button)."""
-        buttons = [self.play_btn, self._next_btn, self.speed_fab]
+        buttons = [self.play_btn, self.next_btn, self.speed_fab]
         for btn in buttons:
             if btn:
                 if enabled:
@@ -511,16 +511,9 @@ class PlaybackController:
                 sel_pair = (sel.tool_key, sel.variant_key)
                 if sel_pair != self._last_tool_selection:
                     self._last_tool_selection = sel_pair
-                    # Update robot model so FK reflects the new tool
-                    ui_state.active_robot.set_active_tool(
-                        sel.tool_key,
-                        variant_key=sel.variant_key or None,
+                    ui_state.urdf_scene.apply_tool_everywhere(
+                        sel.tool_key, variant_key=sel.variant_key or None
                     )
-                    ui_state.urdf_scene.apply_tool(
-                        sel.tool_key,
-                        variant_key=sel.variant_key or None,
-                    )
-                    ui_state.urdf_scene._update_tcp_ball_position()
                     # Sync to controller so readout reflects tool TCP
                     if ui_state.control_panel and ui_state.control_panel.client:
                         asyncio.create_task(
@@ -711,12 +704,12 @@ class PlaybackController:
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Play (Space)"
 
-        if self._stop_btn:
-            self._stop_btn.set_visibility(simulation_state.script_running)
+        if self.stop_btn:
+            self.stop_btn.set_visibility(simulation_state.script_running)
 
-        if self._next_btn:
+        if self.next_btn:
             has_steps = simulation_state.total_steps > 0
-            self._next_btn.set_visibility(has_steps)
+            self.next_btn.set_visibility(has_steps)
             at_last = (
                 (
                     simulation_state.current_step_index
@@ -726,9 +719,9 @@ class PlaybackController:
                 else True
             )
             if at_last and not simulation_state.script_running:
-                self._next_btn.disable()
+                self.next_btn.disable()
             else:
-                self._next_btn.enable()
+                self.next_btn.enable()
 
     # ---- Scrub bar segments ----
 

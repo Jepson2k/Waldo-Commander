@@ -1201,15 +1201,14 @@ async def index_page():
         global _page_state
         if ui_state.active_client_id == this_client.id:
             ui_state.active_client_id = None
-        # Atomically clear all per-connection state if this is still the
-        # active client (avoid race on refresh).
+        # Editor + page-state teardown must only run for the active client.
+        # A shadow tab disconnecting must not touch the active tab's
+        # listeners, timers, or script-watch tasks — _on_disconnect is
+        # registered before the shadow `return`, so shadow tabs reach here.
         if _page_state is not None and _page_state.page_client is this_client:
             _page_state = None
-        # Per-page cleanup: remove listeners/timers registered during build()
-        # so they don't leak across page reloads (otherwise every reload
-        # piles another listener onto simulation_state).
-        if editor_panel is not None:
-            editor_panel.cleanup()
+            if editor_panel is not None:
+                editor_panel.cleanup()
 
     this_client.on_disconnect(_on_disconnect)
 

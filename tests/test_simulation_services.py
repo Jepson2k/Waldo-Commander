@@ -1441,3 +1441,66 @@ def test_editor_panel_cleanup_is_idempotent():
     panel = EditorPanel()
     panel.cleanup()
     panel.cleanup()  # second call must not raise
+
+
+# ============================================================================
+# Per-tab log routing
+# ============================================================================
+
+
+def test_script_output_appends_to_launching_tab_only():
+    """Per-tab log isolation: a script's stdout/stderr must land in the
+    output_log of the tab that started the script, regardless of which
+    tab the user is currently viewing.
+    """
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.state import EditorTab, editor_tabs_state
+
+    # Set up two tabs with empty logs.
+    tab_a = EditorTab(
+        id="tab-a", filename="a.py", file_path=None, content="", saved_content=""
+    )
+    tab_b = EditorTab(
+        id="tab-b", filename="b.py", file_path=None, content="", saved_content=""
+    )
+    editor_tabs_state.tabs = [tab_a, tab_b]
+    editor_tabs_state.active_tab_id = "tab-a"
+
+    # Script launched from tab A; record lines while user switches to B.
+    script_exec._script_tab_id = "tab-a"
+    script_exec._record_line("line1 while on A")
+    editor_tabs_state.active_tab_id = "tab-b"
+    script_exec._record_line("line2 after switching to B")
+    script_exec._record_line("line3 still on B")
+    editor_tabs_state.active_tab_id = "tab-a"
+    script_exec._record_line("line4 back on A")
+
+    assert tab_a.output_log == [
+        "line1 while on A",
+        "line2 after switching to B",
+        "line3 still on B",
+        "line4 back on A",
+    ], "All script output must accumulate in the launching tab's log"
+    assert tab_b.output_log == [], "Tab B owns its own (empty) log"
+
+
+def test_record_line_caps_output_log_at_1000():
+    """``output_log`` cap must match ``ui.log(max_lines=1000)`` so the
+    tab-switch rehydrate doesn't overflow the visible widget.
+    """
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.state import EditorTab, editor_tabs_state
+
+    tab = EditorTab(
+        id="cap-tab", filename="x.py", file_path=None, content="", saved_content=""
+    )
+    editor_tabs_state.tabs = [tab]
+    editor_tabs_state.active_tab_id = "cap-tab"
+    script_exec._script_tab_id = "cap-tab"
+
+    for i in range(1100):
+        script_exec._record_line(f"line {i}")
+
+    assert len(tab.output_log) == 1000
+    assert tab.output_log[0] == "line 100", "Oldest 100 lines should be trimmed (FIFO)"
+    assert tab.output_log[-1] == "line 1099"

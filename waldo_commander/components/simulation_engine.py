@@ -138,15 +138,9 @@ class SimulationEngine:
             if first_sel.segment_index < 0:
                 tool_key = first_sel.tool_key
                 variant_key = first_sel.variant_key or None
-                ui_state.active_robot.set_active_tool(
-                    tool_key,
-                    variant_key=variant_key,
+                ui_state.urdf_scene.apply_tool_everywhere(
+                    tool_key, variant_key=variant_key
                 )
-                ui_state.urdf_scene.apply_tool(
-                    tool_key,
-                    variant_key=variant_key,
-                )
-                ui_state.urdf_scene._update_tcp_ball_position()
                 if ui_state.control_panel and ui_state.control_panel.client:
                     try:
                         await ui_state.control_panel.client.select_tool(
@@ -157,7 +151,14 @@ class SimulationEngine:
                         logger.debug("select_tool sync failed: %s", e)
 
         if error:
-            log_panel.push(f"[SIM ERROR] {error}")
+            line = f"[SIM ERROR] {error}"
+            sim_tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
+            if sim_tab is not None:
+                sim_tab.output_log.append(line)
+                if len(sim_tab.output_log) > 1000:
+                    del sim_tab.output_log[: len(sim_tab.output_log) - 1000]
+            if sim_tab is None or sim_tab.id == editor_tabs_state.active_tab_id:
+                log_panel.push(line)
 
         decorations.apply_diagnostics(error)
         decorations.push_line_metadata()

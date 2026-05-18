@@ -398,6 +398,9 @@ class MotionRecorder:
 
             # Flash the newly added line
             new_line_number = lines_before + 1
+            # Local import: motion_recorder is in services/ and decorations
+            # is in components/, so a top-level import would invert the
+            # layered dependency direction. Keep it lazy.
             from waldo_commander.components.editor_decorations import decorations
 
             decorations.flash_editor_lines([new_line_number])
