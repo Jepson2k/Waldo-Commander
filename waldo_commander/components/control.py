@@ -23,6 +23,7 @@ from waldo_commander.state import (
     ui_state,
     global_phase_timer,
 )
+from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import SettingsContent
 from waldo_commander.services.motion_recorder import motion_recorder
@@ -1495,8 +1496,7 @@ class ControlPanel:
             self.update_robot_btn_visual()
             if ui_state._readout_panel is not None:
                 ui_state.readout_panel.update_conn_io()
-            if ui_state._playback is not None:
-                ui_state.playback.sync_mode()
+            playback.sync_mode()
 
     async def on_estop_click(self) -> None:
         """Trigger digital E-STOP (STOP command) and show dialog."""

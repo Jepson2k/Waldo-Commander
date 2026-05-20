@@ -90,10 +90,6 @@ class ScriptExecutionController:
         )
         if tab is not None:
             tab.output_log.append(line)
-            # Match ui.log(max_lines=1000) cap so rehydrate doesn't outgrow
-            # the display.
-            if len(tab.output_log) > 1000:
-                del tab.output_log[: len(tab.output_log) - 1000]
         if tab is not None and tab.id == editor_tabs_state.active_tab_id:
             if ui_client is not None:
                 with ui_client:
@@ -262,13 +258,13 @@ class ScriptExecutionController:
                             simulation_state.executing_step_index = step
                             simulation_state.executing_step_at_end = False
                             simulation_state.current_step_index = step
-                            simulation_state.notify_changed()
+                            simulation_state.notify_step_changed()
                     elif event_type == "complete":
                         with ui_client:
                             simulation_state.executing_step_index = step
                             simulation_state.executing_step_at_end = True
                             simulation_state.current_step_index = step
-                            simulation_state.notify_changed()
+                            simulation_state.notify_step_changed()
                         logger.debug(
                             "Script event: %s completed (step %d)", method, step
                         )

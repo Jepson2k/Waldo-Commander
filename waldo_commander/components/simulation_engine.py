@@ -155,8 +155,6 @@ class SimulationEngine:
             sim_tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
             if sim_tab is not None:
                 sim_tab.output_log.append(line)
-                if len(sim_tab.output_log) > 1000:
-                    del sim_tab.output_log[: len(sim_tab.output_log) - 1000]
             if sim_tab is None or sim_tab.id == editor_tabs_state.active_tab_id:
                 log_panel.push(line)
 

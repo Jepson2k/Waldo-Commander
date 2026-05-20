@@ -1488,7 +1488,6 @@ def main():
     # Store panels in ui_state for cross-module access
     ui_state.control_panel = control_panel
     ui_state.editor_panel = editor_panel
-    ui_state.playback = editor_panel.playback
     ui_state.readout_panel = readout_panel
 
     # Configure logging

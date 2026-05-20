@@ -49,6 +49,7 @@ class ChangeNotifierMixin:
     """
 
     _change_listeners: list[Callable[[], None]]
+    _step_listeners: list[Callable[[], None]]
 
     def _get_listeners(self) -> list[Callable[[], None]]:
         try:
@@ -56,6 +57,13 @@ class ChangeNotifierMixin:
         except AttributeError:
             self._change_listeners = []
             return self._change_listeners
+
+    def _get_step_listeners(self) -> list[Callable[[], None]]:
+        try:
+            return self._step_listeners
+        except AttributeError:
+            self._step_listeners = []
+            return self._step_listeners
 
     def add_change_listener(self, callback: Callable[[], None]) -> None:
         listeners = self._get_listeners()
@@ -70,6 +78,23 @@ class ChangeNotifierMixin:
 
     def notify_changed(self) -> None:
         for cb in self._get_listeners():
+            cb()
+
+    def add_step_listener(self, callback: Callable[[], None]) -> None:
+        listeners = self._get_step_listeners()
+        if callback not in listeners:
+            self._step_listeners = [*listeners, callback]
+
+    def remove_step_listener(self, callback: Callable[[], None]) -> None:
+        self._step_listeners = [
+            cb for cb in self._get_step_listeners() if cb != callback
+        ]
+
+    def notify_step_changed(self) -> None:
+        # Dedicated channel for high-frequency script-step events (~20Hz).
+        # Routing these through notify_changed would fan out to the URDF
+        # scene reconciler — only playback needs to react.
+        for cb in self._get_step_listeners():
             cb()
 
 
@@ -260,6 +285,7 @@ class SimulationState(ChangeNotifierMixin):
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
+    _step_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
 
     def reset(self) -> None:
         self.targets.clear()
@@ -483,7 +509,6 @@ class UiState:
     _editor_panel: Any = None
     _control_panel: Any = None
     _readout_panel: Any = None
-    _playback: Any = None
 
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
@@ -492,7 +517,6 @@ class UiState:
     editor_panel = _RequiredField()
     control_panel = _RequiredField()
     readout_panel = _RequiredField()
-    playback = _RequiredField()
     joint_jog_timer = _RequiredField()
     cart_jog_timer = _RequiredField()
 
@@ -517,7 +541,10 @@ class EditorTab:
     file_path: str | None  # Full path if saved to server
     content: str  # Current editor content
     saved_content: str  # Content at last save (for dirty tracking)
-    output_log: list[str] = field(default_factory=list)  # Per-tab output log entries
+    # Bounded so a chatty script can't grow the buffer unboundedly; matches
+    # ui.log(max_lines=1000) in log_panel so tab-switch rehydrate doesn't
+    # outgrow the display widget.
+    output_log: deque[str] = field(default_factory=lambda: deque(maxlen=1000))
     path_segments: list[PathSegment] = field(
         default_factory=list
     )  # Per-tab simulation paths

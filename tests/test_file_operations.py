@@ -144,3 +144,31 @@ class TestFileOperations:
         response = await user.download.next(timeout=2.0)
         assert response.status_code == 200
         assert len(response.content) > 0
+
+
+def test_build_file_tree_ids_are_unique_for_same_named_files_in_nested_dirs(tmp_path):
+    """Regression: pre-fix, same-named files in different subdirs collided in
+    ui.tree's selection model because file IDs used ``item.name``. Fix uses
+    ``str(item.relative_to(base))`` to guarantee uniqueness."""
+    from waldo_commander.components.file_operations import FileOperationsMixin
+
+    (tmp_path / "home.py").write_text("")
+    (tmp_path / "subdir").mkdir()
+    (tmp_path / "subdir" / "home.py").write_text("")
+
+    nodes = FileOperationsMixin._build_file_tree(tmp_path, tmp_path)
+
+    def file_ids(node_list):
+        out = []
+        for n in node_list:
+            if n.get("children"):
+                out.extend(file_ids(n["children"]))
+            else:
+                out.append(n["id"])
+        return out
+
+    ids = file_ids(nodes)
+    assert len(ids) == len(set(ids)), f"Duplicate file IDs in tree: {ids}"
+    assert any("subdir" in i and "home.py" in i for i in ids), (
+        f"Nested file ID must encode the subdir path; got {ids}"
+    )

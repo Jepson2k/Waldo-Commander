@@ -1475,13 +1475,13 @@ def test_script_output_appends_to_launching_tab_only():
     editor_tabs_state.active_tab_id = "tab-a"
     script_exec._record_line("line4 back on A")
 
-    assert tab_a.output_log == [
+    assert list(tab_a.output_log) == [
         "line1 while on A",
         "line2 after switching to B",
         "line3 still on B",
         "line4 back on A",
     ], "All script output must accumulate in the launching tab's log"
-    assert tab_b.output_log == [], "Tab B owns its own (empty) log"
+    assert len(tab_b.output_log) == 0, "Tab B owns its own (empty) log"
 
 
 def test_record_line_caps_output_log_at_1000():
@@ -1504,3 +1504,48 @@ def test_record_line_caps_output_log_at_1000():
     assert len(tab.output_log) == 1000
     assert tab.output_log[0] == "line 100", "Oldest 100 lines should be trimmed (FIFO)"
     assert tab.output_log[-1] == "line 1099"
+
+
+def test_notify_step_changed_only_fires_step_listeners():
+    """Regression: step events route through the dedicated step channel so
+    urdf_scene's ``_update_simulation_view`` (a change-channel listener)
+    doesn't re-walk segment fingerprints on every ~20Hz step event."""
+    change_count = [0]
+    step_count = [0]
+
+    def on_change():
+        change_count[0] += 1
+
+    def on_step():
+        step_count[0] += 1
+
+    simulation_state.add_change_listener(on_change)
+    simulation_state.add_step_listener(on_step)
+    try:
+        simulation_state.notify_step_changed()
+        assert step_count[0] == 1
+        assert change_count[0] == 0, "Step channel must not fire change listeners"
+
+        simulation_state.notify_changed()
+        assert change_count[0] == 1
+        assert step_count[0] == 1, "Change channel must not fire step listeners"
+    finally:
+        simulation_state.remove_change_listener(on_change)
+        simulation_state.remove_step_listener(on_step)
+
+
+def test_playback_reset_for_test_clears_step_listener():
+    """``PlaybackController.cleanup()`` must remove the step-channel listener
+    registered by ``setup_timers()``, mirroring the change-channel cleanup."""
+    from waldo_commander.components.playback import playback
+
+    baseline = len(simulation_state._step_listeners)
+
+    for _ in range(3):
+        simulation_state.add_step_listener(playback._on_step_change)
+        playback.reset_for_test()
+
+    assert len(simulation_state._step_listeners) == baseline, (
+        f"Step listeners leaked: baseline={baseline}, "
+        f"now={len(simulation_state._step_listeners)}"
+    )

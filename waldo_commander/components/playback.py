@@ -259,11 +259,13 @@ class PlaybackController:
         self._last_executing_step_index = simulation_state.executing_step_index
         self._last_executing_step_at_end = simulation_state.executing_step_at_end
         simulation_state.add_change_listener(self._on_state_change)
+        simulation_state.add_step_listener(self._on_step_change)
         self._sim_timer = ui.timer(1.0 / 50, self._sim_playback_tick, active=False)
 
     def cleanup(self) -> None:
         """Remove listeners and cancel any async tasks owned by this controller."""
         simulation_state.remove_change_listener(self._on_state_change)
+        simulation_state.remove_step_listener(self._on_step_change)
         if self._teleport_task and not self._teleport_task.done():
             self._teleport_task.cancel()
             self._teleport_task = None
@@ -367,23 +369,39 @@ class PlaybackController:
     # ---- Script execution: state-driven listener ----
 
     def _on_state_change(self) -> None:
-        """React to simulation_state mutations published by script_execution.
+        """React to ``script_running`` edges and other state-channel mutations.
 
-        Mirrors the edge-detection pattern in EditorDecorations / LogPanelController:
-        compare the new state against ``_last_*`` snapshots, dispatch to per-edge
-        handlers, then refresh play-button visuals. The listener runs synchronously
-        inside whichever ``with ui_client:`` block fired ``notify_changed()``, so
-        UI mutations here are safe without re-entering a client context.
+        Step-lifecycle events fire on the dedicated step channel
+        (``_on_step_change``) to avoid fanning ~20 Hz step notifications out
+        to ``urdf_scene._update_simulation_view``. This handler covers the
+        less-frequent start/stop edges plus play-button refreshes.
         """
         running = simulation_state.script_running
-        step = simulation_state.executing_step_index
-        at_end = simulation_state.executing_step_at_end
 
         # Script-running edge: idle → running
         if running and not self._last_script_running:
             self._handle_script_start_edge()
 
-        # Step lifecycle event (publishes once per IPC "start"/"complete" event).
+        # Script-running edge: running → idle
+        if self._last_script_running and not running:
+            self._handle_script_stop_edge()
+
+        self._last_script_running = running
+
+        # Always refresh play-button visuals; the call is idempotent.
+        self.update_play_button()
+
+    def _on_step_change(self) -> None:
+        """React to step-lifecycle events on the dedicated step channel.
+
+        Fired by ``script_execution._watch_script_events`` for every IPC
+        ``start`` / ``complete`` event (~20 Hz). Kept off the global change
+        channel so urdf_scene doesn't re-walk segment fingerprints per step.
+        """
+        running = simulation_state.script_running
+        step = simulation_state.executing_step_index
+        at_end = simulation_state.executing_step_at_end
+
         if (
             running
             and step >= 0
@@ -397,15 +415,11 @@ class PlaybackController:
             else:
                 self._handle_step_start(step)
 
-        # Script-running edge: running → idle
-        if self._last_script_running and not running:
-            self._handle_script_stop_edge()
-
-        self._last_script_running = running
         self._last_executing_step_index = step
         self._last_executing_step_at_end = at_end
 
-        # Always refresh play-button visuals; the call is idempotent.
+        # Play-button visuals can change on step edges (e.g. enabling
+        # Next during stepping); refresh is idempotent.
         self.update_play_button()
 
     def _handle_script_start_edge(self) -> None:

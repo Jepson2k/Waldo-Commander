@@ -366,7 +366,6 @@ class EditorPanel(FileOperationsMixin):
             file_path=None,
             content=content if content is not None else default_python_snippet(),
             saved_content=content if content is not None else default_python_snippet(),
-            output_log=[],
             path_segments=[],
             targets=[],
             created_at=time.time(),
