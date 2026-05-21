@@ -581,6 +581,12 @@ class EditorTabsState(ChangeNotifierMixin):
     # Updated by EditorPanel on every tab switch / initial build.
     active_textarea: Any = None  # ui.codemirror | None at runtime
     active_filename_input: Any = None  # ui.input | None at runtime
+    # Per-tab textarea refs so sub-controllers can write decorations,
+    # diagnostics, etc. to a specific tab's editor even when it isn't
+    # the active one (e.g. the launching tab during script execution
+    # while the user has switched to a different tab). Maintained by
+    # EditorPanel on tab build / close.
+    textareas_by_tab: dict[str, Any] = field(default_factory=dict)
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
@@ -600,6 +606,13 @@ class EditorTabsState(ChangeNotifierMixin):
     def find_tab_by_id(self, tab_id: str) -> EditorTab | None:
         """Find a tab by its ID."""
         return next((t for t in self.tabs if t.id == tab_id), None)
+
+    def get_tab_textarea(self, tab_id: str | None) -> Any:
+        """Look up a tab's CodeMirror textarea by id. Returns None if the
+        tab id is None or the tab isn't currently mounted."""
+        if tab_id is None:
+            return None
+        return self.textareas_by_tab.get(tab_id)
 
     def add_tab(self, tab: EditorTab) -> None:
         """Add a new tab."""

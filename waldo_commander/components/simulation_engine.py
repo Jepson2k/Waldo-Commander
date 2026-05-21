@@ -101,11 +101,17 @@ class SimulationEngine:
     # ---- Core simulation run ----
 
     async def run_simulation(self, tab_id: str | None = None) -> str | None:
-        """Run the simulation for the current script."""
+        """Run the simulation for the current script.
+
+        Resolves ``tab_id`` to the active tab when omitted, then captures
+        the launching tab's textarea so post-sim decoration writes
+        (diagnostics, line metadata, target anchors) land on that tab
+        even if the user has switched away by the time the sim completes.
+        """
         if tab_id is None:
             tab_id = editor_tabs_state.active_tab_id
 
-        textarea = editor_tabs_state.active_textarea
+        textarea = editor_tabs_state.get_tab_textarea(tab_id)
         content = textarea.value if textarea else ""
         if not content:
             return None
@@ -158,9 +164,10 @@ class SimulationEngine:
             if sim_tab is None or sim_tab.id == editor_tabs_state.active_tab_id:
                 log_panel.push(line)
 
-        decorations.apply_diagnostics(error)
-        decorations.push_line_metadata()
-        decorations.push_target_positions()
+        if tab_id is not None:
+            decorations.apply_diagnostics(error, tab_id)
+            decorations.push_line_metadata(tab_id)
+            decorations.push_target_positions(tab_id)
 
         return error
 

@@ -462,6 +462,7 @@ class EditorPanel(FileOperationsMixin):
             if "panel" in widgets and widgets["panel"]:
                 widgets["panel"].delete()
             del self._tab_widgets[tab_id]
+        editor_tabs_state.textareas_by_tab.pop(tab_id, None)
 
         # Remove from state
         editor_tabs_state.remove_tab(tab_id)
@@ -671,6 +672,7 @@ class EditorPanel(FileOperationsMixin):
             # Store references
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
+            editor_tabs_state.textareas_by_tab[tab.id] = textarea
 
         return panel
 

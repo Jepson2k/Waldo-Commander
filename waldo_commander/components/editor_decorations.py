@@ -1,8 +1,12 @@
 """CodeMirror decoration controller: flash, executing-line highlight, diagnostics, line tooltips, and target anchors.
 
-Reads the active textarea from ``editor_tabs_state.active_textarea`` (which
-``EditorPanel`` updates on tab switch), so it works for whichever tab is
-currently focused without needing a back-reference into ``EditorPanel``.
+Decoration writes are routed to a specific tab's textarea by tab_id (looked
+up via ``editor_tabs_state.get_tab_textarea``). Sub-controllers that own a
+tab context pass that tab_id — simulation_engine for diagnostics / line
+metadata / target anchors (the simulated tab), script_exec for the
+executing-line highlight (the launching tab). Flash decorations stay on
+the active tab because their callers (insert-command, motion recorder)
+always target the user's current edit surface.
 
 Clears the executing-line highlight automatically when ``simulation_state.script_running``
 transitions from True to False (via the state listener registered in __init__).
@@ -39,7 +43,10 @@ class EditorDecorations:
     def __init__(self) -> None:
         self._active_flashes: list[tuple[int, set[int]]] = []
         self._flash_token: int = 0
-        self._executing_line: int | None = None
+        # Executing-line is tracked per launching tab so the highlight
+        # persists on that tab even when the user switches away while a
+        # script is running.
+        self._executing_line_by_tab: dict[str, int] = {}
         self._ui_client: Client | None = None
         self._last_script_running: bool = False
         simulation_state.add_change_listener(self._on_state_change)
@@ -47,11 +54,11 @@ class EditorDecorations:
     def cleanup(self) -> None:
         """Per-page cleanup. Clears in-flight decoration state so a flash
         timer that died with the client doesn't leave stale entries that
-        the next page's ``_apply_decorations`` would aggregate onto the
-        new textarea. The change listener stays registered (process-wide,
+        the next page's apply routine would aggregate onto the new
+        textarea. The change listener stays registered (process-wide,
         single instance — nothing to deregister)."""
         self._active_flashes.clear()
-        self._executing_line = None
+        self._executing_line_by_tab.clear()
         self._flash_token = 0
 
     def reset_for_test(self) -> None:
@@ -70,41 +77,62 @@ class EditorDecorations:
     def _on_state_change(self) -> None:
         running = simulation_state.script_running
         if self._last_script_running and not running:
-            self.clear_executing_line_highlight()
+            # Script stopped — clear every tracked executing-line highlight
+            # (in practice there's at most one, since only one script can
+            # run at a time, but the dict is the source of truth).
+            for tab_id in list(self._executing_line_by_tab):
+                self.clear_executing_line_highlight(tab_id)
         self._last_script_running = running
 
     # ---- Decoration application ----
 
-    def _apply_decorations(self) -> None:
-        """Single source of truth for editor decorations.
+    def _apply_decorations_to_tab(self, tab_id: str) -> None:
+        """Write the aggregated decoration spec list for one tab's textarea.
 
-        Aggregates flash + executing-line state into one list and assigns to
-        the flat ``decorations`` property in a single round-trip.
+        Combines whatever flash decorations are active (flashes are always
+        on the active tab, so they only appear when tab_id == active) with
+        that tab's executing-line highlight. Result is assigned to the
+        tab's CodeMirror ``decorations`` in a single round-trip.
         """
-        textarea = editor_tabs_state.active_textarea
-        if not textarea:
+        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        if textarea is None:
             return
         specs: list[DecorationSpec] = []
-        flash_lines: set[int] = set()
-        for _, lines in self._active_flashes:
-            flash_lines.update(lines)
-        for ln in sorted(flash_lines):
-            specs.append({"kind": "line", "line": ln, "class": "cm-line-flash"})
-        if self._executing_line is not None:
+        if tab_id == editor_tabs_state.active_tab_id:
+            flash_lines: set[int] = set()
+            for _, lines in self._active_flashes:
+                flash_lines.update(lines)
+            for ln in sorted(flash_lines):
+                specs.append({"kind": "line", "line": ln, "class": "cm-line-flash"})
+        executing_line = self._executing_line_by_tab.get(tab_id)
+        if executing_line is not None:
             specs.append(
                 {
                     "kind": "line",
-                    "line": self._executing_line,
+                    "line": executing_line,
                     "class": "cm-highlighted",
                 }
             )
         textarea.decorations[:] = specs
 
+    def _apply_active_tab_decorations(self) -> None:
+        """Re-render decorations on whichever tab is currently active.
+
+        Used by the flash path, where the change is on the active tab and
+        any executing-line highlight that happens to be on the same tab
+        needs to be preserved in the single ``decorations`` write."""
+        active = editor_tabs_state.active_tab_id
+        if active is not None:
+            self._apply_decorations_to_tab(active)
+
     def flash_editor_lines(self, line_numbers: list[int]) -> None:
         """Flash specific lines in the CodeMirror editor.
 
-        When the editor panel is collapsed, flashes the editor tab via JS
-        instead of applying decorations to an off-screen textarea.
+        Flashes always target the active tab — the only callers are
+        insert-command and motion recorder, both of which write to the
+        user's current edit surface. When the editor panel is collapsed,
+        flashes the editor tab via JS instead of applying decorations to
+        an off-screen textarea.
         """
         textarea = editor_tabs_state.active_textarea
         if not textarea or not line_numbers:
@@ -115,7 +143,7 @@ class EditorDecorations:
         self._flash_token += 1
         token = self._flash_token
         self._active_flashes.append((token, set(line_numbers)))
-        self._apply_decorations()
+        self._apply_active_tab_decorations()
         textarea.reveal_line(max(line_numbers))
         ui.timer(1.5, lambda t=token: self._expire_flash(t), once=True)
 
@@ -125,7 +153,7 @@ class EditorDecorations:
             (t, lns) for t, lns in self._active_flashes if t != token
         ]
         if len(self._active_flashes) != before:
-            self._apply_decorations()
+            self._apply_active_tab_decorations()
 
     def flash_editor_tab(self) -> None:
         """Flash the editor tab to indicate new content when panel is collapsed."""
@@ -157,10 +185,14 @@ class EditorDecorations:
 
     # ---- Executing-line highlight ----
 
-    def highlight_executing_line(self, step_index: int) -> None:
-        """Highlight the source line corresponding to the current step."""
-        textarea = editor_tabs_state.active_textarea
-        if not textarea:
+    def highlight_executing_line(self, step_index: int, tab_id: str) -> None:
+        """Highlight the source line on the launching tab for the current step.
+
+        ``tab_id`` is the tab the script was launched from. Decorations
+        stay on that tab even if the user switches away mid-run.
+        """
+        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        if textarea is None:
             return
 
         new_line: int | None = None
@@ -171,28 +203,33 @@ class EditorDecorations:
             if segment.line_number > 0:
                 new_line = segment.line_number
 
-        if new_line == self._executing_line:
+        current = self._executing_line_by_tab.get(tab_id)
+        if new_line == current:
             if new_line is not None:
                 textarea.reveal_line(new_line)
             return
 
-        self._executing_line = new_line
-        self._apply_decorations()
+        if new_line is None:
+            self._executing_line_by_tab.pop(tab_id, None)
+        else:
+            self._executing_line_by_tab[tab_id] = new_line
+        self._apply_decorations_to_tab(tab_id)
         if new_line is not None:
             textarea.reveal_line(new_line)
 
-    def clear_executing_line_highlight(self) -> None:
-        """Clear the executing line highlight decoration."""
-        if self._executing_line is not None:
-            self._executing_line = None
-            self._apply_decorations()
+    def clear_executing_line_highlight(self, tab_id: str) -> None:
+        """Clear the executing-line highlight from the given tab."""
+        if tab_id in self._executing_line_by_tab:
+            del self._executing_line_by_tab[tab_id]
+            self._apply_decorations_to_tab(tab_id)
 
     # ---- Diagnostics ----
 
-    def apply_diagnostics(self, error: str | None = None) -> None:
-        """Apply CM6 lint diagnostics for simulation errors and timing warnings."""
-        textarea = editor_tabs_state.active_textarea
-        if not textarea:
+    def apply_diagnostics(self, error: str | None, tab_id: str) -> None:
+        """Apply CM6 lint diagnostics for simulation errors and timing
+        warnings to the simulated tab's textarea."""
+        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        if textarea is None:
             return
 
         diagnostics: list[Diagnostic] = []
@@ -234,10 +271,11 @@ class EditorDecorations:
 
     # ---- Line metadata + target anchors ----
 
-    def push_line_metadata(self) -> None:
-        """Push per-line metadata to CM6 for hover tooltips."""
-        textarea = editor_tabs_state.active_textarea
-        if not textarea:
+    def push_line_metadata(self, tab_id: str) -> None:
+        """Push per-line metadata to CM6 for hover tooltips on the
+        simulated tab's textarea."""
+        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        if textarea is None:
             return
         tooltips: dict[int, str] = {}
         for seg in simulation_state.path_segments:
@@ -262,10 +300,11 @@ class EditorDecorations:
 
         textarea._props["line-tooltips"] = tooltips
 
-    def push_target_positions(self) -> None:
-        """Push current target positions to CM6 line anchors for edit tracking."""
-        textarea = editor_tabs_state.active_textarea
-        if not textarea:
+    def push_target_positions(self, tab_id: str) -> None:
+        """Push current target positions to CM6 line anchors on the
+        simulated tab's textarea for edit tracking."""
+        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        if textarea is None:
             return
         anchors = [
             {"id": t.id, "line": t.line_number}

@@ -429,12 +429,16 @@ class PlaybackController:
         if self._sim_timer:
             self._sim_timer.active = True
         self._highlight_current_segment()
-        decorations.highlight_executing_line(step)
+        tab_id = script_exec.launching_tab_id
+        if tab_id is not None:
+            decorations.highlight_executing_line(step, tab_id)
 
     def _handle_step_complete(self, step: int) -> None:
         """Script reported segment end: snap slider to segment end."""
         self._highlight_current_segment()
-        decorations.highlight_executing_line(step)
+        tab_id = script_exec.launching_tab_id
+        if tab_id is not None:
+            decorations.highlight_executing_line(step, tab_id)
         if self._timeline and self._scrub_slider:
             end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
             t = self._timeline.cumulative_times[end_idx]
@@ -504,7 +508,13 @@ class PlaybackController:
         if sample.segment_index != simulation_state.current_step_index:
             simulation_state.current_step_index = sample.segment_index
             self._highlight_current_segment()
-            decorations.highlight_executing_line(sample.segment_index)
+            # Sim playback animates the active tab's simulation. If a
+            # script is also running, prefer the launching tab so the
+            # highlight stays on it even when the user scrubs while the
+            # script is paused on a different tab.
+            target_tab = script_exec.launching_tab_id or editor_tabs_state.active_tab_id
+            if target_tab is not None:
+                decorations.highlight_executing_line(sample.segment_index, target_tab)
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.update_playback_opacity()
 
