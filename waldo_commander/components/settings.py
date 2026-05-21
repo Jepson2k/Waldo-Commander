@@ -134,6 +134,7 @@ class SettingsContent:
         )
         if ui_state.urdf_scene:
             ui_state.urdf_scene.apply_tool(tool_key, variant_key=variant_key)
+            ui_state.urdf_scene.refresh_tcp_ball()
 
     def _rebuild_variant_selector(self, tool_key: str) -> None:
         """Rebuild variant sub-selector for the current tool."""
