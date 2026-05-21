@@ -40,12 +40,13 @@ logger = logging.getLogger(__name__)
 class ScriptExecutionController:
     """Owns the script subprocess lifecycle and GUI step controller.
 
-    ``__init__`` takes a program directory; callers reach the singleton via
-    ``script_exec`` (constructed after EditorPanel chooses the program dir).
+    Reached via the module-level ``script_exec`` singleton. The program
+    directory is supplied later via ``set_program_dir()`` once
+    ``EditorPanel.__init__`` has chosen it.
     """
 
-    def __init__(self, program_dir: Path | None = None) -> None:
-        self._program_dir: Path | None = program_dir
+    def __init__(self) -> None:
+        self._program_dir: Path | None = None
         self.script_handle: ScriptProcessHandle | None = None
         self._step_session_id: str | None = None
         self._step_controller: GUIStepController | None = None

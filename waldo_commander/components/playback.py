@@ -31,12 +31,10 @@ class PlaybackController:
 
     def __init__(self) -> None:
         # Bottom playback bar elements
-        self.playback_bar: ui.element | None = None
         self.play_btn: ui.button | None = None
         self.play_btn_tooltip: ui.tooltip | None = None
         self.stop_btn: ui.button | None = None
         self.next_btn: ui.button | None = None
-        self._scrub_parent: ui.element | None = None
         self._scrub_container: ui.element | None = None
         self._segment_elements: list[ui.element] = []
         self._checkpoint_markers: list[ui.element] = []
@@ -60,7 +58,6 @@ class PlaybackController:
         # is kept across toggles so it can be dismissed.
         self.record_btn: ui.button | None = None
         self._record_btn_tooltip: ui.tooltip | None = None
-        self._capture_btn: ui.button | None = None
         self._recording_notification: ui.notification | None = None
         self._ui_client: Client | None = None
 
@@ -96,10 +93,8 @@ class PlaybackController:
         with (
             ui.row()
             .classes("w-full items-center gap-2 bottom-playback-bar")
-            .style("min-height: 48px;") as bar
+            .style("min-height: 48px;")
         ):
-            self.playback_bar = bar
-
             # 1. Play/Pause button
             self.play_btn = ui.button(
                 icon="play_arrow", on_click=self.toggle_play
@@ -130,8 +125,7 @@ class PlaybackController:
             with ui.element("div").classes("flex-1"):
                 with (
                     ui.element("div").classes("relative w-full").style("height: 24px;")
-                ) as scrub_parent:
-                    self._scrub_parent = scrub_parent
+                ):
                     self._scrub_container = (
                         ui.row()
                         .classes("absolute rounded-lg overflow-hidden gap-0")
@@ -199,13 +193,9 @@ class PlaybackController:
             self.record_btn.mark("editor-record-btn")
 
             # 7. Capture position
-            self._capture_btn = (
-                ui.button(
-                    icon="camera_alt", on_click=motion_recorder.capture_current_pose
-                )
-                .props("round dense unelevated")
-                .tooltip("Capture Current Pose")
-            )
+            ui.button(
+                icon="camera_alt", on_click=motion_recorder.capture_current_pose
+            ).props("round dense unelevated").tooltip("Capture Current Pose")
 
             # 8. Log show/hide
             log_panel.build_toggle_button()
