@@ -116,7 +116,7 @@ class PlaybackController:
             self.next_btn = (
                 ui.button(icon="skip_next", on_click=self.step_forward)
                 .props("round dense flat color=white")
-                .tooltip("Next step (S)")
+                .tooltip("Next step (N)")
             )
             self.next_btn.mark("editor-step-next")
             self.next_btn.set_visibility(False)

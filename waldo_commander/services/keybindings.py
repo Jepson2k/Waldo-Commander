@@ -355,8 +355,8 @@ def _register_default_keybindings() -> None:
 
     keybindings_manager.register(
         Keybinding(
-            key="s",
-            display="S",
+            key="n",
+            display="N",
             description="Step forward",
             action=lambda: ep.playback.step_forward(),
             category="Playback",
@@ -420,11 +420,6 @@ def _register_cartesian_jog_keybindings(cp: Any) -> None:
     }
 
     for key, axis in jog_key_map.items():
-        # S key is context-aware: jog when not running, step when running
-        enabled_check = (
-            (lambda: not simulation_state.script_running) if key == "s" else None
-        )
-
         keybindings_manager.register(
             Keybinding(
                 key=key,
@@ -434,7 +429,6 @@ def _register_cartesian_jog_keybindings(cp: Any) -> None:
                 on_release=_make_jog_release(cp, axis),
                 category="Cartesian Jog",
                 holdable=True,
-                enabled_check=enabled_check,
             )
         )
 
