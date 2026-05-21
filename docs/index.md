@@ -3,7 +3,7 @@
 A web interface for controlling robotic arms, currently tested with the [PAROL6](https://github.com/PCrnjak/PAROL6-Desktop-robot-arm) robot.
 
 <video controls width="100%">
-  <source src="videos/demo_showcase.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/demo_showcase.mp4" type="video/mp4">
 </video>
 
 - **Browser-based.** Control from any device on the network without being tethered to the arm.
@@ -34,7 +34,7 @@ Jog in joint space (one joint at a time) or Cartesian space (translate in XYZ, r
 Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[/]** to adjust speed. Clicking a jog button or key sends a single step; holding it jogs continuously until you release.
 
 <video controls width="100%">
-  <source src="videos/basic_control.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/basic_control.mp4" type="video/mp4">
 </video>
 
 ### Connecting Your Robot
@@ -46,7 +46,7 @@ In the control panel, switch to the **Settings** tab and select your hardware co
 - <span style="color: #9e9e9e">&#9632;</span> Simulator mode
 
 <video controls width="100%">
-  <source src="videos/connecting_to_robot.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/connecting_to_robot.mp4" type="video/mp4">
 </video>
 
 ### Programming, Recording, and Path Visualization
@@ -56,7 +56,7 @@ Write robot programs in Python using the built-in editor with auto-complete for 
 Run programs against the simulator to preview the motion path in 3D. The path traces the TCP position through each move, color-coded by reachability. Execute on hardware when you're ready.
 
 <video controls width="100%">
-  <source src="videos/recording_and_previewing_actions.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/recording_and_previewing_actions.mp4" type="video/mp4">
 </video>
 
 ### I/O and Tool Control
@@ -64,7 +64,7 @@ Run programs against the simulator to preview the motion path in 3D. The path tr
 Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens in the Settings tab; the 3D model updates to show the attached tool.
 
 <video controls width="100%">
-  <source src="videos/attaching_a_tool.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/attaching_a_tool.mp4" type="video/mp4">
 </video>
 
 ### Camera Feed

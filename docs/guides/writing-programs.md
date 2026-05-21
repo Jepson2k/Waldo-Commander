@@ -43,7 +43,7 @@ rbt.move_l([-50, 340, 334, 90, 0, 90], speed=0.5)
 `speed` is normalized 0.0–1.0. You can also use `duration` (seconds) or `accel` (0.0–1.0). Relative moves offset from the current position with `rel=True`, and `frame="TRF"` switches to the Tool Reference Frame for Cartesian moves.
 
 <video controls width="100%">
-  <source src="../../videos/move_j_vs_move_l.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/move_j_vs_move_l.mp4" type="video/mp4">
 </video>
 
 ## Curved motion
@@ -101,7 +101,7 @@ rbt.move_s(spline, speed=SPEED)
 These commands raise `NotImplementedError` on backends that don't support them.
 
 <video controls width="100%">
-  <source src="../../videos/smooth_motion.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/smooth_motion.mp4" type="video/mp4">
 </video>
 
 ## Zig-zag scan with blend radius
@@ -131,7 +131,7 @@ rbt.wait_motion()
 ```
 
 <video controls width="100%">
-  <source src="../../videos/zig_zag_with_blend.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/zig_zag_with_blend.mp4" type="video/mp4">
 </video>
 
 ## Tool control and precision
@@ -220,7 +220,7 @@ print("Done!")
 ```
 
 <video controls width="100%">
-  <source src="../../videos/tool_control_and_rotations.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/tool_control_and_rotations.mp4" type="video/mp4">
 </video>
 
 ## The complete script
@@ -369,5 +369,5 @@ print("Done!")
 ```
 
 <video controls width="100%">
-  <source src="../../videos/demo_showcase.mp4" type="video/mp4">
+  <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/demo_showcase.mp4" type="video/mp4">
 </video>
