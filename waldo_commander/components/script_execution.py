@@ -74,6 +74,10 @@ class ScriptExecutionController:
     def set_ui_client(self, client: Client | None) -> None:
         self._ui_client = client
 
+    def is_launching_tab(self, tab_id: str) -> bool:
+        """True if this tab launched the currently running script."""
+        return self._script_tab_id == tab_id
+
     def _record_line(self, line: str, ui_client: Client | None = None) -> None:
         """Append a log line to the launching tab's output_log; push to the
         visible log_panel only when the launching tab is currently active.

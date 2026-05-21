@@ -392,6 +392,15 @@ class EditorPanel(FileOperationsMixin):
         Uses deferred execution via ui.timer to avoid modifying UI
         during NiceGUI's event listener iteration.
         """
+        # The subprocess outlives the page (script_exec.cleanup doesn't kill
+        # script_handle), so closing its launching tab would orphan the output:
+        # _record_line silently drops every line once find_tab_by_id returns None.
+        if simulation_state.script_running and script_exec.is_launching_tab(tab.id):
+            ui.notify(
+                "Cannot close the tab whose script is running. Stop the script first.",
+                color="warning",
+            )
+            return
 
         def do_close():
             if tab.is_dirty:

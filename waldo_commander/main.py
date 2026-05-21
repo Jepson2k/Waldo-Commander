@@ -201,8 +201,7 @@ async def initialize_urdf_scene() -> None:
         result = await client.tools()
         if result and result.tool:
             vk = ng_app.storage.general.get(f"tool_variant_{result.tool}")
-            ui_state.active_robot.set_active_tool(result.tool, variant_key=vk)
-            ui_state.urdf_scene.apply_tool(result.tool, variant_key=vk)
+            ui_state.urdf_scene.apply_tool_everywhere(result.tool, variant_key=vk)
     except Exception as e:
         logger.error("Failed to sync TCP tool pose: %s", e)
 
@@ -240,8 +239,7 @@ async def initialize_urdf_scene() -> None:
     stored_tool = ng_app.storage.general.get("selected_tool")
     if stored_tool and stored_tool != "NONE" and ui_state.urdf_scene:
         vk = ng_app.storage.general.get(f"tool_variant_{stored_tool}")
-        ui_state.active_robot.set_active_tool(stored_tool, variant_key=vk)
-        ui_state.urdf_scene.apply_tool(stored_tool, variant_key=vk)
+        ui_state.urdf_scene.apply_tool_everywhere(stored_tool, variant_key=vk)
     else:
         # Invalidate FK cache even without tool change (gizmo sync needs fresh FK)
         ui_state.urdf_scene.invalidate_fk_cache()

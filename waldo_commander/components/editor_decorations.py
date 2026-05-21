@@ -45,11 +45,14 @@ class EditorDecorations:
         simulation_state.add_change_listener(self._on_state_change)
 
     def cleanup(self) -> None:
-        """Per-page cleanup. No-op: the change listener was registered in
-        ``__init__`` (process-wide, single instance), not in ``setup_timers``
-        per-page, so there's nothing to deregister. Method exists for
-        symmetry with the other singletons so ``EditorPanel.cleanup()`` can
-        iterate uniformly."""
+        """Per-page cleanup. Clears in-flight decoration state so a flash
+        timer that died with the client doesn't leave stale entries that
+        the next page's ``_apply_decorations`` would aggregate onto the
+        new textarea. The change listener stays registered (process-wide,
+        single instance — nothing to deregister)."""
+        self._active_flashes.clear()
+        self._executing_line = None
+        self._flash_token = 0
 
     def reset_for_test(self) -> None:
         """Restore field defaults by replaying ``__init__`` on this instance.
