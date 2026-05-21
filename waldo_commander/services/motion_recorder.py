@@ -14,6 +14,7 @@ from waldo_commander.state import (
     ui_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED
+from waldo_commander.services.command_discovery import discover_robot_commands
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,6 @@ class MotionRecorder:
     @staticmethod
     def _get_motion_cmd_names() -> frozenset[str]:
         """Get motion command names from the command palette discovery."""
-        from waldo_commander.services.command_discovery import discover_robot_commands
-
         commands = discover_robot_commands()
         return frozenset(
             name
