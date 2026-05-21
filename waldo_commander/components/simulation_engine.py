@@ -19,7 +19,7 @@ import asyncio
 import logging
 
 import numpy as np
-from nicegui import Client, context, ui
+from nicegui import Client, ui
 
 from waldo_commander.constants import config
 from waldo_commander.components.editor_decorations import decorations
@@ -182,31 +182,29 @@ class SimulationEngine:
             self._simulation_debounce_timer.cancel(with_current_invocation=True)
             self._simulation_debounce_timer = None
 
-        # Default-script optimization: skip simulation if content is the default snippet
-        tab = editor_tabs_state.find_tab_by_id(tab_id)
-        if tab and is_default_script(tab.content):
-            tab.final_joints_rad = list(get_home_joints_rad())
-            tab.path_segments = []
-            tab.targets = []
-            tab.tool_actions = []
-            tab.tool_selections = []
-            if tab_id == editor_tabs_state.active_tab_id:
-                simulation_state.path_segments = []
-                simulation_state.targets = []
-                simulation_state.tool_actions = []
-                simulation_state.tool_selections = []
-                simulation_state.total_steps = 0
-                try:
-                    ui_client = self._ui_client or context.client
-                    with ui_client:
-                        simulation_state.notify_changed()
-                except RuntimeError:
-                    simulation_state.notify_changed()
-                playback.update_scrub_segments()
-            return
-
         async def run_simulation_quietly():
             try:
+                # Default-script optimization: skip simulation if content
+                # is the default snippet. Deferred inside the debounced
+                # callback so the O(K) whitespace-normalize check runs once
+                # per idle window instead of on every keystroke that
+                # schedules a (re)simulation.
+                tab = editor_tabs_state.find_tab_by_id(tab_id)
+                if tab and is_default_script(tab.content):
+                    tab.final_joints_rad = list(get_home_joints_rad())
+                    tab.path_segments = []
+                    tab.targets = []
+                    tab.tool_actions = []
+                    tab.tool_selections = []
+                    if tab_id == editor_tabs_state.active_tab_id:
+                        simulation_state.path_segments = []
+                        simulation_state.targets = []
+                        simulation_state.tool_actions = []
+                        simulation_state.tool_selections = []
+                        simulation_state.total_steps = 0
+                        simulation_state.notify_changed()
+                        playback.update_scrub_segments()
+                    return
                 logger.debug("DEBOUNCE: Starting simulation...")
                 await self.run_simulation(tab_id=tab_id)
                 logger.debug("DEBOUNCE: Simulation completed successfully")
