@@ -130,6 +130,7 @@ class ScriptExecutionController:
             runtime_dir = self._program_dir / ".runtime"
             runtime_dir.mkdir(parents=True, exist_ok=True)
             script_path = runtime_dir / filename
+            script_path.parent.mkdir(parents=True, exist_ok=True)
             script_path.write_text(content, encoding="utf-8")
 
             if filename_input:

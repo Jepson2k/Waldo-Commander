@@ -1347,6 +1347,49 @@ class TestScriptExecutionLifecycle:
 
                 await stop_script(handle)
 
+    @pytest.mark.asyncio
+    async def test_start_handles_subdir_filename(self, tmp_path, monkeypatch):
+        """Filenames with path separators (from files loaded out of subdirs) must
+        not break start()'s write to ``.runtime/<filename>``.
+
+        Regression: file tree IDs are relative paths (``str(item.relative_to(base))``),
+        so loading ``programs/sub/foo.py`` puts ``"sub/foo.py"`` in the filename
+        input. Pre-fix, ``script_path.write_text`` raised FileNotFoundError because
+        only ``.runtime`` was created, not ``.runtime/sub``.
+        """
+        from waldo_commander.components import script_execution as se
+        from waldo_commander.state import editor_tabs_state
+
+        # Stub run_script so we don't actually launch a subprocess — the bug
+        # is in the file write that happens before run_script is called.
+        async def stub_run_script(*args, **kwargs):
+            raise RuntimeError("stub: stop after file write")
+
+        monkeypatch.setattr(se, "run_script", stub_run_script)
+        monkeypatch.setattr(se.ui, "notify", lambda *a, **k: None)
+        monkeypatch.setattr(se.log_panel, "clear", lambda: None)
+        monkeypatch.setattr(se.log_panel, "push", lambda line: None)
+        monkeypatch.setattr(se.log_panel, "expand", lambda: None)
+
+        fake_textarea = MagicMock()
+        fake_textarea.value = "# subdir regression\n"
+        fake_filename_input = MagicMock()
+        fake_filename_input.value = "sub/regression.py"
+        editor_tabs_state.active_textarea = fake_textarea
+        editor_tabs_state.active_filename_input = fake_filename_input
+
+        se.script_exec.set_program_dir(tmp_path)
+
+        try:
+            await se.script_exec.start()
+
+            written = tmp_path / ".runtime" / "sub" / "regression.py"
+            assert written.exists(), f"Expected {written} to exist after start() ran"
+            assert written.read_text(encoding="utf-8") == "# subdir regression\n"
+        finally:
+            editor_tabs_state.active_textarea = None
+            editor_tabs_state.active_filename_input = None
+
     def test_import_order_script_execution_first(self):
         """script_execution must be importable before playback (no module cycle).
 
