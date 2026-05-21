@@ -36,6 +36,7 @@ from waldo_commander.components.editor import EditorPanel
 from waldo_commander.components.gripper import GripperPage
 from waldo_commander.components.help_menu import help_menu
 from waldo_commander.components.io import IoPage
+from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import ReadoutPanel
 from waldo_commander.constants import config, DEFAULT_CAMERA
 from waldo_commander.numba_pipelines import (
@@ -959,8 +960,7 @@ def _register_handlers() -> None:
             await _set_initial_mode(port)
             await _restore_settings()
             # Sync editor slider mode now that simulator_active is known
-            if editor_panel:
-                editor_panel.playback.sync_mode()
+            playback.sync_mode()
             logger.info(
                 "waldo-commander ready on http://%s:%s",
                 config.server_host,
