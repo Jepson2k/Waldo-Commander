@@ -929,8 +929,17 @@ def _register_handlers() -> None:
         try:
             saved_tool = ng_app.storage.general.get("selected_tool", "")
             if saved_tool:
-                await client.select_tool(saved_tool)
-                logger.debug("startup: set tool to %s", saved_tool)
+                # initialize_urdf_scene already reads the same variant
+                # storage key when wiring the scene mesh; pass it to
+                # select_tool too so the controller's per-variant TCP
+                # matches the scene on first boot.
+                saved_variant = ng_app.storage.general.get(
+                    f"tool_variant_{saved_tool}", ""
+                )
+                await client.select_tool(saved_tool, variant_key=saved_variant)
+                logger.debug(
+                    "startup: set tool to %s (variant=%r)", saved_tool, saved_variant
+                )
         except Exception as e:
             logger.warning("startup: select_tool failed: %s", e)
 
