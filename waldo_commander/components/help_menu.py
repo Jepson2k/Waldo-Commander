@@ -182,7 +182,9 @@ class HelpMenu:
                     """,
                     )
 
-    _TUTORIALS_URL = "https://jepson2k.github.io/Waldo-Commander/videos"
+    _TUTORIALS_URL = (
+        "https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets"
+    )
 
     def _build_quickstart_stepper(self, include_safety_step: bool = False) -> None:
         """Build quick start stepper with tutorial videos.
