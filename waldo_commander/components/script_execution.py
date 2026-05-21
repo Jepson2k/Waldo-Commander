@@ -57,16 +57,20 @@ class ScriptExecutionController:
         self._script_tab_id: str | None = None
 
     def cleanup(self) -> None:
-        """Per-page cleanup — cancel the event watcher and step controller
-        bound to this page. Does NOT touch ``script_handle``: the user's
-        subprocess outlives the page (``_on_shutdown`` reaps it)."""
-        self._cleanup_stepping()
+        """Per-page cleanup — cancel the event watcher bound to this page.
+        Does NOT touch ``script_handle`` OR the stepping IPC: the
+        subprocess outlives the page (``_on_shutdown`` reaps it), and the
+        step controller / IPC files are preserved so the subprocess can
+        keep stepping. The next page's ``set_ui_client`` rebinds the
+        watcher to the new client."""
+        self._cancel_watcher()
 
     def reset_for_test(self) -> None:
         """Restore field defaults by replaying ``__init__`` on this instance.
-        Nulls ``_program_dir``; ``EditorPanel.__init__`` re-sets it on next
-        page build via ``set_program_dir()``."""
-        self.cleanup()
+        Calls the FULL stepping teardown (deleting IPC files) — unlike
+        per-page ``cleanup()`` which preserves IPC across reloads, tests
+        want a fully clean slate between runs."""
+        self._cleanup_stepping()
         type(self).__init__(self)
 
     def set_program_dir(self, program_dir: Path) -> None:
@@ -74,6 +78,19 @@ class ScriptExecutionController:
 
     def set_ui_client(self, client: Client | None) -> None:
         self._ui_client = client
+        # If a stepping subprocess outlived the previous page, its IPC
+        # files and step controller were preserved by ``cleanup()`` (see
+        # docstring). Rebind the event watcher to the new client so step
+        # progress resumes on this page.
+        if (
+            client is not None
+            and simulation_state.script_running
+            and self._step_controller is not None
+            and (self._event_watcher_task is None or self._event_watcher_task.done())
+        ):
+            self._event_watcher_task = asyncio.create_task(
+                self._watch_script_events(client)
+            )
 
     def is_launching_tab(self, tab_id: str) -> bool:
         """True if this tab launched the currently running script."""
@@ -321,12 +338,18 @@ class ScriptExecutionController:
         simulation_state.notify_changed()
         self._cleanup_stepping()
 
-    def _cleanup_stepping(self) -> None:
-        """Clean up stepping controller and event watcher."""
+    def _cancel_watcher(self) -> None:
+        """Cancel the event watcher task without touching step IPC state.
+        Used by per-page cleanup so the subprocess can keep stepping while
+        no page is connected."""
         if self._event_watcher_task and not self._event_watcher_task.done():
             self._event_watcher_task.cancel()
         self._event_watcher_task = None
 
+    def _cleanup_stepping(self) -> None:
+        """Full stepping teardown — cancel watcher, deinit step controller,
+        delete IPC files. Used on script completion or stop."""
+        self._cancel_watcher()
         if self._step_controller:
             self._step_controller.cleanup()
             self._step_controller = None
