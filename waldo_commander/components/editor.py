@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any, Callable
 
-from nicegui import context, ui, Client
+from nicegui import context, ui
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import REPO_ROOT
 from waldo_commander.state import (
@@ -42,7 +42,6 @@ class EditorPanel(FileOperationsMixin):
 
     def __init__(self) -> None:
         """Initialize editor panel with state and UI references."""
-        self._ui_client: Client | None = None  # NiceGUI client for JS execution
         # Program directory
         self.PROGRAM_DIR = (
             REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
@@ -690,15 +689,14 @@ class EditorPanel(FileOperationsMixin):
 
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""
-        # Store NiceGUI client reference for JS execution from background tasks
         try:
-            self._ui_client = ui.context.client
+            ui_client = ui.context.client
         except RuntimeError:
-            pass  # No client context during build (shouldn't happen)
-        decorations.set_ui_client(self._ui_client)
-        simulation.set_ui_client(self._ui_client)
-        playback.set_ui_client(self._ui_client)
-        script_exec.set_ui_client(self._ui_client)
+            ui_client = None
+        decorations.set_ui_client(ui_client)
+        simulation.set_ui_client(ui_client)
+        playback.set_ui_client(ui_client)
+        script_exec.set_ui_client(ui_client)
 
         # Periodic check: re-run path preview when robot position changes
         ui.timer(1.0, simulation.check_position_changed)

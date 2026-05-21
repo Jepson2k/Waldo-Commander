@@ -17,6 +17,7 @@ from typing import Callable, Any
 
 from nicegui import ui
 
+from waldo_commander.components.playback import playback
 from waldo_commander.constants import CLICK_HOLD_THRESHOLD_S
 from waldo_commander.state import simulation_state, ui_state
 
@@ -319,7 +320,6 @@ def setup_keybindings(help_menu: Any) -> None:
 def _register_default_keybindings() -> None:
     """Register all default keybindings."""
     cp = ui_state.control_panel
-    ep = ui_state.editor_panel
 
     # Robot Control
     keybindings_manager.register(
@@ -348,7 +348,7 @@ def _register_default_keybindings() -> None:
             key=" ",
             display="Space",
             description="Play/Pause",
-            action=lambda: asyncio.create_task(ep.playback.toggle_play()),
+            action=lambda: asyncio.create_task(playback.toggle_play()),
             category="Playback",
         )
     )
@@ -358,7 +358,7 @@ def _register_default_keybindings() -> None:
             key="n",
             display="N",
             description="Step forward",
-            action=lambda: ep.playback.step_forward(),
+            action=lambda: playback.step_forward(),
             category="Playback",
             enabled_check=lambda: simulation_state.script_running
             or simulation_state.total_steps > 0,

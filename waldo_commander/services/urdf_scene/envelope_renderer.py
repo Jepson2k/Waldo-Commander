@@ -8,7 +8,7 @@ Provides workspace envelope visualization:
 
 Kept as a mixin (not full composition) because the per-Object3D APIs act on
 owned state the renderer already manages — no external scene references need
-threading. See ``EnvelopeRenderer`` for details.
+threading.
 """
 
 import hashlib

@@ -37,6 +37,7 @@ from waldo_commander.components.gripper import GripperPage
 from waldo_commander.components.help_menu import help_menu
 from waldo_commander.components.io import IoPage
 from waldo_commander.components.playback import playback
+from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
 from waldo_commander.constants import config, DEFAULT_CAMERA
 from waldo_commander.numba_pipelines import (
@@ -1003,8 +1004,6 @@ def _register_handlers() -> None:
 
         # Stop any running script processes first
         try:
-            from waldo_commander.components.script_execution import script_exec
-
             if simulation_state.script_running and script_exec.script_handle:
                 logger.debug("Stopping running script process during shutdown...")
                 from waldo_commander.services.script_runner import stop_script
@@ -1085,8 +1084,6 @@ def _cleanup_script_processes_sync() -> None:
     This is called from atexit and signal handlers as a last-resort cleanup.
     """
     try:
-        from waldo_commander.components.script_execution import script_exec
-
         if script_exec.script_handle:
             proc = script_exec.script_handle.get("proc")
             if proc and proc.returncode is None:

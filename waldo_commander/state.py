@@ -38,14 +38,22 @@ else:
 
 
 class ChangeNotifierMixin:
-    """Mixin providing add/remove/notify change-listener pattern.
+    """Mixin providing add/remove/notify listener patterns on two channels.
 
-    Uses copy-on-write: add/remove replace the list reference so that
-    notify_changed can iterate without allocation or mutation risk.
+    The change channel (``add_change_listener`` / ``remove_change_listener`` /
+    ``notify_changed``) fans out broad state mutations to all observers. The
+    step channel (``add_step_listener`` / ``remove_step_listener`` /
+    ``notify_step_changed``) is a parallel pipe for high-frequency script-step
+    events (~20Hz) that only playback needs to observe, so they bypass the
+    URDF scene reconciler and other change-listeners.
+
+    Both channels use copy-on-write: add/remove replace the list reference so
+    that notify_* can iterate without allocation or mutation risk.
 
     Subclasses using @dataclass should declare:
         _change_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
-    If omitted, the list is auto-created on first use.
+        _step_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
+    If omitted, each list is auto-created on first use.
     """
 
     _change_listeners: list[Callable[[], None]]
@@ -91,9 +99,6 @@ class ChangeNotifierMixin:
         ]
 
     def notify_step_changed(self) -> None:
-        # Dedicated channel for high-frequency script-step events (~20Hz).
-        # Routing these through notify_changed would fan out to the URDF
-        # scene reconciler — only playback needs to react.
         for cb in self._get_step_listeners():
             cb()
 

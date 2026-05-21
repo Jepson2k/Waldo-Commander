@@ -1,5 +1,5 @@
 """
-UrdfScene - Main class integrating all mixins.
+UrdfScene - Main class integrating editing/TCP/envelope mixins and a path renderer.
 
 This implementation is based on the original MIT-licensed urdf_scene_nicegui project.
 Attribution:
@@ -274,7 +274,7 @@ class UrdfScene(
         # Scene wrapper for proper positioning of overlays
         self._scene_wrapper: Any | None = None
 
-        # Initialize mixin states
+        # Initialize mixin states and renderers
         self._init_editing_state()
         self._init_tcp_controls_state()
         self._init_envelope_state()
