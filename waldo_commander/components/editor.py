@@ -71,51 +71,45 @@ class EditorPanel(FileOperationsMixin):
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
 
-    def _insert_python_snippet(self, key: str) -> str:
-        """Get Python code snippet for the given key."""
-        # Non-robot utility snippets
+    def _insert_command(self, method_name: str) -> None:
+        """Build a snippet for ``method_name`` (pre-filled with the robot's
+        current position for move_j / move_l) and append it to the active
+        textarea."""
+        textarea = editor_tabs_state.active_textarea
+        if not textarea:
+            return
+
         utility_snippets = {
             "delay": "time.sleep(1.0)",
             "comment": "# Add your robot commands here",
         }
-        if key in utility_snippets:
-            return utility_snippets[key]
+        if method_name in utility_snippets:
+            snippet = utility_snippets[method_name]
+        elif method_name == "move_j":
+            speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
+            accel = max(0.01, min(1.0, ui_state.jog_accel / 100.0))
+            angles = list(robot_state.angles.deg)
+            snippet = f"rbt.move_j({angles}, speed={speed}, accel={accel})"
+        elif method_name == "move_l":
+            speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
+            accel = max(0.01, min(1.0, ui_state.jog_accel / 100.0))
+            x, y, z = robot_state.x, robot_state.y, robot_state.z
+            rx, ry, rz = robot_state.rx, robot_state.ry, robot_state.rz
+            snippet = (
+                f"rbt.move_l([{x:.3f}, {y:.3f}, {z:.3f}, "
+                f"{rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel})"
+            )
+        else:
+            all_commands = discover_robot_commands()
+            snippet = all_commands.get(method_name, {}).get(
+                "snippet", f"rbt.{method_name}(...)"
+            )
 
-        # Look up auto-discovered snippet from backend docstrings
-        all_commands = discover_robot_commands()
-        if key in all_commands:
-            return all_commands[key]["snippet"]
-
-        return f"rbt.{key}(...)"
-
-    def _generate_snippet(self, method_name: str, use_current_position: bool) -> str:
-        """Generate Python snippet with optional current position pre-fill."""
-        speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
-        accel = max(0.01, min(1.0, ui_state.jog_accel / 100.0))
-
-        # Motion commands that can use current position
-        if use_current_position:
-            if method_name == "move_j":
-                angles = list(robot_state.angles.deg)
-                return f"rbt.move_j({angles}, speed={speed}, accel={accel})"
-            elif method_name == "move_l":
-                x, y, z = robot_state.x, robot_state.y, robot_state.z
-                rx, ry, rz = robot_state.rx, robot_state.ry, robot_state.rz
-                return f"rbt.move_l([{x:.3f}, {y:.3f}, {z:.3f}, {rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel})"
-
-        # Generic snippets - delegate to existing method
-        return self._insert_python_snippet(method_name)
-
-    def _insert_command(self, method_name: str, use_current_position: bool) -> None:
-        """Generate and insert command snippet into editor."""
-        textarea = editor_tabs_state.active_textarea
-        if textarea:
-            snippet = self._generate_snippet(method_name, use_current_position)
-            val = textarea.value
-            if val and not val.endswith("\n"):
-                val += "\n"
-            textarea.value = val + snippet + "\n"
-            logger.info("Added Python snippet: %s", snippet)
+        val = textarea.value
+        if val and not val.endswith("\n"):
+            val += "\n"
+        textarea.value = val + snippet + "\n"
+        logger.info("Added Python snippet: %s", snippet)
 
     def sync_code_from_target(
         self,
@@ -325,7 +319,7 @@ class EditorPanel(FileOperationsMixin):
                             item = ui.menu_item(
                                 cmd["title"],
                                 on_click=lambda e, k=cmd["key"]: self._insert_command(
-                                    k, True
+                                    k
                                 ),
                             ).classes("text-sm")
 
