@@ -85,8 +85,8 @@ class ScriptExecutionController:
 
         ``ui_client`` is the page client captured at ``start()`` so the
         push runs in the right NiceGUI context when called from a script
-        subprocess callback. Callers in an already-active client context
-        (e.g. SIM ERROR routing) can pass ``None``.
+        subprocess callback. Tests may pass ``None`` — ``log_panel.push``
+        no-ops when the log widget hasn't been built.
         """
         tab = (
             editor_tabs_state.find_tab_by_id(self._script_tab_id)
