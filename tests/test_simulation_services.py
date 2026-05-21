@@ -645,8 +645,15 @@ class TestEditorAutoSimulation:
                 mock_textarea = MagicMock()
                 mock_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
                 editor_tabs_state.active_textarea = mock_textarea
+                editor_tabs_state.active_tab_id = "tab_under_test"
+                editor_tabs_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
-                await simulation.run_simulation()
+                try:
+                    await simulation.run_simulation()
+                finally:
+                    editor_tabs_state.textareas_by_tab.pop("tab_under_test", None)
+                    editor_tabs_state.active_tab_id = None
+                    editor_tabs_state.active_textarea = None
 
                 assert update_called is True
                 assert update_content == "rbt.move_j([0,0,0,0,0,0])"
@@ -672,8 +679,15 @@ class TestEditorAutoSimulation:
                 mock_textarea = MagicMock()
                 mock_textarea.value = ""
                 editor_tabs_state.active_textarea = mock_textarea
+                editor_tabs_state.active_tab_id = "tab_under_test"
+                editor_tabs_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
-                await simulation.run_simulation()
+                try:
+                    await simulation.run_simulation()
+                finally:
+                    editor_tabs_state.textareas_by_tab.pop("tab_under_test", None)
+                    editor_tabs_state.active_tab_id = None
+                    editor_tabs_state.active_textarea = None
 
                 assert update_called is False
 
