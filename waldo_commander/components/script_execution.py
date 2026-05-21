@@ -129,7 +129,6 @@ class ScriptExecutionController:
             content = textarea.value if textarea else ""
             assert self._program_dir is not None, "program_dir not set"
             runtime_dir = self._program_dir / ".runtime"
-            runtime_dir.mkdir(parents=True, exist_ok=True)
             script_path = runtime_dir / filename
             script_path.parent.mkdir(parents=True, exist_ok=True)
             script_path.write_text(content, encoding="utf-8")
