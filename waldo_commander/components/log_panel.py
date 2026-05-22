@@ -70,6 +70,10 @@ class LogPanelController:
         with self.log_toggle_btn:
             self.log_toggle_btn_tooltip = ui.tooltip("Show Output")
         self.log_toggle_btn.mark("editor-log-toggle")
+        # Page-reload-during-script: the listener's idle→running edge won't
+        # fire (baseline is already running), so seed the visual to match.
+        if self._last_script_running:
+            self.expand()
         return self.log_toggle_btn
 
     def build_log_area(self) -> ui.log:

@@ -19,7 +19,7 @@ import asyncio
 import logging
 
 import numpy as np
-from nicegui import Client, ui
+from nicegui import ui
 
 from waldo_commander.constants import config
 from waldo_commander.components.editor_decorations import decorations
@@ -72,14 +72,12 @@ class SimulationEngine:
     """Owns debounced + on-position-change path preview runs.
 
     Construction registers no listeners — call sites schedule simulations
-    directly. ``set_ui_client`` is called once from ``EditorPanel.build()``
-    so background tasks can route through the page client.
+    directly.
     """
 
     def __init__(self) -> None:
         self._simulation_debounce_timer: ui.timer | None = None
         self._debounce_delay: float = 1.0  # seconds of idle before running
-        self._ui_client: Client | None = None
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel any pending debounced simulation so it
@@ -92,11 +90,6 @@ class SimulationEngine:
         """Restore field defaults by replaying ``__init__`` on this instance."""
         self.cleanup()
         type(self).__init__(self)
-
-    # ---- Wiring ----
-
-    def set_ui_client(self, client: Client | None) -> None:
-        self._ui_client = client
 
     # ---- Core simulation run ----
 

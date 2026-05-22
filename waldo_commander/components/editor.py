@@ -338,9 +338,6 @@ class EditorPanel(FileOperationsMixin):
         if self._tab_switch_render_task is not None:
             self._tab_switch_render_task.cancel()
             self._tab_switch_render_task = None
-        # Only playback owns a per-page simulation_state listener; remove it
-        # first. The other cleanups are independent (decorations / log_panel
-        # are no-ops, simulation/script_exec only cancel their own resources).
         self.playback.cleanup()
         decorations.cleanup()
         log_panel.cleanup()
@@ -694,7 +691,6 @@ class EditorPanel(FileOperationsMixin):
         except RuntimeError:
             ui_client = None
         decorations.set_ui_client(ui_client)
-        simulation.set_ui_client(ui_client)
         playback.set_ui_client(ui_client)
         script_exec.set_ui_client(ui_client)
 
