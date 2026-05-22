@@ -3,8 +3,8 @@
 Reads the active textarea from ``editor_tabs_state.active_textarea``, mutates
 ``simulation_state``, and drives the path-visualizer service. Diagnostics,
 line-tooltips, and target anchors are pushed directly to the ``decorations``
-singleton (the strings are consumed by exactly one listener, so a state
-round-trip would be ceremony).
+singleton via method calls — these are imperative UI operations on a known
+recipient, so a state round-trip would be ceremony.
 
 Calls into ``playback`` are direct rather than listener-routed because
 the three things this module triggers — loading-progress visibility,
@@ -108,6 +108,8 @@ class SimulationEngine:
         content = textarea.value if textarea else ""
         if not content:
             return None
+        # textarea is non-None ⇒ tab_id was non-None (get_tab_textarea(None) → None).
+        assert tab_id is not None
 
         loading = playback.sim_loading_progress
         if loading:
@@ -157,10 +159,9 @@ class SimulationEngine:
             if sim_tab is None or sim_tab.id == editor_tabs_state.active_tab_id:
                 log_panel.push(line)
 
-        if tab_id is not None:
-            decorations.apply_diagnostics(error, tab_id)
-            decorations.push_line_metadata(tab_id)
-            decorations.push_target_positions(tab_id)
+        decorations.apply_diagnostics(error, tab_id)
+        decorations.push_line_metadata(tab_id)
+        decorations.push_target_positions(tab_id)
 
         return error
 

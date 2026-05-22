@@ -5,8 +5,8 @@ up via ``editor_tabs_state.get_tab_textarea``). Sub-controllers that own a
 tab context pass that tab_id — simulation_engine for diagnostics / line
 metadata / target anchors (the simulated tab), script_exec for the
 executing-line highlight (the launching tab). Flash decorations stay on
-the active tab because their callers (insert-command, motion recorder)
-always target the user's current edit surface.
+the active tab because their callers (``EditorPanel.add_target_code`` and
+the motion recorder) always target the user's current edit surface.
 
 Clears the executing-line highlight automatically when ``simulation_state.script_running``
 transitions from True to False (via the state listener registered in __init__).
@@ -200,10 +200,9 @@ class EditorDecorations:
             return
 
         new_line: int | None = None
-        if simulation_state.path_segments and 0 <= step_index < len(
-            simulation_state.path_segments
-        ):
-            segment = simulation_state.path_segments[step_index]
+        tab = editor_tabs_state.find_tab_by_id(tab_id)
+        if tab and 0 <= step_index < len(tab.path_segments):
+            segment = tab.path_segments[step_index]
             if segment.line_number > 0:
                 new_line = segment.line_number
 

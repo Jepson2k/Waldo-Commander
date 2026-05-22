@@ -153,19 +153,22 @@ def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
 
 
 @pytest.fixture
-def mock_editor():
-    """Create mock editor for motion recorder tests."""
+def mock_textarea():
+    """Set up a mocked active textarea + editor_panel for motion recorder tests.
+
+    Yields the textarea mock — tests assert on its ``.value`` to verify what
+    motion_recorder inserted. ``ui_state.editor_panel`` is wired to a separate
+    MagicMock so production code that does presence checks still works.
+    """
     from waldo_commander.state import editor_tabs_state
 
-    mock_editor = MagicMock()
     mock_textarea = MagicMock()
     mock_textarea.value = "# Initial code\n"
-    mock_editor.program_textarea = mock_textarea
     editor_tabs_state.active_textarea = mock_textarea
-    ui_state.editor_panel = mock_editor
+    ui_state.editor_panel = MagicMock()
     old_robot = ui_state.robot
     ui_state.robot = get_robot()
-    yield mock_editor
+    yield mock_textarea
     ui_state.editor_panel = None
     editor_tabs_state.active_textarea = None
     ui_state.robot = old_robot
@@ -174,29 +177,29 @@ def mock_editor():
 class TestMotionRecorder:
     """Tests for motion recording functionality (code-insertion API)."""
 
-    def test_capture_current_pose_inserts_code(self, mock_editor):
+    def test_capture_current_pose_inserts_code(self, mock_textarea):
         """capture_current_pose should insert move_l code into editor."""
         set_robot_pose(150.0, 250.0, 350.0)
 
         recorder = MotionRecorder()
         recorder.capture_current_pose()
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.move_l([150.000, 250.000, 350.000" in inserted_code
         assert "speed=" in inserted_code
         assert "accel=" in inserted_code
 
-    def test_capture_current_pose_joints_mode(self, mock_editor):
+    def test_capture_current_pose_joints_mode(self, mock_textarea):
         """capture_current_pose with joints mode should insert move_j code."""
         robot_state.angles.set_deg(np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]))
 
         recorder = MotionRecorder()
         recorder.capture_current_pose(move_type="joints")
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.move_j([10.00, 20.00, 30.00, 40.00, 50.00, 60.00" in inserted_code
 
-    def test_toggle_recording_lifecycle(self, mock_editor):
+    def test_toggle_recording_lifecycle(self, mock_textarea):
         """toggle_recording should toggle recording state on/off."""
         recorder = MotionRecorder()
 
@@ -211,7 +214,7 @@ class TestMotionRecorder:
         recorder.toggle_recording()
         assert recording_state.is_recording is False
 
-    def test_jog_recording_lifecycle(self, mock_editor):
+    def test_jog_recording_lifecycle(self, mock_textarea):
         """Test complete jog recording cycle: start sets state, end inserts code."""
         set_robot_pose(100.0, 200.0, 300.0)
         robot_state.angles.set_deg(np.zeros(6))
@@ -234,7 +237,7 @@ class TestMotionRecorder:
         recorder.on_jog_end()
 
         # Check that code was inserted
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.move_l(" in inserted_code
 
     def test_jog_events_ignored_when_not_recording(self):
@@ -256,55 +259,55 @@ class TestMotionRecorder:
 
         editor_tabs_state.active_textarea = None
 
-    def test_record_action_home_generates_code(self, mock_editor):
+    def test_record_action_home_generates_code(self, mock_textarea):
         """record_action for home should generate home code."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
         recorder.record_action("home")
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.home()" in inserted_code
 
-    def test_record_action_gripper_commands(self, mock_editor):
+    def test_record_action_gripper_commands(self, mock_textarea):
         """record_action for gripper should generate tool access + method calls."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
         # Part 1: Calibrate command
         recorder.record_action("gripper", calibrate=True)
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.tool.calibrate()" in inserted_code
 
         # Part 2: Move command with params (partial position → set_position)
-        mock_editor.program_textarea.value = ""
+        mock_textarea.value = ""
         recorder.record_action("gripper", position=0.5, speed=50, current=200)
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.tool.set_position(0.5, speed=50, current=200)" in inserted_code
 
         # Part 3: Full open (position=0.0) — always uses set_position
-        mock_editor.program_textarea.value = ""
+        mock_textarea.value = ""
         recorder.record_action("gripper", position=0.0)
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.tool.set_position(0.0)" in inserted_code
 
         # Part 4: Full close (position=1.0) — always uses set_position
-        mock_editor.program_textarea.value = ""
+        mock_textarea.value = ""
         recorder.record_action("gripper", position=1.0)
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.tool.set_position(1.0)" in inserted_code
 
-    def test_record_action_io(self, mock_editor):
+    def test_record_action_io(self, mock_textarea):
         """record_action for io should generate write_io code."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
         recorder.record_action("io", port=1, state=1)
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.write_io(1, 1)" in inserted_code
 
-    def test_record_action_ignored_when_not_recording(self, mock_editor):
+    def test_record_action_ignored_when_not_recording(self, mock_textarea):
         """record_action should be ignored when not recording."""
         recorder = MotionRecorder()
         recording_state.is_recording = False
@@ -312,9 +315,9 @@ class TestMotionRecorder:
         recorder.record_action("home")
 
         # Code should not have been inserted (still just initial code)
-        assert mock_editor.program_textarea.value == "# Initial code\n"
+        assert mock_textarea.value == "# Initial code\n"
 
-    def test_multiple_jogs_insert_multiple_code_lines(self, mock_editor):
+    def test_multiple_jogs_insert_multiple_code_lines(self, mock_textarea):
         """Multiple jog start/end cycles should insert multiple code lines."""
         set_robot_pose(100.0, 100.0, 100.0)
         robot_state.angles.set_deg(np.zeros(6))
@@ -337,11 +340,11 @@ class TestMotionRecorder:
         recorder.toggle_recording()  # Stop
 
         # Should have inserted code for both moves
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         # Count occurrences of move commands
         assert inserted_code.count("rbt.move") >= 2
 
-    def test_stop_recording_ends_active_jog(self, mock_editor):
+    def test_stop_recording_ends_active_jog(self, mock_textarea):
         """Stopping recording should end any active jog."""
         set_robot_pose(100.0, 100.0, 100.0)
         robot_state.angles.set_deg(np.zeros(6))
@@ -358,14 +361,14 @@ class TestMotionRecorder:
         recorder.toggle_recording()  # Stop
 
         # Check that code was inserted
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.move_l(" in inserted_code
 
 
 class TestMotionRecorderWaitTimeGaps:
     """Tests for recorder inserting delays after non-blocking moves."""
 
-    def test_wall_time_initialized_on_recording_start(self, mock_editor):
+    def test_wall_time_initialized_on_recording_start(self, mock_textarea):
         """_last_action_wall_time resets to 0 when recording starts."""
         recorder = MotionRecorder()
         recorder._last_action_wall_time = 99.0
@@ -373,7 +376,7 @@ class TestMotionRecorderWaitTimeGaps:
         assert recorder._last_action_wall_time == 0.0
         recorder.toggle_recording()
 
-    def test_wall_time_updated_after_record_action(self, mock_editor):
+    def test_wall_time_updated_after_record_action(self, mock_textarea):
         """_last_action_wall_time is stamped after each recorded action."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
@@ -385,7 +388,7 @@ class TestMotionRecorderWaitTimeGaps:
 
         recorder.toggle_recording()
 
-    def test_gap_inserted_between_non_jog_actions(self, mock_editor):
+    def test_gap_inserted_between_non_jog_actions(self, mock_textarea):
         """A time.sleep() is inserted when wall-clock time elapses between actions."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
@@ -401,14 +404,14 @@ class TestMotionRecorderWaitTimeGaps:
         # Record second action — should insert a delay
         recorder.record_action("gripper", position=1.0)
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "time.sleep(" in inserted_code, (
             "Expected time.sleep() to be inserted for gap between actions"
         )
 
         recorder.toggle_recording()
 
-    def test_no_gap_for_motion_actions(self, mock_editor):
+    def test_no_gap_for_motion_actions(self, mock_textarea):
         """Motion actions (move_j/move_l) don't get delay inserted before them."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
@@ -426,7 +429,7 @@ class TestMotionRecorderWaitTimeGaps:
             accel=0.5,
         )
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         # time.sleep should NOT appear between gripper and move_j
         lines = inserted_code.strip().split("\n")
         # Find the move_j line and check the line before it
@@ -438,7 +441,7 @@ class TestMotionRecorderWaitTimeGaps:
 
         recorder.toggle_recording()
 
-    def test_flush_sets_wall_time_to_last_pending(self, mock_editor):
+    def test_flush_sets_wall_time_to_last_pending(self, mock_textarea):
         """After flushing pending actions, wall time = last pending action time."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
@@ -1329,7 +1332,7 @@ class TestScriptExecutionLifecycle:
         editor_tabs_state.active_filename_input = fake_filename_input
 
         # run_script reads ui_state.active_robot.backend_package; ensure it's set
-        # (matches the mock_editor fixture's pattern).
+        # (matches the mock_textarea fixture's pattern).
         old_robot = ui_state.robot
         ui_state.robot = get_robot()
 
