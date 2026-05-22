@@ -331,6 +331,7 @@ class ScriptExecutionController:
     def _reset_state(self) -> None:
         """Reset all script-related state after a script finishes or errors."""
         self.script_handle = None
+        self._script_tab_id = None
         simulation_state.script_running = False
         simulation_state.is_playing = False
         simulation_state.sim_pose_override = False

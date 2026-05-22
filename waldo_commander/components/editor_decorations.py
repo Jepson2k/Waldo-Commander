@@ -132,11 +132,11 @@ class EditorDecorations:
     def flash_editor_lines(self, line_numbers: list[int]) -> None:
         """Flash specific lines in the CodeMirror editor.
 
-        Flashes always target the active tab — the only callers are
-        insert-command and motion recorder, both of which write to the
-        user's current edit surface. When the editor panel is collapsed,
-        flashes the editor tab via JS instead of applying decorations to
-        an off-screen textarea.
+        Flashes always target the active tab — both callers
+        (``EditorPanel.add_target_code`` and the motion recorder) write to
+        the user's current edit surface. When the editor panel is
+        collapsed, flashes the editor tab via JS instead of applying
+        decorations to an off-screen textarea.
         """
         textarea = editor_tabs_state.active_textarea
         if not textarea or not line_numbers:

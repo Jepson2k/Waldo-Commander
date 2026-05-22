@@ -17,7 +17,6 @@ from typing import Callable, Any
 
 from nicegui import ui
 
-from waldo_commander.components.playback import playback
 from waldo_commander.constants import CLICK_HOLD_THRESHOLD_S
 from waldo_commander.state import simulation_state, ui_state
 
@@ -319,6 +318,11 @@ def setup_keybindings(help_menu: Any) -> None:
 
 def _register_default_keybindings() -> None:
     """Register all default keybindings."""
+    # Local import: keybindings is in services/ and playback is in
+    # components/, so a top-level import would invert the layered
+    # dependency direction. Keep it lazy.
+    from waldo_commander.components.playback import playback
+
     cp = ui_state.control_panel
 
     # Robot Control

@@ -368,11 +368,9 @@ class PlaybackController:
         """
         running = simulation_state.script_running
 
-        # Script-running edge: idle → running
         if running and not self._last_script_running:
             self._handle_script_start_edge()
 
-        # Script-running edge: running → idle
         if self._last_script_running and not running:
             self._handle_script_stop_edge()
 

@@ -1537,26 +1537,31 @@ class TestScriptExecutionLifecycle:
 # ============================================================================
 
 
-def test_playback_reset_for_test_clears_listener():
+def test_playback_reset_for_test_clears_listeners():
     """``PlaybackController.setup_timers()`` runs once per page build and
-    registers a ``simulation_state`` change listener. ``reset_for_test()``
-    must call ``cleanup()`` so listeners don't accumulate across tests.
+    registers both a change-channel and a step-channel listener on
+    ``simulation_state``. ``reset_for_test()`` must call ``cleanup()`` so
+    neither leaks across tests.
     """
     from waldo_commander.components.playback import playback
 
-    # Baseline: number of listeners after import (decorations/log_panel
-    # register in __init__ and stay registered).
-    baseline = len(simulation_state._change_listeners)
+    # Baseline counts after import (decorations/log_panel register in
+    # __init__ and stay registered on the change channel).
+    change_baseline = len(simulation_state._change_listeners)
+    step_baseline = len(simulation_state._step_listeners)
 
-    # Simulate N page builds by calling setup_timers() in a clean client
-    # context isn't necessary — only the add_change_listener call matters.
     for _ in range(3):
         simulation_state.add_change_listener(playback._on_state_change)
+        simulation_state.add_step_listener(playback._on_step_change)
         playback.reset_for_test()
 
-    assert len(simulation_state._change_listeners) == baseline, (
-        f"Listeners leaked: baseline={baseline}, "
+    assert len(simulation_state._change_listeners) == change_baseline, (
+        f"Change listeners leaked: baseline={change_baseline}, "
         f"now={len(simulation_state._change_listeners)}"
+    )
+    assert len(simulation_state._step_listeners) == step_baseline, (
+        f"Step listeners leaked: baseline={step_baseline}, "
+        f"now={len(simulation_state._step_listeners)}"
     )
 
 
@@ -1659,6 +1664,22 @@ def test_record_line_caps_output_log_at_1000():
     assert tab.output_log[-1] == "line 1099"
 
 
+def test_reset_state_clears_launching_tab_id():
+    """``_reset_state`` must clear ``_script_tab_id`` so post-completion
+    scrubbing in ``playback._apply_time`` falls back to the active tab.
+    Otherwise the executing-line highlight stays pinned to the launching
+    tab's textarea (often hidden) after the user switches tabs.
+    """
+    from waldo_commander.components.script_execution import script_exec
+
+    script_exec._script_tab_id = "tab-a"
+    assert script_exec.launching_tab_id == "tab-a"
+
+    script_exec._reset_state()
+
+    assert script_exec.launching_tab_id is None
+
+
 def test_notify_step_changed_only_fires_step_listeners():
     """Regression: step events route through the dedicated step channel so
     urdf_scene's ``_update_simulation_view`` (a change-channel listener)
@@ -1685,20 +1706,3 @@ def test_notify_step_changed_only_fires_step_listeners():
     finally:
         simulation_state.remove_change_listener(on_change)
         simulation_state.remove_step_listener(on_step)
-
-
-def test_playback_reset_for_test_clears_step_listener():
-    """``PlaybackController.cleanup()`` must remove the step-channel listener
-    registered by ``setup_timers()``, mirroring the change-channel cleanup."""
-    from waldo_commander.components.playback import playback
-
-    baseline = len(simulation_state._step_listeners)
-
-    for _ in range(3):
-        simulation_state.add_step_listener(playback._on_step_change)
-        playback.reset_for_test()
-
-    assert len(simulation_state._step_listeners) == baseline, (
-        f"Step listeners leaked: baseline={baseline}, "
-        f"now={len(simulation_state._step_listeners)}"
-    )
