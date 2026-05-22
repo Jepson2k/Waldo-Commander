@@ -379,7 +379,9 @@ class TestEditorInteractivity:
             )
         )
 
-        # Editor should auto-open from restored state, wait for CodeMirror
+        # Sidebar tab selection isn't persisted across refresh, so re-activate
+        # program tab before checking codemirror.
+        click_tab(class_screen, "program")
         wait_for_codemirror_ready(class_screen)
 
         # Verify content persisted

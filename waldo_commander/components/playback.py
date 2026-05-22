@@ -5,22 +5,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from nicegui import ui, context
+from nicegui import Client, ui, context
 
 from waldo_commander.common.theme import PathColors
+from waldo_commander.components.editor_decorations import decorations
+from waldo_commander.components.log_panel import log_panel
+from waldo_commander.components.script_execution import script_exec
+from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.state import (
+    editor_tabs_state,
+    recording_state,
     robot_state,
     simulation_state,
     ui_state,
-    editor_tabs_state,
 )
-
-if TYPE_CHECKING:
-    from waldo_commander.components.editor import EditorPanel
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +29,12 @@ logger = logging.getLogger(__name__)
 class PlaybackController:
     """Owns the bottom playback bar UI and all simulation/script playback logic."""
 
-    def __init__(self, editor: EditorPanel) -> None:
-        self._editor = editor
-
+    def __init__(self) -> None:
         # Bottom playback bar elements
-        self.playback_bar: ui.element | None = None
-        self._play_btn: ui.button | None = None
-        self._play_btn_tooltip: ui.tooltip | None = None
-        self._stop_btn: ui.button | None = None
-        self._next_btn: ui.button | None = None
-        self._scrub_parent: ui.element | None = None
+        self.play_btn: ui.button | None = None
+        self.play_btn_tooltip: ui.tooltip | None = None
+        self.stop_btn: ui.button | None = None
+        self.next_btn: ui.button | None = None
         self._scrub_container: ui.element | None = None
         self._segment_elements: list[ui.element] = []
         self._checkpoint_markers: list[ui.element] = []
@@ -56,6 +53,32 @@ class PlaybackController:
         self._last_slider_update: float = 0.0  # throttle slider visual updates
         self._last_tool_selection: tuple[str, str] | None = None
 
+        # Recording widgets — the record button and its tooltip live in the
+        # playback bar so PlaybackController owns them. Notification reference
+        # is kept across toggles so it can be dismissed.
+        self.record_btn: ui.button | None = None
+        self._record_btn_tooltip: ui.tooltip | None = None
+        self._recording_notification: ui.notification | None = None
+        self._ui_client: Client | None = None
+
+        # Edge-detection state for the simulation_state change listener.
+        # Mirrors EditorDecorations._on_state_change / LogPanelController._on_state_change.
+        self._last_script_running: bool = False
+        self._last_executing_step_index: int = -1
+        self._last_executing_step_at_end: bool = False
+
+    def set_ui_client(self, client: Client | None) -> None:
+        """Store the page client for background-task UI operations."""
+        self._ui_client = client
+
+    def reset_for_test(self) -> None:
+        """Restore field defaults by replaying ``__init__`` on this instance.
+        ``cleanup()`` removes the listener registered by ``setup_timers()``;
+        ``__init__`` doesn't re-add it (that lives in setup_timers, which
+        the next page build calls)."""
+        self.cleanup()
+        type(self).__init__(self)
+
     @property
     def sim_loading_progress(self) -> ui.element | None:
         return self._sim_loading_progress
@@ -67,47 +90,42 @@ class PlaybackController:
 
         Order: Play | Stop | Next | Slider | Speed FAB | Record | Capture | Log toggle
         """
-        from waldo_commander.services.motion_recorder import motion_recorder
-
         with (
             ui.row()
             .classes("w-full items-center gap-2 bottom-playback-bar")
-            .style("min-height: 48px;") as bar
+            .style("min-height: 48px;")
         ):
-            self.playback_bar = bar
-
             # 1. Play/Pause button
-            self._play_btn = ui.button(
+            self.play_btn = ui.button(
                 icon="play_arrow", on_click=self.toggle_play
             ).props("round dense color=positive unelevated")
-            with self._play_btn:
-                self._play_btn_tooltip = ui.tooltip("Play (Space)")
-            self._play_btn.mark("editor-play-btn")
+            with self.play_btn:
+                self.play_btn_tooltip = ui.tooltip("Play (Space)")
+            self.play_btn.mark("editor-play-btn")
 
             # 2. Stop button
-            self._stop_btn = (
-                ui.button(icon="stop", on_click=self._editor._stop_script_process)
+            self.stop_btn = (
+                ui.button(icon="stop", on_click=script_exec.stop)
                 .props("round dense color=negative unelevated")
                 .tooltip("Stop")
             )
-            self._stop_btn.mark("editor-stop-btn")
-            self._stop_btn.set_visibility(False)
+            self.stop_btn.mark("editor-stop-btn")
+            self.stop_btn.set_visibility(False)
 
             # 3. Next step button
-            self._next_btn = (
+            self.next_btn = (
                 ui.button(icon="skip_next", on_click=self.step_forward)
                 .props("round dense flat color=white")
-                .tooltip("Next step (S)")
+                .tooltip("Next step (N)")
             )
-            self._next_btn.mark("editor-step-next")
-            self._next_btn.set_visibility(False)
+            self.next_btn.mark("editor-step-next")
+            self.next_btn.set_visibility(False)
 
             # 4. Timeline scrub area — layered: segments + loading + slider
             with ui.element("div").classes("flex-1"):
                 with (
                     ui.element("div").classes("relative w-full").style("height: 24px;")
-                ) as scrub_parent:
-                    self._scrub_parent = scrub_parent
+                ):
                     self._scrub_container = (
                         ui.row()
                         .classes("absolute rounded-lg overflow-hidden gap-0")
@@ -167,69 +185,114 @@ class PlaybackController:
                 )
 
             # 6. Record button
-            self._editor.record_btn = ui.button(
-                icon="fiber_manual_record", on_click=self._editor._toggle_recording
+            self.record_btn = ui.button(
+                icon="fiber_manual_record", on_click=self._toggle_recording
             ).props("round dense color=negative unelevated")
-            with self._editor.record_btn:
-                self._editor._record_btn_tooltip = ui.tooltip("Start Recording")
-            self._editor.record_btn.mark("editor-record-btn")
+            with self.record_btn:
+                self._record_btn_tooltip = ui.tooltip("Start Recording")
+            self.record_btn.mark("editor-record-btn")
 
             # 7. Capture position
-            self._editor._capture_btn = (
-                ui.button(
-                    icon="camera_alt", on_click=motion_recorder.capture_current_pose
-                )
-                .props("round dense unelevated")
-                .tooltip("Capture Current Pose")
-            )
+            ui.button(
+                icon="camera_alt", on_click=motion_recorder.capture_current_pose
+            ).props("round dense unelevated").tooltip("Capture Current Pose")
 
             # 8. Log show/hide
-            self._editor.log_toggle_btn = (
-                ui.button(icon="expand_more", on_click=self._editor._toggle_log)
-                .props("round dense flat")
-                .classes("text-white")
-            )
-            with self._editor.log_toggle_btn:
-                self._editor._log_toggle_btn_tooltip = ui.tooltip("Show Output")
-            self._editor.log_toggle_btn.mark("editor-log-toggle")
+            log_panel.build_toggle_button()
+
+    # ---- Recording lifecycle ----
+
+    def _toggle_recording(self) -> None:
+        """Toggle motion recording on/off and update the record button visual."""
+        motion_recorder.toggle_recording()
+        if recording_state.is_recording:
+            if self.record_btn:
+                self.record_btn.props("color=warning")
+            if self._record_btn_tooltip:
+                self._record_btn_tooltip.text = "Stop Recording"
+            self.set_enabled(False)
+            try:
+                ui_client = self._ui_client or context.client
+                with ui_client:
+                    self._recording_notification = ui.notification(
+                        message="Recording",
+                        type="negative",
+                        icon="fiber_manual_record",
+                        position="top",
+                        timeout=0,
+                        close_button=False,
+                        classes="recording-notification",
+                    )
+            except RuntimeError:
+                pass
+        else:
+            if self.record_btn:
+                self.record_btn.props("color=negative")
+            if self._record_btn_tooltip:
+                self._record_btn_tooltip.text = "Start Recording"
+            self.set_enabled(True)
+            if self._recording_notification is not None:
+                try:
+                    client = self._ui_client or context.client
+                    with client:
+                        self._recording_notification.dismiss()
+                except RuntimeError:
+                    pass
+                self._recording_notification = None
 
     def setup_timers(self) -> None:
         """Create timers and register listeners. Must be called within client context."""
-        simulation_state.add_change_listener(self._update_play_button)
+        # Seed the edge-detection baseline with current state so the first
+        # listener fire after a page reload doesn't treat live state as a
+        # transition.
+        self._last_script_running = simulation_state.script_running
+        self._last_executing_step_index = simulation_state.executing_step_index
+        self._last_executing_step_at_end = simulation_state.executing_step_at_end
+        simulation_state.add_change_listener(self._on_state_change)
+        simulation_state.add_step_listener(self._on_step_change)
         self._sim_timer = ui.timer(1.0 / 50, self._sim_playback_tick, active=False)
 
     def cleanup(self) -> None:
-        """Remove listeners registered by this controller."""
-        simulation_state.remove_change_listener(self._update_play_button)
+        """Remove listeners and cancel any async tasks owned by this controller."""
+        simulation_state.remove_change_listener(self._on_state_change)
+        simulation_state.remove_step_listener(self._on_step_change)
+        if self._teleport_task and not self._teleport_task.done():
+            self._teleport_task.cancel()
+            self._teleport_task = None
+
+    def on_simulation_complete(self) -> None:
+        """Called by SimulationEngine after a successful run. Owns timeline +
+        scrub-segment + sim_playback_time reset."""
+        self.invalidate_timeline()
+        simulation_state.sim_playback_time = 0.0
+        self.update_scrub_segments()
 
     # ---- Public actions ----
 
     async def toggle_play(self) -> None:
         """Toggle play/pause for script execution or simulation playback."""
-        if self._editor.script_running:
+        if simulation_state.script_running:
             if simulation_state.is_playing:
-                if self._editor._step_controller:
-                    self._editor._step_controller.signal_pause()
+                script_exec.signal_pause()
                 simulation_state.is_playing = False
                 logger.debug("Script paused")
             else:
-                if self._editor._step_controller:
-                    self._editor._step_controller.signal_play()
+                script_exec.signal_play()
                 simulation_state.is_playing = True
                 logger.debug("Script playing")
-            self._update_play_button()
+            simulation_state.notify_changed()
         elif robot_state.simulator_active and simulation_state.total_steps > 0:
             if simulation_state.sim_playback_active:
                 self._pause_sim_playback()
             else:
                 self._start_sim_playback()
         else:
-            await self._editor._start_script_process()
+            await script_exec.start()
 
     def step_forward(self) -> None:
         """Step forward one segment."""
-        if self._editor.script_running and self._editor._step_controller:
-            self._editor._step_controller.signal_step()
+        if simulation_state.script_running:
+            script_exec.signal_step()
             logger.debug("Step forward signal sent to script")
         elif self._timeline and simulation_state.total_steps > 0:
             next_idx = min(
@@ -285,7 +348,7 @@ class PlaybackController:
 
     def set_enabled(self, enabled: bool) -> None:
         """Enable or disable playback controls (except record button)."""
-        buttons = [self._play_btn, self._next_btn, self.speed_fab]
+        buttons = [self.play_btn, self.next_btn, self.speed_fab]
         for btn in buttons:
             if btn:
                 if enabled:
@@ -293,55 +356,107 @@ class PlaybackController:
                 else:
                     btn.disable()
 
-    # ---- Script execution bridge ----
+    # ---- Script execution: state-driven listener ----
 
-    def on_script_start(self) -> None:
-        """Called when a script starts running."""
+    def _on_state_change(self) -> None:
+        """React to ``script_running`` edges and other state-channel mutations.
+
+        Step-lifecycle events fire on the dedicated step channel
+        (``_on_step_change``) to avoid fanning ~20 Hz step notifications out
+        to ``urdf_scene._update_simulation_view``. This handler covers the
+        less-frequent start/stop edges plus play-button refreshes.
+        """
+        running = simulation_state.script_running
+
+        if running and not self._last_script_running:
+            self._handle_script_start_edge()
+
+        if self._last_script_running and not running:
+            self._handle_script_stop_edge()
+
+        self._last_script_running = running
+
+        # Always refresh play-button visuals; the call is idempotent.
+        self.update_play_button()
+
+    def _on_step_change(self) -> None:
+        """React to step-lifecycle events on the dedicated step channel.
+
+        Fired by ``script_execution._watch_script_events`` for every IPC
+        ``start`` / ``complete`` event (~20 Hz). Kept off the global change
+        channel so urdf_scene doesn't re-walk segment fingerprints per step.
+        """
+        running = simulation_state.script_running
+        step = simulation_state.executing_step_index
+        at_end = simulation_state.executing_step_at_end
+
+        if (
+            running
+            and step >= 0
+            and (
+                step != self._last_executing_step_index
+                or at_end != self._last_executing_step_at_end
+            )
+        ):
+            if at_end:
+                self._handle_step_complete(step)
+            else:
+                self._handle_step_start(step)
+
+        self._last_executing_step_index = step
+        self._last_executing_step_at_end = at_end
+
+        # Play-button visuals can change on step edges (e.g. enabling
+        # Next during stepping); refresh is idempotent.
+        self.update_play_button()
+
+    def _handle_script_start_edge(self) -> None:
+        """Cancel sim playback and prep the scrub slider for script-driven mode."""
+        # Tear down any in-progress sim playback before the script takes over.
+        if simulation_state.sim_playback_active:
+            self._pause_sim_playback()
+        simulation_state.sim_playback_time = 0.0
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
-        self._update_play_button()
 
-    def on_script_step_start(self, step: int, ui_client: Any) -> None:
-        """Called when a script command starts executing."""
-        with ui_client:
-            self._exec_step_index = step
-            self._exec_start_time = time.monotonic()
-            self._ensure_timeline()
-            if self._sim_timer:
-                self._sim_timer.active = True
-            simulation_state.current_step_index = step
-            self._highlight_current_segment()
-            self._editor.highlight_executing_line(step)
+    def _handle_step_start(self, step: int) -> None:
+        """Script reported segment start: advance UI to segment-start position."""
+        self._exec_step_index = step
+        self._exec_start_time = time.monotonic()
+        self._ensure_timeline()
+        if self._sim_timer:
+            self._sim_timer.active = True
+        self._highlight_current_segment()
+        tab_id = script_exec.launching_tab_id
+        if tab_id is not None:
+            decorations.highlight_executing_line(step, tab_id)
 
-    def on_script_step_complete(self, step: int, ui_client: Any) -> None:
-        """Called when a script command completes."""
-        with ui_client:
-            simulation_state.current_step_index = step
-            self._highlight_current_segment()
-            self._editor.highlight_executing_line(step)
-            # Snap slider to segment end
-            if self._timeline and self._scrub_slider:
-                end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
-                t = self._timeline.cumulative_times[end_idx]
-                self._scrub_slider.value = t
-                text = self._format_time(t, self._timeline.total_duration)
-                self._scrub_slider.props(f'label-value="{text}"')
+    def _handle_step_complete(self, step: int) -> None:
+        """Script reported segment end: snap slider to segment end."""
+        self._highlight_current_segment()
+        tab_id = script_exec.launching_tab_id
+        if tab_id is not None:
+            decorations.highlight_executing_line(step, tab_id)
+        if self._timeline and self._scrub_slider:
+            end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
+            t = self._timeline.cumulative_times[end_idx]
+            self._scrub_slider.value = t
+            text = self._format_time(t, self._timeline.total_duration)
+            self._scrub_slider.props(f'label-value="{text}"')
 
-    def on_script_stop(self, ui_client: Any) -> None:
-        """Called when a script finishes or is stopped."""
-        with ui_client:
-            self._exec_step_index = -1
-            if self._sim_timer:
-                self._sim_timer.active = False
-            if self._scrub_slider:
-                self._scrub_slider.props(remove="label-always")
-            # Snap slider to end
-            if self._timeline and self._scrub_slider:
+    def _handle_script_stop_edge(self) -> None:
+        """Reset playback bar after a script finishes or is stopped."""
+        self._exec_step_index = -1
+        if self._sim_timer:
+            self._sim_timer.active = False
+        if self._scrub_slider:
+            self._scrub_slider.props(remove="label-always")
+            # Snap slider to timeline end so the user sees the final position.
+            if self._timeline:
                 t = self._timeline.total_duration
                 self._scrub_slider.value = t
                 text = self._format_time(t, t)
                 self._scrub_slider.props(f'label-value="{text}"')
-            self._update_play_button()
 
     # ---- Scrub / slider ----
 
@@ -391,7 +506,13 @@ class PlaybackController:
         if sample.segment_index != simulation_state.current_step_index:
             simulation_state.current_step_index = sample.segment_index
             self._highlight_current_segment()
-            self._editor.highlight_executing_line(sample.segment_index)
+            # Sim playback animates the active tab's simulation. If a
+            # script is also running, prefer the launching tab so the
+            # highlight stays on it even when the user scrubs while the
+            # script is paused on a different tab.
+            target_tab = script_exec.launching_tab_id or editor_tabs_state.active_tab_id
+            if target_tab is not None:
+                decorations.highlight_executing_line(sample.segment_index, target_tab)
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.update_playback_opacity()
 
@@ -402,16 +523,9 @@ class PlaybackController:
                 sel_pair = (sel.tool_key, sel.variant_key)
                 if sel_pair != self._last_tool_selection:
                     self._last_tool_selection = sel_pair
-                    # Update robot model so FK reflects the new tool
-                    ui_state.active_robot.set_active_tool(
-                        sel.tool_key,
-                        variant_key=sel.variant_key or None,
+                    ui_state.urdf_scene.apply_tool_everywhere(
+                        sel.tool_key, variant_key=sel.variant_key or None
                     )
-                    ui_state.urdf_scene.apply_tool(
-                        sel.tool_key,
-                        variant_key=sel.variant_key or None,
-                    )
-                    ui_state.urdf_scene._update_tcp_ball_position()
                     # Sync to controller so readout reflects tool TCP
                     if ui_state.control_panel and ui_state.control_panel.client:
                         asyncio.create_task(
@@ -496,7 +610,7 @@ class PlaybackController:
             self._sim_timer.active = True
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
-        self._update_play_button()
+        self.update_play_button()
 
     def _pause_sim_playback(self) -> None:
         """Pause simulation playback.
@@ -515,7 +629,7 @@ class PlaybackController:
         self._snapshot_joints()
         if self._scrub_slider:
             self._scrub_slider.props(remove="label-always")
-        self._update_play_button()
+        self.update_play_button()
 
     def _sim_playback_tick(self) -> None:
         """30Hz tick for simulation playback or script execution slider tracking."""
@@ -525,7 +639,7 @@ class PlaybackController:
             return
 
         # Script execution mode: smooth slider tracking (no URDF control)
-        if self._editor.script_running and self._exec_step_index >= 0:
+        if simulation_state.script_running and self._exec_step_index >= 0:
             self._script_slider_tick()
             return
 
@@ -587,27 +701,27 @@ class PlaybackController:
 
     # ---- Play button state ----
 
-    def _update_play_button(self) -> None:
+    def update_play_button(self) -> None:
         """Update play/pause button icon and stop/step button visibility."""
-        if self._play_btn:
+        if self.play_btn:
             playing = (
-                self._editor.script_running and simulation_state.is_playing
+                simulation_state.script_running and simulation_state.is_playing
             ) or simulation_state.sim_playback_active
             if playing:
-                self._play_btn.props("icon=pause color=warning")
-                if self._play_btn_tooltip:
-                    self._play_btn_tooltip.text = "Pause (Space)"
+                self.play_btn.props("icon=pause color=warning")
+                if self.play_btn_tooltip:
+                    self.play_btn_tooltip.text = "Pause (Space)"
             else:
-                self._play_btn.props("icon=play_arrow color=positive")
-                if self._play_btn_tooltip:
-                    self._play_btn_tooltip.text = "Play (Space)"
+                self.play_btn.props("icon=play_arrow color=positive")
+                if self.play_btn_tooltip:
+                    self.play_btn_tooltip.text = "Play (Space)"
 
-        if self._stop_btn:
-            self._stop_btn.set_visibility(self._editor.script_running)
+        if self.stop_btn:
+            self.stop_btn.set_visibility(simulation_state.script_running)
 
-        if self._next_btn:
+        if self.next_btn:
             has_steps = simulation_state.total_steps > 0
-            self._next_btn.set_visibility(has_steps)
+            self.next_btn.set_visibility(has_steps)
             at_last = (
                 (
                     simulation_state.current_step_index
@@ -616,10 +730,10 @@ class PlaybackController:
                 if has_steps
                 else True
             )
-            if at_last and not self._editor.script_running:
-                self._next_btn.disable()
+            if at_last and not simulation_state.script_running:
+                self.next_btn.disable()
             else:
-                self._next_btn.enable()
+                self.next_btn.enable()
 
     # ---- Scrub bar segments ----
 
@@ -781,3 +895,6 @@ class PlaybackController:
             return f"{int(m)}:{s:04.1f}"
 
         return f"{fmt(current)} / {fmt(total)}"
+
+
+playback: PlaybackController = PlaybackController()

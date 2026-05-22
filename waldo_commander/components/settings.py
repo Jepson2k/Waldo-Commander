@@ -8,6 +8,7 @@ from nicegui import ui
 
 from waldoctl import RobotClient
 
+from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
@@ -120,7 +121,7 @@ class SettingsContent:
         """Notify simulation state changed and trigger debounced re-simulation."""
         simulation_state.notify_changed()
         try:
-            ui_state.editor_panel.schedule_debounced_simulation()
+            simulation.schedule_debounced_simulation()
         except RuntimeError:
             pass
 
@@ -133,6 +134,7 @@ class SettingsContent:
         )
         if ui_state.urdf_scene:
             ui_state.urdf_scene.apply_tool(tool_key, variant_key=variant_key)
+            ui_state.urdf_scene.refresh_tcp_ball()
 
     def _rebuild_variant_selector(self, tool_key: str) -> None:
         """Rebuild variant sub-selector for the current tool."""

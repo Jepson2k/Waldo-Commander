@@ -14,6 +14,7 @@ from waldo_commander.state import (
     ui_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED
+from waldo_commander.services.command_discovery import discover_robot_commands
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,6 @@ class MotionRecorder:
     @staticmethod
     def _get_motion_cmd_names() -> frozenset[str]:
         """Get motion command names from the command palette discovery."""
-        from waldo_commander.components.editor import discover_robot_commands
-
         commands = discover_robot_commands()
         return frozenset(
             name
@@ -93,7 +92,7 @@ class MotionRecorder:
         If an existing select_tool line is found, update it. Otherwise insert one
         before the first motion command (home, move_j, move_l, etc.).
         """
-        textarea = ui_state.editor_panel.program_textarea
+        textarea = editor_tabs_state.active_textarea
         if not textarea:
             return
         val: str = str(textarea.value or "")
@@ -346,15 +345,15 @@ class MotionRecorder:
                 duration,
             )
 
-        self._flush_pending_actions()
+        self._flush_pending_actions(self._active_jog.start_time)
         self._active_jog = None
 
-    def _flush_pending_actions(self) -> None:
+    def _flush_pending_actions(self, jog_start_time: float) -> None:
         """Flush actions queued during a jog, inserting time.sleep delays."""
-        if not self._pending_actions or not self._active_jog:
+        if not self._pending_actions:
             return
 
-        last_t = self._active_jog.start_time
+        last_t = jog_start_time
         for action_type, params, queued_at in self._pending_actions:
             delay = queued_at - last_t
             if delay > 0.05:
@@ -382,8 +381,8 @@ class MotionRecorder:
     def _insert_snippet(self, snippet: str) -> None:
         """Insert code snippet into the editor and flash the new line."""
 
-        if ui_state.editor_panel.program_textarea:
-            textarea = ui_state.editor_panel.program_textarea
+        if editor_tabs_state.active_textarea:
+            textarea = editor_tabs_state.active_textarea
             val = textarea.value or ""
 
             # Count lines before insertion for flash highlighting
@@ -398,7 +397,12 @@ class MotionRecorder:
 
             # Flash the newly added line
             new_line_number = lines_before + 1
-            ui_state.editor_panel.flash_editor_lines([new_line_number])
+            # Local import: motion_recorder is in services/ and decorations
+            # is in components/, so a top-level import would invert the
+            # layered dependency direction. Keep it lazy.
+            from waldo_commander.components.editor_decorations import decorations
+
+            decorations.flash_editor_lines([new_line_number])
         else:
             logger.error("Editor textarea not ready - open Program tab first")
 

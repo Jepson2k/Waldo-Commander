@@ -293,6 +293,50 @@ def class_screen(
 
 
 @pytest.fixture(autouse=True)
+def reset_editor_singletons(
+    request: pytest.FixtureRequest,
+) -> Generator[None, None, None]:
+    """Reset module-level editor singletons between tests.
+
+    EditorDecorations, LogPanelController, PlaybackController, SimulationEngine,
+    and ScriptExecutionController are constructed once at import time and
+    survive across tests. Clear their transient state so each test starts
+    from a clean baseline (matches the post-page-load state).
+
+    Skips reset for class_screen tests — those keep the same page alive
+    across tests in the class, so wiping the singletons' widget refs would
+    desynchronize Python from the still-mounted DOM (button.props() calls
+    silently no-op because the field is None).
+    """
+    if "class_screen" in request.fixturenames:
+        yield
+        return
+    yield
+    from waldo_commander.components.editor_decorations import decorations
+    from waldo_commander.components.log_panel import log_panel
+    from waldo_commander.components.playback import playback
+    from waldo_commander.components.simulation_engine import simulation
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.state import simulation_state
+
+    # Only playback owns a per-page simulation_state listener; reset it first
+    # so its cleanup() removes that listener before the other resets run.
+    # The other singletons' resets only re-init their own state.
+    playback.reset_for_test()
+    decorations.reset_for_test()
+    log_panel.reset_for_test()
+    simulation.reset_for_test()
+    script_exec.reset_for_test()
+
+    # Script/sim flags live on simulation_state, not on a singleton. Without
+    # resetting, a test that leaves script_running=True (e.g. crash mid-start)
+    # poisons gating checks in the next test.
+    simulation_state.script_running = False
+    simulation_state.executing_step_index = -1
+    simulation_state.executing_step_at_end = False
+
+
+@pytest.fixture(autouse=True)
 def restore_process_pool_after_nicegui_fixtures(
     request: pytest.FixtureRequest,
 ) -> Generator[None, None, None]:

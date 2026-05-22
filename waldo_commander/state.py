@@ -38,17 +38,26 @@ else:
 
 
 class ChangeNotifierMixin:
-    """Mixin providing add/remove/notify change-listener pattern.
+    """Mixin providing add/remove/notify listener patterns on two channels.
 
-    Uses copy-on-write: add/remove replace the list reference so that
-    notify_changed can iterate without allocation or mutation risk.
+    The change channel (``add_change_listener`` / ``remove_change_listener`` /
+    ``notify_changed``) fans out broad state mutations to all observers. The
+    step channel (``add_step_listener`` / ``remove_step_listener`` /
+    ``notify_step_changed``) is a parallel pipe for high-frequency script-step
+    events (~20Hz) that only playback needs to observe, so they bypass the
+    URDF scene reconciler and other change-listeners.
+
+    Both channels use copy-on-write: add/remove replace the list reference so
+    that notify_* can iterate without allocation or mutation risk.
 
     Subclasses using @dataclass should declare:
         _change_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
-    If omitted, the list is auto-created on first use.
+        _step_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
+    If omitted, each list is auto-created on first use.
     """
 
     _change_listeners: list[Callable[[], None]]
+    _step_listeners: list[Callable[[], None]]
 
     def _get_listeners(self) -> list[Callable[[], None]]:
         try:
@@ -57,18 +66,40 @@ class ChangeNotifierMixin:
             self._change_listeners = []
             return self._change_listeners
 
+    def _get_step_listeners(self) -> list[Callable[[], None]]:
+        try:
+            return self._step_listeners
+        except AttributeError:
+            self._step_listeners = []
+            return self._step_listeners
+
     def add_change_listener(self, callback: Callable[[], None]) -> None:
         listeners = self._get_listeners()
         if callback not in listeners:
             self._change_listeners = [*listeners, callback]
 
     def remove_change_listener(self, callback: Callable[[], None]) -> None:
-        self._change_listeners = [
-            cb for cb in self._get_listeners() if cb is not callback
-        ]
+        # Use != (not `is not`) so bound methods removable by their func: each
+        # access of `obj.method` creates a fresh bound-method object that fails
+        # `is`, but bound methods compare equal by (instance, func).
+        self._change_listeners = [cb for cb in self._get_listeners() if cb != callback]
 
     def notify_changed(self) -> None:
         for cb in self._get_listeners():
+            cb()
+
+    def add_step_listener(self, callback: Callable[[], None]) -> None:
+        listeners = self._get_step_listeners()
+        if callback not in listeners:
+            self._step_listeners = [*listeners, callback]
+
+    def remove_step_listener(self, callback: Callable[[], None]) -> None:
+        self._step_listeners = [
+            cb for cb in self._get_step_listeners() if cb != callback
+        ]
+
+    def notify_step_changed(self) -> None:
+        for cb in self._get_step_listeners():
             cb()
 
 
@@ -250,9 +281,16 @@ class SimulationState(ChangeNotifierMixin):
         False  # True while scrubbing/playing — suppresses status-loop URDF updates
     )
     last_teleport_ts: float = 0.0  # monotonic time of last teleport send; used by status loop to delay handback
+    script_running: bool = False  # True while a user script is executing
+    # Step-lifecycle phase from the running script's IPC events. Together,
+    # these let playback's state listener distinguish "step N just started"
+    # from "step N just completed" without a direct call from script_exec.
+    executing_step_index: int = -1  # segment currently executing (-1 = idle)
+    executing_step_at_end: bool = False  # False = at start of segment, True = at end
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
+    _step_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
 
     def reset(self) -> None:
         self.targets.clear()
@@ -272,6 +310,9 @@ class SimulationState(ChangeNotifierMixin):
         self.sim_playback_active = False
         self.sim_pose_override = False
         self.last_teleport_ts = 0.0
+        self.script_running = False
+        self.executing_step_index = -1
+        self.executing_step_at_end = False
 
 
 @bindable_dataclass
@@ -473,7 +514,6 @@ class UiState:
     _editor_panel: Any = None
     _control_panel: Any = None
     _readout_panel: Any = None
-    _playback: Any = None
 
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
@@ -482,7 +522,6 @@ class UiState:
     editor_panel = _RequiredField()
     control_panel = _RequiredField()
     readout_panel = _RequiredField()
-    playback = _RequiredField()
     joint_jog_timer = _RequiredField()
     cart_jog_timer = _RequiredField()
 
@@ -507,7 +546,10 @@ class EditorTab:
     file_path: str | None  # Full path if saved to server
     content: str  # Current editor content
     saved_content: str  # Content at last save (for dirty tracking)
-    output_log: list[str] = field(default_factory=list)  # Per-tab output log entries
+    # Bounded so a chatty script can't grow the buffer unboundedly; matches
+    # ui.log(max_lines=1000) in log_panel so tab-switch rehydrate doesn't
+    # outgrow the display widget.
+    output_log: deque[str] = field(default_factory=lambda: deque(maxlen=1000))
     path_segments: list[PathSegment] = field(
         default_factory=list
     )  # Per-tab simulation paths
@@ -528,10 +570,28 @@ class EditorTab:
 
 @bindable_dataclass
 class EditorTabsState(ChangeNotifierMixin):
-    """State for multi-tab editor."""
+    """State for multi-tab editor.
+
+    Holds both pure tab data (``tabs``, ``active_tab_id``) and the widget
+    references for the active tab (``active_textarea``,
+    ``active_filename_input``). Mixing widget refs with data here is
+    intentional: the refs' lifecycle is tied directly to tab switching, and
+    consolidating them on the tab-state object lets sub-controllers
+    (decorations, simulation engine, motion recorder, script execution) read
+    the active tab's widgets without back-references into EditorPanel.
+    """
 
     tabs: list[EditorTab] = field(default_factory=list)
     active_tab_id: str | None = None
+    # Updated by EditorPanel on every tab switch / initial build.
+    active_textarea: Any = None  # ui.codemirror | None at runtime
+    active_filename_input: Any = None  # ui.input | None at runtime
+    # Per-tab textarea refs so sub-controllers can write decorations,
+    # diagnostics, etc. to a specific tab's editor even when it isn't
+    # the active one (e.g. the launching tab during script execution
+    # while the user has switched to a different tab). Maintained by
+    # EditorPanel on tab build / close.
+    textareas_by_tab: dict[str, Any] = field(default_factory=dict)
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
@@ -552,6 +612,13 @@ class EditorTabsState(ChangeNotifierMixin):
         """Find a tab by its ID."""
         return next((t for t in self.tabs if t.id == tab_id), None)
 
+    def get_tab_textarea(self, tab_id: str | None) -> Any:
+        """Look up a tab's CodeMirror textarea by id. Returns None if the
+        tab id is None or the tab isn't currently mounted."""
+        if tab_id is None:
+            return None
+        return self.textareas_by_tab.get(tab_id)
+
     def add_tab(self, tab: EditorTab) -> None:
         """Add a new tab."""
         self.tabs.append(tab)
@@ -567,6 +634,9 @@ class EditorTabsState(ChangeNotifierMixin):
     def reset(self) -> None:
         self.tabs = []
         self.active_tab_id = None
+        self.active_textarea = None
+        self.active_filename_input = None
+        self.textareas_by_tab.clear()
 
 
 @dataclass

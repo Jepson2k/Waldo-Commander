@@ -1,5 +1,9 @@
 """Unit tests for scene diff rendering: fingerprinting, diffing, and opacity."""
 
+import math
+
+import pytest
+
 from waldo_commander.state import PathSegment, ProgramTarget, ToolAction
 from waldo_commander.services.urdf_scene.urdf_scene import (
     RenderedSegment,
@@ -385,5 +389,35 @@ class TestCollectFailedTarget:
             )
             assert len(targets) == 1
             assert targets[0]["is_valid"] is False
+        finally:
+            linecache.cache.pop("simulation_script.py", None)
+
+    def test_cartesian_failed_target_rotation_is_in_radians(self):
+        """Regression: failed-target marker rotations were emitted as raw
+        degrees but the renderer consumes radians. Fix wraps with
+        ``math.radians(v)``."""
+        client, targets = self._make_client()
+        import linecache
+
+        linecache.cache["simulation_script.py"] = (
+            100,
+            None,
+            ["robot.move_l([100, 200, 300, 90, 0, 0])\n"],
+            "simulation_script.py",
+        )
+        try:
+            client._collect_failed_target(
+                line_no=1,
+                move_type="cartesian",
+                args=([100.0, 200.0, 300.0, 90.0, 0.0, 0.0],),
+                kwargs={},
+            )
+            assert len(targets) == 1
+            pose = targets[0]["pose"]
+            assert pose[3] == pytest.approx(math.pi / 2), (
+                "rx must be converted from degrees to radians"
+            )
+            assert pose[4] == pytest.approx(0.0)
+            assert pose[5] == pytest.approx(0.0)
         finally:
             linecache.cache.pop("simulation_script.py", None)

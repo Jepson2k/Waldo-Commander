@@ -80,9 +80,10 @@ class FileOperationsMixin:
         """Save tab content to server."""
         try:
             name = tab.filename or "program.py"
-            file_path = str(self.PROGRAM_DIR / name)
-            (self.PROGRAM_DIR / name).write_text(tab.content, encoding="utf-8")
-            tab.file_path = file_path
+            target = self.PROGRAM_DIR / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(tab.content, encoding="utf-8")
+            tab.file_path = str(target)
             tab.saved_content = tab.content
             self._update_dirty_dot(tab)
             logger.info("Saved program %s", name)
@@ -109,13 +110,13 @@ class FileOperationsMixin:
     # ---- File tree helpers ----
 
     @staticmethod
-    def _build_file_tree(root: Path) -> list[dict]:
+    def _build_file_tree(root: Path, base: Path) -> list[dict]:
         """Build child node list for ui.tree from a directory (recursive)."""
         nodes: list[dict] = []
         try:
             for item in sorted(root.iterdir(), key=lambda p: (p.is_file(), p.name)):
                 if item.is_dir() and not item.name.startswith("."):
-                    children = FileOperationsMixin._build_file_tree(item)
+                    children = FileOperationsMixin._build_file_tree(item, base)
                     if children:
                         nodes.append(
                             {
@@ -128,7 +129,7 @@ class FileOperationsMixin:
                 elif item.is_file() and item.suffix in (".py", ".txt", ".prog", ""):
                     nodes.append(
                         {
-                            "id": item.name,
+                            "id": str(item.relative_to(base)),
                             "label": item.name,
                             "icon": "description",
                         }
@@ -144,7 +145,7 @@ class FileOperationsMixin:
                 "id": str(self.PROGRAM_DIR),
                 "label": self.PROGRAM_DIR.name,
                 "icon": "folder",
-                "children": self._build_file_tree(self.PROGRAM_DIR),
+                "children": self._build_file_tree(self.PROGRAM_DIR, self.PROGRAM_DIR),
             }
         ]
 

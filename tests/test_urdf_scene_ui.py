@@ -42,7 +42,7 @@ async def test_urdf_scene_envelope_pregenerated_on_startup(
     so it's available for immediate rendering when envelope mode is 'on'.
     """
     from waldo_commander.state import ui_state
-    from waldo_commander.services.urdf_scene.envelope_mixin import workspace_envelope
+    from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 
     # Reset envelope state before test
     workspace_envelope.reset()
@@ -83,7 +83,7 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
     envelope wireframe sphere is created and made visible in the scene.
     """
     from waldo_commander.state import ui_state, simulation_state
-    from waldo_commander.services.urdf_scene.envelope_mixin import workspace_envelope
+    from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 
     await user.open("/")
     await wait_for_urdf_ready()

@@ -312,6 +312,11 @@ class TCPControlsMixin:
         self.invalidate_fk_cache()
         self._update_tcp_ball_position()
 
+    def refresh_tcp_ball(self) -> None:
+        """Public wrapper around ``_update_tcp_ball_position`` for external
+        callers that need to re-position the TCP ball after a tool swap."""
+        self._update_tcp_ball_position()
+
     def _update_tcp_ball_position(self) -> None:
         """Update TCP ball position from FK, with drift correction.
 

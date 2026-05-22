@@ -3,6 +3,8 @@
 These tests verify actual behavior rather than just checking if buttons exist.
 """
 
+import asyncio
+import contextlib
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,7 +22,7 @@ from parol6.client.dry_run_client import DryRunRobotClient
 from waldo_commander.services.path_preview_client import PathPreviewClient
 from waldo_commander.services.motion_recorder import MotionRecorder
 from waldo_commander.services.path_visualizer import PathVisualizer
-from waldo_commander.services.urdf_scene.envelope_mixin import WorkspaceEnvelope
+from waldo_commander.services.urdf_scene.envelope_renderer import WorkspaceEnvelope
 
 
 # ============================================================================
@@ -151,46 +153,53 @@ def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
 
 
 @pytest.fixture
-def mock_editor():
-    """Create mock editor for motion recorder tests."""
-    mock_editor = MagicMock()
+def mock_textarea():
+    """Set up a mocked active textarea + editor_panel for motion recorder tests.
+
+    Yields the textarea mock — tests assert on its ``.value`` to verify what
+    motion_recorder inserted. ``ui_state.editor_panel`` is wired to a separate
+    MagicMock so production code that does presence checks still works.
+    """
+    from waldo_commander.state import editor_tabs_state
+
     mock_textarea = MagicMock()
     mock_textarea.value = "# Initial code\n"
-    mock_editor.program_textarea = mock_textarea
-    ui_state.editor_panel = mock_editor
+    editor_tabs_state.active_textarea = mock_textarea
+    ui_state.editor_panel = MagicMock()
     old_robot = ui_state.robot
     ui_state.robot = get_robot()
-    yield mock_editor
+    yield mock_textarea
     ui_state.editor_panel = None
+    editor_tabs_state.active_textarea = None
     ui_state.robot = old_robot
 
 
 class TestMotionRecorder:
     """Tests for motion recording functionality (code-insertion API)."""
 
-    def test_capture_current_pose_inserts_code(self, mock_editor):
+    def test_capture_current_pose_inserts_code(self, mock_textarea):
         """capture_current_pose should insert move_l code into editor."""
         set_robot_pose(150.0, 250.0, 350.0)
 
         recorder = MotionRecorder()
         recorder.capture_current_pose()
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.move_l([150.000, 250.000, 350.000" in inserted_code
         assert "speed=" in inserted_code
         assert "accel=" in inserted_code
 
-    def test_capture_current_pose_joints_mode(self, mock_editor):
+    def test_capture_current_pose_joints_mode(self, mock_textarea):
         """capture_current_pose with joints mode should insert move_j code."""
         robot_state.angles.set_deg(np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]))
 
         recorder = MotionRecorder()
         recorder.capture_current_pose(move_type="joints")
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.move_j([10.00, 20.00, 30.00, 40.00, 50.00, 60.00" in inserted_code
 
-    def test_toggle_recording_lifecycle(self, mock_editor):
+    def test_toggle_recording_lifecycle(self, mock_textarea):
         """toggle_recording should toggle recording state on/off."""
         recorder = MotionRecorder()
 
@@ -205,7 +214,7 @@ class TestMotionRecorder:
         recorder.toggle_recording()
         assert recording_state.is_recording is False
 
-    def test_jog_recording_lifecycle(self, mock_editor):
+    def test_jog_recording_lifecycle(self, mock_textarea):
         """Test complete jog recording cycle: start sets state, end inserts code."""
         set_robot_pose(100.0, 200.0, 300.0)
         robot_state.angles.set_deg(np.zeros(6))
@@ -228,15 +237,17 @@ class TestMotionRecorder:
         recorder.on_jog_end()
 
         # Check that code was inserted
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.move_l(" in inserted_code
 
     def test_jog_events_ignored_when_not_recording(self):
         """Jog start and end events should be ignored when not recording."""
+        from waldo_commander.state import editor_tabs_state
+
         recorder = MotionRecorder()
-        ui_state.editor_panel = MagicMock()
-        ui_state.editor_panel.program_textarea = MagicMock()
-        ui_state.editor_panel.program_textarea.value = ""
+        mock_textarea = MagicMock()
+        mock_textarea.value = ""
+        editor_tabs_state.active_textarea = mock_textarea
 
         # Not recording - jog start should be ignored
         recorder.on_jog_start("joint", "J1+")
@@ -244,59 +255,59 @@ class TestMotionRecorder:
 
         # Not recording - jog end should also be ignored
         recorder.on_jog_end()
-        assert ui_state.editor_panel.program_textarea.value == ""
+        assert mock_textarea.value == ""
 
-        ui_state.editor_panel = None
+        editor_tabs_state.active_textarea = None
 
-    def test_record_action_home_generates_code(self, mock_editor):
+    def test_record_action_home_generates_code(self, mock_textarea):
         """record_action for home should generate home code."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
         recorder.record_action("home")
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.home()" in inserted_code
 
-    def test_record_action_gripper_commands(self, mock_editor):
+    def test_record_action_gripper_commands(self, mock_textarea):
         """record_action for gripper should generate tool access + method calls."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
         # Part 1: Calibrate command
         recorder.record_action("gripper", calibrate=True)
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.tool.calibrate()" in inserted_code
 
         # Part 2: Move command with params (partial position → set_position)
-        mock_editor.program_textarea.value = ""
+        mock_textarea.value = ""
         recorder.record_action("gripper", position=0.5, speed=50, current=200)
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.tool.set_position(0.5, speed=50, current=200)" in inserted_code
 
         # Part 3: Full open (position=0.0) — always uses set_position
-        mock_editor.program_textarea.value = ""
+        mock_textarea.value = ""
         recorder.record_action("gripper", position=0.0)
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.tool.set_position(0.0)" in inserted_code
 
         # Part 4: Full close (position=1.0) — always uses set_position
-        mock_editor.program_textarea.value = ""
+        mock_textarea.value = ""
         recorder.record_action("gripper", position=1.0)
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.tool.set_position(1.0)" in inserted_code
 
-    def test_record_action_io(self, mock_editor):
+    def test_record_action_io(self, mock_textarea):
         """record_action for io should generate write_io code."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
         recorder.record_action("io", port=1, state=1)
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.write_io(1, 1)" in inserted_code
 
-    def test_record_action_ignored_when_not_recording(self, mock_editor):
+    def test_record_action_ignored_when_not_recording(self, mock_textarea):
         """record_action should be ignored when not recording."""
         recorder = MotionRecorder()
         recording_state.is_recording = False
@@ -304,9 +315,9 @@ class TestMotionRecorder:
         recorder.record_action("home")
 
         # Code should not have been inserted (still just initial code)
-        assert mock_editor.program_textarea.value == "# Initial code\n"
+        assert mock_textarea.value == "# Initial code\n"
 
-    def test_multiple_jogs_insert_multiple_code_lines(self, mock_editor):
+    def test_multiple_jogs_insert_multiple_code_lines(self, mock_textarea):
         """Multiple jog start/end cycles should insert multiple code lines."""
         set_robot_pose(100.0, 100.0, 100.0)
         robot_state.angles.set_deg(np.zeros(6))
@@ -329,11 +340,11 @@ class TestMotionRecorder:
         recorder.toggle_recording()  # Stop
 
         # Should have inserted code for both moves
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         # Count occurrences of move commands
         assert inserted_code.count("rbt.move") >= 2
 
-    def test_stop_recording_ends_active_jog(self, mock_editor):
+    def test_stop_recording_ends_active_jog(self, mock_textarea):
         """Stopping recording should end any active jog."""
         set_robot_pose(100.0, 100.0, 100.0)
         robot_state.angles.set_deg(np.zeros(6))
@@ -350,14 +361,14 @@ class TestMotionRecorder:
         recorder.toggle_recording()  # Stop
 
         # Check that code was inserted
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "rbt.move_l(" in inserted_code
 
 
 class TestMotionRecorderWaitTimeGaps:
     """Tests for recorder inserting delays after non-blocking moves."""
 
-    def test_wall_time_initialized_on_recording_start(self, mock_editor):
+    def test_wall_time_initialized_on_recording_start(self, mock_textarea):
         """_last_action_wall_time resets to 0 when recording starts."""
         recorder = MotionRecorder()
         recorder._last_action_wall_time = 99.0
@@ -365,7 +376,7 @@ class TestMotionRecorderWaitTimeGaps:
         assert recorder._last_action_wall_time == 0.0
         recorder.toggle_recording()
 
-    def test_wall_time_updated_after_record_action(self, mock_editor):
+    def test_wall_time_updated_after_record_action(self, mock_textarea):
         """_last_action_wall_time is stamped after each recorded action."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
@@ -377,7 +388,7 @@ class TestMotionRecorderWaitTimeGaps:
 
         recorder.toggle_recording()
 
-    def test_gap_inserted_between_non_jog_actions(self, mock_editor):
+    def test_gap_inserted_between_non_jog_actions(self, mock_textarea):
         """A time.sleep() is inserted when wall-clock time elapses between actions."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
@@ -393,14 +404,14 @@ class TestMotionRecorderWaitTimeGaps:
         # Record second action — should insert a delay
         recorder.record_action("gripper", position=1.0)
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         assert "time.sleep(" in inserted_code, (
             "Expected time.sleep() to be inserted for gap between actions"
         )
 
         recorder.toggle_recording()
 
-    def test_no_gap_for_motion_actions(self, mock_editor):
+    def test_no_gap_for_motion_actions(self, mock_textarea):
         """Motion actions (move_j/move_l) don't get delay inserted before them."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
@@ -418,7 +429,7 @@ class TestMotionRecorderWaitTimeGaps:
             accel=0.5,
         )
 
-        inserted_code = mock_editor.program_textarea.value
+        inserted_code = mock_textarea.value
         # time.sleep should NOT appear between gripper and move_j
         lines = inserted_code.strip().split("\n")
         # Find the move_j line and check the line before it
@@ -430,7 +441,7 @@ class TestMotionRecorderWaitTimeGaps:
 
         recorder.toggle_recording()
 
-    def test_flush_sets_wall_time_to_last_pending(self, mock_editor):
+    def test_flush_sets_wall_time_to_last_pending(self, mock_textarea):
         """After flushing pending actions, wall time = last pending action time."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
@@ -570,70 +581,60 @@ class TestEditorAutoSimulation:
     """Tests for editor auto-simulation on code change."""
 
     def test_debounce_defaults(self):
-        """EditorPanel should have correct debounce defaults."""
-        from waldo_commander.components.editor import EditorPanel
+        """SimulationEngine should have correct debounce defaults."""
+        from waldo_commander.components.simulation_engine import simulation
 
-        panel = EditorPanel()
-
-        assert panel._debounce_delay == 1.0
-        # Timer starts as None
-        assert panel._simulation_debounce_timer is None
+        assert simulation._debounce_delay == 1.0
 
     def testschedule_debounced_simulation_creates_timer(self):
         """schedule_debounced_simulation should create a timer."""
-        from waldo_commander.components.editor import EditorPanel
+        from waldo_commander.components.simulation_engine import simulation
         from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui") as mock_ui:
+        with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer = MagicMock()
             mock_ui.timer.return_value = mock_timer
 
-            # Set up active tab so scheduling doesn't return early
             editor_tabs_state.active_tab_id = "test-tab"
+            simulation._simulation_debounce_timer = None
 
-            panel = EditorPanel()
-            panel.schedule_debounced_simulation()
+            simulation.schedule_debounced_simulation()
 
-            # Verify timer was created with correct parameters
             mock_ui.timer.assert_called_once()
             call_args = mock_ui.timer.call_args
-            assert call_args[0][0] == 1.0  # debounce delay
+            assert call_args[0][0] == 1.0
             assert call_args[1]["once"] is True
 
     def testschedule_debounced_simulation_cancels_previous_timer(self):
         """Calling schedule_debounced_simulation again should cancel previous timer."""
-        from waldo_commander.components.editor import EditorPanel
+        from waldo_commander.components.simulation_engine import simulation
         from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui") as mock_ui:
+        with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer1 = MagicMock()
             mock_timer2 = MagicMock()
             mock_ui.timer.side_effect = [mock_timer1, mock_timer2]
 
-            # Set up active tab so scheduling doesn't return early
             editor_tabs_state.active_tab_id = "test-tab"
+            simulation._simulation_debounce_timer = None
 
-            panel = EditorPanel()
+            simulation.schedule_debounced_simulation()
+            assert simulation._simulation_debounce_timer == mock_timer1
 
-            # First call creates timer1
-            panel.schedule_debounced_simulation()
-            assert panel._simulation_debounce_timer == mock_timer1
-
-            # Second call should cancel timer1 (including running callback) and create timer2
-            panel.schedule_debounced_simulation()
+            simulation.schedule_debounced_simulation()
             mock_timer1.cancel.assert_called_once_with(with_current_invocation=True)
-            assert panel._simulation_debounce_timer == mock_timer2
+            assert simulation._simulation_debounce_timer == mock_timer2
 
     @pytest.mark.asyncio
     async def test_run_simulation_calls_path_visualizer(self):
-        """_run_simulation should call path_visualizer.update_path_visualization."""
-        from waldo_commander.components.editor import EditorPanel
+        """run_simulation should call path_visualizer.update_path_visualization."""
+        from waldo_commander.components.simulation_engine import simulation
+        from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui"):
+        with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
-                "waldo_commander.components.editor.path_visualizer"
+                "waldo_commander.components.simulation_engine.path_visualizer"
             ) as mock_visualizer:
-                # Track if update was called
                 update_called = False
                 update_content = None
 
@@ -644,23 +645,31 @@ class TestEditorAutoSimulation:
 
                 mock_visualizer.update_path_visualization = mock_update
 
-                panel = EditorPanel()
-                panel.program_textarea = MagicMock()
-                panel.program_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
+                mock_textarea = MagicMock()
+                mock_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
+                editor_tabs_state.active_textarea = mock_textarea
+                editor_tabs_state.active_tab_id = "tab_under_test"
+                editor_tabs_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
-                await panel._run_simulation()
+                try:
+                    await simulation.run_simulation()
+                finally:
+                    editor_tabs_state.textareas_by_tab.pop("tab_under_test", None)
+                    editor_tabs_state.active_tab_id = None
+                    editor_tabs_state.active_textarea = None
 
                 assert update_called is True
                 assert update_content == "rbt.move_j([0,0,0,0,0,0])"
 
     @pytest.mark.asyncio
     async def test_run_simulation_empty_content_skips_visualization(self):
-        """_run_simulation should skip visualization when content is empty."""
-        from waldo_commander.components.editor import EditorPanel
+        """run_simulation should skip visualization when content is empty."""
+        from waldo_commander.components.simulation_engine import simulation
+        from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui"):
+        with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
-                "waldo_commander.components.editor.path_visualizer"
+                "waldo_commander.components.simulation_engine.path_visualizer"
             ) as mock_visualizer:
                 update_called = False
 
@@ -670,13 +679,19 @@ class TestEditorAutoSimulation:
 
                 mock_visualizer.update_path_visualization = mock_update
 
-                panel = EditorPanel()
-                panel.program_textarea = MagicMock()
-                panel.program_textarea.value = ""  # Empty content
+                mock_textarea = MagicMock()
+                mock_textarea.value = ""
+                editor_tabs_state.active_textarea = mock_textarea
+                editor_tabs_state.active_tab_id = "tab_under_test"
+                editor_tabs_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
-                await panel._run_simulation()
+                try:
+                    await simulation.run_simulation()
+                finally:
+                    editor_tabs_state.textareas_by_tab.pop("tab_under_test", None)
+                    editor_tabs_state.active_tab_id = None
+                    editor_tabs_state.active_textarea = None
 
-                # Should NOT call update_path_visualization for empty content
                 assert update_called is False
 
 
@@ -698,19 +713,20 @@ class TestSimulationCaching:
         ui_state.robot = old_robot
 
     def test_default_script_detected(self):
-        """_is_default_script returns True for default content, skipping simulation."""
-        from waldo_commander.components.editor import EditorPanel
+        """is_default_script returns True for default content, skipping simulation."""
+        from waldo_commander.components.simulation_engine import (
+            default_python_snippet,
+            is_default_script,
+        )
 
-        panel = EditorPanel()
-
-        default_content = panel._default_python_snippet()
-        assert panel._is_default_script(default_content) is True
+        default_content = default_python_snippet()
+        assert is_default_script(default_content) is True
 
         # Whitespace variations should still match
-        assert panel._is_default_script(default_content + "\n\n  \n") is True
+        assert is_default_script(default_content + "\n\n  \n") is True
 
         # Non-default content should not match
-        assert panel._is_default_script("rbt.move_j([0,0,0,0,0,0])") is False
+        assert is_default_script("rbt.move_j([0,0,0,0,0,0])") is False
 
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):
@@ -1251,3 +1267,445 @@ class TestSimPoseOverrideAutoClear:
             and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
         )
         assert not should_clear
+
+
+# ============================================================================
+# ScriptExecutionController Lifecycle Tests
+# ============================================================================
+
+
+class TestScriptExecutionLifecycle:
+    """Tests for ScriptExecutionController subprocess lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_start_reaps_subprocess_on_late_exception(
+        self, tmp_path, monkeypatch
+    ):
+        """If start() raises *after* run_script succeeds, the subprocess must be killed.
+
+        Without this guarantee, exceptions in the post-run_script section of start()
+        (signal_play, log_panel.expand, task creation) leak a process group.
+        """
+        from waldo_commander.components import script_execution as se
+        from waldo_commander.state import editor_tabs_state
+
+        # Long-running script: only `stop_script` (i.e. our cleanup path) can end it.
+        script_path = tmp_path / "long_running.py"
+        script_path.write_text("import time\nwhile True:\n    time.sleep(0.1)\n")
+
+        # Capture the real handle as it's returned by run_script so we can verify
+        # the subprocess gets reaped.
+        captured: dict = {}
+        real_run_script = se.run_script
+
+        async def capturing_run_script(*args, **kwargs):
+            handle = await real_run_script(*args, **kwargs)
+            captured["handle"] = handle
+            return handle
+
+        monkeypatch.setattr(se, "run_script", capturing_run_script)
+
+        # Stub UI-coupled imports so start() doesn't need a NiceGUI client context.
+        fake_client = MagicMock()
+        monkeypatch.setattr(
+            se,
+            "context",
+            type("FakeCtx", (), {"client": fake_client})(),
+        )
+        monkeypatch.setattr(se.ui, "notify", lambda *a, **k: None)
+        monkeypatch.setattr(se.log_panel, "clear", lambda: None)
+        monkeypatch.setattr(se.log_panel, "push", lambda line: None)
+
+        # Force log_panel.expand() to raise — this fires after run_script returns
+        # successfully, exercising the late-exception path.
+        def raise_expand():
+            raise RuntimeError("simulated UI failure after subprocess started")
+
+        monkeypatch.setattr(se.log_panel, "expand", raise_expand)
+
+        # Provide the active-tab widget refs start() reads from.
+        fake_textarea = MagicMock()
+        fake_textarea.value = script_path.read_text()
+        fake_filename_input = MagicMock()
+        fake_filename_input.value = script_path.name
+        editor_tabs_state.active_textarea = fake_textarea
+        editor_tabs_state.active_filename_input = fake_filename_input
+
+        # run_script reads ui_state.active_robot.backend_package; ensure it's set
+        # (matches the mock_textarea fixture's pattern).
+        old_robot = ui_state.robot
+        ui_state.robot = get_robot()
+
+        se.script_exec.set_program_dir(tmp_path)
+
+        try:
+            await se.script_exec.start()
+
+            # Contract: handle cleared, state reset.
+            assert se.script_exec.script_handle is None
+            assert simulation_state.script_running is False
+            assert simulation_state.is_playing is False
+
+            # The subprocess must be dead — this is the regression guard.
+            assert "handle" in captured, "run_script did not run; test setup is wrong"
+            proc = captured["handle"]["proc"]
+            # stop_script awaits proc.wait() after termination, so by the time
+            # start()'s except clause returns, returncode must be set.
+            assert proc.returncode is not None, (
+                f"Subprocess was leaked! PID {proc.pid} still running."
+            )
+        finally:
+            editor_tabs_state.active_textarea = None
+            editor_tabs_state.active_filename_input = None
+            ui_state.robot = old_robot
+            # Belt-and-suspenders: if the test ever ran without the fix, ensure
+            # the subprocess is killed so it doesn't leak into the next test.
+            handle = captured.get("handle")
+            if handle and handle["proc"].returncode is None:
+                from waldo_commander.services.script_runner import stop_script
+
+                await stop_script(handle)
+
+    @pytest.mark.asyncio
+    async def test_start_handles_subdir_filename(self, tmp_path, monkeypatch):
+        """Filenames with path separators (from files loaded out of subdirs) must
+        not break start()'s write to ``.runtime/<filename>``.
+
+        Regression: file tree IDs are relative paths (``str(item.relative_to(base))``),
+        so loading ``programs/sub/foo.py`` puts ``"sub/foo.py"`` in the filename
+        input. Pre-fix, ``script_path.write_text`` raised FileNotFoundError because
+        only ``.runtime`` was created, not ``.runtime/sub``.
+        """
+        from waldo_commander.components import script_execution as se
+        from waldo_commander.state import editor_tabs_state
+
+        # Stub run_script so we don't actually launch a subprocess — the bug
+        # is in the file write that happens before run_script is called.
+        async def stub_run_script(*args, **kwargs):
+            raise RuntimeError("stub: stop after file write")
+
+        monkeypatch.setattr(se, "run_script", stub_run_script)
+        monkeypatch.setattr(se.ui, "notify", lambda *a, **k: None)
+        monkeypatch.setattr(se.log_panel, "clear", lambda: None)
+        monkeypatch.setattr(se.log_panel, "push", lambda line: None)
+        monkeypatch.setattr(se.log_panel, "expand", lambda: None)
+
+        fake_textarea = MagicMock()
+        fake_textarea.value = "# subdir regression\n"
+        fake_filename_input = MagicMock()
+        fake_filename_input.value = "sub/regression.py"
+        editor_tabs_state.active_textarea = fake_textarea
+        editor_tabs_state.active_filename_input = fake_filename_input
+
+        se.script_exec.set_program_dir(tmp_path)
+
+        try:
+            await se.script_exec.start()
+
+            written = tmp_path / ".runtime" / "sub" / "regression.py"
+            assert written.exists(), f"Expected {written} to exist after start() ran"
+            assert written.read_text(encoding="utf-8") == "# subdir regression\n"
+        finally:
+            editor_tabs_state.active_textarea = None
+            editor_tabs_state.active_filename_input = None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_preserves_stepping_ipc_across_page_reload(
+        self, tmp_path, monkeypatch
+    ):
+        """Per-page ``cleanup()`` must NOT delete the stepping IPC files.
+
+        Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``
+        which deleted ``/tmp/.parol_control_X`` and ``/tmp/.parol_events_X``.
+        With the subprocess still alive, ``check_should_pause()`` then read
+        the missing control file → defaulted to ``paused=True`` →
+        ``wait_for_step_or_play`` blocked 300s per command. The script
+        effectively hung until shutdown.
+
+        After fix: ``cleanup()`` cancels only the event watcher; the step
+        controller, session id, and IPC files are preserved so the
+        subprocess can keep stepping, and ``set_ui_client`` on the next
+        page rebinds a fresh watcher to the new client.
+        """
+        from waldo_commander.components import script_execution as se
+        from waldo_commander.services.stepping_client import GUIStepController
+
+        # Simulate "script is running mid-stepping" — initialize a real
+        # step controller (which creates IPC files), then flag the
+        # simulation_state so the watcher-restart logic sees it.
+        session_id = "test_cross_reload_ipc"
+        step_controller = GUIStepController(session_id)
+        step_controller.initialize()
+
+        # Sanity: IPC files exist after initialize.
+        assert step_controller._control_file.exists()
+        assert step_controller._event_file.exists()
+
+        old_running = simulation_state.script_running
+        old_session = se.script_exec._step_session_id
+        old_controller = se.script_exec._step_controller
+        old_watcher = se.script_exec._event_watcher_task
+        old_client = se.script_exec._ui_client
+        try:
+            simulation_state.script_running = True
+            se.script_exec._step_session_id = session_id
+            se.script_exec._step_controller = step_controller
+
+            # Mock the watcher task — a never-completing coroutine that we
+            # can verify was cancelled.
+            watcher_started = asyncio.Event()
+            watcher_cancelled = asyncio.Event()
+
+            async def fake_watcher():
+                watcher_started.set()
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    watcher_cancelled.set()
+                    raise
+
+            se.script_exec._event_watcher_task = asyncio.create_task(fake_watcher())
+            await watcher_started.wait()
+
+            # Per-page disconnect cleanup
+            se.script_exec.cleanup()
+
+            await asyncio.sleep(0)  # let the cancellation propagate
+            assert watcher_cancelled.is_set(), "Watcher task was not cancelled"
+            assert se.script_exec._event_watcher_task is None
+            # Step controller + session preserved across the disconnect.
+            assert se.script_exec._step_controller is step_controller
+            assert se.script_exec._step_session_id == session_id
+            # IPC files survived.
+            assert step_controller._control_file.exists()
+            assert step_controller._event_file.exists()
+
+            # New page connecting — set_ui_client should rebind a new
+            # watcher because the subprocess is still flagged as running.
+            fake_client = MagicMock()
+            se.script_exec.set_ui_client(fake_client)
+            assert se.script_exec._event_watcher_task is not None
+            assert not se.script_exec._event_watcher_task.done()
+        finally:
+            # Drop the restarted watcher; it polls IPC files we're about
+            # to delete and would otherwise log noisy errors.
+            if (
+                se.script_exec._event_watcher_task is not None
+                and not se.script_exec._event_watcher_task.done()
+            ):
+                se.script_exec._event_watcher_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await se.script_exec._event_watcher_task
+            simulation_state.script_running = old_running
+            se.script_exec._step_session_id = old_session
+            se.script_exec._step_controller = old_controller
+            se.script_exec._event_watcher_task = old_watcher
+            se.script_exec._ui_client = old_client
+            step_controller.cleanup()
+
+    def test_import_order_script_execution_first(self):
+        """script_execution must be importable before playback (no module cycle).
+
+        Regression guard: pre-fix, ``playback.py`` did
+        ``from waldo_commander.components.script_execution import script_exec``
+        at module level, and ``script_execution.py`` reached for ``playback``
+        via a module-alias import. Importing ``script_execution`` first raised
+        ``ImportError: cannot import name 'script_exec' from partially
+        initialized module``. Other imports happened to load ``playback`` first
+        in normal runs, masking the bug. Run this in a fresh subprocess so the
+        ambient ``sys.modules`` cache can't paper over a re-introduced cycle.
+        """
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from waldo_commander.components.script_execution import script_exec; "
+                "assert script_exec is not None",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"Importing script_execution first failed:\nstdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
+
+
+# ============================================================================
+# Singleton listener-leak regression
+# ============================================================================
+
+
+def test_playback_reset_for_test_clears_listeners():
+    """``PlaybackController.setup_timers()`` runs once per page build and
+    registers both a change-channel and a step-channel listener on
+    ``simulation_state``. ``reset_for_test()`` must call ``cleanup()`` so
+    neither leaks across tests.
+    """
+    from waldo_commander.components.playback import playback
+
+    # Baseline counts after import (decorations/log_panel register in
+    # __init__ and stay registered on the change channel).
+    change_baseline = len(simulation_state._change_listeners)
+    step_baseline = len(simulation_state._step_listeners)
+
+    for _ in range(3):
+        simulation_state.add_change_listener(playback._on_state_change)
+        simulation_state.add_step_listener(playback._on_step_change)
+        playback.reset_for_test()
+
+    assert len(simulation_state._change_listeners) == change_baseline, (
+        f"Change listeners leaked: baseline={change_baseline}, "
+        f"now={len(simulation_state._change_listeners)}"
+    )
+    assert len(simulation_state._step_listeners) == step_baseline, (
+        f"Step listeners leaked: baseline={step_baseline}, "
+        f"now={len(simulation_state._step_listeners)}"
+    )
+
+
+def test_editor_panel_cleanup_removes_playback_listener():
+    """Production regression guard: ``EditorPanel.cleanup()`` (now called from
+    ``_on_disconnect``) must remove the per-page playback listener so a user
+    reloading the browser tab doesn't leak one listener per reload.
+    """
+    from waldo_commander.components.playback import playback
+    from waldo_commander.components.editor import EditorPanel
+
+    baseline = len(simulation_state._change_listeners)
+    simulation_state.add_change_listener(playback._on_state_change)
+    assert len(simulation_state._change_listeners) == baseline + 1
+
+    # Build a panel so cleanup() has something to delegate to. We only need
+    # cleanup() to fire, not build() — the playback singleton is module-level.
+    panel = EditorPanel()
+    panel.cleanup()
+
+    assert len(simulation_state._change_listeners) == baseline, (
+        f"editor_panel.cleanup() leaked: baseline={baseline}, "
+        f"now={len(simulation_state._change_listeners)}"
+    )
+
+
+def test_editor_panel_cleanup_is_idempotent():
+    """``_on_disconnect`` fires per-page; ``_on_shutdown`` also calls
+    ``editor_panel.cleanup()``. The composition must tolerate being called
+    twice without raising (Timer.cancel, Task.cancel, and
+    remove_change_listener are all expected idempotent).
+    """
+    from waldo_commander.components.editor import EditorPanel
+
+    panel = EditorPanel()
+    panel.cleanup()
+    panel.cleanup()  # second call must not raise
+
+
+# ============================================================================
+# Per-tab log routing
+# ============================================================================
+
+
+def test_script_output_appends_to_launching_tab_only():
+    """Per-tab log isolation: a script's stdout/stderr must land in the
+    output_log of the tab that started the script, regardless of which
+    tab the user is currently viewing.
+    """
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.state import EditorTab, editor_tabs_state
+
+    # Set up two tabs with empty logs.
+    tab_a = EditorTab(
+        id="tab-a", filename="a.py", file_path=None, content="", saved_content=""
+    )
+    tab_b = EditorTab(
+        id="tab-b", filename="b.py", file_path=None, content="", saved_content=""
+    )
+    editor_tabs_state.tabs = [tab_a, tab_b]
+    editor_tabs_state.active_tab_id = "tab-a"
+
+    # Script launched from tab A; record lines while user switches to B.
+    script_exec._script_tab_id = "tab-a"
+    script_exec._record_line("line1 while on A")
+    editor_tabs_state.active_tab_id = "tab-b"
+    script_exec._record_line("line2 after switching to B")
+    script_exec._record_line("line3 still on B")
+    editor_tabs_state.active_tab_id = "tab-a"
+    script_exec._record_line("line4 back on A")
+
+    assert list(tab_a.output_log) == [
+        "line1 while on A",
+        "line2 after switching to B",
+        "line3 still on B",
+        "line4 back on A",
+    ], "All script output must accumulate in the launching tab's log"
+    assert len(tab_b.output_log) == 0, "Tab B owns its own (empty) log"
+
+
+def test_record_line_caps_output_log_at_1000():
+    """``output_log`` cap must match ``ui.log(max_lines=1000)`` so the
+    tab-switch rehydrate doesn't overflow the visible widget.
+    """
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.state import EditorTab, editor_tabs_state
+
+    tab = EditorTab(
+        id="cap-tab", filename="x.py", file_path=None, content="", saved_content=""
+    )
+    editor_tabs_state.tabs = [tab]
+    editor_tabs_state.active_tab_id = "cap-tab"
+    script_exec._script_tab_id = "cap-tab"
+
+    for i in range(1100):
+        script_exec._record_line(f"line {i}")
+
+    assert len(tab.output_log) == 1000
+    assert tab.output_log[0] == "line 100", "Oldest 100 lines should be trimmed (FIFO)"
+    assert tab.output_log[-1] == "line 1099"
+
+
+def test_reset_state_clears_launching_tab_id():
+    """``_reset_state`` must clear ``_script_tab_id`` so post-completion
+    scrubbing in ``playback._apply_time`` falls back to the active tab.
+    Otherwise the executing-line highlight stays pinned to the launching
+    tab's textarea (often hidden) after the user switches tabs.
+    """
+    from waldo_commander.components.script_execution import script_exec
+
+    script_exec._script_tab_id = "tab-a"
+    assert script_exec.launching_tab_id == "tab-a"
+
+    script_exec._reset_state()
+
+    assert script_exec.launching_tab_id is None
+
+
+def test_notify_step_changed_only_fires_step_listeners():
+    """Regression: step events route through the dedicated step channel so
+    urdf_scene's ``_update_simulation_view`` (a change-channel listener)
+    doesn't re-walk segment fingerprints on every ~20Hz step event."""
+    change_count = [0]
+    step_count = [0]
+
+    def on_change():
+        change_count[0] += 1
+
+    def on_step():
+        step_count[0] += 1
+
+    simulation_state.add_change_listener(on_change)
+    simulation_state.add_step_listener(on_step)
+    try:
+        simulation_state.notify_step_changed()
+        assert step_count[0] == 1
+        assert change_count[0] == 0, "Step channel must not fire change listeners"
+
+        simulation_state.notify_changed()
+        assert change_count[0] == 1
+        assert step_count[0] == 1, "Change channel must not fire step listeners"
+    finally:
+        simulation_state.remove_change_listener(on_change)
+        simulation_state.remove_step_listener(on_step)

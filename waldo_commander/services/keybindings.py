@@ -318,8 +318,12 @@ def setup_keybindings(help_menu: Any) -> None:
 
 def _register_default_keybindings() -> None:
     """Register all default keybindings."""
+    # Local import: keybindings is in services/ and playback is in
+    # components/, so a top-level import would invert the layered
+    # dependency direction. Keep it lazy.
+    from waldo_commander.components.playback import playback
+
     cp = ui_state.control_panel
-    ep = ui_state.editor_panel
 
     # Robot Control
     keybindings_manager.register(
@@ -348,25 +352,26 @@ def _register_default_keybindings() -> None:
             key=" ",
             display="Space",
             description="Play/Pause",
-            action=lambda: asyncio.create_task(ep.playback.toggle_play()),
+            action=lambda: asyncio.create_task(playback.toggle_play()),
             category="Playback",
         )
     )
 
     keybindings_manager.register(
         Keybinding(
-            key="s",
-            display="S",
+            key="n",
+            display="N",
             description="Step forward",
-            action=lambda: ep.playback.step_forward(),
+            action=lambda: playback.step_forward(),
             category="Playback",
-            enabled_check=lambda: ep.script_running or simulation_state.total_steps > 0,
+            enabled_check=lambda: simulation_state.script_running
+            or simulation_state.total_steps > 0,
         )
     )
 
     # Cartesian Jog - WASD + Q/E
     # These are holdable: click = single step, hold = continuous jog
-    _register_cartesian_jog_keybindings(cp, ep)
+    _register_cartesian_jog_keybindings(cp)
 
     # Speed Control — delegated to control panel so the rating widget,
     # icon color, tooltip, and persisted storage stay in sync.
@@ -406,7 +411,7 @@ def _register_default_keybindings() -> None:
     )
 
 
-def _register_cartesian_jog_keybindings(cp: Any, ep: Any) -> None:
+def _register_cartesian_jog_keybindings(cp: Any) -> None:
     """Register WASD + Q/E keybindings for cartesian jogging."""
     # Map keys to axes: W/S = Y, A/D = X, Q/E = Z
     jog_key_map = {
@@ -419,9 +424,6 @@ def _register_cartesian_jog_keybindings(cp: Any, ep: Any) -> None:
     }
 
     for key, axis in jog_key_map.items():
-        # S key is context-aware: jog when not running, step when running
-        enabled_check = (lambda: not ep.script_running) if key == "s" else None
-
         keybindings_manager.register(
             Keybinding(
                 key=key,
@@ -431,7 +433,6 @@ def _register_cartesian_jog_keybindings(cp: Any, ep: Any) -> None:
                 on_release=_make_jog_release(cp, axis),
                 category="Cartesian Jog",
                 holdable=True,
-                enabled_check=enabled_check,
             )
         )
 
