@@ -19,7 +19,11 @@ import logging
 import re
 
 from nicegui import Client, ui
-from nicegui.elements.codemirror.codemirror import DecorationSpec, Diagnostic
+from nicegui.elements.codemirror.codemirror import (
+    DecorationSpec,
+    Diagnostic,
+    LineAnchor,
+)
 
 from waldo_commander.state import editor_tabs_state, simulation_state, ui_state
 
@@ -306,7 +310,7 @@ class EditorDecorations:
         textarea = editor_tabs_state.get_tab_textarea(tab_id)
         if textarea is None:
             return
-        anchors = [
+        anchors: list[LineAnchor] = [
             {"id": t.id, "line": t.line_number}
             for t in simulation_state.targets
             if t.line_number > 0

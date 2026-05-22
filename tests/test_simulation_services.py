@@ -1412,7 +1412,7 @@ class TestScriptExecutionLifecycle:
     ):
         """Per-page ``cleanup()`` must NOT delete the stepping IPC files.
 
-        Regression: pre-fix, ``cleanup()`` called ``_cleanup_stepping()``
+        Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``
         which deleted ``/tmp/.parol_control_X`` and ``/tmp/.parol_events_X``.
         With the subprocess still alive, ``check_should_pause()`` then read
         the missing control file → defaulted to ``paused=True`` →

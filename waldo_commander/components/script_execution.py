@@ -70,7 +70,7 @@ class ScriptExecutionController:
         Calls the FULL stepping teardown (deleting IPC files) — unlike
         per-page ``cleanup()`` which preserves IPC across reloads, tests
         want a fully clean slate between runs."""
-        self._cleanup_stepping()
+        self.cleanup_stepping()
         type(self).__init__(self)
 
     def set_program_dir(self, program_dir: Path) -> None:
@@ -214,7 +214,6 @@ class ScriptExecutionController:
             # Reap the subprocess if run_script succeeded before the exception
             # — otherwise the process group outlives the failed start.
             leaked_handle = self.script_handle
-            self.script_handle = None
             if leaked_handle is not None:
                 try:
                     await stop_script(leaked_handle)
@@ -223,13 +222,7 @@ class ScriptExecutionController:
                         "Failed to stop leaked subprocess after start error: %s",
                         stop_err,
                     )
-            simulation_state.script_running = False
-            self._step_session_id = None
-            if self._step_controller:
-                self._step_controller.cleanup()
-                self._step_controller = None
-            simulation_state.is_playing = False
-            simulation_state.notify_changed()
+            self._reset_state()
 
     async def stop(self) -> None:
         """Stop the running script process."""
@@ -243,7 +236,7 @@ class ScriptExecutionController:
             simulation_state.script_running = False
             simulation_state.is_playing = False
             simulation_state.notify_changed()
-            self._cleanup_stepping()
+            self.cleanup_stepping()
             if handle:
                 await stop_script(handle)
             ui.notify("Script stopped", color="warning")
@@ -342,7 +335,7 @@ class ScriptExecutionController:
         simulation_state.is_playing = False
         simulation_state.sim_pose_override = False
         simulation_state.notify_changed()
-        self._cleanup_stepping()
+        self.cleanup_stepping()
 
     def _cancel_watcher(self) -> None:
         """Cancel the event watcher task without touching step IPC state.
@@ -352,7 +345,7 @@ class ScriptExecutionController:
             self._event_watcher_task.cancel()
         self._event_watcher_task = None
 
-    def _cleanup_stepping(self) -> None:
+    def cleanup_stepping(self) -> None:
         """Full stepping teardown — cancel watcher, deinit step controller,
         delete IPC files. Used on script completion or stop."""
         self._cancel_watcher()

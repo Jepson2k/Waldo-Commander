@@ -6,11 +6,11 @@ line-tooltips, and target anchors are pushed directly to the ``decorations``
 singleton (the strings are consumed by exactly one listener, so a state
 round-trip would be ceremony).
 
-Calls into ``playback`` are direct, not listener-based, because
-``bindable_dataclass`` field assignment doesn't fire
-``ChangeNotifierMixin._change_listeners``. Loading-progress visibility,
-timeline invalidation, and scrub-segment rebuilds therefore call
-``playback.X(...)`` explicitly after the simulation completes.
+Calls into ``playback`` are direct rather than listener-routed because
+the three things this module triggers — loading-progress visibility,
+timeline cache invalidation, and scrub-segment rebuild — are imperative
+UI operations, not state mutations. Inventing pseudo-state fields just
+to drive a listener would be more ceremony than the direct call.
 """
 
 from __future__ import annotations

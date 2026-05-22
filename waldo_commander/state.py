@@ -636,6 +636,7 @@ class EditorTabsState(ChangeNotifierMixin):
         self.active_tab_id = None
         self.active_textarea = None
         self.active_filename_input = None
+        self.textareas_by_tab.clear()
 
 
 @dataclass

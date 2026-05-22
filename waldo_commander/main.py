@@ -1011,7 +1011,7 @@ def _register_handlers() -> None:
                 await stop_script(script_exec.script_handle, timeout=2.0)
                 script_exec.script_handle = None
                 simulation_state.script_running = False
-                script_exec._cleanup_stepping()
+                script_exec.cleanup_stepping()
         except Exception as e:
             logger.warning("Error stopping script during shutdown: %s", e)
 
