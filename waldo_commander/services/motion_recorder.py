@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import waldoctl
+
 from waldo_commander.state import (
     editor_tabs_state,
     recording_state,
@@ -174,8 +176,8 @@ class MotionRecorder:
             angles = self._get_current_angles()
             if not self._matches_sim_end(angles):
                 args = ", ".join(f"{a:.2f}" for a in angles)
-                spd = ui_state.jog_speed / 100.0
-                acc = ui_state.jog_accel / 100.0
+                spd = waldoctl.commander.settings.jog.speed / 100.0
+                acc = waldoctl.commander.settings.jog.accel / 100.0
                 anchor_snippet = f"rbt.move_j([{args}], speed={spd}, accel={acc})  # Recording start position"
                 self._insert_snippet(anchor_snippet)
                 logger.info(
@@ -244,16 +246,16 @@ class MotionRecorder:
         """
         if action_type == "move_j":
             angles = params["angles"]
-            spd = ui_state.jog_speed / 100.0
-            acc = ui_state.jog_accel / 100.0
+            spd = waldoctl.commander.settings.jog.speed / 100.0
+            acc = waldoctl.commander.settings.jog.accel / 100.0
             args = ", ".join(f"{a:.2f}" for a in angles)
             wait_str = ", wait=False" if not params.get("wait", True) else ""
             return f"rbt.move_j([{args}], speed={spd}, accel={acc}{wait_str})"
 
         elif action_type == "move_l":
             pose = params["pose"]
-            spd = ui_state.jog_speed / 100.0
-            acc = ui_state.jog_accel / 100.0
+            spd = waldoctl.commander.settings.jog.speed / 100.0
+            acc = waldoctl.commander.settings.jog.accel / 100.0
             args = ", ".join(f"{p:.3f}" for p in pose)
             wait_str = ", wait=False" if not params.get("wait", True) else ""
             return f"rbt.move_l([{args}], speed={spd}, accel={acc}{wait_str})"

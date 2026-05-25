@@ -9,6 +9,7 @@ import asyncio
 import os
 
 import pytest
+import waldoctl
 from nicegui.testing import User
 from waldoctl import ActionState
 
@@ -82,7 +83,6 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
     the joint by approximately the configured step size using move_j.
     Tests both positive and negative directions.
     """
-    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -90,7 +90,7 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
     await ensure_robot_ready_for_motion(robot_state)
 
     # --- Part 1: Positive direction ---
-    ui_state.joint_step_deg = 5.0
+    waldoctl.commander.settings.jog.joint_step_deg = 5.0
     initial_j1 = await wait_for_motion_stable(lambda: robot_state.angles[0])
 
     # Click J1 plus button (single click, not hold)
@@ -103,7 +103,7 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
     assert 4.9 <= delta <= 5.1, f"Expected J1 to move +5.0°±0.1°, moved {delta:.2f}°"
 
     # --- Part 2: Negative direction ---
-    ui_state.joint_step_deg = 3.0
+    waldoctl.commander.settings.jog.joint_step_deg = 3.0
     initial_j1 = await wait_for_motion_stable(lambda: robot_state.angles[0])
 
     # Click J1 minus button (mousedown/mouseup pair — jog buttons don't listen for raw click)
@@ -124,7 +124,6 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     When a cartesian jog button is clicked briefly (not held), it should move
     the TCP by approximately the configured step size using move_l.
     """
-    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -141,7 +140,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
         await asyncio.sleep(0.1)
 
     # --- Part 1: Z+ translation ---
-    ui_state.joint_step_deg = 10.0
+    waldoctl.commander.settings.jog.joint_step_deg = 10.0
     await wait_for_motion_stable(
         lambda: float(robot_state.z), tolerance=0.05, stable_ticks=30
     )
@@ -157,7 +156,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     )
 
     # --- Part 2: Z- translation ---
-    ui_state.joint_step_deg = 5.0
+    waldoctl.commander.settings.jog.joint_step_deg = 5.0
     await wait_for_motion_stable(
         lambda: float(robot_state.z), tolerance=0.1, stable_ticks=20
     )
@@ -171,7 +170,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     assert 4.9 <= delta <= 5.1, f"Expected Z to move -5.0mm±0.1mm, moved {delta:.2f}mm"
 
     # --- Part 3: RZ+ rotation ---
-    ui_state.joint_step_deg = 2.0
+    waldoctl.commander.settings.jog.joint_step_deg = 2.0
     await wait_for_motion_stable(
         lambda: float(robot_state.rz), tolerance=0.1, stable_ticks=20
     )
@@ -205,7 +204,7 @@ async def test_joint_jog_one_degree_step(user: User, robot_state) -> None:
     await ui_state.control_panel.client.select_profile("TOPPRA")
 
     # Set step size to 1.0 degrees
-    ui_state.joint_step_deg = 1.0
+    waldoctl.commander.settings.jog.joint_step_deg = 1.0
 
     # Wait for robot to be completely stable
     initial_j1 = await wait_for_motion_stable(
@@ -245,7 +244,7 @@ async def test_cartesian_jog_one_mm_step(user: User, robot_state) -> None:
     await asyncio.sleep(0.1)
 
     # Set step size to 1.0mm
-    ui_state.joint_step_deg = 1.0
+    waldoctl.commander.settings.jog.joint_step_deg = 1.0
 
     # Wait for robot to be completely stable
     initial_z = await wait_for_motion_stable(
@@ -285,7 +284,7 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state) -> None:
     await ui_state.control_panel.client.select_profile("TOPPRA")
 
     # Set step size to 1.0 degrees
-    ui_state.joint_step_deg = 1.0
+    waldoctl.commander.settings.jog.joint_step_deg = 1.0
     num_clicks = 5
     expected_total = num_clicks * 1.0
 
@@ -344,7 +343,7 @@ async def test_cartesian_jog_rapid_clicks(user: User, robot_state) -> None:
     await asyncio.sleep(0.1)
 
     # Set step size to 2.0mm (slightly larger for clearer signal)
-    ui_state.joint_step_deg = 2.0
+    waldoctl.commander.settings.jog.joint_step_deg = 2.0
     num_clicks = 5
     expected_total = num_clicks * 2.0
 

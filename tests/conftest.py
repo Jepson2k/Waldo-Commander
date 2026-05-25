@@ -443,6 +443,36 @@ def robot_state():
     return state_module.robot_state
 
 
+class _StubClient:
+    """Raises if a test accidentally reaches for ``commander.client``."""
+
+    def __getattr__(self, name: str) -> object:
+        raise NotImplementedError(
+            f"_StubClient.{name} — unit tests should not use commander.client"
+        )
+
+
+def _install_test_commander() -> None:
+    """Register a minimal ``Commander`` for tests that exercise WC code
+    without starting the full NiceGUI app. Idempotent; re-registers a fresh
+    Commander each call so per-test isolation matches state resets.
+    """
+    import waldoctl
+    from waldoctl import Commander, ProgramTabs, RobotStatus, Settings
+
+    from waldo_commander.profiles import get_robot
+
+    waldoctl._set_commander(
+        Commander(
+            robot=get_robot(),
+            client=_StubClient(),  # type: ignore[arg-type]
+            status=RobotStatus(),
+            programs=ProgramTabs(),
+            settings=Settings(),
+        )
+    )
+
+
 @pytest.fixture(autouse=True)
 def reset_state(request: pytest.FixtureRequest):
     """Reset all shared state between tests for isolation.
@@ -464,6 +494,11 @@ def reset_state(request: pytest.FixtureRequest):
     # Mark first visit and safety as acknowledged so dialogs don't appear
     ng_app.storage.general[HelpMenu.FIRST_VISIT_KEY] = True
     ng_app.storage.general[HelpMenu.SAFETY_ACKNOWLEDGED_KEY] = True
+
+    # Reinstall a fresh Commander before reset_all_state() runs — live-app
+    # tests' shutdown hook clears the locator, so unit tests that follow
+    # would otherwise hit the "not initialised" RuntimeError.
+    _install_test_commander()
 
     reset_all_state()
 

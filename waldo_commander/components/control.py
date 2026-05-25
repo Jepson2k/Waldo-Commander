@@ -13,6 +13,7 @@ import importlib.resources as pkg_resources
 import numpy as np
 
 from nicegui import ui, app, Client
+import waldoctl
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
@@ -284,7 +285,7 @@ class _ToolQuickActions:
             robot_state.tool_key,
             robot_state.tool_position,
             robot_state.tool_engaged,
-            ui_state.gripper_current,
+            waldoctl.commander.settings.gripper.current,
         )
         if visual_key == self._last_visual:
             return
@@ -356,7 +357,7 @@ class _ToolQuickActions:
                 self._adjust_minus_btn.classes(add="cp-disabled-strong")
                 self._adjust_plus_btn.classes(add="cp-disabled-strong")
             else:
-                cur = ui_state.gripper_current
+                cur = waldoctl.commander.settings.gripper.current
                 step = tool.adjust_step
                 # Disable at limits
                 if isinstance(tool, ElectricGripperTool):
@@ -397,8 +398,8 @@ class _ToolQuickActions:
             if isinstance(tool, GripperTool):
                 spd_kwargs: dict = {}
                 if isinstance(tool, ElectricGripperTool):
-                    spd_kwargs["speed"] = ui_state.jog_speed / 100.0
-                    spd_kwargs["current"] = ui_state.gripper_current
+                    spd_kwargs["speed"] = waldoctl.commander.settings.jog.speed / 100.0
+                    spd_kwargs["current"] = waldoctl.commander.settings.gripper.current
                 if tool.is_open(robot_state.tool_position):
                     target = 1.0  # close
                 else:
@@ -406,7 +407,7 @@ class _ToolQuickActions:
                 if ui_state.gripper_page is not None:
                     ui_state.gripper_page.set_target_position(target)
                 else:
-                    ui_state.tool_target_position = target
+                    waldoctl.commander.settings.gripper.target_position = target
                 await tool.set_position(target, **spd_kwargs)
                 motion_recorder.record_action("gripper", position=target, **spd_kwargs)
             else:
@@ -437,13 +438,13 @@ class _ToolQuickActions:
             return
         step = tool.adjust_step * direction
         lo, hi = tool.current_range
-        new_cur = max(lo, min(hi, ui_state.gripper_current + step))
+        new_cur = max(lo, min(hi, waldoctl.commander.settings.gripper.current + step))
         if ui_state.gripper_page is not None:
             ui_state.gripper_page.set_target_current(new_cur)
         else:
-            ui_state.gripper_current = new_cur
+            waldoctl.commander.settings.gripper.current = new_cur
         try:
-            pos = ui_state.tool_target_position
+            pos = waldoctl.commander.settings.gripper.target_position
             await tool.set_position(pos, current=new_cur)
             motion_recorder.record_action("gripper", position=pos, current=new_cur)
         except Exception as e:
@@ -555,12 +556,12 @@ def _safe_task(coro: Any) -> asyncio.Task:
 
 def _norm_speed() -> float:
     """Normalize jog_speed (0-100 slider) to 0.01..1.0 range."""
-    return max(0.01, min(1.0, ui_state.jog_speed / 100.0))
+    return max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
 
 
 def _norm_accel() -> float:
     """Normalize jog_accel (0-100 slider) to 0.0..1.0 range."""
-    return ui_state.jog_accel / 100.0
+    return waldoctl.commander.settings.jog.accel / 100.0
 
 
 class ControlPanel:
@@ -927,11 +928,11 @@ class ControlPanel:
             and not simulation_state.script_running
         )
         if not jog_possible and not self._gizmo_auto_hidden:
-            if ui_state.urdf_scene and ui_state.gizmo_visible:
+            if ui_state.urdf_scene and waldoctl.commander.settings.view.gizmo_visible:
                 ui_state.urdf_scene.set_gizmo_visible(False)
                 self._gizmo_auto_hidden = True
         elif jog_possible and self._gizmo_auto_hidden:
-            if ui_state.urdf_scene and ui_state.gizmo_visible:
+            if ui_state.urdf_scene and waldoctl.commander.settings.view.gizmo_visible:
                 ui_state.urdf_scene.set_gizmo_visible(True)
             self._gizmo_auto_hidden = False
 
@@ -1007,7 +1008,7 @@ class ControlPanel:
         async def on_click():
             speed = _norm_speed()
             accel = _norm_accel()
-            step = abs(float(ui_state.joint_step_deg))
+            step = abs(float(waldoctl.commander.settings.jog.joint_step_deg))
             try:
                 angles = list(robot_state.angles.deg)
                 if len(angles) >= self._n_joints:
@@ -1104,7 +1105,9 @@ class ControlPanel:
 
         async def on_click():
             speed = _norm_speed()
-            step = max(0.1, min(100.0, float(ui_state.joint_step_deg)))
+            step = max(
+                0.1, min(100.0, float(waldoctl.commander.settings.jog.joint_step_deg))
+            )
             try:
                 axis_letter = axis.rstrip("+-")
                 direction = 1.0 if axis.endswith("+") else -1.0
@@ -1356,7 +1359,9 @@ class ControlPanel:
         """Sync gizmo state to URDF scene after it's initialized (called once after scene is ready)."""
         if ui_state.urdf_scene:
             # Apply current gizmo visibility
-            ui_state.urdf_scene.set_gizmo_visible(ui_state.gizmo_visible)
+            ui_state.urdf_scene.set_gizmo_visible(
+                waldoctl.commander.settings.view.gizmo_visible
+            )
             # Apply current gizmo mode (default is Move/TRANSLATE)
             ui_state.urdf_scene.set_gizmo_display_mode("TRANSLATE")
             # Fixed WRF orientation for cartesian UI layout
@@ -1391,7 +1396,7 @@ class ControlPanel:
 
     async def on_gizmo_toggle(self, visible: bool) -> None:
         """Toggle gizmo visibility and TCP TransformControls."""
-        ui_state.gizmo_visible = bool(visible)
+        waldoctl.commander.settings.view.gizmo_visible = bool(visible)
         if ui_state.urdf_scene is None:
             logger.warning("Cannot toggle gizmo: URDF scene not initialized")
             return
@@ -1665,7 +1670,7 @@ class ControlPanel:
                             def check_lower_limit(a, i=idx, lo=lo):
                                 if len(a) <= i:
                                     return False
-                                step = ui_state.joint_step_deg
+                                step = waldoctl.commander.settings.jog.joint_step_deg
                                 return a[i] - step >= lo
 
                             left_btn.bind_enabled_from(
@@ -1695,7 +1700,7 @@ class ControlPanel:
                             def check_upper_limit(a, i=idx, hi=hi):
                                 if len(a) <= i:
                                     return False
-                                step = ui_state.joint_step_deg
+                                step = waldoctl.commander.settings.jog.joint_step_deg
                                 return a[i] + step <= hi
 
                             right_btn.bind_enabled_from(
@@ -1836,6 +1841,19 @@ class ControlPanel:
                     self._settings_content = SettingsContent(self.client)
                     self._settings_content.build_embedded()
 
+    _PREF_TARGETS = {
+        "jog_speed": ("jog", "speed"),
+        "jog_accel": ("jog", "accel"),
+    }
+
+    @classmethod
+    def _resolve_pref(cls, ui_attr: str) -> tuple[Any, str]:
+        """Map a legacy rating-row name (``jog_speed`` / ``jog_accel``) onto
+        the live ``commander.settings`` leaf — returns ``(target_obj, attr)``.
+        """
+        group, attr = cls._PREF_TARGETS[ui_attr]
+        return getattr(waldoctl.commander.settings, group), attr
+
     def _build_rating_row(
         self,
         *,
@@ -1847,12 +1865,15 @@ class ControlPanel:
         format_tooltip: Callable[[float], str],
     ) -> None:
         """Build a 10-step rating row (speed or acceleration) with persistence."""
+        target_obj, target_attr = self._resolve_pref(ui_attr)
         with ui.row().classes("items-center gap-2 w-full"):
             icon = ui.icon(icon_name, size="md", color=default_color)
             with icon:
                 tooltip = ui.tooltip(storage_key.replace("_", " ").title())
-            stored = app.storage.general.get(storage_key, getattr(ui_state, ui_attr))
-            setattr(ui_state, ui_attr, stored)
+            stored = app.storage.general.get(
+                storage_key, getattr(target_obj, target_attr)
+            )
+            setattr(target_obj, target_attr, stored)
             v_init = max(1, min(10, round(int(stored) / self._RATING_UNIT)))
 
             rating = ui.rating(max=10, icon="circle", size="16px", value=v_init).props(
@@ -1865,6 +1886,8 @@ class ControlPanel:
                 "colors": colors,
                 "format_tooltip": format_tooltip,
                 "storage_key": storage_key,
+                "target_obj": target_obj,
+                "target_attr": target_attr,
             }
 
             # Click on the rating dispatches the new step value (1..10) as
@@ -1892,7 +1915,7 @@ class ControlPanel:
             return
         step = max(1, min(10, step))
         new_value = step * self._RATING_UNIT
-        setattr(ui_state, ui_attr, new_value)
+        setattr(refs["target_obj"], refs["target_attr"], new_value)
         app.storage.general[refs["storage_key"]] = new_value
         if sync_widget:
             refs["rating"].value = step
@@ -1903,7 +1926,10 @@ class ControlPanel:
         """Adjust a rating-row backed value (jog_speed/jog_accel) by delta
         and sync the widget. Used by the [/] keybindings so keyboard
         adjustments behave the same as clicking the rating."""
-        current = int(getattr(ui_state, ui_attr, 0))
+        refs = self._rating_widgets.get(ui_attr)
+        if refs is None:
+            return
+        current = int(getattr(refs["target_obj"], refs["target_attr"], 0))
         step = round((current + delta) / self._RATING_UNIT)
         self._set_rating_step(ui_attr, step)
 
@@ -2103,7 +2129,7 @@ class ControlPanel:
                 ui.label("Step:").classes("text-white")
                 self._step_input = (
                     ui.number(
-                        value=ui_state.joint_step_deg,
+                        value=waldoctl.commander.settings.jog.joint_step_deg,
                         min=1,
                         max=100.0,
                         step=1,
@@ -2114,7 +2140,7 @@ class ControlPanel:
                         'dense borderless hide-bottom-space input-style="text-align:right"'
                     )
                     .classes("step-input")
-                    .bind_value(ui_state, "joint_step_deg")
+                    .bind_value(waldoctl.commander.settings.jog, "joint_step_deg")
                 )
                 with self._step_input:
                     self._step_input_tooltip = ui.tooltip("Step size in degrees")

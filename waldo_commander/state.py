@@ -485,18 +485,8 @@ class UiState:
     urdf_index_mapping: list[int] = field(default_factory=lambda: list(range(6)))
     current_tool_stls: list[Any] = field(default_factory=list)
 
-    # Control panel UI state
-    jog_speed: int = 50
-    jog_accel: int = 50
-    incremental_jog: bool = False
-    joint_step_deg: float = 1.0
-    gizmo_visible: bool = True
-
-    # Gripper panel state
-    gripper_speed_sync: bool = True
-    gripper_speed: int = 50
-    gripper_current: int = 500
-    tool_target_position: float = 0.0
+    # User preferences (jog speed/accel/step, gripper speed/current/sync, gizmo visibility)
+    # now live on ``commander.settings.{jog, gripper, view}`` (waldoctl).
 
     # Camera device: -1 = disabled, int = device index, str = device name
     camera_device: int | str = -1

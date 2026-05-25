@@ -7,7 +7,9 @@ import time
 import uuid
 from typing import Any, Callable
 
+import waldoctl
 from nicegui import context, ui
+
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import REPO_ROOT
 from waldo_commander.state import (
@@ -85,13 +87,13 @@ class EditorPanel(FileOperationsMixin):
         if method_name in utility_snippets:
             snippet = utility_snippets[method_name]
         elif method_name == "move_j":
-            speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
-            accel = max(0.01, min(1.0, ui_state.jog_accel / 100.0))
+            speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
+            accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
             angles = list(robot_state.angles.deg)
             snippet = f"rbt.move_j({angles}, speed={speed}, accel={accel})"
         elif method_name == "move_l":
-            speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
-            accel = max(0.01, min(1.0, ui_state.jog_accel / 100.0))
+            speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
+            accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
             x, y, z = robot_state.x, robot_state.y, robot_state.z
             rx, ry, rz = robot_state.rx, robot_state.ry, robot_state.rz
             snippet = (
@@ -243,8 +245,8 @@ class EditorPanel(FileOperationsMixin):
         if not textarea:
             return None
 
-        speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
-        accel = max(0.01, min(1.0, ui_state.jog_accel / 100.0))
+        speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
+        accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
 
         pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose) + "]"
 
