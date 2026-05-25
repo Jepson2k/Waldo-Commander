@@ -8,8 +8,11 @@ from pathlib import Path
 
 from nicegui import ui
 
+import waldoctl
+from waldoctl import ActionStatus
+
 from waldo_commander.common.theme import IO_COLOR_OFF, IO_COLOR_ON
-from waldo_commander.state import ActionStatus, action_log, robot_state, ui_state
+from waldo_commander.state import robot_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +85,7 @@ _TIP_TEXT = random.choice(_TIPS)
 def _build_log_entries_html() -> str:
     """Build HTML for all action log entries."""
     parts: list[str] = []
-    for entry in reversed(action_log.entries):
+    for entry in reversed(waldoctl.commander.status.action.history):
         icon = _STATUS_ICONS.get(entry.status, "")
         count = (
             f" <span style='color:var(--ctk-muted)'>\u00d7{entry.count}</span>"
@@ -138,7 +141,11 @@ class ReadoutPanel:
         self._last_tool_key: str | None = None
         self._last_io_inputs: list[int] | None = None
         self._last_io_outputs: list[int] | None = None
-        self._last_log_version: int = -1
+
+        # commander.status.action change-listener for the action log. Bound at
+        # build time (when the scroll-area widget exists); kept here so cleanup
+        # can remove it on shutdown.
+        self._action_log_listener_bound: bool = False
 
     def update_conn_io(self) -> None:
         """Update connection face and IO status. Called from status consumer."""
@@ -210,19 +217,26 @@ class ReadoutPanel:
                         chip.props(f"color={color}")
 
     def update_action_log(self) -> None:
-        """Update the action log scroll area. Called from status consumer."""
-        if not self._action_scroll_area:
-            return
+        """Rebuild the action log scroll area from ``commander.status.action``.
 
-        version = action_log.version
-        if version == self._last_log_version:
+        Bound as a change-listener on ``commander.status.action`` once the
+        scroll-area widget is built; fires only when the log actually mutates.
+        """
+        if not self._action_scroll_area or not self._action_log_html:
             return
-        self._last_log_version = version
+        self._action_log_html.set_content(_build_log_entries_html())
+        self._action_scroll_area.scroll_to(percent=0.0)
 
-        # Rebuild log entries (newest first) and scroll to top
-        if self._action_log_html:
-            self._action_log_html.set_content(_build_log_entries_html())
-            self._action_scroll_area.scroll_to(percent=0.0)
+    def _bind_action_log_listener(self) -> None:
+        """Subscribe to ``commander.status.action`` for incremental rebuilds.
+
+        Called once from build time (after the scroll-area widget exists and
+        after ``commander`` is registered). Idempotent.
+        """
+        if self._action_log_listener_bound:
+            return
+        waldoctl.commander.status.action.add_change_listener(self.update_action_log)
+        self._action_log_listener_bound = True
 
     def _toggle_action_log(self) -> None:
         """Toggle action log between collapsed and expanded."""
@@ -424,5 +438,7 @@ class ReadoutPanel:
                             "w-full"
                         )
 
-                # Initial action log (conn_io is synced after URDF init in _init())
+                # Subscribe to action-log updates and seed the initial state
+                # (conn_io is synced after URDF init in _init()).
+                self._bind_action_log_listener()
                 self.update_action_log()

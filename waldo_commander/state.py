@@ -710,127 +710,10 @@ class ReadinessState:
 
 
 # ===========================================================================
-# Action Log
+# Action log — moved to ``waldo_commander.services.action_log`` and the
+# data fields (``ActionStatus`` / ``ActionLogEntry`` / ``history``) now live
+# on ``commander.status.action`` from waldoctl. Nothing remains here.
 # ===========================================================================
-
-
-class ActionStatus(Enum):
-    EXECUTING = "executing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-@dataclass
-class ActionLogEntry:
-    """Single entry in the action log."""
-
-    command_name: str
-    params: str = ""
-    status: ActionStatus = ActionStatus.EXECUTING
-    command_index: int = -1
-    count: int = 1
-    timestamp: float = 0.0
-
-
-class ActionLog:
-    """Session-scoped action log with coalescing of repeated commands."""
-
-    def __init__(self, max_entries: int = 200) -> None:
-        self._entries: deque[ActionLogEntry] = deque(maxlen=max_entries)
-        self._last_executing_index: int = -1
-        self._last_completed_index: int = -1
-        self._version: int = 0
-
-    @property
-    def entries(self) -> deque[ActionLogEntry]:
-        return self._entries
-
-    @property
-    def version(self) -> int:
-        return self._version
-
-    @property
-    def latest(self) -> ActionLogEntry | None:
-        return self._entries[-1] if self._entries else None
-
-    def process_status(
-        self,
-        action_current: str,
-        action_params: str,
-        action_state: ActionState,
-        executing_index: int,
-        completed_index: int,
-    ) -> bool:
-        """Process a status update, returning True if the log changed."""
-        changed = False
-
-        # Detect new command starting
-        if (
-            executing_index > self._last_executing_index
-            and action_state == ActionState.EXECUTING
-        ):
-            name = action_current.removesuffix("Command")
-            latest = self.latest
-            if (
-                latest
-                and latest.command_name == name
-                and latest.params == action_params
-                and latest.status == ActionStatus.COMPLETED
-            ):
-                latest.count += 1
-                latest.status = ActionStatus.EXECUTING
-                latest.command_index = executing_index
-                latest.timestamp = time.time()
-            else:
-                self._entries.append(
-                    ActionLogEntry(
-                        command_name=name,
-                        params=action_params,
-                        command_index=executing_index,
-                        timestamp=time.time(),
-                    )
-                )
-            self._last_executing_index = executing_index
-            changed = True
-
-        # Detect command completion
-        if completed_index > self._last_completed_index:
-            matched = False
-            for entry in reversed(self._entries):
-                if entry.command_index == completed_index:
-                    entry.status = ActionStatus.COMPLETED
-                    matched = True
-                    break
-            # Coalesced entries may have overwritten command_index;
-            # fall back to marking the latest EXECUTING entry as completed
-            if not matched and self._entries:
-                for entry in reversed(self._entries):
-                    if entry.status == ActionStatus.EXECUTING:
-                        entry.status = ActionStatus.COMPLETED
-                        break
-            self._last_completed_index = completed_index
-            changed = True
-
-        # Detect failure (action goes IDLE but completed_index didn't advance)
-        if (
-            action_state != ActionState.EXECUTING
-            and self._entries
-            and self._entries[-1].status == ActionStatus.EXECUTING
-            and completed_index == self._last_completed_index
-            and executing_index == self._last_executing_index
-        ):
-            self._entries[-1].status = ActionStatus.FAILED
-            changed = True
-
-        if changed:
-            self._version += 1
-        return changed
-
-    def clear(self) -> None:
-        self._entries.clear()
-        self._last_executing_index = -1
-        self._last_completed_index = -1
-        self._version += 1
 
 
 # Module-level singletons
@@ -841,7 +724,6 @@ simulation_state: SimulationState = SimulationState()
 recording_state: RecordingState = RecordingState()
 readiness_state: ReadinessState = ReadinessState()
 editor_tabs_state: EditorTabsState = EditorTabsState()
-action_log: ActionLog = ActionLog()
 
 
 def reset_all_state() -> None:
@@ -853,7 +735,10 @@ def reset_all_state() -> None:
     recording_state.reset()
     readiness_state.reset()
     editor_tabs_state.reset()
-    action_log.clear()
+    # Action log now lives on commander.status.action; the service drops it.
+    from waldo_commander.services.action_log import action_log_service
+
+    action_log_service.clear()
 
 
 # Global timing instrumentation - import and use from any module

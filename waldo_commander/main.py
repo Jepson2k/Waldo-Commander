@@ -63,9 +63,9 @@ from waldo_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
+from waldo_commander.services.action_log import action_log_service
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
-    action_log,
     robot_state,
     controller_state,
     simulation_state,
@@ -1378,14 +1378,13 @@ async def _status_consumer() -> None:
 
                             # Update panels
                             readout_panel.update_conn_io()
-                            action_log.process_status(
+                            action_log_service.process_status(
                                 robot_state.action_current,
                                 robot_state.action_params,
                                 robot_state.action_state,
                                 robot_state.executing_index,
                                 robot_state.completed_index,
                             )
-                            readout_panel.update_action_log()
                             control_panel.refresh_joint_enablement()
                             control_panel.sync_cartesian_button_states()
                             control_panel.sync_gizmo_for_jog_state()
