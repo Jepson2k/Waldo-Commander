@@ -16,7 +16,16 @@ from pathlib import Path
 
 import numpy as np
 from nicegui import Client, app as ng_app, ui
-from waldoctl import GripperTool, LinearMotion, RobotClient
+import waldoctl
+from waldoctl import (
+    Commander,
+    GripperTool,
+    LinearMotion,
+    ProgramTabs,
+    RobotClient,
+    RobotStatus,
+    Settings,
+)
 
 from waldo_commander.common.logging_config import (
     attach_ui_log,
@@ -1073,6 +1082,11 @@ def _register_handlers() -> None:
             if t is not threading.current_thread():
                 logger.debug("Alive thread: name=%s daemon=%s", t.name, t.daemon)
 
+        # Drop the locator last — any consumer still alive after this point
+        # will get the clear "commander not initialised" RuntimeError instead
+        # of dotting into a torn-down Commander.
+        waldoctl._clear_commander()
+
 
 # Register handlers at module load
 _register_handlers()
@@ -1493,6 +1507,21 @@ def main():
     ui_state.control_panel = control_panel
     ui_state.editor_panel = editor_panel
     ui_state.readout_panel = readout_panel
+
+    # Assemble the public Commander locator. Populated here (post panel
+    # construction) so consumers can reach robot / client / live status /
+    # programs / settings through `waldoctl.commander.*` from anywhere.
+    # Sub-objects are constructed with defaults; the status loop populates
+    # `commander.status` on each tick, the editor populates `commander.programs`
+    # as tabs open, and the settings panel binds to `commander.settings`.
+    commander = Commander(
+        robot=robot,
+        client=client,
+        status=RobotStatus(),
+        programs=ProgramTabs(),
+        settings=Settings(),
+    )
+    waldoctl._set_commander(commander)
 
     # Configure logging
     configure_logging(config.log_level)
