@@ -22,8 +22,11 @@ import numpy as np
 from nicegui import app, ui, run
 from nicegui.events import SceneClipPlane
 
+import waldoctl
+from waldoctl import EnvelopeMode
+
 from waldo_commander.common.theme import SceneColors
-from waldo_commander.state import EnvelopeMode, simulation_state, robot_state
+from waldo_commander.state import simulation_state, robot_state
 
 
 logger = logging.getLogger(__name__)
@@ -638,7 +641,7 @@ class EnvelopeRenderer:
         For OFF/ON modes, only acts on mode transitions (not every tick).
         For AUTO, checks TCP proximity to the boundary each tick.
         """
-        mode = simulation_state.envelope_mode
+        mode = waldoctl.commander.settings.view.envelope_mode
 
         if mode is EnvelopeMode.OFF:
             if self._envelope_visible:

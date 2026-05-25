@@ -3,7 +3,6 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Callable, TYPE_CHECKING
 
 import numpy as np
@@ -11,14 +10,6 @@ from nicegui import binding
 from waldoctl import ActionState, ToolStatus
 
 from waldo_commander.common.loop_timer import PhaseTimer
-
-
-class EnvelopeMode(Enum):
-    """Workspace envelope visibility modes."""
-
-    AUTO = "auto"
-    ON = "on"
-    OFF = "off"
 
 
 logger = logging.getLogger(__name__)
@@ -270,9 +261,7 @@ class SimulationState(ChangeNotifierMixin):
     total_steps: int = 0
     is_playing: bool = False
     playback_speed: float = 1.0  # Multiplier
-    preview_mode: bool = False  # True=Dry Run, False=Real Execute
     paths_visible: bool = True
-    envelope_mode: EnvelopeMode = EnvelopeMode.AUTO
     active_cursor_line: int = 0  # 1-indexed editor cursor line, 0 = none
     sim_playback_time: float = 0.0  # Current playback position (seconds)
     sim_total_duration: float = 0.0  # Total timeline duration (seconds)
@@ -301,9 +290,7 @@ class SimulationState(ChangeNotifierMixin):
         self.total_steps = 0
         self.is_playing = False
         self.playback_speed = 1.0
-        self.preview_mode = False
         self.paths_visible = True
-        self.envelope_mode = EnvelopeMode.AUTO
         self.active_cursor_line = 0
         self.sim_playback_time = 0.0
         self.sim_total_duration = 0.0

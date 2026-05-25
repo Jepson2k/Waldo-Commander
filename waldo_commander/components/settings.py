@@ -6,14 +6,15 @@ from contextlib import contextmanager
 from nicegui import app as ng_app
 from nicegui import ui
 
-from waldoctl import RobotClient
+import waldoctl
+from waldoctl import EnvelopeMode, RobotClient
 
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
-from waldo_commander.state import EnvelopeMode, robot_state, simulation_state, ui_state
+from waldo_commander.state import robot_state, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +277,7 @@ class SettingsContent:
     def _build_envelope(self, prefs: dict) -> None:
         async def _on_envelope_mode_change(e):
             mode = EnvelopeMode(e.value)
-            simulation_state.envelope_mode = mode
+            waldoctl.commander.settings.view.envelope_mode = mode
             ng_app.storage.general["envelope_mode"] = mode.value
             simulation_state.notify_changed()
 
@@ -287,7 +288,7 @@ class SettingsContent:
                 on_change=_on_envelope_mode_change,
             ).classes("w-24").props("dense").mark("select-envelope-mode")
 
-        simulation_state.envelope_mode = prefs["envelope_mode"]
+        waldoctl.commander.settings.view.envelope_mode = prefs["envelope_mode"]
 
     def _build_tool_section(self) -> None:
         async def _on_tool_change(e):
