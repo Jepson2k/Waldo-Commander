@@ -468,7 +468,10 @@ class EditorPanel(FileOperationsMixin):
             if self.tabs_container and waldoctl.commander.programs.active_id:
                 self.tabs_container.set_value(waldoctl.commander.programs.active_id)
             return
-        if is_any_program_running() and simulation_state.is_playing:
+        active_for_lock = waldoctl.commander.programs.active
+        if is_any_program_running() and (
+            active_for_lock is not None and active_for_lock.dry_run.playback.is_playing
+        ):
             ui.notify("Cannot switch tabs during script playback", color="warning")
             if self.tabs_container and waldoctl.commander.programs.active_id:
                 self.tabs_container.set_value(waldoctl.commander.programs.active_id)
@@ -491,7 +494,8 @@ class EditorPanel(FileOperationsMixin):
 
         # Update active tab
         waldoctl.commander.programs.active_id = tab_id
-        simulation_state.active_cursor_line = 0
+        if tab is not None:
+            tab.dry_run.playback.active_cursor_line = 0
 
         # Update tab panels value
         if self.tab_panels_container:
@@ -664,7 +668,7 @@ class EditorPanel(FileOperationsMixin):
         """Handle cursor line change from CodeMirror."""
         if tab.id != waldoctl.commander.programs.active_id:
             return
-        simulation_state.active_cursor_line = e.line
+        tab.dry_run.playback.active_cursor_line = e.line
         if ui_state.urdf_scene and simulation_state.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
 

@@ -1353,7 +1353,6 @@ class TestScriptExecutionLifecycle:
             # Contract: handle cleared, state reset.
             assert se.script_exec.script_handle is None
             assert is_any_program_running() is False
-            assert simulation_state.is_playing is False
 
             # The subprocess must be dead — this is the regression guard.
             assert "handle" in captured, "run_script did not run; test setup is wrong"

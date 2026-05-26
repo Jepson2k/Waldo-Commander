@@ -25,6 +25,7 @@ from urllib.request import url2pathname
 import numpy as np
 from nicegui import ui, app
 
+import waldoctl
 from waldoctl import LinearMotion, RotaryMotion, MeshRole, PartMotion
 
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
@@ -1237,7 +1238,10 @@ class UrdfScene(
 
     def update_cursor_line_highlight(self) -> None:
         """Highlight path objects for the segment matching the editor cursor line."""
-        cursor_line = simulation_state.active_cursor_line
+        active = waldoctl.commander.programs.active
+        cursor_line = (
+            active.dry_run.playback.active_cursor_line if active is not None else 0
+        )
         if cursor_line == self._highlighted_line:
             return
         prev_line = self._highlighted_line

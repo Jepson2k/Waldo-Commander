@@ -197,7 +197,7 @@ class ScriptExecutionController:
                 launching_tab.execution.is_running = True
                 launching_tab.dry_run.playback.executing_step_index = -1
                 launching_tab.dry_run.playback.executing_step_at_end = False
-            simulation_state.is_playing = True
+                launching_tab.dry_run.playback.is_playing = True
             self._step_controller.signal_play()
             simulation_state.notify_changed()
 
@@ -247,7 +247,7 @@ class ScriptExecutionController:
             )
             if running_tab is not None:
                 running_tab.execution.is_running = False
-            simulation_state.is_playing = False
+                running_tab.dry_run.playback.is_playing = False
             simulation_state.notify_changed()
             self.cleanup_stepping()
             if handle:
@@ -333,7 +333,7 @@ class ScriptExecutionController:
                     )
                     if running_tab is not None:
                         running_tab.execution.is_running = False
-                    simulation_state.is_playing = False
+                        running_tab.dry_run.playback.is_playing = False
                     simulation_state.notify_changed()
 
     async def _monitor_script_completion(
@@ -368,8 +368,8 @@ class ScriptExecutionController:
         )
         if running_tab is not None:
             running_tab.execution.is_running = False
+            running_tab.dry_run.playback.is_playing = False
         self._script_tab_id = None
-        simulation_state.is_playing = False
         playback_coordination.sim_pose_override = False
         simulation_state.notify_changed()
         self.cleanup_stepping()

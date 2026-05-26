@@ -199,10 +199,7 @@ class SimulationState(ChangeNotifierMixin):
     tool_selections: list[ToolSelection] = field(default_factory=list)
     current_step_index: int = 0
     total_steps: int = 0
-    is_playing: bool = False
-    playback_speed: float = 1.0  # Multiplier
     paths_visible: bool = True
-    active_cursor_line: int = 0  # 1-indexed editor cursor line, 0 = none
     sim_playback_time: float = 0.0  # Current playback position (seconds)
     sim_total_duration: float = 0.0  # Total timeline duration (seconds)
     sim_playback_active: bool = False  # True when simulation playback timer is ticking
@@ -218,10 +215,7 @@ class SimulationState(ChangeNotifierMixin):
         self.tool_selections.clear()
         self.current_step_index = 0
         self.total_steps = 0
-        self.is_playing = False
-        self.playback_speed = 1.0
         self.paths_visible = True
-        self.active_cursor_line = 0
         self.sim_playback_time = 0.0
         self.sim_total_duration = 0.0
         self.sim_playback_active = False

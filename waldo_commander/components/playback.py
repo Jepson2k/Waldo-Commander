@@ -284,14 +284,16 @@ class PlaybackController:
 
     async def toggle_play(self) -> None:
         """Toggle play/pause for script execution or simulation playback."""
+        active = waldoctl.commander.programs.active
         if is_any_program_running():
-            if simulation_state.is_playing:
+            if active is not None and active.dry_run.playback.is_playing:
                 script_exec.signal_pause()
-                simulation_state.is_playing = False
+                active.dry_run.playback.is_playing = False
                 logger.debug("Script paused")
             else:
                 script_exec.signal_play()
-                simulation_state.is_playing = True
+                if active is not None:
+                    active.dry_run.playback.is_playing = True
                 logger.debug("Script playing")
             simulation_state.notify_changed()
         elif robot_state.simulator_active and simulation_state.total_steps > 0:
@@ -624,7 +626,9 @@ class PlaybackController:
         if simulation_state.sim_playback_time >= tl.total_duration:
             simulation_state.sim_playback_time = 0.0
         simulation_state.sim_playback_active = True
-        simulation_state.is_playing = True
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            active.dry_run.playback.is_playing = True
         self._last_tick_time = time.monotonic()
         if self._sim_timer:
             self._sim_timer.active = True
@@ -643,7 +647,9 @@ class PlaybackController:
         simulation_state.sim_playback_active = False
         # Let the auto-clear in main.py handle the handback after 100ms
         playback_coordination.last_teleport_ts = time.monotonic()
-        simulation_state.is_playing = False
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            active.dry_run.playback.is_playing = False
         self._last_tool_selection = None
         # Snapshot so position-change checker doesn't re-sim
         self._snapshot_joints()
@@ -670,7 +676,9 @@ class PlaybackController:
             return
 
         now = time.monotonic()
-        dt = (now - self._last_tick_time) * simulation_state.playback_speed
+        active = waldoctl.commander.programs.active
+        speed = active.dry_run.playback.playback_speed if active is not None else 1.0
+        dt = (now - self._last_tick_time) * speed
         self._last_tick_time = now
 
         t = simulation_state.sim_playback_time + dt
@@ -714,7 +722,9 @@ class PlaybackController:
 
     def _set_speed(self, value: float) -> None:
         """Set playback speed and update FAB icon to match."""
-        simulation_state.playback_speed = value
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            active.dry_run.playback.playback_speed = value
         if self.speed_fab:
             icon = self._SPEED_ICONS.get(value, "1x_mobiledata")
             self.speed_fab.props(f'icon="{icon}"')
@@ -724,9 +734,13 @@ class PlaybackController:
     def update_play_button(self) -> None:
         """Update play/pause button icon and stop/step button visibility."""
         script_running = is_any_program_running()
+        active = waldoctl.commander.programs.active
+        active_is_playing = (
+            active.dry_run.playback.is_playing if active is not None else False
+        )
         if self.play_btn:
             playing = (
-                script_running and simulation_state.is_playing
+                script_running and active_is_playing
             ) or simulation_state.sim_playback_active
             if playing:
                 self.play_btn.props("icon=pause color=warning")
