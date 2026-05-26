@@ -59,9 +59,17 @@ def _clean_stale_state():
     )
 
     def _reset() -> None:
+        try:
+            programs = waldoctl.commander.programs
+        except RuntimeError:
+            # Module-scope fixture runs before any class_screen-created
+            # commander; nothing to clean in that case.
+            simulation_state.path_segments.clear()
+            simulation_state.targets.clear()
+            return
         set_active_recording(False)
-        waldoctl.commander.programs.items.clear()
-        waldoctl.commander.programs.active_id = None
+        programs.items.clear()
+        programs.active_id = None
         simulation_state.path_segments.clear()
         simulation_state.targets.clear()
 

@@ -6,22 +6,31 @@ import waldoctl
 from waldoctl import Program
 
 
-def set_active_recording(is_recording: bool) -> None:
-    """Set the active program's ``recording.is_recording`` flag.
+def ensure_active_program() -> Program | None:
+    """Ensure an active ``Program`` exists; create a stub if not.
 
-    Creates a stub active program if none exists, so unit tests that need
-    to flip the recording bit without going through the editor's
-    tab-creation path can do so. Idempotent for the "stop recording" case
-    when no programs are open.
+    Returns the active program (or ``None`` if the Commander locator
+    hasn't been registered yet — pre-startup window in test fixtures).
     """
     try:
         programs = waldoctl.commander.programs
     except RuntimeError:
-        return  # locator not registered yet
+        return None
     if programs.active is None:
-        if not is_recording:
-            return
         stub = Program(filename="test.py")
         programs.items = [*programs.items, stub]
         programs.active_id = stub.id
-    programs.active.recording.is_recording = is_recording
+    return programs.active
+
+
+def set_active_recording(is_recording: bool) -> None:
+    """Set the active program's ``recording.is_recording`` flag.
+
+    Always ensures an active program exists so tests that flip recording
+    state — including the ``False`` case — find a Program for downstream
+    code (e.g. ``motion_recorder._start_recording``) to write into.
+    """
+    active = ensure_active_program()
+    if active is None:
+        return  # locator not registered yet
+    active.recording.is_recording = is_recording

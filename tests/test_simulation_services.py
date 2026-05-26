@@ -155,12 +155,15 @@ def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
 
 @pytest.fixture
 def mock_textarea():
-    """Set up a mocked active textarea + editor_panel for motion recorder tests.
+    """Set up a mocked active textarea + editor_panel + program for motion recorder tests.
 
     Yields the textarea mock — tests assert on its ``.value`` to verify what
     motion_recorder inserted. ``ui_state.editor_panel`` is wired to a separate
-    MagicMock so production code that does presence checks still works.
+    MagicMock so production code that does presence checks still works. An
+    active ``Program`` is ensured so ``motion_recorder._start_recording`` has
+    a target to write recording state into.
     """
+    from tests.helpers.programs import ensure_active_program
 
     mock_textarea = MagicMock()
     mock_textarea.value = "# Initial code\n"
@@ -168,6 +171,7 @@ def mock_textarea():
     ui_state.editor_panel = MagicMock()
     old_robot = ui_state.robot
     ui_state.robot = get_robot()
+    ensure_active_program()
     yield mock_textarea
     ui_state.editor_panel = None
     ui_state.active_textarea = None
