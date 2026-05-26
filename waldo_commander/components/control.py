@@ -286,7 +286,7 @@ class _ToolQuickActions:
         visual_key = (
             waldoctl.commander.status.tool.key,
             robot_state.tool_position,
-            robot_state.tool_engaged,
+            waldoctl.commander.status.tool.engaged,
             waldoctl.commander.settings.gripper.current,
         )
         if visual_key == self._last_visual:
@@ -305,7 +305,7 @@ class _ToolQuickActions:
             else:
                 off_icon, on_icon = tool.action_l_icons
                 off_label, on_label = tool.action_l_labels or ("Off", "On")
-                engaged = robot_state.tool_engaged
+                engaged = waldoctl.commander.status.tool.engaged
                 if tool.action_l_mode == ToggleMode.TRIGGER:
                     icon = off_icon
                     color = "cyan-8"
@@ -337,7 +337,7 @@ class _ToolQuickActions:
                     self._action_r_btn.props("color=cyan-8")
                     r_tooltip = off_label_r
                 else:
-                    engaged_r = robot_state.tool_engaged
+                    engaged_r = waldoctl.commander.status.tool.engaged
                     self._action_r_btn._props["icon"] = (
                         off_icon_r if engaged_r else on_icon_r
                     )
@@ -413,7 +413,7 @@ class _ToolQuickActions:
                 await tool.set_position(target, **spd_kwargs)
                 motion_recorder.record_action("gripper", position=target, **spd_kwargs)
             else:
-                await tool.action_l(not robot_state.tool_engaged)
+                await tool.action_l(not waldoctl.commander.status.tool.engaged)
         except Exception as e:
             logger.error("Tool action_l failed: %s", e)
             ui.notify(f"Action failed: {e}", color="negative")
@@ -425,7 +425,7 @@ class _ToolQuickActions:
         if tool is None or tool.action_r_labels is None:
             return
         try:
-            await tool.action_r(not robot_state.tool_engaged)
+            await tool.action_r(not waldoctl.commander.status.tool.engaged)
         except Exception as e:
             logger.error("Tool action_r failed: %s", e)
             ui.notify(f"Action failed: {e}", color="negative")

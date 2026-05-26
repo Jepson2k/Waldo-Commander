@@ -237,8 +237,6 @@ class SimulationState(ChangeNotifierMixin):
     bindable_fields=[
         "tool_position",
         "tool_current",
-        "tool_engaged",
-        "tool_part_detected",
         "action_current",
         "action_state",
         "action_params",
@@ -267,12 +265,13 @@ class RobotState(ChangeNotifierMixin):
     # ``commander.status.{...}`` from waldoctl. IO inputs/outputs/estop
     # live on ``commander.status.io``. The numpy ``orientation`` array
     # stays here as a rad-access companion for FK / IK consumers.
-    # tool_key / tool_variant_key live on commander.status.tool.{key,
-    # variant_key} (waldoctl's ToolStatus is a bindable_dataclass).
+    # tool_key / tool_variant_key / tool_engaged / tool_part_detected live
+    # on commander.status.tool.{key, variant_key, engaged, part_detected}
+    # (waldoctl's ToolStatus is a bindable_dataclass). The remaining scalar
+    # mirrors (tool_position from positions[0], tool_current from channels[0])
+    # are derived single-DOF projections used by the bindable gripper UI.
     tool_position: float = 0.0
     tool_current: float = 0.0
-    tool_engaged: bool = False
-    tool_part_detected: bool = False
     tool_time_series: ToolTimeSeries = field(default_factory=ToolTimeSeries)
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
@@ -301,8 +300,6 @@ class RobotState(ChangeNotifierMixin):
             arr[:] = 1
         self.tool_position = 0.0
         self.tool_current = 0.0
-        self.tool_engaged = False
-        self.tool_part_detected = False
         self.tool_time_series.clear()
         self.speeds[:] = 0.0
         self.action_current = ""

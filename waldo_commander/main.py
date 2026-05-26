@@ -461,8 +461,8 @@ def update_ui_from_status() -> None:
     tool_key_changed = ts.key != pub_tool.key
     pub_tool.key = ts.key
     robot_state.tool_position = ts.positions[0] if ts.positions else 0.0
-    robot_state.tool_engaged = ts.engaged
-    robot_state.tool_part_detected = ts.part_detected
+    pub_tool.engaged = ts.engaged
+    pub_tool.part_detected = ts.part_detected
     robot_state.tool_current = ts.channels[0] if len(ts.channels) > 0 else 0.0
     robot_state.tool_time_series.push(
         robot_state.tool_position, robot_state.tool_current
