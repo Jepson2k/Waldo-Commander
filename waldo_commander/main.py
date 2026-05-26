@@ -455,18 +455,21 @@ def update_ui_from_status() -> None:
         io.outputs = _io_out.tolist()
     io.estop = int(robot_state.io[n_in + n_out])
 
-    # Push tool status derived fields into bindable RobotState
+    # Push tool status fields into commander.status.tool. Each leaf
+    # assignment fires its bindable_dataclass bindings synchronously;
+    # tuple reassignments (positions / channels) propagate to gripper
+    # readouts that bind through a backward function.
     ts = robot_state.tool_status
     pub_tool = waldoctl.commander.status.tool
     tool_key_changed = ts.key != pub_tool.key
     pub_tool.key = ts.key
-    robot_state.tool_position = ts.positions[0] if ts.positions else 0.0
+    pub_tool.positions = tuple(ts.positions)
     pub_tool.engaged = ts.engaged
     pub_tool.part_detected = ts.part_detected
-    robot_state.tool_current = ts.channels[0] if len(ts.channels) > 0 else 0.0
-    robot_state.tool_time_series.push(
-        robot_state.tool_position, robot_state.tool_current
-    )
+    pub_tool.channels = tuple(ts.channels)
+    _pos0 = pub_tool.positions[0] if pub_tool.positions else 0.0
+    _cur0 = pub_tool.channels[0] if pub_tool.channels else 0.0
+    robot_state.tool_time_series.push(_pos0, _cur0)
 
     # Build gripper tab on first tool detection
     if tool_key_changed and pub_tool.key != "NONE":

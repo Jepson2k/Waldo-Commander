@@ -283,10 +283,12 @@ class _ToolQuickActions:
         if tool is None:
             return
 
+        pub_tool = waldoctl.commander.status.tool
+        tool_position = pub_tool.positions[0] if pub_tool.positions else 0.0
         visual_key = (
-            waldoctl.commander.status.tool.key,
-            robot_state.tool_position,
-            waldoctl.commander.status.tool.engaged,
+            pub_tool.key,
+            tool_position,
+            pub_tool.engaged,
             waldoctl.commander.settings.gripper.current,
         )
         if visual_key == self._last_visual:
@@ -296,7 +298,7 @@ class _ToolQuickActions:
         # Left action button
         if tool.action_l_icons:
             if isinstance(tool, GripperTool):
-                is_open = tool.is_open(robot_state.tool_position)
+                is_open = tool.is_open(tool_position)
                 off_icon, on_icon = tool.action_l_icons
                 off_label, on_label = tool.action_l_labels or ("Close", "Open")
                 icon = off_icon if is_open else on_icon
@@ -402,7 +404,9 @@ class _ToolQuickActions:
                 if isinstance(tool, ElectricGripperTool):
                     spd_kwargs["speed"] = waldoctl.commander.settings.jog.speed / 100.0
                     spd_kwargs["current"] = waldoctl.commander.settings.gripper.current
-                if tool.is_open(robot_state.tool_position):
+                _pos_t = waldoctl.commander.status.tool.positions
+                _cur_pos = _pos_t[0] if _pos_t else 0.0
+                if tool.is_open(_cur_pos):
                     target = 1.0  # close
                 else:
                     target = 0.0  # open

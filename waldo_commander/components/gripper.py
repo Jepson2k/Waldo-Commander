@@ -379,10 +379,13 @@ class GripperPage:
                     )
 
         ts = robot_state.tool_status
+        pub_tool = waldoctl.commander.status.tool
+        tool_position = pub_tool.positions[0] if pub_tool.positions else 0.0
+        tool_current = pub_tool.channels[0] if pub_tool.channels else 0.0
         status_key = (
             ts.state,
-            robot_state.tool_position,
-            robot_state.tool_current,
+            tool_position,
+            tool_current,
             ts.part_detected,
             ts.engaged,
             ts.fault_code,
@@ -392,13 +395,11 @@ class GripperPage:
         self._last_status_key = status_key
 
         # Initialize target from feedback on first status
-        if not self._target_initialized and robot_state.tool_position > 0:
+        if not self._target_initialized and tool_position > 0:
             self._target_initialized = True
-            waldoctl.commander.settings.gripper.target_position = (
-                robot_state.tool_position
-            )
+            waldoctl.commander.settings.gripper.target_position = tool_position
             if self._pos_slider is not None:
-                self._pos_slider.set_value(round(robot_state.tool_position * 100))
+                self._pos_slider.set_value(round(tool_position * 100))
 
         # State dot + label
         s = ts.state
@@ -443,25 +444,30 @@ class GripperPage:
             )
             self._state_label = ui.label("Off").classes("text-xs")
 
-            # Position
+            # Position — bind to the bindable ``positions`` tuple and project
+            # the first DOF for single-axis gripper display.
             ui.label("Position").classes(_lbl)
             ui.icon("circle").style(f"{_dot_s} color: {_CLR_POS};")
             (
                 ui.label("0 %")
                 .classes("text-sm font-medium")
                 .bind_text_from(
-                    robot_state, "tool_position", backward=lambda v: f"{v * 100:.0f} %"
+                    waldoctl.commander.status.tool,
+                    "positions",
+                    backward=lambda p: f"{(p[0] if p else 0.0) * 100:.0f} %",
                 )
             )
 
-            # Current
+            # Current — bind to ``channels`` tuple, project first channel.
             ui.label("Current").classes(_lbl)
             ui.icon("circle").style(f"{_dot_s} color: {_CLR_CUR};")
             (
                 ui.label("0 mA")
                 .classes("text-sm")
                 .bind_text_from(
-                    robot_state, "tool_current", backward=lambda v: f"{v:.0f} mA"
+                    waldoctl.commander.status.tool,
+                    "channels",
+                    backward=lambda c: f"{(c[0] if c else 0.0):.0f} mA",
                 )
             )
 

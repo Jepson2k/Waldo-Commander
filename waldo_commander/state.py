@@ -233,12 +233,7 @@ class SimulationState(ChangeNotifierMixin):
 
 # Extended shared state singletons for cross-module access
 # Only scalar fields are bindable - numpy arrays are excluded to avoid comparison issues
-@bindable_dataclass(
-    bindable_fields=[
-        "tool_position",
-        "tool_current",
-    ]
-)
+@bindable_dataclass(bindable_fields=[])
 class RobotState(ChangeNotifierMixin):
     # ``angles`` (joint angles in deg/rad) moved to
     # ``commander.status.joints.angles`` — same ``AngleArray`` interface.
@@ -262,13 +257,10 @@ class RobotState(ChangeNotifierMixin):
     # ``commander.status.{...}`` from waldoctl. IO inputs/outputs/estop
     # live on ``commander.status.io``. The numpy ``orientation`` array
     # stays here as a rad-access companion for FK / IK consumers.
-    # tool_key / tool_variant_key / tool_engaged / tool_part_detected live
-    # on commander.status.tool.{key, variant_key, engaged, part_detected}
-    # (waldoctl's ToolStatus is a bindable_dataclass). The remaining scalar
-    # mirrors (tool_position from positions[0], tool_current from channels[0])
-    # are derived single-DOF projections used by the bindable gripper UI.
-    tool_position: float = 0.0
-    tool_current: float = 0.0
+    # All tool fields live on commander.status.tool — readers project
+    # positions[0] / channels[0] inline when they need the single-DOF
+    # scalar. tool_time_series stays here as a WC-internal rolling buffer
+    # backing the gripper chart.
     tool_time_series: ToolTimeSeries = field(default_factory=ToolTimeSeries)
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
@@ -289,8 +281,6 @@ class RobotState(ChangeNotifierMixin):
         self.pose[:] = 0.0
         self.io[:] = 0
         self.tool_status = ToolStatus()
-        self.tool_position = 0.0
-        self.tool_current = 0.0
         self.tool_time_series.clear()
         self.speeds[:] = 0.0
         self.executing_index = -1
