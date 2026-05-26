@@ -1371,9 +1371,12 @@ async def _status_consumer() -> None:
                         if frame in robot_state.cart_en:
                             robot_state.cart_en[frame][:] = arr
 
-                    robot_state.action_current = status.action_current
-                    robot_state.action_params = status.action_params
-                    robot_state.action_state = status.action_state
+                    action = waldoctl.commander.status.action
+                    action.current_name = status.action_current
+                    action.state = status.action_state
+                    # action_params is per-command metadata used by the
+                    # action_log_service dedup; not on the public Action
+                    # surface, kept in the status update tuple below.
                     robot_state.executing_index = status.executing_index
                     robot_state.completed_index = status.completed_index
                     waldoctl.commander.status.last_update = time.time()
@@ -1406,9 +1409,9 @@ async def _status_consumer() -> None:
                             # Update panels
                             readout_panel.update_conn_io()
                             action_log_service.process_status(
-                                robot_state.action_current,
-                                robot_state.action_params,
-                                robot_state.action_state,
+                                action.current_name,
+                                status.action_params,
+                                action.state,
                                 robot_state.executing_index,
                                 robot_state.completed_index,
                             )

@@ -273,7 +273,7 @@ async def wait_for_motion_start(
         await asyncio.sleep(interval)
 
         # Check if action_state indicates motion
-        if robot_state.action_state == ActionState.EXECUTING:
+        if waldoctl.commander.status.action.state == ActionState.EXECUTING:
             return True
 
         # Check if timestamp updated since we started
@@ -289,7 +289,7 @@ async def wait_for_motion_start(
     if require_detection:
         raise TimeoutError(
             f"wait_for_motion_start: No motion detected after {timeout_s}s. "
-            f"action_state={robot_state.action_state}, "
+            f"action_state={waldoctl.commander.status.action.state}, "
             f"initial_angles={initial_angles[:3] if initial_angles else []}, "
             f"current_angles={list(waldoctl.commander.status.joints.angles.deg[:3]) if len(waldoctl.commander.status.joints.angles) > 0 else []}"
         )

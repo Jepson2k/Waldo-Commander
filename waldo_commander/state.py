@@ -237,9 +237,6 @@ class SimulationState(ChangeNotifierMixin):
     bindable_fields=[
         "tool_position",
         "tool_current",
-        "action_current",
-        "action_state",
-        "action_params",
     ]
 )
 class RobotState(ChangeNotifierMixin):
@@ -276,9 +273,10 @@ class RobotState(ChangeNotifierMixin):
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
     )  # deg/s
-    action_current: str = ""
-    action_state: ActionState = ActionState.IDLE
-    action_params: str = ""
+    # action_current / action_state live on commander.status.action.
+    # ``action_params`` is per-command metadata for the dedup service; it
+    # flows directly from the StatusBuffer into action_log_service without
+    # a singleton mirror.
     executing_index: int = -1
     completed_index: int = -1
     _change_listeners: list[Callable[[], None]] = field(
@@ -302,9 +300,6 @@ class RobotState(ChangeNotifierMixin):
         self.tool_current = 0.0
         self.tool_time_series.clear()
         self.speeds[:] = 0.0
-        self.action_current = ""
-        self.action_state = ActionState.IDLE
-        self.action_params = ""
         self.executing_index = -1
         self.completed_index = -1
 

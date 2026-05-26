@@ -143,7 +143,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
 
     # Wait for robot to be completely idle - no pending commands
     for _ in range(50):  # Up to 5 seconds
-        if robot_state.action_state == ActionState.IDLE:
+        if waldoctl.commander.status.action.state == ActionState.IDLE:
             break
         await asyncio.sleep(0.1)
 
@@ -414,7 +414,7 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
 
     # Wait for any queued commands to complete first (action_state becomes IDLE)
     for _ in range(50):  # Up to 5 seconds
-        if robot_state.action_state == ActionState.IDLE:
+        if waldoctl.commander.status.action.state == ActionState.IDLE:
             break
         await asyncio.sleep(0.1)
 
