@@ -174,7 +174,7 @@ class PlaybackController:
                 .tooltip("Playback Speed") as speed_fab
             ):
                 self.speed_fab = speed_fab
-                speed_fab.visible = robot_state.simulator_active
+                speed_fab.visible = waldoctl.commander.status.simulator_active
                 ui.fab_action(
                     "sym_o_speed_0_5x",
                     on_click=lambda: self._set_speed(0.5),
@@ -298,7 +298,7 @@ class PlaybackController:
                     active.dry_run.playback.is_playing = True
                 logger.debug("Script playing")
             simulation_state.notify_changed()
-        elif robot_state.simulator_active and (
+        elif waldoctl.commander.status.simulator_active and (
             active is not None and active.dry_run.total_steps > 0
         ):
             if active.dry_run.playback.is_active:
@@ -327,12 +327,12 @@ class PlaybackController:
     def sync_mode(self) -> None:
         """Sync slider/speed controls to current robot mode (simulator vs robot)."""
         if self._scrub_slider:
-            if robot_state.simulator_active:
+            if waldoctl.commander.status.simulator_active:
                 self._scrub_slider.props(remove="readonly")
             else:
                 self._scrub_slider.props("readonly")
         if self.speed_fab:
-            self.speed_fab.visible = robot_state.simulator_active
+            self.speed_fab.visible = waldoctl.commander.status.simulator_active
 
     # ---- Bridge API (called by EditorPanel) ----
 
@@ -519,7 +519,11 @@ class PlaybackController:
         # Sample tool position once (used for both teleport and URDF animation)
         tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
 
-        if sample.joints and ui_state.urdf_scene and robot_state.simulator_active:
+        if (
+            sample.joints
+            and ui_state.urdf_scene
+            and waldoctl.commander.status.simulator_active
+        ):
             playback_coordination.sim_pose_override = True
             ui_state.urdf_scene.set_axis_values(sample.joints)
             robot_state.angles.set_rad(np.asarray(sample.joints))

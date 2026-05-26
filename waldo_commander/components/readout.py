@@ -151,8 +151,8 @@ class ReadoutPanel:
         """Update connection face and IO status. Called from status consumer."""
         # Robot face — determine state from connection
         if self._robot_face_html and self._robot_face_container:
-            sim_active = robot_state.simulator_active
-            connected = robot_state.connected
+            sim_active = waldoctl.commander.status.simulator_active
+            connected = waldoctl.commander.status.connected
             if sim_active:
                 face = RobotFace.NEUTRAL
             elif connected:
@@ -260,9 +260,9 @@ class ReadoutPanel:
                 ):
                     _init_face = (
                         RobotFace.NEUTRAL
-                        if robot_state.simulator_active
+                        if waldoctl.commander.status.simulator_active
                         else RobotFace.HAPPY
-                        if robot_state.connected
+                        if waldoctl.commander.status.connected
                         else RobotFace.SAD
                     )
                     self._last_face_state = _init_face
@@ -414,7 +414,7 @@ class ReadoutPanel:
                         (
                             ui.label("-")
                             .bind_text_from(
-                                robot_state,
+                                waldoctl.commander.status.pose,
                                 "tcp_speed",
                                 backward=lambda v: f"{v:.0f}",
                             )

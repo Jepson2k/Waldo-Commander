@@ -236,7 +236,7 @@ class SimulationEngine:
         )
         if (
             is_any_program_running()
-            or robot_state.editing_mode
+            or waldoctl.commander.status.editing_mode
             or self._simulation_debounce_timer is not None
             or playback_coordination.sim_pose_override
             or is_playback_active

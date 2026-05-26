@@ -235,7 +235,6 @@ class SimulationState(ChangeNotifierMixin):
 # Only scalar fields are bindable - numpy arrays are excluded to avoid comparison issues
 @bindable_dataclass(
     bindable_fields=[
-        "connected",
         "x",
         "y",
         "z",
@@ -248,12 +247,9 @@ class SimulationState(ChangeNotifierMixin):
         "tool_current",
         "tool_engaged",
         "tool_part_detected",
-        "simulator_active",
         "action_current",
         "action_state",
         "action_params",
-        "editing_mode",
-        "tcp_speed",
     ]
 )
 class RobotState(ChangeNotifierMixin):
@@ -272,7 +268,8 @@ class RobotState(ChangeNotifierMixin):
     # Movement enablement arrays from STATUS (12 ints each)
     joint_en: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
     cart_en: dict[str, np.ndarray] = field(default_factory=dict)
-    connected: bool = False
+    # Connection / simulator / editing-mode flags + last-update timestamp +
+    # TCP linear speed all live on ``commander.status.*`` from waldoctl.
     # Derived scalars for convenient, high-performance UI bindings
     x: float = 0.0
     y: float = 0.0
@@ -294,16 +291,11 @@ class RobotState(ChangeNotifierMixin):
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
     )  # deg/s
-    tcp_speed: float = 0.0  # mm/s
-    simulator_active: bool = False
     action_current: str = ""
     action_state: ActionState = ActionState.IDLE
     action_params: str = ""
     executing_index: int = -1
     completed_index: int = -1
-    last_update_ts: float = 0.0  # timestamp of last STATUS update
-    # Editing mode - when True, x/y/z/angles are controlled by target editor
-    editing_mode: bool = False
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
@@ -322,7 +314,6 @@ class RobotState(ChangeNotifierMixin):
         self.joint_en[:] = 1
         for arr in self.cart_en.values():
             arr[:] = 1
-        self.connected = False
         self.x = self.y = self.z = 0.0
         self.rx = self.ry = self.rz = 0.0
         self.tool_key = "NONE"
@@ -333,15 +324,11 @@ class RobotState(ChangeNotifierMixin):
         self.tool_part_detected = False
         self.tool_time_series.clear()
         self.speeds[:] = 0.0
-        self.tcp_speed = 0.0
-        self.simulator_active = False
         self.action_current = ""
         self.action_state = ActionState.IDLE
         self.action_params = ""
         self.executing_index = -1
         self.completed_index = -1
-        self.last_update_ts = 0.0
-        self.editing_mode = False
 
 
 @dataclass

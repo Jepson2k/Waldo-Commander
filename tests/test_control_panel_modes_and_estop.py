@@ -28,8 +28,10 @@ async def test_home_command_behavior(
 
     # --- Part 1: HOME blocked without connection ---
     # Override state after page load so HOME guard sees both flags as False
-    robot_state.simulator_active = False
-    robot_state.connected = False
+    import waldoctl as _wctl
+
+    _wctl.commander.status.simulator_active = False
+    _wctl.commander.status.connected = False
 
     user.find(marker="btn-home").click()
     await asyncio.sleep(0)
@@ -41,7 +43,7 @@ async def test_home_command_behavior(
 
     # --- Part 2: HOME allowed with simulator ---
     # Enable simulator mode and try again
-    robot_state.simulator_active = True
+    _wctl.commander.status.simulator_active = True
 
     user.find(marker="btn-home").click()
 

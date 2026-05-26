@@ -8,6 +8,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Callable
 
+import waldoctl
 from nicegui.testing import User
 from waldoctl import ActionState
 
@@ -124,24 +125,24 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
         ) from None
 
     # If we have valid angles and simulator is active, we're good
-    if _has_valid_angles() and robot_state.simulator_active:
+    if _has_valid_angles() and waldoctl.commander.status.simulator_active:
         return
 
     # Toggle simulator if needed
-    if not robot_state.simulator_active:
+    if not waldoctl.commander.status.simulator_active:
         user.find(marker="btn-robot-toggle").click()
         await asyncio.sleep(0.1)
 
     # Wait for simulator_active flag to be set by the toggle handler
     for _ in range(int(timeout_s / 0.1)):
-        if robot_state.simulator_active and _has_valid_angles():
+        if waldoctl.commander.status.simulator_active and _has_valid_angles():
             return
         await asyncio.sleep(0.1)
 
     if not _has_valid_angles():
         raise TimeoutError(
             f"enable_sim: No valid angles after waiting. "
-            f"simulator_active={robot_state.simulator_active}, "
+            f"simulator_active={waldoctl.commander.status.simulator_active}, "
             f"angles={robot_state.angles}"
         )
 
@@ -272,7 +273,7 @@ async def wait_for_motion_start(
             return True
 
         # Check if timestamp updated since we started
-        if robot_state.last_update_ts > start_time:
+        if waldoctl.commander.status.last_update > start_time:
             # Check if any joint angle changed
             current_angles = robot_state.angles.deg
             if len(current_angles) >= 6 and initial_angles:
@@ -362,10 +363,13 @@ async def ensure_robot_ready_for_motion(robot_state, timeout_s: float = 5.0) -> 
     )
 
     # Validate motion mode is active
-    assert robot_state.simulator_active or robot_state.connected, (
+    assert (
+        waldoctl.commander.status.simulator_active
+        or waldoctl.commander.status.connected
+    ), (
         "ensure_robot_ready_for_motion: No motion mode active. "
-        f"simulator_active={robot_state.simulator_active}, "
-        f"connected={robot_state.connected}"
+        f"simulator_active={waldoctl.commander.status.simulator_active}, "
+        f"connected={waldoctl.commander.status.connected}"
     )
 
 

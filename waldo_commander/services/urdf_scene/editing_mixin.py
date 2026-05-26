@@ -133,7 +133,7 @@ class EditingMixin:
         self._joint_ring_touched = False
         self._editing_rotation_set = False
 
-        robot_state.editing_mode = True
+        waldoctl.commander.status.editing_mode = True
         self.set_appearance_mode(RobotAppearanceMode.EDITING)
         self._apply_joint_angles(self._editing_angles)
 
@@ -157,7 +157,7 @@ class EditingMixin:
 
         self._apply_joint_angles(self._pre_edit_angles)
 
-        if robot_state.simulator_active:
+        if waldoctl.commander.status.simulator_active:
             self.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
         else:
             self.set_appearance_mode(RobotAppearanceMode.LIVE)
@@ -167,7 +167,7 @@ class EditingMixin:
         self._joint_controls_suspended = False
         self._editing_rotation_set = False
 
-        robot_state.editing_mode = False
+        waldoctl.commander.status.editing_mode = False
 
         # Snap TCP ball back to robot's live position
         self.invalidate_fk_cache()
@@ -753,7 +753,7 @@ class EditingMixin:
 
     def _sync_robot_state_from_editing(self) -> None:
         """Sync robot_state with editing values."""
-        if not robot_state.editing_mode:
+        if not waldoctl.commander.status.editing_mode:
             return
 
         try:

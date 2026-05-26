@@ -132,7 +132,10 @@ def _update_connection_notification() -> None:
     if not readiness_state.app_ready.is_set():
         return
 
-    needs_warning = not robot_state.simulator_active and not robot_state.connected
+    needs_warning = (
+        not waldoctl.commander.status.simulator_active
+        and not waldoctl.commander.status.connected
+    )
 
     if needs_warning and ps.connection_notification is None:
         ps.connection_notification = ui.notification(
@@ -265,7 +268,7 @@ async def initialize_urdf_scene() -> None:
     control_panel.sync_gizmo_to_urdf()
 
     # Apply simulator appearance if in simulator mode (scene wasn't ready earlier)
-    if robot_state.simulator_active:
+    if waldoctl.commander.status.simulator_active:
         ui_state.urdf_scene.set_simulator_appearance(True)
 
 
@@ -337,7 +340,7 @@ async def stop_controller() -> None:
                 await status_consumer_task
 
         controller_state.running = False
-        robot_state.connected = False
+        waldoctl.commander.status.connected = False
         logger.info("Controller stopped")
     except Exception as e:
         logger.error("Stop controller failed: %s", e)
@@ -393,8 +396,8 @@ async def check_ping() -> None:
     # Update robot connectivity status. The multicast status consumer drives
     # the joint/cartesian button sync at status rate; the two calls below
     # cover the "stream went silent" path that the consumer cannot, since
-    # they read robot_state.connected directly.
-    robot_state.connected = ps.last_ping_ok
+    # they read waldoctl.commander.status.connected directly.
+    waldoctl.commander.status.connected = ps.last_ping_ok
     if readout_panel is not None:
         readout_panel.update_conn_io()
     if control_panel is not None:
@@ -405,7 +408,7 @@ async def check_ping() -> None:
 def update_ui_from_status() -> None:
     """Update UI elements from robot_state (called from multicast consumer)"""
     # Skip position/angle updates when in editing mode (editing sync handles these)
-    skip_position_updates = robot_state.editing_mode
+    skip_position_updates = waldoctl.commander.status.editing_mode
     # Skip URDF scene updates during sim playback/scrubbing (teleport syncs backend)
     skip_scene_updates = (
         skip_position_updates or playback_coordination.sim_pose_override
@@ -792,15 +795,15 @@ def build_page_content() -> None:
                     hw_now = bool(result.hardware_connected) if result else False
                 except Exception:
                     hw_now = False
-                if hw_now and robot_state.simulator_active:
+                if hw_now and waldoctl.commander.status.simulator_active:
                     logger.info("Hardware detected — switching to robot mode")
-                    robot_state.simulator_active = False
+                    waldoctl.commander.status.simulator_active = False
                     try:
                         await client.simulator(False)
                         await client.resume()
                     except Exception as e:
                         logger.warning("auto robot-mode switch failed: %s", e)
-                robot_state.connected = hw_now
+                waldoctl.commander.status.connected = hw_now
 
                 control_panel.update_robot_btn_visual()
                 readout_panel.update_conn_io()
@@ -917,7 +920,7 @@ def _register_handlers() -> None:
 
         When a port is configured the controller already has a real serial
         transport — don't replace it with simulator.  The page-load ping
-        in ``_init`` will set ``robot_state.simulator_active`` based on
+        in ``_init`` will set ``waldoctl.commander.status.simulator_active`` based on
         whether hardware is actually connected.
         """
         if not port:
@@ -925,7 +928,7 @@ def _register_handlers() -> None:
                 await client.simulator(True)
             except Exception as e:
                 logger.error("startup: simulator(True) failed: %s", e)
-            robot_state.simulator_active = True
+            waldoctl.commander.status.simulator_active = True
         try:
             await client.resume()
         except Exception as e:
@@ -1270,7 +1273,7 @@ async def index_page():
         result = await client.ping()
         hw_ok = result.hardware_connected if result else False
         if hw_ok:
-            robot_state.connected = True
+            waldoctl.commander.status.connected = True
     except Exception as e:
         logger.warning("Connectivity check failed: %s", e)
 
@@ -1336,7 +1339,7 @@ async def _status_consumer() -> None:
                 with global_phase_timer.phase("status"):
                     # Copy status data (in-place fills to avoid allocations)
                     if (
-                        not robot_state.editing_mode
+                        not waldoctl.commander.status.editing_mode
                         and not playback_coordination.sim_pose_override
                     ):
                         robot_state.angles.set_deg(status.angles)
@@ -1347,9 +1350,8 @@ async def _status_consumer() -> None:
 
                     # Speeds arrive as rad/s from backend — convert to deg/s for display
                     np.rad2deg(status.speeds, out=robot_state.speeds)
-                    robot_state.tcp_speed = (
-                        0.3 * status.tcp_speed + 0.7 * robot_state.tcp_speed
-                    )
+                    pose = waldoctl.commander.status.pose
+                    pose.tcp_speed = 0.3 * status.tcp_speed + 0.7 * pose.tcp_speed
 
                     # Mark backend ready on first valid STATUS
                     readiness_state.mark_backend_done()
@@ -1365,7 +1367,7 @@ async def _status_consumer() -> None:
                     robot_state.action_state = status.action_state
                     robot_state.executing_index = status.executing_index
                     robot_state.completed_index = status.completed_index
-                    robot_state.last_update_ts = time.time()
+                    waldoctl.commander.status.last_update = time.time()
 
                     # Auto-clear scrub override after teleport has had time to propagate
                     _active_pb = waldoctl.commander.programs.active

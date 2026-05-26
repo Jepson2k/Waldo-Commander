@@ -846,7 +846,7 @@ class ControlPanel:
     def refresh_joint_enablement(self) -> None:
         """Apply stronger disabled visuals to joint +/- buttons using robot_state.joint_en."""
         # Get current state for dirty checking
-        editing_mode = robot_state.editing_mode
+        editing_mode = waldoctl.commander.status.editing_mode
         en = robot_state.joint_en
         current_tuple = tuple(en) if len(en) == 2 * self._n_joints else None
 
@@ -886,7 +886,7 @@ class ControlPanel:
         Translation axes use WRF enablement, rotation axes use TRF enablement
         (matching the actual jog frame convention).
         """
-        editing_mode = robot_state.editing_mode
+        editing_mode = waldoctl.commander.status.editing_mode
         frames = ui_state.active_robot.cartesian_frames
         wrf, trf = frames[0], frames[1]
         en_wrf = robot_state.cart_en.get(wrf, _DEFAULT_CART_EN)
@@ -923,8 +923,11 @@ class ControlPanel:
     def sync_gizmo_for_jog_state(self) -> None:
         """Auto-hide TCP gizmo when live jogging is unavailable, restore when available."""
         jog_possible = (
-            not robot_state.editing_mode
-            and (robot_state.simulator_active or robot_state.connected)
+            not waldoctl.commander.status.editing_mode
+            and (
+                waldoctl.commander.status.simulator_active
+                or waldoctl.commander.status.connected
+            )
             and not is_any_program_running()
         )
         if not jog_possible and not self._gizmo_auto_hidden:
@@ -945,7 +948,10 @@ class ControlPanel:
             if notify:
                 ui.notify("Script is running — jog disabled", color="warning")
             return False
-        if robot_state.simulator_active or robot_state.connected:
+        if (
+            waldoctl.commander.status.simulator_active
+            or waldoctl.commander.status.connected
+        ):
             return True
         if notify:
             ui.notify(
@@ -959,7 +965,7 @@ class ControlPanel:
 
     async def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
         """Hybrid click/hold: quick click => single step, press-and-hold => stream until release."""
-        if robot_state.editing_mode:
+        if waldoctl.commander.status.editing_mode:
             return
         if not self._movement_allowed(notify=is_pressed):
             return
@@ -1069,7 +1075,7 @@ class ControlPanel:
 
     async def set_axis_pressed(self, axis: str, is_pressed: bool) -> None:
         """Hybrid click/hold for cartesian axes: click => single step, hold => stream."""
-        if robot_state.editing_mode:
+        if waldoctl.commander.status.editing_mode:
             return
         if not self._movement_allowed(notify=is_pressed):
             return
@@ -1334,7 +1340,7 @@ class ControlPanel:
     async def go_to_joint_limit(self, joint_index: int, which: str) -> None:
         """Move to min or max joint limit for a specific joint while holding others."""
         # Skip if in editing mode (target editor controls robot)
-        if robot_state.editing_mode:
+        if waldoctl.commander.status.editing_mode:
             return
 
         if not self._movement_allowed():
@@ -1414,7 +1420,7 @@ class ControlPanel:
 
     async def send_home(self) -> None:
         # In editing mode, move the editing robot to home position
-        if robot_state.editing_mode:
+        if waldoctl.commander.status.editing_mode:
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.apply_editing_home()
                 logger.info("HOME sent to editing robot")
@@ -1451,7 +1457,7 @@ class ControlPanel:
         """Update Robot/Simulator toggle button appearance."""
         if self._robot_btn is None:
             return
-        if robot_state.simulator_active:
+        if waldoctl.commander.status.simulator_active:
             self._robot_btn.props("color=amber-8")
             self._robot_btn.classes(add="glass-btn glass-amber")
         else:
@@ -1470,9 +1476,9 @@ class ControlPanel:
                     logger.warning("Failed to stop script before mode switch: %s", e)
 
             # Toggle simulator mode and enable
-            if not robot_state.simulator_active:
+            if not waldoctl.commander.status.simulator_active:
                 await self.client.simulator(True)
-                robot_state.simulator_active = True
+                waldoctl.commander.status.simulator_active = True
                 # Apply simulator visual appearance to URDF scene (amber ghosting)
                 if self._is_urdf_scene_valid() and ui_state.urdf_scene:
                     ui_state.urdf_scene.set_simulator_appearance(True)
@@ -1484,7 +1490,7 @@ class ControlPanel:
                     logger.warning("Resume after simulator on failed: %s", e)
             else:
                 await self.client.simulator(False)
-                robot_state.simulator_active = False
+                waldoctl.commander.status.simulator_active = False
                 # Restore default URDF appearance (remove simulator ghosting)
                 if self._is_urdf_scene_valid() and ui_state.urdf_scene:
                     ui_state.urdf_scene.set_simulator_appearance(False)
