@@ -250,8 +250,17 @@ class PlaybackController:
         # listener fire after a page reload doesn't treat live state as a
         # transition.
         self._last_script_running = is_any_program_running()
-        self._last_executing_step_index = simulation_state.executing_step_index
-        self._last_executing_step_at_end = simulation_state.executing_step_at_end
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            self._last_executing_step_index = (
+                active.dry_run.playback.executing_step_index
+            )
+            self._last_executing_step_at_end = (
+                active.dry_run.playback.executing_step_at_end
+            )
+        else:
+            self._last_executing_step_index = -1
+            self._last_executing_step_at_end = False
         simulation_state.add_change_listener(self._on_state_change)
         simulation_state.add_step_listener(self._on_step_change)
         self._sim_timer = ui.timer(1.0 / 50, self._sim_playback_tick, active=False)
@@ -391,8 +400,13 @@ class PlaybackController:
         channel so urdf_scene doesn't re-walk segment fingerprints per step.
         """
         running = is_any_program_running()
-        step = simulation_state.executing_step_index
-        at_end = simulation_state.executing_step_at_end
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            step = active.dry_run.playback.executing_step_index
+            at_end = active.dry_run.playback.executing_step_at_end
+        else:
+            step = -1
+            at_end = False
 
         if (
             running

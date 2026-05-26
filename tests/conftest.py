@@ -318,7 +318,6 @@ def reset_editor_singletons(
     from waldo_commander.components.playback import playback
     from waldo_commander.components.simulation_engine import simulation
     from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.state import simulation_state
 
     # Only playback owns a per-page simulation_state listener; reset it first
     # so its cleanup() removes that listener before the other resets run.
@@ -336,10 +335,10 @@ def reset_editor_singletons(
     try:
         for p in waldoctl.commander.programs.items:
             p.execution.is_running = False
+            p.dry_run.playback.executing_step_index = -1
+            p.dry_run.playback.executing_step_at_end = False
     except RuntimeError:
         pass
-    simulation_state.executing_step_index = -1
-    simulation_state.executing_step_at_end = False
 
 
 @pytest.fixture(autouse=True)

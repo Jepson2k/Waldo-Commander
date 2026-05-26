@@ -195,9 +195,9 @@ class ScriptExecutionController:
             # the script-start edge and reacts.
             if launching_tab is not None:
                 launching_tab.execution.is_running = True
+                launching_tab.dry_run.playback.executing_step_index = -1
+                launching_tab.dry_run.playback.executing_step_at_end = False
             simulation_state.is_playing = True
-            simulation_state.executing_step_index = -1
-            simulation_state.executing_step_at_end = False
             self._step_controller.signal_play()
             simulation_state.notify_changed()
 
@@ -287,16 +287,27 @@ class ScriptExecutionController:
                     event_type = event.get("event")
                     method = event.get("method", "")
                     step = event.get("step", 0)
+                    running_tab = (
+                        waldoctl.commander.programs.get(self._script_tab_id)
+                        if self._script_tab_id
+                        else None
+                    )
                     if event_type == "start":
                         with ui_client:
-                            simulation_state.executing_step_index = step
-                            simulation_state.executing_step_at_end = False
+                            if running_tab is not None:
+                                running_tab.dry_run.playback.executing_step_index = step
+                                running_tab.dry_run.playback.executing_step_at_end = (
+                                    False
+                                )
                             simulation_state.current_step_index = step
                             simulation_state.notify_step_changed()
                     elif event_type == "complete":
                         with ui_client:
-                            simulation_state.executing_step_index = step
-                            simulation_state.executing_step_at_end = True
+                            if running_tab is not None:
+                                running_tab.dry_run.playback.executing_step_index = step
+                                running_tab.dry_run.playback.executing_step_at_end = (
+                                    True
+                                )
                             simulation_state.current_step_index = step
                             simulation_state.notify_step_changed()
                         logger.debug(
