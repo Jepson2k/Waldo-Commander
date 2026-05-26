@@ -63,7 +63,7 @@ from waldo_commander.services.urdf_scene import (
     update_urdf_angles,
 )
 from waldo_commander.services.action_log import action_log_service
-from waldo_commander.services.programs import EditorPrograms
+from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
     robot_state,
@@ -1016,13 +1016,20 @@ def _register_handlers() -> None:
 
         # Stop any running script processes first
         try:
-            if simulation_state.script_running and script_exec.script_handle:
+            if is_any_program_running() and script_exec.script_handle:
                 logger.debug("Stopping running script process during shutdown...")
                 from waldo_commander.services.script_runner import stop_script
 
                 await stop_script(script_exec.script_handle, timeout=2.0)
                 script_exec.script_handle = None
-                simulation_state.script_running = False
+                running_tab_id = script_exec.launching_tab_id
+                running_tab = (
+                    waldoctl.commander.programs.get(running_tab_id)
+                    if running_tab_id
+                    else None
+                )
+                if running_tab is not None:
+                    running_tab.execution.is_running = False
                 script_exec.cleanup_stepping()
         except Exception as e:
             logger.warning("Error stopping script during shutdown: %s", e)

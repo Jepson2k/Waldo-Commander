@@ -8,7 +8,7 @@ executing-line highlight (the launching tab). Flash decorations stay on
 the active tab because their callers (``EditorPanel.add_target_code`` and
 the motion recorder) always target the user's current edit surface.
 
-Clears the executing-line highlight automatically when ``simulation_state.script_running``
+Clears the executing-line highlight automatically when no program is running
 transitions from True to False (via the state listener registered in __init__).
 """
 
@@ -27,6 +27,7 @@ from nicegui.elements.codemirror.codemirror import (
 
 import waldoctl
 
+from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,7 @@ class EditorDecorations:
         self._ui_client = client
 
     def _on_state_change(self) -> None:
-        running = simulation_state.script_running
+        running = is_any_program_running()
         if self._last_script_running and not running:
             # Script stopped — clear every tracked executing-line highlight
             # (in practice there's at most one, since only one script can

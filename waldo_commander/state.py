@@ -206,7 +206,6 @@ class SimulationState(ChangeNotifierMixin):
     sim_playback_time: float = 0.0  # Current playback position (seconds)
     sim_total_duration: float = 0.0  # Total timeline duration (seconds)
     sim_playback_active: bool = False  # True when simulation playback timer is ticking
-    script_running: bool = False  # True while a user script is executing
     # Step-lifecycle phase from the running script's IPC events. Together,
     # these let playback's state listener distinguish "step N just started"
     # from "step N just completed" without a direct call from script_exec.
@@ -231,7 +230,6 @@ class SimulationState(ChangeNotifierMixin):
         self.sim_playback_time = 0.0
         self.sim_total_duration = 0.0
         self.sim_playback_active = False
-        self.script_running = False
         self.executing_step_index = -1
         self.executing_step_at_end = False
 

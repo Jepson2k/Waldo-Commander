@@ -33,6 +33,7 @@ from waldo_commander.services.script_runner import (
     stop_script,
 )
 from waldo_commander.services.stepping_client import GUIStepController
+from waldo_commander.services.programs import is_any_program_running
 import waldoctl
 from waldoctl import LogEntry
 
@@ -88,7 +89,7 @@ class ScriptExecutionController:
         # progress resumes on this page.
         if (
             client is not None
-            and simulation_state.script_running
+            and is_any_program_running()
             and self._step_controller is not None
             and (self._event_watcher_task is None or self._event_watcher_task.done())
         ):
@@ -133,14 +134,14 @@ class ScriptExecutionController:
 
     async def toggle(self) -> None:
         """Toggle start/stop based on current state."""
-        if simulation_state.script_running:
+        if is_any_program_running():
             await self.stop()
         else:
             await self.start()
 
     async def start(self) -> None:
         """Start the current editor content as a Python subprocess."""
-        if simulation_state.script_running:
+        if is_any_program_running():
             ui.notify("Script already running", color="warning")
             return
 
@@ -189,9 +190,11 @@ class ScriptExecutionController:
                 script_config, on_stdout, on_stderr, session_id=self._step_session_id
             )
 
-            # Subprocess is live — flip script_running and emit one notification
-            # so playback's listener sees the script-start edge and reacts.
-            simulation_state.script_running = True
+            # Subprocess is live — flip execution.is_running on the launching
+            # program and emit one notification so playback's listener sees
+            # the script-start edge and reacts.
+            if launching_tab is not None:
+                launching_tab.execution.is_running = True
             simulation_state.is_playing = True
             simulation_state.executing_step_index = -1
             simulation_state.executing_step_at_end = False
@@ -230,14 +233,20 @@ class ScriptExecutionController:
 
     async def stop(self) -> None:
         """Stop the running script process."""
-        if not simulation_state.script_running or not self.script_handle:
+        if not is_any_program_running() or not self.script_handle:
             ui.notify("No script running", color="warning")
             return
 
         try:
             handle = self.script_handle
             self.script_handle = None
-            simulation_state.script_running = False
+            running_tab = (
+                waldoctl.commander.programs.get(self._script_tab_id)
+                if self._script_tab_id
+                else None
+            )
+            if running_tab is not None:
+                running_tab.execution.is_running = False
             simulation_state.is_playing = False
             simulation_state.notify_changed()
             self.cleanup_stepping()
@@ -272,7 +281,7 @@ class ScriptExecutionController:
         """Poll for script events and publish step transitions to simulation_state."""
         watcher_crashed = False
         try:
-            while simulation_state.script_running and self._step_controller:
+            while is_any_program_running() and self._step_controller:
                 events = self._step_controller.poll_events()
                 for event in events:
                     event_type = event.get("event")
@@ -304,9 +313,15 @@ class ScriptExecutionController:
             # If the watcher died unexpectedly while the script is still flagged
             # as running, fire a stop edge so playback unstalls instead of waiting
             # for the subprocess-completion monitor to notice.
-            if watcher_crashed and simulation_state.script_running:
+            if watcher_crashed and is_any_program_running():
                 with ui_client:
-                    simulation_state.script_running = False
+                    running_tab = (
+                        waldoctl.commander.programs.get(self._script_tab_id)
+                        if self._script_tab_id
+                        else None
+                    )
+                    if running_tab is not None:
+                        running_tab.execution.is_running = False
                     simulation_state.is_playing = False
                     simulation_state.notify_changed()
 
@@ -335,8 +350,14 @@ class ScriptExecutionController:
     def _reset_state(self) -> None:
         """Reset all script-related state after a script finishes or errors."""
         self.script_handle = None
+        running_tab = (
+            waldoctl.commander.programs.get(self._script_tab_id)
+            if self._script_tab_id
+            else None
+        )
+        if running_tab is not None:
+            running_tab.execution.is_running = False
         self._script_tab_id = None
-        simulation_state.script_running = False
         simulation_state.is_playing = False
         playback_coordination.sim_pose_override = False
         simulation_state.notify_changed()

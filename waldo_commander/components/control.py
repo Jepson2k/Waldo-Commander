@@ -20,7 +20,6 @@ from waldoctl.types import Axis
 from waldo_commander.constants import config, DEFAULT_CAMERA, CLICK_HOLD_THRESHOLD_S
 from waldo_commander.state import (
     robot_state,
-    simulation_state,
     ui_state,
     global_phase_timer,
 )
@@ -28,6 +27,7 @@ from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import SettingsContent
 from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.services.programs import is_any_program_running
 
 logger = logging.getLogger(__name__)
 
@@ -925,7 +925,7 @@ class ControlPanel:
         jog_possible = (
             not robot_state.editing_mode
             and (robot_state.simulator_active or robot_state.connected)
-            and not simulation_state.script_running
+            and not is_any_program_running()
         )
         if not jog_possible and not self._gizmo_auto_hidden:
             if ui_state.urdf_scene and waldoctl.commander.settings.view.gizmo_visible:
@@ -941,7 +941,7 @@ class ControlPanel:
     @staticmethod
     def _movement_allowed(notify: bool = True) -> bool:
         """Return True if robot movement is permitted (simulator active or hardware connected, no script running)."""
-        if simulation_state.script_running:
+        if is_any_program_running():
             if notify:
                 ui.notify("Script is running — jog disabled", color="warning")
             return False
@@ -1462,7 +1462,7 @@ class ControlPanel:
         """Toggle between robot and simulator modes and update URDF appearance."""
         try:
             # Stop any running user script before mode switch (safety)
-            if simulation_state.script_running:
+            if is_any_program_running():
                 logger.info("Stopping running script before mode switch")
                 try:
                     await script_exec.stop()

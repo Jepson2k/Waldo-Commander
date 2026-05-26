@@ -12,6 +12,7 @@ import logging
 
 from nicegui import ui
 
+from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import simulation_state
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ class LogPanelController:
     # ---- State listener: auto-expand on script start ----
 
     def _on_state_change(self) -> None:
-        running = simulation_state.script_running
+        running = is_any_program_running()
         if running and not self._last_script_running and not self._log_expanded:
             self.expand()
         self._last_script_running = running
@@ -61,7 +62,7 @@ class LogPanelController:
         """Create the show/hide toggle button. Call inside the playback bar."""
         # Reset transient state for a fresh page build (new client / test).
         self._log_expanded = False
-        self._last_script_running = simulation_state.script_running
+        self._last_script_running = is_any_program_running()
         self.log_toggle_btn = (
             ui.button(icon="expand_more", on_click=self.toggle)
             .props("round dense flat")

@@ -40,6 +40,24 @@ def is_any_program_recording() -> bool:
         return False
 
 
+def is_any_program_running() -> bool:
+    """True if any open ``Program`` has its script currently executing.
+
+    The one-execution-at-a-time invariant is enforced by
+    ``script_execution`` (it refuses to start a second script while one is
+    live). This helper is the read side: anywhere WC previously checked
+    the global ``simulation_state.script_running`` flag uses this.
+
+    Tolerates the pre-startup window when the locator isn't registered yet —
+    returns ``False`` in that case so call sites in fixtures / smoke checks
+    behave the same as the legacy ``simulation_state.script_running == False``.
+    """
+    try:
+        return any(p.execution.is_running for p in waldoctl.commander.programs.items)
+    except RuntimeError:
+        return False
+
+
 class EditorPrograms(ProgramTabs):
     """Concrete ``ProgramTabs`` backed by WC's editor.
 

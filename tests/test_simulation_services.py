@@ -20,7 +20,10 @@ from waldo_commander.state import (
 )
 from parol6.client.dry_run_client import DryRunRobotClient
 from tests.helpers.programs import set_active_recording
-from waldo_commander.services.programs import is_any_program_recording
+from waldo_commander.services.programs import (
+    is_any_program_recording,
+    is_any_program_running,
+)
 from waldo_commander.services.path_preview_client import PathPreviewClient
 from waldo_commander.services.motion_recorder import MotionRecorder
 from waldo_commander.services.path_visualizer import PathVisualizer
@@ -1349,7 +1352,7 @@ class TestScriptExecutionLifecycle:
 
             # Contract: handle cleared, state reset.
             assert se.script_exec.script_handle is None
-            assert simulation_state.script_running is False
+            assert is_any_program_running() is False
             assert simulation_state.is_playing is False
 
             # The subprocess must be dead — this is the regression guard.
@@ -1446,13 +1449,18 @@ class TestScriptExecutionLifecycle:
         assert step_controller._control_file.exists()
         assert step_controller._event_file.exists()
 
-        old_running = simulation_state.script_running
+        import waldoctl as _wctl
+
+        active_program = _wctl.commander.programs.active
+        if active_program is None:
+            active_program = _wctl.commander.programs.new(filename="ipc_test.py")
+        old_running = active_program.execution.is_running
         old_session = se.script_exec._step_session_id
         old_controller = se.script_exec._step_controller
         old_watcher = se.script_exec._event_watcher_task
         old_client = se.script_exec._ui_client
         try:
-            simulation_state.script_running = True
+            active_program.execution.is_running = True
             se.script_exec._step_session_id = session_id
             se.script_exec._step_controller = step_controller
 
@@ -1501,7 +1509,7 @@ class TestScriptExecutionLifecycle:
                 se.script_exec._event_watcher_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await se.script_exec._event_watcher_task
-            simulation_state.script_running = old_running
+            active_program.execution.is_running = old_running
             se.script_exec._step_session_id = old_session
             se.script_exec._step_controller = old_controller
             se.script_exec._event_watcher_task = old_watcher

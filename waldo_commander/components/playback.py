@@ -16,7 +16,10 @@ from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.timeline import Timeline
-from waldo_commander.services.programs import is_any_program_recording
+from waldo_commander.services.programs import (
+    is_any_program_recording,
+    is_any_program_running,
+)
 from waldo_commander.state import (
     playback_coordination,
     robot_state,
@@ -246,7 +249,7 @@ class PlaybackController:
         # Seed the edge-detection baseline with current state so the first
         # listener fire after a page reload doesn't treat live state as a
         # transition.
-        self._last_script_running = simulation_state.script_running
+        self._last_script_running = is_any_program_running()
         self._last_executing_step_index = simulation_state.executing_step_index
         self._last_executing_step_at_end = simulation_state.executing_step_at_end
         simulation_state.add_change_listener(self._on_state_change)
@@ -272,7 +275,7 @@ class PlaybackController:
 
     async def toggle_play(self) -> None:
         """Toggle play/pause for script execution or simulation playback."""
-        if simulation_state.script_running:
+        if is_any_program_running():
             if simulation_state.is_playing:
                 script_exec.signal_pause()
                 simulation_state.is_playing = False
@@ -292,7 +295,7 @@ class PlaybackController:
 
     def step_forward(self) -> None:
         """Step forward one segment."""
-        if simulation_state.script_running:
+        if is_any_program_running():
             script_exec.signal_step()
             logger.debug("Step forward signal sent to script")
         elif self._timeline and simulation_state.total_steps > 0:
@@ -367,7 +370,7 @@ class PlaybackController:
         to ``urdf_scene._update_simulation_view``. This handler covers the
         less-frequent start/stop edges plus play-button refreshes.
         """
-        running = simulation_state.script_running
+        running = is_any_program_running()
 
         if running and not self._last_script_running:
             self._handle_script_start_edge()
@@ -387,7 +390,7 @@ class PlaybackController:
         ``start`` / ``complete`` event (~20 Hz). Kept off the global change
         channel so urdf_scene doesn't re-walk segment fingerprints per step.
         """
-        running = simulation_state.script_running
+        running = is_any_program_running()
         step = simulation_state.executing_step_index
         at_end = simulation_state.executing_step_at_end
 
@@ -642,7 +645,7 @@ class PlaybackController:
             return
 
         # Script execution mode: smooth slider tracking (no URDF control)
-        if simulation_state.script_running and self._exec_step_index >= 0:
+        if is_any_program_running() and self._exec_step_index >= 0:
             self._script_slider_tick()
             return
 
@@ -706,9 +709,10 @@ class PlaybackController:
 
     def update_play_button(self) -> None:
         """Update play/pause button icon and stop/step button visibility."""
+        script_running = is_any_program_running()
         if self.play_btn:
             playing = (
-                simulation_state.script_running and simulation_state.is_playing
+                script_running and simulation_state.is_playing
             ) or simulation_state.sim_playback_active
             if playing:
                 self.play_btn.props("icon=pause color=warning")
@@ -720,7 +724,7 @@ class PlaybackController:
                     self.play_btn_tooltip.text = "Play (Space)"
 
         if self.stop_btn:
-            self.stop_btn.set_visibility(simulation_state.script_running)
+            self.stop_btn.set_visibility(script_running)
 
         if self.next_btn:
             has_steps = simulation_state.total_steps > 0
@@ -733,7 +737,7 @@ class PlaybackController:
                 if has_steps
                 else True
             )
-            if at_last and not simulation_state.script_running:
+            if at_last and not script_running:
                 self.next_btn.disable()
             else:
                 self.next_btn.enable()

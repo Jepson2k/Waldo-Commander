@@ -30,6 +30,7 @@ from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.playback import playback
 from waldo_commander.services.path_visualizer import UNCHANGED, path_visualizer
+from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import (
     playback_coordination,
     robot_state,
@@ -233,7 +234,7 @@ class SimulationEngine:
     def check_position_changed(self) -> None:
         """Periodically check if robot position changed and re-run path preview."""
         if (
-            simulation_state.script_running
+            is_any_program_running()
             or robot_state.editing_mode
             or self._simulation_debounce_timer is not None
             or playback_coordination.sim_pose_override

@@ -12,7 +12,10 @@ from waldoctl import Program
 
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import REPO_ROOT
-from waldo_commander.services.programs import is_any_program_recording
+from waldo_commander.services.programs import (
+    is_any_program_recording,
+    is_any_program_running,
+)
 from waldo_commander.state import (
     robot_state,
     simulation_state,
@@ -376,7 +379,7 @@ class EditorPanel(FileOperationsMixin):
         # The subprocess outlives the page (script_exec.cleanup doesn't kill
         # script_handle), so closing its launching tab would orphan the output:
         # _record_line silently drops every line once find_tab_by_id returns None.
-        if simulation_state.script_running and script_exec.is_launching_tab(tab.id):
+        if is_any_program_running() and script_exec.is_launching_tab(tab.id):
             ui.notify(
                 "Cannot close the tab whose script is running. Stop the script first.",
                 color="warning",
@@ -465,7 +468,7 @@ class EditorPanel(FileOperationsMixin):
             if self.tabs_container and waldoctl.commander.programs.active_id:
                 self.tabs_container.set_value(waldoctl.commander.programs.active_id)
             return
-        if simulation_state.script_running and simulation_state.is_playing:
+        if is_any_program_running() and simulation_state.is_playing:
             ui.notify("Cannot switch tabs during script playback", color="warning")
             if self.tabs_container and waldoctl.commander.programs.active_id:
                 self.tabs_container.set_value(waldoctl.commander.programs.active_id)

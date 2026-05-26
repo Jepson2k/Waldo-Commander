@@ -18,6 +18,7 @@ from typing import Callable, Any
 from nicegui import ui
 
 from waldo_commander.constants import CLICK_HOLD_THRESHOLD_S
+from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
@@ -364,7 +365,7 @@ def _register_default_keybindings() -> None:
             description="Step forward",
             action=lambda: playback.step_forward(),
             category="Playback",
-            enabled_check=lambda: simulation_state.script_running
+            enabled_check=lambda: is_any_program_running()
             or simulation_state.total_steps > 0,
         )
     )

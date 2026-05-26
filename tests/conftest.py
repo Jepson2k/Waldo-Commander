@@ -23,6 +23,7 @@ from nicegui.testing.screen_plugin import (
     pytest_runtest_makereport,  # noqa: F401
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
+import waldoctl
 from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
 from selenium import webdriver as _webdriver
@@ -328,10 +329,15 @@ def reset_editor_singletons(
     simulation.reset_for_test()
     script_exec.reset_for_test()
 
-    # Script/sim flags live on simulation_state, not on a singleton. Without
-    # resetting, a test that leaves script_running=True (e.g. crash mid-start)
-    # poisons gating checks in the next test.
-    simulation_state.script_running = False
+    # Script/sim flags live on simulation_state and per-program execution
+    # state. Without resetting, a test that leaves a program's execution
+    # marked running (e.g. crash mid-start) poisons gating checks in the
+    # next test.
+    try:
+        for p in waldoctl.commander.programs.items:
+            p.execution.is_running = False
+    except RuntimeError:
+        pass
     simulation_state.executing_step_index = -1
     simulation_state.executing_step_at_end = False
 
