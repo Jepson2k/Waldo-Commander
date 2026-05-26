@@ -71,6 +71,7 @@ from waldo_commander.state import (
     simulation_state,
     ui_state,
     readiness_state,
+    playback_coordination,
     global_phase_timer,
 )
 
@@ -407,7 +408,9 @@ def update_ui_from_status() -> None:
     # Skip position/angle updates when in editing mode (editing sync handles these)
     skip_position_updates = robot_state.editing_mode
     # Skip URDF scene updates during sim playback/scrubbing (teleport syncs backend)
-    skip_scene_updates = skip_position_updates or simulation_state.sim_pose_override
+    skip_scene_updates = (
+        skip_position_updates or playback_coordination.sim_pose_override
+    )
 
     # Update URDF scene with new angles and TCP ball
     if not skip_scene_updates:
@@ -1326,12 +1329,12 @@ async def _status_consumer() -> None:
                     # Copy status data (in-place fills to avoid allocations)
                     if (
                         not robot_state.editing_mode
-                        and not simulation_state.sim_pose_override
+                        and not playback_coordination.sim_pose_override
                     ):
                         robot_state.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io
-                    if not simulation_state.sim_pose_override:
+                    if not playback_coordination.sim_pose_override:
                         robot_state.tool_status = status.tool_status
 
                     # Speeds arrive as rad/s from backend — convert to deg/s for display
@@ -1358,13 +1361,14 @@ async def _status_consumer() -> None:
 
                     # Auto-clear scrub override after teleport has had time to propagate
                     if (
-                        simulation_state.sim_pose_override
+                        playback_coordination.sim_pose_override
                         and not simulation_state.sim_playback_active
-                        and simulation_state.last_teleport_ts > 0
-                        and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+                        and playback_coordination.last_teleport_ts > 0
+                        and (time.monotonic() - playback_coordination.last_teleport_ts)
+                        > 0.1
                     ):
-                        simulation_state.sim_pose_override = False
-                        simulation_state.last_teleport_ts = 0.0
+                        playback_coordination.sim_pose_override = False
+                        playback_coordination.last_teleport_ts = 0.0
 
                     # Both checks needed: _deleted guards the brief window
                     # between NiceGUI marking the client dead and removing it

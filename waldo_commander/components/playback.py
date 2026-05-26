@@ -18,6 +18,7 @@ from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.state import (
+    playback_coordination,
     robot_state,
     simulation_state,
     ui_state,
@@ -489,11 +490,11 @@ class PlaybackController:
         tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
 
         if sample.joints and ui_state.urdf_scene and robot_state.simulator_active:
-            simulation_state.sim_pose_override = True
+            playback_coordination.sim_pose_override = True
             ui_state.urdf_scene.set_axis_values(sample.joints)
             robot_state.angles.set_rad(np.asarray(sample.joints))
             if ui_state.control_panel:
-                simulation_state.last_teleport_ts = time.monotonic()
+                playback_coordination.last_teleport_ts = time.monotonic()
                 if self._teleport_task and not self._teleport_task.done():
                     self._teleport_task.cancel()
                 self._teleport_task = asyncio.create_task(
@@ -624,7 +625,7 @@ class PlaybackController:
             self._sim_timer.active = False
         simulation_state.sim_playback_active = False
         # Let the auto-clear in main.py handle the handback after 100ms
-        simulation_state.last_teleport_ts = time.monotonic()
+        playback_coordination.last_teleport_ts = time.monotonic()
         simulation_state.is_playing = False
         self._last_tool_selection = None
         # Snapshot so position-change checker doesn't re-sim

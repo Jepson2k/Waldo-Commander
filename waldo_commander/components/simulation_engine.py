@@ -31,6 +31,7 @@ from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.playback import playback
 from waldo_commander.services.path_visualizer import UNCHANGED, path_visualizer
 from waldo_commander.state import (
+    playback_coordination,
     robot_state,
     simulation_state,
     ui_state,
@@ -106,13 +107,13 @@ class SimulationEngine:
         """
         if tab_id is None:
             tab_id = waldoctl.commander.programs.active_id
+        if tab_id is None:
+            return None
 
         textarea = ui_state.textareas_by_tab.get(tab_id)
         content = textarea.value if textarea else ""
         if not content:
             return None
-        # textarea is non-None ⇒ tab_id was non-None (get_tab_textarea(None) → None).
-        assert tab_id is not None
 
         loading = playback.sim_loading_progress
         if loading:
@@ -235,7 +236,7 @@ class SimulationEngine:
             simulation_state.script_running
             or robot_state.editing_mode
             or self._simulation_debounce_timer is not None
-            or simulation_state.sim_pose_override
+            or playback_coordination.sim_pose_override
             or simulation_state.sim_playback_active
         ):
             return

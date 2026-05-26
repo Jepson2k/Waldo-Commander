@@ -7,7 +7,14 @@ from typing import Any, Callable, TYPE_CHECKING
 
 import numpy as np
 from nicegui import binding
-from waldoctl import ActionState, ToolStatus
+from waldoctl import (
+    ActionState,
+    PathSegment,
+    ProgramTarget,
+    ToolAction,
+    ToolSelection,
+    ToolStatus,
+)
 
 from waldo_commander.common.loop_timer import PhaseTimer
 
@@ -177,78 +184,11 @@ class ToolTimeSeries:
         self._dirty = False
 
 
-@dataclass(slots=True)
-class ProgramTarget:
-    id: str  # Unique identifier
-    line_number: int  # Line number in the editor (1-based)
-    pose: list[float]  # [x, y, z, rx, ry, rz]
-    move_type: str  # "cartesian", "pose", "joints"
-    scene_object_id: str  # ID of the 3D marker object in the scene
-    is_valid: bool = True  # False when move failed (out of range, IK failure)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "ProgramTarget":
-        """Deserialize from dict."""
-        return cls(**d)
-
-
-@dataclass(slots=True)
-class PathSegment:
-    points: list[list[float]]  # List of [x, y, z] points defining the segment
-    color: str  # Hex color code (green, blue, orange, red)
-    is_valid: bool  # Whether the segment is reachable (IK valid)
-    line_number: int  # Source line number in program
-    joints: list[float] | None = None  # Joint angles at end of segment
-    move_type: str = "cartesian"  # "cartesian", "joints", "smooth_*"
-    is_dashed: bool = True  # Whether to render as dashed line
-    show_arrows: bool = True  # Whether to show direction arrows
-    joint_trajectory: list[list[float]] | None = (
-        None  # Full joint trajectory for smooth playback
-    )
-    # Timing validation fields
-    estimated_duration: float | None = None  # Computed duration from trajectory builder
-    requested_duration: float | None = None  # User-requested duration
-    timing_feasible: bool = True  # Whether motion achievable in requested time
-    checkpoint: str | None = (
-        None  # Checkpoint type (e.g. "home") — playback pauses here
-    )
-    is_travel: bool = (
-        False  # True for travel-to-start segments (before first motion command)
-    )
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "PathSegment":
-        """Deserialize from dict."""
-        return cls(**d)
-
-
-@dataclass(slots=True)
-class ToolAction:
-    tcp_pose: list[float] | None
-    motions: list[dict[str, Any]]
-    target_positions: tuple[float, ...]
-    activation_type: str
-    line_number: int
-    method: str
-    start_positions: tuple[
-        float, ...
-    ] = ()  # Jaw positions at start of action (0=open, 1=closed)
-    estimated_duration: float = 0.0
-    sleep_offset: float = (
-        0.0  # Seconds into preceding non-blocking move when tool fires
-    )
-    segment_index: int = -1  # Index of preceding path segment (-1 if none)
-    tcp_path: list[list[float]] | None = None  # TCP poses sampled over action duration
-
-
-@dataclass(slots=True)
-class ToolSelection:
-    """Records a select_tool() call during simulation for timeline playback."""
-
-    tool_key: str
-    variant_key: str = ""
-    segment_index: int = -1  # -1 means before any motion
-    line_number: int = 0
+# ProgramTarget, PathSegment, ToolAction, ToolSelection are owned by waldoctl
+# (re-exported above from ``waldoctl``). The WC-local duplicates have been
+# removed so ``simulation_state``'s field types unify with
+# ``commander.programs.active.dry_run.*`` and the type checker stops flagging
+# cross-module list assignments.
 
 
 @bindable_dataclass
@@ -266,10 +206,6 @@ class SimulationState(ChangeNotifierMixin):
     sim_playback_time: float = 0.0  # Current playback position (seconds)
     sim_total_duration: float = 0.0  # Total timeline duration (seconds)
     sim_playback_active: bool = False  # True when simulation playback timer is ticking
-    sim_pose_override: bool = (
-        False  # True while scrubbing/playing — suppresses status-loop URDF updates
-    )
-    last_teleport_ts: float = 0.0  # monotonic time of last teleport send; used by status loop to delay handback
     script_running: bool = False  # True while a user script is executing
     # Step-lifecycle phase from the running script's IPC events. Together,
     # these let playback's state listener distinguish "step N just started"
@@ -295,8 +231,6 @@ class SimulationState(ChangeNotifierMixin):
         self.sim_playback_time = 0.0
         self.sim_total_duration = 0.0
         self.sim_playback_active = False
-        self.sim_pose_override = False
-        self.last_teleport_ts = 0.0
         self.script_running = False
         self.executing_step_index = -1
         self.executing_step_at_end = False
@@ -431,6 +365,26 @@ class ControllerState:
 
     def reset(self) -> None:
         self.running = False
+
+
+@dataclass
+class PlaybackCoordination:
+    """WC-private coordination between dry-run playback and the status loop.
+
+    Not part of the public ``waldoctl.commander`` surface — these flags are
+    internal to how WC suppresses status-loop URDF writes while scrubbing or
+    playing back a simulated trajectory, so the live robot pose doesn't fight
+    the scene with the scrubbed pose.
+    """
+
+    sim_pose_override: bool = False
+    """True while scrubbing/playing — suppresses status-loop URDF updates."""
+    last_teleport_ts: float = 0.0
+    """Monotonic time of last teleport send; used by status loop to delay handback."""
+
+    def reset(self) -> None:
+        self.sim_pose_override = False
+        self.last_teleport_ts = 0.0
 
 
 class _RequiredField:
@@ -610,6 +564,7 @@ controller_state: ControllerState = ControllerState()
 ui_state: UiState = UiState()
 simulation_state: SimulationState = SimulationState()
 readiness_state: ReadinessState = ReadinessState()
+playback_coordination: PlaybackCoordination = PlaybackCoordination()
 
 
 def reset_all_state() -> None:
@@ -618,6 +573,7 @@ def reset_all_state() -> None:
     controller_state.reset()
     ui_state.reset()
     simulation_state.reset()
+    playback_coordination.reset()
     readiness_state.reset()
     # Editor tabs / action log live on the commander locator now; reset via
     # their services so the public surface stays in sync with WC's mirrors.

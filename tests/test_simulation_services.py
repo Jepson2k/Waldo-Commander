@@ -13,6 +13,7 @@ import pytest
 
 from waldo_commander.profiles import get_robot
 from waldo_commander.state import (
+    playback_coordination,
     simulation_state,
     robot_state,
     ui_state,
@@ -1219,58 +1220,58 @@ class TestSimPoseOverrideAutoClear:
 
     def test_clears_after_timeout(self):
         """Override should clear once 100ms has passed since last teleport."""
-        simulation_state.sim_pose_override = True
+        playback_coordination.sim_pose_override = True
         simulation_state.sim_playback_active = False
-        simulation_state.last_teleport_ts = time.monotonic() - 0.2  # 200ms ago
+        playback_coordination.last_teleport_ts = time.monotonic() - 0.2  # 200ms ago
 
         # Simulate the auto-clear condition from main.py
         should_clear = (
-            simulation_state.sim_pose_override
+            playback_coordination.sim_pose_override
             and not simulation_state.sim_playback_active
-            and simulation_state.last_teleport_ts > 0
-            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+            and playback_coordination.last_teleport_ts > 0
+            and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
         )
         assert should_clear
 
     def test_stays_set_during_active_scrubbing(self):
         """Override should NOT clear if a teleport was sent recently."""
-        simulation_state.sim_pose_override = True
+        playback_coordination.sim_pose_override = True
         simulation_state.sim_playback_active = False
-        simulation_state.last_teleport_ts = time.monotonic()  # just now
+        playback_coordination.last_teleport_ts = time.monotonic()  # just now
 
         should_clear = (
-            simulation_state.sim_pose_override
+            playback_coordination.sim_pose_override
             and not simulation_state.sim_playback_active
-            and simulation_state.last_teleport_ts > 0
-            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+            and playback_coordination.last_teleport_ts > 0
+            and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
         )
         assert not should_clear
 
     def test_stays_set_during_playback(self):
         """Override should NOT clear during active simulation playback."""
-        simulation_state.sim_pose_override = True
+        playback_coordination.sim_pose_override = True
         simulation_state.sim_playback_active = True
-        simulation_state.last_teleport_ts = time.monotonic() - 0.2
+        playback_coordination.last_teleport_ts = time.monotonic() - 0.2
 
         should_clear = (
-            simulation_state.sim_pose_override
+            playback_coordination.sim_pose_override
             and not simulation_state.sim_playback_active
-            and simulation_state.last_teleport_ts > 0
-            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+            and playback_coordination.last_teleport_ts > 0
+            and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
         )
         assert not should_clear
 
     def test_no_clear_without_teleport(self):
         """Override should NOT clear if no teleport was ever sent (ts=0)."""
-        simulation_state.sim_pose_override = True
+        playback_coordination.sim_pose_override = True
         simulation_state.sim_playback_active = False
-        simulation_state.last_teleport_ts = 0.0
+        playback_coordination.last_teleport_ts = 0.0
 
         should_clear = (
-            simulation_state.sim_pose_override
+            playback_coordination.sim_pose_override
             and not simulation_state.sim_playback_active
-            and simulation_state.last_teleport_ts > 0
-            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+            and playback_coordination.last_teleport_ts > 0
+            and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
         )
         assert not should_clear
 

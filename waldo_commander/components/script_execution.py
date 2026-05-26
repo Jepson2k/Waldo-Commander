@@ -36,7 +36,7 @@ from waldo_commander.services.stepping_client import GUIStepController
 import waldoctl
 from waldoctl import LogEntry
 
-from waldo_commander.state import simulation_state, ui_state
+from waldo_commander.state import playback_coordination, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +338,7 @@ class ScriptExecutionController:
         self._script_tab_id = None
         simulation_state.script_running = False
         simulation_state.is_playing = False
-        simulation_state.sim_pose_override = False
+        playback_coordination.sim_pose_override = False
         simulation_state.notify_changed()
         self.cleanup_stepping()
 
