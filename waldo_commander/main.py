@@ -457,8 +457,9 @@ def update_ui_from_status() -> None:
 
     # Push tool status derived fields into bindable RobotState
     ts = robot_state.tool_status
-    tool_key_changed = ts.key != robot_state.tool_key
-    robot_state.tool_key = ts.key
+    pub_tool = waldoctl.commander.status.tool
+    tool_key_changed = ts.key != pub_tool.key
+    pub_tool.key = ts.key
     robot_state.tool_position = ts.positions[0] if ts.positions else 0.0
     robot_state.tool_engaged = ts.engaged
     robot_state.tool_part_detected = ts.part_detected
@@ -468,7 +469,7 @@ def update_ui_from_status() -> None:
     )
 
     # Build gripper tab on first tool detection
-    if tool_key_changed and robot_state.tool_key != "NONE":
+    if tool_key_changed and pub_tool.key != "NONE":
         try:
             if ui_state._build_gripper_content is not None:
                 ui_state._build_gripper_content()
@@ -568,8 +569,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                         (
                             ui.label("Gripper")
                             .bind_text_from(
-                                robot_state,
-                                "tool_key",
+                                waldoctl.commander.status.tool,
+                                "key",
                                 backward=lambda k: f"Gripper: {k}"
                                 if k != "NONE"
                                 else "Gripper",
@@ -601,7 +602,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                             return " · ".join(parts)
 
                         gripper_features_label.bind_text_from(
-                            robot_state, "tool_key", backward=_update_features
+                            waldoctl.commander.status.tool,
+                            "key",
+                            backward=_update_features,
                         )
                         ui.space()
                         ui.button(icon="close", on_click=close_top_panels).props(
@@ -812,7 +815,10 @@ def build_page_content() -> None:
                 readout_panel.update_conn_io()
 
                 # Enable gripper tab if a tool is already active
-                if robot_state.tool_key and robot_state.tool_key != "NONE":
+                if (
+                    waldoctl.commander.status.tool.key
+                    and waldoctl.commander.status.tool.key != "NONE"
+                ):
                     if ui_state._build_gripper_content is not None:
                         ui_state._build_gripper_content()
                     if ui_state._gripper_tab is not None:

@@ -12,7 +12,7 @@ import waldoctl
 from waldoctl import ActionStatus
 
 from waldo_commander.common.theme import IO_COLOR_OFF, IO_COLOR_ON
-from waldo_commander.state import robot_state, ui_state
+from waldo_commander.state import ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,7 @@ class ReadoutPanel:
                     self._robot_chip.update()
 
         # Tool chip — show "w/ <tool>" when a tool is active
-        tool_key = robot_state.tool_key
+        tool_key = waldoctl.commander.status.tool.key
         if tool_key != self._last_tool_key:
             self._last_tool_key = tool_key
             if self._tool_chip is not None and self._tool_label is not None:

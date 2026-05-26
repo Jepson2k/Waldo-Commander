@@ -152,22 +152,22 @@ async def wait_for_tool_key(
     tool_key: str,
     timeout_s: float = 2.0,
 ) -> None:
-    """Wait for robot_state.tool_key to match expected value.
+    """Wait for waldoctl.commander.status.tool.key to match expected value.
 
     After calling client.select_tool(), the backend must broadcast a status
-    update before robot_state.tool_key reflects the change.
+    update before waldoctl.commander.status.tool.key reflects the change.
 
     Raises:
         TimeoutError: If tool_key doesn't match within timeout
     """
     interval = 0.05
     for _ in range(int(timeout_s / interval)):
-        if robot_state.tool_key == tool_key:
+        if waldoctl.commander.status.tool.key == tool_key:
             return
         await asyncio.sleep(interval)
     raise TimeoutError(
         f"tool_key did not become '{tool_key}' within {timeout_s}s, "
-        f"still '{robot_state.tool_key}'"
+        f"still '{waldoctl.commander.status.tool.key}'"
     )
 
 

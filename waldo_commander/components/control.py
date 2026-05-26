@@ -233,11 +233,13 @@ class _ToolQuickActions:
             .classes("rounded-lg shadow-sm p-2 gap-1")
             .style("border: 1px solid rgba(255,255,255,0.1);")
             .bind_visibility_from(
-                robot_state, "tool_key", backward=lambda k: k != "NONE"
+                waldoctl.commander.status.tool,
+                "key",
+                backward=lambda k: k != "NONE",
             )
             .mark("tool-quick-actions")
         ):
-            ui.label().bind_text_from(robot_state, "tool_key").classes(
+            ui.label().bind_text_from(waldoctl.commander.status.tool, "key").classes(
                 "text-xs text-center w-full opacity-60"
             )
 
@@ -282,7 +284,7 @@ class _ToolQuickActions:
             return
 
         visual_key = (
-            robot_state.tool_key,
+            waldoctl.commander.status.tool.key,
             robot_state.tool_position,
             robot_state.tool_engaged,
             waldoctl.commander.settings.gripper.current,

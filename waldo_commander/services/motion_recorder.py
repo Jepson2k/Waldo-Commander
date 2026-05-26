@@ -11,7 +11,6 @@ import waldoctl
 
 from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.state import (
-    robot_state,
     ui_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED
@@ -170,9 +169,11 @@ class MotionRecorder:
         )
 
         # Ensure select_tool is before the first move command in the script
-        tool_key = robot_state.tool_key
+        tool_key = waldoctl.commander.status.tool.key
         if tool_key and tool_key != "NONE":
-            self._ensure_select_tool(tool_key, variant_key=robot_state.tool_variant_key)
+            self._ensure_select_tool(
+                tool_key, variant_key=waldoctl.commander.status.tool.variant_key
+            )
 
         # Insert anchor move_j to establish recording start position — but only
         # if the robot has moved away from where the script's simulation ends.

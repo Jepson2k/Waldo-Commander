@@ -235,8 +235,6 @@ class SimulationState(ChangeNotifierMixin):
 # Only scalar fields are bindable - numpy arrays are excluded to avoid comparison issues
 @bindable_dataclass(
     bindable_fields=[
-        "tool_key",
-        "tool_variant_key",
         "tool_position",
         "tool_current",
         "tool_engaged",
@@ -269,8 +267,8 @@ class RobotState(ChangeNotifierMixin):
     # ``commander.status.{...}`` from waldoctl. IO inputs/outputs/estop
     # live on ``commander.status.io``. The numpy ``orientation`` array
     # stays here as a rad-access companion for FK / IK consumers.
-    tool_key: str = "NONE"
-    tool_variant_key: str = ""
+    # tool_key / tool_variant_key live on commander.status.tool.{key,
+    # variant_key} (waldoctl's ToolStatus is a bindable_dataclass).
     tool_position: float = 0.0
     tool_current: float = 0.0
     tool_engaged: bool = False
@@ -301,8 +299,6 @@ class RobotState(ChangeNotifierMixin):
         self.joint_en[:] = 1
         for arr in self.cart_en.values():
             arr[:] = 1
-        self.tool_key = "NONE"
-        self.tool_variant_key = ""
         self.tool_position = 0.0
         self.tool_current = 0.0
         self.tool_engaged = False

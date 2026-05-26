@@ -14,7 +14,7 @@ from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
-from waldo_commander.state import robot_state, simulation_state, ui_state
+from waldo_commander.state import simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ class SettingsContent:
         async def _on_variant_change(e):
             vk = e.value
             ng_app.storage.general[f"tool_variant_{tool_key}"] = vk
-            robot_state.tool_variant_key = vk or ""
+            waldoctl.commander.status.tool.variant_key = vk or ""
             self._apply_tool_scene(tool_key, variant_key=vk)
             self._notify_and_resimulate()
 
@@ -302,7 +302,7 @@ class SettingsContent:
                 return
 
             ng_app.storage.general["selected_tool"] = tool
-            robot_state.tool_variant_key = vk or ""
+            waldoctl.commander.status.tool.variant_key = vk or ""
             self._apply_tool_scene(tool, variant_key=vk)
             self._rebuild_variant_selector(tool)
             self._rebuild_tcp_offset(tool)
@@ -331,7 +331,7 @@ class SettingsContent:
         self._rebuild_tcp_offset(stored_tool)
 
         vk_initial = self._get_variant_key(stored_tool)
-        robot_state.tool_variant_key = vk_initial or ""
+        waldoctl.commander.status.tool.variant_key = vk_initial or ""
         if stored_tool:
             self._apply_tool_scene(stored_tool, variant_key=vk_initial)
 

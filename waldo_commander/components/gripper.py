@@ -539,9 +539,9 @@ class GripperPage:
         def _update_current_range() -> None:
             if self._cur_slider is None:
                 return
-            if robot_state.tool_key == self._last_current_tool_key:
+            if waldoctl.commander.status.tool.key == self._last_current_tool_key:
                 return
-            self._last_current_tool_key = robot_state.tool_key
+            self._last_current_tool_key = waldoctl.commander.status.tool.key
             tool = self._get_active_gripper()
             if isinstance(tool, ElectricGripperTool):
                 lo, hi = tool.current_range
