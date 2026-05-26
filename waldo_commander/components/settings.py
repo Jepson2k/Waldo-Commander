@@ -428,6 +428,58 @@ class SettingsContent:
                     value="dark",
                 ).classes("w-24").props("dense disable")
 
+    def _build_backend_selector(self) -> None:
+        """Backend (robot driver) selection dropdown.
+
+        Writes the chosen backend name to
+        ``commander.settings.plugins.backend`` and shows a "restart
+        required" hint — backend switching takes effect on next launch.
+        """
+        from waldo_commander.profiles import DEFAULT_ROBOT
+        from waldoctl.discovery import available_backends
+
+        installed = sorted(available_backends())
+        if not installed:
+            return  # Defensive: shouldn't happen since startup already resolved one
+        plugins = waldoctl.commander.settings.plugins
+        current = plugins.backend or DEFAULT_ROBOT
+        if current not in installed:
+            current = installed[0]
+
+        def _on_backend_change(e) -> None:
+            new = e.value
+            plugins.backend = new
+            ng_app.storage.general["plugins/backend"] = new
+            ui.notify("Backend change applies on next launch", color="info")
+
+        with _setting_row("Backend", "Robot driver (applied on next launch)"):
+            ui.select(
+                options={b: b for b in installed},
+                value=current,
+                on_change=_on_backend_change,
+            ).classes("w-40").props("dense").mark("settings-backend-select")
+
+    def _build_plugin_panels(self) -> None:
+        """Panel-enable/disable toggle list.
+
+        Each row corresponds to an installed panel plugin id; toggling
+        adds/removes the id from ``commander.settings.plugins.disabled_panels``.
+        Re-load takes effect on the next page reload. With no panel
+        plugins installed yet (PR #2 of the stack), this section shows a
+        placeholder.
+        """
+        plugins = waldoctl.commander.settings.plugins
+        with _setting_row(
+            "Panel plugins", "Show / hide installed panel plugins (reload to apply)"
+        ):
+            # Panel plugin discovery ships in stack PR #2; until then this
+            # surface only exposes the list-of-disabled-ids that PR #2
+            # will consume.
+            count = len(plugins.disabled_panels)
+            ui.label(f"{count} disabled" if count else "No plugins installed").classes(
+                "text-xs text-[var(--ctk-muted)]"
+            ).mark("settings-plugins-summary")
+
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):
             with ui.element("span").tooltip(
@@ -464,6 +516,8 @@ class SettingsContent:
             lambda: self._build_motion_profile(prefs),
             lambda: self._build_theme(prefs),
             self._build_reference_frames,
+            self._build_backend_selector,
+            self._build_plugin_panels,
         ]
 
         for i, section in enumerate(sections):

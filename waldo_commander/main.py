@@ -1585,6 +1585,12 @@ def main():
     for frame in robot.cartesian_frames:
         commander.status.pose.cart_jog.by_frame[frame] = FrameJogAvailability()
 
+    # Restore plugin settings from prior session.
+    commander.settings.plugins.backend = ng_app.storage.general.get("plugins/backend")
+    commander.settings.plugins.disabled_panels = list(
+        ng_app.storage.general.get("plugins/disabled_panels", [])
+    )
+
     # Configure logging
     configure_logging(config.log_level)
     logger.debug(
