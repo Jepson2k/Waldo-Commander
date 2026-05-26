@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+import waldoctl
 
 from waldo_commander.profiles import get_robot
 from waldo_commander.state import (
@@ -145,12 +146,12 @@ class TestDryRunClient:
 
 def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
     """Set both robot_state pose values and pose matrix."""
-    robot_state.x = x
-    robot_state.y = y
-    robot_state.z = z
-    robot_state.rx = rx
-    robot_state.ry = ry
-    robot_state.rz = rz
+    waldoctl.commander.status.pose.x = x
+    waldoctl.commander.status.pose.y = y
+    waldoctl.commander.status.pose.z = z
+    waldoctl.commander.status.pose.rx = rx
+    waldoctl.commander.status.pose.ry = ry
+    waldoctl.commander.status.pose.rz = rz
     robot_state.pose = np.array(
         [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1],
         dtype=np.float64,

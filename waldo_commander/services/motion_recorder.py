@@ -51,12 +51,12 @@ class MotionRecorder:
         Returns [x, y, z, rx, ry, rz] in mm/deg.
         """
         return [
-            robot_state.x,
-            robot_state.y,
-            robot_state.z,
-            robot_state.rx,
-            robot_state.ry,
-            robot_state.rz,
+            waldoctl.commander.status.pose.x,
+            waldoctl.commander.status.pose.y,
+            waldoctl.commander.status.pose.z,
+            waldoctl.commander.status.pose.rx,
+            waldoctl.commander.status.pose.ry,
+            waldoctl.commander.status.pose.rz,
         ]
 
     def _get_current_angles(self) -> list[float]:
@@ -158,12 +158,12 @@ class MotionRecorder:
             )
         logger.info(
             "Recording started - initial pose: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f] (mm/deg)",
-            robot_state.x,
-            robot_state.y,
-            robot_state.z,
-            robot_state.rx,
-            robot_state.ry,
-            robot_state.rz,
+            waldoctl.commander.status.pose.x,
+            waldoctl.commander.status.pose.y,
+            waldoctl.commander.status.pose.z,
+            waldoctl.commander.status.pose.rx,
+            waldoctl.commander.status.pose.ry,
+            waldoctl.commander.status.pose.rz,
         )
 
         # Ensure select_tool is before the first move command in the script

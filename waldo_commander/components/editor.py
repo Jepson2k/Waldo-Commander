@@ -95,8 +95,16 @@ class EditorPanel(FileOperationsMixin):
         elif method_name == "move_l":
             speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
             accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
-            x, y, z = robot_state.x, robot_state.y, robot_state.z
-            rx, ry, rz = robot_state.rx, robot_state.ry, robot_state.rz
+            x, y, z = (
+                waldoctl.commander.status.pose.x,
+                waldoctl.commander.status.pose.y,
+                waldoctl.commander.status.pose.z,
+            )
+            rx, ry, rz = (
+                waldoctl.commander.status.pose.rx,
+                waldoctl.commander.status.pose.ry,
+                waldoctl.commander.status.pose.rz,
+            )
             snippet = (
                 f"rbt.move_l([{x:.3f}, {y:.3f}, {z:.3f}, "
                 f"{rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel})"

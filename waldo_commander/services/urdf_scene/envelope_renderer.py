@@ -26,7 +26,7 @@ import waldoctl
 from waldoctl import EnvelopeMode
 
 from waldo_commander.common.theme import SceneColors
-from waldo_commander.state import simulation_state, robot_state
+from waldo_commander.state import simulation_state
 
 
 logger = logging.getLogger(__name__)
@@ -654,7 +654,11 @@ class EnvelopeRenderer:
             return
 
         # Auto — show with proximity clipping when near the boundary
-        tcp = (robot_state.x / 1000.0, robot_state.y / 1000.0, robot_state.z / 1000.0)
+        tcp = (
+            waldoctl.commander.status.pose.x / 1000.0,
+            waldoctl.commander.status.pose.y / 1000.0,
+            waldoctl.commander.status.pose.z / 1000.0,
+        )
         if self._is_near_boundary(*tcp):
             self._show_envelope(clipped=True, approaching_positions=[tcp])
         else:

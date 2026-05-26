@@ -712,12 +712,12 @@ class EditingMixin:
         # Subtract tool offset since sync adds it to z
         offset = self._current_tool_offset_z
         return [
-            robot_state.x / 1000,  # mm -> m
-            robot_state.y / 1000,
-            (robot_state.z / 1000) - offset,
-            robot_state.rx,
-            robot_state.ry,
-            robot_state.rz,
+            waldoctl.commander.status.pose.x / 1000,  # mm -> m
+            waldoctl.commander.status.pose.y / 1000,
+            (waldoctl.commander.status.pose.z / 1000) - offset,
+            waldoctl.commander.status.pose.rx,
+            waldoctl.commander.status.pose.ry,
+            waldoctl.commander.status.pose.rz,
         ]
 
     def _add_target_with_pose(self, pose: list[float], move_type: str) -> None:
@@ -764,16 +764,22 @@ class EditingMixin:
                 fk = self._ik_solver.forward_kinematics(angles_rad)
                 if fk is not None:
                     offset = self._current_tool_offset_z
-                    robot_state.x = fk[0] * 1000
-                    robot_state.y = fk[1] * 1000
-                    robot_state.z = (fk[2] + offset) * 1000
+                    waldoctl.commander.status.pose.x = fk[0] * 1000
+                    waldoctl.commander.status.pose.y = fk[1] * 1000
+                    waldoctl.commander.status.pose.z = (fk[2] + offset) * 1000
                     if len(fk) >= 6:
                         # Set orientation from radians (computes degrees internally)
                         robot_state.orientation.set_rad(np.asarray(fk[3:6]))
                         # Also set scalar fields for UI binding
-                        robot_state.rx = robot_state.orientation.deg[0]
-                        robot_state.ry = robot_state.orientation.deg[1]
-                        robot_state.rz = robot_state.orientation.deg[2]
+                        waldoctl.commander.status.pose.rx = robot_state.orientation.deg[
+                            0
+                        ]
+                        waldoctl.commander.status.pose.ry = robot_state.orientation.deg[
+                            1
+                        ]
+                        waldoctl.commander.status.pose.rz = robot_state.orientation.deg[
+                            2
+                        ]
                     self._update_envelope_from_robot_state()
         except (TypeError, ValueError, AttributeError) as e:
             logger.debug("_sync_robot_state_from_editing failed: %s", e)

@@ -235,12 +235,6 @@ class SimulationState(ChangeNotifierMixin):
 # Only scalar fields are bindable - numpy arrays are excluded to avoid comparison issues
 @bindable_dataclass(
     bindable_fields=[
-        "x",
-        "y",
-        "z",
-        "rx",
-        "ry",
-        "rz",
         "tool_key",
         "tool_variant_key",
         "tool_position",
@@ -268,19 +262,11 @@ class RobotState(ChangeNotifierMixin):
     # Movement enablement arrays from STATUS (12 ints each)
     joint_en: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
     cart_en: dict[str, np.ndarray] = field(default_factory=dict)
-    # Connection / simulator / editing-mode flags + last-update timestamp +
-    # TCP linear speed all live on ``commander.status.*`` from waldoctl.
-    # Derived scalars for convenient, high-performance UI bindings
-    x: float = 0.0
-    y: float = 0.0
-    z: float = 0.0
-    rx: float = 0.0
-    ry: float = 0.0
-    rz: float = 0.0
-    # Dynamic IO lists (inputs / outputs / estop) live on
-    # ``commander.status.io`` from waldoctl; the legacy mirrors here are
-    # gone. Consumers go through ``waldoctl.commander.status.io.{inputs,
-    # outputs, estop}`` directly.
+    # Connection / simulator / editing-mode / last-update timestamp + TCP
+    # linear speed + Cartesian pose scalars (x/y/z/rx/ry/rz) all live on
+    # ``commander.status.{...}`` from waldoctl. IO inputs/outputs/estop
+    # live on ``commander.status.io``. The numpy ``orientation`` array
+    # stays here as a rad-access companion for FK / IK consumers.
     tool_key: str = "NONE"
     tool_variant_key: str = ""
     tool_position: float = 0.0
@@ -314,8 +300,6 @@ class RobotState(ChangeNotifierMixin):
         self.joint_en[:] = 1
         for arr in self.cart_en.values():
             arr[:] = 1
-        self.x = self.y = self.z = 0.0
-        self.rx = self.ry = self.rz = 0.0
         self.tool_key = "NONE"
         self.tool_variant_key = ""
         self.tool_position = 0.0

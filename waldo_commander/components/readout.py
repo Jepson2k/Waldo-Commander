@@ -343,7 +343,9 @@ class ReadoutPanel:
                         ui.label("X:").classes("text-sm tcp-x")
                         (
                             ui.label("-")
-                            .bind_text_from(robot_state, "x", backward=_fmt_1f)
+                            .bind_text_from(
+                                waldoctl.commander.status.pose, "x", backward=_fmt_1f
+                            )
                             .classes("text-3xl tcp-x")
                             .style("min-width: 5rem; text-align: right;")
                             .mark("readout-x")
@@ -354,7 +356,9 @@ class ReadoutPanel:
                         ui.label("Y:").classes("text-sm tcp-y")
                         (
                             ui.label("-")
-                            .bind_text_from(robot_state, "y", backward=_fmt_1f)
+                            .bind_text_from(
+                                waldoctl.commander.status.pose, "y", backward=_fmt_1f
+                            )
                             .classes("text-3xl tcp-y")
                             .style("min-width: 5rem; text-align: right;")
                             .mark("readout-y")
@@ -365,7 +369,9 @@ class ReadoutPanel:
                         ui.label("Z:").classes("text-sm tcp-z")
                         (
                             ui.label("-")
-                            .bind_text_from(robot_state, "z", backward=_fmt_1f)
+                            .bind_text_from(
+                                waldoctl.commander.status.pose, "z", backward=_fmt_1f
+                            )
                             .classes("text-3xl tcp-z")
                             .style("min-width: 5rem; text-align: right;")
                             .mark("readout-z")
@@ -378,7 +384,9 @@ class ReadoutPanel:
                         ui.label("Rx:").classes("text-xs tcp-rx")
                         (
                             ui.label("-")
-                            .bind_text_from(robot_state, "rx", backward=_fmt_1f)
+                            .bind_text_from(
+                                waldoctl.commander.status.pose, "rx", backward=_fmt_1f
+                            )
                             .classes("text-base tcp-rx")
                             .style("min-width: 3.5rem; text-align: right;")
                             .mark("readout-rx")
@@ -389,7 +397,9 @@ class ReadoutPanel:
                         ui.label("Ry:").classes("text-xs tcp-ry")
                         (
                             ui.label("-")
-                            .bind_text_from(robot_state, "ry", backward=_fmt_1f)
+                            .bind_text_from(
+                                waldoctl.commander.status.pose, "ry", backward=_fmt_1f
+                            )
                             .classes("text-base tcp-ry")
                             .style("min-width: 3.5rem; text-align: right;")
                             .mark("readout-ry")
@@ -400,7 +410,9 @@ class ReadoutPanel:
                         ui.label("Rz:").classes("text-xs tcp-rz")
                         (
                             ui.label("-")
-                            .bind_text_from(robot_state, "rz", backward=_fmt_1f)
+                            .bind_text_from(
+                                waldoctl.commander.status.pose, "rz", backward=_fmt_1f
+                            )
                             .classes("text-base tcp-rz")
                             .style("min-width: 3.5rem; text-align: right;")
                             .mark("readout-rz")

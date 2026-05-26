@@ -142,13 +142,15 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     # --- Part 1: Z+ translation ---
     waldoctl.commander.settings.jog.joint_step_deg = 10.0
     await wait_for_motion_stable(
-        lambda: float(robot_state.z), tolerance=0.05, stable_ticks=30
+        lambda: float(waldoctl.commander.status.pose.z), tolerance=0.05, stable_ticks=30
     )
-    initial_z = float(robot_state.z)
+    initial_z = float(waldoctl.commander.status.pose.z)
 
     await simulate_click(user, "axis-zplus")
     await wait_for_motion_start(robot_state)
-    final_z = await wait_for_motion_stable(lambda: float(robot_state.z), tolerance=0.1)
+    final_z = await wait_for_motion_stable(
+        lambda: float(waldoctl.commander.status.pose.z), tolerance=0.1
+    )
 
     delta_z = final_z - initial_z
     assert 9.9 <= delta_z <= 10.1, (
@@ -158,13 +160,15 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     # --- Part 2: Z- translation ---
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
     await wait_for_motion_stable(
-        lambda: float(robot_state.z), tolerance=0.1, stable_ticks=20
+        lambda: float(waldoctl.commander.status.pose.z), tolerance=0.1, stable_ticks=20
     )
-    initial_z = float(robot_state.z)
+    initial_z = float(waldoctl.commander.status.pose.z)
 
     await simulate_click(user, "axis-zminus")
     await wait_for_motion_start(robot_state)
-    final_z = await wait_for_motion_stable(lambda: float(robot_state.z), tolerance=0.1)
+    final_z = await wait_for_motion_stable(
+        lambda: float(waldoctl.commander.status.pose.z), tolerance=0.1
+    )
 
     delta = initial_z - final_z
     assert 4.9 <= delta <= 5.1, f"Expected Z to move -5.0mm±0.1mm, moved {delta:.2f}mm"
@@ -172,14 +176,14 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     # --- Part 3: RZ+ rotation ---
     waldoctl.commander.settings.jog.joint_step_deg = 2.0
     await wait_for_motion_stable(
-        lambda: float(robot_state.rz), tolerance=0.1, stable_ticks=20
+        lambda: float(waldoctl.commander.status.pose.rz), tolerance=0.1, stable_ticks=20
     )
-    initial_rz = float(robot_state.rz)
+    initial_rz = float(waldoctl.commander.status.pose.rz)
 
     await simulate_click(user, "axis-rzplus")
     await wait_for_motion_start(robot_state)
     final_rz = await wait_for_motion_stable(
-        lambda: float(robot_state.rz), tolerance=0.1
+        lambda: float(waldoctl.commander.status.pose.rz), tolerance=0.1
     )
 
     delta = abs(final_rz - initial_rz)
@@ -248,14 +252,14 @@ async def test_cartesian_jog_one_mm_step(user: User, robot_state) -> None:
 
     # Wait for robot to be completely stable
     initial_z = await wait_for_motion_stable(
-        lambda: float(robot_state.z), timeout_s=3.0, stable_ticks=20
+        lambda: float(waldoctl.commander.status.pose.z), timeout_s=3.0, stable_ticks=20
     )
 
     # Single click on Z plus
     await simulate_click(user, "axis-zplus")
     await wait_for_motion_start(robot_state)
     final_z = await wait_for_motion_stable(
-        lambda: float(robot_state.z), timeout_s=5.0, stable_ticks=20
+        lambda: float(waldoctl.commander.status.pose.z), timeout_s=5.0, stable_ticks=20
     )
 
     delta = final_z - initial_z
@@ -349,7 +353,7 @@ async def test_cartesian_jog_rapid_clicks(user: User, robot_state) -> None:
 
     # Wait for robot to be completely stable
     initial_z = await wait_for_motion_stable(
-        lambda: float(robot_state.z), timeout_s=3.0, stable_ticks=20
+        lambda: float(waldoctl.commander.status.pose.z), timeout_s=3.0, stable_ticks=20
     )
 
     # Rapid clicks - 300ms between clicks (cartesian moves take longer due to IK)
@@ -362,7 +366,7 @@ async def test_cartesian_jog_rapid_clicks(user: User, robot_state) -> None:
 
     # Wait for all motion to complete (longer timeout and more stable ticks for CI)
     final_z = await wait_for_motion_stable(
-        lambda: float(robot_state.z), timeout_s=15.0, stable_ticks=50
+        lambda: float(waldoctl.commander.status.pose.z), timeout_s=15.0, stable_ticks=50
     )
 
     delta = final_z - initial_z

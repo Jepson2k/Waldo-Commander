@@ -430,13 +430,16 @@ def update_ui_from_status() -> None:
             _pose_result_buffer,
         )
 
-        robot_state.x = _pose_result_buffer[0]
-        robot_state.y = _pose_result_buffer[1]
-        robot_state.z = _pose_result_buffer[2]
-        # Set both scalar fields (for UI binding) and orientation array (for rad access)
-        robot_state.rx = _pose_result_buffer[3]
-        robot_state.ry = _pose_result_buffer[4]
-        robot_state.rz = _pose_result_buffer[5]
+        _pose = waldoctl.commander.status.pose
+        _pose.x = _pose_result_buffer[0]
+        _pose.y = _pose_result_buffer[1]
+        _pose.z = _pose_result_buffer[2]
+        _pose.rx = _pose_result_buffer[3]
+        _pose.ry = _pose_result_buffer[4]
+        _pose.rz = _pose_result_buffer[5]
+        # Orientation array is kept on robot_state for rad access from FK
+        # consumers (IK solver, motion recorder). Scalars above are the
+        # public surface.
         robot_state.orientation.set_deg(_pose_result_buffer[3:6])
 
     # Push IO derived fields into ``commander.status.io`` for public
