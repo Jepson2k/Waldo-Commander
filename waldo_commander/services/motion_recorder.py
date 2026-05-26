@@ -63,8 +63,8 @@ class MotionRecorder:
         """Get current joint angles as list."""
         n = ui_state.active_robot.joints.count
         return (
-            list(robot_state.angles.deg[:n])
-            if len(robot_state.angles) >= n
+            list(waldoctl.commander.status.joints.angles.deg[:n])
+            if len(waldoctl.commander.status.joints.angles) >= n
             else [0.0] * n
         )
 
@@ -151,10 +151,13 @@ class MotionRecorder:
         self._last_action_wall_time = 0.0
 
         # Log the initial position for reference
-        if len(robot_state.angles) >= ui_state.active_robot.joints.count:
+        if (
+            len(waldoctl.commander.status.joints.angles)
+            >= ui_state.active_robot.joints.count
+        ):
             logger.info(
                 "Recording started - initial joints: %s deg",
-                [f"{a:.1f}" for a in robot_state.angles.deg],
+                [f"{a:.1f}" for a in waldoctl.commander.status.joints.angles.deg],
             )
         logger.info(
             "Recording started - initial pose: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f] (mm/deg)",
@@ -175,7 +178,10 @@ class MotionRecorder:
         # if the robot has moved away from where the script's simulation ends.
         # This avoids a redundant zero-distance segment (e.g. script ends with
         # home() and robot is still at home when recording starts).
-        if len(robot_state.angles) >= ui_state.active_robot.joints.count:
+        if (
+            len(waldoctl.commander.status.joints.angles)
+            >= ui_state.active_robot.joints.count
+        ):
             angles = self._get_current_angles()
             if not self._matches_sim_end(angles):
                 args = ", ".join(f"{a:.2f}" for a in angles)

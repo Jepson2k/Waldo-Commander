@@ -509,7 +509,12 @@ def reset_state(request: pytest.FixtureRequest):
     reset_all_state()
 
     # Test-specific overrides (differ from zero defaults)
-    state_module.robot_state.angles.set_deg(np.array(HOME_ANGLES_DEG, dtype=np.float64))
+    try:
+        waldoctl.commander.status.joints.angles.set_deg(
+            np.array(HOME_ANGLES_DEG, dtype=np.float64)
+        )
+    except RuntimeError:
+        pass
     state_module.robot_state.io = np.array([0, 0, 0, 0, 1], dtype=np.int32)  # ESTOP OK
     try:
         io = waldoctl.commander.status.io

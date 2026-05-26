@@ -200,7 +200,9 @@ class TestMotionRecorder:
 
     def test_capture_current_pose_joints_mode(self, mock_textarea):
         """capture_current_pose with joints mode should insert move_j code."""
-        robot_state.angles.set_deg(np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]))
+        waldoctl.commander.status.joints.angles.set_deg(
+            np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
+        )
 
         recorder = MotionRecorder()
         recorder.capture_current_pose(move_type="joints")
@@ -226,7 +228,7 @@ class TestMotionRecorder:
     def test_jog_recording_lifecycle(self, mock_textarea):
         """Test complete jog recording cycle: start sets state, end inserts code."""
         set_robot_pose(100.0, 200.0, 300.0)
-        robot_state.angles.set_deg(np.zeros(6))
+        waldoctl.commander.status.joints.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start recording
@@ -328,7 +330,7 @@ class TestMotionRecorder:
     def test_multiple_jogs_insert_multiple_code_lines(self, mock_textarea):
         """Multiple jog start/end cycles should insert multiple code lines."""
         set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles.set_deg(np.zeros(6))
+        waldoctl.commander.status.joints.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start
@@ -355,7 +357,7 @@ class TestMotionRecorder:
     def test_stop_recording_ends_active_jog(self, mock_textarea):
         """Stopping recording should end any active jog."""
         set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles.set_deg(np.zeros(6))
+        waldoctl.commander.status.joints.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start

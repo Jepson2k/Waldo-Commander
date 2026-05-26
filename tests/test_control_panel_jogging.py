@@ -36,7 +36,7 @@ async def test_joint_jog_button_sends_jog_j(user: User, robot_state) -> None:
     await ensure_robot_ready_for_motion(robot_state)
 
     initial_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=3.0
+        lambda: waldoctl.commander.status.joints.angles[0], timeout_s=3.0
     )
 
     # Click J1 plus button and wait for motion
@@ -45,7 +45,7 @@ async def test_joint_jog_button_sends_jog_j(user: User, robot_state) -> None:
 
     # Wait for motion to stabilize
     final_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=5.0
+        lambda: waldoctl.commander.status.joints.angles[0], timeout_s=5.0
     )
 
     # We expect J1 to change after the jog command
@@ -91,12 +91,16 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
 
     # --- Part 1: Positive direction ---
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
-    initial_j1 = await wait_for_motion_stable(lambda: robot_state.angles[0])
+    initial_j1 = await wait_for_motion_stable(
+        lambda: waldoctl.commander.status.joints.angles[0]
+    )
 
     # Click J1 plus button (single click, not hold)
     await simulate_click(user, "btn-j1-plus")
     await wait_for_motion_start(robot_state)
-    final_j1 = await wait_for_motion_stable(lambda: robot_state.angles[0])
+    final_j1 = await wait_for_motion_stable(
+        lambda: waldoctl.commander.status.joints.angles[0]
+    )
 
     # J1 should have increased by exactly 5 degrees (±0.1° for rounding)
     delta = final_j1 - initial_j1
@@ -104,12 +108,16 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
 
     # --- Part 2: Negative direction ---
     waldoctl.commander.settings.jog.joint_step_deg = 3.0
-    initial_j1 = await wait_for_motion_stable(lambda: robot_state.angles[0])
+    initial_j1 = await wait_for_motion_stable(
+        lambda: waldoctl.commander.status.joints.angles[0]
+    )
 
     # Click J1 minus button (mousedown/mouseup pair — jog buttons don't listen for raw click)
     await simulate_click(user, "btn-j1-minus")
     await wait_for_motion_start(robot_state)
-    final_j1 = await wait_for_motion_stable(lambda: robot_state.angles[0])
+    final_j1 = await wait_for_motion_stable(
+        lambda: waldoctl.commander.status.joints.angles[0]
+    )
 
     # J1 should have decreased by exactly 3 degrees (±0.1° for rounding)
     delta = initial_j1 - final_j1
@@ -212,14 +220,18 @@ async def test_joint_jog_one_degree_step(user: User, robot_state) -> None:
 
     # Wait for robot to be completely stable
     initial_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=3.0, stable_ticks=20
+        lambda: waldoctl.commander.status.joints.angles[0],
+        timeout_s=3.0,
+        stable_ticks=20,
     )
 
     # Single click on J1 plus
     await simulate_click(user, "btn-j1-plus")
     await wait_for_motion_start(robot_state)
     final_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=5.0, stable_ticks=20
+        lambda: waldoctl.commander.status.joints.angles[0],
+        timeout_s=5.0,
+        stable_ticks=20,
     )
 
     delta = final_j1 - initial_j1
@@ -294,7 +306,9 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state) -> None:
 
     # Wait for robot to be completely stable
     initial_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=3.0, stable_ticks=20
+        lambda: waldoctl.commander.status.joints.angles[0],
+        timeout_s=3.0,
+        stable_ticks=20,
     )
 
     # Rapid clicks - 150ms between clicks is fast but realistic human speed
@@ -307,7 +321,9 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state) -> None:
 
     # Wait for all motion to complete (longer timeout and more stable ticks for CI)
     final_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=15.0, stable_ticks=50
+        lambda: waldoctl.commander.status.joints.angles[0],
+        timeout_s=15.0,
+        stable_ticks=50,
     )
 
     delta = final_j1 - initial_j1
@@ -407,7 +423,7 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
 
     # Wait for initial status and snapshot current angles after queue drains
     initial_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=5.0
+        lambda: waldoctl.commander.status.joints.angles[0], timeout_s=5.0
     )
 
     # Click J1's min limit button
@@ -418,7 +434,9 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
 
     # Wait for motion to complete and stabilize (limit moves can take 5+ seconds)
     final_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=20.0, stable_ticks=30
+        lambda: waldoctl.commander.status.joints.angles[0],
+        timeout_s=20.0,
+        stable_ticks=30,
     )
 
     # J1 should be at or very close to its minimum limit (within 1 degree)
@@ -447,7 +465,7 @@ async def test_jog_buttons_disabled_in_editing_mode(user: User, robot_state) -> 
     await enable_sim(user, robot_state)
 
     # Get initial J1 angle
-    initial_j1 = robot_state.angles[0]
+    initial_j1 = waldoctl.commander.status.joints.angles[0]
 
     # Enable editing mode
     rs.editing_mode = True
@@ -461,9 +479,9 @@ async def test_jog_buttons_disabled_in_editing_mode(user: User, robot_state) -> 
     await asyncio.sleep(0.3)
 
     # J1 should NOT have moved (editing mode blocks jog)
-    assert abs(robot_state.angles[0] - initial_j1) < 0.1, (
+    assert abs(waldoctl.commander.status.joints.angles[0] - initial_j1) < 0.1, (
         f"J1 should not move in editing mode. "
-        f"Initial: {initial_j1:.2f}°, Current: {robot_state.angles[0]:.2f}°"
+        f"Initial: {initial_j1:.2f}°, Current: {waldoctl.commander.status.joints.angles[0]:.2f}°"
     )
 
     # Clean up

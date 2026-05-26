@@ -526,14 +526,14 @@ class PlaybackController:
         ):
             playback_coordination.sim_pose_override = True
             ui_state.urdf_scene.set_axis_values(sample.joints)
-            robot_state.angles.set_rad(np.asarray(sample.joints))
+            waldoctl.commander.status.joints.angles.set_rad(np.asarray(sample.joints))
             if ui_state.control_panel:
                 playback_coordination.last_teleport_ts = time.monotonic()
                 if self._teleport_task and not self._teleport_task.done():
                     self._teleport_task.cancel()
                 self._teleport_task = asyncio.create_task(
                     self._teleport(
-                        robot_state.angles.deg.tolist(),
+                        waldoctl.commander.status.joints.angles.deg.tolist(),
                         list(tool_pos) if tool_pos else None,
                     )
                 )
@@ -616,7 +616,9 @@ class PlaybackController:
         active_tab = waldoctl.commander.programs.active
         if active_tab is not None:
             n = ui_state.active_robot.joints.count
-            active_tab.dry_run.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
+            active_tab.dry_run.last_sim_joints_deg = (
+                waldoctl.commander.status.joints.angles.deg[:n].copy()
+            )
 
     # ---- Simulation playback engine ----
 

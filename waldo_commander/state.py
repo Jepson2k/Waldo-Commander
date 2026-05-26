@@ -247,8 +247,10 @@ class SimulationState(ChangeNotifierMixin):
     ]
 )
 class RobotState(ChangeNotifierMixin):
-    # Preallocated arrays for zero-allocation hot path updates
-    angles: AngleArray = field(default_factory=AngleArray)  # joint angles (deg/rad)
+    # ``angles`` (joint angles in deg/rad) moved to
+    # ``commander.status.joints.angles`` — same ``AngleArray`` interface.
+    # ``orientation`` stays here as a rad-access companion for FK/IK
+    # consumers that don't want to deg2rad on every read.
     orientation: AngleArray = field(
         default_factory=lambda: AngleArray(size=3)
     )  # rx/ry/rz (deg/rad)
@@ -292,7 +294,6 @@ class RobotState(ChangeNotifierMixin):
 
     def reset(self) -> None:
         """Reset to defaults. Arrays are zeroed in-place; cart_en frames preserved."""
-        self.angles.set_deg(np.zeros(len(self.angles), dtype=np.float64))
         self.orientation.set_deg(np.zeros(3, dtype=np.float64))
         self.pose[:] = 0.0
         self.io[:] = 0

@@ -417,7 +417,7 @@ def update_ui_from_status() -> None:
     # Update URDF scene with new angles and TCP ball
     if not skip_scene_updates:
         with global_phase_timer.phase("scene"):
-            update_urdf_angles(robot_state.angles.deg)
+            update_urdf_angles(waldoctl.commander.status.joints.angles.deg)
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.update_from_robot_state()
 
@@ -1345,7 +1345,7 @@ async def _status_consumer() -> None:
                         not waldoctl.commander.status.editing_mode
                         and not playback_coordination.sim_pose_override
                     ):
-                        robot_state.angles.set_deg(status.angles)
+                        waldoctl.commander.status.joints.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io
                     if not playback_coordination.sim_pose_override:

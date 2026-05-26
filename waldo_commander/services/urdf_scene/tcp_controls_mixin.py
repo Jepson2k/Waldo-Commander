@@ -23,7 +23,6 @@ from pinokin import arrays_equal_n
 from nicegui.helpers import is_user_simulation
 
 from waldo_commander.common.theme import SceneColors
-from waldo_commander.state import robot_state
 from .ik_solver import EditingIKSolver
 
 from .config import RobotAppearanceMode
@@ -338,12 +337,12 @@ class TCPControlsMixin:
                 self._last_fk_angles_tuple = key
                 angles_changed = True
         else:
-            angles_deg = robot_state.angles.deg
+            angles_deg = waldoctl.commander.status.joints.angles.deg
             if self._last_fk_angles_raw is None or not arrays_equal_n(
                 angles_deg[:n], self._last_fk_angles_raw
             ):
                 self._last_fk_angles_raw = angles_deg[:n].copy()
-                angles_rad = robot_state.angles.rad
+                angles_rad = waldoctl.commander.status.joints.angles.rad
                 angles_changed = True
 
         if angles_changed:

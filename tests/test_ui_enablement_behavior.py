@@ -2,6 +2,7 @@
 
 import asyncio
 import pytest
+import waldoctl
 from nicegui.testing import User
 
 from tests.helpers.wait import (
@@ -36,7 +37,9 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
     user.find(marker="btn-j1-max-limit").click()
     await wait_for_motion_start(robot_state, timeout_s=5.0)
     final_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=20.0, stable_ticks=30
+        lambda: waldoctl.commander.status.joints.angles[0],
+        timeout_s=20.0,
+        stable_ticks=30,
     )
 
     # Verify we're at or near max limit
@@ -75,7 +78,9 @@ async def test_cartesian_at_workspace_limit_disables_axis(
     # This quickly reaches the cartesian workspace boundary
     user.find(marker="btn-j2-max-limit").click()
     await wait_for_motion_start(robot_state)
-    await wait_for_motion_stable(lambda: robot_state.angles[1], timeout_s=15.0)
+    await wait_for_motion_stable(
+        lambda: waldoctl.commander.status.joints.angles[1], timeout_s=15.0
+    )
 
     # Wait for enablement arrays to update
     await asyncio.sleep(0.2)

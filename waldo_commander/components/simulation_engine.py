@@ -33,7 +33,6 @@ from waldo_commander.services.path_visualizer import UNCHANGED, path_visualizer
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import (
     playback_coordination,
-    robot_state,
     simulation_state,
     ui_state,
 )
@@ -131,7 +130,9 @@ class SimulationEngine:
         tab = waldoctl.commander.programs.get(tab_id) if tab_id else None
         if tab and (error is None or error == UNCHANGED):
             n = ui_state.active_robot.joints.count
-            tab.dry_run.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
+            tab.dry_run.last_sim_joints_deg = (
+                waldoctl.commander.status.joints.angles.deg[:n].copy()
+            )
 
         if error == UNCHANGED:
             return None
@@ -249,7 +250,9 @@ class SimulationEngine:
         if not textarea or not textarea.value:
             return
 
-        current_deg = robot_state.angles.deg[: ui_state.active_robot.joints.count]
+        current_deg = waldoctl.commander.status.joints.angles.deg[
+            : ui_state.active_robot.joints.count
+        ]
         if np.max(np.abs(current_deg - active_tab.dry_run.last_sim_joints_deg)) > 0.5:
             self.schedule_debounced_simulation()
 

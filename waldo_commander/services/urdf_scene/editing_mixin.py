@@ -122,7 +122,7 @@ class EditingMixin:
         """Enter editing mode at specified joint angles."""
         n = len(self.joint_names)
         # Save current angles for restoration
-        self._pre_edit_angles = list(robot_state.angles.rad[:n])
+        self._pre_edit_angles = list(waldoctl.commander.status.joints.angles.rad[:n])
 
         # Set editing angles (pad or truncate to joint count)
         self._editing_angles = list(joint_angles) + [0.0] * (n - len(joint_angles))
@@ -513,7 +513,7 @@ class EditingMixin:
             # Editing existing target — convert to move_j in place
             target = self._find_target_by_id(self._editing_target_id)
             n = len(self.joint_names)
-            angles_deg = list(robot_state.angles.deg[:n])
+            angles_deg = list(waldoctl.commander.status.joints.angles.deg[:n])
             if target:
                 pose = target.pose
                 ui_state.editor_panel.sync_code_from_target(
@@ -623,7 +623,7 @@ class EditingMixin:
             if show_joints:
                 # Use pre-computed degrees from robot_state (synced from editing angles)
                 n = len(self.joint_names)
-                angles_deg = list(robot_state.angles.deg[:n])
+                angles_deg = list(waldoctl.commander.status.joints.angles.deg[:n])
                 orig_deg = self._original_editing_joints or [0.0] * n
                 for i, angle in enumerate(angles_deg):
                     delta = angle - orig_deg[i]
@@ -693,8 +693,8 @@ class EditingMixin:
     def _get_robot_angles_rad(self) -> list[float]:
         """Get robot angles in radians."""
         n = len(self.joint_names)
-        if len(robot_state.angles) >= n:
-            return list(robot_state.angles.rad[:n])
+        if len(waldoctl.commander.status.joints.angles) >= n:
+            return list(waldoctl.commander.status.joints.angles.rad[:n])
         return [0.0] * n
 
     def _get_current_tcp_z(self) -> float | None:
@@ -749,7 +749,9 @@ class EditingMixin:
         """Insert joint target code."""
         # Use pre-computed degrees from robot_state (synced from editing angles)
         n = len(self.joint_names)
-        ui_state.editor_panel.add_joint_target_code(list(robot_state.angles.deg[:n]))
+        ui_state.editor_panel.add_joint_target_code(
+            list(waldoctl.commander.status.joints.angles.deg[:n])
+        )
 
     def _sync_robot_state_from_editing(self) -> None:
         """Sync robot_state with editing values."""
@@ -758,7 +760,7 @@ class EditingMixin:
 
         try:
             angles_rad = self.get_editing_angles()
-            robot_state.angles.set_rad(np.asarray(angles_rad))
+            waldoctl.commander.status.joints.angles.set_rad(np.asarray(angles_rad))
 
             if self._ik_solver:
                 fk = self._ik_solver.forward_kinematics(angles_rad)

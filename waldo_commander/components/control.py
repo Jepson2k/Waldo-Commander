@@ -1016,7 +1016,7 @@ class ControlPanel:
             accel = _norm_accel()
             step = abs(float(waldoctl.commander.settings.jog.joint_step_deg))
             try:
-                angles = list(robot_state.angles.deg)
+                angles = list(waldoctl.commander.status.joints.angles.deg)
                 if len(angles) >= self._n_joints:
                     target_angles = angles[: self._n_joints]
                     lo, hi = self._get_joint_limits(j)
@@ -1326,7 +1326,7 @@ class ControlPanel:
             return
 
         try:
-            angles = list(robot_state.angles.deg)
+            angles = list(waldoctl.commander.status.joints.angles.deg)
             lo, hi = self._get_joint_limits(joint_index)
             tgt = max(lo, min(hi, float(target_deg)))
             pose = angles[: self._n_joints]
@@ -1347,7 +1347,7 @@ class ControlPanel:
             return
 
         try:
-            angles = list(robot_state.angles.deg)
+            angles = list(waldoctl.commander.status.joints.angles.deg)
             lo, hi = self._get_joint_limits(joint_index)
 
             target = angles[: self._n_joints]
@@ -1579,7 +1579,7 @@ class ControlPanel:
                                 return max(0.0, min(1.0, (a[i] - lo) / (hi - lo)))
 
                             bar.bind_value_from(
-                                robot_state,
+                                waldoctl.commander.status.joints,
                                 "angles",
                                 backward=_bar_backward,
                             )
@@ -1635,7 +1635,7 @@ class ControlPanel:
                             )
 
                             num.bind_value_from(
-                                robot_state,
+                                waldoctl.commander.status.joints,
                                 "angles",
                                 backward=_num_backward,
                             )
@@ -1680,7 +1680,9 @@ class ControlPanel:
                                 return a[i] - step >= lo
 
                             left_btn.bind_enabled_from(
-                                robot_state, "angles", backward=check_lower_limit
+                                waldoctl.commander.status.joints,
+                                "angles",
+                                backward=check_lower_limit,
                             )
                             left_btn.on(
                                 "mousedown",
@@ -1710,7 +1712,9 @@ class ControlPanel:
                                 return a[i] + step <= hi
 
                             right_btn.bind_enabled_from(
-                                robot_state, "angles", backward=check_upper_limit
+                                waldoctl.commander.status.joints,
+                                "angles",
+                                backward=check_upper_limit,
                             )
                             right_btn.on(
                                 "mousedown",

@@ -17,7 +17,6 @@ from waldo_commander.services.programs import (
     is_any_program_running,
 )
 from waldo_commander.state import (
-    robot_state,
     simulation_state,
     ui_state,
 )
@@ -90,7 +89,7 @@ class EditorPanel(FileOperationsMixin):
         elif method_name == "move_j":
             speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
             accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
-            angles = list(robot_state.angles.deg)
+            angles = list(waldoctl.commander.status.joints.angles.deg)
             snippet = f"rbt.move_j({angles}, speed={speed}, accel={accel})"
         elif method_name == "move_l":
             speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))

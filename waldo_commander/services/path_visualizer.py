@@ -28,7 +28,6 @@ from waldo_commander.state import (
     PathSegment,
     ProgramTarget,
     ui_state,
-    robot_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
 
@@ -426,11 +425,14 @@ class PathVisualizer:
 
             # Get current robot joint angles for initial position
             initial_joints_rad: np.ndarray | None = None
-            if len(robot_state.angles) >= ui_state.active_robot.joints.count:
-                initial_joints_rad = robot_state.angles.rad
+            if (
+                len(waldoctl.commander.status.joints.angles)
+                >= ui_state.active_robot.joints.count
+            ):
+                initial_joints_rad = waldoctl.commander.status.joints.angles.rad
                 logger.debug(
                     "Using current robot joints as initial: %s deg",
-                    robot_state.angles.deg,
+                    waldoctl.commander.status.joints.angles.deg,
                 )
 
             # Get backend info from current robot
