@@ -1365,11 +1365,28 @@ async def _status_consumer() -> None:
                     # Mark backend ready on first valid STATUS
                     readiness_state.mark_backend_done()
 
-                    # Movement enablement arrays
-                    robot_state.joint_en[:] = status.joint_en
+                    # Movement enablement: split the 12-int joint_en /
+                    # cart_en arrays into the per-direction lists exposed on
+                    # ``commander.status.joints`` and
+                    # ``commander.status.pose.cart_jog``.
+                    j_en = status.joint_en
+                    n_dof = len(j_en) // 2
+                    joints = waldoctl.commander.status.joints
+                    joints.can_jog_pos = [bool(j_en[2 * j]) for j in range(n_dof)]
+                    joints.can_jog_neg = [bool(j_en[2 * j + 1]) for j in range(n_dof)]
+                    cart_jog = waldoctl.commander.status.pose.cart_jog
                     for frame, arr in status.cart_en.items():
-                        if frame in robot_state.cart_en:
-                            robot_state.cart_en[frame][:] = arr
+                        frame_av = cart_jog.by_frame.get(frame)
+                        if frame_av is None:
+                            from waldoctl import FrameJogAvailability
+
+                            frame_av = FrameJogAvailability()
+                            cart_jog.by_frame[frame] = frame_av
+                        n_axes = len(arr) // 2
+                        frame_av.can_jog_pos = [bool(arr[2 * i]) for i in range(n_axes)]
+                        frame_av.can_jog_neg = [
+                            bool(arr[2 * i + 1]) for i in range(n_axes)
+                        ]
 
                     action = waldoctl.commander.status.action
                     action.current_name = status.action_current
@@ -1515,8 +1532,8 @@ def main():
     # Initialize robot, client, and component instances
     robot = get_robot(name=args.robot)
     ui_state.robot = robot
-    # Initialize cart_en buffers from robot's cartesian frames
-    robot_state.init_cart_en(robot.cartesian_frames)
+    # Per-frame cart_jog buffers are seeded below once the Commander is
+    # registered. The status loop fills them on each tick.
     # Resize IO buffer to match robot's pin count. The derived
     # ``commander.status.io.inputs / outputs`` lists are populated below
     # once the Commander is registered (default is []; status loop fills
@@ -1557,6 +1574,13 @@ def main():
     # the right list lengths before the first STATUS broadcast arrives.
     commander.status.io.inputs = [0] * robot.digital_inputs
     commander.status.io.outputs = [0] * robot.digital_outputs
+
+    # Seed per-frame cart_jog availability so the cartesian-button sync code
+    # has a frame_av to read on the first tick (before STATUS arrives).
+    from waldoctl import FrameJogAvailability
+
+    for frame in robot.cartesian_frames:
+        commander.status.pose.cart_jog.by_frame[frame] = FrameJogAvailability()
 
     # Configure logging
     configure_logging(config.log_level)

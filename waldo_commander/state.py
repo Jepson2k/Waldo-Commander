@@ -254,9 +254,9 @@ class RobotState(ChangeNotifierMixin):
         default_factory=lambda: np.zeros(5, dtype=np.int32)
     )  # [inputs..., outputs..., estop] — resized at startup
     tool_status: ToolStatus = field(default_factory=ToolStatus)
-    # Movement enablement arrays from STATUS (12 ints each)
-    joint_en: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
-    cart_en: dict[str, np.ndarray] = field(default_factory=dict)
+    # Movement enablement arrays live on commander.status.joints.can_jog_pos
+    # / can_jog_neg (6 bools each) and
+    # commander.status.pose.cart_jog.by_frame[<frame>].can_jog_{pos,neg}.
     # Connection / simulator / editing-mode / last-update timestamp + TCP
     # linear speed + Cartesian pose scalars (x/y/z/rx/ry/rz) all live on
     # ``commander.status.{...}`` from waldoctl. IO inputs/outputs/estop
@@ -283,19 +283,12 @@ class RobotState(ChangeNotifierMixin):
         default_factory=list, repr=False
     )
 
-    def init_cart_en(self, frames: tuple[str, ...]) -> None:
-        """Initialize cart_en arrays for each Cartesian frame."""
-        self.cart_en = {f: np.ones(12, dtype=np.int32) for f in frames}
-
     def reset(self) -> None:
-        """Reset to defaults. Arrays are zeroed in-place; cart_en frames preserved."""
+        """Reset to defaults. Arrays are zeroed in-place."""
         self.orientation.set_deg(np.zeros(3, dtype=np.float64))
         self.pose[:] = 0.0
         self.io[:] = 0
         self.tool_status = ToolStatus()
-        self.joint_en[:] = 1
-        for arr in self.cart_en.values():
-            arr[:] = 1
         self.tool_position = 0.0
         self.tool_current = 0.0
         self.tool_time_series.clear()

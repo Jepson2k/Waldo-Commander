@@ -523,10 +523,22 @@ def reset_state(request: pytest.FixtureRequest):
         io.estop = 1
     except RuntimeError:
         pass
-    state_module.robot_state.cart_en = {
-        "WRF": np.ones(12, dtype=np.int32),
-        "TRF": np.ones(12, dtype=np.int32),
-    }
+    try:
+        from waldoctl import FrameJogAvailability
+
+        joints = waldoctl.commander.status.joints
+        joints.can_jog_pos = [True] * 6
+        joints.can_jog_neg = [True] * 6
+        cart_jog = waldoctl.commander.status.pose.cart_jog
+        for frame in ("WRF", "TRF"):
+            av = cart_jog.by_frame.get(frame)
+            if av is None:
+                av = FrameJogAvailability()
+                cart_jog.by_frame[frame] = av
+            av.can_jog_pos = [True] * 6
+            av.can_jog_neg = [True] * 6
+    except RuntimeError:
+        pass
 
     # Clear NiceGUI log handler targets to prevent deadlocks when logging
     # triggers widget.push() on stale widgets outside a NiceGUI context

@@ -651,7 +651,9 @@ class ControlPanel:
         self._rating_widgets: dict[str, dict[str, Any]] = {}
 
         # Dirty checking caches for button enablement (avoid redundant CSS updates)
-        self._last_joint_en_tuple: tuple[int, ...] | None = None
+        self._last_joint_en_tuple: tuple[tuple[bool, ...], tuple[bool, ...]] | None = (
+            None
+        )
         self._last_cart_en_tuple: tuple[tuple, ...] | None = None
         self._last_editing_mode: bool | None = None
         self._gizmo_auto_hidden: bool = (
@@ -846,11 +848,17 @@ class ControlPanel:
             elem.classes(remove="cp-disabled-strong")
 
     def refresh_joint_enablement(self) -> None:
-        """Apply stronger disabled visuals to joint +/- buttons using robot_state.joint_en."""
-        # Get current state for dirty checking
+        """Apply stronger disabled visuals to joint +/- buttons using
+        ``commander.status.joints.can_jog_pos / can_jog_neg``."""
         editing_mode = waldoctl.commander.status.editing_mode
-        en = robot_state.joint_en
-        current_tuple = tuple(en) if len(en) == 2 * self._n_joints else None
+        joints = waldoctl.commander.status.joints
+        pos = joints.can_jog_pos
+        neg = joints.can_jog_neg
+        current_tuple = (
+            (tuple(pos), tuple(neg))
+            if len(pos) == self._n_joints and len(neg) == self._n_joints
+            else None
+        )
 
         # Skip if state unchanged (18x faster when idle)
         if (
@@ -874,8 +882,8 @@ class ControlPanel:
 
         n_joints = ui_state.active_robot.joints.count
         for j in range(n_joints):
-            plus_allowed = bool(en[2 * j])
-            minus_allowed = bool(en[2 * j + 1])
+            plus_allowed = pos[j]
+            minus_allowed = neg[j]
             self._set_strong_disabled(self._joint_right_btns.get(j), not plus_allowed)
             self._set_strong_disabled(self._joint_left_btns.get(j), not minus_allowed)
 
@@ -891,9 +899,27 @@ class ControlPanel:
         editing_mode = waldoctl.commander.status.editing_mode
         frames = ui_state.active_robot.cartesian_frames
         wrf, trf = frames[0], frames[1]
-        en_wrf = robot_state.cart_en.get(wrf, _DEFAULT_CART_EN)
-        en_trf = robot_state.cart_en.get(trf, _DEFAULT_CART_EN)
-        current_tuple = (tuple(en_wrf), tuple(en_trf))
+        by_frame = waldoctl.commander.status.pose.cart_jog.by_frame
+
+        def _flatten(frame: str) -> tuple[int, ...]:
+            """Re-flatten the per-direction lists back to the wire-shape
+            12-int array (X+, X-, Y+, Y-, ..., RZ-) for the cached compare
+            tuple + axis lookups."""
+            av = by_frame.get(frame)
+            if av is None:
+                return tuple(_DEFAULT_CART_EN)
+            pos = av.can_jog_pos
+            neg = av.can_jog_neg
+            n = min(len(pos), len(neg))
+            out: list[int] = []
+            for i in range(n):
+                out.append(int(pos[i]))
+                out.append(int(neg[i]))
+            return tuple(out)
+
+        en_wrf = _flatten(wrf)
+        en_trf = _flatten(trf)
+        current_tuple = (en_wrf, en_trf)
 
         # Skip if state unchanged
         if (
@@ -1094,9 +1120,12 @@ class ControlPanel:
         if axis in _AXIS_ORDER:
             idx = _AXIS_ORDER.index(axis)
             frame = frames[1] if idx >= 6 else frames[0]
-            en_list = robot_state.cart_en.get(frame, _DEFAULT_CART_EN)
-            if len(en_list) == 12:
-                allowed = bool(int(en_list[idx]))
+            frame_av = waldoctl.commander.status.pose.cart_jog.by_frame.get(frame)
+            if frame_av is not None:
+                axis_idx = idx // 2
+                lst = frame_av.can_jog_pos if idx % 2 == 0 else frame_av.can_jog_neg
+                if axis_idx < len(lst):
+                    allowed = bool(lst[axis_idx])
         self._set_strong_disabled(self._cart_axis_imgs.get(axis), not allowed)
         if is_pressed and not allowed:
             return
