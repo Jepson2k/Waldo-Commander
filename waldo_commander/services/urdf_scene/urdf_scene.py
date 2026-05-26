@@ -1320,7 +1320,8 @@ class UrdfScene(
         otherwise issue up to ~11 separate frames (polyline + cones for a
         long move), which can render half-faded if interleaved with three.js.
         """
-        step = simulation_state.current_step_index
+        active = waldoctl.commander.programs.active
+        step = active.dry_run.playback.current_step if active is not None else 0
         prev = self._rendered_playback_step
         n_rendered = len(self._rendered_segments)
         has_any = (

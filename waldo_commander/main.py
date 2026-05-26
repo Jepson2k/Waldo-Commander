@@ -68,7 +68,6 @@ from waldo_commander.services.urdf_scene.envelope_renderer import workspace_enve
 from waldo_commander.state import (
     robot_state,
     controller_state,
-    simulation_state,
     ui_state,
     readiness_state,
     playback_coordination,
@@ -1367,9 +1366,13 @@ async def _status_consumer() -> None:
                     robot_state.last_update_ts = time.time()
 
                     # Auto-clear scrub override after teleport has had time to propagate
+                    _active_pb = waldoctl.commander.programs.active
+                    _is_active = (
+                        _active_pb is not None and _active_pb.dry_run.playback.is_active
+                    )
                     if (
                         playback_coordination.sim_pose_override
-                        and not simulation_state.sim_playback_active
+                        and not _is_active
                         and playback_coordination.last_teleport_ts > 0
                         and (time.monotonic() - playback_coordination.last_teleport_ts)
                         > 0.1

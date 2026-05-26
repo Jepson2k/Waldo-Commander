@@ -275,9 +275,11 @@ class PlaybackController:
 
     def on_simulation_complete(self) -> None:
         """Called by SimulationEngine after a successful run. Owns timeline +
-        scrub-segment + sim_playback_time reset."""
+        scrub-segment + playback_time reset."""
         self.invalidate_timeline()
-        simulation_state.sim_playback_time = 0.0
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            active.dry_run.playback.playback_time = 0.0
         self.update_scrub_segments()
 
     # ---- Public actions ----
@@ -296,8 +298,10 @@ class PlaybackController:
                     active.dry_run.playback.is_playing = True
                 logger.debug("Script playing")
             simulation_state.notify_changed()
-        elif robot_state.simulator_active and simulation_state.total_steps > 0:
-            if simulation_state.sim_playback_active:
+        elif robot_state.simulator_active and (
+            active is not None and active.dry_run.total_steps > 0
+        ):
+            if active.dry_run.playback.is_active:
                 self._pause_sim_playback()
             else:
                 self._start_sim_playback()
@@ -309,10 +313,13 @@ class PlaybackController:
         if is_any_program_running():
             script_exec.signal_step()
             logger.debug("Step forward signal sent to script")
-        elif self._timeline and simulation_state.total_steps > 0:
+        elif self._timeline:
+            active = waldoctl.commander.programs.active
+            if active is None or active.dry_run.total_steps <= 0:
+                return
             next_idx = min(
-                simulation_state.current_step_index + 1,
-                simulation_state.total_steps - 1,
+                active.dry_run.playback.current_step + 1,
+                active.dry_run.total_steps - 1,
             )
             t = self._timeline.cumulative_times[next_idx]
             self._apply_time(t)
@@ -359,7 +366,9 @@ class PlaybackController:
     def stop_playback(self) -> None:
         """Stop simulation playback and reset to start."""
         self._pause_sim_playback()
-        simulation_state.sim_playback_time = 0.0
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            active.dry_run.playback.playback_time = 0.0
 
     def set_enabled(self, enabled: bool) -> None:
         """Enable or disable playback controls (except record button)."""
@@ -433,9 +442,11 @@ class PlaybackController:
     def _handle_script_start_edge(self) -> None:
         """Cancel sim playback and prep the scrub slider for script-driven mode."""
         # Tear down any in-progress sim playback before the script takes over.
-        if simulation_state.sim_playback_active:
+        active = waldoctl.commander.programs.active
+        if active is not None and active.dry_run.playback.is_active:
             self._pause_sim_playback()
-        simulation_state.sim_playback_time = 0.0
+        if active is not None:
+            active.dry_run.playback.playback_time = 0.0
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
 
@@ -482,11 +493,9 @@ class PlaybackController:
 
     def _on_scrub_change(self, e) -> None:
         """Handle scrub slider value change (user interaction only, not programmatic)."""
-        if (
-            self._timeline
-            and not self._updating_slider
-            and not simulation_state.sim_playback_active
-        ):
+        active = waldoctl.commander.programs.active
+        is_active = active is not None and active.dry_run.playback.is_active
+        if self._timeline and not self._updating_slider and not is_active:
             self._apply_time(float(e.value), update_slider=False)
             # Update snapshot so position-change checker doesn't re-sim after scrub
             self._snapshot_joints()
@@ -502,7 +511,9 @@ class PlaybackController:
         tl = self._timeline
         if not tl:
             return
-        simulation_state.sim_playback_time = t
+        _apply_active = waldoctl.commander.programs.active
+        if _apply_active is not None:
+            _apply_active.dry_run.playback.playback_time = t
         sample = tl.sample(t)
 
         # Sample tool position once (used for both teleport and URDF animation)
@@ -523,8 +534,11 @@ class PlaybackController:
                     )
                 )
 
-        if sample.segment_index != simulation_state.current_step_index:
-            simulation_state.current_step_index = sample.segment_index
+        if (
+            _apply_active is not None
+            and sample.segment_index != _apply_active.dry_run.playback.current_step
+        ):
+            _apply_active.dry_run.playback.current_step = sample.segment_index
             self._highlight_current_segment()
             # Sim playback animates the active tab's simulation. If a
             # script is also running, prefer the launching tab so the
@@ -624,11 +638,11 @@ class PlaybackController:
         tl = self._ensure_timeline()
         if not tl:
             return
-        if simulation_state.sim_playback_time >= tl.total_duration:
-            simulation_state.sim_playback_time = 0.0
-        simulation_state.sim_playback_active = True
         active = waldoctl.commander.programs.active
         if active is not None:
+            if active.dry_run.playback.playback_time >= tl.total_duration:
+                active.dry_run.playback.playback_time = 0.0
+            active.dry_run.playback.is_active = True
             active.dry_run.playback.is_playing = True
         self._last_tick_time = time.monotonic()
         if self._sim_timer:
@@ -645,11 +659,11 @@ class PlaybackController:
         """
         if self._sim_timer:
             self._sim_timer.active = False
-        simulation_state.sim_playback_active = False
         # Let the auto-clear in main.py handle the handback after 100ms
         playback_coordination.last_teleport_ts = time.monotonic()
         active = waldoctl.commander.programs.active
         if active is not None:
+            active.dry_run.playback.is_active = False
             active.dry_run.playback.is_playing = False
         self._last_tool_selection = None
         # Snapshot so position-change checker doesn't re-sim
@@ -671,18 +685,18 @@ class PlaybackController:
             return
 
         # Simulation playback mode
-        if not simulation_state.sim_playback_active:
+        active = waldoctl.commander.programs.active
+        if active is None or not active.dry_run.playback.is_active:
             if self._sim_timer:
                 self._sim_timer.active = False
             return
 
         now = time.monotonic()
-        active = waldoctl.commander.programs.active
-        speed = active.dry_run.playback.playback_speed if active is not None else 1.0
+        speed = active.dry_run.playback.playback_speed
         dt = (now - self._last_tick_time) * speed
         self._last_tick_time = now
 
-        t = simulation_state.sim_playback_time + dt
+        t = active.dry_run.playback.playback_time + dt
 
         if t >= self._timeline.total_duration:
             t = self._timeline.total_duration
@@ -739,10 +753,11 @@ class PlaybackController:
         active_is_playing = (
             active.dry_run.playback.is_playing if active is not None else False
         )
+        active_is_active = (
+            active.dry_run.playback.is_active if active is not None else False
+        )
         if self.play_btn:
-            playing = (
-                script_running and active_is_playing
-            ) or simulation_state.sim_playback_active
+            playing = (script_running and active_is_playing) or active_is_active
             if playing:
                 self.play_btn.props("icon=pause color=warning")
                 if self.play_btn_tooltip:
@@ -756,16 +771,13 @@ class PlaybackController:
             self.stop_btn.set_visibility(script_running)
 
         if self.next_btn:
-            has_steps = simulation_state.total_steps > 0
+            total_steps = active.dry_run.total_steps if active is not None else 0
+            has_steps = total_steps > 0
             self.next_btn.set_visibility(has_steps)
-            at_last = (
-                (
-                    simulation_state.current_step_index
-                    >= simulation_state.total_steps - 1
-                )
-                if has_steps
-                else True
+            current_step = (
+                active.dry_run.playback.current_step if active is not None else 0
             )
+            at_last = (current_step >= total_steps - 1) if has_steps else True
             if at_last and not script_running:
                 self.next_btn.disable()
             else:
@@ -807,7 +819,7 @@ class PlaybackController:
         if not tl or total_dur <= 0:
             return
 
-        step = simulation_state.current_step_index
+        step = active.dry_run.playback.current_step if active is not None else 0
         cum = tl.cumulative_times
         seg_durs = tl.segment_durations
 
@@ -888,7 +900,7 @@ class PlaybackController:
             return
         active = waldoctl.commander.programs.active
         segments = active.dry_run.path_segments if active is not None else []
-        step = simulation_state.current_step_index
+        step = active.dry_run.playback.current_step if active is not None else 0
         prev = self._last_highlighted_index
         self._last_highlighted_index = step
 
@@ -909,7 +921,7 @@ class PlaybackController:
         # Update tool marker opacity based on current playback time
         tl = self._timeline
         if tl and self._tool_markers:
-            t = simulation_state.sim_playback_time
+            t = active.dry_run.playback.playback_time if active is not None else 0.0
             kf = tl.tool_keyframes
             marker_idx = 0
             for i in range(0, len(kf) - 1, 2):

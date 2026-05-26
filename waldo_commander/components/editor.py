@@ -526,11 +526,9 @@ class EditorPanel(FileOperationsMixin):
         if self._tab_switch_render_task is not None:
             self._tab_switch_render_task.cancel()
 
-        simulation_state.current_step_index = 0
         active = waldoctl.commander.programs.active
-        simulation_state.total_steps = (
-            len(active.dry_run.path_segments) if active is not None else 0
-        )
+        if active is not None:
+            active.dry_run.playback.current_step = 0
 
         # Capture client context before creating task (asyncio.create_task
         # doesn't propagate NiceGUI context)

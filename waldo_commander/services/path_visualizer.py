@@ -583,12 +583,10 @@ class PathVisualizer:
                 target_tab.dry_run.tool_selections = new_tool_selections
                 target_tab.dry_run.total_steps = len(new_segments)
 
-                # Fire the WC-side change notification when the active tab's
-                # dry-run results changed so listeners (urdf scene, playback)
-                # re-render against the freshly stored data.
-                if target_tab.id == waldoctl.commander.programs.active_id:
-                    simulation_state.total_steps = len(new_segments)
-                else:
+                # Dry-run results live on the target tab; readers go through
+                # ``commander.programs.active.dry_run`` so the WC-side change
+                # notification below fires regardless of which tab is active.
+                if target_tab.id != waldoctl.commander.programs.active_id:
                     logger.debug(
                         "Simulation for tab %s complete, but tab no longer active - "
                         "skipping global state update",

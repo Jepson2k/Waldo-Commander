@@ -207,27 +207,24 @@ class ToolTimeSeries:
 
 @bindable_dataclass
 class SimulationState(ChangeNotifierMixin):
-    # path_segments / targets / tool_actions / tool_selections moved to
-    # commander.programs.active.dry_run.* — readers go through the active
-    # program directly; writers update the owning program's dry_run.
-    current_step_index: int = 0
-    total_steps: int = 0
+    # Per-program simulation results live on ``commander.programs.active
+    # .dry_run.*`` (``path_segments`` / ``targets`` / ``tool_actions`` /
+    # ``tool_selections`` / ``total_steps`` / ``total_duration``).
+    # Playback timeline scalars (``current_step`` / ``playback_time`` /
+    # ``playback_speed`` / ``is_playing`` / ``is_active`` /
+    # ``active_cursor_line``) live on ``dry_run.playback.*``.
+    #
+    # What stays here: the WC-side notification channels that consumers
+    # subscribe to globally (a single change-listener registration covers
+    # every tab switch + every dry-run update).
     paths_visible: bool = True
-    sim_playback_time: float = 0.0  # Current playback position (seconds)
-    sim_total_duration: float = 0.0  # Total timeline duration (seconds)
-    sim_playback_active: bool = False  # True when simulation playback timer is ticking
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
     _step_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
 
     def reset(self) -> None:
-        self.current_step_index = 0
-        self.total_steps = 0
         self.paths_visible = True
-        self.sim_playback_time = 0.0
-        self.sim_total_duration = 0.0
-        self.sim_playback_active = False
 
 
 # ``RecordingState`` migrated to ``commander.programs.active.recording``;

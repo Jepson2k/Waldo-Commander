@@ -299,7 +299,8 @@ class ScriptExecutionController:
                                 running_tab.dry_run.playback.executing_step_at_end = (
                                     False
                                 )
-                            simulation_state.current_step_index = step
+                            if running_tab is not None:
+                                running_tab.dry_run.playback.current_step = step
                             simulation_state.notify_step_changed()
                     elif event_type == "complete":
                         with ui_client:
@@ -308,7 +309,8 @@ class ScriptExecutionController:
                                 running_tab.dry_run.playback.executing_step_at_end = (
                                     True
                                 )
-                            simulation_state.current_step_index = step
+                            if running_tab is not None:
+                                running_tab.dry_run.playback.current_step = step
                             simulation_state.notify_step_changed()
                         logger.debug(
                             "Script event: %s completed (step %d)", method, step

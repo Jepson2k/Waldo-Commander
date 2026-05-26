@@ -477,7 +477,7 @@ async def test_step_button_enabled_after_simulation(user: User, robot_state) -> 
     - Step button is not disabled
     - Play button starts simulation playback (not script execution)
     """
-    from waldo_commander.state import ui_state, simulation_state
+    from waldo_commander.state import ui_state
     import waldoctl
 
     await user.open("/")
@@ -520,12 +520,16 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     assert editor.playback.next_btn._props.get("disable") is not True, (
         "Step button should be enabled"
     )
-    assert simulation_state.total_steps > 0, "Should have simulation steps"
+    import waldoctl as _wctl
+
+    _active_for_steps = _wctl.commander.programs.active
+    assert _active_for_steps is not None, "An active program should exist"
+    assert _active_for_steps.dry_run.total_steps > 0, "Should have simulation steps"
 
     # Play should start sim playback, not script execution
     await editor.playback.toggle_play()
     await asyncio.sleep(0.1)
-    assert simulation_state.sim_playback_active is True, (
+    assert _active_for_steps.dry_run.playback.is_active is True, (
         "Play should start simulation playback when steps exist"
     )
     assert is_any_program_running() is False, (
@@ -535,7 +539,7 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     # Pause sim playback
     await editor.playback.toggle_play()
     await asyncio.sleep(0)
-    assert simulation_state.sim_playback_active is False
+    assert _active_for_steps.dry_run.playback.is_active is False
 
 
 @pytest.mark.integration

@@ -207,7 +207,6 @@ class SimulationEngine:
                     tab.dry_run.tool_selections = []
                     tab.dry_run.total_steps = 0
                     if tab_id == waldoctl.commander.programs.active_id:
-                        simulation_state.total_steps = 0
                         simulation_state.notify_changed()
                         playback.update_scrub_segments()
                     return
@@ -231,16 +230,18 @@ class SimulationEngine:
 
     def check_position_changed(self) -> None:
         """Periodically check if robot position changed and re-run path preview."""
+        active_tab = waldoctl.commander.programs.active
+        is_playback_active = (
+            active_tab is not None and active_tab.dry_run.playback.is_active
+        )
         if (
             is_any_program_running()
             or robot_state.editing_mode
             or self._simulation_debounce_timer is not None
             or playback_coordination.sim_pose_override
-            or simulation_state.sim_playback_active
+            or is_playback_active
         ):
             return
-
-        active_tab = waldoctl.commander.programs.active
         if not active_tab or active_tab.dry_run.last_sim_joints_deg is None:
             return
 

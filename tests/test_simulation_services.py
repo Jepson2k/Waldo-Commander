@@ -891,7 +891,9 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have 2 segments and total_steps should match
-        assert simulation_state.total_steps == len(self._active_dry_run().path_segments)
+        assert self._active_dry_run().total_steps == len(
+            self._active_dry_run().path_segments
+        )
 
     @pytest.mark.asyncio
     async def test_visualizer_joint_coordinates_in_meters(self):
@@ -1228,18 +1230,32 @@ class TestTeleportCommand:
 
 
 class TestSimPoseOverrideAutoClear:
-    """Tests for the timestamp-based auto-clear of sim_pose_override."""
+    """Tests for the timestamp-based auto-clear of sim_pose_override.
+
+    The auto-clear condition reads ``commander.programs.active.dry_run
+    .playback.is_active`` to decide whether the user is still scrubbing.
+    Each test seeds an active program so the lookup resolves.
+    """
+
+    @staticmethod
+    def _seed_program(is_active: bool):
+        from tests.helpers.programs import ensure_active_program
+
+        program = ensure_active_program()
+        assert program is not None
+        program.dry_run.playback.is_active = is_active
+        return program
 
     def test_clears_after_timeout(self):
         """Override should clear once 100ms has passed since last teleport."""
+        program = self._seed_program(is_active=False)
         playback_coordination.sim_pose_override = True
-        simulation_state.sim_playback_active = False
         playback_coordination.last_teleport_ts = time.monotonic() - 0.2  # 200ms ago
 
         # Simulate the auto-clear condition from main.py
         should_clear = (
             playback_coordination.sim_pose_override
-            and not simulation_state.sim_playback_active
+            and not program.dry_run.playback.is_active
             and playback_coordination.last_teleport_ts > 0
             and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
         )
@@ -1247,13 +1263,13 @@ class TestSimPoseOverrideAutoClear:
 
     def test_stays_set_during_active_scrubbing(self):
         """Override should NOT clear if a teleport was sent recently."""
+        program = self._seed_program(is_active=False)
         playback_coordination.sim_pose_override = True
-        simulation_state.sim_playback_active = False
         playback_coordination.last_teleport_ts = time.monotonic()  # just now
 
         should_clear = (
             playback_coordination.sim_pose_override
-            and not simulation_state.sim_playback_active
+            and not program.dry_run.playback.is_active
             and playback_coordination.last_teleport_ts > 0
             and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
         )
@@ -1261,13 +1277,13 @@ class TestSimPoseOverrideAutoClear:
 
     def test_stays_set_during_playback(self):
         """Override should NOT clear during active simulation playback."""
+        program = self._seed_program(is_active=True)
         playback_coordination.sim_pose_override = True
-        simulation_state.sim_playback_active = True
         playback_coordination.last_teleport_ts = time.monotonic() - 0.2
 
         should_clear = (
             playback_coordination.sim_pose_override
-            and not simulation_state.sim_playback_active
+            and not program.dry_run.playback.is_active
             and playback_coordination.last_teleport_ts > 0
             and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
         )
@@ -1275,13 +1291,13 @@ class TestSimPoseOverrideAutoClear:
 
     def test_no_clear_without_teleport(self):
         """Override should NOT clear if no teleport was ever sent (ts=0)."""
+        program = self._seed_program(is_active=False)
         playback_coordination.sim_pose_override = True
-        simulation_state.sim_playback_active = False
         playback_coordination.last_teleport_ts = 0.0
 
         should_clear = (
             playback_coordination.sim_pose_override
-            and not simulation_state.sim_playback_active
+            and not program.dry_run.playback.is_active
             and playback_coordination.last_teleport_ts > 0
             and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
         )
