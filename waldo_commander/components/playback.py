@@ -7,6 +7,7 @@ import logging
 import time
 
 import numpy as np
+import waldoctl
 from nicegui import Client, ui, context
 
 from waldo_commander.common.theme import PathColors
@@ -15,9 +16,8 @@ from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.timeline import Timeline
+from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.state import (
-    editor_tabs_state,
-    recording_state,
     robot_state,
     simulation_state,
     ui_state,
@@ -205,7 +205,7 @@ class PlaybackController:
     def _toggle_recording(self) -> None:
         """Toggle motion recording on/off and update the record button visual."""
         motion_recorder.toggle_recording()
-        if recording_state.is_recording:
+        if is_any_program_recording():
             if self.record_btn:
                 self.record_btn.props("color=warning")
             if self._record_btn_tooltip:
@@ -510,7 +510,9 @@ class PlaybackController:
             # script is also running, prefer the launching tab so the
             # highlight stays on it even when the user scrubs while the
             # script is paused on a different tab.
-            target_tab = script_exec.launching_tab_id or editor_tabs_state.active_tab_id
+            target_tab = (
+                script_exec.launching_tab_id or waldoctl.commander.programs.active_id
+            )
             if target_tab is not None:
                 decorations.highlight_executing_line(sample.segment_index, target_tab)
             if ui_state.urdf_scene:
@@ -573,10 +575,10 @@ class PlaybackController:
 
     def _snapshot_joints(self) -> None:
         """Snapshot current robot joint angles to the active tab's last_sim_joints_deg."""
-        active_tab = editor_tabs_state.get_active_tab()
+        active_tab = waldoctl.commander.programs.active
         if active_tab is not None:
             n = ui_state.active_robot.joints.count
-            active_tab.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
+            active_tab.dry_run.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
 
     # ---- Simulation playback engine ----
 

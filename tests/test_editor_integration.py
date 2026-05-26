@@ -9,6 +9,7 @@ from tests.helpers.wait import (
     wait_for_app_ready,
     enable_sim,
 )
+from waldo_commander.services.programs import is_any_program_recording
 
 
 @pytest.mark.integration
@@ -190,7 +191,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
     - recording_state.is_recording becomes False
     - Button color changes back to negative (red)
     """
-    from waldo_commander.state import recording_state, ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -203,7 +204,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
     assert editor is not None, "Editor panel should exist"
 
     # Initially not recording with red color
-    assert recording_state.is_recording is False
+    assert not is_any_program_recording()
     record_btn_ref = editor.playback.record_btn
     assert record_btn_ref is not None, "Record button reference should exist"
     initial_color = record_btn_ref._props.get("color", "")
@@ -216,7 +217,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
     record_btn.click()
     await asyncio.sleep(0.1)
 
-    assert recording_state.is_recording is True, "Expected recording to start"
+    assert is_any_program_recording(), "Expected recording to start"
     recording_color = record_btn_ref._props.get("color", "")
     assert recording_color == "warning", (
         f"Recording color should be warning (amber), got {recording_color}"
@@ -226,7 +227,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
     record_btn.click()
     await asyncio.sleep(0.1)
 
-    assert recording_state.is_recording is False, "Expected recording to stop"
+    assert not is_any_program_recording(), "Expected recording to stop"
     stopped_color = record_btn_ref._props.get("color", "")
     assert stopped_color == "negative", (
         f"Stopped color should be negative (red), got {stopped_color}"
@@ -246,7 +247,7 @@ async def test_recording_notification_appears_and_disappears(
     When recording stops:
     - The notification is dismissed
     """
-    from waldo_commander.state import recording_state, ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -259,7 +260,7 @@ async def test_recording_notification_appears_and_disappears(
     assert editor is not None, "Editor panel should exist"
 
     # Initially no recording notification
-    assert recording_state.is_recording is False
+    assert not is_any_program_recording()
     assert editor.playback._recording_notification is None
 
     # Click record to start
@@ -268,7 +269,7 @@ async def test_recording_notification_appears_and_disappears(
     await asyncio.sleep(0.1)
 
     # Recording notification should appear
-    assert recording_state.is_recording is True
+    assert is_any_program_recording()
     assert editor.playback._recording_notification is not None, (
         "Recording notification should exist"
     )
@@ -279,7 +280,7 @@ async def test_recording_notification_appears_and_disappears(
     await asyncio.sleep(0.1)
 
     # Recording notification should be dismissed
-    assert recording_state.is_recording is False
+    assert not is_any_program_recording()
     assert editor.playback._recording_notification is None, (
         "Recording notification should be dismissed"
     )
@@ -321,7 +322,8 @@ async def test_dirty_icon_appears_after_editing(user: User) -> None:
     When tab content is modified from its saved state, a dirty indicator
     should become visible to show unsaved changes.
     """
-    from waldo_commander.state import ui_state, editor_tabs_state
+    from waldo_commander.state import ui_state
+    import waldoctl
 
     await user.open("/")
     await wait_for_app_ready()
@@ -333,7 +335,7 @@ async def test_dirty_icon_appears_after_editing(user: User) -> None:
     assert editor is not None, "Editor panel should exist"
 
     # Get active tab
-    tab = editor_tabs_state.get_active_tab()
+    tab = waldoctl.commander.programs.active
     assert tab is not None, "Active tab should exist"
 
     # Initially tab should not be dirty (content == saved_content)
@@ -345,7 +347,7 @@ async def test_dirty_icon_appears_after_editing(user: User) -> None:
     assert dirty_dot is not None, "Dirty dot widget should exist"
 
     # Modify the content directly (simulating editor change)
-    tab.content = tab.content + "\n# Modified"
+    tab.source = tab.source + "\n# Modified"
 
     # Tab should now be dirty (is_dirty is a computed property)
     assert tab.is_dirty is True, "Tab should be dirty after modification"
@@ -364,7 +366,8 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     Each tab should store its own path visualization data.
     The _save_simulation_context method correctly saves simulation_state to a tab.
     """
-    from waldo_commander.state import ui_state, editor_tabs_state, simulation_state
+    from waldo_commander.state import ui_state, simulation_state
+    import waldoctl
 
     await user.open("/")
     await wait_for_app_ready()
@@ -376,7 +379,7 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     assert editor is not None, "Editor panel should exist"
 
     # Get first tab
-    tab1 = editor_tabs_state.get_active_tab()
+    tab1 = waldoctl.commander.programs.active
     assert tab1 is not None, "First tab should exist"
 
     # Set simulation_state data for tab1 (this is what gets saved to the tab on switch)
@@ -388,21 +391,21 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     await asyncio.sleep(0.1)
 
     # Tab1 should now have the simulation_state data saved to it
-    assert tab1.path_segments == [{"fake": "segment1"}], (
+    assert tab1.dry_run.path_segments == [{"fake": "segment1"}], (
         "Tab1 should have saved simulation_state data"
     )
-    assert tab1.targets == [{"fake": "target1"}], (
+    assert tab1.dry_run.targets == [{"fake": "target1"}], (
         "Tab1 should have saved simulation_state data"
     )
 
     # Get second tab
-    tab2 = editor_tabs_state.get_active_tab()
+    tab2 = waldoctl.commander.programs.active
     assert tab2 is not None, "Second tab should exist"
     assert tab2.id != tab1.id, "Should be on new tab"
 
     # Tab2 should have empty paths (new tab, no simulation run yet)
-    assert tab2.path_segments == [], "New tab should have empty path_segments"
-    assert tab2.targets == [], "New tab should have empty targets"
+    assert tab2.dry_run.path_segments == [], "New tab should have empty path_segments"
+    assert tab2.dry_run.targets == [], "New tab should have empty targets"
 
     # Set different simulation_state data for tab2
     simulation_state.path_segments = [{"fake": "segment2"}]  # type: ignore[list-item]
@@ -411,18 +414,18 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     # Manually save to tab2
     editor._save_simulation_context(tab2)
 
-    assert tab2.path_segments == [{"fake": "segment2"}], (
+    assert tab2.dry_run.path_segments == [{"fake": "segment2"}], (
         "Tab2 should have its own simulation data"
     )
-    assert tab2.targets == [{"fake": "target2"}], (
+    assert tab2.dry_run.targets == [{"fake": "target2"}], (
         "Tab2 should have its own simulation data"
     )
 
     # Tab1's data should still be preserved
-    assert tab1.path_segments == [{"fake": "segment1"}], (
+    assert tab1.dry_run.path_segments == [{"fake": "segment1"}], (
         "Tab1's data should be preserved after saving tab2"
     )
-    assert tab1.targets == [{"fake": "target1"}], (
+    assert tab1.dry_run.targets == [{"fake": "target1"}], (
         "Tab1's data should be preserved after saving tab2"
     )
 
@@ -434,7 +437,8 @@ async def test_create_and_remove_tab(user: User) -> None:
     Creating a tab should increase the tab count.
     Closing a tab should decrease the tab count.
     """
-    from waldo_commander.state import editor_tabs_state, ui_state
+    from waldo_commander.state import ui_state
+    import waldoctl
 
     await user.open("/")
     await wait_for_app_ready()
@@ -446,7 +450,7 @@ async def test_create_and_remove_tab(user: User) -> None:
     assert editor is not None, "Editor panel should exist"
 
     # Get initial tab count
-    initial_count = len(editor_tabs_state.tabs)
+    initial_count = len(waldoctl.commander.programs.items)
     assert initial_count >= 1, "Should have at least one initial tab"
 
     # Create a new tab
@@ -454,12 +458,12 @@ async def test_create_and_remove_tab(user: User) -> None:
     await asyncio.sleep(0)
 
     # Verify new tab was created
-    assert len(editor_tabs_state.tabs) == initial_count + 1, (
+    assert len(waldoctl.commander.programs.items) == initial_count + 1, (
         f"Expected {initial_count + 1} tabs after creating new"
     )
 
     # Get the new tab (should be active)
-    new_tab = editor_tabs_state.get_active_tab()
+    new_tab = waldoctl.commander.programs.active
     assert new_tab is not None, "New tab should be active"
     new_tab_id = new_tab.id
 
@@ -470,16 +474,16 @@ async def test_create_and_remove_tab(user: User) -> None:
     # CI environments need more time for the timer callback to execute
     for _ in range(40):
         await asyncio.sleep(0.1)
-        if len(editor_tabs_state.tabs) == initial_count:
+        if len(waldoctl.commander.programs.items) == initial_count:
             break
 
     # Verify tab was removed
-    assert len(editor_tabs_state.tabs) == initial_count, (
+    assert len(waldoctl.commander.programs.items) == initial_count, (
         f"Expected {initial_count} tabs after closing"
     )
 
     # Verify the closed tab no longer exists
-    assert editor_tabs_state.find_tab_by_id(new_tab_id) is None, (
+    assert waldoctl.commander.programs.get(new_tab_id) is None, (
         "Closed tab should no longer exist"
     )
 
@@ -493,7 +497,8 @@ async def test_step_button_enabled_after_simulation(user: User, robot_state) -> 
     - Step button is not disabled
     - Play button starts simulation playback (not script execution)
     """
-    from waldo_commander.state import ui_state, editor_tabs_state, simulation_state
+    from waldo_commander.state import ui_state, simulation_state
+    import waldoctl
 
     await user.open("/")
     await wait_for_app_ready()
@@ -512,15 +517,15 @@ async def test_step_button_enabled_after_simulation(user: User, robot_state) -> 
     )
 
     # Set script with move commands to generate simulation steps
-    tab = editor_tabs_state.get_active_tab()
+    tab = waldoctl.commander.programs.active
     assert tab is not None
     test_script = """from parol6 import RobotClient
 rbt = RobotClient()
 rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
 """
-    editor_tabs_state.active_textarea.value = test_script
-    tab.content = test_script
+    ui_state.active_textarea.value = test_script
+    tab.source = test_script
 
     # Run simulation to populate steps
     from waldo_commander.components.simulation_engine import simulation as _sim
@@ -563,7 +568,8 @@ async def test_simulation_creates_targets_for_literal_moves(
     tracked by the CM6 StateField for interactive 3D editing. No markers are
     added to the user's source code.
     """
-    from waldo_commander.state import editor_tabs_state, simulation_state, ui_state
+    from waldo_commander.state import simulation_state, ui_state
+    import waldoctl
 
     await user.open("/")
     await wait_for_app_ready()
@@ -575,16 +581,16 @@ async def test_simulation_creates_targets_for_literal_moves(
     editor = ui_state.editor_panel
     assert editor is not None, "Editor panel should exist"
 
-    tab = editor_tabs_state.get_active_tab()
+    tab = waldoctl.commander.programs.active
     assert tab is not None, "Active tab should exist"
 
     test_script = """from parol6 import RobotClient
 rbt = RobotClient()
 rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 """
-    assert editor_tabs_state.active_textarea is not None
-    editor_tabs_state.active_textarea.value = test_script
-    tab.content = test_script
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = test_script
+    tab.source = test_script
 
     from waldo_commander.components.simulation_engine import simulation as _sim
 
@@ -602,7 +608,7 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     assert target.line_number > 0, "Target should have a valid line number"
 
     # Source code should NOT contain any TARGET markers
-    updated_content = editor_tabs_state.active_textarea.value
+    updated_content = ui_state.active_textarea.value
     assert "# TARGET:" not in updated_content, (
         "Source code should not contain TARGET markers"
     )

@@ -458,16 +458,17 @@ def _install_test_commander() -> None:
     Commander each call so per-test isolation matches state resets.
     """
     import waldoctl
-    from waldoctl import Commander, ProgramTabs, RobotStatus, Settings
+    from waldoctl import Commander, RobotStatus, Settings
 
     from waldo_commander.profiles import get_robot
+    from waldo_commander.services.programs import EditorPrograms
 
     waldoctl._set_commander(
         Commander(
             robot=get_robot(),
             client=_StubClient(),  # type: ignore[arg-type]
             status=RobotStatus(),
-            programs=ProgramTabs(),
+            programs=EditorPrograms(),
             settings=Settings(),
         )
     )

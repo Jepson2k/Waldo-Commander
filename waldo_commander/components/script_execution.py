@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import uuid
 from pathlib import Path
 
@@ -32,7 +33,10 @@ from waldo_commander.services.script_runner import (
     stop_script,
 )
 from waldo_commander.services.stepping_client import GUIStepController
-from waldo_commander.state import editor_tabs_state, simulation_state
+import waldoctl
+from waldoctl import LogEntry
+
+from waldo_commander.state import simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -112,13 +116,13 @@ class ScriptExecutionController:
         no-ops when the log widget hasn't been built.
         """
         tab = (
-            editor_tabs_state.find_tab_by_id(self._script_tab_id)
+            waldoctl.commander.programs.get(self._script_tab_id)
             if self._script_tab_id
             else None
         )
         if tab is not None:
-            tab.output_log.append(line)
-        if tab is not None and tab.id == editor_tabs_state.active_tab_id:
+            tab.log.append(LogEntry(timestamp=time.time(), stream="stdout", text=line))
+        if tab is not None and tab.id == waldoctl.commander.programs.active_id:
             if ui_client is not None:
                 with ui_client:
                     log_panel.push(line)
@@ -141,14 +145,14 @@ class ScriptExecutionController:
             return
 
         try:
-            filename_input = editor_tabs_state.active_filename_input
+            filename_input = ui_state.active_filename_input
             filename = (
                 filename_input.value.strip() if filename_input else ""
             ) or "program.py"
             if not filename.endswith(".py"):
                 filename += ".py"
 
-            textarea = editor_tabs_state.active_textarea
+            textarea = ui_state.active_textarea
             content = textarea.value if textarea else ""
             assert self._program_dir is not None, "program_dir not set"
             runtime_dir = self._program_dir / ".runtime"
@@ -161,10 +165,10 @@ class ScriptExecutionController:
 
             # Remember the launching tab so output is appended to its log
             # even after the user switches tabs while the script runs.
-            launching_tab = editor_tabs_state.get_active_tab()
+            launching_tab = waldoctl.commander.programs.active
             self._script_tab_id = launching_tab.id if launching_tab else None
             if launching_tab is not None:
-                launching_tab.output_log.clear()
+                launching_tab.log.clear()
             log_panel.clear()
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))

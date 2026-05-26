@@ -4,21 +4,19 @@ import asyncio
 import logging
 import re
 import time
-import uuid
 from typing import Any, Callable
 
 import waldoctl
 from nicegui import context, ui
+from waldoctl import Program
 
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import REPO_ROOT
+from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.state import (
     robot_state,
     simulation_state,
     ui_state,
-    EditorTab,
-    editor_tabs_state,
-    recording_state,
 )
 from waldo_commander.services.command_discovery import (
     discover_robot_commands,
@@ -60,7 +58,7 @@ class EditorPanel(FileOperationsMixin):
             str, dict
         ] = {}  # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
 
-        # Active tab's widgets live on editor_tabs_state.active_textarea /
+        # Active tab's widgets live on ui_state.active_textarea /
         # active_filename_input — sub-controllers (decorations, simulation,
         # motion recorder, script execution) read them from there directly.
 
@@ -76,7 +74,7 @@ class EditorPanel(FileOperationsMixin):
         """Build a snippet for ``method_name`` (pre-filled with the robot's
         current position for move_j / move_l) and append it to the active
         textarea."""
-        textarea = editor_tabs_state.active_textarea
+        textarea = ui_state.active_textarea
         if not textarea:
             return
 
@@ -133,7 +131,7 @@ class EditorPanel(FileOperationsMixin):
         converted (move_l→move_j or vice versa). joint_angles_deg must be
         provided when converting to move_j.
         """
-        textarea = editor_tabs_state.active_textarea
+        textarea = ui_state.active_textarea
         if not textarea:
             return
 
@@ -206,7 +204,7 @@ class EditorPanel(FileOperationsMixin):
 
         Uses CM6 StateField position tracking to find the line.
         """
-        textarea = editor_tabs_state.active_textarea
+        textarea = ui_state.active_textarea
         if not textarea:
             return
 
@@ -241,7 +239,7 @@ class EditorPanel(FileOperationsMixin):
         Returns:
             1-indexed line number of the new line, or None on failure.
         """
-        textarea = editor_tabs_state.active_textarea
+        textarea = ui_state.active_textarea
         if not textarea:
             return None
 
@@ -350,35 +348,26 @@ class EditorPanel(FileOperationsMixin):
 
     def _new_tab(
         self, filename: str = "untitled.py", content: str | None = None
-    ) -> EditorTab:
+    ) -> Program:
         """Create a new tab and switch to it."""
-        tab = EditorTab(
-            id=uuid.uuid4().hex[:8],
-            filename=filename,
-            file_path=None,
-            content=content if content is not None else default_python_snippet(),
-            saved_content=content if content is not None else default_python_snippet(),
-            path_segments=[],
-            targets=[],
-            created_at=time.time(),
-        )
-
-        editor_tabs_state.add_tab(tab)
+        source = content if content is not None else default_python_snippet()
+        tab = waldoctl.commander.programs.new(source=source, filename=filename)
+        tab.created_at = time.time()
         self._create_tab_widget(tab)
         self._create_tab_panel(tab)
         self._switch_to_tab(tab.id)
 
         # Trigger simulation at tab creation (with default script optimization)
-        if is_default_script(tab.content):
+        if is_default_script(tab.source):
             # Default script ends at home position - skip simulation;
-            # other tab list fields default to [] so no further reset needed.
-            tab.final_joints_rad = list(get_home_joints_rad())
-        elif tab.content.strip():
+            # other dry-run fields default to [] so no further reset needed.
+            tab.dry_run.final_joints_rad = list(get_home_joints_rad())
+        elif tab.source.strip():
             simulation.schedule_debounced_simulation(tab_id=tab.id)
 
         return tab
 
-    def _close_tab(self, tab: EditorTab) -> None:
+    def _close_tab(self, tab: Program) -> None:
         """Close a tab, prompting to save if dirty.
 
         Uses deferred execution via ui.timer to avoid modifying UI
@@ -403,7 +392,7 @@ class EditorPanel(FileOperationsMixin):
         # Defer to avoid "dictionary changed size during iteration" in tests
         ui.timer(0, do_close, once=True)
 
-    def _show_save_confirmation(self, tab: EditorTab) -> None:
+    def _show_save_confirmation(self, tab: Program) -> None:
         """Show save confirmation dialog for dirty tab."""
         dlg = ui.dialog().classes("save-dialog")
 
@@ -429,12 +418,12 @@ class EditorPanel(FileOperationsMixin):
                 ).props("color=primary")
         dlg.open()
 
-    def _do_close_tab(self, tab: EditorTab) -> None:
+    def _do_close_tab(self, tab: Program) -> None:
         """Actually close the tab and clean up UI."""
         tab_id = tab.id
 
         # Determine which tab to switch to BEFORE removing
-        tabs = editor_tabs_state.tabs
+        tabs = waldoctl.commander.programs.items
         closed_idx = next((i for i, t in enumerate(tabs) if t.id == tab_id), -1)
         new_active_id = None
 
@@ -454,51 +443,51 @@ class EditorPanel(FileOperationsMixin):
             if "panel" in widgets and widgets["panel"]:
                 widgets["panel"].delete()
             del self._tab_widgets[tab_id]
-        editor_tabs_state.textareas_by_tab.pop(tab_id, None)
+        ui_state.textareas_by_tab.pop(tab_id, None)
 
         # Remove from state
-        editor_tabs_state.remove_tab(tab_id)
+        waldoctl.commander.programs.close(tab_id)
 
         # Create new tab if all tabs closed
-        if not editor_tabs_state.tabs:
+        if not waldoctl.commander.programs.items:
             self._new_tab()
         elif new_active_id:
-            editor_tabs_state.active_tab_id = new_active_id
+            waldoctl.commander.programs.active_id = new_active_id
             self._switch_to_tab(new_active_id)
 
     def _switch_to_tab(self, tab_id: str) -> None:
         """Switch to a specific tab (blocked during recording/playback)."""
 
         # Block tab switching during recording or playback
-        if recording_state.is_recording:
+        if is_any_program_recording():
             ui.notify("Cannot switch tabs while recording", color="warning")
             # Reset UI to current active tab since the click already changed it visually
-            if self.tabs_container and editor_tabs_state.active_tab_id:
-                self.tabs_container.set_value(editor_tabs_state.active_tab_id)
+            if self.tabs_container and waldoctl.commander.programs.active_id:
+                self.tabs_container.set_value(waldoctl.commander.programs.active_id)
             return
         if simulation_state.script_running and simulation_state.is_playing:
             ui.notify("Cannot switch tabs during script playback", color="warning")
-            if self.tabs_container and editor_tabs_state.active_tab_id:
-                self.tabs_container.set_value(editor_tabs_state.active_tab_id)
+            if self.tabs_container and waldoctl.commander.programs.active_id:
+                self.tabs_container.set_value(waldoctl.commander.programs.active_id)
             return
 
         # Stop simulation playback on tab switch (non-blocking)
         self.playback.stop_playback()
         self.playback.invalidate_timeline()
 
-        tab = editor_tabs_state.find_tab_by_id(tab_id)
+        tab = waldoctl.commander.programs.get(tab_id)
         if not tab:
             return
 
         # Save current tab's simulation context. The log doesn't need saving
         # here — script_execution / simulation_engine append to the owning
         # tab's output_log incrementally during writes.
-        current_tab = editor_tabs_state.get_active_tab()
+        current_tab = waldoctl.commander.programs.active
         if current_tab and current_tab.id != tab_id:
             self._save_simulation_context(current_tab)
 
         # Update active tab
-        editor_tabs_state.active_tab_id = tab_id
+        waldoctl.commander.programs.active_id = tab_id
         simulation_state.active_cursor_line = 0
 
         # Update tab panels value
@@ -514,21 +503,21 @@ class EditorPanel(FileOperationsMixin):
 
         # Swap log content: load new tab's log entries into shared log
         log_panel.clear()
-        for entry in tab.output_log:
-            log_panel.push(entry)
+        for entry in tab.log.entries:
+            log_panel.push(entry.text)
 
         widgets = self._tab_widgets.get(tab_id, {})
-        editor_tabs_state.active_textarea = widgets.get("textarea")
-        editor_tabs_state.active_filename_input = widgets.get("filename_input")
+        ui_state.active_textarea = widgets.get("textarea")
+        ui_state.active_filename_input = widgets.get("filename_input")
 
-    def _save_simulation_context(self, tab: EditorTab) -> None:
+    def _save_simulation_context(self, tab: Program) -> None:
         """Save current simulation state to tab."""
-        tab.path_segments = list(simulation_state.path_segments)
-        tab.targets = list(simulation_state.targets)
-        tab.tool_actions = list(simulation_state.tool_actions)
-        tab.tool_selections = list(simulation_state.tool_selections)
+        tab.dry_run.path_segments = list(simulation_state.path_segments)
+        tab.dry_run.targets = list(simulation_state.targets)
+        tab.dry_run.tool_actions = list(simulation_state.tool_actions)
+        tab.dry_run.tool_selections = list(simulation_state.tool_selections)
 
-    def _load_simulation_context(self, tab: EditorTab) -> None:
+    def _load_simulation_context(self, tab: Program) -> None:
         """Load tab's simulation state into global simulation_state.
 
         Updates simulation_state synchronously so _save_simulation_context on
@@ -540,12 +529,12 @@ class EditorPanel(FileOperationsMixin):
             self._tab_switch_render_task.cancel()
 
         # Update global state synchronously to avoid races with _save
-        simulation_state.path_segments = list(tab.path_segments)
-        simulation_state.targets = list(tab.targets)
-        simulation_state.tool_actions = list(tab.tool_actions)
-        simulation_state.tool_selections = list(tab.tool_selections)
+        simulation_state.path_segments = list(tab.dry_run.path_segments)
+        simulation_state.targets = list(tab.dry_run.targets)
+        simulation_state.tool_actions = list(tab.dry_run.tool_actions)
+        simulation_state.tool_selections = list(tab.dry_run.tool_selections)
         simulation_state.current_step_index = 0
-        simulation_state.total_steps = len(tab.path_segments)
+        simulation_state.total_steps = len(tab.dry_run.path_segments)
 
         # Capture client context before creating task (asyncio.create_task
         # doesn't propagate NiceGUI context)
@@ -570,7 +559,7 @@ class EditorPanel(FileOperationsMixin):
         task = asyncio.create_task(_apply())
         self._tab_switch_render_task = task
 
-    def _create_tab_widget(self, tab: EditorTab) -> ui.tab | None:
+    def _create_tab_widget(self, tab: Program) -> ui.tab | None:
         """Create a single tab widget with filename input, save button, close button."""
         if not self.tabs_container:
             return None
@@ -618,7 +607,7 @@ class EditorPanel(FileOperationsMixin):
 
         return tab_element
 
-    def _create_tab_panel(self, tab: EditorTab) -> ui.tab_panel | None:
+    def _create_tab_panel(self, tab: Program) -> ui.tab_panel | None:
         """Create content panel for a tab (CodeMirror only, log is shared)."""
         if not self.tab_panels_container:
             return None
@@ -636,7 +625,7 @@ class EditorPanel(FileOperationsMixin):
                 # CodeMirror editor - fill entire panel (uses its own internal scrolling)
                 textarea = (
                     ui.codemirror(
-                        value=tab.content,
+                        value=tab.source,
                         language="Python",
                         line_wrapping=True,
                         on_change=lambda e, t=tab: self._on_tab_content_change(
@@ -664,26 +653,26 @@ class EditorPanel(FileOperationsMixin):
             # Store references
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
-            editor_tabs_state.textareas_by_tab[tab.id] = textarea
+            ui_state.textareas_by_tab[tab.id] = textarea
 
         return panel
 
-    def _on_cursor_line(self, tab: EditorTab, e) -> None:
+    def _on_cursor_line(self, tab: Program, e) -> None:
         """Handle cursor line change from CodeMirror."""
-        if tab.id != editor_tabs_state.active_tab_id:
+        if tab.id != waldoctl.commander.programs.active_id:
             return
         simulation_state.active_cursor_line = e.line
         if ui_state.urdf_scene and simulation_state.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
 
-    def _on_tab_content_change(self, tab: EditorTab, new_value: str) -> None:
+    def _on_tab_content_change(self, tab: Program, new_value: str) -> None:
         """Handle content change for a tab."""
-        tab.content = new_value
+        tab.source = new_value
 
         self._update_dirty_dot(tab)
 
         # Only run simulation for active tab
-        if tab.id == editor_tabs_state.active_tab_id:
+        if tab.id == waldoctl.commander.programs.active_id:
             simulation.schedule_debounced_simulation()
 
     def build(self, close_callback: Callable | None = None) -> None:
@@ -808,12 +797,12 @@ class EditorPanel(FileOperationsMixin):
         self.playback.setup_timers()
 
         # Restore tabs from existing state (page refresh) or create initial tab
-        if editor_tabs_state.tabs:
+        if waldoctl.commander.programs.items:
             # Clear stale UI references from previous page load
             self._tab_widgets.clear()
 
             # Rebuild UI for each existing tab
-            for tab in editor_tabs_state.tabs:
+            for tab in waldoctl.commander.programs.items:
                 self._create_tab_widget(tab)
                 self._create_tab_panel(tab)
 
@@ -821,18 +810,21 @@ class EditorPanel(FileOperationsMixin):
             # Set references directly instead of calling _switch_to_tab() which
             # blocks during recording/playback — those guards are for user-initiated
             # switches, not page-load restoration.
-            active_id = editor_tabs_state.active_tab_id or editor_tabs_state.tabs[0].id
-            editor_tabs_state.active_tab_id = active_id
+            active_id = (
+                waldoctl.commander.programs.active_id
+                or waldoctl.commander.programs.items[0].id
+            )
+            waldoctl.commander.programs.active_id = active_id
             if self.tab_panels_container:
                 self.tab_panels_container.set_value(active_id)
             if self.tabs_container:
                 self.tabs_container.set_value(active_id)
             widgets = self._tab_widgets.get(active_id, {})
-            editor_tabs_state.active_textarea = widgets.get("textarea")
-            editor_tabs_state.active_filename_input = widgets.get("filename_input")
+            ui_state.active_textarea = widgets.get("textarea")
+            ui_state.active_filename_input = widgets.get("filename_input")
 
             # Restore simulation state from active tab
-            active_tab = editor_tabs_state.get_active_tab()
+            active_tab = waldoctl.commander.programs.active
             if active_tab:
                 self._load_simulation_context(active_tab)
         else:

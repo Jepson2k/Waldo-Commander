@@ -21,7 +21,6 @@ from waldoctl import (
     Commander,
     GripperTool,
     LinearMotion,
-    ProgramTabs,
     RobotClient,
     RobotStatus,
     Settings,
@@ -64,6 +63,7 @@ from waldo_commander.services.urdf_scene import (
     update_urdf_angles,
 )
 from waldo_commander.services.action_log import action_log_service
+from waldo_commander.services.programs import EditorPrograms
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
     robot_state,
@@ -1517,7 +1517,7 @@ def main():
         robot=robot,
         client=client,
         status=RobotStatus(),
-        programs=ProgramTabs(),
+        programs=EditorPrograms(),
         settings=Settings(),
     )
     waldoctl._set_commander(commander)

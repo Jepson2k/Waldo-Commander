@@ -302,12 +302,8 @@ class SimulationState(ChangeNotifierMixin):
         self.executing_step_at_end = False
 
 
-@bindable_dataclass
-class RecordingState:
-    is_recording: bool = False
-
-    def reset(self) -> None:
-        self.is_recording = False
+# ``RecordingState`` migrated to ``commander.programs.active.recording``;
+# session-wide check is ``services.programs.is_any_program_recording()``.
 
 
 # Extended shared state singletons for cross-module access
@@ -495,6 +491,15 @@ class UiState:
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
 
+    # Editor widget refs — moved off the legacy ``EditorTabsState`` because
+    # NiceGUI element handles don't belong on the public ``ProgramTabs``
+    # surface. EditorPanel writes these on every tab switch / build; the
+    # sub-controllers (decorations, motion_recorder, script_execution) read
+    # the active tab's widgets without back-references into EditorPanel.
+    active_textarea: Any = None  # ui.codemirror | None at runtime
+    active_filename_input: Any = None  # ui.input | None at runtime
+    textareas_by_tab: dict[str, Any] = field(default_factory=dict)
+
     # Post-init required fields (assert on access, set via assignment)
     editor_panel = _RequiredField()
     control_panel = _RequiredField()
@@ -514,106 +519,12 @@ class UiState:
         self.active_client_id = None
 
 
-@dataclass(slots=True)
-class EditorTab:
-    """State for a single editor tab."""
-
-    id: str  # Unique tab identifier (UUID hex)
-    filename: str  # Display name / filename
-    file_path: str | None  # Full path if saved to server
-    content: str  # Current editor content
-    saved_content: str  # Content at last save (for dirty tracking)
-    # Bounded so a chatty script can't grow the buffer unboundedly; matches
-    # ui.log(max_lines=1000) in log_panel so tab-switch rehydrate doesn't
-    # outgrow the display widget.
-    output_log: deque[str] = field(default_factory=lambda: deque(maxlen=1000))
-    path_segments: list[PathSegment] = field(
-        default_factory=list
-    )  # Per-tab simulation paths
-    targets: list[ProgramTarget] = field(default_factory=list)  # Per-tab targets
-    tool_actions: list[ToolAction] = field(default_factory=list)  # Per-tab tool actions
-    tool_selections: list[ToolSelection] = field(
-        default_factory=list
-    )  # Per-tab tool selections
-    final_joints_rad: list[float] | None = None  # Final joint position from simulation
-    last_sim_joints_deg: np.ndarray | None = None  # Robot position when last simulated
-    created_at: float = 0.0  # Timestamp
-
-    @property
-    def is_dirty(self) -> bool:
-        """Return True if content differs from saved content."""
-        return self.content != self.saved_content
-
-
-@bindable_dataclass
-class EditorTabsState(ChangeNotifierMixin):
-    """State for multi-tab editor.
-
-    Holds both pure tab data (``tabs``, ``active_tab_id``) and the widget
-    references for the active tab (``active_textarea``,
-    ``active_filename_input``). Mixing widget refs with data here is
-    intentional: the refs' lifecycle is tied directly to tab switching, and
-    consolidating them on the tab-state object lets sub-controllers
-    (decorations, simulation engine, motion recorder, script execution) read
-    the active tab's widgets without back-references into EditorPanel.
-    """
-
-    tabs: list[EditorTab] = field(default_factory=list)
-    active_tab_id: str | None = None
-    # Updated by EditorPanel on every tab switch / initial build.
-    active_textarea: Any = None  # ui.codemirror | None at runtime
-    active_filename_input: Any = None  # ui.input | None at runtime
-    # Per-tab textarea refs so sub-controllers can write decorations,
-    # diagnostics, etc. to a specific tab's editor even when it isn't
-    # the active one (e.g. the launching tab during script execution
-    # while the user has switched to a different tab). Maintained by
-    # EditorPanel on tab build / close.
-    textareas_by_tab: dict[str, Any] = field(default_factory=dict)
-    _change_listeners: list[Callable[[], None]] = field(
-        default_factory=list, repr=False
-    )
-
-    def get_active_tab(self) -> EditorTab | None:
-        """Get the currently active tab."""
-        if not self.active_tab_id:
-            return None
-        return next((t for t in self.tabs if t.id == self.active_tab_id), None)
-
-    def find_tab_by_path(self, file_path: str | None) -> EditorTab | None:
-        """Find a tab with the given file path. Returns None if file_path is None."""
-        if file_path is None:
-            return None
-        return next((t for t in self.tabs if t.file_path == file_path), None)
-
-    def find_tab_by_id(self, tab_id: str) -> EditorTab | None:
-        """Find a tab by its ID."""
-        return next((t for t in self.tabs if t.id == tab_id), None)
-
-    def get_tab_textarea(self, tab_id: str | None) -> Any:
-        """Look up a tab's CodeMirror textarea by id. Returns None if the
-        tab id is None or the tab isn't currently mounted."""
-        if tab_id is None:
-            return None
-        return self.textareas_by_tab.get(tab_id)
-
-    def add_tab(self, tab: EditorTab) -> None:
-        """Add a new tab."""
-        self.tabs.append(tab)
-        self.notify_changed()
-
-    def remove_tab(self, tab_id: str) -> None:
-        """Remove a tab by ID."""
-        self.tabs = [t for t in self.tabs if t.id != tab_id]
-        if self.active_tab_id == tab_id:
-            self.active_tab_id = self.tabs[0].id if self.tabs else None
-        self.notify_changed()
-
-    def reset(self) -> None:
-        self.tabs = []
-        self.active_tab_id = None
-        self.active_textarea = None
-        self.active_filename_input = None
-        self.textareas_by_tab.clear()
+# ===========================================================================
+# Editor tabs — migrated to ``commander.programs`` (waldoctl) with a WC-side
+# concrete subclass at ``waldo_commander.services.programs.EditorPrograms``.
+# Per-tab dry-run/log data lives on ``Program.dry_run`` and ``Program.log``.
+# Active widget refs migrated to ``UiState`` (active_textarea, etc.).
+# ===========================================================================
 
 
 @dataclass
@@ -698,9 +609,7 @@ robot_state: RobotState = RobotState()
 controller_state: ControllerState = ControllerState()
 ui_state: UiState = UiState()
 simulation_state: SimulationState = SimulationState()
-recording_state: RecordingState = RecordingState()
 readiness_state: ReadinessState = ReadinessState()
-editor_tabs_state: EditorTabsState = EditorTabsState()
 
 
 def reset_all_state() -> None:
@@ -709,13 +618,25 @@ def reset_all_state() -> None:
     controller_state.reset()
     ui_state.reset()
     simulation_state.reset()
-    recording_state.reset()
     readiness_state.reset()
-    editor_tabs_state.reset()
-    # Action log now lives on commander.status.action; the service drops it.
+    # Editor tabs / action log live on the commander locator now; reset via
+    # their services so the public surface stays in sync with WC's mirrors.
     from waldo_commander.services.action_log import action_log_service
 
     action_log_service.clear()
+    import waldoctl
+
+    try:
+        programs = waldoctl.commander.programs
+    except RuntimeError:
+        pass
+    else:
+        programs.items = []
+        programs.active_id = None
+        programs.notify_changed()
+    ui_state.active_textarea = None
+    ui_state.active_filename_input = None
+    ui_state.textareas_by_tab.clear()
 
 
 # Global timing instrumentation - import and use from any module

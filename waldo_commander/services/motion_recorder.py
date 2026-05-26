@@ -9,9 +9,8 @@ import numpy as np
 
 import waldoctl
 
+from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.state import (
-    editor_tabs_state,
-    recording_state,
     robot_state,
     ui_state,
 )
@@ -72,10 +71,10 @@ class MotionRecorder:
     @staticmethod
     def _matches_sim_end(current_angles_deg: list[float], tol_deg: float = 0.5) -> bool:
         """Check if current joint angles match the simulation's final position."""
-        tab = editor_tabs_state.get_active_tab()
-        if tab is None or tab.final_joints_rad is None:
+        tab = waldoctl.commander.programs.active
+        if tab is None or tab.dry_run.final_joints_rad is None:
             return False
-        final_deg = np.degrees(tab.final_joints_rad)
+        final_deg = np.degrees(tab.dry_run.final_joints_rad)
         return bool(np.allclose(current_angles_deg, final_deg, atol=tol_deg))
 
     @staticmethod
@@ -94,7 +93,7 @@ class MotionRecorder:
         If an existing select_tool line is found, update it. Otherwise insert one
         before the first motion command (home, move_j, move_l, etc.).
         """
-        textarea = editor_tabs_state.active_textarea
+        textarea = ui_state.active_textarea
         if not textarea:
             return
         val: str = str(textarea.value or "")
@@ -136,14 +135,18 @@ class MotionRecorder:
 
     def toggle_recording(self) -> None:
         """Toggle recording state on/off."""
-        if recording_state.is_recording:
+        if is_any_program_recording():
             self._stop_recording()
         else:
             self._start_recording()
 
     def _start_recording(self) -> None:
-        """Start a new recording session."""
-        recording_state.is_recording = True
+        """Start a new recording session on the active program."""
+        active = waldoctl.commander.programs.active
+        if active is None:
+            logger.warning("Cannot start recording: no active program")
+            return
+        active.recording.is_recording = True
         self._active_jog = None
         self._last_action_wall_time = 0.0
 
@@ -193,7 +196,10 @@ class MotionRecorder:
         if self._active_jog:
             self.on_jog_end()
 
-        recording_state.is_recording = False
+        # Clear is_recording on every program — the invariant says only one
+        # could have been True, but the sweep makes the stop idempotent.
+        for p in waldoctl.commander.programs.items:
+            p.recording.is_recording = False
         logger.info("Recording stopped")
 
     def record_action(self, action_type: str, **params) -> None:
@@ -204,7 +210,7 @@ class MotionRecorder:
                         "gripper", "io", "delay"
             **params: Action-specific parameters
         """
-        if not recording_state.is_recording:
+        if not is_any_program_recording():
             return
 
         # If a jog is in progress (arm still moving to target), queue
@@ -298,7 +304,7 @@ class MotionRecorder:
             move_type: "joint" or "cartesian"
             axis_info: Axis identifier like "J1+", "J3-", "X+", "RZ-"
         """
-        if not recording_state.is_recording:
+        if not is_any_program_recording():
             return
 
         # If there's already an active jog, end it first
@@ -312,7 +318,7 @@ class MotionRecorder:
 
     def on_jog_end(self) -> None:
         """Called when a jog action ends. Records the move as code."""
-        if not recording_state.is_recording or not self._active_jog:
+        if not is_any_program_recording() or not self._active_jog:
             return
 
         end_time = time.time()
@@ -383,8 +389,8 @@ class MotionRecorder:
     def _insert_snippet(self, snippet: str) -> None:
         """Insert code snippet into the editor and flash the new line."""
 
-        if editor_tabs_state.active_textarea:
-            textarea = editor_tabs_state.active_textarea
+        if ui_state.active_textarea:
+            textarea = ui_state.active_textarea
             val = textarea.value or ""
 
             # Count lines before insertion for flash highlighting

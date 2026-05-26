@@ -8,7 +8,8 @@ from typing import Any
 
 from nicegui import ui
 
-from waldo_commander.state import EditorTab, editor_tabs_state
+import waldoctl
+from waldoctl import Program
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ class FileOperationsMixin:
     _switch_to_tab: Any
     _do_close_tab: Any
 
-    def _update_dirty_dot(self, tab: EditorTab) -> None:
+    def _update_dirty_dot(self, tab: Program) -> None:
         widgets = self._tab_widgets.get(tab.id, {})
         dirty_dot = widgets.get("dirty_dot")
         if dirty_dot:
@@ -36,7 +37,7 @@ class FileOperationsMixin:
         try:
             name = filename or ""
             if not name:
-                tab = editor_tabs_state.get_active_tab()
+                tab = waldoctl.commander.programs.active
                 if tab:
                     name = tab.filename
             if not name:
@@ -45,7 +46,7 @@ class FileOperationsMixin:
 
             file_path = str(self.PROGRAM_DIR / name)
 
-            existing_tab = editor_tabs_state.find_tab_by_path(file_path)
+            existing_tab = waldoctl.commander.programs.find_by_path(file_path)
             if existing_tab:
                 self._switch_to_tab(existing_tab.id)
                 return
@@ -53,7 +54,7 @@ class FileOperationsMixin:
             text = (self.PROGRAM_DIR / name).read_text(encoding="utf-8")
             tab = self._new_tab(filename=name, content=text)
             tab.file_path = file_path
-            tab.saved_content = text
+            tab.mark_saved()
             self._update_dirty_dot(tab)
             logger.info("Loaded program %s", name)
         except Exception as e:
@@ -62,7 +63,7 @@ class FileOperationsMixin:
 
     async def save_program(self) -> None:
         """Save the active tab's program to a file."""
-        tab = editor_tabs_state.get_active_tab()
+        tab = waldoctl.commander.programs.active
         if not tab:
             ui.notify("No active tab to save", color="warning")
             return
@@ -70,36 +71,36 @@ class FileOperationsMixin:
 
     def download_program(self) -> None:
         """Download the active tab's program content to the user's device."""
-        tab = editor_tabs_state.get_active_tab()
+        tab = waldoctl.commander.programs.active
         if not tab:
             ui.notify("No active tab to download", color="warning")
             return
         self._download_tab(tab)
 
-    async def _save_tab(self, tab: EditorTab) -> None:
+    async def _save_tab(self, tab: Program) -> None:
         """Save tab content to server."""
         try:
             name = tab.filename or "program.py"
             target = self.PROGRAM_DIR / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(tab.content, encoding="utf-8")
+            target.write_text(tab.source, encoding="utf-8")
             tab.file_path = str(target)
-            tab.saved_content = tab.content
+            tab.mark_saved()
             self._update_dirty_dot(tab)
             logger.info("Saved program %s", name)
         except Exception as e:
             ui.notify(f"Save failed: {e}", color="negative")
             logger.error("Save failed: %s", e)
 
-    async def _save_tab_and_close(self, tab: EditorTab, dlg: ui.dialog) -> None:
+    async def _save_tab_and_close(self, tab: Program, dlg: ui.dialog) -> None:
         """Save tab and close it."""
         await self._save_tab(tab)
         dlg.close()
         self._do_close_tab(tab)
 
-    def _download_tab(self, tab: EditorTab) -> None:
+    def _download_tab(self, tab: Program) -> None:
         """Download tab content to user's device."""
-        content = tab.content
+        content = tab.source
         if not content:
             ui.notify("No content to download", color="warning")
             return
@@ -165,7 +166,7 @@ class FileOperationsMixin:
 
     def _show_save_dialog(self) -> None:
         """Show save dialog with file tree and download option."""
-        tab = editor_tabs_state.get_active_tab()
+        tab = waldoctl.commander.programs.active
         if not tab:
             return
 
@@ -256,10 +257,10 @@ class FileOperationsMixin:
                     file_path = str(self.PROGRAM_DIR / name)
                     (self.PROGRAM_DIR / name).write_bytes(data)
 
-                    existing_tab = editor_tabs_state.find_tab_by_path(file_path)
+                    existing_tab = waldoctl.commander.programs.find_by_path(file_path)
                     if existing_tab:
-                        existing_tab.content = content
-                        existing_tab.saved_content = content
+                        existing_tab.source = content
+                        existing_tab.mark_saved()
                         widgets = self._tab_widgets.get(existing_tab.id, {})
                         textarea = widgets.get("textarea")
                         if textarea:
@@ -268,7 +269,7 @@ class FileOperationsMixin:
                     else:
                         tab = self._new_tab(filename=name, content=content)
                         tab.file_path = file_path
-                        tab.saved_content = content
+                        tab.mark_saved()
 
                     dlg.close()
                 except Exception as ex:

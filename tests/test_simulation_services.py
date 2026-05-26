@@ -14,11 +14,12 @@ import pytest
 from waldo_commander.profiles import get_robot
 from waldo_commander.state import (
     simulation_state,
-    recording_state,
     robot_state,
     ui_state,
 )
 from parol6.client.dry_run_client import DryRunRobotClient
+from tests.helpers.programs import set_active_recording
+from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.services.path_preview_client import PathPreviewClient
 from waldo_commander.services.motion_recorder import MotionRecorder
 from waldo_commander.services.path_visualizer import PathVisualizer
@@ -160,17 +161,16 @@ def mock_textarea():
     motion_recorder inserted. ``ui_state.editor_panel`` is wired to a separate
     MagicMock so production code that does presence checks still works.
     """
-    from waldo_commander.state import editor_tabs_state
 
     mock_textarea = MagicMock()
     mock_textarea.value = "# Initial code\n"
-    editor_tabs_state.active_textarea = mock_textarea
+    ui_state.active_textarea = mock_textarea
     ui_state.editor_panel = MagicMock()
     old_robot = ui_state.robot
     ui_state.robot = get_robot()
     yield mock_textarea
     ui_state.editor_panel = None
-    editor_tabs_state.active_textarea = None
+    ui_state.active_textarea = None
     ui_state.robot = old_robot
 
 
@@ -204,15 +204,15 @@ class TestMotionRecorder:
         recorder = MotionRecorder()
 
         # Initially not recording
-        assert recording_state.is_recording is False
+        assert not is_any_program_recording()
 
         # First toggle starts recording
         recorder.toggle_recording()
-        assert recording_state.is_recording is True
+        assert is_any_program_recording()
 
         # Second toggle stops recording
         recorder.toggle_recording()
-        assert recording_state.is_recording is False
+        assert not is_any_program_recording()
 
     def test_jog_recording_lifecycle(self, mock_textarea):
         """Test complete jog recording cycle: start sets state, end inserts code."""
@@ -242,12 +242,11 @@ class TestMotionRecorder:
 
     def test_jog_events_ignored_when_not_recording(self):
         """Jog start and end events should be ignored when not recording."""
-        from waldo_commander.state import editor_tabs_state
 
         recorder = MotionRecorder()
         mock_textarea = MagicMock()
         mock_textarea.value = ""
-        editor_tabs_state.active_textarea = mock_textarea
+        ui_state.active_textarea = mock_textarea
 
         # Not recording - jog start should be ignored
         recorder.on_jog_start("joint", "J1+")
@@ -257,12 +256,12 @@ class TestMotionRecorder:
         recorder.on_jog_end()
         assert mock_textarea.value == ""
 
-        editor_tabs_state.active_textarea = None
+        ui_state.active_textarea = None
 
     def test_record_action_home_generates_code(self, mock_textarea):
         """record_action for home should generate home code."""
         recorder = MotionRecorder()
-        recording_state.is_recording = True
+        set_active_recording(True)
 
         recorder.record_action("home")
 
@@ -272,7 +271,7 @@ class TestMotionRecorder:
     def test_record_action_gripper_commands(self, mock_textarea):
         """record_action for gripper should generate tool access + method calls."""
         recorder = MotionRecorder()
-        recording_state.is_recording = True
+        set_active_recording(True)
 
         # Part 1: Calibrate command
         recorder.record_action("gripper", calibrate=True)
@@ -300,7 +299,7 @@ class TestMotionRecorder:
     def test_record_action_io(self, mock_textarea):
         """record_action for io should generate write_io code."""
         recorder = MotionRecorder()
-        recording_state.is_recording = True
+        set_active_recording(True)
 
         recorder.record_action("io", port=1, state=1)
 
@@ -310,7 +309,7 @@ class TestMotionRecorder:
     def test_record_action_ignored_when_not_recording(self, mock_textarea):
         """record_action should be ignored when not recording."""
         recorder = MotionRecorder()
-        recording_state.is_recording = False
+        set_active_recording(False)
 
         recorder.record_action("home")
 
@@ -589,13 +588,13 @@ class TestEditorAutoSimulation:
     def testschedule_debounced_simulation_creates_timer(self):
         """schedule_debounced_simulation should create a timer."""
         from waldo_commander.components.simulation_engine import simulation
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer = MagicMock()
             mock_ui.timer.return_value = mock_timer
 
-            editor_tabs_state.active_tab_id = "test-tab"
+            waldoctl.commander.programs.active_id = "test-tab"
             simulation._simulation_debounce_timer = None
 
             simulation.schedule_debounced_simulation()
@@ -608,14 +607,14 @@ class TestEditorAutoSimulation:
     def testschedule_debounced_simulation_cancels_previous_timer(self):
         """Calling schedule_debounced_simulation again should cancel previous timer."""
         from waldo_commander.components.simulation_engine import simulation
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer1 = MagicMock()
             mock_timer2 = MagicMock()
             mock_ui.timer.side_effect = [mock_timer1, mock_timer2]
 
-            editor_tabs_state.active_tab_id = "test-tab"
+            waldoctl.commander.programs.active_id = "test-tab"
             simulation._simulation_debounce_timer = None
 
             simulation.schedule_debounced_simulation()
@@ -629,7 +628,7 @@ class TestEditorAutoSimulation:
     async def test_run_simulation_calls_path_visualizer(self):
         """run_simulation should call path_visualizer.update_path_visualization."""
         from waldo_commander.components.simulation_engine import simulation
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
@@ -647,16 +646,16 @@ class TestEditorAutoSimulation:
 
                 mock_textarea = MagicMock()
                 mock_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
-                editor_tabs_state.active_textarea = mock_textarea
-                editor_tabs_state.active_tab_id = "tab_under_test"
-                editor_tabs_state.textareas_by_tab["tab_under_test"] = mock_textarea
+                ui_state.active_textarea = mock_textarea
+                waldoctl.commander.programs.active_id = "tab_under_test"
+                ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
                 try:
                     await simulation.run_simulation()
                 finally:
-                    editor_tabs_state.textareas_by_tab.pop("tab_under_test", None)
-                    editor_tabs_state.active_tab_id = None
-                    editor_tabs_state.active_textarea = None
+                    ui_state.textareas_by_tab.pop("tab_under_test", None)
+                    waldoctl.commander.programs.active_id = None
+                    ui_state.active_textarea = None
 
                 assert update_called is True
                 assert update_content == "rbt.move_j([0,0,0,0,0,0])"
@@ -665,7 +664,7 @@ class TestEditorAutoSimulation:
     async def test_run_simulation_empty_content_skips_visualization(self):
         """run_simulation should skip visualization when content is empty."""
         from waldo_commander.components.simulation_engine import simulation
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
@@ -681,16 +680,16 @@ class TestEditorAutoSimulation:
 
                 mock_textarea = MagicMock()
                 mock_textarea.value = ""
-                editor_tabs_state.active_textarea = mock_textarea
-                editor_tabs_state.active_tab_id = "tab_under_test"
-                editor_tabs_state.textareas_by_tab["tab_under_test"] = mock_textarea
+                ui_state.active_textarea = mock_textarea
+                waldoctl.commander.programs.active_id = "tab_under_test"
+                ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
                 try:
                     await simulation.run_simulation()
                 finally:
-                    editor_tabs_state.textareas_by_tab.pop("tab_under_test", None)
-                    editor_tabs_state.active_tab_id = None
-                    editor_tabs_state.active_textarea = None
+                    ui_state.textareas_by_tab.pop("tab_under_test", None)
+                    waldoctl.commander.programs.active_id = None
+                    ui_state.active_textarea = None
 
                 assert update_called is False
 
@@ -731,18 +730,20 @@ class TestSimulationCaching:
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):
         """Simulation results go to tab_id, not active tab (for tab switch during sim)."""
-        from waldo_commander.state import editor_tabs_state, simulation_state, EditorTab
+        from waldo_commander.state import simulation_state
+        import waldoctl
+        from waldoctl import Program
         from waldo_commander.services.path_visualizer import PathVisualizer
 
         # Create two tabs
-        tab1 = EditorTab(
-            id="tab1", filename="a.py", file_path=None, content="", saved_content=""
+        tab1 = Program(
+            id="tab1", filename="a.py", file_path=None, source="", _saved_source=""
         )
-        tab2 = EditorTab(
-            id="tab2", filename="b.py", file_path=None, content="", saved_content=""
+        tab2 = Program(
+            id="tab2", filename="b.py", file_path=None, source="", _saved_source=""
         )
-        editor_tabs_state.tabs = [tab1, tab2]
-        editor_tabs_state.active_tab_id = "tab2"  # Active is tab2
+        waldoctl.commander.programs.items = [tab1, tab2]
+        waldoctl.commander.programs.active_id = "tab2"  # Active is tab2
 
         # Mock run.cpu_bound to return test data and notify_changed to avoid slot stack error
         with (
@@ -766,8 +767,8 @@ class TestSimulationCaching:
             await visualizer.update_path_visualization("print('hi')", tab_id="tab1")
 
             # Results should be in tab1, not tab2
-            assert tab1.final_joints_rad == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-            assert tab2.final_joints_rad is None
+            assert tab1.dry_run.final_joints_rad == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+            assert tab2.dry_run.final_joints_rad is None
 
     def test_simulation_returns_final_joints_rad(self):
         """Simulation result includes final_joints_rad for caching."""
@@ -803,7 +804,8 @@ class TestPathVisualizerIntegration:
         State reset is handled by conftest.reset_state fixture.
         This fixture only sets up the test tab needed for these tests.
         """
-        from waldo_commander.state import editor_tabs_state, EditorTab
+        import waldoctl
+        from waldoctl import Program
 
         old_robot = ui_state.robot
         ui_state.robot = get_robot()
@@ -812,15 +814,15 @@ class TestPathVisualizerIntegration:
         simulation_state._change_listeners.clear()
 
         # Create a test tab so path visualizer can store results
-        test_tab = EditorTab(
+        test_tab = Program(
             id="test-tab",
             filename="test.py",
             file_path=None,
-            content="",
-            saved_content="",
+            source="",
+            _saved_source="",
         )
-        editor_tabs_state.tabs = [test_tab]
-        editor_tabs_state.active_tab_id = "test-tab"
+        waldoctl.commander.programs.items = [test_tab]
+        waldoctl.commander.programs.active_id = "test-tab"
 
         yield
 
@@ -1287,7 +1289,6 @@ class TestScriptExecutionLifecycle:
         (signal_play, log_panel.expand, task creation) leak a process group.
         """
         from waldo_commander.components import script_execution as se
-        from waldo_commander.state import editor_tabs_state
 
         # Long-running script: only `stop_script` (i.e. our cleanup path) can end it.
         script_path = tmp_path / "long_running.py"
@@ -1328,8 +1329,8 @@ class TestScriptExecutionLifecycle:
         fake_textarea.value = script_path.read_text()
         fake_filename_input = MagicMock()
         fake_filename_input.value = script_path.name
-        editor_tabs_state.active_textarea = fake_textarea
-        editor_tabs_state.active_filename_input = fake_filename_input
+        ui_state.active_textarea = fake_textarea
+        ui_state.active_filename_input = fake_filename_input
 
         # run_script reads ui_state.active_robot.backend_package; ensure it's set
         # (matches the mock_textarea fixture's pattern).
@@ -1355,8 +1356,8 @@ class TestScriptExecutionLifecycle:
                 f"Subprocess was leaked! PID {proc.pid} still running."
             )
         finally:
-            editor_tabs_state.active_textarea = None
-            editor_tabs_state.active_filename_input = None
+            ui_state.active_textarea = None
+            ui_state.active_filename_input = None
             ui_state.robot = old_robot
             # Belt-and-suspenders: if the test ever ran without the fix, ensure
             # the subprocess is killed so it doesn't leak into the next test.
@@ -1377,7 +1378,6 @@ class TestScriptExecutionLifecycle:
         only ``.runtime`` was created, not ``.runtime/sub``.
         """
         from waldo_commander.components import script_execution as se
-        from waldo_commander.state import editor_tabs_state
 
         # Stub run_script so we don't actually launch a subprocess — the bug
         # is in the file write that happens before run_script is called.
@@ -1394,8 +1394,8 @@ class TestScriptExecutionLifecycle:
         fake_textarea.value = "# subdir regression\n"
         fake_filename_input = MagicMock()
         fake_filename_input.value = "sub/regression.py"
-        editor_tabs_state.active_textarea = fake_textarea
-        editor_tabs_state.active_filename_input = fake_filename_input
+        ui_state.active_textarea = fake_textarea
+        ui_state.active_filename_input = fake_filename_input
 
         se.script_exec.set_program_dir(tmp_path)
 
@@ -1406,8 +1406,8 @@ class TestScriptExecutionLifecycle:
             assert written.exists(), f"Expected {written} to exist after start() ran"
             assert written.read_text(encoding="utf-8") == "# subdir regression\n"
         finally:
-            editor_tabs_state.active_textarea = None
-            editor_tabs_state.active_filename_input = None
+            ui_state.active_textarea = None
+            ui_state.active_filename_input = None
 
     @pytest.mark.asyncio
     async def test_cleanup_preserves_stepping_ipc_across_page_reload(
@@ -1615,56 +1615,41 @@ def test_script_output_appends_to_launching_tab_only():
     tab the user is currently viewing.
     """
     from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.state import EditorTab, editor_tabs_state
+    import waldoctl
+    from waldoctl import Program
 
     # Set up two tabs with empty logs.
-    tab_a = EditorTab(
-        id="tab-a", filename="a.py", file_path=None, content="", saved_content=""
+    tab_a = Program(
+        id="tab-a", filename="a.py", file_path=None, source="", _saved_source=""
     )
-    tab_b = EditorTab(
-        id="tab-b", filename="b.py", file_path=None, content="", saved_content=""
+    tab_b = Program(
+        id="tab-b", filename="b.py", file_path=None, source="", _saved_source=""
     )
-    editor_tabs_state.tabs = [tab_a, tab_b]
-    editor_tabs_state.active_tab_id = "tab-a"
+    waldoctl.commander.programs.items = [tab_a, tab_b]
+    waldoctl.commander.programs.active_id = "tab-a"
 
     # Script launched from tab A; record lines while user switches to B.
     script_exec._script_tab_id = "tab-a"
     script_exec._record_line("line1 while on A")
-    editor_tabs_state.active_tab_id = "tab-b"
+    waldoctl.commander.programs.active_id = "tab-b"
     script_exec._record_line("line2 after switching to B")
     script_exec._record_line("line3 still on B")
-    editor_tabs_state.active_tab_id = "tab-a"
+    waldoctl.commander.programs.active_id = "tab-a"
     script_exec._record_line("line4 back on A")
 
-    assert list(tab_a.output_log) == [
+    assert [e.text for e in tab_a.log.entries] == [
         "line1 while on A",
         "line2 after switching to B",
         "line3 still on B",
         "line4 back on A",
     ], "All script output must accumulate in the launching tab's log"
-    assert len(tab_b.output_log) == 0, "Tab B owns its own (empty) log"
+    assert len(tab_b.log.entries) == 0, "Tab B owns its own (empty) log"
 
 
-def test_record_line_caps_output_log_at_1000():
-    """``output_log`` cap must match ``ui.log(max_lines=1000)`` so the
-    tab-switch rehydrate doesn't overflow the visible widget.
-    """
-    from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.state import EditorTab, editor_tabs_state
-
-    tab = EditorTab(
-        id="cap-tab", filename="x.py", file_path=None, content="", saved_content=""
-    )
-    editor_tabs_state.tabs = [tab]
-    editor_tabs_state.active_tab_id = "cap-tab"
-    script_exec._script_tab_id = "cap-tab"
-
-    for i in range(1100):
-        script_exec._record_line(f"line {i}")
-
-    assert len(tab.output_log) == 1000
-    assert tab.output_log[0] == "line 100", "Oldest 100 lines should be trimmed (FIFO)"
-    assert tab.output_log[-1] == "line 1099"
+# Note: the legacy ``output_log`` cap test (1000-entry FIFO) was a WC-specific
+# implementation detail tied to ``ui.log(max_lines=1000)``. ``Program.log.entries``
+# is unbounded by design; host applications cap visibly via the widget. The cap
+# may be reintroduced as a host-level concern but isn't part of the public surface.
 
 
 def test_reset_state_clears_launching_tab_id():

@@ -1,6 +1,6 @@
 """Simulation engine: debounced + on-position-change path preview runs.
 
-Reads the active textarea from ``editor_tabs_state.active_textarea``, mutates
+Reads the active textarea from ``ui_state.active_textarea``, mutates
 ``simulation_state``, and drives the path-visualizer service. Diagnostics,
 line-tooltips, and target anchors are pushed directly to the ``decorations``
 singleton via method calls — these are imperative UI operations on a known
@@ -17,17 +17,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import numpy as np
 from nicegui import ui
 
 from waldo_commander.constants import config
+import waldoctl
+from waldoctl import LogEntry
+
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.playback import playback
 from waldo_commander.services.path_visualizer import UNCHANGED, path_visualizer
 from waldo_commander.state import (
-    editor_tabs_state,
     robot_state,
     simulation_state,
     ui_state,
@@ -102,9 +105,9 @@ class SimulationEngine:
         even if the user has switched away by the time the sim completes.
         """
         if tab_id is None:
-            tab_id = editor_tabs_state.active_tab_id
+            tab_id = waldoctl.commander.programs.active_id
 
-        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        textarea = ui_state.textareas_by_tab.get(tab_id)
         content = textarea.value if textarea else ""
         if not content:
             return None
@@ -123,10 +126,10 @@ class SimulationEngine:
                 loading.visible = False
 
         # Snapshot robot position so check_position_changed doesn't re-trigger.
-        tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
+        tab = waldoctl.commander.programs.get(tab_id) if tab_id else None
         if tab and (error is None or error == UNCHANGED):
             n = ui_state.active_robot.joints.count
-            tab.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
+            tab.dry_run.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
 
         if error == UNCHANGED:
             return None
@@ -153,10 +156,12 @@ class SimulationEngine:
 
         if error:
             line = f"[SIM ERROR] {error}"
-            sim_tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
+            sim_tab = waldoctl.commander.programs.get(tab_id) if tab_id else None
             if sim_tab is not None:
-                sim_tab.output_log.append(line)
-            if sim_tab is None or sim_tab.id == editor_tabs_state.active_tab_id:
+                sim_tab.log.append(
+                    LogEntry(timestamp=time.time(), stream="stderr", text=line)
+                )
+            if sim_tab is None or sim_tab.id == waldoctl.commander.programs.active_id:
                 log_panel.push(line)
 
         decorations.apply_diagnostics(error, tab_id)
@@ -174,7 +179,7 @@ class SimulationEngine:
         subprocess, so edits never pile up stale simulations.
         """
         if tab_id is None:
-            tab_id = editor_tabs_state.active_tab_id
+            tab_id = waldoctl.commander.programs.active_id
         if not tab_id:
             return
 
@@ -190,14 +195,14 @@ class SimulationEngine:
                 # callback so the O(K) whitespace-normalize check runs once
                 # per idle window instead of on every keystroke that
                 # schedules a (re)simulation.
-                tab = editor_tabs_state.find_tab_by_id(tab_id)
-                if tab and is_default_script(tab.content):
-                    tab.final_joints_rad = list(get_home_joints_rad())
-                    tab.path_segments = []
-                    tab.targets = []
-                    tab.tool_actions = []
-                    tab.tool_selections = []
-                    if tab_id == editor_tabs_state.active_tab_id:
+                tab = waldoctl.commander.programs.get(tab_id)
+                if tab and is_default_script(tab.source):
+                    tab.dry_run.final_joints_rad = list(get_home_joints_rad())
+                    tab.dry_run.path_segments = []
+                    tab.dry_run.targets = []
+                    tab.dry_run.tool_actions = []
+                    tab.dry_run.tool_selections = []
+                    if tab_id == waldoctl.commander.programs.active_id:
                         simulation_state.path_segments = []
                         simulation_state.targets = []
                         simulation_state.tool_actions = []
@@ -235,16 +240,16 @@ class SimulationEngine:
         ):
             return
 
-        active_tab = editor_tabs_state.get_active_tab()
-        if not active_tab or active_tab.last_sim_joints_deg is None:
+        active_tab = waldoctl.commander.programs.active
+        if not active_tab or active_tab.dry_run.last_sim_joints_deg is None:
             return
 
-        textarea = editor_tabs_state.active_textarea
+        textarea = ui_state.active_textarea
         if not textarea or not textarea.value:
             return
 
         current_deg = robot_state.angles.deg[: ui_state.active_robot.joints.count]
-        if np.max(np.abs(current_deg - active_tab.last_sim_joints_deg)) > 0.5:
+        if np.max(np.abs(current_deg - active_tab.dry_run.last_sim_joints_deg)) > 0.5:
             self.schedule_debounced_simulation()
 
 

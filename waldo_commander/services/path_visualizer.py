@@ -20,6 +20,7 @@ import numpy as np
 
 from nicegui import run
 
+import waldoctl
 from waldoctl import LinearMotion
 
 from waldo_commander.state import (
@@ -28,7 +29,6 @@ from waldo_commander.state import (
     ProgramTarget,
     ui_state,
     robot_state,
-    editor_tabs_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
 
@@ -542,9 +542,9 @@ class PathVisualizer:
             # Store results in the originating tab (or active tab if no tab_id)
             target_tab = None
             if tab_id:
-                target_tab = editor_tabs_state.find_tab_by_id(tab_id)
+                target_tab = waldoctl.commander.programs.get(tab_id)
             if not target_tab:
-                target_tab = editor_tabs_state.get_active_tab()
+                target_tab = waldoctl.commander.programs.active
 
             if target_tab:
                 new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
@@ -554,14 +554,14 @@ class PathVisualizer:
 
                 # Always store final_joints_rad (used for position-change
                 # detection even when segments are unchanged).
-                target_tab.final_joints_rad = result.get("final_joints_rad")
+                target_tab.dry_run.final_joints_rad = result.get("final_joints_rad")
 
                 # Check if results match what's already stored — skip update
                 # to avoid unnecessary scrub bar rebuilds and visual flash.
                 # Don't skip when there's an error: the caller needs the error
                 # string to apply diagnostics even if segments are the same.
                 if self._segments_match(
-                    target_tab.path_segments, new_segments
+                    target_tab.dry_run.path_segments, new_segments
                 ) and not result.get("error"):
                     logger.info(
                         "Simulation results unchanged (sim_id=%d), skipping update",
@@ -570,18 +570,24 @@ class PathVisualizer:
                     return UNCHANGED
 
                 # Store simulation results in the tab
-                target_tab.path_segments = new_segments
-                target_tab.targets = new_targets
-                target_tab.tool_actions = new_tool_actions
-                target_tab.tool_selections = new_tool_selections
+                target_tab.dry_run.path_segments = new_segments
+                target_tab.dry_run.targets = new_targets
+                target_tab.dry_run.tool_actions = new_tool_actions
+                target_tab.dry_run.tool_selections = new_tool_selections
 
                 # Only update global simulation_state if this tab is still active
-                if target_tab.id == editor_tabs_state.active_tab_id:
-                    simulation_state.path_segments = list(target_tab.path_segments)
-                    simulation_state.targets = list(target_tab.targets)
-                    simulation_state.tool_actions = list(target_tab.tool_actions)
-                    simulation_state.tool_selections = list(target_tab.tool_selections)
-                    simulation_state.total_steps = len(target_tab.path_segments)
+                if target_tab.id == waldoctl.commander.programs.active_id:
+                    simulation_state.path_segments = list(
+                        target_tab.dry_run.path_segments
+                    )
+                    simulation_state.targets = list(target_tab.dry_run.targets)
+                    simulation_state.tool_actions = list(
+                        target_tab.dry_run.tool_actions
+                    )
+                    simulation_state.tool_selections = list(
+                        target_tab.dry_run.tool_selections
+                    )
+                    simulation_state.total_steps = len(target_tab.dry_run.path_segments)
                 else:
                     logger.debug(
                         "Simulation for tab %s complete, but tab no longer active - "
