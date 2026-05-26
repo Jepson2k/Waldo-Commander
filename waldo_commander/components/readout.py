@@ -205,8 +205,9 @@ class ReadoutPanel:
 
         # IO chips — update colors when values change
         if self._io_chips:
-            inputs = robot_state.io_inputs
-            outputs = robot_state.io_outputs
+            io = waldoctl.commander.status.io
+            inputs = io.inputs
+            outputs = io.outputs
             if inputs != self._last_io_inputs or outputs != self._last_io_outputs:
                 self._last_io_inputs = list(inputs)
                 self._last_io_outputs = list(outputs)
@@ -316,7 +317,8 @@ class ReadoutPanel:
                     # IO chips — single row
                     with ui.row().classes("gap-0 no-wrap"):
                         self._io_chips = []
-                        for i in range(len(robot_state.io_inputs)):
+                        _io_init = waldoctl.commander.status.io
+                        for i in range(len(_io_init.inputs)):
                             chip = (
                                 ui.chip(f"DI{i + 1}", color=IO_COLOR_OFF)
                                 .props("dense size=sm")
@@ -325,7 +327,7 @@ class ReadoutPanel:
                                 .tooltip(f"Digital Input {i + 1}")
                             )
                             self._io_chips.append(chip)
-                        for i in range(len(robot_state.io_outputs)):
+                        for i in range(len(_io_init.outputs)):
                             chip = (
                                 ui.chip(f"DO{i + 1}", color=IO_COLOR_OFF)
                                 .props("dense size=sm")

@@ -242,9 +242,6 @@ class SimulationState(ChangeNotifierMixin):
         "rx",
         "ry",
         "rz",
-        "io_inputs",
-        "io_outputs",
-        "io_estop",
         "tool_key",
         "tool_variant_key",
         "tool_position",
@@ -283,10 +280,10 @@ class RobotState(ChangeNotifierMixin):
     rx: float = 0.0
     ry: float = 0.0
     rz: float = 0.0
-    # Dynamic IO lists (length determined by robot.digital_inputs / digital_outputs)
-    io_inputs: list[int] = field(default_factory=list)
-    io_outputs: list[int] = field(default_factory=list)
-    io_estop: int = 1
+    # Dynamic IO lists (inputs / outputs / estop) live on
+    # ``commander.status.io`` from waldoctl; the legacy mirrors here are
+    # gone. Consumers go through ``waldoctl.commander.status.io.{inputs,
+    # outputs, estop}`` directly.
     tool_key: str = "NONE"
     tool_variant_key: str = ""
     tool_position: float = 0.0
@@ -328,9 +325,6 @@ class RobotState(ChangeNotifierMixin):
         self.connected = False
         self.x = self.y = self.z = 0.0
         self.rx = self.ry = self.rz = 0.0
-        self.io_inputs = []
-        self.io_outputs = []
-        self.io_estop = 1
         self.tool_key = "NONE"
         self.tool_variant_key = ""
         self.tool_position = 0.0

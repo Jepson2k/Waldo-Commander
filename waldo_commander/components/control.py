@@ -186,14 +186,14 @@ class _EStopManager:
                 self._is_physical = False
 
     def check_state_change(self) -> None:
-        """Monitor robot_state.io_estop and show/hide dialog on transitions."""
-        current = robot_state.io_estop
+        """Monitor ``commander.status.io.estop`` and show/hide dialog on transitions."""
+        current = waldoctl.commander.status.io.estop
 
         if self._last_io_state == 1 and current == 0:
-            logger.warning("Physical E-STOP detected (io_estop 1->0)")
+            logger.warning("Physical E-STOP detected (io.estop 1->0)")
             self.show(is_physical=True)
         elif self._last_io_state == 0 and current == 1:
-            logger.info("Physical E-STOP released (io_estop 0->1)")
+            logger.info("Physical E-STOP released (io.estop 0->1)")
             if self._dialog and self._is_physical:
                 self.close()
                 if self._digital_active:
@@ -1505,7 +1505,7 @@ class ControlPanel:
 
     async def on_estop_click(self) -> None:
         """Trigger digital E-STOP (STOP command) and show dialog."""
-        if robot_state.io_estop == 0:
+        if waldoctl.commander.status.io.estop == 0:
             ui.notify("Physical E-STOP is active - release it first", color="warning")
             return
 

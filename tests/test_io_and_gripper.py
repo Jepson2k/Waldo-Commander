@@ -23,13 +23,17 @@ async def test_io_tab_high_low_buttons_send_commands(user: User, robot_state) ->
     await asyncio.sleep(0)
 
     # Click HIGH for OUTPUT 1 and wait for status propagation
+    import waldoctl as _wctl
+
     user.find("HIGH").click()
     for _ in range(20):
         await asyncio.sleep(0.05)
-        if robot_state.io_outputs and int(robot_state.io_outputs[0]) == 1:
+        _outs = _wctl.commander.status.io.outputs
+        if _outs and int(_outs[0]) == 1:
             break
-    assert robot_state.io_outputs and int(robot_state.io_outputs[0]) == 1, (
-        f"Expected OUTPUT 1 = HIGH (1) after click, got {robot_state.io_outputs}"
+    _outs = _wctl.commander.status.io.outputs
+    assert _outs and int(_outs[0]) == 1, (
+        f"Expected OUTPUT 1 = HIGH (1) after click, got {_outs}"
     )
 
 

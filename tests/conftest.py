@@ -511,8 +511,13 @@ def reset_state(request: pytest.FixtureRequest):
     # Test-specific overrides (differ from zero defaults)
     state_module.robot_state.angles.set_deg(np.array(HOME_ANGLES_DEG, dtype=np.float64))
     state_module.robot_state.io = np.array([0, 0, 0, 0, 1], dtype=np.int32)  # ESTOP OK
-    state_module.robot_state.io_inputs = [0, 0]
-    state_module.robot_state.io_outputs = [0, 0]
+    try:
+        io = waldoctl.commander.status.io
+        io.inputs = [0, 0]
+        io.outputs = [0, 0]
+        io.estop = 1
+    except RuntimeError:
+        pass
     state_module.robot_state.cart_en = {
         "WRF": np.ones(12, dtype=np.int32),
         "TRF": np.ones(12, dtype=np.int32),

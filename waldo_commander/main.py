@@ -436,16 +436,18 @@ def update_ui_from_status() -> None:
         robot_state.rz = _pose_result_buffer[5]
         robot_state.orientation.set_deg(_pose_result_buffer[3:6])
 
-    # Push IO derived fields into bindable RobotState (numpy int32 array)
+    # Push IO derived fields into ``commander.status.io`` for public
+    # consumers (UI panels, MCP, future plugins).
     n_in = ui_state.active_robot.digital_inputs
     n_out = ui_state.active_robot.digital_outputs
     _io_in = robot_state.io[:n_in]
     _io_out = robot_state.io[n_in : n_in + n_out]
-    if not np.array_equal(_io_in, robot_state.io_inputs):
-        robot_state.io_inputs = _io_in.tolist()
-    if not np.array_equal(_io_out, robot_state.io_outputs):
-        robot_state.io_outputs = _io_out.tolist()
-    robot_state.io_estop = int(robot_state.io[n_in + n_out])
+    io = waldoctl.commander.status.io
+    if not np.array_equal(_io_in, io.inputs):
+        io.inputs = _io_in.tolist()
+    if not np.array_equal(_io_out, io.outputs):
+        io.outputs = _io_out.tolist()
+    io.estop = int(robot_state.io[n_in + n_out])
 
     # Push tool status derived fields into bindable RobotState
     ts = robot_state.tool_status
@@ -1501,11 +1503,12 @@ def main():
     ui_state.robot = robot
     # Initialize cart_en buffers from robot's cartesian frames
     robot_state.init_cart_en(robot.cartesian_frames)
-    # Resize IO buffer to match robot's pin count
+    # Resize IO buffer to match robot's pin count. The derived
+    # ``commander.status.io.inputs / outputs`` lists are populated below
+    # once the Commander is registered (default is []; status loop fills
+    # them on each tick).
     io_size = robot.digital_inputs + robot.digital_outputs + 1  # +1 for estop
     robot_state.io = np.zeros(io_size, dtype=np.int32)
-    robot_state.io_inputs = [0] * robot.digital_inputs
-    robot_state.io_outputs = [0] * robot.digital_outputs
     robot_state.speeds = np.zeros(robot.joints.count, dtype=np.float64)
     # Resize pipeline buffers to match this robot's joint count
     init_angle_buffers(robot.joints.count)
@@ -1535,6 +1538,11 @@ def main():
         settings=Settings(),
     )
     waldoctl._set_commander(commander)
+
+    # Seed the IO buffers so consumers (readout chips, e-stop monitor) see
+    # the right list lengths before the first STATUS broadcast arrives.
+    commander.status.io.inputs = [0] * robot.digital_inputs
+    commander.status.io.outputs = [0] * robot.digital_outputs
 
     # Configure logging
     configure_logging(config.log_level)
