@@ -805,6 +805,15 @@ class TestPathVisualizerIntegration:
     The tests use the real robot kinematics module which should be available.
     """
 
+    @staticmethod
+    def _active_dry_run():
+        """Return the active program's dry_run (test convenience accessor)."""
+        import waldoctl
+
+        active = waldoctl.commander.programs.active
+        assert active is not None, "test setup did not create an active program"
+        return active.dry_run
+
     @pytest.fixture(autouse=True)
     def setup_test_tab(self):
         """Create a test tab so path visualizer can store results.
@@ -860,8 +869,8 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created at least one segment
-        assert len(simulation_state.path_segments) >= 1, (
-            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
         )
 
     @pytest.mark.asyncio
@@ -882,7 +891,7 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have 2 segments and total_steps should match
-        assert simulation_state.total_steps == len(simulation_state.path_segments)
+        assert simulation_state.total_steps == len(self._active_dry_run().path_segments)
 
     @pytest.mark.asyncio
     async def test_visualizer_joint_coordinates_in_meters(self):
@@ -905,13 +914,13 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created a segment
-        assert len(simulation_state.path_segments) >= 1, (
-            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
         )
 
         # Check that all points are in meters (not mm)
         # PAROL6 workspace is ~600mm reach, so all coords should be < 1.0m
-        segment = simulation_state.path_segments[-1]
+        segment = self._active_dry_run().path_segments[-1]
         end_point = segment.points[-1]  # [x, y, z]
 
         assert abs(end_point[0]) < 1.0, (
@@ -940,16 +949,16 @@ async def main():
 
         await visualizer.update_path_visualization(program)
 
-        assert len(simulation_state.path_segments) >= 2, (
-            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(self._active_dry_run().path_segments)}"
         )
 
-        assert len(simulation_state.targets) == 2, (
-            f"Expected 2 targets (one per literal move), got {len(simulation_state.targets)}. "
+        assert len(self._active_dry_run().targets) == 2, (
+            f"Expected 2 targets (one per literal move), got {len(self._active_dry_run().targets)}. "
             f"Bug: compile() may not be using 'simulation_script.py' filename for frame inspection."
         )
 
-        target_ids = [t.id for t in simulation_state.targets]
+        target_ids = [t.id for t in self._active_dry_run().targets]
         assert all(tid.startswith("auto_") for tid in target_ids), (
             f"Expected auto-generated target IDs, got {target_ids}"
         )
@@ -971,16 +980,16 @@ async def main():
 
         await visualizer.update_path_visualization(program)
 
-        assert len(simulation_state.path_segments) >= 1, (
-            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
         )
 
         infeasible = [
-            s for s in simulation_state.path_segments if not s.timing_feasible
+            s for s in self._active_dry_run().path_segments if not s.timing_feasible
         ]
         assert len(infeasible) >= 1, (
             "Expected at least one segment with timing_feasible=False; "
-            f"got {[s.timing_feasible for s in simulation_state.path_segments]}"
+            f"got {[s.timing_feasible for s in self._active_dry_run().path_segments]}"
         )
         seg = infeasible[0]
         assert seg.estimated_duration is not None and seg.estimated_duration > 0.01, (
@@ -1012,13 +1021,13 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created path segments (visualization still works)
-        assert len(simulation_state.path_segments) >= 2, (
-            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(self._active_dry_run().path_segments)}"
         )
 
         # Should NOT have created any targets (variables not inspectable)
-        assert len(simulation_state.targets) == 0, (
-            f"Expected 0 targets (moves use variables), got {len(simulation_state.targets)}"
+        assert len(self._active_dry_run().targets) == 0, (
+            f"Expected 0 targets (moves use variables), got {len(self._active_dry_run().targets)}"
         )
 
 

@@ -485,14 +485,10 @@ class EditorPanel(FileOperationsMixin):
         if not tab:
             return
 
-        # Save current tab's simulation context. The log doesn't need saving
-        # here — script_execution / simulation_engine append to the owning
-        # tab's output_log incrementally during writes.
-        current_tab = waldoctl.commander.programs.active
-        if current_tab and current_tab.id != tab_id:
-            self._save_simulation_context(current_tab)
-
-        # Update active tab
+        # Update active tab. Dry-run results, recording state, and step-
+        # lifecycle fields live on each Program directly — readers pull from
+        # ``commander.programs.active.dry_run.*``, so no copy/mirror step is
+        # needed on tab switch beyond resetting playback's per-tab scratch.
         waldoctl.commander.programs.active_id = tab_id
         if tab is not None:
             tab.dry_run.playback.active_cursor_line = 0
@@ -505,8 +501,9 @@ class EditorPanel(FileOperationsMixin):
         if self.tabs_container:
             self.tabs_container.set_value(tab_id)
 
-        # Load this tab's simulation context
-        self._load_simulation_context(tab)
+        # Reset the playback scrub state and schedule the deferred render
+        # against the freshly-active program.
+        self._invalidate_for_tab_switch()
 
         # Swap log content: load new tab's log entries into shared log
         log_panel.clear()
@@ -517,31 +514,23 @@ class EditorPanel(FileOperationsMixin):
         ui_state.active_textarea = widgets.get("textarea")
         ui_state.active_filename_input = widgets.get("filename_input")
 
-    def _save_simulation_context(self, tab: Program) -> None:
-        """Save current simulation state to tab."""
-        tab.dry_run.path_segments = list(simulation_state.path_segments)
-        tab.dry_run.targets = list(simulation_state.targets)
-        tab.dry_run.tool_actions = list(simulation_state.tool_actions)
-        tab.dry_run.tool_selections = list(simulation_state.tool_selections)
+    def _invalidate_for_tab_switch(self) -> None:
+        """Defer expensive path re-rendering after a tab switch.
 
-    def _load_simulation_context(self, tab: Program) -> None:
-        """Load tab's simulation state into global simulation_state.
-
-        Updates simulation_state synchronously so _save_simulation_context on
-        the *next* tab switch reads consistent data. Only defers the expensive
-        path invalidation and re-render to an async task.
+        Dry-run results live on each Program, so switching the active tab
+        already exposes the new program's data to every reader. This method
+        just resets the playback scrub state, invalidates the path-rendering
+        diff so the URDF scene re-paints from the new active program, and
+        fires the change channel so listeners refresh.
         """
-        # Cancel previous tab-switch render if still pending
         if self._tab_switch_render_task is not None:
             self._tab_switch_render_task.cancel()
 
-        # Update global state synchronously to avoid races with _save
-        simulation_state.path_segments = list(tab.dry_run.path_segments)
-        simulation_state.targets = list(tab.dry_run.targets)
-        simulation_state.tool_actions = list(tab.dry_run.tool_actions)
-        simulation_state.tool_selections = list(tab.dry_run.tool_selections)
         simulation_state.current_step_index = 0
-        simulation_state.total_steps = len(tab.dry_run.path_segments)
+        active = waldoctl.commander.programs.active
+        simulation_state.total_steps = (
+            len(active.dry_run.path_segments) if active is not None else 0
+        )
 
         # Capture client context before creating task (asyncio.create_task
         # doesn't propagate NiceGUI context)
@@ -833,7 +822,7 @@ class EditorPanel(FileOperationsMixin):
             # Restore simulation state from active tab
             active_tab = waldoctl.commander.programs.active
             if active_tab:
-                self._load_simulation_context(active_tab)
+                self._invalidate_for_tab_switch()
         else:
             # No existing tabs - create initial tab
             self._new_tab()

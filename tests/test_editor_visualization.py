@@ -33,23 +33,20 @@ def _clean_stale_state():
     """
     import waldoctl
 
-    from waldo_commander.state import (
-        simulation_state,
-    )
-
     try:
         programs = waldoctl.commander.programs
     except RuntimeError:
         # Module-scope fixture runs before any class_screen-created commander.
-        simulation_state.path_segments.clear()
-        simulation_state.targets.clear()
         yield
         return
     set_active_recording(False)
+    for p in programs.items:
+        p.dry_run.path_segments = []
+        p.dry_run.targets = []
+        p.dry_run.tool_actions = []
+        p.dry_run.tool_selections = []
     programs.items.clear()
     programs.active_id = None
-    simulation_state.path_segments.clear()
-    simulation_state.targets.clear()
     yield
 
 

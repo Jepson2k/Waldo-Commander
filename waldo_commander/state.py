@@ -16,6 +16,20 @@ from waldoctl import (
     ToolStatus,
 )
 
+# Re-exports for legacy import sites — these dataclasses live in waldoctl now
+# (one canonical type per shape) but plenty of WC modules still import them
+# from ``waldo_commander.state``. Keep the re-export so the type checker
+# resolves the names and downstream code can migrate to ``waldoctl`` at
+# its own pace.
+__all__ = [
+    "ActionState",
+    "PathSegment",
+    "ProgramTarget",
+    "ToolAction",
+    "ToolSelection",
+    "ToolStatus",
+]
+
 from waldo_commander.common.loop_timer import PhaseTimer
 
 
@@ -193,10 +207,9 @@ class ToolTimeSeries:
 
 @bindable_dataclass
 class SimulationState(ChangeNotifierMixin):
-    targets: list[ProgramTarget] = field(default_factory=list)
-    path_segments: list[PathSegment] = field(default_factory=list)
-    tool_actions: list[ToolAction] = field(default_factory=list)
-    tool_selections: list[ToolSelection] = field(default_factory=list)
+    # path_segments / targets / tool_actions / tool_selections moved to
+    # commander.programs.active.dry_run.* — readers go through the active
+    # program directly; writers update the owning program's dry_run.
     current_step_index: int = 0
     total_steps: int = 0
     paths_visible: bool = True
@@ -209,10 +222,6 @@ class SimulationState(ChangeNotifierMixin):
     _step_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
 
     def reset(self) -> None:
-        self.targets.clear()
-        self.path_segments.clear()
-        self.tool_actions.clear()
-        self.tool_selections.clear()
         self.current_step_index = 0
         self.total_steps = 0
         self.paths_visible = True

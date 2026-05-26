@@ -408,8 +408,15 @@ class PathVisualizer:
             logger.info("Starting isolated path visualization (sim_id=%d)...", sim_id)
 
             if TRACE_ENABLED:
-                segments_before = len(simulation_state.path_segments)
-                targets_before = len(simulation_state.targets)
+                _trace_tab = waldoctl.commander.programs.active
+                segments_before = (
+                    len(_trace_tab.dry_run.path_segments)
+                    if _trace_tab is not None
+                    else 0
+                )
+                targets_before = (
+                    len(_trace_tab.dry_run.targets) if _trace_tab is not None else 0
+                )
                 logger.trace(
                     "PATHVIZ[%d]: Before simulation - segments=%d, targets=%d",
                     sim_id,
@@ -574,20 +581,13 @@ class PathVisualizer:
                 target_tab.dry_run.targets = new_targets
                 target_tab.dry_run.tool_actions = new_tool_actions
                 target_tab.dry_run.tool_selections = new_tool_selections
+                target_tab.dry_run.total_steps = len(new_segments)
 
-                # Only update global simulation_state if this tab is still active
+                # Fire the WC-side change notification when the active tab's
+                # dry-run results changed so listeners (urdf scene, playback)
+                # re-render against the freshly stored data.
                 if target_tab.id == waldoctl.commander.programs.active_id:
-                    simulation_state.path_segments = list(
-                        target_tab.dry_run.path_segments
-                    )
-                    simulation_state.targets = list(target_tab.dry_run.targets)
-                    simulation_state.tool_actions = list(
-                        target_tab.dry_run.tool_actions
-                    )
-                    simulation_state.tool_selections = list(
-                        target_tab.dry_run.tool_selections
-                    )
-                    simulation_state.total_steps = len(target_tab.dry_run.path_segments)
+                    simulation_state.total_steps = len(new_segments)
                 else:
                     logger.debug(
                         "Simulation for tab %s complete, but tab no longer active - "

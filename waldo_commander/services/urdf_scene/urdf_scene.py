@@ -660,11 +660,17 @@ class UrdfScene(
         if self.targets_group is not None:
             self.targets_group.visible(True)
 
-        all_segments = simulation_state.path_segments
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            all_segments = active.dry_run.path_segments
+            tool_actions = active.dry_run.tool_actions
+            targets = active.dry_run.targets
+        else:
+            all_segments = []
+            tool_actions = []
+            targets = []
         new_count = len(all_segments)
         old_count = len(self._rendered_segments)
-        tool_actions = simulation_state.tool_actions
-        targets = simulation_state.targets
 
         # Early-out: nothing to render and nothing rendered
         if (

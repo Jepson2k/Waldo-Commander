@@ -604,16 +604,17 @@ class PlaybackController:
 
     def _ensure_timeline(self) -> Timeline | None:
         """Build or return cached timeline from current path segments."""
-        if not simulation_state.path_segments:
+        active = waldoctl.commander.programs.active
+        if active is None or not active.dry_run.path_segments:
             self._timeline = None
             return None
         if self._timeline is None:
             self._timeline = Timeline.from_segments(
-                simulation_state.path_segments,
-                simulation_state.tool_actions or None,
-                tool_selections=simulation_state.tool_selections or None,
+                active.dry_run.path_segments,
+                active.dry_run.tool_actions or None,
+                tool_selections=active.dry_run.tool_selections or None,
             )
-            simulation_state.sim_total_duration = self._timeline.total_duration
+            active.dry_run.total_duration = self._timeline.total_duration
             if self._scrub_slider is not None:
                 self._scrub_slider.props(f"max={self._timeline.total_duration}")
         return self._timeline
@@ -789,7 +790,8 @@ class PlaybackController:
         self._tool_markers.clear()
         self._last_highlighted_index = -1
 
-        segments = simulation_state.path_segments
+        active = waldoctl.commander.programs.active
+        segments = active.dry_run.path_segments if active is not None else []
         if not segments:
             return
 
@@ -846,7 +848,7 @@ class PlaybackController:
 
             # 5. Tool action markers — full-height (blocking) or mini (overlapping)
             kf = tl.tool_keyframes
-            ta = simulation_state.tool_actions
+            ta = active.dry_run.tool_actions if active is not None else []
             for i in range(0, len(kf) - 1, 2):
                 if (
                     kf[i].positions == kf[i + 1].positions
@@ -884,7 +886,8 @@ class PlaybackController:
         """
         if not self._segment_elements:
             return
-        segments = simulation_state.path_segments
+        active = waldoctl.commander.programs.active
+        segments = active.dry_run.path_segments if active is not None else []
         step = simulation_state.current_step_index
         prev = self._last_highlighted_index
         self._last_highlighted_index = step

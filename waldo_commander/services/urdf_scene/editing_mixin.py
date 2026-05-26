@@ -15,6 +15,7 @@ import math
 from typing import Any
 
 import numpy as np
+import waldoctl
 from nicegui import ui
 
 from waldo_commander.common.theme import SceneColors
@@ -680,8 +681,11 @@ class EditingMixin:
     # -------------------------------------------------------------------------
 
     def _find_target_by_id(self, target_id: str) -> ProgramTarget | None:
-        """Find a target by ID in simulation_state.targets."""
-        for t in simulation_state.targets:
+        """Find a target by ID in the active program's dry-run targets."""
+        active = waldoctl.commander.programs.active
+        if active is None:
+            return None
+        for t in active.dry_run.targets:
             if t.id == target_id:
                 return t
         return None
@@ -736,7 +740,9 @@ class EditingMixin:
                 move_type=move_type,
                 scene_object_id="",
             )
-            simulation_state.targets.append(new_target)
+            active = waldoctl.commander.programs.active
+            if active is not None:
+                active.dry_run.targets = [*active.dry_run.targets, new_target]
             simulation_state.notify_changed()
 
     def _insert_joint_target_from_editing(self) -> None:

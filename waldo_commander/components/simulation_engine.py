@@ -139,8 +139,9 @@ class SimulationEngine:
         playback.on_simulation_complete()
 
         # Apply initial tool selection from script to scene and controller
-        if simulation_state.tool_selections and ui_state.urdf_scene:
-            first_sel = simulation_state.tool_selections[0]
+        sim_tool_selections = tab.dry_run.tool_selections if tab is not None else []
+        if sim_tool_selections and ui_state.urdf_scene:
+            first_sel = sim_tool_selections[0]
             if first_sel.segment_index < 0:
                 tool_key = first_sel.tool_key
                 variant_key = first_sel.variant_key or None
@@ -204,11 +205,8 @@ class SimulationEngine:
                     tab.dry_run.targets = []
                     tab.dry_run.tool_actions = []
                     tab.dry_run.tool_selections = []
+                    tab.dry_run.total_steps = 0
                     if tab_id == waldoctl.commander.programs.active_id:
-                        simulation_state.path_segments = []
-                        simulation_state.targets = []
-                        simulation_state.tool_actions = []
-                        simulation_state.tool_selections = []
                         simulation_state.total_steps = 0
                         simulation_state.notify_changed()
                         playback.update_scrub_segments()

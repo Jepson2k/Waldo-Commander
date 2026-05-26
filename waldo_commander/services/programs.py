@@ -19,7 +19,50 @@ from __future__ import annotations
 from pathlib import Path
 
 import waldoctl
-from waldoctl import Program, ProgramTabs
+from waldoctl import (
+    PathSegment,
+    Program,
+    ProgramTabs,
+    ProgramTarget,
+    ToolAction,
+    ToolSelection,
+)
+
+
+def active_dry_run_segments() -> list[PathSegment]:
+    """Return the active program's dry-run path segments, or empty list."""
+    try:
+        active = waldoctl.commander.programs.active
+    except RuntimeError:
+        return []
+    return list(active.dry_run.path_segments) if active is not None else []
+
+
+def active_dry_run_targets() -> list[ProgramTarget]:
+    """Return the active program's dry-run targets, or empty list."""
+    try:
+        active = waldoctl.commander.programs.active
+    except RuntimeError:
+        return []
+    return list(active.dry_run.targets) if active is not None else []
+
+
+def active_dry_run_tool_actions() -> list[ToolAction]:
+    """Return the active program's dry-run tool actions, or empty list."""
+    try:
+        active = waldoctl.commander.programs.active
+    except RuntimeError:
+        return []
+    return list(active.dry_run.tool_actions) if active is not None else []
+
+
+def active_dry_run_tool_selections() -> list[ToolSelection]:
+    """Return the active program's dry-run tool selections, or empty list."""
+    try:
+        active = waldoctl.commander.programs.active
+    except RuntimeError:
+        return []
+    return list(active.dry_run.tool_selections) if active is not None else []
 
 
 def is_any_program_recording() -> bool:

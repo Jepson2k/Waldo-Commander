@@ -362,10 +362,12 @@ async def test_dirty_icon_appears_after_editing(user: User) -> None:
 async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     """Test that tabs maintain their own path_segments and targets.
 
-    Each tab should store its own path visualization data.
-    The _save_simulation_context method correctly saves simulation_state to a tab.
+    Each ``Program`` owns its own ``dry_run.path_segments`` / ``targets``
+    list directly — writers update the owning tab's dry-run, and switching
+    tabs simply re-points readers to the new active program. There is no
+    longer a global ``simulation_state`` mirror to drive the per-tab copy.
     """
-    from waldo_commander.state import ui_state, simulation_state
+    from waldo_commander.state import ui_state
     import waldoctl
 
     await user.open("/")
@@ -381,51 +383,30 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     tab1 = waldoctl.commander.programs.active
     assert tab1 is not None, "First tab should exist"
 
-    # Set simulation_state data for tab1 (this is what gets saved to the tab on switch)
-    simulation_state.path_segments = [{"fake": "segment1"}]  # type: ignore[list-item]
-    simulation_state.targets = [{"fake": "target1"}]  # type: ignore[list-item]
+    # Write fake simulation results directly into tab1's dry-run
+    tab1.dry_run.path_segments = [{"fake": "segment1"}]  # type: ignore[list-item]
+    tab1.dry_run.targets = [{"fake": "target1"}]  # type: ignore[list-item]
 
-    # Create a second tab (this triggers _save_simulation_context on tab1)
+    # Create a second tab — its dry-run starts empty
     user.find(marker="editor-new-tab-btn").click()
     await asyncio.sleep(0.1)
 
-    # Tab1 should now have the simulation_state data saved to it
-    assert tab1.dry_run.path_segments == [{"fake": "segment1"}], (
-        "Tab1 should have saved simulation_state data"
-    )
-    assert tab1.dry_run.targets == [{"fake": "target1"}], (
-        "Tab1 should have saved simulation_state data"
-    )
-
-    # Get second tab
     tab2 = waldoctl.commander.programs.active
     assert tab2 is not None, "Second tab should exist"
     assert tab2.id != tab1.id, "Should be on new tab"
-
-    # Tab2 should have empty paths (new tab, no simulation run yet)
     assert tab2.dry_run.path_segments == [], "New tab should have empty path_segments"
     assert tab2.dry_run.targets == [], "New tab should have empty targets"
 
-    # Set different simulation_state data for tab2
-    simulation_state.path_segments = [{"fake": "segment2"}]  # type: ignore[list-item]
-    simulation_state.targets = [{"fake": "target2"}]  # type: ignore[list-item]
+    # Write fake simulation results into tab2's dry-run
+    tab2.dry_run.path_segments = [{"fake": "segment2"}]  # type: ignore[list-item]
+    tab2.dry_run.targets = [{"fake": "target2"}]  # type: ignore[list-item]
 
-    # Manually save to tab2
-    editor._save_simulation_context(tab2)
-
-    assert tab2.dry_run.path_segments == [{"fake": "segment2"}], (
-        "Tab2 should have its own simulation data"
-    )
-    assert tab2.dry_run.targets == [{"fake": "target2"}], (
-        "Tab2 should have its own simulation data"
-    )
-
-    # Tab1's data should still be preserved
+    # Tab1's data should still be preserved — no shared state to clobber
     assert tab1.dry_run.path_segments == [{"fake": "segment1"}], (
-        "Tab1's data should be preserved after saving tab2"
+        "Tab1's data should be preserved while editing tab2"
     )
     assert tab1.dry_run.targets == [{"fake": "target1"}], (
-        "Tab1's data should be preserved after saving tab2"
+        "Tab1's data should be preserved while editing tab2"
     )
 
 
@@ -567,7 +548,7 @@ async def test_simulation_creates_targets_for_literal_moves(
     tracked by the CM6 StateField for interactive 3D editing. No markers are
     added to the user's source code.
     """
-    from waldo_commander.state import simulation_state, ui_state
+    from waldo_commander.state import ui_state
     import waldoctl
 
     await user.open("/")
@@ -596,13 +577,14 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     await _sim.run_simulation()
     await asyncio.sleep(0.1)
 
-    # Targets should be created from literal move args
-    assert len(simulation_state.targets) >= 1, (
-        f"Expected at least 1 target, got {len(simulation_state.targets)}"
-    )
+    import waldoctl as _wctl
+
+    _active = _wctl.commander.programs.active
+    _targets = _active.dry_run.targets if _active is not None else []
+    assert len(_targets) >= 1, f"Expected at least 1 target, got {len(_targets)}"
 
     # Target ID should be auto-generated (no UUID markers)
-    target = simulation_state.targets[0]
+    target = _targets[0]
     assert target.id.startswith("auto_"), f"Expected auto-generated ID, got {target.id}"
     assert target.line_number > 0, "Target should have a valid line number"
 

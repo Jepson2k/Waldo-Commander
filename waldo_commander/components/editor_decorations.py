@@ -257,7 +257,9 @@ class EditorDecorations:
                 )
 
         warned_lines: set[int] = set()
-        for seg in simulation_state.path_segments:
+        tab = waldoctl.commander.programs.get(tab_id)
+        segments = tab.dry_run.path_segments if tab is not None else []
+        for seg in segments:
             if seg.timing_feasible or seg.line_number <= 0:
                 continue
             if seg.line_number in warned_lines:
@@ -284,7 +286,9 @@ class EditorDecorations:
         if textarea is None:
             return
         tooltips: dict[int, str] = {}
-        for seg in simulation_state.path_segments:
+        tab = waldoctl.commander.programs.get(tab_id)
+        segments = tab.dry_run.path_segments if tab is not None else []
+        for seg in segments:
             if seg.line_number <= 0 or not seg.points:
                 continue
             end = seg.points[-1]
@@ -312,10 +316,10 @@ class EditorDecorations:
         textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
+        tab = waldoctl.commander.programs.get(tab_id)
+        targets = tab.dry_run.targets if tab is not None else []
         anchors: list[LineAnchor] = [
-            {"id": t.id, "line": t.line_number}
-            for t in simulation_state.targets
-            if t.line_number > 0
+            {"id": t.id, "line": t.line_number} for t in targets if t.line_number > 0
         ]
         textarea.line_anchors[:] = anchors
 
