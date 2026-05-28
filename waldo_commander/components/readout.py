@@ -142,9 +142,9 @@ class ReadoutPanel:
         self._last_io_inputs: list[int] | None = None
         self._last_io_outputs: list[int] | None = None
 
-        # commander.status.action change-listener for the action log. Bound at
-        # build time (when the scroll-area widget exists); kept here so cleanup
-        # can remove it on shutdown.
+        # commander.status.action change-listener for the action log, bound once
+        # at build time (when the scroll-area widget exists). This flag guards
+        # against binding it more than once per panel.
         self._action_log_listener_bound: bool = False
 
     def update_conn_io(self) -> None:

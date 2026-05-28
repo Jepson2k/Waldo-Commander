@@ -411,7 +411,13 @@ class PlaybackController:
         channel so urdf_scene doesn't re-walk segment fingerprints per step.
         """
         running = is_any_program_running()
-        active = waldoctl.commander.programs.active
+        # Step events belong to the launching program. While a script runs the
+        # user may have switched tabs (allowed when paused), so follow the
+        # launching tab rather than the UI-active one.
+        if running and script_exec.launching_tab_id:
+            active = waldoctl.commander.programs.get(script_exec.launching_tab_id)
+        else:
+            active = waldoctl.commander.programs.active
         if active is not None:
             step = active.dry_run.playback.executing_step_index
             at_end = active.dry_run.playback.executing_step_at_end

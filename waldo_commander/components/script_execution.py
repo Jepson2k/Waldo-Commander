@@ -108,7 +108,7 @@ class ScriptExecutionController:
         return self._script_tab_id
 
     def _record_line(self, line: str, ui_client: Client | None = None) -> None:
-        """Append a log line to the launching tab's output_log; push to the
+        """Append a log line to the launching tab's log; push to the
         visible log_panel only when the launching tab is currently active.
 
         ``ui_client`` is the page client captured at ``start()`` so the

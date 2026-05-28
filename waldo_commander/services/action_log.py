@@ -28,6 +28,9 @@ class ActionLogService:
         self._max_entries = max_entries
         self._last_executing_index: int = -1
         self._last_completed_index: int = -1
+        # True when the newest history entry is still EXECUTING — i.e. a
+        # FAILED transition is still possible without an index advance.
+        self._tail_executing: bool = False
 
     def process_status(
         self,
@@ -38,6 +41,16 @@ class ActionLogService:
         completed_index: int,
     ) -> bool:
         """Process a status update, returning True if the log changed."""
+        # Nothing can change unless an index advanced or a still-EXECUTING
+        # entry can transition to FAILED. Skip the per-tick deque copy in the
+        # common idle / steady-EXECUTING case — this runs at 20-50 Hz.
+        if (
+            executing_index == self._last_executing_index
+            and completed_index == self._last_completed_index
+            and not (self._tail_executing and action_state != ActionState.EXECUTING)
+        ):
+            return False
+
         action = waldoctl.commander.status.action
         entries = deque(action.history, maxlen=self._max_entries)
         changed = False
@@ -105,6 +118,9 @@ class ActionLogService:
             # change listeners so the readout HTML rebuilds.
             action.history = list(entries)
             action.notify_changed()
+            self._tail_executing = (
+                bool(entries) and entries[-1].status == ActionStatus.EXECUTING
+            )
         return changed
 
     def clear(self) -> None:
@@ -117,6 +133,7 @@ class ActionLogService:
         """
         self._last_executing_index = -1
         self._last_completed_index = -1
+        self._tail_executing = False
         try:
             action = waldoctl.commander.status.action
         except RuntimeError:

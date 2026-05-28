@@ -30,24 +30,30 @@ def _clean_stale_state():
     Previous test classes (e.g. TestEditorInteractivity) may leave recording
     enabled or tabs with modified content. These module-level singletons are
     NOT reset by NiceGUI's test infrastructure, so we clear them here.
+
+    Symmetric: cleans on both setup AND teardown so subsequent modules can't
+    be polluted by anything our tests left behind.
     """
     import waldoctl
 
-    try:
-        programs = waldoctl.commander.programs
-    except RuntimeError:
-        # Module-scope fixture runs before any class_screen-created commander.
-        yield
-        return
-    set_active_recording(False)
-    for p in programs.items:
-        p.dry_run.path_segments = []
-        p.dry_run.targets = []
-        p.dry_run.tool_actions = []
-        p.dry_run.tool_selections = []
-    programs.items.clear()
-    programs.active_id = None
+    def _reset() -> None:
+        try:
+            programs = waldoctl.commander.programs
+        except RuntimeError:
+            # Module-scope fixture runs before any class_screen-created commander.
+            return
+        set_active_recording(False)
+        for p in programs.items:
+            p.dry_run.path_segments = []
+            p.dry_run.targets = []
+            p.dry_run.tool_actions = []
+            p.dry_run.tool_selections = []
+        programs.items.clear()
+        programs.active_id = None
+
+    _reset()
     yield
+    _reset()
 
 
 # ============================================================================

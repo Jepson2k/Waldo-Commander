@@ -88,7 +88,7 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
 
 @pytest.mark.integration
 async def test_workspace_envelope_mode_changes(user: User) -> None:
-    """Test that changing workspace envelope mode updates simulation_state."""
+    """Test that changing workspace envelope mode updates commander.settings.view.envelope_mode."""
 
     await user.open("/")
     await wait_for_app_ready()

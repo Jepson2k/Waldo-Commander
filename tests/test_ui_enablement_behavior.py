@@ -27,15 +27,15 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Get J1 limits
     j1_min, j1_max = JOINT_LIMITS_DEG[0]
 
     # Move J1 to its max limit using the limit button
     user.find(marker="btn-j1-max-limit").click()
-    await wait_for_motion_start(robot_state, timeout_s=5.0)
+    await wait_for_motion_start(timeout_s=5.0)
     final_j1 = await wait_for_motion_stable(
         lambda: waldoctl.commander.status.joints.angles[0],
         timeout_s=20.0,
@@ -69,13 +69,13 @@ async def test_cartesian_at_workspace_limit_disables_axis(
     """
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Extend the arm by moving J2 to its limit (stretches arm outward)
     # This quickly reaches the cartesian workspace boundary
     user.find(marker="btn-j2-max-limit").click()
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start()
     await wait_for_motion_stable(
         lambda: waldoctl.commander.status.joints.angles[1], timeout_s=15.0
     )
@@ -104,8 +104,8 @@ async def test_joint_en_updates_on_motion(user: User, robot_state) -> None:
     """
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Verify can_jog_pos / can_jog_neg lists each have one entry per joint.
     joints = waldoctl.commander.status.joints

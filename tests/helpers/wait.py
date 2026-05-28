@@ -91,7 +91,7 @@ async def wait_for_motion_stable(
     return get_value_fn()
 
 
-async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
+async def enable_sim(user: User, timeout_s: float = 5.0) -> None:
     """Enable simulator mode and wait for it to be ready.
 
     This helper handles race conditions between test fixtures and app startup:
@@ -101,7 +101,6 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
 
     Args:
         user: NiceGUI User test fixture
-        robot_state: The RobotState instance to check
         timeout_s: Maximum time to wait for simulator to activate
 
     Raises:
@@ -148,7 +147,6 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
 
 
 async def wait_for_tool_key(
-    robot_state,
     tool_key: str,
     timeout_s: float = 2.0,
 ) -> None:
@@ -222,14 +220,14 @@ async def wait_for_urdf_ready(timeout_s: float = 5.0) -> None:
 
 
 async def wait_for_motion_start(
-    robot_state,
     timeout_s: float = 5.0,
     require_detection: bool = True,
 ) -> bool:
     """Wait for motion to begin after a command is issued.
 
-    In the NiceGUI test environment, robot_state may not be updated from
-    STATUS messages because _status_consumer runs as a separate async task.
+    In the NiceGUI test environment, commander.status may not be updated from
+    STATUS messages immediately because _status_consumer runs as a separate
+    async task.
 
     This function:
     1. Records initial angles for comparison
@@ -238,7 +236,6 @@ async def wait_for_motion_start(
     4. Checks if any joint angle has changed from baseline
 
     Args:
-        robot_state: The RobotState instance to check
         timeout_s: Maximum time to wait. Default 5.0s, generous enough for
             slow CI runners (Windows in particular). Override for unit tests
             that intentionally check no-motion scenarios.
@@ -332,14 +329,13 @@ async def wait_for_value_change(
     )
 
 
-async def ensure_robot_ready_for_motion(robot_state, timeout_s: float = 5.0) -> None:
+async def ensure_robot_ready_for_motion(timeout_s: float = 5.0) -> None:
     """Validate robot state is ready for motion testing.
 
     This is a comprehensive check that should be called after enable_sim()
     to ensure all prerequisites for motion commands are met.
 
     Args:
-        robot_state: The RobotState instance to check
         timeout_s: Maximum time to wait for app_ready
 
     Raises:

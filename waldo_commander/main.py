@@ -19,6 +19,7 @@ from nicegui import Client, app as ng_app, ui
 import waldoctl
 from waldoctl import (
     Commander,
+    FrameJogAvailability,
     GripperTool,
     LinearMotion,
     RobotClient,
@@ -446,14 +447,18 @@ def update_ui_from_status() -> None:
     # consumers (UI panels, MCP, future plugins).
     n_in = ui_state.active_robot.digital_inputs
     n_out = ui_state.active_robot.digital_outputs
-    _io_in = robot_state.io[:n_in]
-    _io_out = robot_state.io[n_in : n_in + n_out]
     io = waldoctl.commander.status.io
-    if not np.array_equal(_io_in, io.inputs):
-        io.inputs = _io_in.tolist()
-    if not np.array_equal(_io_out, io.outputs):
-        io.outputs = _io_out.tolist()
-    io.estop = int(robot_state.io[n_in + n_out])
+    buf = robot_state.io
+    # Compare element-wise against the existing lists and rebuild only on
+    # change — avoids coercing the list to a temp ndarray every tick (IO
+    # rarely changes; 0/1 values reuse cached int/bool singletons).
+    if len(io.inputs) != n_in or any(int(buf[i]) != io.inputs[i] for i in range(n_in)):
+        io.inputs = buf[:n_in].tolist()
+    if len(io.outputs) != n_out or any(
+        int(buf[n_in + i]) != io.outputs[i] for i in range(n_out)
+    ):
+        io.outputs = buf[n_in : n_in + n_out].tolist()
+    io.estop = int(buf[n_in + n_out])
 
     # Push tool status fields into commander.status.tool. Each leaf
     # assignment fires its bindable_dataclass bindings synchronously;
@@ -1372,24 +1377,52 @@ async def _status_consumer() -> None:
                     # cart_en arrays into the per-direction lists exposed on
                     # ``commander.status.joints`` and
                     # ``commander.status.pose.cart_jog``.
+                    # Rebuild the per-direction lists only when the wire arrays
+                    # actually change — this runs every tick, so compare against
+                    # the stored lists (0/1 -> cached bool singletons, no alloc)
+                    # and skip the list construction in the steady state.
                     j_en = status.joint_en
                     n_dof = len(j_en) // 2
                     joints = waldoctl.commander.status.joints
-                    joints.can_jog_pos = [bool(j_en[2 * j]) for j in range(n_dof)]
-                    joints.can_jog_neg = [bool(j_en[2 * j + 1]) for j in range(n_dof)]
+                    if (
+                        len(joints.can_jog_pos) != n_dof
+                        or any(
+                            bool(j_en[2 * j]) != joints.can_jog_pos[j]
+                            for j in range(n_dof)
+                        )
+                        or any(
+                            bool(j_en[2 * j + 1]) != joints.can_jog_neg[j]
+                            for j in range(n_dof)
+                        )
+                    ):
+                        joints.can_jog_pos = [bool(j_en[2 * j]) for j in range(n_dof)]
+                        joints.can_jog_neg = [
+                            bool(j_en[2 * j + 1]) for j in range(n_dof)
+                        ]
                     cart_jog = waldoctl.commander.status.pose.cart_jog
                     for frame, arr in status.cart_en.items():
                         frame_av = cart_jog.by_frame.get(frame)
                         if frame_av is None:
-                            from waldoctl import FrameJogAvailability
-
                             frame_av = FrameJogAvailability()
                             cart_jog.by_frame[frame] = frame_av
                         n_axes = len(arr) // 2
-                        frame_av.can_jog_pos = [bool(arr[2 * i]) for i in range(n_axes)]
-                        frame_av.can_jog_neg = [
-                            bool(arr[2 * i + 1]) for i in range(n_axes)
-                        ]
+                        if (
+                            len(frame_av.can_jog_pos) != n_axes
+                            or any(
+                                bool(arr[2 * i]) != frame_av.can_jog_pos[i]
+                                for i in range(n_axes)
+                            )
+                            or any(
+                                bool(arr[2 * i + 1]) != frame_av.can_jog_neg[i]
+                                for i in range(n_axes)
+                            )
+                        ):
+                            frame_av.can_jog_pos = [
+                                bool(arr[2 * i]) for i in range(n_axes)
+                            ]
+                            frame_av.can_jog_neg = [
+                                bool(arr[2 * i + 1]) for i in range(n_axes)
+                            ]
 
                     action = waldoctl.commander.status.action
                     action.current_name = status.action_current
@@ -1580,8 +1613,6 @@ def main():
 
     # Seed per-frame cart_jog availability so the cartesian-button sync code
     # has a frame_av to read on the first tick (before STATUS arrives).
-    from waldoctl import FrameJogAvailability
-
     for frame in robot.cartesian_frames:
         commander.status.pose.cart_jog.by_frame[frame] = FrameJogAvailability()
 

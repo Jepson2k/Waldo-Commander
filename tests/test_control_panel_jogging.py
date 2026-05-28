@@ -32,8 +32,8 @@ async def test_joint_jog_button_sends_jog_j(user: User, robot_state) -> None:
     """
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     initial_j1 = await wait_for_motion_stable(
         lambda: waldoctl.commander.status.joints.angles[0], timeout_s=3.0
@@ -41,7 +41,7 @@ async def test_joint_jog_button_sends_jog_j(user: User, robot_state) -> None:
 
     # Click J1 plus button and wait for motion
     await simulate_click(user, "btn-j1-plus")
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start()
 
     # Wait for motion to stabilize
     final_j1 = await wait_for_motion_stable(
@@ -64,7 +64,7 @@ async def test_cartesian_axis_disabled_when_at_limit(user: User, robot_state) ->
     """
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
+    await enable_sim(user)
 
     # Switch to cartesian jog tab
     user.find(marker="tab-cartesian").click()
@@ -86,8 +86,8 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # --- Part 1: Positive direction ---
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
@@ -97,7 +97,7 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
 
     # Click J1 plus button (single click, not hold)
     await simulate_click(user, "btn-j1-plus")
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start()
     final_j1 = await wait_for_motion_stable(
         lambda: waldoctl.commander.status.joints.angles[0]
     )
@@ -114,7 +114,7 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
 
     # Click J1 minus button (mousedown/mouseup pair — jog buttons don't listen for raw click)
     await simulate_click(user, "btn-j1-minus")
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start()
     final_j1 = await wait_for_motion_stable(
         lambda: waldoctl.commander.status.joints.angles[0]
     )
@@ -135,8 +135,8 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Switch to Cartesian Jog tab
     user.find("Cartesian Jog").click()
@@ -155,7 +155,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     initial_z = float(waldoctl.commander.status.pose.z)
 
     await simulate_click(user, "axis-zplus")
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start()
     final_z = await wait_for_motion_stable(
         lambda: float(waldoctl.commander.status.pose.z), tolerance=0.1
     )
@@ -173,7 +173,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     initial_z = float(waldoctl.commander.status.pose.z)
 
     await simulate_click(user, "axis-zminus")
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start()
     final_z = await wait_for_motion_stable(
         lambda: float(waldoctl.commander.status.pose.z), tolerance=0.1
     )
@@ -189,7 +189,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     initial_rz = float(waldoctl.commander.status.pose.rz)
 
     await simulate_click(user, "axis-rzplus")
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start()
     final_rz = await wait_for_motion_stable(
         lambda: float(waldoctl.commander.status.pose.rz), tolerance=0.1
     )
@@ -209,8 +209,8 @@ async def test_joint_jog_one_degree_step(user: User, robot_state) -> None:
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Set motion profile to TOPPRA (use the app's own client, not session_client)
     await ui_state.control_panel.client.select_profile("TOPPRA")
@@ -227,7 +227,7 @@ async def test_joint_jog_one_degree_step(user: User, robot_state) -> None:
 
     # Single click on J1 plus
     await simulate_click(user, "btn-j1-plus")
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start()
     final_j1 = await wait_for_motion_stable(
         lambda: waldoctl.commander.status.joints.angles[0],
         timeout_s=5.0,
@@ -249,8 +249,8 @@ async def test_cartesian_jog_one_mm_step(user: User, robot_state) -> None:
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Set motion profile to TOPPRA (use the app's own client, not session_client)
     await ui_state.control_panel.client.select_profile("TOPPRA")
@@ -269,7 +269,7 @@ async def test_cartesian_jog_one_mm_step(user: User, robot_state) -> None:
 
     # Single click on Z plus
     await simulate_click(user, "axis-zplus")
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start()
     final_z = await wait_for_motion_stable(
         lambda: float(waldoctl.commander.status.pose.z), timeout_s=5.0, stable_ticks=20
     )
@@ -293,8 +293,8 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state) -> None:
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Set motion profile to TOPPRA (use the app's own client, not session_client)
     await ui_state.control_panel.client.select_profile("TOPPRA")
@@ -352,8 +352,8 @@ async def test_cartesian_jog_rapid_clicks(user: User, robot_state) -> None:
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Set motion profile to TOPPRA (use the app's own client, not session_client)
     await ui_state.control_panel.client.select_profile("TOPPRA")
@@ -409,8 +409,8 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Wait for any queued commands to complete first (action_state becomes IDLE)
     for _ in range(50):  # Up to 5 seconds
@@ -430,7 +430,7 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
     user.find(marker="btn-j1-min-limit").click()
 
     # Wait for motion to start (action_state becomes EXECUTING or angles change)
-    await wait_for_motion_start(robot_state, timeout_s=5.0)
+    await wait_for_motion_start(timeout_s=5.0)
 
     # Wait for motion to complete and stabilize (limit moves can take 5+ seconds)
     final_j1 = await wait_for_motion_stable(
@@ -462,7 +462,7 @@ async def test_jog_buttons_disabled_in_editing_mode(user: User, robot_state) -> 
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
+    await enable_sim(user)
 
     # Get initial J1 angle
     initial_j1 = waldoctl.commander.status.joints.angles[0]

@@ -60,7 +60,7 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
+    await enable_sim(user)
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -194,7 +194,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
+    await enable_sim(user)
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -250,7 +250,7 @@ async def test_recording_notification_appears_and_disappears(
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
+    await enable_sim(user)
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -482,7 +482,7 @@ async def test_step_button_enabled_after_simulation(user: User, robot_state) -> 
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
+    await enable_sim(user)
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -557,7 +557,7 @@ async def test_simulation_creates_targets_for_literal_moves(
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
+    await enable_sim(user)
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)

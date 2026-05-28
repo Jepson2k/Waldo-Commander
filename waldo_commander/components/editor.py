@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import re
-import time
 from typing import Any, Callable
 
 import waldoctl
@@ -362,7 +361,6 @@ class EditorPanel(FileOperationsMixin):
         """Create a new tab and switch to it."""
         source = content if content is not None else default_python_snippet()
         tab = waldoctl.commander.programs.new(source=source, filename=filename)
-        tab.created_at = time.time()
         self._create_tab_widget(tab)
         self._create_tab_panel(tab)
         self._switch_to_tab(tab.id)
@@ -385,7 +383,7 @@ class EditorPanel(FileOperationsMixin):
         """
         # The subprocess outlives the page (script_exec.cleanup doesn't kill
         # script_handle), so closing its launching tab would orphan the output:
-        # _record_line silently drops every line once find_tab_by_id returns None.
+        # _record_line silently drops every line once programs.get returns None.
         if is_any_program_running() and script_exec.is_launching_tab(tab.id):
             ui.notify(
                 "Cannot close the tab whose script is running. Stop the script first.",

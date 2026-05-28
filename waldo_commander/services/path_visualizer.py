@@ -2,7 +2,8 @@
 Path visualization service for robot program simulation.
 
 Runs dry-run simulations in isolated subprocesses for safety and non-blocking
-execution. Results are collected and applied to SimulationState in the main process.
+execution. Results are collected and applied to the originating program's
+dry-run in the main process.
 """
 
 import asyncio
@@ -385,10 +386,11 @@ class PathVisualizer:
         self, program_text: str, tab_id: str | None = None
     ) -> str | None:
         """
-        Run the dry-run simulation for the given program text and update SimulationState.
+        Run the dry-run simulation for the given program text and update the
+        originating program's dry-run.
 
         Executes simulation in an isolated subprocess for safety, then applies
-        the results to the originating tab and (if still active) global simulation state.
+        the results to the originating tab's ``dry_run``.
 
         Args:
             program_text: The Python program to simulate
@@ -591,7 +593,7 @@ class PathVisualizer:
                 if target_tab.id != waldoctl.commander.programs.active_id:
                     logger.debug(
                         "Simulation for tab %s complete, but tab no longer active - "
-                        "skipping global state update",
+                        "results stored on its dry-run, will render on next switch",
                         tab_id,
                     )
 

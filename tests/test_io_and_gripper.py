@@ -47,7 +47,7 @@ async def test_gripper_panel_layout_elements(user: User, robot_state) -> None:
 
     # Set tool to SSG-48 and wait for status loop to propagate
     await ui_state.control_panel.client.select_tool("SSG-48")
-    await wait_for_tool_key(robot_state, "SSG-48")
+    await wait_for_tool_key("SSG-48")
 
     # Open the Gripper tab
     user.find(marker="tab-gripper").click()
@@ -67,7 +67,7 @@ async def test_control_panel_tool_quick_actions(user: User, robot_state) -> None
 
     # Set tool to SSG-48 and wait for status loop to propagate
     await ui_state.control_panel.client.select_tool("SSG-48")
-    await wait_for_tool_key(robot_state, "SSG-48")
+    await wait_for_tool_key("SSG-48")
 
     # Tool action L button should be visible
     await user.should_see(marker="btn-tool-action-l")

@@ -20,12 +20,11 @@ import logging
 import time
 
 import numpy as np
-from nicegui import ui
-
-from waldo_commander.constants import config
 import waldoctl
+from nicegui import ui
 from waldoctl import LogEntry
 
+from waldo_commander.constants import config
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.playback import playback

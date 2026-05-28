@@ -621,7 +621,7 @@ class EditingMixin:
             )
 
             if show_joints:
-                # Use pre-computed degrees from robot_state (synced from editing angles)
+                # Use pre-computed degrees from commander.status (synced from editing angles)
                 n = len(self.joint_names)
                 angles_deg = list(waldoctl.commander.status.joints.angles.deg[:n])
                 orig_deg = self._original_editing_joints or [0.0] * n
@@ -705,7 +705,7 @@ class EditingMixin:
         return float(fk[2]) if fk is not None else None
 
     def _get_editing_tcp_pose(self) -> list[float] | None:
-        """Get TCP pose from robot_state (already synced from editing angles).
+        """Get TCP pose from commander.status (already synced from editing angles).
 
         Returns [x, y, z, rx, ry, rz] with position in meters and rotation in degrees.
         """

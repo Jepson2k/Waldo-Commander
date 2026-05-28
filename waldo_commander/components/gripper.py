@@ -518,8 +518,8 @@ class GripperPage:
             return k != "NONE" and self._is_electric()
 
         ui.label("mA").classes("text-xs text-[var(--ctk-muted)]").bind_visibility_from(
-            robot_state,
-            "tool_key",
+            waldoctl.commander.status.tool,
+            "key",
             backward=_electric_visible,
         )
         self._cur_slider = (
@@ -527,8 +527,8 @@ class GripperPage:
             .on("pan", self._on_slider_pan)
             .on_value_change(self._on_current_slider_change)
         ).bind_visibility_from(
-            robot_state,
-            "tool_key",
+            waldoctl.commander.status.tool,
+            "key",
             backward=_electric_visible,
         )
         cur_input = ui.number(min=0, max=1000, step=10, value=500).props(
@@ -536,8 +536,8 @@ class GripperPage:
         )
         cur_input.bind_value_from(self._cur_slider, "value")
         cur_input.bind_visibility_from(
-            robot_state,
-            "tool_key",
+            waldoctl.commander.status.tool,
+            "key",
             backward=_electric_visible,
         )
 

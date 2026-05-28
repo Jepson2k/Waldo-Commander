@@ -145,7 +145,7 @@ class TestDryRunClient:
 
 
 def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
-    """Set both robot_state pose values and pose matrix."""
+    """Set the commander.status.pose scalars and the robot_state pose matrix."""
     waldoctl.commander.status.pose.x = x
     waldoctl.commander.status.pose.y = y
     waldoctl.commander.status.pose.z = z
