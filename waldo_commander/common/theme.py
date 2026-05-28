@@ -971,6 +971,27 @@ html, body {
   background-color: rgba(255, 255, 0, 0.3);
 }
 
+/* LLM-proposed edits — red strikethrough on removed lines, green
+   widget for additions. Rendered by EditorDecorations._diff_decoration_specs. */
+.cm-line.cm-edit-remove {
+  background-color: rgba(244, 67, 54, 0.18);
+  text-decoration: line-through;
+  text-decoration-color: rgba(244, 67, 54, 0.7);
+}
+.cm-edit-add {
+  background-color: rgba(76, 175, 80, 0.18);
+  color: var(--ctk-text, #cbd5e1);
+  padding: 0 4px;
+  border-left: 3px solid rgba(76, 175, 80, 0.7);
+  white-space: pre;
+}
+
+/* Pending-edit chip row above the CodeMirror editor. */
+.pending-edits-banner {
+  background-color: rgba(76, 175, 80, 0.08);
+  border-bottom: 1px solid rgba(76, 175, 80, 0.25);
+}
+
 
 /* Fade CodeMirror content at bottom using mask - fades to transparent */
 .editor-tab-panel {

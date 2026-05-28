@@ -17,6 +17,7 @@ dependencies = [
   "numpy-stl>=3.0.0",
   "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.2.0",
   "opencv-python-headless>=4.8",
+  "fastmcp>=3.0,<4",
 
   # pinokin: Pinocchio-based FK/IK bindings
   # https://github.com/Jepson2k/pinokin/releases/tag/v0.1.6

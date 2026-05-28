@@ -443,6 +443,9 @@ class EditorPanel(FileOperationsMixin):
 
         # Remove tab widget from tabs container
         if tab_id in self._tab_widgets:
+            # Drop the LLM-edit listener before tearing down the widgets
+            # so it can't fire against a half-deleted banner.
+            self._unsubscribe_from_edits(tab_id)
             widgets = self._tab_widgets[tab_id]
             # Delete the tab widget element
             if "tab_element" in widgets and widgets["tab_element"]:
@@ -618,6 +621,16 @@ class EditorPanel(FileOperationsMixin):
                 .style("padding: 0; width: 100%; height: 100%;")
             )
             with panel:
+                # Pending-LLM-edits banner (one row per proposed edit).
+                # Hidden until at least one edit is queued.
+                edits_banner = (
+                    ui.column()
+                    .classes("w-full pending-edits-banner")
+                    .style("gap: 4px; padding: 4px 8px;")
+                )
+                edits_banner.set_visibility(False)
+                edits_banner.mark(f"edits-banner-{tab.id}")
+
                 # Generate completions
                 completions = generate_completions_from_commands()
 
@@ -652,9 +665,100 @@ class EditorPanel(FileOperationsMixin):
             # Store references
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
+            self._tab_widgets[tab.id]["edits_banner"] = edits_banner
             ui_state.textareas_by_tab[tab.id] = textarea
 
+            # Subscribe to LLM-edit lifecycle so the banner + diff overlay
+            # rebuild whenever propose / approve / reject fires.
+            self._subscribe_to_edits(tab)
+            self._refresh_edits_banner(tab.id)
+
         return panel
+
+    def _subscribe_to_edits(self, tab: Program) -> None:
+        """Register a change listener on ``tab.edits`` for the lifetime of
+        the tab. The listener rebuilds the banner and the CodeMirror diff
+        overlay. Stored on ``self._tab_widgets`` so the matching close path
+        can remove it."""
+
+        def _on_edits_changed(tab_id: str = tab.id) -> None:
+            self._refresh_edits_banner(tab_id)
+            decorations.refresh_diff_overlay(tab_id)
+
+        tab.edits.add_change_listener(_on_edits_changed)
+        self._tab_widgets[tab.id]["edits_listener"] = _on_edits_changed
+
+    def _unsubscribe_from_edits(self, tab_id: str) -> None:
+        """Remove the edit-lifecycle listener registered by
+        :meth:`_subscribe_to_edits`. Safe to call multiple times."""
+        widgets = self._tab_widgets.get(tab_id)
+        if not widgets:
+            return
+        listener = widgets.pop("edits_listener", None)
+        if listener is None:
+            return
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is not None:
+            tab.edits.remove_change_listener(listener)
+
+    def _refresh_edits_banner(self, tab_id: str) -> None:
+        """Rebuild the per-edit chip row above the CodeMirror editor."""
+        widgets = self._tab_widgets.get(tab_id)
+        if not widgets:
+            return
+        banner = widgets.get("edits_banner")
+        if banner is None:
+            return
+        tab = waldoctl.commander.programs.get(tab_id)
+        pending = tab.edits.pending if tab is not None else []
+        banner.clear()
+        if not pending:
+            banner.set_visibility(False)
+            return
+        banner.set_visibility(True)
+        with banner:
+            for edit in pending:
+                with ui.row().classes("w-full items-center").style("gap: 6px;"):
+                    label = edit.description or "(no description)"
+                    ui.label(label).classes("text-xs flex-grow truncate").mark(
+                        f"edit-label-{edit.id.value}"
+                    )
+                    ui.button(
+                        icon="check",
+                        on_click=lambda _e, eid=edit.id, tid=tab_id: self._approve_edit(
+                            tid, eid
+                        ),
+                    ).props("dense flat color=positive").mark(
+                        f"approve-edit-{edit.id.value}"
+                    )
+                    ui.button(
+                        icon="close",
+                        on_click=lambda _e, eid=edit.id, tid=tab_id: self._reject_edit(
+                            tid, eid
+                        ),
+                    ).props("dense flat color=negative").mark(
+                        f"reject-edit-{edit.id.value}"
+                    )
+
+    def _approve_edit(self, tab_id: str, edit_id) -> None:
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is None:
+            return
+        try:
+            tab.edits.approve(edit_id)
+        except ValueError as e:
+            ui.notify(f"Could not apply edit: {e}", color="warning")
+        except KeyError:
+            ui.notify("Edit no longer pending", color="info")
+
+    def _reject_edit(self, tab_id: str, edit_id) -> None:
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is None:
+            return
+        try:
+            tab.edits.reject(edit_id)
+        except KeyError:
+            pass
 
     def _on_cursor_line(self, tab: Program, e) -> None:
         """Handle cursor line change from CodeMirror."""

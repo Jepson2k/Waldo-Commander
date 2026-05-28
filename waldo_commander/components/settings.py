@@ -480,6 +480,71 @@ class SettingsContent:
                 "text-xs text-[var(--ctk-muted)]"
             ).mark("settings-plugins-summary")
 
+    def _build_mcp_server(self) -> None:
+        """MCP server controls.
+
+        ``enabled``, ``host``, ``port``, and ``auth_token`` bind at server
+        start, so we notify "Reload to apply" when those change.
+        ``allow_motion`` is consulted per-tool-call, so it takes effect
+        live.
+        """
+        mcp = waldoctl.commander.settings.mcp
+
+        def _on_enabled_change(e):
+            mcp.enabled = bool(e.value)
+            ng_app.storage.general["mcp/enabled"] = mcp.enabled
+            ui.notify("Reload to apply", color="info")
+
+        def _on_port_change(e):
+            try:
+                port = int(e.value)
+            except (TypeError, ValueError):
+                return
+            mcp.port = port
+            ng_app.storage.general["mcp/port"] = port
+            ui.notify("Reload to apply", color="info")
+
+        def _on_token_change(e):
+            token = e.value or None
+            mcp.auth_token = token
+            ng_app.storage.general["mcp/auth_token"] = token
+            ui.notify("Reload to apply", color="info")
+
+        def _on_allow_motion_change(e):
+            mcp.allow_motion = bool(e.value)
+            ng_app.storage.general["mcp/allow_motion"] = mcp.allow_motion
+
+        with _setting_row(
+            "MCP server", "Expose commander.* to an MCP client (reload to apply)"
+        ):
+            ui.switch(value=mcp.enabled, on_change=_on_enabled_change).props(
+                "dense"
+            ).mark("settings-mcp-enabled")
+
+        with _setting_row("MCP port", "Listening port for HTTP/SSE"):
+            ui.number(
+                value=mcp.port,
+                min=1,
+                max=65535,
+                on_change=_on_port_change,
+            ).classes("w-24").props("dense").mark("settings-mcp-port")
+
+        with _setting_row(
+            "MCP auth token", "Bearer token clients must present (blank = none)"
+        ):
+            ui.input(
+                value=mcp.auth_token or "",
+                password=True,
+                on_change=_on_token_change,
+            ).classes("w-40").props("dense").mark("settings-mcp-token")
+
+        with _setting_row(
+            "Allow motion via MCP", "When off, motion tools refuse cleanly"
+        ):
+            ui.switch(value=mcp.allow_motion, on_change=_on_allow_motion_change).props(
+                "dense"
+            ).mark("settings-mcp-allow-motion")
+
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):
             with ui.element("span").tooltip(
@@ -518,6 +583,7 @@ class SettingsContent:
             self._build_reference_frames,
             self._build_backend_selector,
             self._build_plugin_panels,
+            self._build_mcp_server,
         ]
 
         for i, section in enumerate(sections):

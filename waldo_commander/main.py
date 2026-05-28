@@ -63,6 +63,7 @@ from waldo_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
+from waldo_commander.mcp import start_mcp_server, stop_mcp_server
 from waldo_commander.services.action_log import action_log_service
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
@@ -1011,6 +1012,8 @@ def _register_handlers() -> None:
             await _restore_settings()
             # Sync editor slider mode now that simulator_active is known
             playback.sync_mode()
+            # Spawn the MCP server if the user has opted in (no-op otherwise).
+            await start_mcp_server()
             logger.info(
                 "waldo-commander ready on http://%s:%s",
                 config.server_host,
@@ -1033,6 +1036,8 @@ def _register_handlers() -> None:
         _shutting_down = True
         logger.debug("Nicegui Shutting Down...")
         camera_service.stop()
+        # Stop the MCP server (no-op if it was never started).
+        await stop_mcp_server()
 
         # Wait for startup to complete first (with timeout to avoid hanging forever)
         try:
@@ -1635,6 +1640,24 @@ def main():
     commander.settings.plugins.backend = ng_app.storage.general.get("plugins/backend")
     commander.settings.plugins.disabled_panels = list(
         ng_app.storage.general.get("plugins/disabled_panels", [])
+    )
+
+    # Restore MCP server settings from prior session. `enabled` defaults to
+    # False so the server stays off until the user explicitly opts in.
+    commander.settings.mcp.enabled = bool(
+        ng_app.storage.general.get("mcp/enabled", False)
+    )
+    commander.settings.mcp.host = str(
+        ng_app.storage.general.get("mcp/host", commander.settings.mcp.host)
+    )
+    commander.settings.mcp.port = int(
+        ng_app.storage.general.get("mcp/port", commander.settings.mcp.port)
+    )
+    commander.settings.mcp.auth_token = ng_app.storage.general.get(
+        "mcp/auth_token", None
+    )
+    commander.settings.mcp.allow_motion = bool(
+        ng_app.storage.general.get("mcp/allow_motion", True)
     )
 
     # Configure logging

@@ -99,8 +99,9 @@ class EditorDecorations:
 
         Combines whatever flash decorations are active (flashes are always
         on the active tab, so they only appear when tab_id == active) with
-        that tab's executing-line highlight. Result is assigned to the
-        tab's CodeMirror ``decorations`` in a single round-trip.
+        that tab's executing-line highlight and any pending LLM-proposed
+        edits. Result is assigned to the tab's CodeMirror ``decorations``
+        in a single round-trip.
         """
         textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
@@ -121,7 +122,68 @@ class EditorDecorations:
                     "class": "cm-highlighted",
                 }
             )
+        specs.extend(self._diff_decoration_specs(tab_id))
         textarea.decorations[:] = specs
+
+    def _diff_decoration_specs(self, tab_id: str) -> list[DecorationSpec]:
+        """Build decoration specs from this tab's pending LLM edits.
+
+        For each pending edit:
+        - lines marked ``-`` get a ``line`` decoration with
+          ``cm-edit-remove`` (red strikethrough background).
+        - lines marked ``+`` collapse into one ``widget`` decoration
+          inserted after the hunk's location, classed ``cm-edit-add`` so
+          the editor renders a green "+ <addition>" widget.
+
+        Hunks that fail to parse are silently skipped — the banner above
+        the editor surfaces those errors to the user instead.
+        """
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is None or not tab.edits.pending:
+            return []
+        line_starts = [0]
+        for line in tab.source.splitlines(keepends=True):
+            line_starts.append(line_starts[-1] + len(line))
+        specs: list[DecorationSpec] = []
+        for edit in tab.edits.pending:
+            try:
+                hunks = waldoctl.parse_unified_diff(edit.diff)
+            except ValueError:
+                continue
+            for h in hunks:
+                cursor = h.old_start - 1  # 0-indexed
+                added: list[str] = []
+                for op, content in h.body:
+                    if op == " ":
+                        cursor += 1
+                    elif op == "-":
+                        specs.append(
+                            {
+                                "kind": "line",
+                                "line": cursor + 1,
+                                "class": "cm-edit-remove",
+                            }
+                        )
+                        cursor += 1
+                    elif op == "+":
+                        added.append(content)
+                if added:
+                    pos = line_starts[min(cursor, len(line_starts) - 1)]
+                    specs.append(
+                        {
+                            "kind": "widget",
+                            "position": pos,
+                            "text": "\n".join("+ " + s for s in added),
+                            "class": "cm-edit-add",
+                            "side": 1,
+                        }
+                    )
+        return specs
+
+    def refresh_diff_overlay(self, tab_id: str) -> None:
+        """Re-render decorations for ``tab_id`` after its pending-edits list
+        changed. Public entry point for the editor's edit-listener wiring."""
+        self._apply_decorations_to_tab(tab_id)
 
     def _apply_active_tab_decorations(self) -> None:
         """Re-render decorations on whichever tab is currently active.
