@@ -9,6 +9,7 @@ from nicegui import binding
 from waldoctl import (
     AngleArray,
     ChangeNotifierMixin,
+    Panel,
     PathSegment,
     ProgramTarget,
     ToolAction,
@@ -229,6 +230,10 @@ class UiState:
     active_filename_input: Any = None  # ui.input | None at runtime
     textareas_by_tab: dict[str, Any] = field(default_factory=dict)
 
+    # Plugin panels discovered via the `waldoctl.panels` entry-point group.
+    # Populated once per page build; ordered by (slot, order, id).
+    plugin_panels: list[Panel] = field(default_factory=list)
+
     # Post-init required fields (assert on access, set via assignment)
     editor_panel = _RequiredField()
     control_panel = _RequiredField()
@@ -246,6 +251,9 @@ class UiState:
         """Reset UI state. Does not reset robot (set once at startup)."""
         self.urdf_scene = None
         self.active_client_id = None
+        self.plugin_panels = []
+        if hasattr(self, "_plugin_panels_started"):
+            self._plugin_panels_started = False
 
 
 # ===========================================================================

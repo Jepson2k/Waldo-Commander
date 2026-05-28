@@ -7,7 +7,7 @@ from nicegui import app as ng_app
 from nicegui import ui
 
 import waldoctl
-from waldoctl import EnvelopeMode, RobotClient
+from waldoctl import EnvelopeMode, RobotClient, iter_plugin_panels
 
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.services.camera_service import (
@@ -462,23 +462,55 @@ class SettingsContent:
     def _build_plugin_panels(self) -> None:
         """Panel-enable/disable toggle list.
 
-        Each row corresponds to an installed panel plugin id; toggling
-        adds/removes the id from ``commander.settings.plugins.disabled_panels``.
-        Re-load takes effect on the next page reload. With no panel
-        plugins installed yet (PR #2 of the stack), this section shows a
-        placeholder.
+        One row per installed panel plugin (discovered via the
+        ``waldoctl.panels`` entry-point group). Toggling a row writes
+        through to ``commander.settings.plugins.disabled_panels`` and the
+        rehydrated ``app.storage.general`` slot; the change takes effect on
+        the next page reload. Stale ids — disabled entries whose plugin is
+        no longer installed — are stripped on each rebuild.
         """
         plugins = waldoctl.commander.settings.plugins
-        with _setting_row(
-            "Panel plugins", "Show / hide installed panel plugins (reload to apply)"
-        ):
-            # Panel plugin discovery ships in stack PR #2; until then this
-            # surface only exposes the list-of-disabled-ids that PR #2
-            # will consume.
-            count = len(plugins.disabled_panels)
-            ui.label(f"{count} disabled" if count else "No plugins installed").classes(
-                "text-xs text-[var(--ctk-muted)]"
-            ).mark("settings-plugins-summary")
+        discovered = list(iter_plugin_panels())
+        known_ids = {cls.id for cls in discovered if hasattr(cls, "id")}
+
+        stale = [pid for pid in plugins.disabled_panels if pid not in known_ids]
+        if stale:
+            plugins.disabled_panels = [
+                pid for pid in plugins.disabled_panels if pid in known_ids
+            ]
+            ng_app.storage.general["plugins/disabled_panels"] = list(
+                plugins.disabled_panels
+            )
+
+        if not discovered:
+            with _setting_row("Panel plugins", "Show / hide installed panel plugins"):
+                ui.label("No plugins installed").classes(
+                    "text-xs text-[var(--ctk-muted)]"
+                ).mark("settings-plugins-summary")
+            return
+
+        def _on_toggle(panel_id: str):
+            def _handler(e):
+                enabled = bool(e.value)
+                current = list(plugins.disabled_panels)
+                if enabled:
+                    current = [pid for pid in current if pid != panel_id]
+                elif panel_id not in current:
+                    current.append(panel_id)
+                plugins.disabled_panels = current
+                ng_app.storage.general["plugins/disabled_panels"] = current
+                ui.notify("Reload to apply", color="info")
+
+            return _handler
+
+        for cls in discovered:
+            panel_id = cls.id
+            label = getattr(cls, "display_name", panel_id)
+            with _setting_row(label, f"Plugin id: {panel_id} (reload to apply)"):
+                ui.switch(
+                    value=panel_id not in plugins.disabled_panels,
+                    on_change=_on_toggle(panel_id),
+                ).props("dense").mark(f"settings-plugin-{panel_id}")
 
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):
