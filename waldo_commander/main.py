@@ -394,6 +394,11 @@ async def check_ping() -> None:
             logger.debug("ping: connected True → False (exception)")
         ps.last_ping_ok = False
 
+    # A ping that was in flight when shutdown began can resume here after
+    # _clear_commander has run; bail before touching the commander surface.
+    if _shutting_down:
+        return
+
     # Update robot connectivity status. The multicast status consumer drives
     # the joint/cartesian button sync at status rate; the two calls below
     # cover the "stream went silent" path that the consumer cannot, since

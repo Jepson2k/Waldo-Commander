@@ -110,6 +110,23 @@ async def test_workspace_envelope_mode_changes(user: User) -> None:
         f"Expected EnvelopeMode, got {envelope_mode}"
     )
 
+    # Drive a real change through the select and verify it propagates to
+    # commander.settings.view (select option keys are the EnvelopeMode values).
+    select_el = next(iter(envelope_select.elements))
+
+    async def set_and_verify(mode: EnvelopeMode) -> None:
+        select_el.set_value(mode.value)
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if waldoctl.commander.settings.view.envelope_mode == mode:
+                return
+        assert waldoctl.commander.settings.view.envelope_mode == mode, (
+            f"Envelope mode should be {mode} after selecting {mode.value!r}"
+        )
+
+    await set_and_verify(EnvelopeMode.OFF)
+    await set_and_verify(EnvelopeMode.ON)
+
 
 @pytest.mark.integration
 async def test_tool_selection_changes_tool(user: User) -> None:

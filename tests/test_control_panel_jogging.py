@@ -452,14 +452,13 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
 
 
 @pytest.mark.integration
-async def test_jog_buttons_disabled_in_editing_mode(user: User, robot_state) -> None:
-    """Verify all jog buttons are disabled when in editing mode.
+async def test_jog_buttons_disabled_in_editing_mode(user: User) -> None:
+    """Verify jog presses don't move the robot when in editing mode.
 
-    When editing mode is active (target editor controls robot), jog buttons
-    should be visually disabled and not respond to clicks.
+    When editing mode is active (target editor controls the robot),
+    ``set_joint_pressed`` early-returns on ``commander.status.editing_mode``,
+    so a jog press is ignored.
     """
-    from waldo_commander.state import robot_state as rs
-
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
@@ -467,15 +466,12 @@ async def test_jog_buttons_disabled_in_editing_mode(user: User, robot_state) -> 
     # Get initial J1 angle
     initial_j1 = waldoctl.commander.status.joints.angles[0]
 
-    # Enable editing mode
-    rs.editing_mode = True
-
-    # Trigger UI update for editing mode
-    # The control panel should detect editing mode and disable buttons
+    # Enable editing mode (the target editor takes over robot control)
+    waldoctl.commander.status.editing_mode = True
     await asyncio.sleep(0.1)
 
-    # Click J1 plus button - should NOT cause motion in editing mode
-    user.find(marker="btn-j1-plus").click()
+    # Press J1 plus (mousedown/mouseup) — should NOT cause motion in editing mode
+    await simulate_click(user, "btn-j1-plus")
     await asyncio.sleep(0.3)
 
     # J1 should NOT have moved (editing mode blocks jog)
@@ -485,4 +481,4 @@ async def test_jog_buttons_disabled_in_editing_mode(user: User, robot_state) -> 
     )
 
     # Clean up
-    rs.editing_mode = False
+    waldoctl.commander.status.editing_mode = False

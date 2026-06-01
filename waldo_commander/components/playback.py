@@ -288,14 +288,22 @@ class PlaybackController:
         """Toggle play/pause for script execution or simulation playback."""
         active = waldoctl.commander.programs.active
         if is_any_program_running():
-            if active is not None and active.dry_run.playback.is_playing:
+            # Play/pause belongs to the launching program — the user may have
+            # switched tabs while the script runs, so follow launching_tab_id
+            # rather than the UI-active tab (matches _on_step_change).
+            prog = (
+                waldoctl.commander.programs.get(script_exec.launching_tab_id)
+                if script_exec.launching_tab_id
+                else active
+            )
+            if prog is not None and prog.dry_run.playback.is_playing:
                 script_exec.signal_pause()
-                active.dry_run.playback.is_playing = False
+                prog.dry_run.playback.is_playing = False
                 logger.debug("Script paused")
             else:
                 script_exec.signal_play()
-                if active is not None:
-                    active.dry_run.playback.is_playing = True
+                if prog is not None:
+                    prog.dry_run.playback.is_playing = True
                 logger.debug("Script playing")
             simulation_state.notify_changed()
         elif waldoctl.commander.status.simulator_active and (
@@ -762,14 +770,21 @@ class PlaybackController:
         """Update play/pause button icon and stop/step button visibility."""
         script_running = is_any_program_running()
         active = waldoctl.commander.programs.active
-        active_is_playing = (
-            active.dry_run.playback.is_playing if active is not None else False
+        # While a script runs the play state lives on the launching program
+        # (the user may have switched tabs); otherwise use the active tab.
+        play_prog = (
+            waldoctl.commander.programs.get(script_exec.launching_tab_id)
+            if script_running and script_exec.launching_tab_id
+            else active
+        )
+        play_is_playing = (
+            play_prog.dry_run.playback.is_playing if play_prog is not None else False
         )
         active_is_active = (
             active.dry_run.playback.is_active if active is not None else False
         )
         if self.play_btn:
-            playing = (script_running and active_is_playing) or active_is_active
+            playing = (script_running and play_is_playing) or active_is_active
             if playing:
                 self.play_btn.props("icon=pause color=warning")
                 if self.play_btn_tooltip:
