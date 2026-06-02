@@ -1,7 +1,7 @@
 """Simulation engine: debounced + on-position-change path preview runs.
 
-Reads the active textarea from ``ui_state.active_textarea``, mutates
-``simulation_state``, and drives the path-visualizer service. Diagnostics,
+Reads the active textarea from ``ui_state.active_textarea``, updates the
+active program's ``dry_run`` state, and drives the path-visualizer service. Diagnostics,
 line-tooltips, and target anchors are pushed directly to the ``decorations``
 singleton via method calls — these are imperative UI operations on a known
 recipient, so a state round-trip would be ceremony.
@@ -128,10 +128,7 @@ class SimulationEngine:
         # Snapshot robot position so check_position_changed doesn't re-trigger.
         tab = waldoctl.commander.programs.get(tab_id) if tab_id else None
         if tab and (error is None or error == UNCHANGED):
-            n = ui_state.active_robot.joints.count
-            tab.dry_run.last_sim_joints_deg = (
-                waldoctl.commander.status.joints.angles.deg[:n].copy()
-            )
+            playback.snapshot_joints_to(tab)
 
         if error == UNCHANGED:
             return None

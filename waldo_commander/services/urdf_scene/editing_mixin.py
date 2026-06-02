@@ -747,14 +747,14 @@ class EditingMixin:
 
     def _insert_joint_target_from_editing(self) -> None:
         """Insert joint target code."""
-        # Use pre-computed degrees from robot_state (synced from editing angles)
+        # Use the live joint angles from commander.status (synced from editing).
         n = len(self.joint_names)
         ui_state.editor_panel.add_joint_target_code(
             list(waldoctl.commander.status.joints.angles.deg[:n])
         )
 
     def _sync_robot_state_from_editing(self) -> None:
-        """Sync robot_state with editing values."""
+        """Sync ``commander.status`` joints/pose with the editing values."""
         if not waldoctl.commander.status.editing_mode:
             return
 

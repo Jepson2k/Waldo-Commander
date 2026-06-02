@@ -66,15 +66,12 @@ class SimulationState(ChangeNotifierMixin):
     #
     # What stays here: the WC-side notification channels that consumers
     # subscribe to globally (a single change-listener registration covers
-    # every tab switch + every dry-run update).
-    paths_visible: bool = True
+    # every tab switch + every dry-run update). View prefs like
+    # ``paths_visible`` now live on ``commander.settings.view``.
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
     _step_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
-
-    def reset(self) -> None:
-        self.paths_visible = True
 
 
 # ``RecordingState`` migrated to ``commander.programs.active.recording``;
@@ -350,7 +347,6 @@ def reset_all_state() -> None:
     robot_state.reset()
     controller_state.reset()
     ui_state.reset()
-    simulation_state.reset()
     playback_coordination.reset()
     readiness_state.reset()
     # Editor tabs / action log live on the commander locator now; reset via

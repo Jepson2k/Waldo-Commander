@@ -648,7 +648,7 @@ class UrdfScene(
     def _do_update_simulation_view_body(self) -> None:
         """Body of the simulation view update (run inside a batch_scene)."""
         # Visibility check for paths and targets
-        if not simulation_state.paths_visible:
+        if not waldoctl.commander.settings.view.paths_visible:
             if self.path_group is not None:
                 self.path_group.visible(False)
             if self.targets_group is not None:
@@ -875,7 +875,7 @@ class UrdfScene(
                 del self._rendered_tool_actions[new_ta_count:]
 
         # Highlight path segments matching active cursor line
-        if simulation_state.paths_visible and self._rendered_segments:
+        if waldoctl.commander.settings.view.paths_visible and self._rendered_segments:
             self.update_cursor_line_highlight()
 
         # Waypoint markers at segment endpoints

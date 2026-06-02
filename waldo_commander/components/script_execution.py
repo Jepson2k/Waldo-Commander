@@ -58,7 +58,7 @@ class ScriptExecutionController:
         self._event_watcher_task: asyncio.Task | None = None
         self._ui_client: Client | None = None
         # Tab whose content was launched. Output is appended to that tab's
-        # output_log so switching tabs preserves the originating tab's log.
+        # ``Program.log`` so switching tabs preserves the originating tab's log.
         self._script_tab_id: str | None = None
 
     def cleanup(self) -> None:

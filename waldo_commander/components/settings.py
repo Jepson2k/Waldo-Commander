@@ -262,7 +262,7 @@ class SettingsContent:
     def _build_show_route(self, prefs: dict) -> None:
         async def _on_show_route_change(e):
             val = bool(e.value)
-            simulation_state.paths_visible = val
+            waldoctl.commander.settings.view.paths_visible = val
             ng_app.storage.general["show_route"] = val
             simulation_state.notify_changed()
 
@@ -272,7 +272,7 @@ class SettingsContent:
                 on_change=_on_show_route_change,
             ).props("dense").mark("switch-show-route")
 
-        simulation_state.paths_visible = prefs["show_route"]
+        waldoctl.commander.settings.view.paths_visible = prefs["show_route"]
 
     def _build_envelope(self, prefs: dict) -> None:
         async def _on_envelope_mode_change(e):

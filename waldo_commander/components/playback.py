@@ -625,14 +625,19 @@ class PlaybackController:
         except Exception as exc:
             logger.warning("teleport failed: %s", exc)
 
+    def snapshot_joints_to(self, tab) -> None:
+        """Record the current joint angles on ``tab.dry_run`` so the position-
+        drift check doesn't re-trigger a sim from where the last one left off."""
+        n = ui_state.active_robot.joints.count
+        tab.dry_run.last_sim_joints_deg = waldoctl.commander.status.joints.angles.deg[
+            :n
+        ].copy()
+
     def _snapshot_joints(self) -> None:
-        """Snapshot current robot joint angles to the active tab's last_sim_joints_deg."""
+        """Snapshot the active tab's joint angles (see :meth:`snapshot_joints_to`)."""
         active_tab = waldoctl.commander.programs.active
         if active_tab is not None:
-            n = ui_state.active_robot.joints.count
-            active_tab.dry_run.last_sim_joints_deg = (
-                waldoctl.commander.status.joints.angles.deg[:n].copy()
-            )
+            self.snapshot_joints_to(active_tab)
 
     # ---- Simulation playback engine ----
 
@@ -693,7 +698,7 @@ class PlaybackController:
         self.update_play_button()
 
     def _sim_playback_tick(self) -> None:
-        """30Hz tick for simulation playback or script execution slider tracking."""
+        """50Hz tick for simulation playback or script execution slider tracking."""
         if not self._timeline:
             if self._sim_timer:
                 self._sim_timer.active = False

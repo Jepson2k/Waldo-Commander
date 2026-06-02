@@ -490,13 +490,13 @@ class EditorPanel(FileOperationsMixin):
         if not tab:
             return
 
-        # Update active tab. Dry-run results, recording state, and step-
+        # Update active tab via the ProgramTabs verb (guards membership +
+        # fires notify_changed). Dry-run results, recording state, and step-
         # lifecycle fields live on each Program directly — readers pull from
         # ``commander.programs.active.dry_run.*``, so no copy/mirror step is
         # needed on tab switch beyond resetting playback's per-tab scratch.
-        waldoctl.commander.programs.active_id = tab_id
-        if tab is not None:
-            tab.dry_run.playback.active_cursor_line = 0
+        waldoctl.commander.programs.switch(tab_id)
+        tab.dry_run.playback.active_cursor_line = 0
 
         # Update tab panels value
         if self.tab_panels_container:
@@ -661,7 +661,7 @@ class EditorPanel(FileOperationsMixin):
         if tab.id != waldoctl.commander.programs.active_id:
             return
         tab.dry_run.playback.active_cursor_line = e.line
-        if ui_state.urdf_scene and simulation_state.paths_visible:
+        if ui_state.urdf_scene and waldoctl.commander.settings.view.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
 
     def _on_tab_content_change(self, tab: Program, new_value: str) -> None:

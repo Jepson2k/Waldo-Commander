@@ -1235,9 +1235,12 @@ class TestTeleportCommand:
 class TestSimPoseOverrideAutoClear:
     """Tests for the timestamp-based auto-clear of sim_pose_override.
 
-    The auto-clear condition reads ``commander.programs.active.dry_run
-    .playback.is_active`` to decide whether the user is still scrubbing.
-    Each test seeds an active program so the lookup resolves.
+    These drive the real ``_maybe_clear_sim_pose_override`` from ``main`` (the
+    same function the status loop calls each tick) instead of re-deriving its
+    condition, so a flipped comparison in production fails the test. The
+    condition reads ``commander.programs.active.dry_run.playback.is_active`` to
+    decide whether the user is still scrubbing; each test seeds an active
+    program so the lookup resolves.
     """
 
     @staticmethod
@@ -1250,61 +1253,53 @@ class TestSimPoseOverrideAutoClear:
         return program
 
     def test_clears_after_timeout(self):
-        """Override should clear once 100ms has passed since last teleport."""
-        program = self._seed_program(is_active=False)
+        """Override clears once 100ms has passed since the last teleport."""
+        from waldo_commander.main import _maybe_clear_sim_pose_override
+
+        self._seed_program(is_active=False)
         playback_coordination.sim_pose_override = True
         playback_coordination.last_teleport_ts = time.monotonic() - 0.2  # 200ms ago
 
-        # Simulate the auto-clear condition from main.py
-        should_clear = (
-            playback_coordination.sim_pose_override
-            and not program.dry_run.playback.is_active
-            and playback_coordination.last_teleport_ts > 0
-            and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
-        )
-        assert should_clear
+        _maybe_clear_sim_pose_override()
+
+        assert playback_coordination.sim_pose_override is False
+        assert playback_coordination.last_teleport_ts == 0.0
 
     def test_stays_set_during_active_scrubbing(self):
-        """Override should NOT clear if a teleport was sent recently."""
-        program = self._seed_program(is_active=False)
+        """Override is kept if a teleport was sent recently (<100ms)."""
+        from waldo_commander.main import _maybe_clear_sim_pose_override
+
+        self._seed_program(is_active=False)
         playback_coordination.sim_pose_override = True
         playback_coordination.last_teleport_ts = time.monotonic()  # just now
 
-        should_clear = (
-            playback_coordination.sim_pose_override
-            and not program.dry_run.playback.is_active
-            and playback_coordination.last_teleport_ts > 0
-            and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
-        )
-        assert not should_clear
+        _maybe_clear_sim_pose_override()
+
+        assert playback_coordination.sim_pose_override is True
 
     def test_stays_set_during_playback(self):
-        """Override should NOT clear during active simulation playback."""
-        program = self._seed_program(is_active=True)
+        """Override is kept while simulation playback is active."""
+        from waldo_commander.main import _maybe_clear_sim_pose_override
+
+        self._seed_program(is_active=True)
         playback_coordination.sim_pose_override = True
         playback_coordination.last_teleport_ts = time.monotonic() - 0.2
 
-        should_clear = (
-            playback_coordination.sim_pose_override
-            and not program.dry_run.playback.is_active
-            and playback_coordination.last_teleport_ts > 0
-            and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
-        )
-        assert not should_clear
+        _maybe_clear_sim_pose_override()
+
+        assert playback_coordination.sim_pose_override is True
 
     def test_no_clear_without_teleport(self):
-        """Override should NOT clear if no teleport was ever sent (ts=0)."""
-        program = self._seed_program(is_active=False)
+        """Override is kept if no teleport was ever sent (ts=0)."""
+        from waldo_commander.main import _maybe_clear_sim_pose_override
+
+        self._seed_program(is_active=False)
         playback_coordination.sim_pose_override = True
         playback_coordination.last_teleport_ts = 0.0
 
-        should_clear = (
-            playback_coordination.sim_pose_override
-            and not program.dry_run.playback.is_active
-            and playback_coordination.last_teleport_ts > 0
-            and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
-        )
-        assert not should_clear
+        _maybe_clear_sim_pose_override()
+
+        assert playback_coordination.sim_pose_override is True
 
 
 # ============================================================================

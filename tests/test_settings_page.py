@@ -61,8 +61,8 @@ async def test_serial_port_select_exists(user: User) -> None:
 
 @pytest.mark.integration
 async def test_show_route_toggle_changes_state(user: User) -> None:
-    """Test that toggling Show Route changes simulation_state.paths_visible."""
-    from waldo_commander.state import simulation_state
+    """Test that toggling Show Route updates commander.settings.view.paths_visible."""
+    import waldoctl
 
     await user.open("/")
     await wait_for_app_ready()
@@ -73,7 +73,7 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
     await asyncio.sleep(0)
 
     # Get initial state
-    initial_visible = simulation_state.paths_visible
+    initial_visible = waldoctl.commander.settings.view.paths_visible
 
     # Find and toggle the Show Route switch (by marker, not content)
     show_route_switch = user.find(marker="switch-show-route")
@@ -81,7 +81,7 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
     await asyncio.sleep(0)
 
     # State should have toggled
-    assert simulation_state.paths_visible != initial_visible, (
+    assert waldoctl.commander.settings.view.paths_visible != initial_visible, (
         f"Expected paths_visible to toggle from {initial_visible}"
     )
 

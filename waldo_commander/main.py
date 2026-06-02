@@ -476,6 +476,8 @@ def update_ui_from_status() -> None:
     pub_tool.positions = tuple(ts.positions)
     pub_tool.engaged = ts.engaged
     pub_tool.part_detected = ts.part_detected
+    pub_tool.state = ts.state
+    pub_tool.fault_code = ts.fault_code
     pub_tool.channels = tuple(ts.channels)
     _pos0 = pub_tool.positions[0] if pub_tool.positions else 0.0
     _cur0 = pub_tool.channels[0] if pub_tool.channels else 0.0
@@ -1330,8 +1332,28 @@ async def index_page():
     asyncio.create_task(_mark_page_done())
 
 
+def _maybe_clear_sim_pose_override() -> None:
+    """Release the scrub pose-override once the teleport has propagated.
+
+    While the user scrubs, the status loop holds ``sim_pose_override`` so the
+    live pose doesn't fight the scrubbed pose. Once playback is no longer active
+    and ≥100ms has passed since the last teleport, the override is released so
+    the loop resumes showing the real robot pose.
+    """
+    active_pb = waldoctl.commander.programs.active
+    is_active = active_pb is not None and active_pb.dry_run.playback.is_active
+    if (
+        playback_coordination.sim_pose_override
+        and not is_active
+        and playback_coordination.last_teleport_ts > 0
+        and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
+    ):
+        playback_coordination.sim_pose_override = False
+        playback_coordination.last_teleport_ts = 0.0
+
+
 async def _status_consumer() -> None:
-    """Consume multicast status and update shared robot_state."""
+    """Consume multicast status and populate ``commander.status``."""
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1440,19 +1462,7 @@ async def _status_consumer() -> None:
                     waldoctl.commander.status.last_update = time.time()
 
                     # Auto-clear scrub override after teleport has had time to propagate
-                    _active_pb = waldoctl.commander.programs.active
-                    _is_active = (
-                        _active_pb is not None and _active_pb.dry_run.playback.is_active
-                    )
-                    if (
-                        playback_coordination.sim_pose_override
-                        and not _is_active
-                        and playback_coordination.last_teleport_ts > 0
-                        and (time.monotonic() - playback_coordination.last_teleport_ts)
-                        > 0.1
-                    ):
-                        playback_coordination.sim_pose_override = False
-                        playback_coordination.last_teleport_ts = 0.0
+                    _maybe_clear_sim_pose_override()
 
                     # Both checks needed: _deleted guards the brief window
                     # between NiceGUI marking the client dead and removing it

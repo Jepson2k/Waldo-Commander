@@ -1,15 +1,15 @@
 """Action-log dedup service — feeds ``commander.status.action``.
 
-Stateless data lives on ``commander.status.action`` (``history``, ``state``,
+Action state lives on ``commander.status.action`` (``history``, ``state``,
 ``current_name``). This service holds the per-session bookkeeping needed to
 coalesce repeated commands and detect command transitions from the raw
 ``StatusBuffer`` fields.
 
-``process_status`` is called from the status consumer once per tick; it
-mutates ``commander.status.action.history`` in place and reassigns it
-wholesale on coalesce so bindings against ``Action.history`` fire. It also
-calls ``Action.notify_changed()`` after any mutation so listeners (the
-readout panel's HTML rebuild) can refresh.
+``process_status`` is called from the status consumer once per tick; on any
+change it reassigns ``commander.status.action.history`` wholesale and calls
+``Action.notify_changed()`` so the readout panel's change listener rebuilds
+its HTML. (Nothing value-binds ``Action.history``; the listener is what drives
+the refresh.)
 """
 
 from __future__ import annotations
@@ -114,8 +114,8 @@ class ActionLogService:
             changed = True
 
         if changed:
-            # Reassign wholesale so bindings to `history` fire; then notify
-            # change listeners so the readout HTML rebuilds.
+            # Reassign wholesale (a new list) and notify change listeners so
+            # the readout's listener rebuilds its HTML.
             action.history = list(entries)
             action.notify_changed()
             self._tail_executing = (

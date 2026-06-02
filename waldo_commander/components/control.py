@@ -947,7 +947,10 @@ class ControlPanel:
         for i, ax in enumerate(_AXIS_ORDER):
             en = en_trf if i >= 6 else en_wrf
             elem = self._cart_axis_imgs.get(ax)
-            self._set_strong_disabled(elem, not bool(en[i]))
+            # Default to disabled if the per-frame list is short (shouldn't
+            # happen — availability lists are always 12 wide — but never jog
+            # on missing data).
+            self._set_strong_disabled(elem, i >= len(en) or not bool(en[i]))
 
         self._last_editing_mode = editing_mode
         self._last_cart_en_tuple = current_tuple

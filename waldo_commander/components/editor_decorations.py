@@ -8,8 +8,9 @@ executing-line highlight (the launching tab). Flash decorations stay on
 the active tab because their callers (``EditorPanel.add_target_code`` and
 the motion recorder) always target the user's current edit surface.
 
-Clears the executing-line highlight automatically when no program is running
-transitions from True to False (via the state listener registered in __init__).
+Clears the executing-line highlight automatically on the
+``is_any_program_running()`` True→False edge (via the state listener
+registered in __init__).
 """
 
 from __future__ import annotations
