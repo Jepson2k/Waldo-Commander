@@ -353,8 +353,10 @@ def reset_all_state() -> None:
     # their services so each service's own bookkeeping (dedup cursors) is
     # cleared alongside the public surface it writes to.
     from waldo_commander.services.action_log import action_log_service
+    from waldo_commander.services.control_lease import control_lease
 
     action_log_service.clear()
+    control_lease.reset()
     import waldoctl
 
     try:

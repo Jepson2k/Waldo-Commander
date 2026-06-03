@@ -5,6 +5,7 @@ from __future__ import annotations
 import waldoctl
 
 from waldo_commander.mcp.server import get_mcp
+from waldo_commander.mcp.tools.control import require_mcp_control
 
 mcp = get_mcp()
 
@@ -18,7 +19,11 @@ def _active():
 
 @mcp.tool(name="execution.run_active")
 def run_active() -> None:
-    """Start the active program. Raises if any program is already running."""
+    """Start the active program. Raises if any program is already running.
+
+    Requires holding the control lease (running a program actuates the robot).
+    """
+    require_mcp_control()
     _active().execution.run()
 
 
@@ -36,7 +41,11 @@ def pause_active() -> None:
 
 @mcp.tool(name="execution.resume_active")
 def resume_active() -> None:
-    """Resume the active program from pause."""
+    """Resume the active program from pause.
+
+    Requires holding the control lease (resuming actuates the robot).
+    """
+    require_mcp_control()
     _active().execution.resume()
 
 
