@@ -98,3 +98,23 @@ class ControlLease:
 
 
 control_lease = ControlLease()
+
+
+def browser_try_acquire(client_id: str | None) -> bool:
+    """Whether the active browser tab ``client_id`` may actuate the robot.
+
+    Claims a free lease (or transfers it from a previous/stale browser tab) so
+    the active tab is the default controller, but never steals from a *live* MCP
+    holder — while an AI is driving, the human must press "Take control"
+    (an explicit :meth:`ControlLease.seize`). Returns ``True`` if the browser
+    holds control after the call, ``False`` if MCP is driving.
+    """
+    if client_id is None:
+        return True  # pre-init / tests without a live client — don't block
+    if control_lease.held_by(BROWSER, client_id):
+        return True  # already holds — no re-seize (called on every jog tick)
+    h = control_lease.holder()
+    if h is not None and h.channel == MCP:
+        return False  # an AI session is driving; seizing is explicit
+    control_lease.seize(BROWSER, client_id, "Browser")
+    return True

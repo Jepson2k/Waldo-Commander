@@ -65,6 +65,11 @@ from waldo_commander.services.urdf_scene import (
 )
 from waldo_commander.mcp import start_mcp_server, stop_mcp_server
 from waldo_commander.services.action_log import action_log_service
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    browser_try_acquire,
+    control_lease,
+)
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
@@ -409,6 +414,7 @@ async def check_ping() -> None:
         readout_panel.update_conn_io()
     if control_panel is not None:
         control_panel.sync_gizmo_for_jog_state()
+        control_panel.refresh_control_indicator()
 
 
 # --------------- UI Update Functions ---------------
@@ -1253,6 +1259,10 @@ async def index_page():
     if held_id is None or held_id not in Client.instances:
         ui_state.active_client_id = this_client.id
     is_active = ui_state.active_client_id == this_client.id
+    if is_active:
+        # The active tab is the default controller — claim the lease when it's
+        # free or held by a prior browser tab (but not from a live MCP holder).
+        browser_try_acquire(this_client.id)
 
     def _on_disconnect():
         # Synchronous handler so the active-slot release happens *inline*
@@ -1261,6 +1271,7 @@ async def index_page():
         # on refresh.
         global _page_state
         if ui_state.active_client_id == this_client.id:
+            control_lease.release(BROWSER, this_client.id)
             ui_state.active_client_id = None
         # Editor + page-state teardown must only run for the active client.
         # A shadow tab disconnecting must not touch the active tab's

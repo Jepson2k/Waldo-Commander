@@ -17,11 +17,13 @@ from nicegui.testing import User
 from tests.helpers.wait import wait_for_app_ready
 from tests.test_mcp_server import _payload
 from waldo_commander.mcp.server import get_mcp
+from waldo_commander.services import control_lease as cl
 from waldo_commander.services.control_lease import (
     BROWSER,
     MCP,
     MCP_TTL_SECONDS,
     ControlLease,
+    browser_try_acquire,
     control_lease,
 )
 from waldo_commander.state import ui_state
@@ -124,5 +126,64 @@ async def test_mcp_blocked_while_browser_holds_then_take_control(user: User) -> 
             await client.call_tool("control.release_control")
             controller = _payload(await client.call_tool("control.get_controller"))
             assert controller["holder"] == "no one"
+    finally:
+        control_lease.reset()
+
+
+def test_browser_try_acquire(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The browser gate: claim a free lease, transfer between browser tabs, but
+    never steal from a live MCP holder."""
+    control_lease.reset()
+    # Make "b1"/"b2" look like live nicegui clients so the browser holder isn't
+    # treated as stale.
+    monkeypatch.setattr(cl.Client, "instances", {"b1": object(), "b2": object()})
+    try:
+        # Free → the browser claims control.
+        assert browser_try_acquire("b1") is True
+        assert control_lease.held_by(BROWSER, "b1")
+        # Already holds → still True (no churn).
+        assert browser_try_acquire("b1") is True
+        # A different (active) browser tab transfers the lease to itself.
+        assert browser_try_acquire("b2") is True
+        assert control_lease.held_by(BROWSER, "b2")
+        assert not control_lease.held_by(BROWSER, "b1")
+        # A live MCP holder is never stolen from by a passive browser claim.
+        control_lease.seize(MCP, "s1", "MCP s1")
+        assert browser_try_acquire("b1") is False
+        assert control_lease.held_by(MCP, "s1")
+        # No client id (pre-init / headless) never blocks.
+        assert browser_try_acquire(None) is True
+    finally:
+        control_lease.reset()
+
+
+@pytest.mark.integration
+async def test_browser_is_default_holder_and_can_reclaim(user: User) -> None:
+    """The active browser tab holds control by default; an MCP session can seize
+    it, and the human reclaims it explicitly (the Take-control handoff)."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    browser_id = ui_state.active_client_id
+    assert browser_id
+    # Default holder: the active tab holds the lease out of the box (index_page).
+    assert control_lease.held_by(BROWSER, browser_id)
+
+    mcp = get_mcp()
+    try:
+        async with Client(mcp) as client:
+            # MCP seizes → the browser loses control and won't steal it back
+            # passively (only the explicit Take-control button does).
+            await client.call_tool("control.take_control")
+            assert not control_lease.held_by(BROWSER, browser_id)
+            assert browser_try_acquire(browser_id) is False
+
+            # Human presses Take control → browser reclaims; MCP is now refused.
+            control_lease.seize(BROWSER, browser_id, "Browser")
+            assert control_lease.held_by(BROWSER, browser_id)
+            with pytest.raises(ToolError, match="controlled by"):
+                await client.call_tool(
+                    "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+                )
     finally:
         control_lease.reset()

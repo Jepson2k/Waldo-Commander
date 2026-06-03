@@ -26,6 +26,11 @@ from waldo_commander.state import (
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import SettingsContent
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    browser_try_acquire,
+    control_lease,
+)
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 
@@ -578,6 +583,11 @@ class ControlPanel:
         self.client = client
         self._ui_client: Any = None  # NiceGUI client for background task UI ops
 
+        # Control-lease indicator (shown only when another controller — an
+        # MCP/AI session — holds the lease; offers a Take-control button).
+        self._control_indicator_row: ui.row | None = None
+        self._control_indicator_label: ui.label | None = None
+
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
         self._joint_right_btns: dict[int, ui.button] = {}
@@ -983,6 +993,14 @@ class ControlPanel:
             if notify:
                 ui.notify("Script is running — jog disabled", color="warning")
             return False
+        if not browser_try_acquire(ui_state.active_client_id):
+            if notify:
+                ui.notify(
+                    f"{control_lease.describe()} is controlling the robot — "
+                    "click Take control to take over",
+                    color="warning",
+                )
+            return False
         if (
             waldoctl.commander.status.simulator_active
             or waldoctl.commander.status.connected
@@ -995,6 +1013,58 @@ class ControlPanel:
                 icon="error",
             )
         return False
+
+    # ---- Control-lease indicator ----
+
+    def _build_control_indicator(self) -> None:
+        """Compact banner shown only when another controller (an MCP/AI session)
+        holds the control lease. Names the holder and offers a Take-control
+        button so the human can seize control back. Hidden while this browser
+        tab holds control (or no one does)."""
+        row = (
+            ui.row()
+            .classes(
+                "items-center gap-2 w-full px-2 py-1 rounded-md "
+                "bg-amber-500/15 border border-amber-500/30"
+            )
+            .mark("control-lease-indicator")
+        )
+        self._control_indicator_row = row
+        with row:
+            ui.icon("smart_toy").classes("text-amber-600 text-base")
+            self._control_indicator_label = ui.label("").classes(
+                "text-xs text-amber-700 dark:text-amber-300 flex-grow truncate"
+            )
+            ui.button("Take control", on_click=self._take_control).props(
+                "dense flat color=amber"
+            ).mark("btn-take-control")
+        row.set_visibility(False)
+
+    def _take_control(self) -> None:
+        """Explicitly seize the control lease for this browser tab — the
+        'anyone can seize, always visible' handoff, overriding a live MCP
+        holder."""
+        cid = ui_state.active_client_id
+        if cid is None:
+            return
+        control_lease.seize(BROWSER, cid, "Browser")
+        self.refresh_control_indicator()
+        ui.notify("You're in control of the robot", color="positive")
+
+    def refresh_control_indicator(self) -> None:
+        """Show/hide the indicator based on who holds the lease. Driven by the
+        1 Hz active-tab ping loop (``main.check_ping``)."""
+        row = self._control_indicator_row
+        label = self._control_indicator_label
+        if row is None or label is None:
+            return
+        h = control_lease.holder()
+        other = h is not None and not control_lease.held_by(
+            BROWSER, ui_state.active_client_id or ""
+        )
+        if other and h is not None:
+            label.text = f"{h.label} is controlling the robot"
+        row.set_visibility(other)
 
     # ---- Joint jog methods ----
 
@@ -2014,6 +2084,7 @@ class ControlPanel:
                     self.tool_actions.build()
 
                 self._build_action_row()
+                self._build_control_indicator()
 
             # Jog controls (tabs + grids)
             self.render_jog_content()

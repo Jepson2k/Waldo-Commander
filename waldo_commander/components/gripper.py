@@ -13,8 +13,9 @@ from waldoctl import (
 
 from waldo_commander.constants import config
 from waldo_commander.services.camera_service import camera_service
+from waldo_commander.services.control_lease import browser_try_acquire, control_lease
 from waldo_commander.services.motion_recorder import motion_recorder
-from waldo_commander.state import robot_state
+from waldo_commander.state import robot_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,11 @@ class GripperPage:
     # ---- Actions ----
 
     async def _grip_set(self, position: float, label: str) -> None:
+        if not browser_try_acquire(ui_state.active_client_id):
+            ui.notify(
+                f"{control_lease.describe()} is controlling the robot", color="warning"
+            )
+            return
         try:
             tool = self._get_active_gripper()
             if tool is None:
@@ -348,6 +354,11 @@ class GripperPage:
         waldoctl.commander.settings.gripper.current = int(value)
         self._mark_lines_dirty = True
         if not self._user_dragging:
+            return
+        if not browser_try_acquire(ui_state.active_client_id):
+            ui.notify(
+                f"{control_lease.describe()} is controlling the robot", color="warning"
+            )
             return
         # Send position command with current target position and updated current limit
         tool = self._get_active_gripper()
