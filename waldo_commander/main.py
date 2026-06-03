@@ -1653,9 +1653,6 @@ def main():
     commander.settings.mcp.port = int(
         ng_app.storage.general.get("mcp/port", commander.settings.mcp.port)
     )
-    commander.settings.mcp.auth_token = ng_app.storage.general.get(
-        "mcp/auth_token", None
-    )
     commander.settings.mcp.allow_motion = bool(
         ng_app.storage.general.get("mcp/allow_motion", True)
     )

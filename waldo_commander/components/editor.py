@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import waldoctl
 from nicegui import context, ui
-from waldoctl import Program
+from waldoctl import EditId, Program
 
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import REPO_ROOT
@@ -344,6 +344,10 @@ class EditorPanel(FileOperationsMixin):
         """Per-page cleanup — remove listeners and cancel timers registered
         during ``build()``. Idempotent: safe to call from both
         ``_on_disconnect`` and ``_on_shutdown``."""
+        # Edit listeners live on the process-global tab.edits notifier; drop
+        # them so closures don't accumulate across page (re)builds.
+        for tab_id in list(self._tab_widgets):
+            self._unsubscribe_from_edits(tab_id)
         if self._tab_switch_render_task is not None:
             self._tab_switch_render_task.cancel()
             self._tab_switch_render_task = None
@@ -740,7 +744,7 @@ class EditorPanel(FileOperationsMixin):
                         f"reject-edit-{edit.id.value}"
                     )
 
-    def _approve_edit(self, tab_id: str, edit_id) -> None:
+    def _approve_edit(self, tab_id: str, edit_id: EditId) -> None:
         tab = waldoctl.commander.programs.get(tab_id)
         if tab is None:
             return
@@ -751,7 +755,7 @@ class EditorPanel(FileOperationsMixin):
         except KeyError:
             ui.notify("Edit no longer pending", color="info")
 
-    def _reject_edit(self, tab_id: str, edit_id) -> None:
+    def _reject_edit(self, tab_id: str, edit_id: EditId) -> None:
         tab = waldoctl.commander.programs.get(tab_id)
         if tab is None:
             return
@@ -901,7 +905,12 @@ class EditorPanel(FileOperationsMixin):
 
         # Restore tabs from existing state (page refresh) or create initial tab
         if waldoctl.commander.programs.items:
-            # Clear stale UI references from previous page load
+            # Clear stale UI references from previous page load. Unsubscribe the
+            # edit listeners first: they live on the process-global tab.edits
+            # notifier, so dropping the _tab_widgets entries without removing
+            # them would leak one closure set per page (re)build.
+            for tab_id in list(self._tab_widgets):
+                self._unsubscribe_from_edits(tab_id)
             self._tab_widgets.clear()
 
             # Rebuild UI for each existing tab

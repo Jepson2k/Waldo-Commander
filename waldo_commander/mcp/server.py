@@ -73,7 +73,7 @@ async def start_mcp_server() -> None:
         return
 
     mcp = get_mcp()  # also triggers tool registration
-    logger.info("Starting MCP server on http://%s:%d/sse", settings.host, settings.port)
+    logger.info("Starting MCP server on http://%s:%d/mcp", settings.host, settings.port)
 
     async def _run() -> None:
         try:

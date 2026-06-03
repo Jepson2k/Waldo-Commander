@@ -483,17 +483,24 @@ class SettingsContent:
     def _build_mcp_server(self) -> None:
         """MCP server controls.
 
-        ``enabled``, ``host``, ``port``, and ``auth_token`` bind at server
-        start, so we notify "Reload to apply" when those change.
-        ``allow_motion`` is consulted per-tool-call, so it takes effect
-        live.
+        ``enabled``, ``host``, and ``port`` bind at server start, so we notify
+        "Restart to apply" when those change. ``allow_motion`` is consulted
+        per-tool-call, so it takes effect live. On a trusted LAN the server
+        runs over plain HTTP with no auth — single-controller arbitration is
+        the control lease (take_control), not a token.
         """
         mcp = waldoctl.commander.settings.mcp
 
         def _on_enabled_change(e):
             mcp.enabled = bool(e.value)
             ng_app.storage.general["mcp/enabled"] = mcp.enabled
-            ui.notify("Reload to apply", color="info")
+            ui.notify("Restart to apply", color="info")
+
+        def _on_host_change(e):
+            host = (e.value or "").strip() or "127.0.0.1"
+            mcp.host = host
+            ng_app.storage.general["mcp/host"] = host
+            ui.notify("Restart to apply", color="info")
 
         def _on_port_change(e):
             try:
@@ -502,41 +509,34 @@ class SettingsContent:
                 return
             mcp.port = port
             ng_app.storage.general["mcp/port"] = port
-            ui.notify("Reload to apply", color="info")
-
-        def _on_token_change(e):
-            token = e.value or None
-            mcp.auth_token = token
-            ng_app.storage.general["mcp/auth_token"] = token
-            ui.notify("Reload to apply", color="info")
+            ui.notify("Restart to apply", color="info")
 
         def _on_allow_motion_change(e):
             mcp.allow_motion = bool(e.value)
             ng_app.storage.general["mcp/allow_motion"] = mcp.allow_motion
 
         with _setting_row(
-            "MCP server", "Expose commander.* to an MCP client (reload to apply)"
+            "MCP server", "Expose commander.* to an MCP client (restart to apply)"
         ):
             ui.switch(value=mcp.enabled, on_change=_on_enabled_change).props(
                 "dense"
             ).mark("settings-mcp-enabled")
 
-        with _setting_row("MCP port", "Listening port for HTTP/SSE"):
+        with _setting_row(
+            "MCP host", "Bind address — 127.0.0.1 (local) or a LAN address / 0.0.0.0"
+        ):
+            ui.input(
+                value=mcp.host,
+                on_change=_on_host_change,
+            ).classes("w-40").props("dense").mark("settings-mcp-host")
+
+        with _setting_row("MCP port", "Listening port for streamable HTTP"):
             ui.number(
                 value=mcp.port,
                 min=1,
                 max=65535,
                 on_change=_on_port_change,
             ).classes("w-24").props("dense").mark("settings-mcp-port")
-
-        with _setting_row(
-            "MCP auth token", "Bearer token clients must present (blank = none)"
-        ):
-            ui.input(
-                value=mcp.auth_token or "",
-                password=True,
-                on_change=_on_token_change,
-            ).classes("w-40").props("dense").mark("settings-mcp-token")
 
         with _setting_row(
             "Allow motion via MCP", "When off, motion tools refuse cleanly"

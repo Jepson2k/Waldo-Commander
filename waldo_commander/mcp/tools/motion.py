@@ -14,9 +14,8 @@ intentionally not exposed for v1 — let the LLM compose them through
 
 from __future__ import annotations
 
-from typing import Literal
-
 import waldoctl
+from waldoctl.types import Axis, Frame
 
 from waldo_commander.mcp.server import get_mcp
 
@@ -48,7 +47,7 @@ async def move_j(
 @mcp.tool(name="motion.move_l")
 async def move_l(
     pose: list[float],
-    frame: Literal["WRF", "TRF"] = "WRF",
+    frame: Frame = "WRF",
     speed: float = 0.5,
     accel: float = 1.0,
     wait: bool = False,
@@ -76,8 +75,8 @@ async def jog_j(joint: int, speed: float, duration: float = 0.1) -> int:
 
 @mcp.tool(name="motion.jog_l")
 async def jog_l(
-    frame: Literal["WRF", "TRF"],
-    axis: Literal["X", "Y", "Z", "RX", "RY", "RZ"],
+    frame: Frame,
+    axis: Axis,
     speed: float,
     duration: float = 0.1,
 ) -> int:
