@@ -1024,8 +1024,8 @@ class ControlPanel:
         row = (
             ui.row()
             .classes(
-                "items-center gap-2 w-full px-2 py-1 rounded-md "
-                "bg-amber-500/15 border border-amber-500/30"
+                "control-lease-indicator items-center gap-2 w-full px-2 py-1 "
+                "rounded-md bg-amber-500/15 border border-amber-500/30"
             )
             .mark("control-lease-indicator")
         )
@@ -1037,7 +1037,7 @@ class ControlPanel:
             )
             ui.button("Take control", on_click=self._take_control).props(
                 "dense flat color=amber"
-            ).mark("btn-take-control")
+            ).classes("btn-take-control").mark("btn-take-control")
         row.set_visibility(False)
 
     def _take_control(self) -> None:

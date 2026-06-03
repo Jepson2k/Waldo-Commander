@@ -1,0 +1,60 @@
+"""Browser (screen-fixture) test for the control-lease indicator UI.
+
+Covers the real-DOM behavior the ``user``-fixture tests can't: when an MCP
+session holds control the active browser shows a take-control banner, and the
+human's "Take control" click reclaims control and hides it again. The lease
+singleton is shared between the in-process app and the test, so the test plays
+the MCP side by seizing the lease directly.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import pytest
+from selenium.webdriver.common.by import By
+
+from tests.conftest import skip_webgl_macos_ci
+from tests.helpers.browser_helpers import dismiss_dialogs
+from tests.helpers.wait import (
+    screen_wait_for_element,
+    screen_wait_for_element_hidden,
+    screen_wait_for_element_visible,
+)
+from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
+from waldo_commander.state import ui_state
+
+if TYPE_CHECKING:
+    from nicegui.testing.screen import Screen
+
+
+@pytest.mark.browser
+@skip_webgl_macos_ci
+def test_control_lease_indicator_and_take_control(screen: "Screen") -> None:
+    control_lease.reset()
+    try:
+        screen.open("/")
+        # Control panel (and its lease banner) rendered.
+        assert screen_wait_for_element(screen, ".control-lease-indicator", 30.0)
+        # Clear the startup tutorial dialog so its backdrop doesn't swallow clicks.
+        dismiss_dialogs(screen)
+
+        # Default holder: the active browser tab is in control → banner hidden.
+        assert screen_wait_for_element_hidden(screen, ".control-lease-indicator", 5.0)
+        assert control_lease.held_by(BROWSER, ui_state.active_client_id)
+
+        # An MCP session seizes control. The 1 Hz active-tab loop (check_ping)
+        # refreshes the indicator, so the banner appears within ~1s.
+        control_lease.seize(MCP, "screen-mcp", "MCP session screen-m")
+        assert screen_wait_for_element_visible(screen, ".control-lease-indicator", 5.0)
+        banner = screen.selenium.find_element(
+            By.CSS_SELECTOR, ".control-lease-indicator"
+        )
+        assert "controlling the robot" in banner.text
+
+        # Human presses Take control → browser reclaims, banner hides again.
+        screen.selenium.find_element(By.CSS_SELECTOR, ".btn-take-control").click()
+        assert screen_wait_for_element_hidden(screen, ".control-lease-indicator", 5.0)
+        assert control_lease.held_by(BROWSER, ui_state.active_client_id)
+    finally:
+        control_lease.reset()
