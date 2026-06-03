@@ -471,7 +471,7 @@ class SettingsContent:
         """
         plugins = waldoctl.commander.settings.plugins
         discovered = list(iter_plugin_panels())
-        known_ids = {cls.id for cls in discovered if hasattr(cls, "id")}
+        known_ids = {cls.id for cls in discovered}
 
         stale = [pid for pid in plugins.disabled_panels if pid not in known_ids]
         if stale:
@@ -499,14 +499,14 @@ class SettingsContent:
                     current.append(panel_id)
                 plugins.disabled_panels = current
                 ng_app.storage.general["plugins/disabled_panels"] = current
-                ui.notify("Reload to apply", color="info")
+                ui.notify("Restart to apply", color="info")
 
             return _handler
 
         for cls in discovered:
             panel_id = cls.id
-            label = getattr(cls, "display_name", panel_id)
-            with _setting_row(label, f"Plugin id: {panel_id} (reload to apply)"):
+            label = cls.display_name
+            with _setting_row(label, f"Plugin id: {panel_id} (restart to apply)"):
                 ui.switch(
                     value=panel_id not in plugins.disabled_panels,
                     on_change=_on_toggle(panel_id),

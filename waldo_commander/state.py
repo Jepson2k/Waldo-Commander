@@ -233,6 +233,9 @@ class UiState:
     # Plugin panels discovered via the `waldoctl.panels` entry-point group.
     # Populated once per page build; ordered by (slot, order, id).
     plugin_panels: list[Panel] = field(default_factory=list)
+    # True once Panel.start() has run for the discovered panels this process
+    # (start runs once; cleared on teardown via reset()).
+    _plugin_panels_started: bool = False
 
     # Post-init required fields (assert on access, set via assignment)
     editor_panel = _RequiredField()
@@ -252,8 +255,7 @@ class UiState:
         self.urdf_scene = None
         self.active_client_id = None
         self.plugin_panels = []
-        if hasattr(self, "_plugin_panels_started"):
-            self._plugin_panels_started = False
+        self._plugin_panels_started = False
 
 
 # ===========================================================================

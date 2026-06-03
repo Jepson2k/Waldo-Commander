@@ -517,7 +517,11 @@ def update_ui_from_status() -> None:
 def _discover_plugin_panels() -> None:
     """Populate ``ui_state.plugin_panels`` from the ``waldoctl.panels`` group.
 
-    Idempotent: skips work if already populated. Plugins listed in
+    Cached for the process: once any panel is discovered the populated list
+    short-circuits further scans. (With no plugins installed the result is empty
+    and falsy, so the entry-point scan re-runs per call — cheap, page-build
+    only.) ``iter_plugin_panels`` has already validated each class, so ``cls.id``
+    / ``cls.slot`` are accessed without guards. Plugins listed in
     ``commander.settings.plugins.disabled_panels`` are skipped before
     instantiation. Survivors whose ``applies_to(commander)`` returns ``False``
     are then filtered out. Final order is ``(slot, order, id)`` so tab layout
@@ -529,7 +533,7 @@ def _discover_plugin_panels() -> None:
     disabled = set(commander.settings.plugins.disabled_panels)
     panels: list[Panel] = []
     for cls in iter_plugin_panels():
-        if getattr(cls, "id", None) in disabled:
+        if cls.id in disabled:
             continue
         try:
             p = cls()
@@ -539,6 +543,30 @@ def _discover_plugin_panels() -> None:
             logger.warning("Plugin panel %s init failed: %s", cls, e)
     panels.sort(key=lambda p: (p.slot.value, p.order, p.id))
     ui_state.plugin_panels = panels
+
+
+def _add_plugin_tabs(slot: PanelSlot) -> None:
+    """Add a ``ui.tab`` for each discovered plugin panel in *slot*.
+
+    Call inside the relevant ``ui.tabs()`` context.
+    """
+    for p in ui_state.plugin_panels:
+        if p.slot is slot:
+            tab = ui.tab(name=p.id, label="", icon=p.tab_icon or "extension")
+            if p.tab_tooltip:
+                tab.tooltip(p.tab_tooltip)
+            tab.mark(f"tab-{p.id}")
+
+
+def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
+    """Add a built ``ui.tab_panel`` for each discovered plugin panel in *slot*.
+
+    Call inside the relevant ``ui.tab_panels()`` context.
+    """
+    for p in ui_state.plugin_panels:
+        if p.slot is slot:
+            with ui.tab_panel(p.id).classes("gap-2 overlay-card overflow-hidden"):
+                p.build(commander)
 
 
 def _build_left_panels(panels_wrap: ui.element) -> dict:
@@ -567,12 +595,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         gripper_tab.mark("tab-gripper")
         ui_state._gripper_tab = gripper_tab
 
-        for p in ui_state.plugin_panels:
-            if p.slot is PanelSlot.LEFT_TOP_TAB:
-                _tab = ui.tab(name=p.id, label="", icon=p.tab_icon or "extension")
-                if p.tab_tooltip:
-                    _tab.tooltip(p.tab_tooltip)
-                _tab.mark(f"tab-{p.id}")
+        _add_plugin_tabs(PanelSlot.LEFT_TOP_TAB)
 
     # ---- Top panels container ----
     with (
@@ -669,10 +692,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
 
             ui_state._build_gripper_content = _build_gripper_content
 
-        for p in ui_state.plugin_panels:
-            if p.slot is PanelSlot.LEFT_TOP_TAB:
-                with ui.tab_panel(p.id).classes("gap-2 overlay-card overflow-hidden"):
-                    p.build(commander)
+        _add_plugin_tab_panels(PanelSlot.LEFT_TOP_TAB, commander)
 
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
@@ -700,12 +720,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         help_tab.tooltip("Help")
         help_tab.mark("tab-help")
 
-        for p in ui_state.plugin_panels:
-            if p.slot is PanelSlot.LEFT_BOTTOM_TAB:
-                _tab = ui.tab(name=p.id, label="", icon=p.tab_icon or "extension")
-                if p.tab_tooltip:
-                    _tab.tooltip(p.tab_tooltip)
-                _tab.mark(f"tab-{p.id}")
+        _add_plugin_tabs(PanelSlot.LEFT_BOTTOM_TAB)
 
     # ---- Bottom panels container ----
     with (
@@ -741,10 +756,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui.element("div").classes("resize-handle-right")
             ui.element("div").classes("resize-handle-corner")
 
-        for p in ui_state.plugin_panels:
-            if p.slot is PanelSlot.LEFT_BOTTOM_TAB:
-                with ui.tab_panel(p.id).classes("gap-2 overlay-card overflow-hidden"):
-                    p.build(commander)
+        _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
         def update_bottom_layout():
             is_open = bool(bottom_tabs.value)
@@ -983,7 +995,7 @@ async def _start_plugin_panels() -> None:
     others.  Idempotent via ``ui_state._plugin_panels_started`` so tab
     reloads don't restart already-running tasks.
     """
-    if getattr(ui_state, "_plugin_panels_started", False):
+    if ui_state._plugin_panels_started:
         return
     _discover_plugin_panels()
     commander = waldoctl.commander
@@ -1001,15 +1013,20 @@ async def _stop_plugin_panels() -> None:
     """Run ``Panel.stop`` for every discovered plugin panel.
 
     Each ``stop`` is bounded by a 2-second timeout so a misbehaving plugin
-    cannot block app shutdown.  Errors are logged, never raised.
+    cannot block app shutdown, and the stops run concurrently (mirroring
+    ``_start_plugin_panels``) so N stuck plugins add ~2s to shutdown, not
+    N*2s.  Errors are logged, never raised.
     """
-    for p in ui_state.plugin_panels:
+
+    async def _stop_one(p: Panel) -> None:
         try:
             await asyncio.wait_for(p.stop(), timeout=2.0)
         except asyncio.TimeoutError:
             logger.warning("Plugin panel %r stop timed out", p.id)
         except Exception as e:
             logger.warning("Plugin panel %r stop failed: %s", p.id, e)
+
+    await asyncio.gather(*(_stop_one(p) for p in ui_state.plugin_panels))
 
 
 def _register_handlers() -> None:
