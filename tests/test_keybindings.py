@@ -20,8 +20,8 @@ from tests.helpers.wait import wait_for_app_ready
 
 @pytest.mark.integration
 async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
-    """`]` and `[` must update the rating widget, ui_state, storage, icon
-    color, and tooltip in lockstep.
+    """`]` and `[` must update the rating widget, commander.settings.jog.speed,
+    storage, icon color, and tooltip in lockstep.
 
     Regression for the bug where the keybinding only mutated
     ``waldoctl.commander.settings.jog.speed`` so the underlying jog actions used the new
@@ -65,7 +65,7 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
         # `]` action — should advance by one step.
         inc_binding.action()
         assert waldoctl.commander.settings.jog.speed == 60, (
-            "ui_state should advance to 60"
+            "jog speed should advance to 60"
         )
         assert rating.value == 6, "rating widget should reflect new step"
         assert app.storage.general["jog_speed"] == 60, "storage should persist"

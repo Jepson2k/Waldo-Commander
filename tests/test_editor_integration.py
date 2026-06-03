@@ -180,14 +180,14 @@ async def test_commands_button_clickable(user: User) -> None:
 
 @pytest.mark.integration
 async def test_record_button_toggles(user: User, robot_state) -> None:
-    """Test that the record button toggles recording_state and changes appearance.
+    """Test that the record button toggles recording and changes appearance.
 
     When recording starts:
-    - recording_state.is_recording becomes True
+    - is_any_program_recording() becomes True
     - Button color changes from negative (red) to warning (amber)
 
     When recording stops:
-    - recording_state.is_recording becomes False
+    - is_any_program_recording() becomes False
     - Button color changes back to negative (red)
     """
     from waldo_commander.state import ui_state

@@ -473,12 +473,12 @@ def update_ui_from_status() -> None:
     pub_tool = waldoctl.commander.status.tool
     tool_key_changed = ts.key != pub_tool.key
     pub_tool.key = ts.key
-    pub_tool.positions = tuple(ts.positions)
+    pub_tool.positions = ts.positions
     pub_tool.engaged = ts.engaged
     pub_tool.part_detected = ts.part_detected
     pub_tool.state = ts.state
     pub_tool.fault_code = ts.fault_code
-    pub_tool.channels = tuple(ts.channels)
+    pub_tool.channels = ts.channels
     _pos0 = pub_tool.positions[0] if pub_tool.positions else 0.0
     _cur0 = pub_tool.channels[0] if pub_tool.channels else 0.0
     robot_state.tool_time_series.push(_pos0, _cur0)

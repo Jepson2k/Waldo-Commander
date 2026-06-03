@@ -24,7 +24,7 @@ from tests.helpers.wait import (
 
 
 @pytest.mark.integration
-async def test_joint_jog_button_sends_jog_j(user: User, robot_state) -> None:
+async def test_joint_jog_button_sends_jog_j(user: User) -> None:
     """Clicking a joint jog button should result in joint motion.
 
     Ensures that when simulator mode is active, clicking the J1 + jog
@@ -56,7 +56,7 @@ async def test_joint_jog_button_sends_jog_j(user: User, robot_state) -> None:
 
 
 @pytest.mark.integration
-async def test_cartesian_axis_disabled_when_at_limit(user: User, robot_state) -> None:
+async def test_cartesian_axis_disabled_when_at_limit(user: User) -> None:
     """Verify cartesian axis buttons become disabled when at workspace limits.
 
     When the robot is at or near a cartesian workspace limit, the jog button
@@ -76,7 +76,7 @@ async def test_cartesian_axis_disabled_when_at_limit(user: User, robot_state) ->
 
 
 @pytest.mark.integration
-async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
+async def test_joint_jog_moves_both_directions(user: User) -> None:
     """Verify joint jog buttons move by step amount in both directions.
 
     When a joint jog button is clicked briefly (not held), it should move
@@ -125,7 +125,7 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
 
 
 @pytest.mark.integration
-async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
+async def test_cartesian_jog_all_axes(user: User) -> None:
     """Verify cartesian jog buttons move correctly in all axes.
 
     Tests Z+, Z-, and RZ+ to cover translation and rotation.
@@ -199,7 +199,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
 
 
 @pytest.mark.integration
-async def test_joint_jog_one_degree_step(user: User, robot_state) -> None:
+async def test_joint_jog_one_degree_step(user: User) -> None:
     """Verify single click with 1.0° step moves exactly 1 degree.
 
     Regression test for step precision with small step sizes.
@@ -239,7 +239,7 @@ async def test_joint_jog_one_degree_step(user: User, robot_state) -> None:
 
 
 @pytest.mark.integration
-async def test_cartesian_jog_one_mm_step(user: User, robot_state) -> None:
+async def test_cartesian_jog_one_mm_step(user: User) -> None:
     """Verify single click with 1.0mm step moves exactly 1mm.
 
     Regression test for cartesian step precision with small step sizes.
@@ -283,7 +283,7 @@ async def test_cartesian_jog_one_mm_step(user: User, robot_state) -> None:
     reason="Timing-dependent: CI runners may not complete all motion steps",
 )
 @pytest.mark.integration
-async def test_joint_jog_rapid_clicks(user: User, robot_state) -> None:
+async def test_joint_jog_rapid_clicks(user: User) -> None:
     """Verify rapid clicking accumulates steps correctly.
 
     When clicking multiple times in quick succession, each click should
@@ -342,7 +342,7 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state) -> None:
     reason="Timing-dependent: CI runners may not complete all motion steps",
 )
 @pytest.mark.integration
-async def test_cartesian_jog_rapid_clicks(user: User, robot_state) -> None:
+async def test_cartesian_jog_rapid_clicks(user: User) -> None:
     """Verify rapid cartesian clicking accumulates steps correctly.
 
     When clicking multiple times in quick succession, each click should
@@ -397,7 +397,7 @@ async def test_cartesian_jog_rapid_clicks(user: User, robot_state) -> None:
 
 
 @pytest.mark.integration
-async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -> None:
+async def test_go_to_joint_limit_reaches_actual_limit(user: User) -> None:
     """Go-to-limit buttons should move the joint to its actual limit.
 
     Clicking a joint limit button should result in the joint reaching

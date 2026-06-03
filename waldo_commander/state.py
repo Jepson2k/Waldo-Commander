@@ -350,7 +350,8 @@ def reset_all_state() -> None:
     playback_coordination.reset()
     readiness_state.reset()
     # Editor tabs / action log live on the commander locator now; reset via
-    # their services so the public surface stays in sync with WC's mirrors.
+    # their services so each service's own bookkeeping (dedup cursors) is
+    # cleared alongside the public surface it writes to.
     from waldo_commander.services.action_log import action_log_service
 
     action_log_service.clear()

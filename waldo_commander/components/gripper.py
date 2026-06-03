@@ -343,7 +343,7 @@ class GripperPage:
         await self._grip_set(pos, "Set")
 
     async def _on_current_slider_change(self, e) -> None:
-        """Sync current slider value to ui_state, update markLine, and send to gripper."""
+        """Sync current slider value to commander.settings.gripper.current, update markLine, and send to gripper."""
         value = e.value
         waldoctl.commander.settings.gripper.current = int(value)
         self._mark_lines_dirty = True
