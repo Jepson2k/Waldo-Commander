@@ -20,6 +20,7 @@ from tests.helpers.wait import (
     screen_wait_for_element,
     screen_wait_for_element_hidden,
     screen_wait_for_element_visible,
+    screen_wait_for_scene_ready,
 )
 from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
 from waldo_commander.state import ui_state
@@ -34,8 +35,12 @@ def test_control_lease_indicator_and_take_control(screen: "Screen") -> None:
     control_lease.reset()
     try:
         screen.open("/")
+        # Deterministic readiness gate: wait for the page to finish building
+        # before touching the DOM (racing the control-panel build is what flaked
+        # this on a slow runner). Mirrors the other screen tests.
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
         # Control panel (and its lease banner) rendered.
-        assert screen_wait_for_element(screen, ".control-lease-indicator", 30.0)
+        assert screen_wait_for_element(screen, ".control-lease-indicator", 10.0)
         # Clear the startup tutorial dialog so its backdrop doesn't swallow clicks.
         dismiss_dialogs(screen)
 
