@@ -1,12 +1,12 @@
 name: tests
 
 on:
+  # Run once per change: pull_request covers PR branches; push covers main
+  # (and any direct, PR-less pushes to it). Avoids the duplicate push +
+  # pull_request runs on every PR commit.
   push:
-    paths:
-      - '**'
+    branches: [main]
   pull_request:
-    paths:
-      - '**'
 
 jobs:
   lint:
