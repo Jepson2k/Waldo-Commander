@@ -7,7 +7,7 @@ from nicegui import app as ng_app
 from nicegui import ui
 
 import waldoctl
-from waldoctl import EnvelopeMode, RobotClient, iter_plugin_panels
+from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
 
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.services.camera_service import (
@@ -512,6 +512,22 @@ class SettingsContent:
                     on_change=_on_toggle(panel_id),
                 ).props("dense").mark(f"settings-plugin-{panel_id}")
 
+    def _build_plugin_settings(self) -> None:
+        """Render settings for each enabled panel plugin that contributes any.
+        Owns its leading separator so nothing dangles when no plugin does."""
+        commander = waldoctl.commander
+        contributors = [
+            p
+            for p in ui_state.plugin_panels
+            if type(p).build_settings is not Panel.build_settings
+        ]
+        for panel in contributors:
+            ui.separator().classes("my-1")
+            ui.label(panel.display_name).classes("text-sm font-medium").mark(
+                f"settings-plugin-{panel.id}-header"
+            )
+            panel.build_settings(commander)
+
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):
             with ui.element("span").tooltip(
@@ -556,5 +572,7 @@ class SettingsContent:
             section()
             if i < len(sections) - 1:
                 ui.separator().classes("my-1")
+
+        self._build_plugin_settings()
 
         simulation_state.notify_changed()

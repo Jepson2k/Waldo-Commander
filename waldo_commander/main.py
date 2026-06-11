@@ -66,6 +66,7 @@ from waldo_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
+from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
 from waldo_commander.services.action_log import action_log_service
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
@@ -1736,6 +1737,7 @@ def main():
         status=RobotStatus(),
         programs=EditorPrograms(),
         settings=Settings(),
+        scene=WcSceneHandle(),
     )
     waldoctl._set_commander(commander)
 

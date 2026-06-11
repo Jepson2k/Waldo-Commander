@@ -146,9 +146,10 @@ async def test_tool_selection_changes_tool(user: User) -> None:
     tool_select = user.find(marker="select-tool")
     assert tool_select is not None, "Tool select should exist"
 
-    # Verify all 5 tools are available in the robot
+    # Native count stays 5; robot.tools may compose plugin tools on top.
+    native_tools = [t.key for t in ui_state.active_robot._native_tools.available]
+    assert len(native_tools) == 5, f"Expected 5 native tools, got {native_tools}"
     available_tools = [t.key for t in ui_state.active_robot.tools.available]
-    assert len(available_tools) == 5, f"Expected 5 tools, got {available_tools}"
     for expected in ("NONE", "PNEUMATIC", "SSG-48", "MSG", "VACUUM"):
         assert expected in available_tools, f"{expected} not in {available_tools}"
 
