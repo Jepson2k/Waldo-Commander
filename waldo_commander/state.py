@@ -233,11 +233,13 @@ class UiState:
     textareas_by_tab: dict[str, Any] = field(default_factory=dict)
 
     # Plugin panels discovered via the `waldoctl.panels` entry-point group.
-    # Populated once per page build; ordered by (slot, order, id).
+    # Populated on first page build and cached for the process (cleared via
+    # reset() in tests); ordered by (slot, order, id).
     plugin_panels: list[Panel] = field(default_factory=list)
-    # True once Panel.start() has run for the discovered panels this process
-    # (start runs once; cleared on teardown via reset()).
-    _plugin_panels_started: bool = False
+    # Ids of panels whose Panel.start() has run this process. Tracked per panel
+    # (not a single flag) so a panel discovered after an empty first build still
+    # gets started, and so the start guard can't be straddled by a reload race.
+    _started_panel_ids: set[str] = field(default_factory=set)
 
     # Post-init required fields (assert on access, set via assignment)
     editor_panel = _RequiredField()
@@ -257,7 +259,7 @@ class UiState:
         self.urdf_scene = None
         self.active_client_id = None
         self.plugin_panels = []
-        self._plugin_panels_started = False
+        self._started_panel_ids = set()
 
 
 # ===========================================================================

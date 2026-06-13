@@ -21,10 +21,21 @@ logger = logging.getLogger(__name__)
 
 
 class _NullScene:
-    """No-op stand-in so plugin draw calls are safe when no scene is live."""
+    """No-op stand-in so plugin draw calls are safe when no scene is live.
+
+    Supports the context-manager protocol so ``with null_scene.group():`` (the
+    usual NiceGUI scene-drawing idiom) is also a no-op — ``__getattr__`` alone
+    wouldn't, since ``with`` looks ``__enter__`` / ``__exit__`` up on the type.
+    """
 
     def __getattr__(self, _name: str):
         return lambda *a, **k: self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
 
 
 _NULL_SCENE = _NullScene()

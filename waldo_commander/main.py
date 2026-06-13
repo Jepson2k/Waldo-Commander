@@ -514,18 +514,21 @@ def update_ui_from_status() -> None:
         robot_state.notify_changed()
 
 
+# Core tab ids the frontend owns; a plugin claiming one would create duplicate
+# Quasar tab / tab_panel names and corrupt the layout, so discovery skips them.
+_RESERVED_TAB_IDS = frozenset({"program", "io", "gripper", "response", "log", "help"})
+
+
 def _discover_plugin_panels() -> None:
     """Populate ``ui_state.plugin_panels`` from the ``waldoctl.panels`` group.
 
     Cached for the process: once any panel is discovered the populated list
-    short-circuits further scans. (With no plugins installed the result is empty
-    and falsy, so the entry-point scan re-runs per call — cheap, page-build
-    only.) ``iter_plugin_panels`` has already validated each class, so ``cls.id``
-    / ``cls.slot`` are accessed without guards. Plugins listed in
-    ``commander.settings.plugins.disabled_panels`` are skipped before
-    instantiation. Survivors whose ``applies_to(commander)`` returns ``False``
-    are then filtered out. Final order is ``(slot, order, id)`` so tab layout
-    is deterministic.
+    short-circuits further scans (an empty result is falsy, so a no-plugins
+    install simply re-scans per page build — cheap). Plugins listed in
+    ``commander.settings.plugins.disabled_panels``, or whose id collides with a
+    core tab, are skipped; survivors whose ``applies_to(commander)`` returns
+    ``False`` are filtered out. Final order is ``(slot, order, id)`` so tab
+    layout is deterministic.
     """
     if ui_state.plugin_panels:
         return
@@ -534,6 +537,13 @@ def _discover_plugin_panels() -> None:
     panels: list[Panel] = []
     for cls in iter_plugin_panels():
         if cls.id in disabled:
+            continue
+        if cls.id in _RESERVED_TAB_IDS:
+            logger.warning(
+                "Skipping plugin panel %s: id %r collides with a core tab",
+                cls.__name__,
+                cls.id,
+            )
             continue
         try:
             p = cls()
@@ -815,9 +825,25 @@ def _setup_panel_persistence(refs: dict) -> None:
             try:
                 saved_tabs = await ui.run_javascript("PanelResize.getActiveTabs()")
                 if saved_tabs:
+                    # A persisted tab id can name a plugin that's since been
+                    # disabled / uninstalled; restoring it would select a tab
+                    # that no longer exists. Null out anything not currently a
+                    # core or discovered-plugin tab.
+                    top_valid = {"program", "io", "gripper"} | {
+                        p.id
+                        for p in ui_state.plugin_panels
+                        if p.slot is PanelSlot.LEFT_TOP_TAB
+                    }
+                    bottom_valid = {"response", "help"} | {
+                        p.id
+                        for p in ui_state.plugin_panels
+                        if p.slot is PanelSlot.LEFT_BOTTOM_TAB
+                    }
                     if "top" in saved_tabs:
                         top_tab = saved_tabs["top"]
-                        if top_tab == "gripper" and ui_state.gripper_page is None:
+                        if top_tab not in top_valid or (
+                            top_tab == "gripper" and ui_state.gripper_page is None
+                        ):
                             top_tab = None
                         side_tabs.value = top_tab
                         top_panels.value = top_tab
@@ -828,6 +854,8 @@ def _setup_panel_persistence(refs: dict) -> None:
                             )
                     if "bottom" in saved_tabs:
                         bottom_tab = saved_tabs["bottom"]
+                        if bottom_tab not in bottom_valid:
+                            bottom_tab = None
                         bottom_tabs.value = bottom_tab
                         bottom_panels.value = bottom_tab
                         update_bottom_layout()
@@ -988,23 +1016,26 @@ def _quiet_shutdown_exception_handler(
 
 
 async def _start_plugin_panels() -> None:
-    """Run ``Panel.start`` for every discovered plugin panel.
+    """Run ``Panel.start`` once per process for every discovered plugin panel.
 
-    Called once per session, after the page has been built so plugin UI
-    references are valid.  Errors in one plugin's ``start`` do not stop the
-    others.  Idempotent via ``ui_state._plugin_panels_started`` so tab
-    reloads don't restart already-running tasks.
+    Called after the page is built so plugin UI references are valid. Each
+    panel is marked started *before* its ``start`` is awaited, so a page reload
+    landing mid-start can't double-start it; only panels not yet started are
+    run, so a panel enabled/installed after an empty first build still starts.
+    Errors in one plugin's ``start`` do not stop the others.
     """
-    if ui_state._plugin_panels_started:
-        return
-    _discover_plugin_panels()
     commander = waldoctl.commander
+    pending = [
+        p for p in ui_state.plugin_panels if p.id not in ui_state._started_panel_ids
+    ]
+    if not pending:
+        return
+    ui_state._started_panel_ids.update(p.id for p in pending)
     results = await asyncio.gather(
-        *(p.start(commander) for p in ui_state.plugin_panels),
+        *(p.start(commander) for p in pending),
         return_exceptions=True,
     )
-    ui_state._plugin_panels_started = True
-    for p, r in zip(ui_state.plugin_panels, results):
+    for p, r in zip(pending, results):
         if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
             logger.warning("Plugin panel %r start failed: %s", p.id, r)
 

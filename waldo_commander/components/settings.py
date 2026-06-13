@@ -466,11 +466,12 @@ class SettingsContent:
         ``waldoctl.panels`` entry-point group). Toggling a row writes
         through to ``commander.settings.plugins.disabled_panels`` and the
         rehydrated ``app.storage.general`` slot; the change takes effect on
-        the next page reload. Stale ids — disabled entries whose plugin is
-        no longer installed — are stripped on each rebuild.
+        the next process start (panels are process-scoped singletons). Stale
+        ids — disabled entries whose plugin is no longer installed — are
+        stripped on each rebuild.
         """
         plugins = waldoctl.commander.settings.plugins
-        discovered = list(iter_plugin_panels())
+        discovered = iter_plugin_panels()
         known_ids = {cls.id for cls in discovered}
 
         stale = [pid for pid in plugins.disabled_panels if pid not in known_ids]

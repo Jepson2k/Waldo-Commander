@@ -72,40 +72,40 @@ def _patch_entry_points(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(importlib.metadata, "entry_points", fake_entry_points)
     ui_state.plugin_panels = []
-    ui_state._plugin_panels_started = False
+    ui_state._started_panel_ids = set()
     NotesPanel.start_called = False
     NotesPanel.stop_called = False
     NotesPanel.commander_seen = None
 
 
 @pytest.mark.integration
-async def test_external_panel_appears_as_tab(
+async def test_external_panel_lifecycle(
     user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Plugin-registered Panel surfaces as a tab and its build() renders."""
+    """A plugin Panel surfaces as a tab, build() renders, start() runs after the
+    page is built, and stop() runs on shutdown — the full lifecycle."""
+    from waldo_commander.state import ui_state
+
     _patch_entry_points(monkeypatch)
 
     await user.open("/")
     await wait_for_app_ready()
 
+    # Tab appears and build() rendered into it.
     await user.should_see(marker="tab-notes")
     user.find(marker="tab-notes").click()
     await asyncio.sleep(0)
     await user.should_see(marker="notes-hello")
 
-
-@pytest.mark.integration
-async def test_external_panel_start_runs(
-    user: User, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Plugin Panel.start runs once UI is built."""
-    _patch_entry_points(monkeypatch)
-
-    await user.open("/")
-    await wait_for_app_ready()
-    # start() is scheduled via asyncio.create_task in index_page; yield to let it run.
+    # start() is scheduled via asyncio.create_task in index_page; yield to run.
     for _ in range(20):
         if NotesPanel.start_called:
             break
         await asyncio.sleep(0.05)
     assert NotesPanel.start_called, "Panel.start was not invoked"
+
+    # Shutdown runs Panel.stop on each discovered panel. Driven directly off
+    # ui_state.plugin_panels (importing waldo_commander.main here would create a
+    # second module instance and clobber the runpy app's globals).
+    await asyncio.gather(*(p.stop() for p in ui_state.plugin_panels))
+    assert NotesPanel.stop_called, "Panel.stop was not invoked"
