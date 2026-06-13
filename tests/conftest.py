@@ -328,10 +328,9 @@ def reset_editor_singletons(
     simulation.reset_for_test()
     script_exec.reset_for_test()
 
-    # Script/sim flags live on simulation_state and per-program execution
-    # state. Without resetting, a test that leaves a program's execution
-    # marked running (e.g. crash mid-start) poisons gating checks in the
-    # next test.
+    # Script/sim flags live on per-program execution / playback state. Without
+    # resetting, a test that leaves a program's execution marked running (e.g.
+    # crash mid-start) poisons gating checks in the next test.
     try:
         for p in waldoctl.commander.programs.items:
             p.execution.is_running = False
@@ -508,37 +507,29 @@ def reset_state(request: pytest.FixtureRequest):
 
     reset_all_state()
 
-    # Test-specific overrides (differ from zero defaults)
-    try:
-        waldoctl.commander.status.joints.angles.set_deg(
-            np.array(HOME_ANGLES_DEG, dtype=np.float64)
-        )
-    except RuntimeError:
-        pass
-    state_module.robot_state.io = np.array([0, 0, 0, 0, 1], dtype=np.int32)  # ESTOP OK
-    try:
-        io = waldoctl.commander.status.io
-        io.inputs = [0, 0]
-        io.outputs = [0, 0]
-        io.estop = 1
-    except RuntimeError:
-        pass
-    try:
-        from waldoctl import FrameJogAvailability
+    # Test-specific overrides (differ from zero defaults). _install_test_commander()
+    # above guarantees the locator is registered, so these need no guards.
+    from waldoctl import FrameJogAvailability
 
-        joints = waldoctl.commander.status.joints
-        joints.can_jog_pos = [True] * 6
-        joints.can_jog_neg = [True] * 6
-        cart_jog = waldoctl.commander.status.pose.cart_jog
-        for frame in ("WRF", "TRF"):
-            av = cart_jog.by_frame.get(frame)
-            if av is None:
-                av = FrameJogAvailability()
-                cart_jog.by_frame[frame] = av
-            av.can_jog_pos = [True] * 6
-            av.can_jog_neg = [True] * 6
-    except RuntimeError:
-        pass
+    waldoctl.commander.status.joints.angles.set_deg(
+        np.array(HOME_ANGLES_DEG, dtype=np.float64)
+    )
+    state_module.robot_state.io = np.array([0, 0, 0, 0, 1], dtype=np.int32)  # ESTOP OK
+    io = waldoctl.commander.status.io
+    io.inputs = [0, 0]
+    io.outputs = [0, 0]
+    io.estop = 1
+    joints = waldoctl.commander.status.joints
+    joints.can_jog_pos = [True] * 6
+    joints.can_jog_neg = [True] * 6
+    cart_jog = waldoctl.commander.status.pose.cart_jog
+    for frame in ("WRF", "TRF"):
+        av = cart_jog.by_frame.get(frame)
+        if av is None:
+            av = FrameJogAvailability()
+            cart_jog.by_frame[frame] = av
+        av.can_jog_pos = [True] * 6
+        av.can_jog_neg = [True] * 6
 
     # Clear NiceGUI log handler targets to prevent deadlocks when logging
     # triggers widget.push() on stale widgets outside a NiceGUI context

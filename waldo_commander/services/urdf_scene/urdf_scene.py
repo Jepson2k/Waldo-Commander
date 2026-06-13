@@ -1309,7 +1309,8 @@ class UrdfScene(
         self._clear_path_state()
 
     def update_playback_opacity(self) -> None:
-        """Fade completed elements to 50% opacity based on current_step_index.
+        """Fade completed elements to 50% opacity based on the active program's
+        ``dry_run.playback.current_step``.
 
         Applies opacity to ALL element types: segments, tool actions,
         non-editable waypoints, and editable targets.

@@ -107,7 +107,15 @@ class ScriptExecutionController:
         if no script is running)."""
         return self._script_tab_id
 
-    def _record_line(self, line: str, ui_client: Client | None = None) -> None:
+    def _launching_program(self):
+        """The ``Program`` whose content launched the current script, or None."""
+        if not self._script_tab_id:
+            return None
+        return waldoctl.commander.programs.get(self._script_tab_id)
+
+    def _record_line(
+        self, line: str, ui_client: Client | None = None, stream: str = "stdout"
+    ) -> None:
         """Append a log line to the launching tab's log; push to the
         visible log_panel only when the launching tab is currently active.
 
@@ -116,13 +124,9 @@ class ScriptExecutionController:
         subprocess callback. Tests may pass ``None`` — ``log_panel.push``
         no-ops when the log widget hasn't been built.
         """
-        tab = (
-            waldoctl.commander.programs.get(self._script_tab_id)
-            if self._script_tab_id
-            else None
-        )
+        tab = self._launching_program()
         if tab is not None:
-            tab.log.append(LogEntry(timestamp=time.time(), stream="stdout", text=line))
+            tab.log.append(LogEntry(timestamp=time.time(), stream=stream, text=line))
         if tab is not None and tab.id == waldoctl.commander.programs.active_id:
             if ui_client is not None:
                 with ui_client:
@@ -180,7 +184,7 @@ class ScriptExecutionController:
                 self._record_line(line, ui_client)
 
             def on_stderr(line: str) -> None:
-                self._record_line(f"[ERR] {line}", ui_client)
+                self._record_line(f"[ERR] {line}", ui_client, stream="stderr")
 
             self._step_session_id = uuid.uuid4().hex[:8]
             self._step_controller = GUIStepController(self._step_session_id)
@@ -240,11 +244,7 @@ class ScriptExecutionController:
         try:
             handle = self.script_handle
             self.script_handle = None
-            running_tab = (
-                waldoctl.commander.programs.get(self._script_tab_id)
-                if self._script_tab_id
-                else None
-            )
+            running_tab = self._launching_program()
             if running_tab is not None:
                 running_tab.execution.is_running = False
                 running_tab.dry_run.playback.is_playing = False
@@ -287,11 +287,7 @@ class ScriptExecutionController:
                     event_type = event.get("event")
                     method = event.get("method", "")
                     step = event.get("step", 0)
-                    running_tab = (
-                        waldoctl.commander.programs.get(self._script_tab_id)
-                        if self._script_tab_id
-                        else None
-                    )
+                    running_tab = self._launching_program()
                     if event_type == "start":
                         with ui_client:
                             if running_tab is not None:
@@ -326,11 +322,7 @@ class ScriptExecutionController:
             # for the subprocess-completion monitor to notice.
             if watcher_crashed and is_any_program_running():
                 with ui_client:
-                    running_tab = (
-                        waldoctl.commander.programs.get(self._script_tab_id)
-                        if self._script_tab_id
-                        else None
-                    )
+                    running_tab = self._launching_program()
                     if running_tab is not None:
                         running_tab.execution.is_running = False
                         running_tab.dry_run.playback.is_playing = False
@@ -361,11 +353,7 @@ class ScriptExecutionController:
     def _reset_state(self) -> None:
         """Reset all script-related state after a script finishes or errors."""
         self.script_handle = None
-        running_tab = (
-            waldoctl.commander.programs.get(self._script_tab_id)
-            if self._script_tab_id
-            else None
-        )
+        running_tab = self._launching_program()
         if running_tab is not None:
             running_tab.execution.is_running = False
             running_tab.dry_run.playback.is_playing = False

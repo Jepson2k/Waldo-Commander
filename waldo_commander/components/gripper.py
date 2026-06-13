@@ -380,8 +380,8 @@ class GripperPage:
 
         ts = robot_state.tool_status
         pub_tool = waldoctl.commander.status.tool
-        tool_position = pub_tool.positions[0] if pub_tool.positions else 0.0
-        tool_current = pub_tool.channels[0] if pub_tool.channels else 0.0
+        tool_position = pub_tool.position
+        tool_current = pub_tool.current
         status_key = (
             ts.state,
             tool_position,
