@@ -5,7 +5,7 @@ import waldoctl
 from nicegui import ui
 from waldoctl import RobotClient
 
-from waldo_commander.services.control_lease import browser_try_acquire, control_lease
+from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.state import ui_state
 
@@ -20,10 +20,7 @@ class IoPage:
 
     async def set_output(self, index: int, state: int) -> None:
         """Set digital output via the robot client (0-based index)."""
-        if not browser_try_acquire(ui_state.active_client_id):
-            ui.notify(
-                f"{control_lease.describe()} is controlling the robot", color="warning"
-            )
+        if not require_browser_control(ui_state.active_client_id):
             return
         try:
             await self.client.write_io(index, state)

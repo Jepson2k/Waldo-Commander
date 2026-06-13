@@ -10,7 +10,7 @@ mcp = get_mcp()
 
 
 @mcp.tool(name="robot.get_capabilities")
-def get_capabilities() -> dict:
+async def get_capabilities() -> dict:
     """Static robot configuration: joints, tools, limits, frames, IO width.
 
     Read once at start of session and cache — these don't change unless the

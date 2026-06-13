@@ -118,3 +118,25 @@ def browser_try_acquire(client_id: str | None) -> bool:
         return False  # an AI session is driving; seizing is explicit
     control_lease.seize(BROWSER, client_id, "Browser")
     return True
+
+
+def require_browser_control(client_id: str | None, *, notify: bool = True) -> bool:
+    """Browser-side actuation gate used across the control / io / gripper /
+    playback panels.
+
+    Acquires the lease for the active tab; if a live MCP session holds it,
+    optionally surfaces the standard warning (with the Take-control hint) and
+    returns ``False``. Pass ``notify=False`` on repeated stream ticks (e.g. a
+    slider drag) so the toast fires once per gesture, not per tick.
+    """
+    if browser_try_acquire(client_id):
+        return True
+    if notify:
+        from nicegui import ui
+
+        ui.notify(
+            f"{control_lease.describe()} is controlling the robot — "
+            "click Take control to take over",
+            color="warning",
+        )
+    return False

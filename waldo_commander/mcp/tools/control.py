@@ -8,6 +8,7 @@ session is identified by FastMCP's per-request session id.
 
 from __future__ import annotations
 
+import waldoctl
 from fastmcp.server.dependencies import get_context
 
 from waldo_commander.mcp.server import get_mcp
@@ -45,8 +46,22 @@ def require_mcp_control() -> None:
     )
 
 
+def require_motion_allowed() -> None:
+    """Full actuation gate: the live ``allow_motion`` safety toggle plus the
+    control lease. Used by every tool that physically moves the arm — direct
+    motion verbs and program execution alike — so the user's "Allow motion via
+    MCP" switch covers all of them, not just the motion.* namespace.
+    """
+    if not waldoctl.commander.settings.mcp.allow_motion:
+        raise PermissionError(
+            "motion is disabled in WC's MCP settings "
+            "(commander.settings.mcp.allow_motion = False)"
+        )
+    require_mcp_control()
+
+
 @mcp.tool(name="control.take_control")
-def take_control() -> dict:
+async def take_control() -> dict:
     """Seize the single-controller lease for this MCP session.
 
     Anyone can take control; the displaced holder (a browser tab or another MCP
@@ -59,14 +74,14 @@ def take_control() -> dict:
 
 
 @mcp.tool(name="control.release_control")
-def release_control() -> dict:
+async def release_control() -> dict:
     """Release the lease if this MCP session holds it."""
     control_lease.release(MCP, _session_id())
     return {"holder": control_lease.describe(), "you_hold_it": False}
 
 
 @mcp.tool(name="control.get_controller")
-def get_controller() -> dict:
+async def get_controller() -> dict:
     """Report who currently holds control (read-only — never gated)."""
     return {
         "holder": control_lease.describe(),

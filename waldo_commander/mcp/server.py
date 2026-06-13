@@ -28,6 +28,31 @@ _mcp: "FastMCP | None" = None
 _server_task: asyncio.Task | None = None
 
 
+def _make_lease_touch_middleware():
+    """Build the lease-refresh middleware. Defined here (not module level) so
+    importing this module doesn't pull fastmcp in before the user opts in.
+
+    The lease ages out after a TTL of inactivity; without this, a session that
+    starts a long move and then only reads status / waits would let its lease
+    expire mid-motion (the "MCP is controlling" indicator would vanish while the
+    arm is still moving). Touching is best-effort — never blocks a tool call.
+    """
+    from fastmcp.server.middleware import Middleware
+
+    class _LeaseTouchMiddleware(Middleware):
+        async def on_call_tool(self, context, call_next):
+            try:
+                from waldo_commander.mcp.tools.control import _session_id
+                from waldo_commander.services.control_lease import MCP, control_lease
+
+                control_lease.touch(MCP, _session_id())
+            except Exception:
+                logger.debug("lease touch skipped", exc_info=True)
+            return await call_next(context)
+
+    return _LeaseTouchMiddleware()
+
+
 def get_mcp() -> "FastMCP":
     """Return the module-global FastMCP instance, constructing on demand.
 
@@ -52,6 +77,10 @@ def get_mcp() -> "FastMCP":
                 "before they apply."
             ),
         )
+        # Refresh the holding session's lease on every tool call (not just
+        # gated actuation) so a session that monitors a long move via reads /
+        # wait_motion doesn't age out mid-motion and let the indicator vanish.
+        _mcp.add_middleware(_make_lease_touch_middleware())
         # Trigger tool registration. Imported inline to avoid a circular
         # import (each tool module does ``from .server import get_mcp``).
         from waldo_commander.mcp import tools  # noqa: F401

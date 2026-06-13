@@ -135,15 +135,20 @@ class EditorDecorations:
           inserted after the hunk's location, classed ``cm-edit-add`` so
           the editor renders a green "+ <addition>" widget.
 
-        Hunks that fail to parse are silently skipped — the banner above
-        the editor surfaces those errors to the user instead.
+        Pending diffs are validated at ``propose()`` time, so an unparseable
+        diff can't reach this list; the ``except ValueError`` is cheap
+        insurance for a directly-constructed PendingEdit.
         """
         tab = waldoctl.commander.programs.get(tab_id)
         if tab is None or not tab.edits.pending:
             return []
+        # CodeMirror document positions are UTF-16 code-unit offsets, so the
+        # widget anchor must accumulate UTF-16 lengths — Python's ``len`` counts
+        # code points, which drifts one unit per astral-plane char (e.g. an
+        # emoji) earlier in the source.
         line_starts = [0]
         for line in tab.source.splitlines(keepends=True):
-            line_starts.append(line_starts[-1] + len(line))
+            line_starts.append(line_starts[-1] + len(line.encode("utf-16-le")) // 2)
         specs: list[DecorationSpec] = []
         for edit in tab.edits.pending:
             try:
@@ -151,7 +156,9 @@ class EditorDecorations:
             except ValueError:
                 continue
             for h in hunks:
-                cursor = h.old_start - 1  # 0-indexed
+                # Shared with the apply path so preview and approve can't
+                # diverge: a pure-insertion hunk anchors after old_start.
+                cursor = h.start_index
                 added: list[str] = []
                 for op, content in h.body:
                     if op == " ":

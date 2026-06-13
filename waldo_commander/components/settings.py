@@ -491,21 +491,31 @@ class SettingsContent:
         """
         mcp = waldoctl.commander.settings.mcp
 
+        # host / port commit on blur / enter (DOM "change"), not per keystroke,
+        # so a half-typed address is never persisted; every handler dirty-checks
+        # so an unchanged commit writes nothing and shows no toast.
         def _on_enabled_change(e):
-            mcp.enabled = bool(e.value)
-            ng_app.storage.general["mcp/enabled"] = mcp.enabled
+            val = bool(e.value)
+            if val == mcp.enabled:
+                return
+            mcp.enabled = val
+            ng_app.storage.general["mcp/enabled"] = val
             ui.notify("Restart to apply", color="info")
 
         def _on_host_change(e):
-            host = (e.value or "").strip() or "127.0.0.1"
+            host = (e.args or "").strip() or "127.0.0.1"
+            if host == mcp.host:
+                return
             mcp.host = host
             ng_app.storage.general["mcp/host"] = host
             ui.notify("Restart to apply", color="info")
 
         def _on_port_change(e):
             try:
-                port = int(e.value)
+                port = int(e.args)
             except (TypeError, ValueError):
+                return
+            if not (1 <= port <= 65535) or port == mcp.port:
                 return
             mcp.port = port
             ng_app.storage.general["mcp/port"] = port
@@ -525,18 +535,14 @@ class SettingsContent:
         with _setting_row(
             "MCP host", "Bind address — 127.0.0.1 (local) or a LAN address / 0.0.0.0"
         ):
-            ui.input(
-                value=mcp.host,
-                on_change=_on_host_change,
-            ).classes("w-40").props("dense").mark("settings-mcp-host")
+            ui.input(value=mcp.host).classes("w-40").props("dense").on(
+                "change", _on_host_change
+            ).mark("settings-mcp-host")
 
         with _setting_row("MCP port", "Listening port for streamable HTTP"):
-            ui.number(
-                value=mcp.port,
-                min=1,
-                max=65535,
-                on_change=_on_port_change,
-            ).classes("w-24").props("dense").mark("settings-mcp-port")
+            ui.number(value=mcp.port, min=1, max=65535).classes("w-24").props(
+                "dense"
+            ).on("change", _on_port_change).mark("settings-mcp-port")
 
         with _setting_row(
             "Allow motion via MCP", "When off, motion tools refuse cleanly"

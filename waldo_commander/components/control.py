@@ -28,8 +28,8 @@ from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import SettingsContent
 from waldo_commander.services.control_lease import (
     BROWSER,
-    browser_try_acquire,
     control_lease,
+    require_browser_control,
 )
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
@@ -985,13 +985,7 @@ class ControlPanel:
             if notify:
                 ui.notify("Script is running — jog disabled", color="warning")
             return False
-        if not browser_try_acquire(ui_state.active_client_id):
-            if notify:
-                ui.notify(
-                    f"{control_lease.describe()} is controlling the robot — "
-                    "click Take control to take over",
-                    color="warning",
-                )
+        if not require_browser_control(ui_state.active_client_id, notify=notify):
             return False
         if (
             waldoctl.commander.status.simulator_active

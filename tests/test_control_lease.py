@@ -14,8 +14,8 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from nicegui.testing import User
 
+from tests.helpers.mcp import payload as _payload
 from tests.helpers.wait import wait_for_app_ready
-from tests.test_mcp_server import _payload
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.services import control_lease as cl
 from waldo_commander.services.control_lease import (

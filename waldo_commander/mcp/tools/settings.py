@@ -1,8 +1,14 @@
-"""MCP tools for user preferences — ``commander.settings.*``."""
+"""MCP tools for user preferences — ``commander.settings.*``.
+
+Tools are ``async`` so FastMCP runs them on WC's event loop rather than a
+worker thread — settings writes fire ``notify_changed`` that propagates to
+live NiceGUI bindings, which is loop-affine.
+"""
 
 from __future__ import annotations
 
 import waldoctl
+from waldoctl import EnvelopeMode
 
 from waldo_commander.mcp.server import get_mcp
 
@@ -10,7 +16,7 @@ mcp = get_mcp()
 
 
 @mcp.tool(name="settings.get_jog")
-def get_jog() -> dict:
+async def get_jog() -> dict:
     """Jog control preferences (speed %, accel %, step size)."""
     j = waldoctl.commander.settings.jog
     return {
@@ -22,7 +28,7 @@ def get_jog() -> dict:
 
 
 @mcp.tool(name="settings.set_jog")
-def set_jog(
+async def set_jog(
     speed: int | None = None,
     accel: int | None = None,
     incremental: bool | None = None,
@@ -41,7 +47,7 @@ def set_jog(
 
 
 @mcp.tool(name="settings.get_gripper")
-def get_gripper() -> dict:
+async def get_gripper() -> dict:
     """Gripper preferences."""
     g = waldoctl.commander.settings.gripper
     return {
@@ -53,7 +59,7 @@ def get_gripper() -> dict:
 
 
 @mcp.tool(name="settings.set_gripper")
-def set_gripper(
+async def set_gripper(
     speed_sync: bool | None = None,
     speed: int | None = None,
     current: int | None = None,
@@ -72,28 +78,24 @@ def set_gripper(
 
 
 @mcp.tool(name="settings.get_view")
-def get_view() -> dict:
+async def get_view() -> dict:
     """3D-scene visualisation preferences."""
     v = waldoctl.commander.settings.view
     return {
         "gizmo_visible": v.gizmo_visible,
         "paths_visible": v.paths_visible,
         "envelope_mode": v.envelope_mode.value,
-        "preview_mode": v.preview_mode,
     }
 
 
 @mcp.tool(name="settings.set_view")
-def set_view(
+async def set_view(
     gizmo_visible: bool | None = None,
     paths_visible: bool | None = None,
     envelope_mode: str | None = None,
-    preview_mode: bool | None = None,
 ) -> None:
     """Update one or more view preferences. ``envelope_mode`` accepts
     ``"auto"`` / ``"on"`` / ``"off"``."""
-    from waldoctl import EnvelopeMode
-
     v = waldoctl.commander.settings.view
     if gizmo_visible is not None:
         v.gizmo_visible = gizmo_visible
@@ -101,5 +103,3 @@ def set_view(
         v.paths_visible = paths_visible
     if envelope_mode is not None:
         v.envelope_mode = EnvelopeMode(envelope_mode)
-    if preview_mode is not None:
-        v.preview_mode = preview_mode

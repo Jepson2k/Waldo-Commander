@@ -10,7 +10,7 @@ mcp = get_mcp()
 
 
 @mcp.tool(name="status.get_pose")
-def get_pose() -> dict:
+async def get_pose() -> dict:
     """Current Cartesian pose in the world frame.
 
     Returns translation in mm, rotation as RPY in degrees, and live TCP
@@ -29,7 +29,7 @@ def get_pose() -> dict:
 
 
 @mcp.tool(name="status.get_joints")
-def get_joints() -> dict:
+async def get_joints() -> dict:
     """Current joint angles (deg + rad), joint speeds (rad/s), and per-joint
     jog availability."""
     j = waldoctl.commander.status.joints
@@ -43,7 +43,7 @@ def get_joints() -> dict:
 
 
 @mcp.tool(name="status.get_io")
-def get_io() -> dict:
+async def get_io() -> dict:
     """Digital input/output bitmask state plus the e-stop signal (1=OK, 0=triggered)."""
     io = waldoctl.commander.status.io
     return {
@@ -54,7 +54,7 @@ def get_io() -> dict:
 
 
 @mcp.tool(name="status.get_action_state")
-def get_action_state() -> dict:
+async def get_action_state() -> dict:
     """Currently-executing controller action plus recent action history."""
     a = waldoctl.commander.status.action
     return {
@@ -75,7 +75,7 @@ def get_action_state() -> dict:
 
 
 @mcp.tool(name="status.get_tool_status")
-def get_tool_status() -> dict:
+async def get_tool_status() -> dict:
     """Active tool key + variant + live per-tool state (positions, currents)."""
     t = waldoctl.commander.status.tool
     return {
@@ -91,7 +91,7 @@ def get_tool_status() -> dict:
 
 
 @mcp.tool(name="status.get_connected")
-def get_connected() -> dict:
+async def get_connected() -> dict:
     """Whether the controller link is up and whether the simulator is in use."""
     s = waldoctl.commander.status
     return {"connected": s.connected, "simulator_active": s.simulator_active}

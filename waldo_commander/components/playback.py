@@ -14,7 +14,7 @@ from waldo_commander.common.theme import PathColors
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.services.control_lease import browser_try_acquire, control_lease
+from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.services.programs import (
@@ -314,19 +314,10 @@ class PlaybackController:
         ):
             if active.dry_run.playback.is_active:
                 self._pause_sim_playback()  # pausing is always allowed
-            elif browser_try_acquire(ui_state.active_client_id):
+            elif require_browser_control(ui_state.active_client_id):
                 self._start_sim_playback()
-            else:
-                ui.notify(
-                    f"{control_lease.describe()} is controlling the robot",
-                    color="warning",
-                )
-        elif browser_try_acquire(ui_state.active_client_id):
+        elif require_browser_control(ui_state.active_client_id):
             await script_exec.start()
-        else:
-            ui.notify(
-                f"{control_lease.describe()} is controlling the robot", color="warning"
-            )
 
     def step_forward(self) -> None:
         """Step forward one segment."""

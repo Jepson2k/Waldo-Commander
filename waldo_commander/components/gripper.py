@@ -13,7 +13,7 @@ from waldoctl import (
 
 from waldo_commander.constants import config
 from waldo_commander.services.camera_service import camera_service
-from waldo_commander.services.control_lease import browser_try_acquire, control_lease
+from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.state import robot_state, ui_state
 
@@ -54,6 +54,7 @@ class GripperPage:
         # Live slider state
         self._slider_drag_ts: float = 0.0
         self._last_slider_send: float = 0.0
+        self._last_lease_block_notify: float = 0.0
         self._user_dragging: bool = False
         # Target position initialized flag
         self._target_initialized: bool = False
@@ -73,11 +74,19 @@ class GripperPage:
 
     # ---- Actions ----
 
+    def _can_actuate(self) -> bool:
+        """Lease gate for the gripper slider paths. The toast is debounced to
+        once per few seconds so a sustained drag while an MCP session holds
+        control doesn't stack dozens of identical warnings per gesture."""
+        now = time.monotonic()
+        should_notify = now - self._last_lease_block_notify > 3.0
+        ok = require_browser_control(ui_state.active_client_id, notify=should_notify)
+        if not ok and should_notify:
+            self._last_lease_block_notify = now
+        return ok
+
     async def _grip_set(self, position: float, label: str) -> None:
-        if not browser_try_acquire(ui_state.active_client_id):
-            ui.notify(
-                f"{control_lease.describe()} is controlling the robot", color="warning"
-            )
+        if not self._can_actuate():
             return
         try:
             tool = self._get_active_gripper()
@@ -355,10 +364,7 @@ class GripperPage:
         self._mark_lines_dirty = True
         if not self._user_dragging:
             return
-        if not browser_try_acquire(ui_state.active_client_id):
-            ui.notify(
-                f"{control_lease.describe()} is controlling the robot", color="warning"
-            )
+        if not self._can_actuate():
             return
         # Send position command with current target position and updated current limit
         tool = self._get_active_gripper()

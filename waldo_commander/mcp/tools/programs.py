@@ -5,11 +5,16 @@ Code edits flow through :func:`propose_edit` →
 applied / discarded by a human via the editor's diff overlay. There is
 **no** ``set_source`` tool by design — every LLM edit must be reviewed
 before it touches the program.
+
+Tools are ``async`` so FastMCP runs them on WC's event loop: the program
+verbs fire ``notify_changed`` that the editor turns into NiceGUI element
+creation (tabs, diff overlay), which is loop-affine.
 """
 
 from __future__ import annotations
 
 import waldoctl
+from waldoctl import EditId
 
 from waldo_commander.mcp.server import get_mcp
 
@@ -32,7 +37,7 @@ def _program(program_id: str | None):
 
 
 @mcp.tool(name="programs.list")
-def list_programs() -> list[dict]:
+async def list_programs() -> list[dict]:
     """All currently open programs."""
     tabs = waldoctl.commander.programs
     return [
@@ -48,7 +53,7 @@ def list_programs() -> list[dict]:
 
 
 @mcp.tool(name="programs.get_active")
-def get_active() -> dict | None:
+async def get_active() -> dict | None:
     """Identifier and source of the active program, or ``None`` if none are open."""
     p = waldoctl.commander.programs.active
     if p is None:
@@ -63,31 +68,31 @@ def get_active() -> dict | None:
 
 
 @mcp.tool(name="programs.get_source")
-def get_source(program_id: str | None = None) -> str:
+async def get_source(program_id: str | None = None) -> str:
     """Current editor source for ``program_id`` (defaults to active)."""
     return _program(program_id).source
 
 
 @mcp.tool(name="programs.open")
-def open_program(path: str) -> str:
+async def open_program(path: str) -> str:
     """Open a program by file path. Returns the new (or focused) program id."""
     return waldoctl.commander.programs.open(path).id
 
 
 @mcp.tool(name="programs.close")
-def close_program(program_id: str) -> None:
+async def close_program(program_id: str) -> None:
     """Close the program with the given id."""
     waldoctl.commander.programs.close(program_id)
 
 
 @mcp.tool(name="programs.switch")
-def switch_program(program_id: str) -> None:
+async def switch_program(program_id: str) -> None:
     """Make ``program_id`` the active program."""
     waldoctl.commander.programs.switch(program_id)
 
 
 @mcp.tool(name="programs.new")
-def new_program(
+async def new_program(
     source: str = "",
     filename: str = "untitled.py",
     file_path: str | None = None,
@@ -99,14 +104,14 @@ def new_program(
 
 
 @mcp.tool(name="programs.save")
-def save_program(program_id: str | None = None, path: str | None = None) -> None:
+async def save_program(program_id: str | None = None, path: str | None = None) -> None:
     """Persist the program's source to disk (uses its ``file_path`` if ``path``
     is None)."""
     _program(program_id).save(path)
 
 
 @mcp.tool(name="programs.get_log")
-def get_log(program_id: str | None = None) -> list[dict]:
+async def get_log(program_id: str | None = None) -> list[dict]:
     """Captured stdout/stderr lines for ``program_id`` (defaults to active)."""
     p = _program(program_id)
     return [
@@ -121,7 +126,7 @@ def get_log(program_id: str | None = None) -> list[dict]:
 
 
 @mcp.tool(name="programs.propose_edit")
-def propose_edit(
+async def propose_edit(
     diff: str,
     description: str = "",
     program_id: str | None = None,
@@ -139,7 +144,7 @@ def propose_edit(
 
 
 @mcp.tool(name="programs.list_pending_edits")
-def list_pending_edits(program_id: str | None = None) -> list[dict]:
+async def list_pending_edits(program_id: str | None = None) -> list[dict]:
     """Pending (not-yet-approved) edits on ``program_id`` (defaults to active)."""
     p = _program(program_id)
     return [
@@ -154,13 +159,11 @@ def list_pending_edits(program_id: str | None = None) -> list[dict]:
 
 
 @mcp.tool(name="programs.cancel_pending_edit")
-def cancel_pending_edit(edit_id: str, program_id: str | None = None) -> None:
+async def cancel_pending_edit(edit_id: str, program_id: str | None = None) -> None:
     """Withdraw a pending edit (e.g. the LLM realised it was wrong).
 
     Equivalent to the human clicking Reject in the editor — the edit is
     discarded without being applied.
     """
-    from waldoctl import EditId
-
     p = _program(program_id)
     p.edits.reject(EditId(edit_id))

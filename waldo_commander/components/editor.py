@@ -766,8 +766,18 @@ class EditorPanel(FileOperationsMixin):
             tab.edits.approve(edit_id)
         except ValueError as e:
             ui.notify(f"Could not apply edit: {e}", color="warning")
+            return
         except KeyError:
             ui.notify("Edit no longer pending", color="info")
+            return
+        # approve() rewrote tab.source; push it into CodeMirror so the visible
+        # editor matches (the value= arg is initial-only and the edit listener
+        # only rebuilds the banner/overlay). Without this the pane shows stale
+        # text and the next keystroke writes it back, destroying the edit.
+        widgets = self._tab_widgets.get(tab_id)
+        textarea = widgets.get("textarea") if widgets else None
+        if textarea is not None:
+            textarea.value = tab.source
 
     def _reject_edit(self, tab_id: str, edit_id: EditId) -> None:
         tab = waldoctl.commander.programs.get(tab_id)
@@ -791,6 +801,12 @@ class EditorPanel(FileOperationsMixin):
         tab.source = new_value
 
         self._update_dirty_dot(tab)
+
+        # A pending LLM edit's diff decorations were anchored to the pre-edit
+        # source; recompute them against the now-current text so the overlay
+        # tracks the human's typing instead of freezing on stale line numbers.
+        if tab.edits.pending:
+            decorations.refresh_diff_overlay(tab.id)
 
         # Only run simulation for active tab
         if tab.id == waldoctl.commander.programs.active_id:
