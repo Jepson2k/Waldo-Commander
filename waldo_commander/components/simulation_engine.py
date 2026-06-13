@@ -135,8 +135,15 @@ class SimulationEngine:
 
         playback.on_simulation_complete()
 
-        # Apply initial tool selection from script to scene and controller
-        sim_tool_selections = tab.dry_run.tool_selections if tab is not None else []
+        # Apply initial tool selection from script to scene and controller —
+        # only when this sim's program is the one on screen. A background tab's
+        # sim completing must not swap the visible scene / live tool out from
+        # under the program the user actually switched to.
+        sim_tool_selections = (
+            tab.dry_run.tool_selections
+            if tab is not None and tab.id == waldoctl.commander.programs.active_id
+            else []
+        )
         if sim_tool_selections and ui_state.urdf_scene:
             first_sel = sim_tool_selections[0]
             if first_sel.segment_index < 0:

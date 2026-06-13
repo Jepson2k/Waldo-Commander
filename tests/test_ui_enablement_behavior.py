@@ -15,7 +15,7 @@ from tests.helpers.wait import (
 
 
 @pytest.mark.integration
-async def test_joint_at_limit_disables_direction(user: User, robot_state) -> None:
+async def test_joint_at_limit_disables_direction(user: User) -> None:
     """Test that when a joint reaches its limit, the jog button for that direction is disabled.
 
     When a joint is at or near its maximum limit, the positive direction
@@ -60,7 +60,7 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
 
 @pytest.mark.integration
 async def test_cartesian_at_workspace_limit_disables_axis(
-    user: User, robot_state
+    user: User,
 ) -> None:
     """Test that when near workspace limits, cartesian axis buttons become disabled.
 
@@ -96,7 +96,7 @@ async def test_cartesian_at_workspace_limit_disables_axis(
 
 
 @pytest.mark.integration
-async def test_joint_en_updates_on_motion(user: User, robot_state) -> None:
+async def test_joint_en_updates_on_motion(user: User) -> None:
     """Test that joint enable flags update during motion.
 
     As the robot moves, the joint_en array should update to reflect

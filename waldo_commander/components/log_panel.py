@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 LOG_COLLAPSED_VALUE: float = 94.0
 LOG_EXPAND_THRESHOLD: float = 90.0
 
+# Max lines the shared ``ui.log`` widget retains. Tab-switch rehydrate slices
+# the (unbounded) Program.log to this tail so a chatty run can't push tens of
+# thousands of lines through the widget that only displays the last of them.
+LOG_MAX_LINES: int = 1000
+
 
 class LogPanelController:
     """Owns the editor log widget + splitter + toggle button."""
@@ -80,7 +85,7 @@ class LogPanelController:
     def build_log_area(self) -> ui.log:
         """Create the shared ui.log widget. Call inside the splitter's after slot."""
         self.program_log = (
-            ui.log(max_lines=1000)
+            ui.log(max_lines=LOG_MAX_LINES)
             .classes("w-full h-full whitespace-pre-wrap break-words")
             .style("min-height: 0;")
         )

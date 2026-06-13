@@ -142,11 +142,6 @@ class ReadoutPanel:
         self._last_io_inputs: list[int] | None = None
         self._last_io_outputs: list[int] | None = None
 
-        # commander.status.action change-listener for the action log, bound once
-        # at build time (when the scroll-area widget exists). This flag guards
-        # against binding it more than once per panel.
-        self._action_log_listener_bound: bool = False
-
     def update_conn_io(self) -> None:
         """Update connection face and IO status. Called from status consumer."""
         # Robot face — determine state from connection
@@ -231,13 +226,11 @@ class ReadoutPanel:
     def _bind_action_log_listener(self) -> None:
         """Subscribe to ``commander.status.action`` for incremental rebuilds.
 
-        Called once from build time (after the scroll-area widget exists and
-        after ``commander`` is registered). Idempotent.
+        Called from build time (after the scroll-area widget exists and after
+        ``commander`` is registered). ``add_change_listener`` dedups by
+        ``(instance, func)``, so this is idempotent per Action instance.
         """
-        if self._action_log_listener_bound:
-            return
         waldoctl.commander.status.action.add_change_listener(self.update_action_log)
-        self._action_log_listener_bound = True
 
     def _toggle_action_log(self) -> None:
         """Toggle action log between collapsed and expanded."""

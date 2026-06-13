@@ -1320,6 +1320,12 @@ class TestScriptExecutionLifecycle:
         (signal_play, log_panel.expand, task creation) leak a process group.
         """
         from waldo_commander.components import script_execution as se
+        from tests.helpers.programs import ensure_active_program
+
+        # Seed an active program so start() flips real per-program execution
+        # state — without one, is_any_program_running() is vacuously False and
+        # the reset assertions below can't catch a missed cleanup.
+        active_program = ensure_active_program()
 
         # Long-running script: only `stop_script` (i.e. our cleanup path) can end it.
         script_path = tmp_path / "long_running.py"
@@ -1373,9 +1379,13 @@ class TestScriptExecutionLifecycle:
         try:
             await se.script_exec.start()
 
-            # Contract: handle cleared, state reset.
+            # Contract: handle cleared, state reset. Assert the launching
+            # program's own flags were cleared (the reset path ran), not just
+            # the global helper which would pass regardless with no program.
             assert se.script_exec.script_handle is None
             assert is_any_program_running() is False
+            assert active_program.execution.is_running is False
+            assert active_program.dry_run.playback.is_playing is False
 
             # The subprocess must be dead — this is the regression guard.
             assert "handle" in captured, "run_script did not run; test setup is wrong"
@@ -1471,11 +1481,9 @@ class TestScriptExecutionLifecycle:
         assert step_controller._control_file.exists()
         assert step_controller._event_file.exists()
 
-        import waldoctl as _wctl
-
-        active_program = _wctl.commander.programs.active
+        active_program = waldoctl.commander.programs.active
         if active_program is None:
-            active_program = _wctl.commander.programs.new(filename="ipc_test.py")
+            active_program = waldoctl.commander.programs.new(filename="ipc_test.py")
         old_running = active_program.execution.is_running
         old_session = se.script_exec._step_session_id
         old_controller = se.script_exec._step_controller

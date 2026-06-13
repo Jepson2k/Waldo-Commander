@@ -285,18 +285,20 @@ class PlaybackController:
 
     # ---- Public actions ----
 
+    @staticmethod
+    def _play_program():
+        """The program whose play/step state matters: the launching program
+        while a script runs (the user may have switched tabs), else the active
+        program."""
+        if is_any_program_running() and script_exec.launching_tab_id:
+            return waldoctl.commander.programs.get(script_exec.launching_tab_id)
+        return waldoctl.commander.programs.active
+
     async def toggle_play(self) -> None:
         """Toggle play/pause for script execution or simulation playback."""
         active = waldoctl.commander.programs.active
         if is_any_program_running():
-            # Play/pause belongs to the launching program — the user may have
-            # switched tabs while the script runs, so follow launching_tab_id
-            # rather than the UI-active tab (matches _on_step_change).
-            prog = (
-                waldoctl.commander.programs.get(script_exec.launching_tab_id)
-                if script_exec.launching_tab_id
-                else active
-            )
+            prog = self._play_program()
             if prog is not None and prog.dry_run.playback.is_playing:
                 script_exec.signal_pause()
                 prog.dry_run.playback.is_playing = False
@@ -429,13 +431,8 @@ class PlaybackController:
         channel so urdf_scene doesn't re-walk segment fingerprints per step.
         """
         running = is_any_program_running()
-        # Step events belong to the launching program. While a script runs the
-        # user may have switched tabs (allowed when paused), so follow the
-        # launching tab rather than the UI-active one.
-        if running and script_exec.launching_tab_id:
-            active = waldoctl.commander.programs.get(script_exec.launching_tab_id)
-        else:
-            active = waldoctl.commander.programs.active
+        # Step events belong to the launching program (see _play_program).
+        active = self._play_program()
         if active is not None:
             step = active.dry_run.playback.executing_step_index
             at_end = active.dry_run.playback.executing_step_at_end
@@ -524,7 +521,7 @@ class PlaybackController:
             # Update snapshot so position-change checker doesn't re-sim after scrub
             self._snapshot_joints()
 
-    def _apply_time(self, t: float, *, update_slider: bool = True) -> None:
+    def _apply_time(self, t: float, *, update_slider: bool = True, active=None) -> None:
         """Apply a time position to the simulation: update pose, highlights, slider.
 
         Args:
@@ -535,7 +532,9 @@ class PlaybackController:
         tl = self._timeline
         if not tl:
             return
-        _apply_active = waldoctl.commander.programs.active
+        _apply_active = (
+            active if active is not None else waldoctl.commander.programs.active
+        )
         if _apply_active is not None:
             _apply_active.dry_run.playback.playback_time = t
         sample = tl.sample(t)
@@ -714,8 +713,9 @@ class PlaybackController:
                 self._sim_timer.active = False
             return
 
-        # Script execution mode: smooth slider tracking (no URDF control)
-        if is_any_program_running() and self._exec_step_index >= 0:
+        # Script execution mode: smooth slider tracking (no URDF control). Test
+        # the cheap int index before the program scan.
+        if self._exec_step_index >= 0 and is_any_program_running():
             self._script_slider_tick()
             return
 
@@ -735,11 +735,11 @@ class PlaybackController:
 
         if t >= self._timeline.total_duration:
             t = self._timeline.total_duration
-            self._apply_time(t)
+            self._apply_time(t, active=active)
             self._pause_sim_playback()
             return
 
-        self._apply_time(t)
+        self._apply_time(t, active=active)
 
     def _script_slider_tick(self) -> None:
         """Advance slider smoothly during real script execution."""
@@ -785,13 +785,7 @@ class PlaybackController:
         """Update play/pause button icon and stop/step button visibility."""
         script_running = is_any_program_running()
         active = waldoctl.commander.programs.active
-        # While a script runs the play state lives on the launching program
-        # (the user may have switched tabs); otherwise use the active tab.
-        play_prog = (
-            waldoctl.commander.programs.get(script_exec.launching_tab_id)
-            if script_running and script_exec.launching_tab_id
-            else active
-        )
+        play_prog = self._play_program()
         play_is_playing = (
             play_prog.dry_run.playback.is_playing if play_prog is not None else False
         )

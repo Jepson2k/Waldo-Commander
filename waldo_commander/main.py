@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 from nicegui import Client, app as ng_app, ui
+from pinokin import arrays_equal_n
 import waldoctl
 from waldoctl import (
     Commander,
@@ -486,9 +487,7 @@ def update_ui_from_status() -> None:
     pub_tool.state = ts.state
     pub_tool.fault_code = ts.fault_code
     pub_tool.channels = ts.channels
-    _pos0 = pub_tool.positions[0] if pub_tool.positions else 0.0
-    _cur0 = pub_tool.channels[0] if pub_tool.channels else 0.0
-    robot_state.tool_time_series.push(_pos0, _cur0)
+    robot_state.tool_time_series.push(pub_tool.position, pub_tool.current)
 
     # Build gripper tab on first tool detection
     if tool_key_changed and pub_tool.key != "NONE":
@@ -1356,11 +1355,14 @@ def _maybe_clear_sim_pose_override() -> None:
     and ≥100ms has passed since the last teleport, the override is released so
     the loop resumes showing the real robot pose.
     """
+    # Cheap flag first: in the steady state (nobody scrubbing) this short-
+    # circuits before resolving the active program every status tick.
+    if not playback_coordination.sim_pose_override:
+        return
     active_pb = waldoctl.commander.programs.active
     is_active = active_pb is not None and active_pb.dry_run.playback.is_active
     if (
-        playback_coordination.sim_pose_override
-        and not is_active
+        not is_active
         and playback_coordination.last_teleport_ts > 0
         and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
     ):
@@ -1370,6 +1372,12 @@ def _maybe_clear_sim_pose_override() -> None:
 
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
+    # Shadows of the last-applied jog-enable wire arrays, kept local so each
+    # app start (and each test) begins fresh. The per-direction lists are only
+    # rebuilt when a shadow mismatches (zero-alloc compare via arrays_equal_n);
+    # the copy happens on change, not every tick.
+    joint_en_shadow: np.ndarray | None = None
+    cart_en_shadow: dict[str, np.ndarray] = {}
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1397,12 +1405,13 @@ async def _status_consumer() -> None:
                     )
 
                 with global_phase_timer.phase("status"):
+                    st = waldoctl.commander.status
                     # Copy status data (in-place fills to avoid allocations)
                     if (
-                        not waldoctl.commander.status.editing_mode
+                        not st.editing_mode
                         and not playback_coordination.sim_pose_override
                     ):
-                        waldoctl.commander.status.joints.angles.set_deg(status.angles)
+                        st.joints.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io
                     if not playback_coordination.sim_pose_override:
@@ -1410,55 +1419,44 @@ async def _status_consumer() -> None:
 
                     # Speeds arrive as rad/s from backend — convert to deg/s for display
                     np.rad2deg(status.speeds, out=robot_state.speeds)
-                    pose = waldoctl.commander.status.pose
+                    pose = st.pose
                     pose.tcp_speed = 0.3 * status.tcp_speed + 0.7 * pose.tcp_speed
 
                     # Mark backend ready on first valid STATUS
                     readiness_state.mark_backend_done()
 
-                    # Movement enablement: split the 12-int joint_en /
-                    # cart_en arrays into the per-direction lists exposed on
-                    # ``commander.status.joints`` and
-                    # ``commander.status.pose.cart_jog``.
-                    # Rebuild the per-direction lists only when the wire arrays
-                    # actually change — this runs every tick, so compare against
-                    # the stored lists (0/1 -> cached bool singletons, no alloc)
-                    # and skip the list construction in the steady state.
+                    # Movement enablement: split the interleaved joint_en /
+                    # cart_en wire arrays into the per-direction lists exposed on
+                    # ``commander.status.joints`` / ``...pose.cart_jog``. This
+                    # runs every tick, so dirty-check each wire array against a
+                    # snapshot via the zero-alloc ``arrays_equal_n`` and rebuild
+                    # the lists only on change (the snapshot copy is taken then,
+                    # not per tick).
                     j_en = status.joint_en
                     n_dof = len(j_en) // 2
-                    joints = waldoctl.commander.status.joints
+                    joints = st.joints
                     if (
-                        len(joints.can_jog_pos) != n_dof
-                        or any(
-                            bool(j_en[2 * j]) != joints.can_jog_pos[j]
-                            for j in range(n_dof)
-                        )
-                        or any(
-                            bool(j_en[2 * j + 1]) != joints.can_jog_neg[j]
-                            for j in range(n_dof)
-                        )
+                        joint_en_shadow is None
+                        or len(joints.can_jog_pos) != n_dof
+                        or not arrays_equal_n(j_en, joint_en_shadow)
                     ):
                         joints.can_jog_pos = [bool(j_en[2 * j]) for j in range(n_dof)]
                         joints.can_jog_neg = [
                             bool(j_en[2 * j + 1]) for j in range(n_dof)
                         ]
-                    cart_jog = waldoctl.commander.status.pose.cart_jog
+                        joint_en_shadow = j_en.copy()
+                    cart_jog = st.pose.cart_jog
                     for frame, arr in status.cart_en.items():
                         frame_av = cart_jog.by_frame.get(frame)
                         if frame_av is None:
                             frame_av = FrameJogAvailability()
                             cart_jog.by_frame[frame] = frame_av
                         n_axes = len(arr) // 2
+                        shadow = cart_en_shadow.get(frame)
                         if (
-                            len(frame_av.can_jog_pos) != n_axes
-                            or any(
-                                bool(arr[2 * i]) != frame_av.can_jog_pos[i]
-                                for i in range(n_axes)
-                            )
-                            or any(
-                                bool(arr[2 * i + 1]) != frame_av.can_jog_neg[i]
-                                for i in range(n_axes)
-                            )
+                            shadow is None
+                            or len(frame_av.can_jog_pos) != n_axes
+                            or not arrays_equal_n(arr, shadow)
                         ):
                             frame_av.can_jog_pos = [
                                 bool(arr[2 * i]) for i in range(n_axes)
@@ -1466,8 +1464,9 @@ async def _status_consumer() -> None:
                             frame_av.can_jog_neg = [
                                 bool(arr[2 * i + 1]) for i in range(n_axes)
                             ]
+                            cart_en_shadow[frame] = arr.copy()
 
-                    action = waldoctl.commander.status.action
+                    action = st.action
                     action.current_name = status.action_current
                     action.state = status.action_state
                     # action_params is per-command metadata used by the
@@ -1475,7 +1474,7 @@ async def _status_consumer() -> None:
                     # surface, kept in the status update tuple below.
                     robot_state.executing_index = status.executing_index
                     robot_state.completed_index = status.completed_index
-                    waldoctl.commander.status.last_update = time.time()
+                    st.last_update = time.time()
 
                     # Auto-clear scrub override after teleport has had time to propagate
                     _maybe_clear_sim_pose_override()
@@ -1596,8 +1595,13 @@ def main():
         config.set("log_level", logging.WARNING)
     # else: use env var default (no override needed)
 
-    # Initialize robot, client, and component instances
-    robot = get_robot(name=args.robot)
+    # Initialize robot, client, and component instances. The persisted GUI
+    # backend selection is honored below an explicit --robot / WALDO_ROBOT
+    # override, and only when that backend is actually installed.
+    robot = get_robot(
+        name=args.robot,
+        preferred=ng_app.storage.general.get("plugins/backend"),
+    )
     ui_state.robot = robot
     # Per-frame cart_jog buffers are seeded below once the Commander is
     # registered. The status loop fills them on each tick.

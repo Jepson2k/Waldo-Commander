@@ -24,7 +24,11 @@ from waldo_commander.services.command_discovery import (
     generate_completions_from_commands,
 )
 from waldo_commander.components.editor_decorations import decorations
-from waldo_commander.components.log_panel import LOG_COLLAPSED_VALUE, log_panel
+from waldo_commander.components.log_panel import (
+    LOG_COLLAPSED_VALUE,
+    LOG_MAX_LINES,
+    log_panel,
+)
 from waldo_commander.components.simulation_engine import (
     default_python_snippet,
     get_home_joints_rad,
@@ -480,9 +484,16 @@ class EditorPanel(FileOperationsMixin):
             if self.tabs_container and waldoctl.commander.programs.active_id:
                 self.tabs_container.set_value(waldoctl.commander.programs.active_id)
             return
-        active_for_lock = waldoctl.commander.programs.active
+        # The running script's play state lives on the launching program, which
+        # may differ from the active tab (switching is allowed while paused), so
+        # resolve the lock against launching_tab_id like playback.toggle_play.
+        lock_prog = (
+            waldoctl.commander.programs.get(script_exec.launching_tab_id)
+            if script_exec.launching_tab_id
+            else waldoctl.commander.programs.active
+        )
         if is_any_program_running() and (
-            active_for_lock is not None and active_for_lock.dry_run.playback.is_playing
+            lock_prog is not None and lock_prog.dry_run.playback.is_playing
         ):
             ui.notify("Cannot switch tabs during script playback", color="warning")
             if self.tabs_container and waldoctl.commander.programs.active_id:
@@ -517,9 +528,12 @@ class EditorPanel(FileOperationsMixin):
         # against the freshly-active program.
         self._invalidate_for_tab_switch()
 
-        # Swap log content: load new tab's log entries into shared log
+        # Swap log content: load new tab's log entries into shared log. Only the
+        # displayable tail is replayed — Program.log is unbounded, the widget
+        # keeps LOG_MAX_LINES, so pushing the whole history would serialize tens
+        # of thousands of lines just to show the last LOG_MAX_LINES.
         log_panel.clear()
-        for entry in tab.log.entries:
+        for entry in tab.log.entries[-LOG_MAX_LINES:]:
             log_panel.push(entry.text)
 
         widgets = self._tab_widgets.get(tab_id, {})

@@ -27,12 +27,17 @@ jobs:
           pip install -e ".[dev]"
           # Override the pinned waldoctl/parol6 with the matching feature branch
           # if one exists, AFTER ".[dev]" so its pinned tags don't clobber it.
+          # Skipped on main: pushes to main must test the pyproject-pinned tags
+          # (every sibling repo has a `main`, so the match would always fire and
+          # main CI would never exercise the released pins).
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
-            pip install --force-reinstall --no-deps "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
-          fi
-          if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
-            pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
+          if [ "$BRANCH" != "main" ]; then
+            if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
+            fi
+            if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
+            fi
           fi
           mkdir -p PAROL6-python-API
       - name: Run pre-commit
@@ -67,12 +72,17 @@ jobs:
           pip install ".[dev]"
           # Override the pinned waldoctl/parol6 with the matching feature branch
           # if one exists, AFTER ".[dev]" so its pinned tags don't clobber it.
+          # Skipped on main: pushes to main must test the pyproject-pinned tags
+          # (every sibling repo has a `main`, so the match would always fire and
+          # main CI would never exercise the released pins).
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
-            pip install --force-reinstall --no-deps "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
-          fi
-          if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
-            pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
+          if [ "$BRANCH" != "main" ]; then
+            if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
+            fi
+            if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
+            fi
           fi
 
       - name: Show environment

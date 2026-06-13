@@ -9,7 +9,7 @@ from tests.helpers.wait import wait_for_app_ready, wait_for_tool_key
 
 
 @pytest.mark.integration
-async def test_io_tab_high_low_buttons_send_commands(user: User, robot_state) -> None:
+async def test_io_tab_high_low_buttons_send_commands(user: User) -> None:
     """Clicking HIGH/LOW buttons in the I/O tab should send SET_IO commands.
 
     Verifies the full integration from UI button to controller by checking
@@ -38,7 +38,7 @@ async def test_io_tab_high_low_buttons_send_commands(user: User, robot_state) ->
 
 
 @pytest.mark.integration
-async def test_gripper_panel_layout_elements(user: User, robot_state) -> None:
+async def test_gripper_panel_layout_elements(user: User) -> None:
     """Gripper panel should show chart and status readouts."""
     from waldo_commander.state import ui_state
 
@@ -58,7 +58,7 @@ async def test_gripper_panel_layout_elements(user: User, robot_state) -> None:
 
 
 @pytest.mark.integration
-async def test_control_panel_tool_quick_actions(user: User, robot_state) -> None:
+async def test_control_panel_tool_quick_actions(user: User) -> None:
     """Control panel should show tool quick-action box when a tool is active."""
     from waldo_commander.state import ui_state
 

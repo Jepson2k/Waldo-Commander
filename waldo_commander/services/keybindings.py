@@ -17,18 +17,10 @@ from typing import Callable, Any
 
 from nicegui import ui
 
-import waldoctl
 
 from waldo_commander.constants import CLICK_HOLD_THRESHOLD_S
-from waldo_commander.services.programs import is_any_program_running
+from waldo_commander.services.programs import active_dry_run, is_any_program_running
 from waldo_commander.state import ui_state
-
-
-def _active_total_steps() -> int:
-    """Total dry-run steps for the active program, or 0 if none."""
-    active = waldoctl.commander.programs.active
-    return active.dry_run.total_steps if active is not None else 0
-
 
 logger = logging.getLogger(__name__)
 
@@ -374,7 +366,8 @@ def _register_default_keybindings() -> None:
             description="Step forward",
             action=lambda: playback.step_forward(),
             category="Playback",
-            enabled_check=lambda: is_any_program_running() or _active_total_steps() > 0,
+            enabled_check=lambda: is_any_program_running()
+            or ((dr := active_dry_run()) is not None and dr.total_steps > 0),
         )
     )
 

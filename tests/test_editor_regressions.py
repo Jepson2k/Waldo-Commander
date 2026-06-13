@@ -33,7 +33,7 @@ from tests.helpers.browser_helpers import (
     wait_for_codemirror_ready,
     wait_for_notification,
 )
-from tests.helpers.programs import set_active_recording
+from tests.helpers.programs import clear_all_programs
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -52,27 +52,9 @@ def _clean_stale_state():
     can't be polluted by anything our tests left behind in the editor
     tab state.
     """
-    import waldoctl
-
-    def _reset() -> None:
-        try:
-            programs = waldoctl.commander.programs
-        except RuntimeError:
-            # Module-scope fixture runs before any class_screen-created
-            # commander; nothing to clean in that case.
-            return
-        set_active_recording(False)
-        for p in programs.items:
-            p.dry_run.path_segments = []
-            p.dry_run.targets = []
-            p.dry_run.tool_actions = []
-            p.dry_run.tool_selections = []
-        programs.items.clear()
-        programs.active_id = None
-
-    _reset()
+    clear_all_programs()
     yield
-    _reset()
+    clear_all_programs()
 
 
 def _set_editor_content(screen: "Screen", text: str) -> None:

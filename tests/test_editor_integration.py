@@ -46,7 +46,7 @@ async def test_open_program_tab(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_run_button_toggles(user: User, robot_state) -> None:
+async def test_run_button_toggles(user: User) -> None:
     """Test that the run button toggles between play and pause icons.
 
     When play is clicked:
@@ -179,7 +179,7 @@ async def test_commands_button_clickable(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_record_button_toggles(user: User, robot_state) -> None:
+async def test_record_button_toggles(user: User) -> None:
     """Test that the record button toggles recording and changes appearance.
 
     When recording starts:
@@ -235,7 +235,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
 
 @pytest.mark.integration
 async def test_recording_notification_appears_and_disappears(
-    user: User, robot_state
+    user: User,
 ) -> None:
     """Test that a pulsating recording notification appears at the top of the screen.
 
@@ -469,7 +469,7 @@ async def test_create_and_remove_tab(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_step_button_enabled_after_simulation(user: User, robot_state) -> None:
+async def test_step_button_enabled_after_simulation(user: User) -> None:
     """Test that the step button is visible and enabled after simulation.
 
     After simulation populates steps:
@@ -520,9 +520,7 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     assert editor.playback.next_btn._props.get("disable") is not True, (
         "Step button should be enabled"
     )
-    import waldoctl as _wctl
-
-    _active_for_steps = _wctl.commander.programs.active
+    _active_for_steps = waldoctl.commander.programs.active
     assert _active_for_steps is not None, "An active program should exist"
     assert _active_for_steps.dry_run.total_steps > 0, "Should have simulation steps"
 
@@ -544,7 +542,7 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
 
 @pytest.mark.integration
 async def test_simulation_creates_targets_for_literal_moves(
-    user: User, robot_state
+    user: User,
 ) -> None:
     """Test that simulation creates targets for move commands with literal args.
 
@@ -581,9 +579,7 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     await _sim.run_simulation()
     await asyncio.sleep(0.1)
 
-    import waldoctl as _wctl
-
-    _active = _wctl.commander.programs.active
+    _active = waldoctl.commander.programs.active
     _targets = _active.dry_run.targets if _active is not None else []
     assert len(_targets) >= 1, f"Expected at least 1 target, got {len(_targets)}"
 

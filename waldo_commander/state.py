@@ -78,8 +78,10 @@ class SimulationState(ChangeNotifierMixin):
 # session-wide check is ``services.programs.is_any_program_recording()``.
 
 
-# Extended shared state singletons for cross-module access
-# Only scalar fields are bindable - numpy arrays are excluded to avoid comparison issues
+# Extended shared state singletons for cross-module access.
+# No fields are bindable (bindable_fields=[]); the remaining members are numpy
+# arrays / objects read imperatively, and the migrated scalar fields now live on
+# commander.status.*. Consumers read these directly, not via bindings.
 @bindable_dataclass(bindable_fields=[])
 class RobotState(ChangeNotifierMixin):
     # ``angles`` (joint angles in deg/rad) moved to
