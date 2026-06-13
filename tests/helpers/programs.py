@@ -34,3 +34,24 @@ def set_active_recording(is_recording: bool) -> None:
     if active is None:
         return  # locator not registered yet
     active.recording.is_recording = is_recording
+
+
+def clear_all_programs() -> None:
+    """Clear every open program and its dry-run/recording state.
+
+    No-op when the Commander locator isn't registered yet (module-scope
+    fixtures may run before a test commander exists). Clearing ``items``
+    discards all per-program recording state, so no separate flag reset is
+    needed.
+    """
+    try:
+        programs = waldoctl.commander.programs
+    except RuntimeError:
+        return
+    for p in programs.items:
+        p.dry_run.path_segments = []
+        p.dry_run.targets = []
+        p.dry_run.tool_actions = []
+        p.dry_run.tool_selections = []
+    programs.items.clear()
+    programs.active_id = None

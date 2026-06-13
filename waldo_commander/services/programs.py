@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import waldoctl
-from waldoctl import Program, ProgramTabs
+from waldoctl import DryRun, Playback, Program, ProgramTabs
 
 
 def is_any_program_recording() -> bool:
@@ -35,9 +35,13 @@ def is_any_program_recording() -> bool:
     behave the same as the legacy ``recording_state.is_recording == False``.
     """
     try:
-        return any(p.recording.is_recording for p in waldoctl.commander.programs.items)
+        items = waldoctl.commander.programs.items
     except RuntimeError:
         return False
+    for p in items:
+        if p.recording.is_recording:
+            return True
+    return False
 
 
 def is_any_program_running() -> bool:
@@ -48,14 +52,22 @@ def is_any_program_running() -> bool:
     live). This helper is the read side: anywhere WC previously checked
     the global ``simulation_state.script_running`` flag uses this.
 
+    Runs on the per-tick status / playback paths, so it iterates with an
+    early-return loop rather than ``any(genexpr)`` to avoid allocating a
+    generator each call (``items`` is a handful of open tabs).
+
     Tolerates the pre-startup window when the locator isn't registered yet —
     returns ``False`` in that case so call sites in fixtures / smoke checks
     behave the same as the legacy ``simulation_state.script_running == False``.
     """
     try:
-        return any(p.execution.is_running for p in waldoctl.commander.programs.items)
+        items = waldoctl.commander.programs.items
     except RuntimeError:
         return False
+    for p in items:
+        if p.execution.is_running:
+            return True
+    return False
 
 
 class EditorPrograms(ProgramTabs):
@@ -87,14 +99,18 @@ class EditorPrograms(ProgramTabs):
         return program
 
     def open(self, path: str) -> Program:
-        """Load ``path`` from disk into a new ``Program``. Returns the
-        existing ``Program`` if one is already open for this path.
+        """Load ``path`` from disk into a new ``Program`` and make it active.
+        Returns (and re-activates) the existing ``Program`` if one is already
+        open for this path.
         """
         existing = self.find_by_path(path)
         if existing is not None:
+            self.switch(existing.id)
             return existing
-        content = Path(path).read_text()
-        return self.new(source=content, filename=Path(path).name, file_path=path)
+        content = Path(path).read_text(encoding="utf-8")
+        program = self.new(source=content, filename=Path(path).name, file_path=path)
+        self.switch(program.id)
+        return program
 
     def close(self, id: str) -> None:
         """Remove the ``Program`` with this id. If it was active, the next
@@ -115,3 +131,15 @@ class EditorPrograms(ProgramTabs):
             raise KeyError(id)
         self.active_id = id
         self.notify_changed()
+
+
+def active_dry_run() -> DryRun | None:
+    """The active program's dry-run state, or ``None`` when no program is open."""
+    active = waldoctl.commander.programs.active
+    return active.dry_run if active is not None else None
+
+
+def active_playback() -> Playback | None:
+    """The active program's playback state, or ``None`` when no program is open."""
+    active = waldoctl.commander.programs.active
+    return active.dry_run.playback if active is not None else None

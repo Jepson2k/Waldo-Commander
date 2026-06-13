@@ -10,6 +10,7 @@ import os
 
 import pytest
 import waldoctl
+from nicegui import binding
 from nicegui.testing import User
 from waldoctl import ActionState
 
@@ -52,6 +53,19 @@ async def test_joint_jog_button_sends_jog_j(user: User) -> None:
     assert abs(final_j1 - initial_j1) > 0.1, (
         f"Expected J1 angle to change after jog. "
         f"Initial: {initial_j1:.2f}°, Final: {final_j1:.2f}°"
+    )
+
+    # Regression: the J1 readout widget is bound to commander.status.joints
+    # .angles, which the status loop mutates in place via set_deg(). If 'angles'
+    # were a BindableProperty it would propagate only on reassignment and the
+    # readout would freeze; left non-bindable, the binding is a polled active
+    # link. Force one refresh step and assert the widget tracks the live angle.
+    binding._refresh_step()
+    await asyncio.sleep(0)
+    readout = next(iter(user.find(marker="joint-readout-0").elements))
+    assert readout.value is not None and abs(readout.value - final_j1) < 0.5, (
+        f"J1 readout widget froze: shows {readout.value}, live angle is "
+        f"{final_j1:.2f}° (angles binding is not tracking in-place set_deg)"
     )
 
 

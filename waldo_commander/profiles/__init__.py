@@ -20,10 +20,11 @@ _COMMANDER_DEFAULTS: dict[str, Any] = {
 }
 
 
-def _resolve_robot_name(name: str | None = None) -> str:
+def _resolve_robot_name(name: str | None = None, preferred: str | None = None) -> str:
     """Determine which backend to use.
 
-    Priority: explicit *name* > ``WALDO_ROBOT`` env var > single-backend
+    Priority: explicit *name* > ``WALDO_ROBOT`` env var > *preferred* (the
+    persisted GUI selection, honored only if installed) > single-backend
     auto-detect > :data:`DEFAULT_ROBOT`.
     """
     if name is not None:
@@ -32,16 +33,22 @@ def _resolve_robot_name(name: str | None = None) -> str:
     if env_name:
         return env_name
     backends = available_backends()
+    if preferred and preferred in backends:
+        return preferred
     if len(backends) == 1:
         return backends[0]
     return DEFAULT_ROBOT
 
 
-def get_robot(name: str | None = None, **kwargs: Any) -> Robot:
+def get_robot(
+    name: str | None = None, preferred: str | None = None, **kwargs: Any
+) -> Robot:
     """Create a Robot instance by name (or auto-detected default).
 
-    Waldo-commander defaults (like ``normalize_logs=True``) are applied
-    unless explicitly overridden by the caller.
+    *preferred* is the persisted GUI backend selection: used when no explicit
+    *name* / ``WALDO_ROBOT`` override is given and the value is installed; a
+    stale selection is ignored rather than raising. Waldo-commander defaults
+    (like ``normalize_logs=True``) are applied unless overridden by the caller.
     """
     backends = available_backends()
     if not backends:
@@ -50,7 +57,7 @@ def get_robot(name: str | None = None, **kwargs: Any) -> Robot:
             "pip install waldo-commander[parol6]"
         )
 
-    resolved = _resolve_robot_name(name)
+    resolved = _resolve_robot_name(name, preferred)
     merged = {**_COMMANDER_DEFAULTS, **kwargs}
 
     try:

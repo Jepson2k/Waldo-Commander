@@ -47,8 +47,6 @@ _AXIS_ORDER = (
     "RZ-",
 )
 _AXIS_MAP = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
-_DEFAULT_CART_EN = np.ones(12, dtype=np.int32)
-_DEFAULT_CART_EN.flags.writeable = False
 
 # SVG icon transform lookup: (vb_width, vb_height) -> default transform
 _ICON_TRANSFORMS: dict[tuple[int, int], str] = {
@@ -284,7 +282,7 @@ class _ToolQuickActions:
             return
 
         pub_tool = waldoctl.commander.status.tool
-        tool_position = pub_tool.positions[0] if pub_tool.positions else 0.0
+        tool_position = pub_tool.position
         visual_key = (
             pub_tool.key,
             tool_position,
@@ -404,8 +402,7 @@ class _ToolQuickActions:
                 if isinstance(tool, ElectricGripperTool):
                     spd_kwargs["speed"] = waldoctl.commander.settings.jog.speed / 100.0
                     spd_kwargs["current"] = waldoctl.commander.settings.gripper.current
-                _pos_t = waldoctl.commander.status.tool.positions
-                _cur_pos = _pos_t[0] if _pos_t else 0.0
+                _cur_pos = waldoctl.commander.status.tool.position
                 if tool.is_open(_cur_pos):
                     target = 1.0  # close
                 else:
@@ -654,11 +651,16 @@ class ControlPanel:
         # color, and tooltip in sync.
         self._rating_widgets: dict[str, dict[str, Any]] = {}
 
-        # Dirty checking caches for button enablement (avoid redundant CSS updates)
-        self._last_joint_en_tuple: tuple[tuple[bool, ...], tuple[bool, ...]] | None = (
-            None
-        )
-        self._last_cart_en_tuple: tuple[tuple, ...] | None = None
+        # Dirty checking caches for button enablement (avoid redundant CSS
+        # updates). The status consumer reassigns the per-direction jog lists
+        # wholesale only when the wire arrays change, so a reference-identity
+        # check detects "unchanged since last tick" with zero allocation.
+        self._last_joint_pos: list[bool] | None = None
+        self._last_joint_neg: list[bool] | None = None
+        self._last_cart_wrf_pos: list[bool] | None = None
+        self._last_cart_wrf_neg: list[bool] | None = None
+        self._last_cart_trf_pos: list[bool] | None = None
+        self._last_cart_trf_neg: list[bool] | None = None
         self._last_editing_mode: bool | None = None
         self._gizmo_auto_hidden: bool = (
             False  # True when gizmo hidden due to jog unavailable
@@ -858,18 +860,18 @@ class ControlPanel:
         joints = waldoctl.commander.status.joints
         pos = joints.can_jog_pos
         neg = joints.can_jog_neg
-        current_tuple = (
-            (tuple(pos), tuple(neg))
-            if len(pos) == self._n_joints and len(neg) == self._n_joints
-            else None
-        )
 
-        # Skip if state unchanged (18x faster when idle)
+        # Skip if state unchanged. The producer swaps the lists wholesale only
+        # on change, so identity comparison is a zero-alloc dirty check.
         if (
             editing_mode == self._last_editing_mode
-            and current_tuple == self._last_joint_en_tuple
+            and pos is self._last_joint_pos
+            and neg is self._last_joint_neg
         ):
             return
+        self._last_editing_mode = editing_mode
+        self._last_joint_pos = pos
+        self._last_joint_neg = neg
 
         # If in editing mode, disable all buttons regardless of normal enablement
         if editing_mode:
@@ -877,22 +879,15 @@ class ControlPanel:
                 self._set_strong_disabled(btn, True)
             for btn in self._joint_right_btns.values():
                 self._set_strong_disabled(btn, True)
-            self._last_editing_mode = editing_mode
-            self._last_joint_en_tuple = current_tuple
             return
 
-        if current_tuple is None:
+        if len(pos) != self._n_joints or len(neg) != self._n_joints:
             return
 
         n_joints = ui_state.active_robot.joints.count
         for j in range(n_joints):
-            plus_allowed = pos[j]
-            minus_allowed = neg[j]
-            self._set_strong_disabled(self._joint_right_btns.get(j), not plus_allowed)
-            self._set_strong_disabled(self._joint_left_btns.get(j), not minus_allowed)
-
-        self._last_editing_mode = editing_mode
-        self._last_joint_en_tuple = current_tuple
+            self._set_strong_disabled(self._joint_right_btns.get(j), not pos[j])
+            self._set_strong_disabled(self._joint_left_btns.get(j), not neg[j])
 
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
@@ -904,56 +899,53 @@ class ControlPanel:
         frames = ui_state.active_robot.cartesian_frames
         wrf, trf = frames[0], frames[1]
         by_frame = waldoctl.commander.status.pose.cart_jog.by_frame
+        av_wrf = by_frame.get(wrf)
+        av_trf = by_frame.get(trf)
+        wrf_pos = av_wrf.can_jog_pos if av_wrf else None
+        wrf_neg = av_wrf.can_jog_neg if av_wrf else None
+        trf_pos = av_trf.can_jog_pos if av_trf else None
+        trf_neg = av_trf.can_jog_neg if av_trf else None
 
-        def _flatten(frame: str) -> tuple[int, ...]:
-            """Re-flatten the per-direction lists back to the wire-shape
-            12-int array (X+, X-, Y+, Y-, ..., RZ-) for the cached compare
-            tuple + axis lookups."""
-            av = by_frame.get(frame)
-            if av is None:
-                return tuple(_DEFAULT_CART_EN)
-            pos = av.can_jog_pos
-            neg = av.can_jog_neg
-            n = min(len(pos), len(neg))
-            out: list[int] = []
-            for i in range(n):
-                out.append(int(pos[i]))
-                out.append(int(neg[i]))
-            return tuple(out)
-
-        en_wrf = _flatten(wrf)
-        en_trf = _flatten(trf)
-        current_tuple = (en_wrf, en_trf)
-
-        # Skip if state unchanged
+        # Identity dirty check against the four per-direction lists (the
+        # producer swaps them wholesale only on change), so no per-tick
+        # flatten / tuple allocation.
         if (
             editing_mode == self._last_editing_mode
-            and current_tuple == self._last_cart_en_tuple
+            and wrf_pos is self._last_cart_wrf_pos
+            and wrf_neg is self._last_cart_wrf_neg
+            and trf_pos is self._last_cart_trf_pos
+            and trf_neg is self._last_cart_trf_neg
         ):
             return
+        self._last_editing_mode = editing_mode
+        self._last_cart_wrf_pos = wrf_pos
+        self._last_cart_wrf_neg = wrf_neg
+        self._last_cart_trf_pos = trf_pos
+        self._last_cart_trf_neg = trf_neg
 
         # If in editing mode, disable all cartesian buttons regardless of normal enablement
         if editing_mode:
             for ax in _AXIS_ORDER:
-                elem = self._cart_axis_imgs.get(ax)
-                self._set_strong_disabled(elem, True)
+                self._set_strong_disabled(self._cart_axis_imgs.get(ax), True)
             for elem in self._cart_slot_elems.values():
                 self._set_strong_disabled(elem, True)
-            self._last_editing_mode = editing_mode
-            self._last_cart_en_tuple = current_tuple
             return
 
-        # 2D icons: translation (0-5) from WRF, rotation (6-11) from TRF
+        # 2D icons: translation axes (i<6) use WRF, rotation axes use TRF.
+        # _AXIS_ORDER is (X+, X-, Y+, Y-, ...), so axis = i // 2 and the
+        # per-direction list is chosen by i % 2 (0 = pos, 1 = neg).
         for i, ax in enumerate(_AXIS_ORDER):
-            en = en_trf if i >= 6 else en_wrf
-            elem = self._cart_axis_imgs.get(ax)
-            # Default to disabled if the per-frame list is short (shouldn't
-            # happen — availability lists are always 12 wide — but never jog
-            # on missing data).
-            self._set_strong_disabled(elem, i >= len(en) or not bool(en[i]))
-
-        self._last_editing_mode = editing_mode
-        self._last_cart_en_tuple = current_tuple
+            av = av_wrf if i < 6 else av_trf
+            axis = i // 2
+            lst = (
+                None
+                if av is None
+                else (av.can_jog_pos if i % 2 == 0 else av.can_jog_neg)
+            )
+            # Default to disabled on missing data — availability lists are
+            # normally 6 wide; never jog on a short/absent list.
+            allowed = lst is not None and axis < len(lst) and bool(lst[axis])
+            self._set_strong_disabled(self._cart_axis_imgs.get(ax), not allowed)
 
     def sync_gizmo_for_jog_state(self) -> None:
         """Auto-hide TCP gizmo when live jogging is unavailable, restore when available."""
@@ -1645,6 +1637,7 @@ class ControlPanel:
                                     )
                                     .classes("joint-readout-input")
                                     .style("width:55px;")
+                                    .mark(f"joint-readout-{idx}")
                                 )
                                 spd_lbl = (
                                     ui.label("0°/s")

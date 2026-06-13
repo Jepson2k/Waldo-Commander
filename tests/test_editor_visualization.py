@@ -16,7 +16,7 @@ from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 
 from tests.helpers.browser_helpers import click_tab, wait_for_codemirror_ready
-from tests.helpers.programs import set_active_recording
+from tests.helpers.programs import clear_all_programs
 from tests.helpers.wait import screen_wait_for_scene_ready
 
 if TYPE_CHECKING:
@@ -34,26 +34,9 @@ def _clean_stale_state():
     Symmetric: cleans on both setup AND teardown so subsequent modules can't
     be polluted by anything our tests left behind.
     """
-    import waldoctl
-
-    def _reset() -> None:
-        try:
-            programs = waldoctl.commander.programs
-        except RuntimeError:
-            # Module-scope fixture runs before any class_screen-created commander.
-            return
-        set_active_recording(False)
-        for p in programs.items:
-            p.dry_run.path_segments = []
-            p.dry_run.targets = []
-            p.dry_run.tool_actions = []
-            p.dry_run.tool_selections = []
-        programs.items.clear()
-        programs.active_id = None
-
-    _reset()
+    clear_all_programs()
     yield
-    _reset()
+    clear_all_programs()
 
 
 # ============================================================================
