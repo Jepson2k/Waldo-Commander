@@ -51,11 +51,12 @@ class FileOperationsMixin:
                 self._switch_to_tab(existing_tab.id)
                 return
 
-            text = (self.PROGRAM_DIR / name).read_text(encoding="utf-8")
-            tab = self._new_tab(filename=name, content=text)
-            tab.file_path = file_path
-            tab.mark_saved()
-            self._update_dirty_dot(tab)
+            # open() reads the file, creates a non-dirty program with file_path
+            # set, and switches — the editor's _reconcile_tabs listener builds
+            # the tab widget off that mutation (same path an MCP open follows).
+            program = waldoctl.commander.programs.open(file_path)
+            self._switch_to_tab(program.id)
+            self._update_dirty_dot(program)
             logger.info("Loaded program %s", name)
         except Exception as e:
             ui.notify(f"Load failed: {e}", color="negative")
