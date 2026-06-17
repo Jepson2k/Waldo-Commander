@@ -469,6 +469,54 @@ async def test_create_and_remove_tab(user: User) -> None:
 
 
 @pytest.mark.integration
+async def test_external_program_mutation_renders(user: User) -> None:
+    """A program mutation made OUTSIDE any page action — exactly what an MCP
+    ``programs.*`` tool does — must render in the editor. The reconciler builds
+    the tab widget on ``new``/``open``, follows ``switch``, and tears the widget
+    down on ``close``, with no GUI button involved.
+    """
+    from waldo_commander.state import ui_state
+    import waldoctl
+
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    assert editor is not None
+
+    initial = len(waldoctl.commander.programs.items)
+
+    # new(): no GUI button, no _new_tab() — the reconciler builds the widget.
+    prog = waldoctl.commander.programs.new(source="print('ext')\n", filename="ext.py")
+    await asyncio.sleep(0)
+    assert len(waldoctl.commander.programs.items) == initial + 1
+    await user.should_see(marker=f"editor-tab-{prog.id}")
+
+    # switch(): the active tab follows.
+    waldoctl.commander.programs.switch(prog.id)
+    await asyncio.sleep(0)
+    assert waldoctl.commander.programs.active_id == prog.id
+    assert editor.tabs_container.value == prog.id
+
+    # open(): reads a file from disk into a rendered, non-dirty tab.
+    path = editor.PROGRAM_DIR / "opened_externally.py"
+    path.write_text("print('opened')\n", encoding="utf-8")
+    opened = waldoctl.commander.programs.open(str(path))
+    await asyncio.sleep(0)
+    await user.should_see(marker=f"editor-tab-{opened.id}")
+    assert opened.file_path == str(path)
+    assert not opened.is_dirty
+
+    # close(): the widget is torn down.
+    waldoctl.commander.programs.close(prog.id)
+    await asyncio.sleep(0)
+    assert waldoctl.commander.programs.get(prog.id) is None
+    await user.should_not_see(marker=f"editor-tab-{prog.id}")
+
+
+@pytest.mark.integration
 async def test_step_button_enabled_after_simulation(user: User) -> None:
     """Test that the step button is visible and enabled after simulation.
 
