@@ -6,7 +6,7 @@ import re
 from typing import Any, Callable
 
 import waldoctl
-from nicegui import context, ui
+from nicegui import Client, context, ui
 from waldoctl import EditId, Program
 
 from waldo_commander.common.theme import get_theme
@@ -62,6 +62,11 @@ class EditorPanel(FileOperationsMixin):
         self._tab_widgets: dict[
             str, dict
         ] = {}  # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
+
+        # The page client whose tab widgets this panel renders into. Captured at
+        # build() and used by _reconcile_tabs to enter the right context when a
+        # program mutation arrives from outside a page action (e.g. an MCP tool).
+        self._client: Client | None = None
 
         # Active tab's widgets live on ui_state.active_textarea /
         # active_filename_input — sub-controllers (decorations, simulation,
@@ -348,6 +353,7 @@ class EditorPanel(FileOperationsMixin):
         """Per-page cleanup — remove listeners and cancel timers registered
         during ``build()``. Idempotent: safe to call from both
         ``_on_disconnect`` and ``_on_shutdown``."""
+        waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
         # Edit listeners live on the process-global tab.edits notifier; drop
         # them so closures don't accumulate across page (re)builds.
         for tab_id in list(self._tab_widgets):
@@ -366,11 +372,14 @@ class EditorPanel(FileOperationsMixin):
     def _new_tab(
         self, filename: str = "untitled.py", content: str | None = None
     ) -> Program:
-        """Create a new tab and switch to it."""
+        """Create a new tab and switch to it.
+
+        The tab's widgets are built by ``_reconcile_tabs`` (the change listener
+        on ``commander.programs``) when ``new()`` fires — the same path that
+        renders a program opened from an MCP tool.
+        """
         source = content if content is not None else default_python_snippet()
         tab = waldoctl.commander.programs.new(source=source, filename=filename)
-        self._create_tab_widget(tab)
-        self._create_tab_panel(tab)
         self._switch_to_tab(tab.id)
 
         # Trigger simulation at tab creation (with default script optimization)
@@ -449,22 +458,8 @@ class EditorPanel(FileOperationsMixin):
             else:
                 new_active_id = tabs[1].id  # Next tab if closing first
 
-        # Remove tab widget from tabs container
-        if tab_id in self._tab_widgets:
-            # Drop the LLM-edit listener before tearing down the widgets
-            # so it can't fire against a half-deleted banner.
-            self._unsubscribe_from_edits(tab_id)
-            widgets = self._tab_widgets[tab_id]
-            # Delete the tab widget element
-            if "tab_element" in widgets and widgets["tab_element"]:
-                widgets["tab_element"].delete()
-            # Delete the panel element
-            if "panel" in widgets and widgets["panel"]:
-                widgets["panel"].delete()
-            del self._tab_widgets[tab_id]
-        ui_state.textareas_by_tab.pop(tab_id, None)
-
-        # Remove from state
+        # Remove tab widgets, then drop the program from state.
+        self._remove_tab_widgets(tab_id)
         waldoctl.commander.programs.close(tab_id)
 
         # Create new tab if all tabs closed
@@ -473,6 +468,21 @@ class EditorPanel(FileOperationsMixin):
         elif new_active_id:
             waldoctl.commander.programs.active_id = new_active_id
             self._switch_to_tab(new_active_id)
+
+    def _remove_tab_widgets(self, tab_id: str) -> None:
+        """Delete a tab's DOM elements and drop its references. Idempotent —
+        the shared teardown for both the GUI close path and ``_reconcile_tabs``
+        (a program closed via an MCP tool)."""
+        # Drop the LLM-edit listener first, while its reference is still on the
+        # widget dict, so it can't fire against half-deleted elements.
+        self._unsubscribe_from_edits(tab_id)
+        widgets = self._tab_widgets.pop(tab_id, None)
+        if widgets:
+            if widgets.get("tab_element"):
+                widgets["tab_element"].delete()
+            if widgets.get("panel"):
+                widgets["panel"].delete()
+        ui_state.textareas_by_tab.pop(tab_id, None)
 
     def _switch_to_tab(self, tab_id: str) -> None:
         """Switch to a specific tab (blocked during recording/playback)."""
@@ -583,6 +593,9 @@ class EditorPanel(FileOperationsMixin):
         """Create a single tab widget with filename input, save button, close button."""
         if not self.tabs_container:
             return None
+        existing = self._tab_widgets.get(tab.id)
+        if existing and "tab_element" in existing:
+            return existing["tab_element"]
 
         with self.tabs_container:
             tab_element = ui.tab(name=tab.id, label="").classes("editor-tab")
@@ -631,6 +644,9 @@ class EditorPanel(FileOperationsMixin):
         """Create content panel for a tab (CodeMirror only, log is shared)."""
         if not self.tab_panels_container:
             return None
+        existing = self._tab_widgets.get(tab.id)
+        if existing and "panel" in existing:
+            return existing["panel"]
 
         with self.tab_panels_container:
             panel = (
@@ -788,6 +804,47 @@ class EditorPanel(FileOperationsMixin):
         except KeyError:
             pass
 
+    def _reconcile_tabs(self) -> None:
+        """Render ``commander.programs`` into this page's tab bar — the single
+        widget build/teardown path, driven by *any* program mutation (a GUI
+        button or an MCP ``programs.*`` tool). Registered as a change listener
+        on ``commander.programs`` in :meth:`build`.
+
+        Runs on the event loop (the MCP program tools are async), so entering
+        the captured page client renders a mutation made outside a page action;
+        nested same-client entry during a GUI call is harmless.
+        """
+        client = self._client
+        if client is None or client._deleted:
+            if client is not None:
+                # The page is gone — stop listening so we don't touch dead UI.
+                waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
+            return
+        if not self.tabs_container or not self.tab_panels_container:
+            return
+
+        with client:
+            programs = waldoctl.commander.programs
+            live_ids = {p.id for p in programs.items}
+            # Build widgets for newly-added programs.
+            for tab in programs.items:
+                widgets = self._tab_widgets.get(tab.id)
+                if widgets is None or "tab_element" not in widgets:
+                    self._create_tab_widget(tab)
+                    self._create_tab_panel(tab)
+            # Tear down widgets for programs that are gone.
+            for tab_id in list(self._tab_widgets):
+                if tab_id not in live_ids:
+                    self._remove_tab_widgets(tab_id)
+            # Follow the active program.
+            active_id = programs.active_id
+            if active_id and active_id in self._tab_widgets:
+                self.tab_panels_container.set_value(active_id)
+                self.tabs_container.set_value(active_id)
+                widgets = self._tab_widgets[active_id]
+                ui_state.active_textarea = widgets.get("textarea")
+                ui_state.active_filename_input = widgets.get("filename_input")
+
     def _on_cursor_line(self, tab: Program, e) -> None:
         """Handle cursor line change from CodeMirror."""
         if tab.id != waldoctl.commander.programs.active_id:
@@ -818,6 +875,7 @@ class EditorPanel(FileOperationsMixin):
             ui_client = ui.context.client
         except RuntimeError:
             ui_client = None
+        self._client = ui_client
         decorations.set_ui_client(ui_client)
         playback.set_ui_client(ui_client)
         script_exec.set_ui_client(ui_client)
@@ -933,41 +991,30 @@ class EditorPanel(FileOperationsMixin):
         # Set up playback timers and listeners
         self.playback.setup_timers()
 
+        # Render program mutations into this page's tab bar for the page's
+        # lifetime — whoever makes them (a GUI button or an MCP programs.* tool).
+        # add_change_listener dedups, and cleanup() drops it on disconnect.
+        waldoctl.commander.programs.add_change_listener(self._reconcile_tabs)
+
         # Restore tabs from existing state (page refresh) or create initial tab
         if waldoctl.commander.programs.items:
-            # Clear stale UI references from previous page load. Unsubscribe the
-            # edit listeners first: they live on the process-global tab.edits
-            # notifier, so dropping the _tab_widgets entries without removing
-            # them would leak one closure set per page (re)build.
+            # Drop stale references from a previous page load; the reconciler
+            # rebuilds every tab and follows the active one. Unsubscribe the
+            # edit listeners first — they live on the process-global tab.edits
+            # notifier, so clearing _tab_widgets without removing them leaks a
+            # closure set per page (re)build. active_id is set directly (not via
+            # _switch_to_tab, whose guards are for user-initiated switches).
             for tab_id in list(self._tab_widgets):
                 self._unsubscribe_from_edits(tab_id)
             self._tab_widgets.clear()
-
-            # Rebuild UI for each existing tab
-            for tab in waldoctl.commander.programs.items:
-                self._create_tab_widget(tab)
-                self._create_tab_panel(tab)
-
-            # Activate the previously active tab (or first tab if none active).
-            # Set references directly instead of calling _switch_to_tab() which
-            # blocks during recording/playback — those guards are for user-initiated
-            # switches, not page-load restoration.
-            active_id = (
-                waldoctl.commander.programs.active_id
-                or waldoctl.commander.programs.items[0].id
-            )
-            waldoctl.commander.programs.active_id = active_id
-            if self.tab_panels_container:
-                self.tab_panels_container.set_value(active_id)
-            if self.tabs_container:
-                self.tabs_container.set_value(active_id)
-            widgets = self._tab_widgets.get(active_id, {})
-            ui_state.active_textarea = widgets.get("textarea")
-            ui_state.active_filename_input = widgets.get("filename_input")
+            if not waldoctl.commander.programs.active_id:
+                waldoctl.commander.programs.active_id = (
+                    waldoctl.commander.programs.items[0].id
+                )
+            self._reconcile_tabs()
 
             # Restore simulation state from active tab
-            active_tab = waldoctl.commander.programs.active
-            if active_tab:
+            if waldoctl.commander.programs.active is not None:
                 self._invalidate_for_tab_switch()
         else:
             # No existing tabs - create initial tab

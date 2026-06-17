@@ -7,11 +7,14 @@ via its ``pyproject.toml``.  This module provides the waldo-commander-specific
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from waldoctl import Robot
 from waldoctl.discovery import available_backends, load_robot_class
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_ROBOT = "parol6"
 
@@ -35,6 +38,13 @@ def _resolve_robot_name(name: str | None = None, preferred: str | None = None) -
     backends = available_backends()
     if preferred and preferred in backends:
         return preferred
+    if preferred:
+        logger.warning(
+            "Persisted backend %r is not installed (available: %s); "
+            "ignoring and auto-detecting",
+            preferred,
+            ", ".join(backends) or "none",
+        )
     if len(backends) == 1:
         return backends[0]
     return DEFAULT_ROBOT

@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import waldoctl
-from waldoctl import DryRun, Playback, Program, ProgramTabs
+from waldoctl import DryRun, Program, ProgramTabs
 
 
 def is_any_program_recording() -> bool:
@@ -137,9 +137,3 @@ def active_dry_run() -> DryRun | None:
     """The active program's dry-run state, or ``None`` when no program is open."""
     active = waldoctl.commander.programs.active
     return active.dry_run if active is not None else None
-
-
-def active_playback() -> Playback | None:
-    """The active program's playback state, or ``None`` when no program is open."""
-    active = waldoctl.commander.programs.active
-    return active.dry_run.playback if active is not None else None
