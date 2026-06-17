@@ -7,8 +7,11 @@ applied / discarded by a human via the editor's diff overlay. There is
 before it touches the program.
 
 Tools are ``async`` so FastMCP runs them on WC's event loop: the program
-verbs fire ``notify_changed`` that the editor turns into NiceGUI element
-creation (tabs, diff overlay), which is loop-affine.
+verbs (``open`` / ``new`` / ``close`` / ``switch``) fire ``notify_changed``,
+and the editor's ``EditorPanel._reconcile_tabs`` listener turns that into
+NiceGUI element creation/teardown (tab widgets, diff overlay) on the connected
+page — so an MCP-opened program renders exactly like one opened in the GUI.
+This is loop-affine, which is why the tools must run on the loop.
 """
 
 from __future__ import annotations

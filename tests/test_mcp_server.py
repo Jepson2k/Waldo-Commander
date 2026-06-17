@@ -7,6 +7,8 @@ takes the ``FastMCP`` instance directly — no real socket is opened).
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastmcp import Client
 from nicegui.testing import User
@@ -129,3 +131,85 @@ async def test_propose_and_cancel_edit_via_mcp(user: User) -> None:
         pending_after = _payload(await client.call_tool("programs.list_pending_edits"))
         assert pending_after == []
         assert p.source == "a\nb\nc\n"  # never applied
+
+
+@pytest.mark.integration
+async def test_mcp_program_verbs_render_in_editor(user: User, tmp_path) -> None:
+    """The ``programs.*`` MCP tools must render in the editor exactly like the
+    GUI: ``new``/``open`` build a tab, ``switch`` follows, ``close`` tears it
+    down — driven by the editor's commander.programs change listener.
+    """
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    assert editor is not None
+    mcp = get_mcp()
+
+    async with Client(mcp) as client:
+        # new(): a tab the browser renders, with no GUI button pressed.
+        new_id = _payload(
+            await client.call_tool(
+                "programs.new", {"filename": "mcp_new.py", "source": "print(1)\n"}
+            )
+        )
+        await asyncio.sleep(0)
+        await user.should_see(marker=f"editor-tab-{new_id}")
+
+        # open(): read a file from disk into a rendered tab.
+        path = tmp_path / "mcp_open.py"
+        path.write_text("print('open')\n", encoding="utf-8")
+        open_id = _payload(await client.call_tool("programs.open", {"path": str(path)}))
+        await asyncio.sleep(0)
+        await user.should_see(marker=f"editor-tab-{open_id}")
+
+        # switch(): the active tab follows.
+        await client.call_tool("programs.switch", {"program_id": new_id})
+        await asyncio.sleep(0)
+        assert editor.tabs_container.value == new_id
+
+        # close(): the widget is torn down.
+        await client.call_tool("programs.close", {"program_id": new_id})
+        await asyncio.sleep(0)
+        assert waldoctl.commander.programs.get(new_id) is None
+        await user.should_not_see(marker=f"editor-tab-{new_id}")
+
+
+@pytest.mark.integration
+async def test_play_pause_starts_preview_when_mcp_holds_lease(
+    user: User, monkeypatch
+) -> None:
+    """Regression: ``simulation.play_pause`` must START the preview even though
+    the MCP session holds the control lease. Before the ``control_verified``
+    fix, ``toggle_play``'s browser gate refused (holder.channel == MCP) and the
+    tool silently no-oped while popping a misleading toast.
+    """
+    from waldo_commander.components.playback import playback
+
+    await user.open("/")
+    await wait_for_app_ready()
+    mcp = get_mcp()
+
+    # A previewable program in simulator mode, preview not yet active.
+    waldoctl.commander.status.simulator_active = True
+    active = waldoctl.commander.programs.active
+    assert active is not None
+    active.dry_run.total_steps = 3
+    active.dry_run.playback.is_active = False
+
+    started = {"hit": False}
+    monkeypatch.setattr(
+        playback, "_start_sim_playback", lambda: started.__setitem__("hit", True)
+    )
+
+    async with Client(mcp) as client:
+        await client.call_tool("control.take_control")  # MCP holds the lease
+        await client.call_tool("simulation.play_pause")
+
+    assert started["hit"], (
+        "play_pause should start the preview when the MCP session holds the lease"
+    )

@@ -76,7 +76,10 @@ async def play_pause() -> dict:
     """
     require_mcp_control()
     with _page_client():
-        await playback.toggle_play()
+        # require_mcp_control() above is the lease gate; tell toggle_play the
+        # caller already holds control so its browser-side gate doesn't refuse
+        # (the lease is held by MCP, not the browser).
+        await playback.toggle_play(control_verified=True)
     return await get_mode()
 
 

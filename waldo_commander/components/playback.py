@@ -294,8 +294,15 @@ class PlaybackController:
             return waldoctl.commander.programs.get(script_exec.launching_tab_id)
         return waldoctl.commander.programs.active
 
-    async def toggle_play(self) -> None:
-        """Toggle play/pause for script execution or simulation playback."""
+    async def toggle_play(self, *, control_verified: bool = False) -> None:
+        """Toggle play/pause for script execution or simulation playback.
+
+        ``control_verified`` lets a caller that has already confirmed it holds
+        the control lease (e.g. the MCP ``simulation.play_pause`` tool, after
+        ``require_mcp_control()``) start playback without re-running the
+        browser-side gate — which would refuse, since the lease is held by MCP,
+        not the browser. The GUI button leaves it False and gates as before.
+        """
         active = waldoctl.commander.programs.active
         if is_any_program_running():
             prog = self._play_program()
@@ -314,9 +321,9 @@ class PlaybackController:
         ):
             if active.dry_run.playback.is_active:
                 self._pause_sim_playback()  # pausing is always allowed
-            elif require_browser_control(ui_state.active_client_id):
+            elif control_verified or require_browser_control(ui_state.active_client_id):
                 self._start_sim_playback()
-        elif require_browser_control(ui_state.active_client_id):
+        elif control_verified or require_browser_control(ui_state.active_client_id):
             await script_exec.start()
 
     def step_forward(self) -> None:
