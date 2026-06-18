@@ -90,7 +90,7 @@ Prefer fewer, comprehensive integration tests that mimic manual testing over a l
 - **`screen` fixture** tests are brittle and hard to get right, but they're the closest thing to real testing—use only when necessary (JS-dependent features)
 - **Unit tests** are sometimes necessary to isolate backend logic, but rarely preferred over integration tests
 - Avoid testing "bloat"—more test code means more maintenance burden without proportional value
-- **No tautological tests.** Don't assert what's true by construction — e.g. a freshly built object's default field values. Test behavior, not the class's initializers.
+- **No tautological tests.** Assert behavior, not what's true by construction — not default fields, constructor args echoed back, enum literals, `isinstance`/frozen-raises, or stub-raises-`NotImplementedError`. Drive a method/workflow and assert the outcome.
 - A single comprehensive test that exercises a complete workflow is better than many shallow tests
 - **Merge into one function** - When tests are variations of the same thing (e.g., positive/negative jog), combine into one test with multiple assertions
 - **Class-level fixture sharing** - When tests are logically separate but don't need isolation, group them in a class with class-scoped fixtures to avoid per-test startup/teardown (especially important for expensive browser tests)
