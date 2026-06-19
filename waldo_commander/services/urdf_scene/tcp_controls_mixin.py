@@ -17,12 +17,12 @@ import math
 from typing import Any, Callable
 
 import numpy as np
+import waldoctl
 from nicegui import ui
 from pinokin import arrays_equal_n
 from nicegui.helpers import is_user_simulation
 
 from waldo_commander.common.theme import SceneColors
-from waldo_commander.state import robot_state
 from .ik_solver import EditingIKSolver
 
 from .config import RobotAppearanceMode
@@ -337,12 +337,12 @@ class TCPControlsMixin:
                 self._last_fk_angles_tuple = key
                 angles_changed = True
         else:
-            angles_deg = robot_state.angles.deg
+            angles_deg = waldoctl.commander.status.joints.angles.deg
             if self._last_fk_angles_raw is None or not arrays_equal_n(
                 angles_deg[:n], self._last_fk_angles_raw
             ):
                 self._last_fk_angles_raw = angles_deg[:n].copy()
-                angles_rad = robot_state.angles.rad
+                angles_rad = waldoctl.commander.status.joints.angles.rad
                 angles_changed = True
 
         if angles_changed:
@@ -423,9 +423,9 @@ class TCPControlsMixin:
                     buf[4] = self._tcp_drag_start_rot_deg[1]
                     buf[5] = self._tcp_drag_start_rot_deg[2]
                 else:
-                    buf[3] = robot_state.rx
-                    buf[4] = robot_state.ry
-                    buf[5] = robot_state.rz
+                    buf[3] = waldoctl.commander.status.pose.rx
+                    buf[4] = waldoctl.commander.status.pose.ry
+                    buf[5] = waldoctl.commander.status.pose.rz
                 self._tcp_cartesian_move_callback(buf)
 
         else:  # rotate mode
@@ -438,9 +438,11 @@ class TCPControlsMixin:
 
                 # Reuse pre-allocated buffer
                 buf = self._pose_mm_buffer
-                buf[0] = robot_state.x  # Keep current position (already in mm)
-                buf[1] = robot_state.y
-                buf[2] = robot_state.z
+                buf[0] = (
+                    waldoctl.commander.status.pose.x
+                )  # Keep current position (already in mm)
+                buf[1] = waldoctl.commander.status.pose.y
+                buf[2] = waldoctl.commander.status.pose.z
                 buf[3] = math.degrees(rx)  # rx: rad -> deg
                 buf[4] = math.degrees(ry)  # ry: rad -> deg
                 buf[5] = math.degrees(rz)  # rz: rad -> deg

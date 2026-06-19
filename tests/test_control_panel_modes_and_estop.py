@@ -15,7 +15,7 @@ from tests.helpers.wait import wait_for_app_ready
 
 @pytest.mark.integration
 async def test_home_command_behavior(
-    user: User, robot_state, caplog: pytest.LogCaptureFixture
+    user: User, caplog: pytest.LogCaptureFixture
 ) -> None:
     """HOME command should be blocked without connection, allowed with simulator.
 
@@ -28,8 +28,10 @@ async def test_home_command_behavior(
 
     # --- Part 1: HOME blocked without connection ---
     # Override state after page load so HOME guard sees both flags as False
-    robot_state.simulator_active = False
-    robot_state.connected = False
+    import waldoctl as _wctl
+
+    _wctl.commander.status.simulator_active = False
+    _wctl.commander.status.connected = False
 
     user.find(marker="btn-home").click()
     await asyncio.sleep(0)
@@ -41,7 +43,7 @@ async def test_home_command_behavior(
 
     # --- Part 2: HOME allowed with simulator ---
     # Enable simulator mode and try again
-    robot_state.simulator_active = True
+    _wctl.commander.status.simulator_active = True
 
     user.find(marker="btn-home").click()
 
@@ -54,7 +56,7 @@ async def test_home_command_behavior(
 
 
 @pytest.mark.integration
-async def test_digital_estop_dialog_behavior(user: User, robot_state) -> None:
+async def test_digital_estop_dialog_behavior(user: User) -> None:
     """Digital E-STOP dialog should appear with Resume button."""
     await user.open("/")
     await wait_for_app_ready()

@@ -2,6 +2,7 @@
 
 import asyncio
 import pytest
+import waldoctl
 from nicegui.testing import User
 
 from tests.helpers.wait import (
@@ -14,7 +15,7 @@ from tests.helpers.wait import (
 
 
 @pytest.mark.integration
-async def test_joint_at_limit_disables_direction(user: User, robot_state) -> None:
+async def test_joint_at_limit_disables_direction(user: User) -> None:
     """Test that when a joint reaches its limit, the jog button for that direction is disabled.
 
     When a joint is at or near its maximum limit, the positive direction
@@ -26,17 +27,19 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
 
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Get J1 limits
     j1_min, j1_max = JOINT_LIMITS_DEG[0]
 
     # Move J1 to its max limit using the limit button
     user.find(marker="btn-j1-max-limit").click()
-    await wait_for_motion_start(robot_state, timeout_s=5.0)
+    await wait_for_motion_start(timeout_s=5.0)
     final_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=20.0, stable_ticks=30
+        lambda: waldoctl.commander.status.joints.angles[0],
+        timeout_s=20.0,
+        stable_ticks=30,
     )
 
     # Verify we're at or near max limit
@@ -44,22 +47,20 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
         f"J1 should be near max limit {j1_max}°, got {final_j1:.2f}°"
     )
 
-    # At max limit, positive direction should be blocked
-    # The robot's joint_en array should reflect this
-    # J1 positive enable is at index 0 (even indices are positive)
-    # Note: joint_en updates may take a moment
+    # At max limit, positive direction should be blocked. ``can_jog_pos[0]``
+    # mirrors the backend ``joint_en`` positive bit for J1.
     await asyncio.sleep(0.1)
 
-    # Check that J1+ is disabled (index 0 in joint_en)
-    j1_plus_enabled = robot_state.joint_en[0] if len(robot_state.joint_en) > 0 else 1
-    assert j1_plus_enabled == 0, (
-        f"J1+ should be disabled at max limit, joint_en[0]={j1_plus_enabled}"
+    pos = waldoctl.commander.status.joints.can_jog_pos
+    j1_plus_enabled = pos[0] if pos else True
+    assert not j1_plus_enabled, (
+        f"J1+ should be disabled at max limit, can_jog_pos[0]={j1_plus_enabled}"
     )
 
 
 @pytest.mark.integration
 async def test_cartesian_at_workspace_limit_disables_axis(
-    user: User, robot_state
+    user: User,
 ) -> None:
     """Test that when near workspace limits, cartesian axis buttons become disabled.
 
@@ -68,31 +69,34 @@ async def test_cartesian_at_workspace_limit_disables_axis(
     """
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     # Extend the arm by moving J2 to its limit (stretches arm outward)
     # This quickly reaches the cartesian workspace boundary
     user.find(marker="btn-j2-max-limit").click()
-    await wait_for_motion_start(robot_state)
-    await wait_for_motion_stable(lambda: robot_state.angles[1], timeout_s=15.0)
+    await wait_for_motion_start()
+    await wait_for_motion_stable(
+        lambda: waldoctl.commander.status.joints.angles[1], timeout_s=15.0
+    )
 
     # Wait for enablement arrays to update
     await asyncio.sleep(0.2)
 
-    # At extended position, some cartesian directions should be disabled
-    # The cart_en dict contains enable flags for each axis per frame
-    wrf_en = robot_state.cart_en.get("WRF")
-    assert wrf_en is not None, "cart_en should have WRF frame"
-    disabled_count = sum(1 for v in wrf_en if v == 0)
+    # At extended position, some cartesian directions should be disabled.
+    wrf = waldoctl.commander.status.pose.cart_jog.by_frame.get("WRF")
+    assert wrf is not None, "cart_jog should have WRF frame"
+    disabled_count = sum(1 for v in wrf.can_jog_pos if not v) + sum(
+        1 for v in wrf.can_jog_neg if not v
+    )
     assert disabled_count > 0, (
         f"At extended arm position, some cartesian directions should be disabled. "
-        f"cart_en[WRF]={list(wrf_en)}"
+        f"WRF can_jog_pos={list(wrf.can_jog_pos)}, can_jog_neg={list(wrf.can_jog_neg)}"
     )
 
 
 @pytest.mark.integration
-async def test_joint_en_updates_on_motion(user: User, robot_state) -> None:
+async def test_joint_en_updates_on_motion(user: User) -> None:
     """Test that joint enable flags update during motion.
 
     As the robot moves, the joint_en array should update to reflect
@@ -100,17 +104,22 @@ async def test_joint_en_updates_on_motion(user: User, robot_state) -> None:
     """
     await user.open("/")
     await wait_for_app_ready()
-    await enable_sim(user, robot_state)
-    await ensure_robot_ready_for_motion(robot_state)
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
-    # Verify joint_en array has expected structure (12 values: 6 joints * 2 directions)
-    assert len(robot_state.joint_en) == 12, (
-        f"Expected 12 joint_en values, got {len(robot_state.joint_en)}"
+    # Verify can_jog_pos / can_jog_neg lists each have one entry per joint.
+    joints = waldoctl.commander.status.joints
+    assert len(joints.can_jog_pos) == 6, (
+        f"Expected 6 can_jog_pos values, got {len(joints.can_jog_pos)}"
+    )
+    assert len(joints.can_jog_neg) == 6, (
+        f"Expected 6 can_jog_neg values, got {len(joints.can_jog_neg)}"
     )
 
-    # At home position, most directions should be enabled (value 1)
-    # At least one direction per joint should be enabled
-    enabled_count = sum(1 for v in robot_state.joint_en if v == 1)
+    # At home position, most directions should be enabled.
+    enabled_count = sum(1 for v in joints.can_jog_pos if v) + sum(
+        1 for v in joints.can_jog_neg if v
+    )
     assert enabled_count >= 6, (
         f"At home position, at least 6 directions should be enabled, got {enabled_count}"
     )

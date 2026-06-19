@@ -10,15 +10,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+import waldoctl
 
 from waldo_commander.profiles import get_robot
 from waldo_commander.state import (
+    playback_coordination,
     simulation_state,
-    recording_state,
     robot_state,
     ui_state,
 )
 from parol6.client.dry_run_client import DryRunRobotClient
+from tests.helpers.programs import set_active_recording
+from waldo_commander.services.programs import (
+    is_any_program_recording,
+    is_any_program_running,
+)
 from waldo_commander.services.path_preview_client import PathPreviewClient
 from waldo_commander.services.motion_recorder import MotionRecorder
 from waldo_commander.services.path_visualizer import PathVisualizer
@@ -139,13 +145,13 @@ class TestDryRunClient:
 
 
 def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
-    """Set both robot_state pose values and pose matrix."""
-    robot_state.x = x
-    robot_state.y = y
-    robot_state.z = z
-    robot_state.rx = rx
-    robot_state.ry = ry
-    robot_state.rz = rz
+    """Set the commander.status.pose scalars and the robot_state pose matrix."""
+    waldoctl.commander.status.pose.x = x
+    waldoctl.commander.status.pose.y = y
+    waldoctl.commander.status.pose.z = z
+    waldoctl.commander.status.pose.rx = rx
+    waldoctl.commander.status.pose.ry = ry
+    waldoctl.commander.status.pose.rz = rz
     robot_state.pose = np.array(
         [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1],
         dtype=np.float64,
@@ -154,23 +160,26 @@ def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
 
 @pytest.fixture
 def mock_textarea():
-    """Set up a mocked active textarea + editor_panel for motion recorder tests.
+    """Set up a mocked active textarea + editor_panel + program for motion recorder tests.
 
     Yields the textarea mock — tests assert on its ``.value`` to verify what
     motion_recorder inserted. ``ui_state.editor_panel`` is wired to a separate
-    MagicMock so production code that does presence checks still works.
+    MagicMock so production code that does presence checks still works. An
+    active ``Program`` is ensured so ``motion_recorder._start_recording`` has
+    a target to write recording state into.
     """
-    from waldo_commander.state import editor_tabs_state
+    from tests.helpers.programs import ensure_active_program
 
     mock_textarea = MagicMock()
     mock_textarea.value = "# Initial code\n"
-    editor_tabs_state.active_textarea = mock_textarea
+    ui_state.active_textarea = mock_textarea
     ui_state.editor_panel = MagicMock()
     old_robot = ui_state.robot
     ui_state.robot = get_robot()
+    ensure_active_program()
     yield mock_textarea
     ui_state.editor_panel = None
-    editor_tabs_state.active_textarea = None
+    ui_state.active_textarea = None
     ui_state.robot = old_robot
 
 
@@ -191,7 +200,9 @@ class TestMotionRecorder:
 
     def test_capture_current_pose_joints_mode(self, mock_textarea):
         """capture_current_pose with joints mode should insert move_j code."""
-        robot_state.angles.set_deg(np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]))
+        waldoctl.commander.status.joints.angles.set_deg(
+            np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
+        )
 
         recorder = MotionRecorder()
         recorder.capture_current_pose(move_type="joints")
@@ -204,20 +215,20 @@ class TestMotionRecorder:
         recorder = MotionRecorder()
 
         # Initially not recording
-        assert recording_state.is_recording is False
+        assert not is_any_program_recording()
 
         # First toggle starts recording
         recorder.toggle_recording()
-        assert recording_state.is_recording is True
+        assert is_any_program_recording()
 
         # Second toggle stops recording
         recorder.toggle_recording()
-        assert recording_state.is_recording is False
+        assert not is_any_program_recording()
 
     def test_jog_recording_lifecycle(self, mock_textarea):
         """Test complete jog recording cycle: start sets state, end inserts code."""
         set_robot_pose(100.0, 200.0, 300.0)
-        robot_state.angles.set_deg(np.zeros(6))
+        waldoctl.commander.status.joints.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start recording
@@ -242,12 +253,11 @@ class TestMotionRecorder:
 
     def test_jog_events_ignored_when_not_recording(self):
         """Jog start and end events should be ignored when not recording."""
-        from waldo_commander.state import editor_tabs_state
 
         recorder = MotionRecorder()
         mock_textarea = MagicMock()
         mock_textarea.value = ""
-        editor_tabs_state.active_textarea = mock_textarea
+        ui_state.active_textarea = mock_textarea
 
         # Not recording - jog start should be ignored
         recorder.on_jog_start("joint", "J1+")
@@ -257,12 +267,12 @@ class TestMotionRecorder:
         recorder.on_jog_end()
         assert mock_textarea.value == ""
 
-        editor_tabs_state.active_textarea = None
+        ui_state.active_textarea = None
 
     def test_record_action_home_generates_code(self, mock_textarea):
         """record_action for home should generate home code."""
         recorder = MotionRecorder()
-        recording_state.is_recording = True
+        set_active_recording(True)
 
         recorder.record_action("home")
 
@@ -272,7 +282,7 @@ class TestMotionRecorder:
     def test_record_action_gripper_commands(self, mock_textarea):
         """record_action for gripper should generate tool access + method calls."""
         recorder = MotionRecorder()
-        recording_state.is_recording = True
+        set_active_recording(True)
 
         # Part 1: Calibrate command
         recorder.record_action("gripper", calibrate=True)
@@ -300,7 +310,7 @@ class TestMotionRecorder:
     def test_record_action_io(self, mock_textarea):
         """record_action for io should generate write_io code."""
         recorder = MotionRecorder()
-        recording_state.is_recording = True
+        set_active_recording(True)
 
         recorder.record_action("io", port=1, state=1)
 
@@ -310,7 +320,7 @@ class TestMotionRecorder:
     def test_record_action_ignored_when_not_recording(self, mock_textarea):
         """record_action should be ignored when not recording."""
         recorder = MotionRecorder()
-        recording_state.is_recording = False
+        set_active_recording(False)
 
         recorder.record_action("home")
 
@@ -320,7 +330,7 @@ class TestMotionRecorder:
     def test_multiple_jogs_insert_multiple_code_lines(self, mock_textarea):
         """Multiple jog start/end cycles should insert multiple code lines."""
         set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles.set_deg(np.zeros(6))
+        waldoctl.commander.status.joints.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start
@@ -347,7 +357,7 @@ class TestMotionRecorder:
     def test_stop_recording_ends_active_jog(self, mock_textarea):
         """Stopping recording should end any active jog."""
         set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles.set_deg(np.zeros(6))
+        waldoctl.commander.status.joints.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start
@@ -589,13 +599,13 @@ class TestEditorAutoSimulation:
     def testschedule_debounced_simulation_creates_timer(self):
         """schedule_debounced_simulation should create a timer."""
         from waldo_commander.components.simulation_engine import simulation
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer = MagicMock()
             mock_ui.timer.return_value = mock_timer
 
-            editor_tabs_state.active_tab_id = "test-tab"
+            waldoctl.commander.programs.active_id = "test-tab"
             simulation._simulation_debounce_timer = None
 
             simulation.schedule_debounced_simulation()
@@ -608,14 +618,14 @@ class TestEditorAutoSimulation:
     def testschedule_debounced_simulation_cancels_previous_timer(self):
         """Calling schedule_debounced_simulation again should cancel previous timer."""
         from waldo_commander.components.simulation_engine import simulation
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer1 = MagicMock()
             mock_timer2 = MagicMock()
             mock_ui.timer.side_effect = [mock_timer1, mock_timer2]
 
-            editor_tabs_state.active_tab_id = "test-tab"
+            waldoctl.commander.programs.active_id = "test-tab"
             simulation._simulation_debounce_timer = None
 
             simulation.schedule_debounced_simulation()
@@ -629,7 +639,7 @@ class TestEditorAutoSimulation:
     async def test_run_simulation_calls_path_visualizer(self):
         """run_simulation should call path_visualizer.update_path_visualization."""
         from waldo_commander.components.simulation_engine import simulation
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
@@ -647,16 +657,16 @@ class TestEditorAutoSimulation:
 
                 mock_textarea = MagicMock()
                 mock_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
-                editor_tabs_state.active_textarea = mock_textarea
-                editor_tabs_state.active_tab_id = "tab_under_test"
-                editor_tabs_state.textareas_by_tab["tab_under_test"] = mock_textarea
+                ui_state.active_textarea = mock_textarea
+                waldoctl.commander.programs.active_id = "tab_under_test"
+                ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
                 try:
                     await simulation.run_simulation()
                 finally:
-                    editor_tabs_state.textareas_by_tab.pop("tab_under_test", None)
-                    editor_tabs_state.active_tab_id = None
-                    editor_tabs_state.active_textarea = None
+                    ui_state.textareas_by_tab.pop("tab_under_test", None)
+                    waldoctl.commander.programs.active_id = None
+                    ui_state.active_textarea = None
 
                 assert update_called is True
                 assert update_content == "rbt.move_j([0,0,0,0,0,0])"
@@ -665,7 +675,7 @@ class TestEditorAutoSimulation:
     async def test_run_simulation_empty_content_skips_visualization(self):
         """run_simulation should skip visualization when content is empty."""
         from waldo_commander.components.simulation_engine import simulation
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
@@ -681,16 +691,16 @@ class TestEditorAutoSimulation:
 
                 mock_textarea = MagicMock()
                 mock_textarea.value = ""
-                editor_tabs_state.active_textarea = mock_textarea
-                editor_tabs_state.active_tab_id = "tab_under_test"
-                editor_tabs_state.textareas_by_tab["tab_under_test"] = mock_textarea
+                ui_state.active_textarea = mock_textarea
+                waldoctl.commander.programs.active_id = "tab_under_test"
+                ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
                 try:
                     await simulation.run_simulation()
                 finally:
-                    editor_tabs_state.textareas_by_tab.pop("tab_under_test", None)
-                    editor_tabs_state.active_tab_id = None
-                    editor_tabs_state.active_textarea = None
+                    ui_state.textareas_by_tab.pop("tab_under_test", None)
+                    waldoctl.commander.programs.active_id = None
+                    ui_state.active_textarea = None
 
                 assert update_called is False
 
@@ -731,18 +741,20 @@ class TestSimulationCaching:
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):
         """Simulation results go to tab_id, not active tab (for tab switch during sim)."""
-        from waldo_commander.state import editor_tabs_state, simulation_state, EditorTab
+        from waldo_commander.state import simulation_state
+        import waldoctl
+        from waldoctl import Program
         from waldo_commander.services.path_visualizer import PathVisualizer
 
         # Create two tabs
-        tab1 = EditorTab(
-            id="tab1", filename="a.py", file_path=None, content="", saved_content=""
+        tab1 = Program(
+            id="tab1", filename="a.py", file_path=None, source="", _saved_source=""
         )
-        tab2 = EditorTab(
-            id="tab2", filename="b.py", file_path=None, content="", saved_content=""
+        tab2 = Program(
+            id="tab2", filename="b.py", file_path=None, source="", _saved_source=""
         )
-        editor_tabs_state.tabs = [tab1, tab2]
-        editor_tabs_state.active_tab_id = "tab2"  # Active is tab2
+        waldoctl.commander.programs.items = [tab1, tab2]
+        waldoctl.commander.programs.active_id = "tab2"  # Active is tab2
 
         # Mock run.cpu_bound to return test data and notify_changed to avoid slot stack error
         with (
@@ -766,8 +778,8 @@ class TestSimulationCaching:
             await visualizer.update_path_visualization("print('hi')", tab_id="tab1")
 
             # Results should be in tab1, not tab2
-            assert tab1.final_joints_rad == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-            assert tab2.final_joints_rad is None
+            assert tab1.dry_run.final_joints_rad == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+            assert tab2.dry_run.final_joints_rad is None
 
     def test_simulation_returns_final_joints_rad(self):
         """Simulation result includes final_joints_rad for caching."""
@@ -796,6 +808,15 @@ class TestPathVisualizerIntegration:
     The tests use the real robot kinematics module which should be available.
     """
 
+    @staticmethod
+    def _active_dry_run():
+        """Return the active program's dry_run (test convenience accessor)."""
+        import waldoctl
+
+        active = waldoctl.commander.programs.active
+        assert active is not None, "test setup did not create an active program"
+        return active.dry_run
+
     @pytest.fixture(autouse=True)
     def setup_test_tab(self):
         """Create a test tab so path visualizer can store results.
@@ -803,7 +824,8 @@ class TestPathVisualizerIntegration:
         State reset is handled by conftest.reset_state fixture.
         This fixture only sets up the test tab needed for these tests.
         """
-        from waldo_commander.state import editor_tabs_state, EditorTab
+        import waldoctl
+        from waldoctl import Program
 
         old_robot = ui_state.robot
         ui_state.robot = get_robot()
@@ -812,15 +834,15 @@ class TestPathVisualizerIntegration:
         simulation_state._change_listeners.clear()
 
         # Create a test tab so path visualizer can store results
-        test_tab = EditorTab(
+        test_tab = Program(
             id="test-tab",
             filename="test.py",
             file_path=None,
-            content="",
-            saved_content="",
+            source="",
+            _saved_source="",
         )
-        editor_tabs_state.tabs = [test_tab]
-        editor_tabs_state.active_tab_id = "test-tab"
+        waldoctl.commander.programs.items = [test_tab]
+        waldoctl.commander.programs.active_id = "test-tab"
 
         yield
 
@@ -850,8 +872,8 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created at least one segment
-        assert len(simulation_state.path_segments) >= 1, (
-            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
         )
 
     @pytest.mark.asyncio
@@ -872,7 +894,9 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have 2 segments and total_steps should match
-        assert simulation_state.total_steps == len(simulation_state.path_segments)
+        assert self._active_dry_run().total_steps == len(
+            self._active_dry_run().path_segments
+        )
 
     @pytest.mark.asyncio
     async def test_visualizer_joint_coordinates_in_meters(self):
@@ -895,13 +919,13 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created a segment
-        assert len(simulation_state.path_segments) >= 1, (
-            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
         )
 
         # Check that all points are in meters (not mm)
         # PAROL6 workspace is ~600mm reach, so all coords should be < 1.0m
-        segment = simulation_state.path_segments[-1]
+        segment = self._active_dry_run().path_segments[-1]
         end_point = segment.points[-1]  # [x, y, z]
 
         assert abs(end_point[0]) < 1.0, (
@@ -930,16 +954,16 @@ async def main():
 
         await visualizer.update_path_visualization(program)
 
-        assert len(simulation_state.path_segments) >= 2, (
-            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(self._active_dry_run().path_segments)}"
         )
 
-        assert len(simulation_state.targets) == 2, (
-            f"Expected 2 targets (one per literal move), got {len(simulation_state.targets)}. "
+        assert len(self._active_dry_run().targets) == 2, (
+            f"Expected 2 targets (one per literal move), got {len(self._active_dry_run().targets)}. "
             f"Bug: compile() may not be using 'simulation_script.py' filename for frame inspection."
         )
 
-        target_ids = [t.id for t in simulation_state.targets]
+        target_ids = [t.id for t in self._active_dry_run().targets]
         assert all(tid.startswith("auto_") for tid in target_ids), (
             f"Expected auto-generated target IDs, got {target_ids}"
         )
@@ -961,16 +985,16 @@ async def main():
 
         await visualizer.update_path_visualization(program)
 
-        assert len(simulation_state.path_segments) >= 1, (
-            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
         )
 
         infeasible = [
-            s for s in simulation_state.path_segments if not s.timing_feasible
+            s for s in self._active_dry_run().path_segments if not s.timing_feasible
         ]
         assert len(infeasible) >= 1, (
             "Expected at least one segment with timing_feasible=False; "
-            f"got {[s.timing_feasible for s in simulation_state.path_segments]}"
+            f"got {[s.timing_feasible for s in self._active_dry_run().path_segments]}"
         )
         seg = infeasible[0]
         assert seg.estimated_duration is not None and seg.estimated_duration > 0.01, (
@@ -1002,13 +1026,13 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created path segments (visualization still works)
-        assert len(simulation_state.path_segments) >= 2, (
-            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        assert len(self._active_dry_run().path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(self._active_dry_run().path_segments)}"
         )
 
         # Should NOT have created any targets (variables not inspectable)
-        assert len(simulation_state.targets) == 0, (
-            f"Expected 0 targets (moves use variables), got {len(simulation_state.targets)}"
+        assert len(self._active_dry_run().targets) == 0, (
+            f"Expected 0 targets (moves use variables), got {len(self._active_dry_run().targets)}"
         )
 
 
@@ -1209,64 +1233,73 @@ class TestTeleportCommand:
 
 
 class TestSimPoseOverrideAutoClear:
-    """Tests for the timestamp-based auto-clear of sim_pose_override."""
+    """Tests for the timestamp-based auto-clear of sim_pose_override.
+
+    These drive the real ``_maybe_clear_sim_pose_override`` from ``main`` (the
+    same function the status loop calls each tick) instead of re-deriving its
+    condition, so a flipped comparison in production fails the test. The
+    condition reads ``commander.programs.active.dry_run.playback.is_active`` to
+    decide whether the user is still scrubbing; each test seeds an active
+    program so the lookup resolves.
+    """
+
+    @staticmethod
+    def _seed_program(is_active: bool):
+        from tests.helpers.programs import ensure_active_program
+
+        program = ensure_active_program()
+        assert program is not None
+        program.dry_run.playback.is_active = is_active
+        return program
 
     def test_clears_after_timeout(self):
-        """Override should clear once 100ms has passed since last teleport."""
-        simulation_state.sim_pose_override = True
-        simulation_state.sim_playback_active = False
-        simulation_state.last_teleport_ts = time.monotonic() - 0.2  # 200ms ago
+        """Override clears once 100ms has passed since the last teleport."""
+        from waldo_commander.main import _maybe_clear_sim_pose_override
 
-        # Simulate the auto-clear condition from main.py
-        should_clear = (
-            simulation_state.sim_pose_override
-            and not simulation_state.sim_playback_active
-            and simulation_state.last_teleport_ts > 0
-            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
-        )
-        assert should_clear
+        self._seed_program(is_active=False)
+        playback_coordination.sim_pose_override = True
+        playback_coordination.last_teleport_ts = time.monotonic() - 0.2  # 200ms ago
+
+        _maybe_clear_sim_pose_override()
+
+        assert playback_coordination.sim_pose_override is False
+        assert playback_coordination.last_teleport_ts == 0.0
 
     def test_stays_set_during_active_scrubbing(self):
-        """Override should NOT clear if a teleport was sent recently."""
-        simulation_state.sim_pose_override = True
-        simulation_state.sim_playback_active = False
-        simulation_state.last_teleport_ts = time.monotonic()  # just now
+        """Override is kept if a teleport was sent recently (<100ms)."""
+        from waldo_commander.main import _maybe_clear_sim_pose_override
 
-        should_clear = (
-            simulation_state.sim_pose_override
-            and not simulation_state.sim_playback_active
-            and simulation_state.last_teleport_ts > 0
-            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
-        )
-        assert not should_clear
+        self._seed_program(is_active=False)
+        playback_coordination.sim_pose_override = True
+        playback_coordination.last_teleport_ts = time.monotonic()  # just now
+
+        _maybe_clear_sim_pose_override()
+
+        assert playback_coordination.sim_pose_override is True
 
     def test_stays_set_during_playback(self):
-        """Override should NOT clear during active simulation playback."""
-        simulation_state.sim_pose_override = True
-        simulation_state.sim_playback_active = True
-        simulation_state.last_teleport_ts = time.monotonic() - 0.2
+        """Override is kept while simulation playback is active."""
+        from waldo_commander.main import _maybe_clear_sim_pose_override
 
-        should_clear = (
-            simulation_state.sim_pose_override
-            and not simulation_state.sim_playback_active
-            and simulation_state.last_teleport_ts > 0
-            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
-        )
-        assert not should_clear
+        self._seed_program(is_active=True)
+        playback_coordination.sim_pose_override = True
+        playback_coordination.last_teleport_ts = time.monotonic() - 0.2
+
+        _maybe_clear_sim_pose_override()
+
+        assert playback_coordination.sim_pose_override is True
 
     def test_no_clear_without_teleport(self):
-        """Override should NOT clear if no teleport was ever sent (ts=0)."""
-        simulation_state.sim_pose_override = True
-        simulation_state.sim_playback_active = False
-        simulation_state.last_teleport_ts = 0.0
+        """Override is kept if no teleport was ever sent (ts=0)."""
+        from waldo_commander.main import _maybe_clear_sim_pose_override
 
-        should_clear = (
-            simulation_state.sim_pose_override
-            and not simulation_state.sim_playback_active
-            and simulation_state.last_teleport_ts > 0
-            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
-        )
-        assert not should_clear
+        self._seed_program(is_active=False)
+        playback_coordination.sim_pose_override = True
+        playback_coordination.last_teleport_ts = 0.0
+
+        _maybe_clear_sim_pose_override()
+
+        assert playback_coordination.sim_pose_override is True
 
 
 # ============================================================================
@@ -1287,7 +1320,12 @@ class TestScriptExecutionLifecycle:
         (signal_play, log_panel.expand, task creation) leak a process group.
         """
         from waldo_commander.components import script_execution as se
-        from waldo_commander.state import editor_tabs_state
+        from tests.helpers.programs import ensure_active_program
+
+        # Seed an active program so start() flips real per-program execution
+        # state — without one, is_any_program_running() is vacuously False and
+        # the reset assertions below can't catch a missed cleanup.
+        active_program = ensure_active_program()
 
         # Long-running script: only `stop_script` (i.e. our cleanup path) can end it.
         script_path = tmp_path / "long_running.py"
@@ -1328,8 +1366,8 @@ class TestScriptExecutionLifecycle:
         fake_textarea.value = script_path.read_text()
         fake_filename_input = MagicMock()
         fake_filename_input.value = script_path.name
-        editor_tabs_state.active_textarea = fake_textarea
-        editor_tabs_state.active_filename_input = fake_filename_input
+        ui_state.active_textarea = fake_textarea
+        ui_state.active_filename_input = fake_filename_input
 
         # run_script reads ui_state.active_robot.backend_package; ensure it's set
         # (matches the mock_textarea fixture's pattern).
@@ -1341,10 +1379,13 @@ class TestScriptExecutionLifecycle:
         try:
             await se.script_exec.start()
 
-            # Contract: handle cleared, state reset.
+            # Contract: handle cleared, state reset. Assert the launching
+            # program's own flags were cleared (the reset path ran), not just
+            # the global helper which would pass regardless with no program.
             assert se.script_exec.script_handle is None
-            assert simulation_state.script_running is False
-            assert simulation_state.is_playing is False
+            assert is_any_program_running() is False
+            assert active_program.execution.is_running is False
+            assert active_program.dry_run.playback.is_playing is False
 
             # The subprocess must be dead — this is the regression guard.
             assert "handle" in captured, "run_script did not run; test setup is wrong"
@@ -1355,8 +1396,8 @@ class TestScriptExecutionLifecycle:
                 f"Subprocess was leaked! PID {proc.pid} still running."
             )
         finally:
-            editor_tabs_state.active_textarea = None
-            editor_tabs_state.active_filename_input = None
+            ui_state.active_textarea = None
+            ui_state.active_filename_input = None
             ui_state.robot = old_robot
             # Belt-and-suspenders: if the test ever ran without the fix, ensure
             # the subprocess is killed so it doesn't leak into the next test.
@@ -1377,7 +1418,6 @@ class TestScriptExecutionLifecycle:
         only ``.runtime`` was created, not ``.runtime/sub``.
         """
         from waldo_commander.components import script_execution as se
-        from waldo_commander.state import editor_tabs_state
 
         # Stub run_script so we don't actually launch a subprocess — the bug
         # is in the file write that happens before run_script is called.
@@ -1394,8 +1434,8 @@ class TestScriptExecutionLifecycle:
         fake_textarea.value = "# subdir regression\n"
         fake_filename_input = MagicMock()
         fake_filename_input.value = "sub/regression.py"
-        editor_tabs_state.active_textarea = fake_textarea
-        editor_tabs_state.active_filename_input = fake_filename_input
+        ui_state.active_textarea = fake_textarea
+        ui_state.active_filename_input = fake_filename_input
 
         se.script_exec.set_program_dir(tmp_path)
 
@@ -1406,8 +1446,8 @@ class TestScriptExecutionLifecycle:
             assert written.exists(), f"Expected {written} to exist after start() ran"
             assert written.read_text(encoding="utf-8") == "# subdir regression\n"
         finally:
-            editor_tabs_state.active_textarea = None
-            editor_tabs_state.active_filename_input = None
+            ui_state.active_textarea = None
+            ui_state.active_filename_input = None
 
     @pytest.mark.asyncio
     async def test_cleanup_preserves_stepping_ipc_across_page_reload(
@@ -1441,13 +1481,16 @@ class TestScriptExecutionLifecycle:
         assert step_controller._control_file.exists()
         assert step_controller._event_file.exists()
 
-        old_running = simulation_state.script_running
+        active_program = waldoctl.commander.programs.active
+        if active_program is None:
+            active_program = waldoctl.commander.programs.new(filename="ipc_test.py")
+        old_running = active_program.execution.is_running
         old_session = se.script_exec._step_session_id
         old_controller = se.script_exec._step_controller
         old_watcher = se.script_exec._event_watcher_task
         old_client = se.script_exec._ui_client
         try:
-            simulation_state.script_running = True
+            active_program.execution.is_running = True
             se.script_exec._step_session_id = session_id
             se.script_exec._step_controller = step_controller
 
@@ -1496,7 +1539,7 @@ class TestScriptExecutionLifecycle:
                 se.script_exec._event_watcher_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await se.script_exec._event_watcher_task
-            simulation_state.script_running = old_running
+            active_program.execution.is_running = old_running
             se.script_exec._step_session_id = old_session
             se.script_exec._step_controller = old_controller
             se.script_exec._event_watcher_task = old_watcher
@@ -1615,56 +1658,41 @@ def test_script_output_appends_to_launching_tab_only():
     tab the user is currently viewing.
     """
     from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.state import EditorTab, editor_tabs_state
+    import waldoctl
+    from waldoctl import Program
 
     # Set up two tabs with empty logs.
-    tab_a = EditorTab(
-        id="tab-a", filename="a.py", file_path=None, content="", saved_content=""
+    tab_a = Program(
+        id="tab-a", filename="a.py", file_path=None, source="", _saved_source=""
     )
-    tab_b = EditorTab(
-        id="tab-b", filename="b.py", file_path=None, content="", saved_content=""
+    tab_b = Program(
+        id="tab-b", filename="b.py", file_path=None, source="", _saved_source=""
     )
-    editor_tabs_state.tabs = [tab_a, tab_b]
-    editor_tabs_state.active_tab_id = "tab-a"
+    waldoctl.commander.programs.items = [tab_a, tab_b]
+    waldoctl.commander.programs.active_id = "tab-a"
 
     # Script launched from tab A; record lines while user switches to B.
     script_exec._script_tab_id = "tab-a"
     script_exec._record_line("line1 while on A")
-    editor_tabs_state.active_tab_id = "tab-b"
+    waldoctl.commander.programs.active_id = "tab-b"
     script_exec._record_line("line2 after switching to B")
     script_exec._record_line("line3 still on B")
-    editor_tabs_state.active_tab_id = "tab-a"
+    waldoctl.commander.programs.active_id = "tab-a"
     script_exec._record_line("line4 back on A")
 
-    assert list(tab_a.output_log) == [
+    assert [e.text for e in tab_a.log.entries] == [
         "line1 while on A",
         "line2 after switching to B",
         "line3 still on B",
         "line4 back on A",
     ], "All script output must accumulate in the launching tab's log"
-    assert len(tab_b.output_log) == 0, "Tab B owns its own (empty) log"
+    assert len(tab_b.log.entries) == 0, "Tab B owns its own (empty) log"
 
 
-def test_record_line_caps_output_log_at_1000():
-    """``output_log`` cap must match ``ui.log(max_lines=1000)`` so the
-    tab-switch rehydrate doesn't overflow the visible widget.
-    """
-    from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.state import EditorTab, editor_tabs_state
-
-    tab = EditorTab(
-        id="cap-tab", filename="x.py", file_path=None, content="", saved_content=""
-    )
-    editor_tabs_state.tabs = [tab]
-    editor_tabs_state.active_tab_id = "cap-tab"
-    script_exec._script_tab_id = "cap-tab"
-
-    for i in range(1100):
-        script_exec._record_line(f"line {i}")
-
-    assert len(tab.output_log) == 1000
-    assert tab.output_log[0] == "line 100", "Oldest 100 lines should be trimmed (FIFO)"
-    assert tab.output_log[-1] == "line 1099"
+# Note: the legacy ``output_log`` cap test (1000-entry FIFO) was a WC-specific
+# implementation detail tied to ``ui.log(max_lines=1000)``. ``Program.log.entries``
+# is unbounded by design; host applications cap visibly via the widget. The cap
+# may be reintroduced as a host-level concern but isn't part of the public surface.
 
 
 def test_reset_state_clears_launching_tab_id():

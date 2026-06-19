@@ -13,13 +13,13 @@ import importlib.resources as pkg_resources
 import numpy as np
 
 from nicegui import ui, app, Client
+import waldoctl
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
 from waldo_commander.constants import config, DEFAULT_CAMERA, CLICK_HOLD_THRESHOLD_S
 from waldo_commander.state import (
     robot_state,
-    simulation_state,
     ui_state,
     global_phase_timer,
 )
@@ -27,6 +27,7 @@ from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import SettingsContent
 from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.services.programs import is_any_program_running
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,6 @@ _AXIS_ORDER = (
     "RZ-",
 )
 _AXIS_MAP = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
-_DEFAULT_CART_EN = np.ones(12, dtype=np.int32)
-_DEFAULT_CART_EN.flags.writeable = False
 
 # SVG icon transform lookup: (vb_width, vb_height) -> default transform
 _ICON_TRANSFORMS: dict[tuple[int, int], str] = {
@@ -185,14 +184,14 @@ class _EStopManager:
                 self._is_physical = False
 
     def check_state_change(self) -> None:
-        """Monitor robot_state.io_estop and show/hide dialog on transitions."""
-        current = robot_state.io_estop
+        """Monitor ``commander.status.io.estop`` and show/hide dialog on transitions."""
+        current = waldoctl.commander.status.io.estop
 
         if self._last_io_state == 1 and current == 0:
-            logger.warning("Physical E-STOP detected (io_estop 1->0)")
+            logger.warning("Physical E-STOP detected (io.estop 1->0)")
             self.show(is_physical=True)
         elif self._last_io_state == 0 and current == 1:
-            logger.info("Physical E-STOP released (io_estop 0->1)")
+            logger.info("Physical E-STOP released (io.estop 0->1)")
             if self._dialog and self._is_physical:
                 self.close()
                 if self._digital_active:
@@ -232,11 +231,13 @@ class _ToolQuickActions:
             .classes("rounded-lg shadow-sm p-2 gap-1")
             .style("border: 1px solid rgba(255,255,255,0.1);")
             .bind_visibility_from(
-                robot_state, "tool_key", backward=lambda k: k != "NONE"
+                waldoctl.commander.status.tool,
+                "key",
+                backward=lambda k: k != "NONE",
             )
             .mark("tool-quick-actions")
         ):
-            ui.label().bind_text_from(robot_state, "tool_key").classes(
+            ui.label().bind_text_from(waldoctl.commander.status.tool, "key").classes(
                 "text-xs text-center w-full opacity-60"
             )
 
@@ -280,11 +281,13 @@ class _ToolQuickActions:
         if tool is None:
             return
 
+        pub_tool = waldoctl.commander.status.tool
+        tool_position = pub_tool.position
         visual_key = (
-            robot_state.tool_key,
-            robot_state.tool_position,
-            robot_state.tool_engaged,
-            ui_state.gripper_current,
+            pub_tool.key,
+            tool_position,
+            pub_tool.engaged,
+            waldoctl.commander.settings.gripper.current,
         )
         if visual_key == self._last_visual:
             return
@@ -293,7 +296,7 @@ class _ToolQuickActions:
         # Left action button
         if tool.action_l_icons:
             if isinstance(tool, GripperTool):
-                is_open = tool.is_open(robot_state.tool_position)
+                is_open = tool.is_open(tool_position)
                 off_icon, on_icon = tool.action_l_icons
                 off_label, on_label = tool.action_l_labels or ("Close", "Open")
                 icon = off_icon if is_open else on_icon
@@ -302,7 +305,7 @@ class _ToolQuickActions:
             else:
                 off_icon, on_icon = tool.action_l_icons
                 off_label, on_label = tool.action_l_labels or ("Off", "On")
-                engaged = robot_state.tool_engaged
+                engaged = waldoctl.commander.status.tool.engaged
                 if tool.action_l_mode == ToggleMode.TRIGGER:
                     icon = off_icon
                     color = "cyan-8"
@@ -334,7 +337,7 @@ class _ToolQuickActions:
                     self._action_r_btn.props("color=cyan-8")
                     r_tooltip = off_label_r
                 else:
-                    engaged_r = robot_state.tool_engaged
+                    engaged_r = waldoctl.commander.status.tool.engaged
                     self._action_r_btn._props["icon"] = (
                         off_icon_r if engaged_r else on_icon_r
                     )
@@ -356,7 +359,7 @@ class _ToolQuickActions:
                 self._adjust_minus_btn.classes(add="cp-disabled-strong")
                 self._adjust_plus_btn.classes(add="cp-disabled-strong")
             else:
-                cur = ui_state.gripper_current
+                cur = waldoctl.commander.settings.gripper.current
                 step = tool.adjust_step
                 # Disable at limits
                 if isinstance(tool, ElectricGripperTool):
@@ -397,20 +400,21 @@ class _ToolQuickActions:
             if isinstance(tool, GripperTool):
                 spd_kwargs: dict = {}
                 if isinstance(tool, ElectricGripperTool):
-                    spd_kwargs["speed"] = ui_state.jog_speed / 100.0
-                    spd_kwargs["current"] = ui_state.gripper_current
-                if tool.is_open(robot_state.tool_position):
+                    spd_kwargs["speed"] = waldoctl.commander.settings.jog.speed / 100.0
+                    spd_kwargs["current"] = waldoctl.commander.settings.gripper.current
+                _cur_pos = waldoctl.commander.status.tool.position
+                if tool.is_open(_cur_pos):
                     target = 1.0  # close
                 else:
                     target = 0.0  # open
                 if ui_state.gripper_page is not None:
                     ui_state.gripper_page.set_target_position(target)
                 else:
-                    ui_state.tool_target_position = target
+                    waldoctl.commander.settings.gripper.target_position = target
                 await tool.set_position(target, **spd_kwargs)
                 motion_recorder.record_action("gripper", position=target, **spd_kwargs)
             else:
-                await tool.action_l(not robot_state.tool_engaged)
+                await tool.action_l(not waldoctl.commander.status.tool.engaged)
         except Exception as e:
             logger.error("Tool action_l failed: %s", e)
             ui.notify(f"Action failed: {e}", color="negative")
@@ -422,7 +426,7 @@ class _ToolQuickActions:
         if tool is None or tool.action_r_labels is None:
             return
         try:
-            await tool.action_r(not robot_state.tool_engaged)
+            await tool.action_r(not waldoctl.commander.status.tool.engaged)
         except Exception as e:
             logger.error("Tool action_r failed: %s", e)
             ui.notify(f"Action failed: {e}", color="negative")
@@ -437,13 +441,13 @@ class _ToolQuickActions:
             return
         step = tool.adjust_step * direction
         lo, hi = tool.current_range
-        new_cur = max(lo, min(hi, ui_state.gripper_current + step))
+        new_cur = max(lo, min(hi, waldoctl.commander.settings.gripper.current + step))
         if ui_state.gripper_page is not None:
             ui_state.gripper_page.set_target_current(new_cur)
         else:
-            ui_state.gripper_current = new_cur
+            waldoctl.commander.settings.gripper.current = new_cur
         try:
-            pos = ui_state.tool_target_position
+            pos = waldoctl.commander.settings.gripper.target_position
             await tool.set_position(pos, current=new_cur)
             motion_recorder.record_action("gripper", position=pos, current=new_cur)
         except Exception as e:
@@ -555,12 +559,12 @@ def _safe_task(coro: Any) -> asyncio.Task:
 
 def _norm_speed() -> float:
     """Normalize jog_speed (0-100 slider) to 0.01..1.0 range."""
-    return max(0.01, min(1.0, ui_state.jog_speed / 100.0))
+    return max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
 
 
 def _norm_accel() -> float:
     """Normalize jog_accel (0-100 slider) to 0.0..1.0 range."""
-    return ui_state.jog_accel / 100.0
+    return waldoctl.commander.settings.jog.accel / 100.0
 
 
 class ControlPanel:
@@ -647,9 +651,16 @@ class ControlPanel:
         # color, and tooltip in sync.
         self._rating_widgets: dict[str, dict[str, Any]] = {}
 
-        # Dirty checking caches for button enablement (avoid redundant CSS updates)
-        self._last_joint_en_tuple: tuple[int, ...] | None = None
-        self._last_cart_en_tuple: tuple[tuple, ...] | None = None
+        # Dirty checking caches for button enablement (avoid redundant CSS
+        # updates). The status consumer reassigns the per-direction jog lists
+        # wholesale only when the wire arrays change, so a reference-identity
+        # check detects "unchanged since last tick" with zero allocation.
+        self._last_joint_pos: list[bool] | None = None
+        self._last_joint_neg: list[bool] | None = None
+        self._last_cart_wrf_pos: list[bool] | None = None
+        self._last_cart_wrf_neg: list[bool] | None = None
+        self._last_cart_trf_pos: list[bool] | None = None
+        self._last_cart_trf_neg: list[bool] | None = None
         self._last_editing_mode: bool | None = None
         self._gizmo_auto_hidden: bool = (
             False  # True when gizmo hidden due to jog unavailable
@@ -843,18 +854,24 @@ class ControlPanel:
             elem.classes(remove="cp-disabled-strong")
 
     def refresh_joint_enablement(self) -> None:
-        """Apply stronger disabled visuals to joint +/- buttons using robot_state.joint_en."""
-        # Get current state for dirty checking
-        editing_mode = robot_state.editing_mode
-        en = robot_state.joint_en
-        current_tuple = tuple(en) if len(en) == 2 * self._n_joints else None
+        """Apply stronger disabled visuals to joint +/- buttons using
+        ``commander.status.joints.can_jog_pos / can_jog_neg``."""
+        editing_mode = waldoctl.commander.status.editing_mode
+        joints = waldoctl.commander.status.joints
+        pos = joints.can_jog_pos
+        neg = joints.can_jog_neg
 
-        # Skip if state unchanged (18x faster when idle)
+        # Skip if state unchanged. The producer swaps the lists wholesale only
+        # on change, so identity comparison is a zero-alloc dirty check.
         if (
             editing_mode == self._last_editing_mode
-            and current_tuple == self._last_joint_en_tuple
+            and pos is self._last_joint_pos
+            and neg is self._last_joint_neg
         ):
             return
+        self._last_editing_mode = editing_mode
+        self._last_joint_pos = pos
+        self._last_joint_neg = neg
 
         # If in editing mode, disable all buttons regardless of normal enablement
         if editing_mode:
@@ -862,22 +879,15 @@ class ControlPanel:
                 self._set_strong_disabled(btn, True)
             for btn in self._joint_right_btns.values():
                 self._set_strong_disabled(btn, True)
-            self._last_editing_mode = editing_mode
-            self._last_joint_en_tuple = current_tuple
             return
 
-        if current_tuple is None:
+        if len(pos) != self._n_joints or len(neg) != self._n_joints:
             return
 
         n_joints = ui_state.active_robot.joints.count
         for j in range(n_joints):
-            plus_allowed = bool(en[2 * j])
-            minus_allowed = bool(en[2 * j + 1])
-            self._set_strong_disabled(self._joint_right_btns.get(j), not plus_allowed)
-            self._set_strong_disabled(self._joint_left_btns.get(j), not minus_allowed)
-
-        self._last_editing_mode = editing_mode
-        self._last_joint_en_tuple = current_tuple
+            self._set_strong_disabled(self._joint_right_btns.get(j), not pos[j])
+            self._set_strong_disabled(self._joint_left_btns.get(j), not neg[j])
 
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
@@ -885,53 +895,74 @@ class ControlPanel:
         Translation axes use WRF enablement, rotation axes use TRF enablement
         (matching the actual jog frame convention).
         """
-        editing_mode = robot_state.editing_mode
+        editing_mode = waldoctl.commander.status.editing_mode
         frames = ui_state.active_robot.cartesian_frames
         wrf, trf = frames[0], frames[1]
-        en_wrf = robot_state.cart_en.get(wrf, _DEFAULT_CART_EN)
-        en_trf = robot_state.cart_en.get(trf, _DEFAULT_CART_EN)
-        current_tuple = (tuple(en_wrf), tuple(en_trf))
+        by_frame = waldoctl.commander.status.pose.cart_jog.by_frame
+        av_wrf = by_frame.get(wrf)
+        av_trf = by_frame.get(trf)
+        wrf_pos = av_wrf.can_jog_pos if av_wrf else None
+        wrf_neg = av_wrf.can_jog_neg if av_wrf else None
+        trf_pos = av_trf.can_jog_pos if av_trf else None
+        trf_neg = av_trf.can_jog_neg if av_trf else None
 
-        # Skip if state unchanged
+        # Identity dirty check against the four per-direction lists (the
+        # producer swaps them wholesale only on change), so no per-tick
+        # flatten / tuple allocation.
         if (
             editing_mode == self._last_editing_mode
-            and current_tuple == self._last_cart_en_tuple
+            and wrf_pos is self._last_cart_wrf_pos
+            and wrf_neg is self._last_cart_wrf_neg
+            and trf_pos is self._last_cart_trf_pos
+            and trf_neg is self._last_cart_trf_neg
         ):
             return
+        self._last_editing_mode = editing_mode
+        self._last_cart_wrf_pos = wrf_pos
+        self._last_cart_wrf_neg = wrf_neg
+        self._last_cart_trf_pos = trf_pos
+        self._last_cart_trf_neg = trf_neg
 
         # If in editing mode, disable all cartesian buttons regardless of normal enablement
         if editing_mode:
             for ax in _AXIS_ORDER:
-                elem = self._cart_axis_imgs.get(ax)
-                self._set_strong_disabled(elem, True)
+                self._set_strong_disabled(self._cart_axis_imgs.get(ax), True)
             for elem in self._cart_slot_elems.values():
                 self._set_strong_disabled(elem, True)
-            self._last_editing_mode = editing_mode
-            self._last_cart_en_tuple = current_tuple
             return
 
-        # 2D icons: translation (0-5) from WRF, rotation (6-11) from TRF
+        # 2D icons: translation axes (i<6) use WRF, rotation axes use TRF.
+        # _AXIS_ORDER is (X+, X-, Y+, Y-, ...), so axis = i // 2 and the
+        # per-direction list is chosen by i % 2 (0 = pos, 1 = neg).
         for i, ax in enumerate(_AXIS_ORDER):
-            en = en_trf if i >= 6 else en_wrf
-            elem = self._cart_axis_imgs.get(ax)
-            self._set_strong_disabled(elem, not bool(en[i]))
-
-        self._last_editing_mode = editing_mode
-        self._last_cart_en_tuple = current_tuple
+            av = av_wrf if i < 6 else av_trf
+            axis = i // 2
+            lst = (
+                None
+                if av is None
+                else (av.can_jog_pos if i % 2 == 0 else av.can_jog_neg)
+            )
+            # Default to disabled on missing data — availability lists are
+            # normally 6 wide; never jog on a short/absent list.
+            allowed = lst is not None and axis < len(lst) and bool(lst[axis])
+            self._set_strong_disabled(self._cart_axis_imgs.get(ax), not allowed)
 
     def sync_gizmo_for_jog_state(self) -> None:
         """Auto-hide TCP gizmo when live jogging is unavailable, restore when available."""
         jog_possible = (
-            not robot_state.editing_mode
-            and (robot_state.simulator_active or robot_state.connected)
-            and not simulation_state.script_running
+            not waldoctl.commander.status.editing_mode
+            and (
+                waldoctl.commander.status.simulator_active
+                or waldoctl.commander.status.connected
+            )
+            and not is_any_program_running()
         )
         if not jog_possible and not self._gizmo_auto_hidden:
-            if ui_state.urdf_scene and ui_state.gizmo_visible:
+            if ui_state.urdf_scene and waldoctl.commander.settings.view.gizmo_visible:
                 ui_state.urdf_scene.set_gizmo_visible(False)
                 self._gizmo_auto_hidden = True
         elif jog_possible and self._gizmo_auto_hidden:
-            if ui_state.urdf_scene and ui_state.gizmo_visible:
+            if ui_state.urdf_scene and waldoctl.commander.settings.view.gizmo_visible:
                 ui_state.urdf_scene.set_gizmo_visible(True)
             self._gizmo_auto_hidden = False
 
@@ -940,11 +971,14 @@ class ControlPanel:
     @staticmethod
     def _movement_allowed(notify: bool = True) -> bool:
         """Return True if robot movement is permitted (simulator active or hardware connected, no script running)."""
-        if simulation_state.script_running:
+        if is_any_program_running():
             if notify:
                 ui.notify("Script is running — jog disabled", color="warning")
             return False
-        if robot_state.simulator_active or robot_state.connected:
+        if (
+            waldoctl.commander.status.simulator_active
+            or waldoctl.commander.status.connected
+        ):
             return True
         if notify:
             ui.notify(
@@ -958,7 +992,7 @@ class ControlPanel:
 
     async def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
         """Hybrid click/hold: quick click => single step, press-and-hold => stream until release."""
-        if robot_state.editing_mode:
+        if waldoctl.commander.status.editing_mode:
             return
         if not self._movement_allowed(notify=is_pressed):
             return
@@ -1007,9 +1041,9 @@ class ControlPanel:
         async def on_click():
             speed = _norm_speed()
             accel = _norm_accel()
-            step = abs(float(ui_state.joint_step_deg))
+            step = abs(float(waldoctl.commander.settings.jog.joint_step_deg))
             try:
-                angles = list(robot_state.angles.deg)
+                angles = list(waldoctl.commander.status.joints.angles.deg)
                 if len(angles) >= self._n_joints:
                     target_angles = angles[: self._n_joints]
                     lo, hi = self._get_joint_limits(j)
@@ -1068,7 +1102,7 @@ class ControlPanel:
 
     async def set_axis_pressed(self, axis: str, is_pressed: bool) -> None:
         """Hybrid click/hold for cartesian axes: click => single step, hold => stream."""
-        if robot_state.editing_mode:
+        if waldoctl.commander.status.editing_mode:
             return
         if not self._movement_allowed(notify=is_pressed):
             return
@@ -1085,9 +1119,12 @@ class ControlPanel:
         if axis in _AXIS_ORDER:
             idx = _AXIS_ORDER.index(axis)
             frame = frames[1] if idx >= 6 else frames[0]
-            en_list = robot_state.cart_en.get(frame, _DEFAULT_CART_EN)
-            if len(en_list) == 12:
-                allowed = bool(int(en_list[idx]))
+            frame_av = waldoctl.commander.status.pose.cart_jog.by_frame.get(frame)
+            if frame_av is not None:
+                axis_idx = idx // 2
+                lst = frame_av.can_jog_pos if idx % 2 == 0 else frame_av.can_jog_neg
+                if axis_idx < len(lst):
+                    allowed = bool(lst[axis_idx])
         self._set_strong_disabled(self._cart_axis_imgs.get(axis), not allowed)
         if is_pressed and not allowed:
             return
@@ -1104,7 +1141,9 @@ class ControlPanel:
 
         async def on_click():
             speed = _norm_speed()
-            step = max(0.1, min(100.0, float(ui_state.joint_step_deg)))
+            step = max(
+                0.1, min(100.0, float(waldoctl.commander.settings.jog.joint_step_deg))
+            )
             try:
                 axis_letter = axis.rstrip("+-")
                 direction = 1.0 if axis.endswith("+") else -1.0
@@ -1317,7 +1356,7 @@ class ControlPanel:
             return
 
         try:
-            angles = list(robot_state.angles.deg)
+            angles = list(waldoctl.commander.status.joints.angles.deg)
             lo, hi = self._get_joint_limits(joint_index)
             tgt = max(lo, min(hi, float(target_deg)))
             pose = angles[: self._n_joints]
@@ -1331,14 +1370,14 @@ class ControlPanel:
     async def go_to_joint_limit(self, joint_index: int, which: str) -> None:
         """Move to min or max joint limit for a specific joint while holding others."""
         # Skip if in editing mode (target editor controls robot)
-        if robot_state.editing_mode:
+        if waldoctl.commander.status.editing_mode:
             return
 
         if not self._movement_allowed():
             return
 
         try:
-            angles = list(robot_state.angles.deg)
+            angles = list(waldoctl.commander.status.joints.angles.deg)
             lo, hi = self._get_joint_limits(joint_index)
 
             target = angles[: self._n_joints]
@@ -1356,7 +1395,9 @@ class ControlPanel:
         """Sync gizmo state to URDF scene after it's initialized (called once after scene is ready)."""
         if ui_state.urdf_scene:
             # Apply current gizmo visibility
-            ui_state.urdf_scene.set_gizmo_visible(ui_state.gizmo_visible)
+            ui_state.urdf_scene.set_gizmo_visible(
+                waldoctl.commander.settings.view.gizmo_visible
+            )
             # Apply current gizmo mode (default is Move/TRANSLATE)
             ui_state.urdf_scene.set_gizmo_display_mode("TRANSLATE")
             # Fixed WRF orientation for cartesian UI layout
@@ -1391,7 +1432,7 @@ class ControlPanel:
 
     async def on_gizmo_toggle(self, visible: bool) -> None:
         """Toggle gizmo visibility and TCP TransformControls."""
-        ui_state.gizmo_visible = bool(visible)
+        waldoctl.commander.settings.view.gizmo_visible = bool(visible)
         if ui_state.urdf_scene is None:
             logger.warning("Cannot toggle gizmo: URDF scene not initialized")
             return
@@ -1409,7 +1450,7 @@ class ControlPanel:
 
     async def send_home(self) -> None:
         # In editing mode, move the editing robot to home position
-        if robot_state.editing_mode:
+        if waldoctl.commander.status.editing_mode:
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.apply_editing_home()
                 logger.info("HOME sent to editing robot")
@@ -1446,7 +1487,7 @@ class ControlPanel:
         """Update Robot/Simulator toggle button appearance."""
         if self._robot_btn is None:
             return
-        if robot_state.simulator_active:
+        if waldoctl.commander.status.simulator_active:
             self._robot_btn.props("color=amber-8")
             self._robot_btn.classes(add="glass-btn glass-amber")
         else:
@@ -1457,7 +1498,7 @@ class ControlPanel:
         """Toggle between robot and simulator modes and update URDF appearance."""
         try:
             # Stop any running user script before mode switch (safety)
-            if simulation_state.script_running:
+            if is_any_program_running():
                 logger.info("Stopping running script before mode switch")
                 try:
                     await script_exec.stop()
@@ -1465,9 +1506,9 @@ class ControlPanel:
                     logger.warning("Failed to stop script before mode switch: %s", e)
 
             # Toggle simulator mode and enable
-            if not robot_state.simulator_active:
+            if not waldoctl.commander.status.simulator_active:
                 await self.client.simulator(True)
-                robot_state.simulator_active = True
+                waldoctl.commander.status.simulator_active = True
                 # Apply simulator visual appearance to URDF scene (amber ghosting)
                 if self._is_urdf_scene_valid() and ui_state.urdf_scene:
                     ui_state.urdf_scene.set_simulator_appearance(True)
@@ -1479,7 +1520,7 @@ class ControlPanel:
                     logger.warning("Resume after simulator on failed: %s", e)
             else:
                 await self.client.simulator(False)
-                robot_state.simulator_active = False
+                waldoctl.commander.status.simulator_active = False
                 # Restore default URDF appearance (remove simulator ghosting)
                 if self._is_urdf_scene_valid() and ui_state.urdf_scene:
                     ui_state.urdf_scene.set_simulator_appearance(False)
@@ -1500,7 +1541,7 @@ class ControlPanel:
 
     async def on_estop_click(self) -> None:
         """Trigger digital E-STOP (STOP command) and show dialog."""
-        if robot_state.io_estop == 0:
+        if waldoctl.commander.status.io.estop == 0:
             ui.notify("Physical E-STOP is active - release it first", color="warning")
             return
 
@@ -1568,7 +1609,7 @@ class ControlPanel:
                                 return max(0.0, min(1.0, (a[i] - lo) / (hi - lo)))
 
                             bar.bind_value_from(
-                                robot_state,
+                                waldoctl.commander.status.joints,
                                 "angles",
                                 backward=_bar_backward,
                             )
@@ -1596,6 +1637,7 @@ class ControlPanel:
                                     )
                                     .classes("joint-readout-input")
                                     .style("width:55px;")
+                                    .mark(f"joint-readout-{idx}")
                                 )
                                 spd_lbl = (
                                     ui.label("0°/s")
@@ -1624,7 +1666,7 @@ class ControlPanel:
                             )
 
                             num.bind_value_from(
-                                robot_state,
+                                waldoctl.commander.status.joints,
                                 "angles",
                                 backward=_num_backward,
                             )
@@ -1665,11 +1707,13 @@ class ControlPanel:
                             def check_lower_limit(a, i=idx, lo=lo):
                                 if len(a) <= i:
                                     return False
-                                step = ui_state.joint_step_deg
+                                step = waldoctl.commander.settings.jog.joint_step_deg
                                 return a[i] - step >= lo
 
                             left_btn.bind_enabled_from(
-                                robot_state, "angles", backward=check_lower_limit
+                                waldoctl.commander.status.joints,
+                                "angles",
+                                backward=check_lower_limit,
                             )
                             left_btn.on(
                                 "mousedown",
@@ -1695,11 +1739,13 @@ class ControlPanel:
                             def check_upper_limit(a, i=idx, hi=hi):
                                 if len(a) <= i:
                                     return False
-                                step = ui_state.joint_step_deg
+                                step = waldoctl.commander.settings.jog.joint_step_deg
                                 return a[i] + step <= hi
 
                             right_btn.bind_enabled_from(
-                                robot_state, "angles", backward=check_upper_limit
+                                waldoctl.commander.status.joints,
+                                "angles",
+                                backward=check_upper_limit,
                             )
                             right_btn.on(
                                 "mousedown",
@@ -1836,6 +1882,19 @@ class ControlPanel:
                     self._settings_content = SettingsContent(self.client)
                     self._settings_content.build_embedded()
 
+    _PREF_TARGETS = {
+        "jog_speed": ("jog", "speed"),
+        "jog_accel": ("jog", "accel"),
+    }
+
+    @classmethod
+    def _resolve_pref(cls, ui_attr: str) -> tuple[Any, str]:
+        """Map a legacy rating-row name (``jog_speed`` / ``jog_accel``) onto
+        the live ``commander.settings`` leaf — returns ``(target_obj, attr)``.
+        """
+        group, attr = cls._PREF_TARGETS[ui_attr]
+        return getattr(waldoctl.commander.settings, group), attr
+
     def _build_rating_row(
         self,
         *,
@@ -1847,12 +1906,15 @@ class ControlPanel:
         format_tooltip: Callable[[float], str],
     ) -> None:
         """Build a 10-step rating row (speed or acceleration) with persistence."""
+        target_obj, target_attr = self._resolve_pref(ui_attr)
         with ui.row().classes("items-center gap-2 w-full"):
             icon = ui.icon(icon_name, size="md", color=default_color)
             with icon:
                 tooltip = ui.tooltip(storage_key.replace("_", " ").title())
-            stored = app.storage.general.get(storage_key, getattr(ui_state, ui_attr))
-            setattr(ui_state, ui_attr, stored)
+            stored = app.storage.general.get(
+                storage_key, getattr(target_obj, target_attr)
+            )
+            setattr(target_obj, target_attr, stored)
             v_init = max(1, min(10, round(int(stored) / self._RATING_UNIT)))
 
             rating = ui.rating(max=10, icon="circle", size="16px", value=v_init).props(
@@ -1865,6 +1927,8 @@ class ControlPanel:
                 "colors": colors,
                 "format_tooltip": format_tooltip,
                 "storage_key": storage_key,
+                "target_obj": target_obj,
+                "target_attr": target_attr,
             }
 
             # Click on the rating dispatches the new step value (1..10) as
@@ -1892,7 +1956,7 @@ class ControlPanel:
             return
         step = max(1, min(10, step))
         new_value = step * self._RATING_UNIT
-        setattr(ui_state, ui_attr, new_value)
+        setattr(refs["target_obj"], refs["target_attr"], new_value)
         app.storage.general[refs["storage_key"]] = new_value
         if sync_widget:
             refs["rating"].value = step
@@ -1903,7 +1967,10 @@ class ControlPanel:
         """Adjust a rating-row backed value (jog_speed/jog_accel) by delta
         and sync the widget. Used by the [/] keybindings so keyboard
         adjustments behave the same as clicking the rating."""
-        current = int(getattr(ui_state, ui_attr, 0))
+        refs = self._rating_widgets.get(ui_attr)
+        if refs is None:
+            return
+        current = int(getattr(refs["target_obj"], refs["target_attr"], 0))
         step = round((current + delta) / self._RATING_UNIT)
         self._set_rating_step(ui_attr, step)
 
@@ -2103,7 +2170,7 @@ class ControlPanel:
                 ui.label("Step:").classes("text-white")
                 self._step_input = (
                     ui.number(
-                        value=ui_state.joint_step_deg,
+                        value=waldoctl.commander.settings.jog.joint_step_deg,
                         min=1,
                         max=100.0,
                         step=1,
@@ -2114,7 +2181,7 @@ class ControlPanel:
                         'dense borderless hide-bottom-space input-style="text-align:right"'
                     )
                     .classes("step-input")
-                    .bind_value(ui_state, "joint_step_deg")
+                    .bind_value(waldoctl.commander.settings.jog, "joint_step_deg")
                 )
                 with self._step_input:
                     self._step_input_tooltip = ui.tooltip("Step size in degrees")

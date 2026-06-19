@@ -23,6 +23,7 @@ from nicegui.testing.screen_plugin import (
     pytest_runtest_makereport,  # noqa: F401
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
+import waldoctl
 from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
 from selenium import webdriver as _webdriver
@@ -317,7 +318,6 @@ def reset_editor_singletons(
     from waldo_commander.components.playback import playback
     from waldo_commander.components.simulation_engine import simulation
     from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.state import simulation_state
 
     # Only playback owns a per-page simulation_state listener; reset it first
     # so its cleanup() removes that listener before the other resets run.
@@ -328,12 +328,16 @@ def reset_editor_singletons(
     simulation.reset_for_test()
     script_exec.reset_for_test()
 
-    # Script/sim flags live on simulation_state, not on a singleton. Without
-    # resetting, a test that leaves script_running=True (e.g. crash mid-start)
-    # poisons gating checks in the next test.
-    simulation_state.script_running = False
-    simulation_state.executing_step_index = -1
-    simulation_state.executing_step_at_end = False
+    # Script/sim flags live on per-program execution / playback state. Without
+    # resetting, a test that leaves a program's execution marked running (e.g.
+    # crash mid-start) poisons gating checks in the next test.
+    try:
+        for p in waldoctl.commander.programs.items:
+            p.execution.is_running = False
+            p.dry_run.playback.executing_step_index = -1
+            p.dry_run.playback.executing_step_at_end = False
+    except RuntimeError:
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -443,6 +447,37 @@ def robot_state():
     return state_module.robot_state
 
 
+class _StubClient:
+    """Raises if a test accidentally reaches for ``commander.client``."""
+
+    def __getattr__(self, name: str) -> object:
+        raise NotImplementedError(
+            f"_StubClient.{name} — unit tests should not use commander.client"
+        )
+
+
+def _install_test_commander() -> None:
+    """Register a minimal ``Commander`` for tests that exercise WC code
+    without starting the full NiceGUI app. Idempotent; re-registers a fresh
+    Commander each call so per-test isolation matches state resets.
+    """
+    import waldoctl
+    from waldoctl import Commander, RobotStatus, Settings
+
+    from waldo_commander.profiles import get_robot
+    from waldo_commander.services.programs import EditorPrograms
+
+    waldoctl._set_commander(
+        Commander(
+            robot=get_robot(),
+            client=_StubClient(),  # type: ignore[arg-type]
+            status=RobotStatus(),
+            programs=EditorPrograms(),
+            settings=Settings(),
+        )
+    )
+
+
 @pytest.fixture(autouse=True)
 def reset_state(request: pytest.FixtureRequest):
     """Reset all shared state between tests for isolation.
@@ -465,17 +500,36 @@ def reset_state(request: pytest.FixtureRequest):
     ng_app.storage.general[HelpMenu.FIRST_VISIT_KEY] = True
     ng_app.storage.general[HelpMenu.SAFETY_ACKNOWLEDGED_KEY] = True
 
+    # Reinstall a fresh Commander before reset_all_state() runs — live-app
+    # tests' shutdown hook clears the locator, so unit tests that follow
+    # would otherwise hit the "not initialised" RuntimeError.
+    _install_test_commander()
+
     reset_all_state()
 
-    # Test-specific overrides (differ from zero defaults)
-    state_module.robot_state.angles.set_deg(np.array(HOME_ANGLES_DEG, dtype=np.float64))
+    # Test-specific overrides (differ from zero defaults). _install_test_commander()
+    # above guarantees the locator is registered, so these need no guards.
+    from waldoctl import FrameJogAvailability
+
+    waldoctl.commander.status.joints.angles.set_deg(
+        np.array(HOME_ANGLES_DEG, dtype=np.float64)
+    )
     state_module.robot_state.io = np.array([0, 0, 0, 0, 1], dtype=np.int32)  # ESTOP OK
-    state_module.robot_state.io_inputs = [0, 0]
-    state_module.robot_state.io_outputs = [0, 0]
-    state_module.robot_state.cart_en = {
-        "WRF": np.ones(12, dtype=np.int32),
-        "TRF": np.ones(12, dtype=np.int32),
-    }
+    io = waldoctl.commander.status.io
+    io.inputs = [0, 0]
+    io.outputs = [0, 0]
+    io.estop = 1
+    joints = waldoctl.commander.status.joints
+    joints.can_jog_pos = [True] * 6
+    joints.can_jog_neg = [True] * 6
+    cart_jog = waldoctl.commander.status.pose.cart_jog
+    for frame in ("WRF", "TRF"):
+        av = cart_jog.by_frame.get(frame)
+        if av is None:
+            av = FrameJogAvailability()
+            cart_jog.by_frame[frame] = av
+        av.can_jog_pos = [True] * 6
+        av.can_jog_neg = [True] * 6
 
     # Clear NiceGUI log handler targets to prevent deadlocks when logging
     # triggers widget.push() on stale widgets outside a NiceGUI context

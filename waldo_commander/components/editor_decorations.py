@@ -1,15 +1,16 @@
 """CodeMirror decoration controller: flash, executing-line highlight, diagnostics, line tooltips, and target anchors.
 
 Decoration writes are routed to a specific tab's textarea by tab_id (looked
-up via ``editor_tabs_state.get_tab_textarea``). Sub-controllers that own a
+up via ``ui_state.textareas_by_tab``). Sub-controllers that own a
 tab context pass that tab_id — simulation_engine for diagnostics / line
 metadata / target anchors (the simulated tab), script_exec for the
 executing-line highlight (the launching tab). Flash decorations stay on
 the active tab because their callers (``EditorPanel.add_target_code`` and
 the motion recorder) always target the user's current edit surface.
 
-Clears the executing-line highlight automatically when ``simulation_state.script_running``
-transitions from True to False (via the state listener registered in __init__).
+Clears the executing-line highlight automatically on the
+``is_any_program_running()`` True→False edge (via the state listener
+registered in __init__).
 """
 
 from __future__ import annotations
@@ -25,7 +26,10 @@ from nicegui.elements.codemirror.codemirror import (
     LineAnchor,
 )
 
-from waldo_commander.state import editor_tabs_state, simulation_state, ui_state
+import waldoctl
+
+from waldo_commander.services.programs import is_any_program_running
+from waldo_commander.state import simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +83,7 @@ class EditorDecorations:
         self._ui_client = client
 
     def _on_state_change(self) -> None:
-        running = simulation_state.script_running
+        running = is_any_program_running()
         if self._last_script_running and not running:
             # Script stopped — clear every tracked executing-line highlight
             # (in practice there's at most one, since only one script can
@@ -98,11 +102,11 @@ class EditorDecorations:
         that tab's executing-line highlight. Result is assigned to the
         tab's CodeMirror ``decorations`` in a single round-trip.
         """
-        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
         specs: list[DecorationSpec] = []
-        if tab_id == editor_tabs_state.active_tab_id:
+        if tab_id == waldoctl.commander.programs.active_id:
             flash_lines: set[int] = set()
             for _, lines in self._active_flashes:
                 flash_lines.update(lines)
@@ -125,7 +129,7 @@ class EditorDecorations:
         Used by the flash path, where the change is on the active tab and
         any executing-line highlight that happens to be on the same tab
         needs to be preserved in the single ``decorations`` write."""
-        active = editor_tabs_state.active_tab_id
+        active = waldoctl.commander.programs.active_id
         if active is not None:
             self._apply_decorations_to_tab(active)
 
@@ -138,7 +142,7 @@ class EditorDecorations:
         collapsed, flashes the editor tab via JS instead of applying
         decorations to an off-screen textarea.
         """
-        textarea = editor_tabs_state.active_textarea
+        textarea = ui_state.active_textarea
         if not textarea or not line_numbers:
             return
         if not ui_state.program_panel_visible:
@@ -195,14 +199,14 @@ class EditorDecorations:
         ``tab_id`` is the tab the script was launched from. Decorations
         stay on that tab even if the user switches away mid-run.
         """
-        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
 
         new_line: int | None = None
-        tab = editor_tabs_state.find_tab_by_id(tab_id)
-        if tab and 0 <= step_index < len(tab.path_segments):
-            segment = tab.path_segments[step_index]
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab and 0 <= step_index < len(tab.dry_run.path_segments):
+            segment = tab.dry_run.path_segments[step_index]
             if segment.line_number > 0:
                 new_line = segment.line_number
 
@@ -231,7 +235,7 @@ class EditorDecorations:
     def apply_diagnostics(self, error: str | None, tab_id: str) -> None:
         """Apply CM6 lint diagnostics for simulation errors and timing
         warnings to the simulated tab's textarea."""
-        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
 
@@ -254,7 +258,9 @@ class EditorDecorations:
                 )
 
         warned_lines: set[int] = set()
-        for seg in simulation_state.path_segments:
+        tab = waldoctl.commander.programs.get(tab_id)
+        segments = tab.dry_run.path_segments if tab is not None else []
+        for seg in segments:
             if seg.timing_feasible or seg.line_number <= 0:
                 continue
             if seg.line_number in warned_lines:
@@ -277,11 +283,13 @@ class EditorDecorations:
     def push_line_metadata(self, tab_id: str) -> None:
         """Push per-line metadata to CM6 for hover tooltips on the
         simulated tab's textarea."""
-        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
         tooltips: dict[int, str] = {}
-        for seg in simulation_state.path_segments:
+        tab = waldoctl.commander.programs.get(tab_id)
+        segments = tab.dry_run.path_segments if tab is not None else []
+        for seg in segments:
             if seg.line_number <= 0 or not seg.points:
                 continue
             end = seg.points[-1]
@@ -306,13 +314,13 @@ class EditorDecorations:
     def push_target_positions(self, tab_id: str) -> None:
         """Push current target positions to CM6 line anchors on the
         simulated tab's textarea for edit tracking."""
-        textarea = editor_tabs_state.get_tab_textarea(tab_id)
+        textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
+        tab = waldoctl.commander.programs.get(tab_id)
+        targets = tab.dry_run.targets if tab is not None else []
         anchors: list[LineAnchor] = [
-            {"id": t.id, "line": t.line_number}
-            for t in simulation_state.targets
-            if t.line_number > 0
+            {"id": t.id, "line": t.line_number} for t in targets if t.line_number > 0
         ]
         textarea.line_anchors[:] = anchors
 

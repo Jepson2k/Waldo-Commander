@@ -86,7 +86,8 @@ class TestFileOperations:
 
     async def test_save_to_server_writes_file(self, user: "User") -> None:
         """_save_tab writes file to PROGRAM_DIR."""
-        from waldo_commander.state import editor_tabs_state, ui_state
+        from waldo_commander.state import ui_state
+        import waldoctl
 
         await user.open("/")
         user.find(marker="tab-program").click()
@@ -95,11 +96,11 @@ class TestFileOperations:
         editor = ui_state.editor_panel
         assert editor is not None
 
-        active_tab = editor_tabs_state.get_active_tab()
+        active_tab = waldoctl.commander.programs.active
         assert active_tab is not None
         test_content = "# Save test\nprint('saved')\n"
         test_filename = "test_save_direct.py"
-        active_tab.content = test_content
+        active_tab.source = test_content
         active_tab.filename = test_filename
 
         await editor._save_tab(active_tab)
@@ -115,18 +116,18 @@ class TestFileOperations:
 
     async def test_new_tab_button(self, user: "User") -> None:
         """Clicking new tab button creates a new tab."""
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         await user.open("/")
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
 
-        initial_tab_count = len(editor_tabs_state.tabs)
+        initial_tab_count = len(waldoctl.commander.programs.items)
 
         user.find(marker="editor-new-tab-btn").click()
         await asyncio.sleep(0)
 
-        assert len(editor_tabs_state.tabs) == initial_tab_count + 1
+        assert len(waldoctl.commander.programs.items) == initial_tab_count + 1
 
     async def test_download_triggers(self, user: "User") -> None:
         """Download button in save dialog triggers a download."""

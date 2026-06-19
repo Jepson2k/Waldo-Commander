@@ -2,7 +2,8 @@
 Path visualization service for robot program simulation.
 
 Runs dry-run simulations in isolated subprocesses for safety and non-blocking
-execution. Results are collected and applied to SimulationState in the main process.
+execution. Results are collected and applied to the originating program's
+dry-run in the main process.
 """
 
 import asyncio
@@ -20,6 +21,7 @@ import numpy as np
 
 from nicegui import run
 
+import waldoctl
 from waldoctl import LinearMotion
 
 from waldo_commander.state import (
@@ -27,8 +29,6 @@ from waldo_commander.state import (
     PathSegment,
     ProgramTarget,
     ui_state,
-    robot_state,
-    editor_tabs_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
 
@@ -386,10 +386,11 @@ class PathVisualizer:
         self, program_text: str, tab_id: str | None = None
     ) -> str | None:
         """
-        Run the dry-run simulation for the given program text and update SimulationState.
+        Run the dry-run simulation for the given program text and update the
+        originating program's dry-run.
 
         Executes simulation in an isolated subprocess for safety, then applies
-        the results to the originating tab and (if still active) global simulation state.
+        the results to the originating tab's ``dry_run``.
 
         Args:
             program_text: The Python program to simulate
@@ -408,8 +409,15 @@ class PathVisualizer:
             logger.info("Starting isolated path visualization (sim_id=%d)...", sim_id)
 
             if TRACE_ENABLED:
-                segments_before = len(simulation_state.path_segments)
-                targets_before = len(simulation_state.targets)
+                _trace_tab = waldoctl.commander.programs.active
+                segments_before = (
+                    len(_trace_tab.dry_run.path_segments)
+                    if _trace_tab is not None
+                    else 0
+                )
+                targets_before = (
+                    len(_trace_tab.dry_run.targets) if _trace_tab is not None else 0
+                )
                 logger.trace(
                     "PATHVIZ[%d]: Before simulation - segments=%d, targets=%d",
                     sim_id,
@@ -419,11 +427,14 @@ class PathVisualizer:
 
             # Get current robot joint angles for initial position
             initial_joints_rad: np.ndarray | None = None
-            if len(robot_state.angles) >= ui_state.active_robot.joints.count:
-                initial_joints_rad = robot_state.angles.rad
+            if (
+                len(waldoctl.commander.status.joints.angles)
+                >= ui_state.active_robot.joints.count
+            ):
+                initial_joints_rad = waldoctl.commander.status.joints.angles.rad
                 logger.debug(
                     "Using current robot joints as initial: %s deg",
-                    robot_state.angles.deg,
+                    waldoctl.commander.status.joints.angles.deg,
                 )
 
             # Get backend info from current robot
@@ -542,9 +553,9 @@ class PathVisualizer:
             # Store results in the originating tab (or active tab if no tab_id)
             target_tab = None
             if tab_id:
-                target_tab = editor_tabs_state.find_tab_by_id(tab_id)
+                target_tab = waldoctl.commander.programs.get(tab_id)
             if not target_tab:
-                target_tab = editor_tabs_state.get_active_tab()
+                target_tab = waldoctl.commander.programs.active
 
             if target_tab:
                 new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
@@ -554,14 +565,14 @@ class PathVisualizer:
 
                 # Always store final_joints_rad (used for position-change
                 # detection even when segments are unchanged).
-                target_tab.final_joints_rad = result.get("final_joints_rad")
+                target_tab.dry_run.final_joints_rad = result.get("final_joints_rad")
 
                 # Check if results match what's already stored — skip update
                 # to avoid unnecessary scrub bar rebuilds and visual flash.
                 # Don't skip when there's an error: the caller needs the error
                 # string to apply diagnostics even if segments are the same.
                 if self._segments_match(
-                    target_tab.path_segments, new_segments
+                    target_tab.dry_run.path_segments, new_segments
                 ) and not result.get("error"):
                     logger.info(
                         "Simulation results unchanged (sim_id=%d), skipping update",
@@ -570,22 +581,19 @@ class PathVisualizer:
                     return UNCHANGED
 
                 # Store simulation results in the tab
-                target_tab.path_segments = new_segments
-                target_tab.targets = new_targets
-                target_tab.tool_actions = new_tool_actions
-                target_tab.tool_selections = new_tool_selections
+                target_tab.dry_run.path_segments = new_segments
+                target_tab.dry_run.targets = new_targets
+                target_tab.dry_run.tool_actions = new_tool_actions
+                target_tab.dry_run.tool_selections = new_tool_selections
+                target_tab.dry_run.total_steps = len(new_segments)
 
-                # Only update global simulation_state if this tab is still active
-                if target_tab.id == editor_tabs_state.active_tab_id:
-                    simulation_state.path_segments = list(target_tab.path_segments)
-                    simulation_state.targets = list(target_tab.targets)
-                    simulation_state.tool_actions = list(target_tab.tool_actions)
-                    simulation_state.tool_selections = list(target_tab.tool_selections)
-                    simulation_state.total_steps = len(target_tab.path_segments)
-                else:
+                # Dry-run results live on the target tab; readers go through
+                # ``commander.programs.active.dry_run`` so the WC-side change
+                # notification below fires regardless of which tab is active.
+                if target_tab.id != waldoctl.commander.programs.active_id:
                     logger.debug(
                         "Simulation for tab %s complete, but tab no longer active - "
-                        "skipping global state update",
+                        "results stored on its dry-run, will render on next switch",
                         tab_id,
                     )
 

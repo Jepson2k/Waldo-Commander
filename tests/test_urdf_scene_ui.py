@@ -79,10 +79,10 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
 ) -> None:
     """Test that changing envelope_mode to 'on' creates and shows the envelope.
 
-    Verifies that when simulation_state.envelope_mode is set to 'on', the
+    Verifies that when commander.settings.view.envelope_mode is set to 'on', the
     envelope wireframe sphere is created and made visible in the scene.
     """
-    from waldo_commander.state import ui_state, simulation_state
+    from waldo_commander.state import ui_state
     from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 
     await user.open("/")
@@ -92,9 +92,10 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
     assert scene is not None, "Expected ui_state.urdf_scene to be initialized"
 
     # Set envelope mode to 'off' first
-    from waldo_commander.state import EnvelopeMode
+    import waldoctl
+    from waldoctl import EnvelopeMode
 
-    simulation_state.envelope_mode = EnvelopeMode.OFF
+    waldoctl.commander.settings.view.envelope_mode = EnvelopeMode.OFF
     await asyncio.sleep(0.2)  # Let update timer run
 
     # If envelope_object exists, it should be hidden
@@ -104,7 +105,7 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
         )
 
     # Now set envelope mode to 'on'
-    simulation_state.envelope_mode = EnvelopeMode.ON
+    waldoctl.commander.settings.view.envelope_mode = EnvelopeMode.ON
     await asyncio.sleep(0.2)  # Let update timer run
 
     # Envelope data should exist

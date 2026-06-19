@@ -16,6 +16,7 @@ from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 
 from tests.helpers.browser_helpers import click_tab, wait_for_codemirror_ready
+from tests.helpers.programs import clear_all_programs
 from tests.helpers.wait import screen_wait_for_scene_ready
 
 if TYPE_CHECKING:
@@ -29,19 +30,13 @@ def _clean_stale_state():
     Previous test classes (e.g. TestEditorInteractivity) may leave recording
     enabled or tabs with modified content. These module-level singletons are
     NOT reset by NiceGUI's test infrastructure, so we clear them here.
-    """
-    from waldo_commander.state import (
-        editor_tabs_state,
-        recording_state,
-        simulation_state,
-    )
 
-    recording_state.is_recording = False
-    editor_tabs_state.tabs.clear()
-    editor_tabs_state.active_tab_id = None
-    simulation_state.path_segments.clear()
-    simulation_state.targets.clear()
+    Symmetric: cleans on both setup AND teardown so subsequent modules can't
+    be polluted by anything our tests left behind.
+    """
+    clear_all_programs()
     yield
+    clear_all_programs()
 
 
 # ============================================================================

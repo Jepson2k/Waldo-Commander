@@ -16,7 +16,17 @@ from pathlib import Path
 
 import numpy as np
 from nicegui import Client, app as ng_app, ui
-from waldoctl import GripperTool, LinearMotion, RobotClient
+from pinokin import arrays_equal_n
+import waldoctl
+from waldoctl import (
+    Commander,
+    FrameJogAvailability,
+    GripperTool,
+    LinearMotion,
+    RobotClient,
+    RobotStatus,
+    Settings,
+)
 
 from waldo_commander.common.logging_config import (
     attach_ui_log,
@@ -54,14 +64,15 @@ from waldo_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
+from waldo_commander.services.action_log import action_log_service
+from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
-    action_log,
     robot_state,
     controller_state,
-    simulation_state,
     ui_state,
     readiness_state,
+    playback_coordination,
     global_phase_timer,
 )
 
@@ -123,7 +134,10 @@ def _update_connection_notification() -> None:
     if not readiness_state.app_ready.is_set():
         return
 
-    needs_warning = not robot_state.simulator_active and not robot_state.connected
+    needs_warning = (
+        not waldoctl.commander.status.simulator_active
+        and not waldoctl.commander.status.connected
+    )
 
     if needs_warning and ps.connection_notification is None:
         ps.connection_notification = ui.notification(
@@ -256,7 +270,7 @@ async def initialize_urdf_scene() -> None:
     control_panel.sync_gizmo_to_urdf()
 
     # Apply simulator appearance if in simulator mode (scene wasn't ready earlier)
-    if robot_state.simulator_active:
+    if waldoctl.commander.status.simulator_active:
         ui_state.urdf_scene.set_simulator_appearance(True)
 
 
@@ -328,7 +342,7 @@ async def stop_controller() -> None:
                 await status_consumer_task
 
         controller_state.running = False
-        robot_state.connected = False
+        waldoctl.commander.status.connected = False
         logger.info("Controller stopped")
     except Exception as e:
         logger.error("Stop controller failed: %s", e)
@@ -381,11 +395,16 @@ async def check_ping() -> None:
             logger.debug("ping: connected True → False (exception)")
         ps.last_ping_ok = False
 
+    # A ping that was in flight when shutdown began can resume here after
+    # _clear_commander has run; bail before touching the commander surface.
+    if _shutting_down:
+        return
+
     # Update robot connectivity status. The multicast status consumer drives
     # the joint/cartesian button sync at status rate; the two calls below
     # cover the "stream went silent" path that the consumer cannot, since
-    # they read robot_state.connected directly.
-    robot_state.connected = ps.last_ping_ok
+    # they read waldoctl.commander.status.connected directly.
+    waldoctl.commander.status.connected = ps.last_ping_ok
     if readout_panel is not None:
         readout_panel.update_conn_io()
     if control_panel is not None:
@@ -396,14 +415,16 @@ async def check_ping() -> None:
 def update_ui_from_status() -> None:
     """Update UI elements from robot_state (called from multicast consumer)"""
     # Skip position/angle updates when in editing mode (editing sync handles these)
-    skip_position_updates = robot_state.editing_mode
+    skip_position_updates = waldoctl.commander.status.editing_mode
     # Skip URDF scene updates during sim playback/scrubbing (teleport syncs backend)
-    skip_scene_updates = skip_position_updates or simulation_state.sim_pose_override
+    skip_scene_updates = (
+        skip_position_updates or playback_coordination.sim_pose_override
+    )
 
     # Update URDF scene with new angles and TCP ball
     if not skip_scene_updates:
         with global_phase_timer.phase("scene"):
-            update_urdf_angles(robot_state.angles.deg)
+            update_urdf_angles(waldoctl.commander.status.joints.angles.deg)
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.update_from_robot_state()
 
@@ -416,40 +437,53 @@ def update_ui_from_status() -> None:
             _pose_result_buffer,
         )
 
-        robot_state.x = _pose_result_buffer[0]
-        robot_state.y = _pose_result_buffer[1]
-        robot_state.z = _pose_result_buffer[2]
-        # Set both scalar fields (for UI binding) and orientation array (for rad access)
-        robot_state.rx = _pose_result_buffer[3]
-        robot_state.ry = _pose_result_buffer[4]
-        robot_state.rz = _pose_result_buffer[5]
+        _pose = waldoctl.commander.status.pose
+        _pose.x = _pose_result_buffer[0]
+        _pose.y = _pose_result_buffer[1]
+        _pose.z = _pose_result_buffer[2]
+        _pose.rx = _pose_result_buffer[3]
+        _pose.ry = _pose_result_buffer[4]
+        _pose.rz = _pose_result_buffer[5]
+        # Orientation array is kept on robot_state for rad access from FK
+        # consumers (IK solver, motion recorder). Scalars above are the
+        # public surface.
         robot_state.orientation.set_deg(_pose_result_buffer[3:6])
 
-    # Push IO derived fields into bindable RobotState (numpy int32 array)
+    # Push IO derived fields into ``commander.status.io`` for public
+    # consumers (UI panels, MCP, future plugins).
     n_in = ui_state.active_robot.digital_inputs
     n_out = ui_state.active_robot.digital_outputs
-    _io_in = robot_state.io[:n_in]
-    _io_out = robot_state.io[n_in : n_in + n_out]
-    if not np.array_equal(_io_in, robot_state.io_inputs):
-        robot_state.io_inputs = _io_in.tolist()
-    if not np.array_equal(_io_out, robot_state.io_outputs):
-        robot_state.io_outputs = _io_out.tolist()
-    robot_state.io_estop = int(robot_state.io[n_in + n_out])
+    io = waldoctl.commander.status.io
+    buf = robot_state.io
+    # Compare element-wise against the existing lists and rebuild only on
+    # change — avoids coercing the list to a temp ndarray every tick (IO
+    # rarely changes; 0/1 values reuse cached int/bool singletons).
+    if len(io.inputs) != n_in or any(int(buf[i]) != io.inputs[i] for i in range(n_in)):
+        io.inputs = buf[:n_in].tolist()
+    if len(io.outputs) != n_out or any(
+        int(buf[n_in + i]) != io.outputs[i] for i in range(n_out)
+    ):
+        io.outputs = buf[n_in : n_in + n_out].tolist()
+    io.estop = int(buf[n_in + n_out])
 
-    # Push tool status derived fields into bindable RobotState
+    # Push tool status fields into commander.status.tool. Each leaf
+    # assignment fires its bindable_dataclass bindings synchronously;
+    # tuple reassignments (positions / channels) propagate to gripper
+    # readouts that bind through a backward function.
     ts = robot_state.tool_status
-    tool_key_changed = ts.key != robot_state.tool_key
-    robot_state.tool_key = ts.key
-    robot_state.tool_position = ts.positions[0] if ts.positions else 0.0
-    robot_state.tool_engaged = ts.engaged
-    robot_state.tool_part_detected = ts.part_detected
-    robot_state.tool_current = ts.channels[0] if len(ts.channels) > 0 else 0.0
-    robot_state.tool_time_series.push(
-        robot_state.tool_position, robot_state.tool_current
-    )
+    pub_tool = waldoctl.commander.status.tool
+    tool_key_changed = ts.key != pub_tool.key
+    pub_tool.key = ts.key
+    pub_tool.positions = ts.positions
+    pub_tool.engaged = ts.engaged
+    pub_tool.part_detected = ts.part_detected
+    pub_tool.state = ts.state
+    pub_tool.fault_code = ts.fault_code
+    pub_tool.channels = ts.channels
+    robot_state.tool_time_series.push(pub_tool.position, pub_tool.current)
 
     # Build gripper tab on first tool detection
-    if tool_key_changed and robot_state.tool_key != "NONE":
+    if tool_key_changed and pub_tool.key != "NONE":
         try:
             if ui_state._build_gripper_content is not None:
                 ui_state._build_gripper_content()
@@ -549,8 +583,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                         (
                             ui.label("Gripper")
                             .bind_text_from(
-                                robot_state,
-                                "tool_key",
+                                waldoctl.commander.status.tool,
+                                "key",
                                 backward=lambda k: f"Gripper: {k}"
                                 if k != "NONE"
                                 else "Gripper",
@@ -582,7 +616,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                             return " · ".join(parts)
 
                         gripper_features_label.bind_text_from(
-                            robot_state, "tool_key", backward=_update_features
+                            waldoctl.commander.status.tool,
+                            "key",
+                            backward=_update_features,
                         )
                         ui.space()
                         ui.button(icon="close", on_click=close_top_panels).props(
@@ -779,21 +815,24 @@ def build_page_content() -> None:
                     hw_now = bool(result.hardware_connected) if result else False
                 except Exception:
                     hw_now = False
-                if hw_now and robot_state.simulator_active:
+                if hw_now and waldoctl.commander.status.simulator_active:
                     logger.info("Hardware detected — switching to robot mode")
-                    robot_state.simulator_active = False
+                    waldoctl.commander.status.simulator_active = False
                     try:
                         await client.simulator(False)
                         await client.resume()
                     except Exception as e:
                         logger.warning("auto robot-mode switch failed: %s", e)
-                robot_state.connected = hw_now
+                waldoctl.commander.status.connected = hw_now
 
                 control_panel.update_robot_btn_visual()
                 readout_panel.update_conn_io()
 
                 # Enable gripper tab if a tool is already active
-                if robot_state.tool_key and robot_state.tool_key != "NONE":
+                if (
+                    waldoctl.commander.status.tool.key
+                    and waldoctl.commander.status.tool.key != "NONE"
+                ):
                     if ui_state._build_gripper_content is not None:
                         ui_state._build_gripper_content()
                     if ui_state._gripper_tab is not None:
@@ -904,7 +943,7 @@ def _register_handlers() -> None:
 
         When a port is configured the controller already has a real serial
         transport — don't replace it with simulator.  The page-load ping
-        in ``_init`` will set ``robot_state.simulator_active`` based on
+        in ``_init`` will set ``waldoctl.commander.status.simulator_active`` based on
         whether hardware is actually connected.
         """
         if not port:
@@ -912,7 +951,7 @@ def _register_handlers() -> None:
                 await client.simulator(True)
             except Exception as e:
                 logger.error("startup: simulator(True) failed: %s", e)
-            robot_state.simulator_active = True
+            waldoctl.commander.status.simulator_active = True
         try:
             await client.resume()
         except Exception as e:
@@ -1004,13 +1043,20 @@ def _register_handlers() -> None:
 
         # Stop any running script processes first
         try:
-            if simulation_state.script_running and script_exec.script_handle:
+            if is_any_program_running() and script_exec.script_handle:
                 logger.debug("Stopping running script process during shutdown...")
                 from waldo_commander.services.script_runner import stop_script
 
                 await stop_script(script_exec.script_handle, timeout=2.0)
                 script_exec.script_handle = None
-                simulation_state.script_running = False
+                running_tab_id = script_exec.launching_tab_id
+                running_tab = (
+                    waldoctl.commander.programs.get(running_tab_id)
+                    if running_tab_id
+                    else None
+                )
+                if running_tab is not None:
+                    running_tab.execution.is_running = False
                 script_exec.cleanup_stepping()
         except Exception as e:
             logger.warning("Error stopping script during shutdown: %s", e)
@@ -1072,6 +1118,11 @@ def _register_handlers() -> None:
         for t in threading.enumerate():
             if t is not threading.current_thread():
                 logger.debug("Alive thread: name=%s daemon=%s", t.name, t.daemon)
+
+        # Drop the locator last — any consumer still alive after this point
+        # will get the clear "commander not initialised" RuntimeError instead
+        # of dotting into a torn-down Commander.
+        waldoctl._clear_commander()
 
 
 # Register handlers at module load
@@ -1245,7 +1296,7 @@ async def index_page():
         result = await client.ping()
         hw_ok = result.hardware_connected if result else False
         if hw_ok:
-            robot_state.connected = True
+            waldoctl.commander.status.connected = True
     except Exception as e:
         logger.warning("Connectivity check failed: %s", e)
 
@@ -1280,8 +1331,37 @@ async def index_page():
     asyncio.create_task(_mark_page_done())
 
 
+def _maybe_clear_sim_pose_override() -> None:
+    """Release the scrub pose-override once the teleport has propagated.
+
+    While the user scrubs, the status loop holds ``sim_pose_override`` so the
+    live pose doesn't fight the scrubbed pose. Once playback is no longer active
+    and ≥100ms has passed since the last teleport, the override is released so
+    the loop resumes showing the real robot pose.
+    """
+    # Cheap flag first: in the steady state (nobody scrubbing) this short-
+    # circuits before resolving the active program every status tick.
+    if not playback_coordination.sim_pose_override:
+        return
+    active_pb = waldoctl.commander.programs.active
+    is_active = active_pb is not None and active_pb.dry_run.playback.is_active
+    if (
+        not is_active
+        and playback_coordination.last_teleport_ts > 0
+        and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
+    ):
+        playback_coordination.sim_pose_override = False
+        playback_coordination.last_teleport_ts = 0.0
+
+
 async def _status_consumer() -> None:
-    """Consume multicast status and update shared robot_state."""
+    """Consume multicast status and populate ``commander.status``."""
+    # Shadows of the last-applied jog-enable wire arrays, kept local so each
+    # app start (and each test) begins fresh. The per-direction lists are only
+    # rebuilt when a shadow mismatches (zero-alloc compare via arrays_equal_n);
+    # the copy happens on change, not every tick.
+    joint_en_shadow: np.ndarray | None = None
+    cart_en_shadow: dict[str, np.ndarray] = {}
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1309,48 +1389,79 @@ async def _status_consumer() -> None:
                     )
 
                 with global_phase_timer.phase("status"):
+                    st = waldoctl.commander.status
                     # Copy status data (in-place fills to avoid allocations)
                     if (
-                        not robot_state.editing_mode
-                        and not simulation_state.sim_pose_override
+                        not st.editing_mode
+                        and not playback_coordination.sim_pose_override
                     ):
-                        robot_state.angles.set_deg(status.angles)
+                        st.joints.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io
-                    if not simulation_state.sim_pose_override:
+                    if not playback_coordination.sim_pose_override:
                         robot_state.tool_status = status.tool_status
 
                     # Speeds arrive as rad/s from backend — convert to deg/s for display
                     np.rad2deg(status.speeds, out=robot_state.speeds)
-                    robot_state.tcp_speed = (
-                        0.3 * status.tcp_speed + 0.7 * robot_state.tcp_speed
-                    )
+                    pose = st.pose
+                    pose.tcp_speed = 0.3 * status.tcp_speed + 0.7 * pose.tcp_speed
 
                     # Mark backend ready on first valid STATUS
                     readiness_state.mark_backend_done()
 
-                    # Movement enablement arrays
-                    robot_state.joint_en[:] = status.joint_en
+                    # Movement enablement: split the interleaved joint_en /
+                    # cart_en wire arrays into the per-direction lists exposed on
+                    # ``commander.status.joints`` / ``...pose.cart_jog``. This
+                    # runs every tick, so dirty-check each wire array against a
+                    # snapshot via the zero-alloc ``arrays_equal_n`` and rebuild
+                    # the lists only on change (the snapshot copy is taken then,
+                    # not per tick).
+                    j_en = status.joint_en
+                    n_dof = len(j_en) // 2
+                    joints = st.joints
+                    if (
+                        joint_en_shadow is None
+                        or len(joints.can_jog_pos) != n_dof
+                        or not arrays_equal_n(j_en, joint_en_shadow)
+                    ):
+                        joints.can_jog_pos = [bool(j_en[2 * j]) for j in range(n_dof)]
+                        joints.can_jog_neg = [
+                            bool(j_en[2 * j + 1]) for j in range(n_dof)
+                        ]
+                        joint_en_shadow = j_en.copy()
+                    cart_jog = st.pose.cart_jog
                     for frame, arr in status.cart_en.items():
-                        if frame in robot_state.cart_en:
-                            robot_state.cart_en[frame][:] = arr
+                        frame_av = cart_jog.by_frame.get(frame)
+                        if frame_av is None:
+                            frame_av = FrameJogAvailability()
+                            cart_jog.by_frame[frame] = frame_av
+                        n_axes = len(arr) // 2
+                        shadow = cart_en_shadow.get(frame)
+                        if (
+                            shadow is None
+                            or len(frame_av.can_jog_pos) != n_axes
+                            or not arrays_equal_n(arr, shadow)
+                        ):
+                            frame_av.can_jog_pos = [
+                                bool(arr[2 * i]) for i in range(n_axes)
+                            ]
+                            frame_av.can_jog_neg = [
+                                bool(arr[2 * i + 1]) for i in range(n_axes)
+                            ]
+                            cart_en_shadow[frame] = arr.copy()
 
-                    robot_state.action_current = status.action_current
-                    robot_state.action_params = status.action_params
-                    robot_state.action_state = status.action_state
+                    action = st.action
+                    action.current_name = status.action_current
+                    action.state = status.action_state
+                    # action_params is per-command metadata used by the
+                    # action_log_service dedup; not on the public Action
+                    # surface, kept in the status update tuple below.
                     robot_state.executing_index = status.executing_index
                     robot_state.completed_index = status.completed_index
-                    robot_state.last_update_ts = time.time()
+                    st.last_update = time.time()
 
                     # Auto-clear scrub override after teleport has had time to propagate
-                    if (
-                        simulation_state.sim_pose_override
-                        and not simulation_state.sim_playback_active
-                        and simulation_state.last_teleport_ts > 0
-                        and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
-                    ):
-                        simulation_state.sim_pose_override = False
-                        simulation_state.last_teleport_ts = 0.0
+                    _maybe_clear_sim_pose_override()
 
                     # Both checks needed: _deleted guards the brief window
                     # between NiceGUI marking the client dead and removing it
@@ -1364,14 +1475,13 @@ async def _status_consumer() -> None:
 
                             # Update panels
                             readout_panel.update_conn_io()
-                            action_log.process_status(
-                                robot_state.action_current,
-                                robot_state.action_params,
-                                robot_state.action_state,
+                            action_log_service.process_status(
+                                action.current_name,
+                                status.action_params,
+                                action.state,
                                 robot_state.executing_index,
                                 robot_state.completed_index,
                             )
-                            readout_panel.update_action_log()
                             control_panel.refresh_joint_enablement()
                             control_panel.sync_cartesian_button_states()
                             control_panel.sync_gizmo_for_jog_state()
@@ -1469,16 +1579,22 @@ def main():
         config.set("log_level", logging.WARNING)
     # else: use env var default (no override needed)
 
-    # Initialize robot, client, and component instances
-    robot = get_robot(name=args.robot)
+    # Initialize robot, client, and component instances. The persisted GUI
+    # backend selection is honored below an explicit --robot / WALDO_ROBOT
+    # override, and only when that backend is actually installed.
+    robot = get_robot(
+        name=args.robot,
+        preferred=ng_app.storage.general.get("plugins/backend"),
+    )
     ui_state.robot = robot
-    # Initialize cart_en buffers from robot's cartesian frames
-    robot_state.init_cart_en(robot.cartesian_frames)
-    # Resize IO buffer to match robot's pin count
+    # Per-frame cart_jog buffers are seeded below once the Commander is
+    # registered. The status loop fills them on each tick.
+    # Resize IO buffer to match robot's pin count. The derived
+    # ``commander.status.io.inputs / outputs`` lists are populated below
+    # once the Commander is registered (default is []; status loop fills
+    # them on each tick).
     io_size = robot.digital_inputs + robot.digital_outputs + 1  # +1 for estop
     robot_state.io = np.zeros(io_size, dtype=np.int32)
-    robot_state.io_inputs = [0] * robot.digital_inputs
-    robot_state.io_outputs = [0] * robot.digital_outputs
     robot_state.speeds = np.zeros(robot.joints.count, dtype=np.float64)
     # Resize pipeline buffers to match this robot's joint count
     init_angle_buffers(robot.joints.count)
@@ -1493,6 +1609,37 @@ def main():
     ui_state.control_panel = control_panel
     ui_state.editor_panel = editor_panel
     ui_state.readout_panel = readout_panel
+
+    # Assemble the public Commander locator. Populated here (post panel
+    # construction) so consumers can reach robot / client / live status /
+    # programs / settings through `waldoctl.commander.*` from anywhere.
+    # Sub-objects are constructed with defaults; the status loop populates
+    # `commander.status` on each tick, the editor populates `commander.programs`
+    # as tabs open, and the settings panel binds to `commander.settings`.
+    commander = Commander(
+        robot=robot,
+        client=client,
+        status=RobotStatus(),
+        programs=EditorPrograms(),
+        settings=Settings(),
+    )
+    waldoctl._set_commander(commander)
+
+    # Seed the IO buffers so consumers (readout chips, e-stop monitor) see
+    # the right list lengths before the first STATUS broadcast arrives.
+    commander.status.io.inputs = [0] * robot.digital_inputs
+    commander.status.io.outputs = [0] * robot.digital_outputs
+
+    # Seed per-frame cart_jog availability so the cartesian-button sync code
+    # has a frame_av to read on the first tick (before STATUS arrives).
+    for frame in robot.cartesian_frames:
+        commander.status.pose.cart_jog.by_frame[frame] = FrameJogAvailability()
+
+    # Restore plugin settings from prior session.
+    commander.settings.plugins.backend = ng_app.storage.general.get("plugins/backend")
+    commander.settings.plugins.disabled_panels = list(
+        ng_app.storage.general.get("plugins/disabled_panels", [])
+    )
 
     # Configure logging
     configure_logging(config.log_level)

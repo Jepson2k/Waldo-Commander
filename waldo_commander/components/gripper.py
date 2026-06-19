@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+import waldoctl
 from waldoctl import (
     ElectricGripperTool,
     GripperTool,
@@ -13,7 +14,7 @@ from waldoctl import (
 from waldo_commander.constants import config
 from waldo_commander.services.camera_service import camera_service
 from waldo_commander.services.motion_recorder import motion_recorder
-from waldo_commander.state import robot_state, ui_state
+from waldo_commander.state import robot_state
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +80,12 @@ class GripperPage:
                 return
             spd_kwargs: dict = {}
             if isinstance(tool, ElectricGripperTool):
-                if ui_state.gripper_speed_sync:
-                    spd_kwargs["speed"] = ui_state.jog_speed / 100.0
+                if waldoctl.commander.settings.gripper.speed_sync:
+                    spd_kwargs["speed"] = waldoctl.commander.settings.jog.speed / 100.0
                 else:
-                    spd_kwargs["speed"] = ui_state.gripper_speed / 100.0
+                    spd_kwargs["speed"] = (
+                        waldoctl.commander.settings.gripper.speed / 100.0
+                    )
                 if self._cur_slider:
                     spd_kwargs["current"] = int(self._cur_slider.value)
             await tool.set_position(position, **spd_kwargs)
@@ -255,8 +258,10 @@ class GripperPage:
             return
         self._mark_lines_dirty = False
 
-        target_pos_pct = round(ui_state.tool_target_position * 100, 1)
-        current_limit = ui_state.gripper_current
+        target_pos_pct = round(
+            waldoctl.commander.settings.gripper.target_position * 100, 1
+        )
+        current_limit = waldoctl.commander.settings.gripper.current
 
         if result is not None:
             timestamps, positions, currents = result
@@ -300,14 +305,14 @@ class GripperPage:
 
     def set_target_position(self, position: float) -> None:
         """Set target position and update the slider. Called by control panel actions."""
-        ui_state.tool_target_position = position
+        waldoctl.commander.settings.gripper.target_position = position
         if self._pos_slider is not None:
             self._pos_slider.set_value(round(position * 100))
         self._update_mark_lines()
 
     def set_target_current(self, current: int) -> None:
         """Set target current and update the slider. Called by control panel adjust."""
-        ui_state.gripper_current = current
+        waldoctl.commander.settings.gripper.current = current
         if self._cur_slider is not None:
             self._cur_slider.set_value(current)
         self._update_mark_lines()
@@ -333,14 +338,14 @@ class GripperPage:
         self._last_slider_send = now
         value = e.value
         pos = value / 100.0
-        ui_state.tool_target_position = pos
+        waldoctl.commander.settings.gripper.target_position = pos
         self._update_mark_lines()
         await self._grip_set(pos, "Set")
 
     async def _on_current_slider_change(self, e) -> None:
-        """Sync current slider value to ui_state, update markLine, and send to gripper."""
+        """Sync current slider value to commander.settings.gripper.current, update markLine, and send to gripper."""
         value = e.value
-        ui_state.gripper_current = int(value)
+        waldoctl.commander.settings.gripper.current = int(value)
         self._mark_lines_dirty = True
         if not self._user_dragging:
             return
@@ -349,7 +354,7 @@ class GripperPage:
         if isinstance(tool, ElectricGripperTool):
             try:
                 await tool.set_position(
-                    ui_state.tool_target_position,
+                    waldoctl.commander.settings.gripper.target_position,
                     current=int(value),
                 )
             except Exception as exc:
@@ -374,10 +379,13 @@ class GripperPage:
                     )
 
         ts = robot_state.tool_status
+        pub_tool = waldoctl.commander.status.tool
+        tool_position = pub_tool.position
+        tool_current = pub_tool.current
         status_key = (
             ts.state,
-            robot_state.tool_position,
-            robot_state.tool_current,
+            tool_position,
+            tool_current,
             ts.part_detected,
             ts.engaged,
             ts.fault_code,
@@ -387,11 +395,11 @@ class GripperPage:
         self._last_status_key = status_key
 
         # Initialize target from feedback on first status
-        if not self._target_initialized and robot_state.tool_position > 0:
+        if not self._target_initialized and tool_position > 0:
             self._target_initialized = True
-            ui_state.tool_target_position = robot_state.tool_position
+            waldoctl.commander.settings.gripper.target_position = tool_position
             if self._pos_slider is not None:
-                self._pos_slider.set_value(round(robot_state.tool_position * 100))
+                self._pos_slider.set_value(round(tool_position * 100))
 
         # State dot + label
         s = ts.state
@@ -436,25 +444,30 @@ class GripperPage:
             )
             self._state_label = ui.label("Off").classes("text-xs")
 
-            # Position
+            # Position — bind to the bindable ``positions`` tuple and project
+            # the first DOF for single-axis gripper display.
             ui.label("Position").classes(_lbl)
             ui.icon("circle").style(f"{_dot_s} color: {_CLR_POS};")
             (
                 ui.label("0 %")
                 .classes("text-sm font-medium")
                 .bind_text_from(
-                    robot_state, "tool_position", backward=lambda v: f"{v * 100:.0f} %"
+                    waldoctl.commander.status.tool,
+                    "positions",
+                    backward=lambda p: f"{(p[0] if p else 0.0) * 100:.0f} %",
                 )
             )
 
-            # Current
+            # Current — bind to ``channels`` tuple, project first channel.
             ui.label("Current").classes(_lbl)
             ui.icon("circle").style(f"{_dot_s} color: {_CLR_CUR};")
             (
                 ui.label("0 mA")
                 .classes("text-sm")
                 .bind_text_from(
-                    robot_state, "tool_current", backward=lambda v: f"{v:.0f} mA"
+                    waldoctl.commander.status.tool,
+                    "channels",
+                    backward=lambda c: f"{(c[0] if c else 0.0):.0f} mA",
                 )
             )
 
@@ -505,8 +518,8 @@ class GripperPage:
             return k != "NONE" and self._is_electric()
 
         ui.label("mA").classes("text-xs text-[var(--ctk-muted)]").bind_visibility_from(
-            robot_state,
-            "tool_key",
+            waldoctl.commander.status.tool,
+            "key",
             backward=_electric_visible,
         )
         self._cur_slider = (
@@ -514,8 +527,8 @@ class GripperPage:
             .on("pan", self._on_slider_pan)
             .on_value_change(self._on_current_slider_change)
         ).bind_visibility_from(
-            robot_state,
-            "tool_key",
+            waldoctl.commander.status.tool,
+            "key",
             backward=_electric_visible,
         )
         cur_input = ui.number(min=0, max=1000, step=10, value=500).props(
@@ -523,8 +536,8 @@ class GripperPage:
         )
         cur_input.bind_value_from(self._cur_slider, "value")
         cur_input.bind_visibility_from(
-            robot_state,
-            "tool_key",
+            waldoctl.commander.status.tool,
+            "key",
             backward=_electric_visible,
         )
 
@@ -532,9 +545,9 @@ class GripperPage:
         def _update_current_range() -> None:
             if self._cur_slider is None:
                 return
-            if robot_state.tool_key == self._last_current_tool_key:
+            if waldoctl.commander.status.tool.key == self._last_current_tool_key:
                 return
-            self._last_current_tool_key = robot_state.tool_key
+            self._last_current_tool_key = waldoctl.commander.status.tool.key
             tool = self._get_active_gripper()
             if isinstance(tool, ElectricGripperTool):
                 lo, hi = tool.current_range
@@ -553,23 +566,32 @@ class GripperPage:
         ui.label("Speed").classes("text-xs text-[var(--ctk-muted)] pt-2")
         with ui.row().classes("col-span-2 w-full items-center gap-2 no-wrap pt-2"):
             (
-                ui.switch("Sync", value=ui_state.gripper_speed_sync)
+                ui.switch("Sync", value=waldoctl.commander.settings.gripper.speed_sync)
                 .props("dense")
-                .bind_value(ui_state, "gripper_speed_sync")
+                .bind_value(waldoctl.commander.settings.gripper, "speed_sync")
             )
             # Synced: show read-only system speed
             (
                 ui.label("")
-                .bind_text_from(ui_state, "jog_speed", backward=lambda v: f"{v}%")
-                .bind_visibility_from(ui_state, "gripper_speed_sync")
+                .bind_text_from(
+                    waldoctl.commander.settings.jog, "speed", backward=lambda v: f"{v}%"
+                )
+                .bind_visibility_from(waldoctl.commander.settings.gripper, "speed_sync")
                 .classes("text-xs text-[var(--ctk-muted)]")
             )
             # Independent: slider
             (
-                ui.slider(min=1, max=100, value=ui_state.gripper_speed, step=1)
-                .bind_value(ui_state, "gripper_speed")
+                ui.slider(
+                    min=1,
+                    max=100,
+                    value=waldoctl.commander.settings.gripper.speed,
+                    step=1,
+                )
+                .bind_value(waldoctl.commander.settings.gripper, "speed")
                 .bind_visibility_from(
-                    ui_state, "gripper_speed_sync", backward=lambda v: not v
+                    waldoctl.commander.settings.gripper,
+                    "speed_sync",
+                    backward=lambda v: not v,
                 )
                 .classes("flex-1")
             )

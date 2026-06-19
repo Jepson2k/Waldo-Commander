@@ -61,8 +61,8 @@ async def test_serial_port_select_exists(user: User) -> None:
 
 @pytest.mark.integration
 async def test_show_route_toggle_changes_state(user: User) -> None:
-    """Test that toggling Show Route changes simulation_state.paths_visible."""
-    from waldo_commander.state import simulation_state
+    """Test that toggling Show Route updates commander.settings.view.paths_visible."""
+    import waldoctl
 
     await user.open("/")
     await wait_for_app_ready()
@@ -73,7 +73,7 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
     await asyncio.sleep(0)
 
     # Get initial state
-    initial_visible = simulation_state.paths_visible
+    initial_visible = waldoctl.commander.settings.view.paths_visible
 
     # Find and toggle the Show Route switch (by marker, not content)
     show_route_switch = user.find(marker="switch-show-route")
@@ -81,15 +81,14 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
     await asyncio.sleep(0)
 
     # State should have toggled
-    assert simulation_state.paths_visible != initial_visible, (
+    assert waldoctl.commander.settings.view.paths_visible != initial_visible, (
         f"Expected paths_visible to toggle from {initial_visible}"
     )
 
 
 @pytest.mark.integration
 async def test_workspace_envelope_mode_changes(user: User) -> None:
-    """Test that changing workspace envelope mode updates simulation_state."""
-    from waldo_commander.state import simulation_state
+    """Test that changing workspace envelope mode updates commander.settings.view.envelope_mode."""
 
     await user.open("/")
     await wait_for_app_ready()
@@ -103,11 +102,30 @@ async def test_workspace_envelope_mode_changes(user: User) -> None:
     envelope_select = user.find(marker="select-envelope-mode")
     assert envelope_select is not None, "Envelope mode select should exist"
 
-    from waldo_commander.state import EnvelopeMode
+    import waldoctl
+    from waldoctl import EnvelopeMode
 
-    assert isinstance(simulation_state.envelope_mode, EnvelopeMode), (
-        f"Expected EnvelopeMode, got {simulation_state.envelope_mode}"
+    envelope_mode = waldoctl.commander.settings.view.envelope_mode
+    assert isinstance(envelope_mode, EnvelopeMode), (
+        f"Expected EnvelopeMode, got {envelope_mode}"
     )
+
+    # Drive a real change through the select and verify it propagates to
+    # commander.settings.view (select option keys are the EnvelopeMode values).
+    select_el = next(iter(envelope_select.elements))
+
+    async def set_and_verify(mode: EnvelopeMode) -> None:
+        select_el.set_value(mode.value)
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if waldoctl.commander.settings.view.envelope_mode == mode:
+                return
+        assert waldoctl.commander.settings.view.envelope_mode == mode, (
+            f"Envelope mode should be {mode} after selecting {mode.value!r}"
+        )
+
+    await set_and_verify(EnvelopeMode.OFF)
+    await set_and_verify(EnvelopeMode.ON)
 
 
 @pytest.mark.integration

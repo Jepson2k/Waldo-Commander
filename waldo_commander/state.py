@@ -1,24 +1,35 @@
 import asyncio
 import logging
 import time
-from collections import deque
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Callable, TYPE_CHECKING
 
 import numpy as np
 from nicegui import binding
-from waldoctl import ActionState, ToolStatus
+from waldoctl import (
+    AngleArray,
+    ChangeNotifierMixin,
+    PathSegment,
+    ProgramTarget,
+    ToolAction,
+    ToolSelection,
+    ToolStatus,
+    ToolTimeSeries,
+)
+
+# Re-exports for legacy import sites — these dataclasses live in waldoctl now
+# (one canonical type per shape) but several WC modules still import them
+# from ``waldo_commander.state``. Keep the re-export so the type checker
+# resolves the names and downstream code can migrate to ``waldoctl`` at
+# its own pace.
+__all__ = [
+    "PathSegment",
+    "ProgramTarget",
+    "ToolAction",
+    "ToolSelection",
+]
 
 from waldo_commander.common.loop_timer import PhaseTimer
-
-
-class EnvelopeMode(Enum):
-    """Workspace envelope visibility modes."""
-
-    AUTO = "auto"
-    ON = "on"
-    OFF = "off"
 
 
 logger = logging.getLogger(__name__)
@@ -37,323 +48,46 @@ else:
     bindable_dataclass = binding.bindable_dataclass
 
 
-class ChangeNotifierMixin:
-    """Mixin providing add/remove/notify listener patterns on two channels.
-
-    The change channel (``add_change_listener`` / ``remove_change_listener`` /
-    ``notify_changed``) fans out broad state mutations to all observers. The
-    step channel (``add_step_listener`` / ``remove_step_listener`` /
-    ``notify_step_changed``) is a parallel pipe for high-frequency script-step
-    events (~20Hz) that only playback needs to observe, so they bypass the
-    URDF scene reconciler and other change-listeners.
-
-    Both channels use copy-on-write: add/remove replace the list reference so
-    that notify_* can iterate without allocation or mutation risk.
-
-    Subclasses using @dataclass should declare:
-        _change_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
-        _step_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
-    If omitted, each list is auto-created on first use.
-    """
-
-    _change_listeners: list[Callable[[], None]]
-    _step_listeners: list[Callable[[], None]]
-
-    def _get_listeners(self) -> list[Callable[[], None]]:
-        try:
-            return self._change_listeners
-        except AttributeError:
-            self._change_listeners = []
-            return self._change_listeners
-
-    def _get_step_listeners(self) -> list[Callable[[], None]]:
-        try:
-            return self._step_listeners
-        except AttributeError:
-            self._step_listeners = []
-            return self._step_listeners
-
-    def add_change_listener(self, callback: Callable[[], None]) -> None:
-        listeners = self._get_listeners()
-        if callback not in listeners:
-            self._change_listeners = [*listeners, callback]
-
-    def remove_change_listener(self, callback: Callable[[], None]) -> None:
-        # Use != (not `is not`) so bound methods removable by their func: each
-        # access of `obj.method` creates a fresh bound-method object that fails
-        # `is`, but bound methods compare equal by (instance, func).
-        self._change_listeners = [cb for cb in self._get_listeners() if cb != callback]
-
-    def notify_changed(self) -> None:
-        for cb in self._get_listeners():
-            cb()
-
-    def add_step_listener(self, callback: Callable[[], None]) -> None:
-        listeners = self._get_step_listeners()
-        if callback not in listeners:
-            self._step_listeners = [*listeners, callback]
-
-    def remove_step_listener(self, callback: Callable[[], None]) -> None:
-        self._step_listeners = [
-            cb for cb in self._get_step_listeners() if cb != callback
-        ]
-
-    def notify_step_changed(self) -> None:
-        for cb in self._get_step_listeners():
-            cb()
-
-
-class AngleArray:
-    """Dual-representation angle array storing both degrees and radians.
-
-    Provides zero-allocation access to angles in either unit. Conversion
-    happens once at update time via set_deg() or set_rad().
-    """
-
-    __slots__ = ("_deg", "_rad")
-
-    def __init__(self, size: int = 6) -> None:
-        self._deg = np.zeros(size, dtype=np.float64)
-        self._rad = np.zeros(size, dtype=np.float64)
-
-    @property
-    def deg(self) -> np.ndarray:
-        """Angles in degrees."""
-        return self._deg
-
-    @property
-    def rad(self) -> np.ndarray:
-        """Angles in radians."""
-        return self._rad
-
-    def set_deg(self, values: np.ndarray) -> None:
-        """Set angles from degrees, computing radians in-place."""
-        self._deg[:] = values
-        np.deg2rad(self._deg, out=self._rad)
-
-    def set_rad(self, values: np.ndarray) -> None:
-        """Set angles from radians, computing degrees in-place."""
-        self._rad[:] = values
-        np.rad2deg(self._rad, out=self._deg)
-
-    def __len__(self) -> int:
-        return len(self._deg)
-
-    def __getitem__(self, idx: int) -> float:
-        """Index access returns degrees (for backwards compatibility)."""
-        return float(self._deg[idx])
-
-
-class ToolTimeSeries:
-    """Rolling time series buffer for tool telemetry (position, current).
-
-    Every status update is pushed directly.  Chart reads via
-    ``get_series_if_dirty()`` — no locking needed since both sides run on the
-    same asyncio event loop.
-
-    Uses column-oriented storage to avoid zip-transpose on every read.
-    """
-
-    __slots__ = ("_ts", "_pos", "_cur", "_maxlen", "_dirty")
-
-    def __init__(self, max_points: int = 500) -> None:
-        self._maxlen = max_points
-        self._ts: deque[float] = deque(maxlen=max_points)
-        self._pos: deque[float] = deque(maxlen=max_points)
-        self._cur: deque[float] = deque(maxlen=max_points)
-        self._dirty: bool = False
-
-    def push(self, position: float, current: float) -> None:
-        """Append a sample unconditionally."""
-        self._ts.append(time.time())
-        self._pos.append(position)
-        self._cur.append(current)
-        self._dirty = True
-
-    def get_series_if_dirty(
-        self,
-    ) -> tuple[list[float], list[float], list[float]] | None:
-        """Return ``(timestamps, positions, currents)`` if new samples exist."""
-        if not self._dirty:
-            return None
-        self._dirty = False
-        return list(self._ts), list(self._pos), list(self._cur)
-
-    def clear(self) -> None:
-        self._ts.clear()
-        self._pos.clear()
-        self._cur.clear()
-        self._dirty = False
-
-
-@dataclass(slots=True)
-class ProgramTarget:
-    id: str  # Unique identifier
-    line_number: int  # Line number in the editor (1-based)
-    pose: list[float]  # [x, y, z, rx, ry, rz]
-    move_type: str  # "cartesian", "pose", "joints"
-    scene_object_id: str  # ID of the 3D marker object in the scene
-    is_valid: bool = True  # False when move failed (out of range, IK failure)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "ProgramTarget":
-        """Deserialize from dict."""
-        return cls(**d)
-
-
-@dataclass(slots=True)
-class PathSegment:
-    points: list[list[float]]  # List of [x, y, z] points defining the segment
-    color: str  # Hex color code (green, blue, orange, red)
-    is_valid: bool  # Whether the segment is reachable (IK valid)
-    line_number: int  # Source line number in program
-    joints: list[float] | None = None  # Joint angles at end of segment
-    move_type: str = "cartesian"  # "cartesian", "joints", "smooth_*"
-    is_dashed: bool = True  # Whether to render as dashed line
-    show_arrows: bool = True  # Whether to show direction arrows
-    joint_trajectory: list[list[float]] | None = (
-        None  # Full joint trajectory for smooth playback
-    )
-    # Timing validation fields
-    estimated_duration: float | None = None  # Computed duration from trajectory builder
-    requested_duration: float | None = None  # User-requested duration
-    timing_feasible: bool = True  # Whether motion achievable in requested time
-    checkpoint: str | None = (
-        None  # Checkpoint type (e.g. "home") — playback pauses here
-    )
-    is_travel: bool = (
-        False  # True for travel-to-start segments (before first motion command)
-    )
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "PathSegment":
-        """Deserialize from dict."""
-        return cls(**d)
-
-
-@dataclass(slots=True)
-class ToolAction:
-    tcp_pose: list[float] | None
-    motions: list[dict[str, Any]]
-    target_positions: tuple[float, ...]
-    activation_type: str
-    line_number: int
-    method: str
-    start_positions: tuple[
-        float, ...
-    ] = ()  # Jaw positions at start of action (0=open, 1=closed)
-    estimated_duration: float = 0.0
-    sleep_offset: float = (
-        0.0  # Seconds into preceding non-blocking move when tool fires
-    )
-    segment_index: int = -1  # Index of preceding path segment (-1 if none)
-    tcp_path: list[list[float]] | None = None  # TCP poses sampled over action duration
-
-
-@dataclass(slots=True)
-class ToolSelection:
-    """Records a select_tool() call during simulation for timeline playback."""
-
-    tool_key: str
-    variant_key: str = ""
-    segment_index: int = -1  # -1 means before any motion
-    line_number: int = 0
+# ProgramTarget, PathSegment, ToolAction, ToolSelection are owned by waldoctl
+# (re-exported above from ``waldoctl``). The WC-local duplicates have been
+# removed so ``simulation_state``'s field types unify with
+# ``commander.programs.active.dry_run.*`` and the type checker stops flagging
+# cross-module list assignments.
 
 
 @bindable_dataclass
 class SimulationState(ChangeNotifierMixin):
-    targets: list[ProgramTarget] = field(default_factory=list)
-    path_segments: list[PathSegment] = field(default_factory=list)
-    tool_actions: list[ToolAction] = field(default_factory=list)
-    tool_selections: list[ToolSelection] = field(default_factory=list)
-    current_step_index: int = 0
-    total_steps: int = 0
-    is_playing: bool = False
-    playback_speed: float = 1.0  # Multiplier
-    preview_mode: bool = False  # True=Dry Run, False=Real Execute
-    paths_visible: bool = True
-    envelope_mode: EnvelopeMode = EnvelopeMode.AUTO
-    active_cursor_line: int = 0  # 1-indexed editor cursor line, 0 = none
-    sim_playback_time: float = 0.0  # Current playback position (seconds)
-    sim_total_duration: float = 0.0  # Total timeline duration (seconds)
-    sim_playback_active: bool = False  # True when simulation playback timer is ticking
-    sim_pose_override: bool = (
-        False  # True while scrubbing/playing — suppresses status-loop URDF updates
-    )
-    last_teleport_ts: float = 0.0  # monotonic time of last teleport send; used by status loop to delay handback
-    script_running: bool = False  # True while a user script is executing
-    # Step-lifecycle phase from the running script's IPC events. Together,
-    # these let playback's state listener distinguish "step N just started"
-    # from "step N just completed" without a direct call from script_exec.
-    executing_step_index: int = -1  # segment currently executing (-1 = idle)
-    executing_step_at_end: bool = False  # False = at start of segment, True = at end
+    # Per-program simulation results live on ``commander.programs.active
+    # .dry_run.*`` (``path_segments`` / ``targets`` / ``tool_actions`` /
+    # ``tool_selections`` / ``total_steps`` / ``total_duration``).
+    # Playback timeline scalars (``current_step`` / ``playback_time`` /
+    # ``playback_speed`` / ``is_playing`` / ``is_active`` /
+    # ``active_cursor_line``) live on ``dry_run.playback.*``.
+    #
+    # What stays here: the WC-side notification channels that consumers
+    # subscribe to globally (a single change-listener registration covers
+    # every tab switch + every dry-run update). View prefs like
+    # ``paths_visible`` now live on ``commander.settings.view``.
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
     _step_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
 
-    def reset(self) -> None:
-        self.targets.clear()
-        self.path_segments.clear()
-        self.tool_actions.clear()
-        self.tool_selections.clear()
-        self.current_step_index = 0
-        self.total_steps = 0
-        self.is_playing = False
-        self.playback_speed = 1.0
-        self.preview_mode = False
-        self.paths_visible = True
-        self.envelope_mode = EnvelopeMode.AUTO
-        self.active_cursor_line = 0
-        self.sim_playback_time = 0.0
-        self.sim_total_duration = 0.0
-        self.sim_playback_active = False
-        self.sim_pose_override = False
-        self.last_teleport_ts = 0.0
-        self.script_running = False
-        self.executing_step_index = -1
-        self.executing_step_at_end = False
+
+# ``RecordingState`` migrated to ``commander.programs.active.recording``;
+# session-wide check is ``services.programs.is_any_program_recording()``.
 
 
-@bindable_dataclass
-class RecordingState:
-    is_recording: bool = False
-
-    def reset(self) -> None:
-        self.is_recording = False
-
-
-# Extended shared state singletons for cross-module access
-# Only scalar fields are bindable - numpy arrays are excluded to avoid comparison issues
-@bindable_dataclass(
-    bindable_fields=[
-        "connected",
-        "x",
-        "y",
-        "z",
-        "rx",
-        "ry",
-        "rz",
-        "io_inputs",
-        "io_outputs",
-        "io_estop",
-        "tool_key",
-        "tool_variant_key",
-        "tool_position",
-        "tool_current",
-        "tool_engaged",
-        "tool_part_detected",
-        "simulator_active",
-        "action_current",
-        "action_state",
-        "action_params",
-        "editing_mode",
-        "tcp_speed",
-    ]
-)
+# Extended shared state singletons for cross-module access.
+# No fields are bindable (bindable_fields=[]); the remaining members are numpy
+# arrays / objects read imperatively, and the migrated scalar fields now live on
+# commander.status.*. Consumers read these directly, not via bindings.
+@bindable_dataclass(bindable_fields=[])
 class RobotState(ChangeNotifierMixin):
-    # Preallocated arrays for zero-allocation hot path updates
-    angles: AngleArray = field(default_factory=AngleArray)  # joint angles (deg/rad)
+    # ``angles`` (joint angles in deg/rad) moved to
+    # ``commander.status.joints.angles`` — same ``AngleArray`` interface.
+    # ``orientation`` stays here as a rad-access companion for FK/IK
+    # consumers that don't want to deg2rad on every read.
     orientation: AngleArray = field(
         default_factory=lambda: AngleArray(size=3)
     )  # rx/ry/rz (deg/rad)
@@ -364,82 +98,42 @@ class RobotState(ChangeNotifierMixin):
         default_factory=lambda: np.zeros(5, dtype=np.int32)
     )  # [inputs..., outputs..., estop] — resized at startup
     tool_status: ToolStatus = field(default_factory=ToolStatus)
-    # Movement enablement arrays from STATUS (12 ints each)
-    joint_en: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
-    cart_en: dict[str, np.ndarray] = field(default_factory=dict)
-    connected: bool = False
-    # Derived scalars for convenient, high-performance UI bindings
-    x: float = 0.0
-    y: float = 0.0
-    z: float = 0.0
-    rx: float = 0.0
-    ry: float = 0.0
-    rz: float = 0.0
-    # Dynamic IO lists (length determined by robot.digital_inputs / digital_outputs)
-    io_inputs: list[int] = field(default_factory=list)
-    io_outputs: list[int] = field(default_factory=list)
-    io_estop: int = 1
-    tool_key: str = "NONE"
-    tool_variant_key: str = ""
-    tool_position: float = 0.0
-    tool_current: float = 0.0
-    tool_engaged: bool = False
-    tool_part_detected: bool = False
+    # Movement enablement arrays live on commander.status.joints.can_jog_pos
+    # / can_jog_neg (6 bools each) and
+    # commander.status.pose.cart_jog.by_frame[<frame>].can_jog_{pos,neg}.
+    # Connection / simulator / editing-mode / last-update timestamp + TCP
+    # linear speed + Cartesian pose scalars (x/y/z/rx/ry/rz) all live on
+    # ``commander.status.{...}`` from waldoctl. IO inputs/outputs/estop
+    # live on ``commander.status.io``. The numpy ``orientation`` array
+    # stays here as a rad-access companion for FK / IK consumers.
+    # All tool fields live on commander.status.tool — readers project
+    # positions[0] / channels[0] inline when they need the single-DOF
+    # scalar. tool_time_series stays here as a WC-internal rolling buffer
+    # backing the gripper chart.
     tool_time_series: ToolTimeSeries = field(default_factory=ToolTimeSeries)
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
     )  # deg/s
-    tcp_speed: float = 0.0  # mm/s
-    simulator_active: bool = False
-    action_current: str = ""
-    action_state: ActionState = ActionState.IDLE
-    action_params: str = ""
+    # action_current / action_state live on commander.status.action.
+    # ``action_params`` is per-command metadata for the dedup service; it
+    # flows directly from the StatusBuffer into action_log_service without
+    # a singleton mirror.
     executing_index: int = -1
     completed_index: int = -1
-    last_update_ts: float = 0.0  # timestamp of last STATUS update
-    # Editing mode - when True, x/y/z/angles are controlled by target editor
-    editing_mode: bool = False
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
 
-    def init_cart_en(self, frames: tuple[str, ...]) -> None:
-        """Initialize cart_en arrays for each Cartesian frame."""
-        self.cart_en = {f: np.ones(12, dtype=np.int32) for f in frames}
-
     def reset(self) -> None:
-        """Reset to defaults. Arrays are zeroed in-place; cart_en frames preserved."""
-        self.angles.set_deg(np.zeros(len(self.angles), dtype=np.float64))
+        """Reset to defaults. Arrays are zeroed in-place."""
         self.orientation.set_deg(np.zeros(3, dtype=np.float64))
         self.pose[:] = 0.0
         self.io[:] = 0
         self.tool_status = ToolStatus()
-        self.joint_en[:] = 1
-        for arr in self.cart_en.values():
-            arr[:] = 1
-        self.connected = False
-        self.x = self.y = self.z = 0.0
-        self.rx = self.ry = self.rz = 0.0
-        self.io_inputs = []
-        self.io_outputs = []
-        self.io_estop = 1
-        self.tool_key = "NONE"
-        self.tool_variant_key = ""
-        self.tool_position = 0.0
-        self.tool_current = 0.0
-        self.tool_engaged = False
-        self.tool_part_detected = False
         self.tool_time_series.clear()
         self.speeds[:] = 0.0
-        self.tcp_speed = 0.0
-        self.simulator_active = False
-        self.action_current = ""
-        self.action_state = ActionState.IDLE
-        self.action_params = ""
         self.executing_index = -1
         self.completed_index = -1
-        self.last_update_ts = 0.0
-        self.editing_mode = False
 
 
 @dataclass
@@ -448,6 +142,26 @@ class ControllerState:
 
     def reset(self) -> None:
         self.running = False
+
+
+@dataclass
+class PlaybackCoordination:
+    """WC-private coordination between dry-run playback and the status loop.
+
+    Not part of the public ``waldoctl.commander`` surface — these flags are
+    internal to how WC suppresses status-loop URDF writes while scrubbing or
+    playing back a simulated trajectory, so the live robot pose doesn't fight
+    the scene with the scrubbed pose.
+    """
+
+    sim_pose_override: bool = False
+    """True while scrubbing/playing — suppresses status-loop URDF updates."""
+    last_teleport_ts: float = 0.0
+    """Monotonic time of last teleport send; used by status loop to delay handback."""
+
+    def reset(self) -> None:
+        self.sim_pose_override = False
+        self.last_teleport_ts = 0.0
 
 
 class _RequiredField:
@@ -485,18 +199,8 @@ class UiState:
     urdf_index_mapping: list[int] = field(default_factory=lambda: list(range(6)))
     current_tool_stls: list[Any] = field(default_factory=list)
 
-    # Control panel UI state
-    jog_speed: int = 50
-    jog_accel: int = 50
-    incremental_jog: bool = False
-    joint_step_deg: float = 1.0
-    gizmo_visible: bool = True
-
-    # Gripper panel state
-    gripper_speed_sync: bool = True
-    gripper_speed: int = 50
-    gripper_current: int = 500
-    tool_target_position: float = 0.0
+    # User preferences (jog speed/accel/step, gripper speed/current/sync, gizmo visibility)
+    # now live on ``commander.settings.{jog, gripper, view}`` (waldoctl).
 
     # Camera device: -1 = disabled, int = device index, str = device name
     camera_device: int | str = -1
@@ -518,6 +222,15 @@ class UiState:
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
 
+    # Editor widget refs — moved off the legacy ``EditorTabsState`` because
+    # NiceGUI element handles don't belong on the public ``ProgramTabs``
+    # surface. EditorPanel writes these on every tab switch / build; the
+    # sub-controllers (decorations, motion_recorder, script_execution) read
+    # the active tab's widgets without back-references into EditorPanel.
+    active_textarea: Any = None  # ui.codemirror | None at runtime
+    active_filename_input: Any = None  # ui.input | None at runtime
+    textareas_by_tab: dict[str, Any] = field(default_factory=dict)
+
     # Post-init required fields (assert on access, set via assignment)
     editor_panel = _RequiredField()
     control_panel = _RequiredField()
@@ -537,106 +250,12 @@ class UiState:
         self.active_client_id = None
 
 
-@dataclass(slots=True)
-class EditorTab:
-    """State for a single editor tab."""
-
-    id: str  # Unique tab identifier (UUID hex)
-    filename: str  # Display name / filename
-    file_path: str | None  # Full path if saved to server
-    content: str  # Current editor content
-    saved_content: str  # Content at last save (for dirty tracking)
-    # Bounded so a chatty script can't grow the buffer unboundedly; matches
-    # ui.log(max_lines=1000) in log_panel so tab-switch rehydrate doesn't
-    # outgrow the display widget.
-    output_log: deque[str] = field(default_factory=lambda: deque(maxlen=1000))
-    path_segments: list[PathSegment] = field(
-        default_factory=list
-    )  # Per-tab simulation paths
-    targets: list[ProgramTarget] = field(default_factory=list)  # Per-tab targets
-    tool_actions: list[ToolAction] = field(default_factory=list)  # Per-tab tool actions
-    tool_selections: list[ToolSelection] = field(
-        default_factory=list
-    )  # Per-tab tool selections
-    final_joints_rad: list[float] | None = None  # Final joint position from simulation
-    last_sim_joints_deg: np.ndarray | None = None  # Robot position when last simulated
-    created_at: float = 0.0  # Timestamp
-
-    @property
-    def is_dirty(self) -> bool:
-        """Return True if content differs from saved content."""
-        return self.content != self.saved_content
-
-
-@bindable_dataclass
-class EditorTabsState(ChangeNotifierMixin):
-    """State for multi-tab editor.
-
-    Holds both pure tab data (``tabs``, ``active_tab_id``) and the widget
-    references for the active tab (``active_textarea``,
-    ``active_filename_input``). Mixing widget refs with data here is
-    intentional: the refs' lifecycle is tied directly to tab switching, and
-    consolidating them on the tab-state object lets sub-controllers
-    (decorations, simulation engine, motion recorder, script execution) read
-    the active tab's widgets without back-references into EditorPanel.
-    """
-
-    tabs: list[EditorTab] = field(default_factory=list)
-    active_tab_id: str | None = None
-    # Updated by EditorPanel on every tab switch / initial build.
-    active_textarea: Any = None  # ui.codemirror | None at runtime
-    active_filename_input: Any = None  # ui.input | None at runtime
-    # Per-tab textarea refs so sub-controllers can write decorations,
-    # diagnostics, etc. to a specific tab's editor even when it isn't
-    # the active one (e.g. the launching tab during script execution
-    # while the user has switched to a different tab). Maintained by
-    # EditorPanel on tab build / close.
-    textareas_by_tab: dict[str, Any] = field(default_factory=dict)
-    _change_listeners: list[Callable[[], None]] = field(
-        default_factory=list, repr=False
-    )
-
-    def get_active_tab(self) -> EditorTab | None:
-        """Get the currently active tab."""
-        if not self.active_tab_id:
-            return None
-        return next((t for t in self.tabs if t.id == self.active_tab_id), None)
-
-    def find_tab_by_path(self, file_path: str | None) -> EditorTab | None:
-        """Find a tab with the given file path. Returns None if file_path is None."""
-        if file_path is None:
-            return None
-        return next((t for t in self.tabs if t.file_path == file_path), None)
-
-    def find_tab_by_id(self, tab_id: str) -> EditorTab | None:
-        """Find a tab by its ID."""
-        return next((t for t in self.tabs if t.id == tab_id), None)
-
-    def get_tab_textarea(self, tab_id: str | None) -> Any:
-        """Look up a tab's CodeMirror textarea by id. Returns None if the
-        tab id is None or the tab isn't currently mounted."""
-        if tab_id is None:
-            return None
-        return self.textareas_by_tab.get(tab_id)
-
-    def add_tab(self, tab: EditorTab) -> None:
-        """Add a new tab."""
-        self.tabs.append(tab)
-        self.notify_changed()
-
-    def remove_tab(self, tab_id: str) -> None:
-        """Remove a tab by ID."""
-        self.tabs = [t for t in self.tabs if t.id != tab_id]
-        if self.active_tab_id == tab_id:
-            self.active_tab_id = self.tabs[0].id if self.tabs else None
-        self.notify_changed()
-
-    def reset(self) -> None:
-        self.tabs = []
-        self.active_tab_id = None
-        self.active_textarea = None
-        self.active_filename_input = None
-        self.textareas_by_tab.clear()
+# ===========================================================================
+# Editor tabs — migrated to ``commander.programs`` (waldoctl) with a WC-side
+# concrete subclass at ``waldo_commander.services.programs.EditorPrograms``.
+# Per-tab dry-run/log data lives on ``Program.dry_run`` and ``Program.log``.
+# Active widget refs migrated to ``UiState`` (active_textarea, etc.).
+# ===========================================================================
 
 
 @dataclass
@@ -710,127 +329,10 @@ class ReadinessState:
 
 
 # ===========================================================================
-# Action Log
+# Action log — moved to ``waldo_commander.services.action_log`` and the
+# data fields (``ActionStatus`` / ``ActionLogEntry`` / ``history``) now live
+# on ``commander.status.action`` from waldoctl. Nothing remains here.
 # ===========================================================================
-
-
-class ActionStatus(Enum):
-    EXECUTING = "executing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-@dataclass
-class ActionLogEntry:
-    """Single entry in the action log."""
-
-    command_name: str
-    params: str = ""
-    status: ActionStatus = ActionStatus.EXECUTING
-    command_index: int = -1
-    count: int = 1
-    timestamp: float = 0.0
-
-
-class ActionLog:
-    """Session-scoped action log with coalescing of repeated commands."""
-
-    def __init__(self, max_entries: int = 200) -> None:
-        self._entries: deque[ActionLogEntry] = deque(maxlen=max_entries)
-        self._last_executing_index: int = -1
-        self._last_completed_index: int = -1
-        self._version: int = 0
-
-    @property
-    def entries(self) -> deque[ActionLogEntry]:
-        return self._entries
-
-    @property
-    def version(self) -> int:
-        return self._version
-
-    @property
-    def latest(self) -> ActionLogEntry | None:
-        return self._entries[-1] if self._entries else None
-
-    def process_status(
-        self,
-        action_current: str,
-        action_params: str,
-        action_state: ActionState,
-        executing_index: int,
-        completed_index: int,
-    ) -> bool:
-        """Process a status update, returning True if the log changed."""
-        changed = False
-
-        # Detect new command starting
-        if (
-            executing_index > self._last_executing_index
-            and action_state == ActionState.EXECUTING
-        ):
-            name = action_current.removesuffix("Command")
-            latest = self.latest
-            if (
-                latest
-                and latest.command_name == name
-                and latest.params == action_params
-                and latest.status == ActionStatus.COMPLETED
-            ):
-                latest.count += 1
-                latest.status = ActionStatus.EXECUTING
-                latest.command_index = executing_index
-                latest.timestamp = time.time()
-            else:
-                self._entries.append(
-                    ActionLogEntry(
-                        command_name=name,
-                        params=action_params,
-                        command_index=executing_index,
-                        timestamp=time.time(),
-                    )
-                )
-            self._last_executing_index = executing_index
-            changed = True
-
-        # Detect command completion
-        if completed_index > self._last_completed_index:
-            matched = False
-            for entry in reversed(self._entries):
-                if entry.command_index == completed_index:
-                    entry.status = ActionStatus.COMPLETED
-                    matched = True
-                    break
-            # Coalesced entries may have overwritten command_index;
-            # fall back to marking the latest EXECUTING entry as completed
-            if not matched and self._entries:
-                for entry in reversed(self._entries):
-                    if entry.status == ActionStatus.EXECUTING:
-                        entry.status = ActionStatus.COMPLETED
-                        break
-            self._last_completed_index = completed_index
-            changed = True
-
-        # Detect failure (action goes IDLE but completed_index didn't advance)
-        if (
-            action_state != ActionState.EXECUTING
-            and self._entries
-            and self._entries[-1].status == ActionStatus.EXECUTING
-            and completed_index == self._last_completed_index
-            and executing_index == self._last_executing_index
-        ):
-            self._entries[-1].status = ActionStatus.FAILED
-            changed = True
-
-        if changed:
-            self._version += 1
-        return changed
-
-    def clear(self) -> None:
-        self._entries.clear()
-        self._last_executing_index = -1
-        self._last_completed_index = -1
-        self._version += 1
 
 
 # Module-level singletons
@@ -838,10 +340,8 @@ robot_state: RobotState = RobotState()
 controller_state: ControllerState = ControllerState()
 ui_state: UiState = UiState()
 simulation_state: SimulationState = SimulationState()
-recording_state: RecordingState = RecordingState()
 readiness_state: ReadinessState = ReadinessState()
-editor_tabs_state: EditorTabsState = EditorTabsState()
-action_log: ActionLog = ActionLog()
+playback_coordination: PlaybackCoordination = PlaybackCoordination()
 
 
 def reset_all_state() -> None:
@@ -849,11 +349,27 @@ def reset_all_state() -> None:
     robot_state.reset()
     controller_state.reset()
     ui_state.reset()
-    simulation_state.reset()
-    recording_state.reset()
+    playback_coordination.reset()
     readiness_state.reset()
-    editor_tabs_state.reset()
-    action_log.clear()
+    # Editor tabs / action log live on the commander locator now; reset via
+    # their services so each service's own bookkeeping (dedup cursors) is
+    # cleared alongside the public surface it writes to.
+    from waldo_commander.services.action_log import action_log_service
+
+    action_log_service.clear()
+    import waldoctl
+
+    try:
+        programs = waldoctl.commander.programs
+    except RuntimeError:
+        pass
+    else:
+        programs.items = []
+        programs.active_id = None
+        programs.notify_changed()
+    ui_state.active_textarea = None
+    ui_state.active_filename_input = None
+    ui_state.textareas_by_tab.clear()
 
 
 # Global timing instrumentation - import and use from any module

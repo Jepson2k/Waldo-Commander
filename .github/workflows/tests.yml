@@ -1,12 +1,12 @@
 name: tests
 
 on:
+  # Run once per change: pull_request covers PR branches; push covers main
+  # (and any direct, PR-less pushes to it). Avoids the duplicate push +
+  # pull_request runs on every PR commit.
   push:
-    paths:
-      - '**'
+    branches: [main]
   pull_request:
-    paths:
-      - '**'
 
 jobs:
   lint:
@@ -24,14 +24,21 @@ jobs:
       - name: Install dependencies for pre-commit hooks
         run: |
           python -m pip install --upgrade pip
-          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
-            pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
-          fi
-          if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
-            pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
-          fi
           pip install -e ".[dev]"
+          # Override the pinned waldoctl/parol6 with the matching feature branch
+          # if one exists, AFTER ".[dev]" so its pinned tags don't clobber it.
+          # Skipped on main: pushes to main must test the pyproject-pinned tags
+          # (every sibling repo has a `main`, so the match would always fire and
+          # main CI would never exercise the released pins).
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          if [ "$BRANCH" != "main" ]; then
+            if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
+            fi
+            if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
+            fi
+          fi
           mkdir -p PAROL6-python-API
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
@@ -58,23 +65,25 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install cross-repo dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          # waldoctl: install from matching branch if one exists; otherwise pyproject's pin handles it
-          if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
-            pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
-          fi
-          # parol6: install from matching branch if one exists; otherwise pyproject's pin handles it
-          if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
-            pip install "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
-          fi
-
-      - name: Install package
-        run: |
           pip install ".[dev]"
+          # Override the pinned waldoctl/parol6 with the matching feature branch
+          # if one exists, AFTER ".[dev]" so its pinned tags don't clobber it.
+          # Skipped on main: pushes to main must test the pyproject-pinned tags
+          # (every sibling repo has a `main`, so the match would always fire and
+          # main CI would never exercise the released pins).
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          if [ "$BRANCH" != "main" ]; then
+            if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
+            fi
+            if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
+            fi
+          fi
 
       - name: Show environment
         run: |

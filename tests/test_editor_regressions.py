@@ -33,6 +33,7 @@ from tests.helpers.browser_helpers import (
     wait_for_codemirror_ready,
     wait_for_notification,
 )
+from tests.helpers.programs import clear_all_programs
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -51,22 +52,9 @@ def _clean_stale_state():
     can't be polluted by anything our tests left behind in the editor
     tab state.
     """
-    from waldo_commander.state import (
-        editor_tabs_state,
-        recording_state,
-        simulation_state,
-    )
-
-    def _reset() -> None:
-        recording_state.is_recording = False
-        editor_tabs_state.tabs.clear()
-        editor_tabs_state.active_tab_id = None
-        simulation_state.path_segments.clear()
-        simulation_state.targets.clear()
-
-    _reset()
+    clear_all_programs()
     yield
-    _reset()
+    clear_all_programs()
 
 
 def _set_editor_content(screen: "Screen", text: str) -> None:
@@ -100,22 +88,23 @@ class TestEditorRegressions:
         when triggered via real Ctrl+S keystrokes — guards against any
         rewiring of on_save that would break the coroutine handoff.
         """
-        from waldo_commander.state import editor_tabs_state, ui_state
+        from waldo_commander.state import ui_state
+        import waldoctl
 
         click_tab(class_screen, "program")
         wait_for_codemirror_ready(class_screen)
 
-        active_tab = editor_tabs_state.get_active_tab()
+        active_tab = waldoctl.commander.programs.active
         assert active_tab is not None, "expected an active tab after opening program"
 
         original_filename = active_tab.filename
-        original_content = active_tab.content
+        original_content = active_tab.source
         target_name = "regression_ctrl_s_test.py"
         target_content = "# ctrl-s regression test\n"
         target_path = ui_state.editor_panel.PROGRAM_DIR / target_name
         active_tab.filename = target_name
         # Push the content through CodeMirror so the editor's doc and
-        # tab.content stay in sync. Setting tab.content from Python alone
+        # tab.source stay in sync. Setting tab.source from Python alone
         # races with the editor's on_change sync — on a slow CI runner the
         # editor's empty initial value can clobber our update before
         # _save_tab reads it, and the file ends up empty.
@@ -145,7 +134,7 @@ class TestEditorRegressions:
             target_path.unlink(missing_ok=True)
             active_tab.filename = original_filename
             # Restore content via the same dispatch path so the editor doc
-            # matches the restored tab.content (otherwise the next test
+            # matches the restored tab.source (otherwise the next test
             # would see a stale editor doc).
             _set_editor_content(class_screen, original_content)
 
@@ -165,12 +154,12 @@ class TestEditorRegressions:
         path containing a null byte, which makes Path.write_text raise
         ValueError("embedded null byte").
         """
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         click_tab(class_screen, "program")
         wait_for_codemirror_ready(class_screen)
 
-        active_tab = editor_tabs_state.get_active_tab()
+        active_tab = waldoctl.commander.programs.active
         assert active_tab is not None
 
         original_filename = active_tab.filename
@@ -195,14 +184,14 @@ class TestEditorRegressions:
         with CM.linter(() => []) which keeps lintState working without the
         suppressing tooltip provider.
         """
-        from waldo_commander.state import editor_tabs_state
+        import waldoctl
 
         click_tab(class_screen, "program")
         wait_for_codemirror_ready(class_screen)
 
-        active_tab = editor_tabs_state.get_active_tab()
+        active_tab = waldoctl.commander.programs.active
         assert active_tab is not None
-        original_content = active_tab.content
+        original_content = active_tab.source
 
         # Clear via dispatch so we start from a known empty state. The
         # actual test typing must use real send_keys (below) so it goes

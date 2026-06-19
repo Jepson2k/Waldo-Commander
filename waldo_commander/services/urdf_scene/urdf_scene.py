@@ -25,6 +25,7 @@ from urllib.request import url2pathname
 import numpy as np
 from nicegui import ui, app
 
+import waldoctl
 from waldoctl import LinearMotion, RotaryMotion, MeshRole, PartMotion
 
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
@@ -647,7 +648,7 @@ class UrdfScene(
     def _do_update_simulation_view_body(self) -> None:
         """Body of the simulation view update (run inside a batch_scene)."""
         # Visibility check for paths and targets
-        if not simulation_state.paths_visible:
+        if not waldoctl.commander.settings.view.paths_visible:
             if self.path_group is not None:
                 self.path_group.visible(False)
             if self.targets_group is not None:
@@ -659,11 +660,17 @@ class UrdfScene(
         if self.targets_group is not None:
             self.targets_group.visible(True)
 
-        all_segments = simulation_state.path_segments
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            all_segments = active.dry_run.path_segments
+            tool_actions = active.dry_run.tool_actions
+            targets = active.dry_run.targets
+        else:
+            all_segments = []
+            tool_actions = []
+            targets = []
         new_count = len(all_segments)
         old_count = len(self._rendered_segments)
-        tool_actions = simulation_state.tool_actions
-        targets = simulation_state.targets
 
         # Early-out: nothing to render and nothing rendered
         if (
@@ -868,7 +875,7 @@ class UrdfScene(
                 del self._rendered_tool_actions[new_ta_count:]
 
         # Highlight path segments matching active cursor line
-        if simulation_state.paths_visible and self._rendered_segments:
+        if waldoctl.commander.settings.view.paths_visible and self._rendered_segments:
             self.update_cursor_line_highlight()
 
         # Waypoint markers at segment endpoints
@@ -1237,7 +1244,10 @@ class UrdfScene(
 
     def update_cursor_line_highlight(self) -> None:
         """Highlight path objects for the segment matching the editor cursor line."""
-        cursor_line = simulation_state.active_cursor_line
+        active = waldoctl.commander.programs.active
+        cursor_line = (
+            active.dry_run.playback.active_cursor_line if active is not None else 0
+        )
         if cursor_line == self._highlighted_line:
             return
         prev_line = self._highlighted_line
@@ -1299,7 +1309,8 @@ class UrdfScene(
         self._clear_path_state()
 
     def update_playback_opacity(self) -> None:
-        """Fade completed elements to 50% opacity based on current_step_index.
+        """Fade completed elements to 50% opacity based on the active program's
+        ``dry_run.playback.current_step``.
 
         Applies opacity to ALL element types: segments, tool actions,
         non-editable waypoints, and editable targets.
@@ -1310,7 +1321,8 @@ class UrdfScene(
         otherwise issue up to ~11 separate frames (polyline + cones for a
         long move), which can render half-faded if interleaved with three.js.
         """
-        step = simulation_state.current_step_index
+        active = waldoctl.commander.programs.active
+        step = active.dry_run.playback.current_step if active is not None else 0
         prev = self._rendered_playback_step
         n_rendered = len(self._rendered_segments)
         has_any = (

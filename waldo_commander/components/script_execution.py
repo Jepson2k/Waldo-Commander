@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import uuid
 from pathlib import Path
 
@@ -32,7 +33,11 @@ from waldo_commander.services.script_runner import (
     stop_script,
 )
 from waldo_commander.services.stepping_client import GUIStepController
-from waldo_commander.state import editor_tabs_state, simulation_state
+from waldo_commander.services.programs import is_any_program_running
+import waldoctl
+from waldoctl import LogEntry
+
+from waldo_commander.state import playback_coordination, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +58,7 @@ class ScriptExecutionController:
         self._event_watcher_task: asyncio.Task | None = None
         self._ui_client: Client | None = None
         # Tab whose content was launched. Output is appended to that tab's
-        # output_log so switching tabs preserves the originating tab's log.
+        # ``Program.log`` so switching tabs preserves the originating tab's log.
         self._script_tab_id: str | None = None
 
     def cleanup(self) -> None:
@@ -84,7 +89,7 @@ class ScriptExecutionController:
         # progress resumes on this page.
         if (
             client is not None
-            and simulation_state.script_running
+            and is_any_program_running()
             and self._step_controller is not None
             and (self._event_watcher_task is None or self._event_watcher_task.done())
         ):
@@ -102,8 +107,16 @@ class ScriptExecutionController:
         if no script is running)."""
         return self._script_tab_id
 
-    def _record_line(self, line: str, ui_client: Client | None = None) -> None:
-        """Append a log line to the launching tab's output_log; push to the
+    def _launching_program(self):
+        """The ``Program`` whose content launched the current script, or None."""
+        if not self._script_tab_id:
+            return None
+        return waldoctl.commander.programs.get(self._script_tab_id)
+
+    def _record_line(
+        self, line: str, ui_client: Client | None = None, stream: str = "stdout"
+    ) -> None:
+        """Append a log line to the launching tab's log; push to the
         visible log_panel only when the launching tab is currently active.
 
         ``ui_client`` is the page client captured at ``start()`` so the
@@ -111,14 +124,10 @@ class ScriptExecutionController:
         subprocess callback. Tests may pass ``None`` — ``log_panel.push``
         no-ops when the log widget hasn't been built.
         """
-        tab = (
-            editor_tabs_state.find_tab_by_id(self._script_tab_id)
-            if self._script_tab_id
-            else None
-        )
+        tab = self._launching_program()
         if tab is not None:
-            tab.output_log.append(line)
-        if tab is not None and tab.id == editor_tabs_state.active_tab_id:
+            tab.log.append(LogEntry(timestamp=time.time(), stream=stream, text=line))
+        if tab is not None and tab.id == waldoctl.commander.programs.active_id:
             if ui_client is not None:
                 with ui_client:
                     log_panel.push(line)
@@ -129,26 +138,26 @@ class ScriptExecutionController:
 
     async def toggle(self) -> None:
         """Toggle start/stop based on current state."""
-        if simulation_state.script_running:
+        if is_any_program_running():
             await self.stop()
         else:
             await self.start()
 
     async def start(self) -> None:
         """Start the current editor content as a Python subprocess."""
-        if simulation_state.script_running:
+        if is_any_program_running():
             ui.notify("Script already running", color="warning")
             return
 
         try:
-            filename_input = editor_tabs_state.active_filename_input
+            filename_input = ui_state.active_filename_input
             filename = (
                 filename_input.value.strip() if filename_input else ""
             ) or "program.py"
             if not filename.endswith(".py"):
                 filename += ".py"
 
-            textarea = editor_tabs_state.active_textarea
+            textarea = ui_state.active_textarea
             content = textarea.value if textarea else ""
             assert self._program_dir is not None, "program_dir not set"
             runtime_dir = self._program_dir / ".runtime"
@@ -161,10 +170,10 @@ class ScriptExecutionController:
 
             # Remember the launching tab so output is appended to its log
             # even after the user switches tabs while the script runs.
-            launching_tab = editor_tabs_state.get_active_tab()
+            launching_tab = waldoctl.commander.programs.active
             self._script_tab_id = launching_tab.id if launching_tab else None
             if launching_tab is not None:
-                launching_tab.output_log.clear()
+                launching_tab.log.clear()
             log_panel.clear()
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))
@@ -175,7 +184,7 @@ class ScriptExecutionController:
                 self._record_line(line, ui_client)
 
             def on_stderr(line: str) -> None:
-                self._record_line(f"[ERR] {line}", ui_client)
+                self._record_line(f"[ERR] {line}", ui_client, stream="stderr")
 
             self._step_session_id = uuid.uuid4().hex[:8]
             self._step_controller = GUIStepController(self._step_session_id)
@@ -185,12 +194,14 @@ class ScriptExecutionController:
                 script_config, on_stdout, on_stderr, session_id=self._step_session_id
             )
 
-            # Subprocess is live — flip script_running and emit one notification
-            # so playback's listener sees the script-start edge and reacts.
-            simulation_state.script_running = True
-            simulation_state.is_playing = True
-            simulation_state.executing_step_index = -1
-            simulation_state.executing_step_at_end = False
+            # Subprocess is live — flip execution.is_running on the launching
+            # program and emit one notification so playback's listener sees
+            # the script-start edge and reacts.
+            if launching_tab is not None:
+                launching_tab.execution.is_running = True
+                launching_tab.dry_run.playback.executing_step_index = -1
+                launching_tab.dry_run.playback.executing_step_at_end = False
+                launching_tab.dry_run.playback.is_playing = True
             self._step_controller.signal_play()
             simulation_state.notify_changed()
 
@@ -226,15 +237,17 @@ class ScriptExecutionController:
 
     async def stop(self) -> None:
         """Stop the running script process."""
-        if not simulation_state.script_running or not self.script_handle:
+        if not is_any_program_running() or not self.script_handle:
             ui.notify("No script running", color="warning")
             return
 
         try:
             handle = self.script_handle
             self.script_handle = None
-            simulation_state.script_running = False
-            simulation_state.is_playing = False
+            running_tab = self._launching_program()
+            if running_tab is not None:
+                running_tab.execution.is_running = False
+                running_tab.dry_run.playback.is_playing = False
             simulation_state.notify_changed()
             self.cleanup_stepping()
             if handle:
@@ -268,23 +281,30 @@ class ScriptExecutionController:
         """Poll for script events and publish step transitions to simulation_state."""
         watcher_crashed = False
         try:
-            while simulation_state.script_running and self._step_controller:
+            while is_any_program_running() and self._step_controller:
                 events = self._step_controller.poll_events()
                 for event in events:
                     event_type = event.get("event")
                     method = event.get("method", "")
                     step = event.get("step", 0)
+                    running_tab = self._launching_program()
                     if event_type == "start":
                         with ui_client:
-                            simulation_state.executing_step_index = step
-                            simulation_state.executing_step_at_end = False
-                            simulation_state.current_step_index = step
+                            if running_tab is not None:
+                                running_tab.dry_run.playback.executing_step_index = step
+                                running_tab.dry_run.playback.executing_step_at_end = (
+                                    False
+                                )
+                                running_tab.dry_run.playback.current_step = step
                             simulation_state.notify_step_changed()
                     elif event_type == "complete":
                         with ui_client:
-                            simulation_state.executing_step_index = step
-                            simulation_state.executing_step_at_end = True
-                            simulation_state.current_step_index = step
+                            if running_tab is not None:
+                                running_tab.dry_run.playback.executing_step_index = step
+                                running_tab.dry_run.playback.executing_step_at_end = (
+                                    True
+                                )
+                                running_tab.dry_run.playback.current_step = step
                             simulation_state.notify_step_changed()
                         logger.debug(
                             "Script event: %s completed (step %d)", method, step
@@ -300,10 +320,12 @@ class ScriptExecutionController:
             # If the watcher died unexpectedly while the script is still flagged
             # as running, fire a stop edge so playback unstalls instead of waiting
             # for the subprocess-completion monitor to notice.
-            if watcher_crashed and simulation_state.script_running:
+            if watcher_crashed and is_any_program_running():
                 with ui_client:
-                    simulation_state.script_running = False
-                    simulation_state.is_playing = False
+                    running_tab = self._launching_program()
+                    if running_tab is not None:
+                        running_tab.execution.is_running = False
+                        running_tab.dry_run.playback.is_playing = False
                     simulation_state.notify_changed()
 
     async def _monitor_script_completion(
@@ -331,10 +353,12 @@ class ScriptExecutionController:
     def _reset_state(self) -> None:
         """Reset all script-related state after a script finishes or errors."""
         self.script_handle = None
+        running_tab = self._launching_program()
+        if running_tab is not None:
+            running_tab.execution.is_running = False
+            running_tab.dry_run.playback.is_playing = False
         self._script_tab_id = None
-        simulation_state.script_running = False
-        simulation_state.is_playing = False
-        simulation_state.sim_pose_override = False
+        playback_coordination.sim_pose_override = False
         simulation_state.notify_changed()
         self.cleanup_stepping()
 

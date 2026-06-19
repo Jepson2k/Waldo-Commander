@@ -8,6 +8,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Callable
 
+import waldoctl
 from nicegui.testing import User
 from waldoctl import ActionState
 
@@ -66,7 +67,7 @@ async def wait_for_motion_stable(
     except (IndexError, KeyError, TypeError) as e:
         raise ValueError(
             f"wait_for_motion_stable: Cannot get initial value. "
-            f"Ensure robot_state.angles is populated. Error: {e}"
+            f"Ensure waldoctl.commander.status.joints.angles is populated. Error: {e}"
         ) from e
 
     for _ in range(int(timeout_s / interval)):
@@ -90,7 +91,7 @@ async def wait_for_motion_stable(
     return get_value_fn()
 
 
-async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
+async def enable_sim(user: User, timeout_s: float = 5.0) -> None:
     """Enable simulator mode and wait for it to be ready.
 
     This helper handles race conditions between test fixtures and app startup:
@@ -100,7 +101,6 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
 
     Args:
         user: NiceGUI User test fixture
-        robot_state: The RobotState instance to check
         timeout_s: Maximum time to wait for simulator to activate
 
     Raises:
@@ -109,7 +109,7 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
     from waldo_commander.state import readiness_state
 
     def _has_valid_angles() -> bool:
-        angles = robot_state.angles
+        angles = waldoctl.commander.status.joints.angles
         return len(angles) >= 6
 
     # Wait for app to be ready first
@@ -124,49 +124,48 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
         ) from None
 
     # If we have valid angles and simulator is active, we're good
-    if _has_valid_angles() and robot_state.simulator_active:
+    if _has_valid_angles() and waldoctl.commander.status.simulator_active:
         return
 
     # Toggle simulator if needed
-    if not robot_state.simulator_active:
+    if not waldoctl.commander.status.simulator_active:
         user.find(marker="btn-robot-toggle").click()
         await asyncio.sleep(0.1)
 
     # Wait for simulator_active flag to be set by the toggle handler
     for _ in range(int(timeout_s / 0.1)):
-        if robot_state.simulator_active and _has_valid_angles():
+        if waldoctl.commander.status.simulator_active and _has_valid_angles():
             return
         await asyncio.sleep(0.1)
 
     if not _has_valid_angles():
         raise TimeoutError(
             f"enable_sim: No valid angles after waiting. "
-            f"simulator_active={robot_state.simulator_active}, "
-            f"angles={robot_state.angles}"
+            f"simulator_active={waldoctl.commander.status.simulator_active}, "
+            f"angles={waldoctl.commander.status.joints.angles}"
         )
 
 
 async def wait_for_tool_key(
-    robot_state,
     tool_key: str,
     timeout_s: float = 2.0,
 ) -> None:
-    """Wait for robot_state.tool_key to match expected value.
+    """Wait for waldoctl.commander.status.tool.key to match expected value.
 
     After calling client.select_tool(), the backend must broadcast a status
-    update before robot_state.tool_key reflects the change.
+    update before waldoctl.commander.status.tool.key reflects the change.
 
     Raises:
         TimeoutError: If tool_key doesn't match within timeout
     """
     interval = 0.05
     for _ in range(int(timeout_s / interval)):
-        if robot_state.tool_key == tool_key:
+        if waldoctl.commander.status.tool.key == tool_key:
             return
         await asyncio.sleep(interval)
     raise TimeoutError(
         f"tool_key did not become '{tool_key}' within {timeout_s}s, "
-        f"still '{robot_state.tool_key}'"
+        f"still '{waldoctl.commander.status.tool.key}'"
     )
 
 
@@ -221,14 +220,14 @@ async def wait_for_urdf_ready(timeout_s: float = 5.0) -> None:
 
 
 async def wait_for_motion_start(
-    robot_state,
     timeout_s: float = 5.0,
     require_detection: bool = True,
 ) -> bool:
     """Wait for motion to begin after a command is issued.
 
-    In the NiceGUI test environment, robot_state may not be updated from
-    STATUS messages because _status_consumer runs as a separate async task.
+    In the NiceGUI test environment, commander.status may not be updated from
+    STATUS messages immediately because _status_consumer runs as a separate
+    async task.
 
     This function:
     1. Records initial angles for comparison
@@ -237,7 +236,6 @@ async def wait_for_motion_start(
     4. Checks if any joint angle has changed from baseline
 
     Args:
-        robot_state: The RobotState instance to check
         timeout_s: Maximum time to wait. Default 5.0s, generous enough for
             slow CI runners (Windows in particular). Override for unit tests
             that intentionally check no-motion scenarios.
@@ -256,7 +254,11 @@ async def wait_for_motion_start(
     import time
 
     # Record initial state for comparison
-    initial_angles = list(robot_state.angles.deg) if len(robot_state.angles) > 0 else []
+    initial_angles = (
+        list(waldoctl.commander.status.joints.angles.deg)
+        if len(waldoctl.commander.status.joints.angles) > 0
+        else []
+    )
     start_time = time.time()
 
     # Brief delay to allow command to be sent
@@ -268,13 +270,13 @@ async def wait_for_motion_start(
         await asyncio.sleep(interval)
 
         # Check if action_state indicates motion
-        if robot_state.action_state == ActionState.EXECUTING:
+        if waldoctl.commander.status.action.state == ActionState.EXECUTING:
             return True
 
         # Check if timestamp updated since we started
-        if robot_state.last_update_ts > start_time:
+        if waldoctl.commander.status.last_update > start_time:
             # Check if any joint angle changed
-            current_angles = robot_state.angles.deg
+            current_angles = waldoctl.commander.status.joints.angles.deg
             if len(current_angles) >= 6 and initial_angles:
                 for i in range(min(6, len(current_angles), len(initial_angles))):
                     if abs(current_angles[i] - initial_angles[i]) > 0.01:
@@ -284,9 +286,9 @@ async def wait_for_motion_start(
     if require_detection:
         raise TimeoutError(
             f"wait_for_motion_start: No motion detected after {timeout_s}s. "
-            f"action_state={robot_state.action_state}, "
+            f"action_state={waldoctl.commander.status.action.state}, "
             f"initial_angles={initial_angles[:3] if initial_angles else []}, "
-            f"current_angles={list(robot_state.angles.deg[:3]) if len(robot_state.angles) > 0 else []}"
+            f"current_angles={list(waldoctl.commander.status.joints.angles.deg[:3]) if len(waldoctl.commander.status.joints.angles) > 0 else []}"
         )
 
     # Continue anyway and let wait_for_motion_stable handle detection
@@ -327,14 +329,13 @@ async def wait_for_value_change(
     )
 
 
-async def ensure_robot_ready_for_motion(robot_state, timeout_s: float = 5.0) -> None:
+async def ensure_robot_ready_for_motion(timeout_s: float = 5.0) -> None:
     """Validate robot state is ready for motion testing.
 
     This is a comprehensive check that should be called after enable_sim()
     to ensure all prerequisites for motion commands are met.
 
     Args:
-        robot_state: The RobotState instance to check
         timeout_s: Maximum time to wait for app_ready
 
     Raises:
@@ -355,17 +356,20 @@ async def ensure_robot_ready_for_motion(robot_state, timeout_s: float = 5.0) -> 
         ) from None
 
     # Validate angles
-    angles = robot_state.angles
+    angles = waldoctl.commander.status.joints.angles
     assert len(angles) >= 6, (
         f"ensure_robot_ready_for_motion: Invalid angles. "
         f"Expected >=6 elements, got: {len(angles)}"
     )
 
     # Validate motion mode is active
-    assert robot_state.simulator_active or robot_state.connected, (
+    assert (
+        waldoctl.commander.status.simulator_active
+        or waldoctl.commander.status.connected
+    ), (
         "ensure_robot_ready_for_motion: No motion mode active. "
-        f"simulator_active={robot_state.simulator_active}, "
-        f"connected={robot_state.connected}"
+        f"simulator_active={waldoctl.commander.status.simulator_active}, "
+        f"connected={waldoctl.commander.status.connected}"
     )
 
 

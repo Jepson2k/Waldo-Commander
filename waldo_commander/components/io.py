@@ -1,11 +1,12 @@
 import logging
 from functools import partial
 
+import waldoctl
 from nicegui import ui
 from waldoctl import RobotClient
 
 from waldo_commander.services.motion_recorder import motion_recorder
-from waldo_commander.state import robot_state, ui_state
+from waldo_commander.state import ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class IoPage:
         n_in = ui_state.active_robot.digital_inputs
         n_out = ui_state.active_robot.digital_outputs
 
+        io = waldoctl.commander.status.io
         with ui.column().classes("gap-2"):
             # Input rows + E-STOP
             with ui.row().classes("items-center gap-4"):
@@ -38,8 +40,8 @@ class IoPage:
                     (
                         ui.label(f"INPUT {i + 1}: -")
                         .bind_text_from(
-                            robot_state,
-                            "io_inputs",
+                            io,
+                            "inputs",
                             backward=lambda v, j=i: (
                                 f"INPUT {j + 1}: {v[j] if len(v) > j else '-'}"
                             ),
@@ -49,8 +51,8 @@ class IoPage:
                 (
                     ui.label("ESTOP: unknown")
                     .bind_text_from(
-                        robot_state,
-                        "io_estop",
+                        io,
+                        "estop",
                         backward=lambda v: f"ESTOP: {'OK' if v else 'TRIGGERED'}",
                     )
                     .classes("text-sm")
@@ -64,8 +66,8 @@ class IoPage:
                     (
                         ui.label(f"OUTPUT {i + 1}: -")
                         .bind_text_from(
-                            robot_state,
-                            "io_outputs",
+                            io,
+                            "outputs",
                             backward=lambda v, j=i: (
                                 f"OUTPUT {j + 1}: {v[j] if len(v) > j else '-'}"
                             ),

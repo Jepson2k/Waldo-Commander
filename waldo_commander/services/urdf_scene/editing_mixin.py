@@ -15,6 +15,7 @@ import math
 from typing import Any
 
 import numpy as np
+import waldoctl
 from nicegui import ui
 
 from waldo_commander.common.theme import SceneColors
@@ -121,7 +122,7 @@ class EditingMixin:
         """Enter editing mode at specified joint angles."""
         n = len(self.joint_names)
         # Save current angles for restoration
-        self._pre_edit_angles = list(robot_state.angles.rad[:n])
+        self._pre_edit_angles = list(waldoctl.commander.status.joints.angles.rad[:n])
 
         # Set editing angles (pad or truncate to joint count)
         self._editing_angles = list(joint_angles) + [0.0] * (n - len(joint_angles))
@@ -132,7 +133,7 @@ class EditingMixin:
         self._joint_ring_touched = False
         self._editing_rotation_set = False
 
-        robot_state.editing_mode = True
+        waldoctl.commander.status.editing_mode = True
         self.set_appearance_mode(RobotAppearanceMode.EDITING)
         self._apply_joint_angles(self._editing_angles)
 
@@ -156,7 +157,7 @@ class EditingMixin:
 
         self._apply_joint_angles(self._pre_edit_angles)
 
-        if robot_state.simulator_active:
+        if waldoctl.commander.status.simulator_active:
             self.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
         else:
             self.set_appearance_mode(RobotAppearanceMode.LIVE)
@@ -166,7 +167,7 @@ class EditingMixin:
         self._joint_controls_suspended = False
         self._editing_rotation_set = False
 
-        robot_state.editing_mode = False
+        waldoctl.commander.status.editing_mode = False
 
         # Snap TCP ball back to robot's live position
         self.invalidate_fk_cache()
@@ -512,7 +513,7 @@ class EditingMixin:
             # Editing existing target — convert to move_j in place
             target = self._find_target_by_id(self._editing_target_id)
             n = len(self.joint_names)
-            angles_deg = list(robot_state.angles.deg[:n])
+            angles_deg = list(waldoctl.commander.status.joints.angles.deg[:n])
             if target:
                 pose = target.pose
                 ui_state.editor_panel.sync_code_from_target(
@@ -620,9 +621,9 @@ class EditingMixin:
             )
 
             if show_joints:
-                # Use pre-computed degrees from robot_state (synced from editing angles)
+                # Use pre-computed degrees from commander.status (synced from editing angles)
                 n = len(self.joint_names)
-                angles_deg = list(robot_state.angles.deg[:n])
+                angles_deg = list(waldoctl.commander.status.joints.angles.deg[:n])
                 orig_deg = self._original_editing_joints or [0.0] * n
                 for i, angle in enumerate(angles_deg):
                     delta = angle - orig_deg[i]
@@ -680,8 +681,11 @@ class EditingMixin:
     # -------------------------------------------------------------------------
 
     def _find_target_by_id(self, target_id: str) -> ProgramTarget | None:
-        """Find a target by ID in simulation_state.targets."""
-        for t in simulation_state.targets:
+        """Find a target by ID in the active program's dry-run targets."""
+        active = waldoctl.commander.programs.active
+        if active is None:
+            return None
+        for t in active.dry_run.targets:
             if t.id == target_id:
                 return t
         return None
@@ -689,8 +693,8 @@ class EditingMixin:
     def _get_robot_angles_rad(self) -> list[float]:
         """Get robot angles in radians."""
         n = len(self.joint_names)
-        if len(robot_state.angles) >= n:
-            return list(robot_state.angles.rad[:n])
+        if len(waldoctl.commander.status.joints.angles) >= n:
+            return list(waldoctl.commander.status.joints.angles.rad[:n])
         return [0.0] * n
 
     def _get_current_tcp_z(self) -> float | None:
@@ -701,19 +705,19 @@ class EditingMixin:
         return float(fk[2]) if fk is not None else None
 
     def _get_editing_tcp_pose(self) -> list[float] | None:
-        """Get TCP pose from robot_state (already synced from editing angles).
+        """Get TCP pose from commander.status (already synced from editing angles).
 
         Returns [x, y, z, rx, ry, rz] with position in meters and rotation in degrees.
         """
         # Subtract tool offset since sync adds it to z
         offset = self._current_tool_offset_z
         return [
-            robot_state.x / 1000,  # mm -> m
-            robot_state.y / 1000,
-            (robot_state.z / 1000) - offset,
-            robot_state.rx,
-            robot_state.ry,
-            robot_state.rz,
+            waldoctl.commander.status.pose.x / 1000,  # mm -> m
+            waldoctl.commander.status.pose.y / 1000,
+            (waldoctl.commander.status.pose.z / 1000) - offset,
+            waldoctl.commander.status.pose.rx,
+            waldoctl.commander.status.pose.ry,
+            waldoctl.commander.status.pose.rz,
         ]
 
     def _add_target_with_pose(self, pose: list[float], move_type: str) -> None:
@@ -736,38 +740,48 @@ class EditingMixin:
                 move_type=move_type,
                 scene_object_id="",
             )
-            simulation_state.targets.append(new_target)
+            active = waldoctl.commander.programs.active
+            if active is not None:
+                active.dry_run.targets = [*active.dry_run.targets, new_target]
             simulation_state.notify_changed()
 
     def _insert_joint_target_from_editing(self) -> None:
         """Insert joint target code."""
-        # Use pre-computed degrees from robot_state (synced from editing angles)
+        # Use the live joint angles from commander.status (synced from editing).
         n = len(self.joint_names)
-        ui_state.editor_panel.add_joint_target_code(list(robot_state.angles.deg[:n]))
+        ui_state.editor_panel.add_joint_target_code(
+            list(waldoctl.commander.status.joints.angles.deg[:n])
+        )
 
     def _sync_robot_state_from_editing(self) -> None:
-        """Sync robot_state with editing values."""
-        if not robot_state.editing_mode:
+        """Sync ``commander.status`` joints/pose with the editing values."""
+        if not waldoctl.commander.status.editing_mode:
             return
 
         try:
             angles_rad = self.get_editing_angles()
-            robot_state.angles.set_rad(np.asarray(angles_rad))
+            waldoctl.commander.status.joints.angles.set_rad(np.asarray(angles_rad))
 
             if self._ik_solver:
                 fk = self._ik_solver.forward_kinematics(angles_rad)
                 if fk is not None:
                     offset = self._current_tool_offset_z
-                    robot_state.x = fk[0] * 1000
-                    robot_state.y = fk[1] * 1000
-                    robot_state.z = (fk[2] + offset) * 1000
+                    waldoctl.commander.status.pose.x = fk[0] * 1000
+                    waldoctl.commander.status.pose.y = fk[1] * 1000
+                    waldoctl.commander.status.pose.z = (fk[2] + offset) * 1000
                     if len(fk) >= 6:
                         # Set orientation from radians (computes degrees internally)
                         robot_state.orientation.set_rad(np.asarray(fk[3:6]))
                         # Also set scalar fields for UI binding
-                        robot_state.rx = robot_state.orientation.deg[0]
-                        robot_state.ry = robot_state.orientation.deg[1]
-                        robot_state.rz = robot_state.orientation.deg[2]
+                        waldoctl.commander.status.pose.rx = robot_state.orientation.deg[
+                            0
+                        ]
+                        waldoctl.commander.status.pose.ry = robot_state.orientation.deg[
+                            1
+                        ]
+                        waldoctl.commander.status.pose.rz = robot_state.orientation.deg[
+                            2
+                        ]
                     self._update_envelope_from_robot_state()
         except (TypeError, ValueError, AttributeError) as e:
             logger.debug("_sync_robot_state_from_editing failed: %s", e)
