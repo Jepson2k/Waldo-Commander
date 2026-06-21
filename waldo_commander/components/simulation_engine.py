@@ -133,7 +133,11 @@ class SimulationEngine:
         if error == UNCHANGED:
             return None
 
-        playback.on_simulation_complete()
+        # Gate to the active tab: a background tab's sim completing must not reset
+        # the on-screen tab's playback state (same rule as the tool-selection
+        # block below).
+        if tab is not None and tab.id == waldoctl.commander.programs.active_id:
+            playback.on_simulation_complete()
 
         # Apply initial tool selection from script to scene and controller —
         # only when this sim's program is the one on screen. A background tab's

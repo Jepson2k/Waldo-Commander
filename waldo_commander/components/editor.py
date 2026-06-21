@@ -477,16 +477,13 @@ class EditorPanel(FileOperationsMixin):
                 widgets["panel"].delete()
         ui_state.textareas_by_tab.pop(tab_id, None)
 
-    def _switch_to_tab(self, tab_id: str) -> None:
-        """Switch to a specific tab (blocked during recording/playback)."""
-
-        # Block tab switching during recording or playback
+    def _switch_blocked(self) -> bool:
+        """True (and notifies) when recording or active script playback should
+        block a tab switch or file open. Shared with file_operations.load_program
+        so the open() path is guarded before it mutates active_id."""
         if is_any_program_recording():
             ui.notify("Cannot switch tabs while recording", color="warning")
-            # Reset UI to current active tab since the click already changed it visually
-            if self.tabs_container and waldoctl.commander.programs.active_id:
-                self.tabs_container.set_value(waldoctl.commander.programs.active_id)
-            return
+            return True
         # The running script's play state lives on the launching program, which
         # may differ from the active tab (switching is allowed while paused), so
         # resolve the lock against launching_tab_id like playback.toggle_play.
@@ -499,6 +496,13 @@ class EditorPanel(FileOperationsMixin):
             lock_prog is not None and lock_prog.dry_run.playback.is_playing
         ):
             ui.notify("Cannot switch tabs during script playback", color="warning")
+            return True
+        return False
+
+    def _switch_to_tab(self, tab_id: str) -> None:
+        """Switch to a specific tab (blocked during recording/playback)."""
+        if self._switch_blocked():
+            # Reset UI to the active tab since the click already moved it visually.
             if self.tabs_container and waldoctl.commander.programs.active_id:
                 self.tabs_container.set_value(waldoctl.commander.programs.active_id)
             return
