@@ -183,18 +183,13 @@ async def initialize_urdf_scene() -> None:
             tool = r.tools[tool_key]
         except KeyError:
             return None
-        # Per-variant TCP overrides tool-level TCP
-        if variant_key is not None:
-            for v in tool.variants:
-                if v.key == variant_key and v.tcp_origin is not None:
-                    return ToolPose(
-                        origin=list(v.tcp_origin),
-                        rpy=list(v.tcp_rpy) if v.tcp_rpy else list(tool.tcp_rpy),
-                    )
-        return ToolPose(
-            origin=list(tool.tcp_origin),
-            rpy=list(tool.tcp_rpy),
+        # Resolve per-variant TCP, overriding origin and rpy independently (a
+        # variant that sets only tcp_rpy keeps its rotation — the old inline
+        # logic dropped it because it gated the whole override on tcp_origin).
+        origin, rpy = waldoctl.resolve_variant_tcp(
+            tool.tcp_origin, tool.tcp_rpy, tool.variants, variant_key
         )
+        return ToolPose(origin=list(origin), rpy=list(rpy))
 
     # Create UrdfScene config with all settings
     scene_config = UrdfSceneConfig(
@@ -576,7 +571,13 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
     for p in ui_state.plugin_panels:
         if p.slot is slot:
             with ui.tab_panel(p.id).classes("gap-2 overlay-card overflow-hidden"):
-                p.build(commander)
+                # A third-party plugin's build() must not blank the whole page;
+                # leave an empty-but-valid tab panel on failure (mirrors the
+                # init guard in _discover_plugin_panels).
+                try:
+                    p.build(commander)
+                except Exception as e:
+                    logger.warning("Plugin panel %s build failed: %s", p.id, e)
 
 
 def _build_left_panels(panels_wrap: ui.element) -> dict:
