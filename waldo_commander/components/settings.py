@@ -470,9 +470,17 @@ class SettingsContent:
         ids — disabled entries whose plugin is no longer installed — are
         stripped on each rebuild.
         """
+        from waldoctl.discovery import list_panels
+
         plugins = waldoctl.commander.settings.plugins
         discovered = iter_plugin_panels()
-        known_ids = {cls.id for cls in discovered}
+        # "Known" = loaded plugin ids plus every installed entry-point name, so a
+        # disabled plugin that is installed but currently fails to import keeps its
+        # disabled choice; only genuinely-uninstalled ids are purged. (ep.name and
+        # cls.id usually coincide; a broken plugin whose id differs from its
+        # entry-point name is the one residual gap — its id can't be read without
+        # importing it.)
+        known_ids = {cls.id for cls in discovered} | set(list_panels())
 
         stale = [pid for pid in plugins.disabled_panels if pid not in known_ids]
         if stale:
@@ -527,7 +535,11 @@ class SettingsContent:
             ui.label(panel.display_name).classes("text-sm font-medium").mark(
                 f"settings-plugin-{panel.id}-header"
             )
-            panel.build_settings(commander)
+            # A plugin's build_settings() must not break the whole settings page.
+            try:
+                panel.build_settings(commander)
+            except Exception as e:
+                logger.warning("Plugin %s build_settings failed: %s", panel.id, e)
 
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):
