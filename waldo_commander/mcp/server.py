@@ -2,8 +2,7 @@
 
 The server starts when ``commander.settings.mcp.enabled`` is True, runs
 as a background coroutine on WC's NiceGUI event loop, and shuts down
-cleanly on app teardown. ``allow_motion`` is consulted per-call inside
-the motion tools, not here, so flipping it doesn't need a restart.
+cleanly on app teardown.
 
 The FastMCP instance is module-global so the tool modules can import it
 and register tools at module import time. The instance is constructed

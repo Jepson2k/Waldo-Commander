@@ -484,8 +484,7 @@ class SettingsContent:
         """MCP server controls.
 
         ``enabled``, ``host``, and ``port`` bind at server start, so we notify
-        "Restart to apply" when those change. ``allow_motion`` is consulted
-        per-tool-call, so it takes effect live. On a trusted LAN the server
+        "Restart to apply" when those change. On a trusted LAN the server
         runs over plain HTTP with no auth — single-controller arbitration is
         the control lease (take_control), not a token.
         """
@@ -521,10 +520,6 @@ class SettingsContent:
             ng_app.storage.general["mcp/port"] = port
             ui.notify("Restart to apply", color="info")
 
-        def _on_allow_motion_change(e):
-            mcp.allow_motion = bool(e.value)
-            ng_app.storage.general["mcp/allow_motion"] = mcp.allow_motion
-
         with _setting_row(
             "MCP server", "Expose commander.* to an MCP client (restart to apply)"
         ):
@@ -543,13 +538,6 @@ class SettingsContent:
             ui.number(value=mcp.port, min=1, max=65535).classes("w-24").props(
                 "dense"
             ).on("change", _on_port_change).mark("settings-mcp-port")
-
-        with _setting_row(
-            "Allow motion via MCP", "When off, motion tools refuse cleanly"
-        ):
-            ui.switch(value=mcp.allow_motion, on_change=_on_allow_motion_change).props(
-                "dense"
-            ).mark("settings-mcp-allow-motion")
 
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):

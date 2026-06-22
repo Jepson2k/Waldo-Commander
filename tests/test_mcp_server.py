@@ -75,26 +75,33 @@ async def test_settings_tool_writes_propagate(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_motion_tool_refuses_when_allow_motion_off(user: User) -> None:
-    """When the user disables motion, every motion tool raises cleanly
-    without touching the controller. FastMCP surfaces tool-side
-    exceptions as ``ToolError`` on the client side; the message must
-    mention the gating flag so the LLM can see what to fix."""
+async def test_hardware_motion_needs_session_consent(user: User) -> None:
+    """In hardware mode the first real move of an MCP session is refused until a
+    human grants consent in the GUI; the refusal (a ``ToolError`` on the client
+    side) tells the LLM to approve the prompt and retry."""
     from fastmcp.exceptions import ToolError
+
+    from waldo_commander.services.control_lease import control_lease
 
     await user.open("/")
     await wait_for_app_ready()
 
     mcp = get_mcp()
-    waldoctl.commander.settings.mcp.allow_motion = False
+    waldoctl.commander.status.simulator_active = False  # real hardware
     try:
         async with Client(mcp) as client:
-            with pytest.raises(ToolError, match="allow_motion"):
+            # Hold the lease first so the consent gate (not the lease) is the
+            # blocker.
+            await client.call_tool("control.take_control")
+            # Refused with a consent/approve-the-prompt message (the exact text
+            # depends on whether a live GUI page is connected to prompt on).
+            with pytest.raises(ToolError, match="consent|prompt"):
                 await client.call_tool(
                     "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
                 )
     finally:
-        waldoctl.commander.settings.mcp.allow_motion = True
+        waldoctl.commander.status.simulator_active = True
+        control_lease.reset()
 
 
 @pytest.mark.integration

@@ -299,7 +299,7 @@ class PlaybackController:
 
         ``control_verified`` lets a caller that has already confirmed it holds
         the control lease (e.g. the MCP ``simulation.play_pause`` tool, after
-        ``require_mcp_control()``) start playback without re-running the
+        ``require_actuation()``) start playback without re-running the
         browser-side gate — which would refuse, since the lease is held by MCP,
         not the browser. The GUI button leaves it False and gates as before.
         """

@@ -1,8 +1,8 @@
 """MCP tools for direct motion commands — ``commander.client.*``.
 
-Every **actuating** tool here passes :func:`require_motion_allowed` — the live
-``commander.settings.mcp.allow_motion`` toggle (flippable from WC's Settings
-without a restart) plus the single-controller lease. The deliberately ungated
+Every **actuating** tool here passes :func:`require_actuation` — the
+single-controller lease, plus a one-time per-session human consent in the GUI
+when driving real hardware (skipped in simulator mode). The deliberately ungated
 tools are ``halt`` (stopping is always safe) and ``wait_motion`` (passive).
 
 These wrappers are deliberately a flat subset of the full client surface: the
@@ -18,7 +18,7 @@ import waldoctl
 from waldoctl.types import Axis, Frame
 
 from waldo_commander.mcp.server import get_mcp
-from waldo_commander.mcp.tools.control import require_motion_allowed
+from waldo_commander.mcp.tools.control import require_actuation
 
 mcp = get_mcp()
 
@@ -46,7 +46,7 @@ async def move_j(
     wait: bool = False,
 ) -> int:
     """Joint-space move to ``angles`` (degrees). Returns the command index."""
-    require_motion_allowed()
+    require_actuation()
     return _dispatched(
         await waldoctl.commander.client.move_j(
             angles, speed=speed, accel=accel, wait=wait
@@ -64,7 +64,7 @@ async def move_l(
     wait: bool = False,
 ) -> int:
     """Linear Cartesian move to ``pose = [x,y,z,rx,ry,rz]`` (mm, deg)."""
-    require_motion_allowed()
+    require_actuation()
     return _dispatched(
         await waldoctl.commander.client.move_l(
             pose, frame=frame, speed=speed, accel=accel, wait=wait
@@ -76,14 +76,14 @@ async def move_l(
 @mcp.tool(name="motion.home")
 async def home(wait: bool = False) -> int:
     """Move to the robot's home position."""
-    require_motion_allowed()
+    require_actuation()
     return _dispatched(await waldoctl.commander.client.home(wait=wait), "home")
 
 
 @mcp.tool(name="motion.jog_j")
 async def jog_j(joint: int, speed: float, duration: float = 0.1) -> int:
     """Velocity jog one joint for ``duration`` seconds."""
-    require_motion_allowed()
+    require_actuation()
     return _dispatched(
         await waldoctl.commander.client.jog_j(joint, speed, duration), "jog_j"
     )
@@ -97,7 +97,7 @@ async def jog_l(
     duration: float = 0.1,
 ) -> int:
     """Velocity jog one Cartesian axis for ``duration`` seconds."""
-    require_motion_allowed()
+    require_actuation()
     return _dispatched(
         await waldoctl.commander.client.jog_l(frame, axis, speed, duration), "jog_l"
     )
@@ -107,8 +107,8 @@ async def jog_l(
 async def halt() -> int:
     """Immediate stop — halt all motion and disable.
 
-    Deliberately ungated: stopping is always safe, so ``halt`` works even when
-    ``allow_motion`` is False (it and ``wait_motion`` are the exceptions).
+    Deliberately ungated: stopping is always safe, so ``halt`` needs no lease or
+    consent (it and ``wait_motion`` are the exceptions).
     """
     return _dispatched(await waldoctl.commander.client.halt(), "halt")
 
@@ -116,7 +116,7 @@ async def halt() -> int:
 @mcp.tool(name="motion.resume")
 async def resume() -> int:
     """Re-enable the robot after halt / e-stop."""
-    require_motion_allowed()
+    require_actuation()
     return _dispatched(await waldoctl.commander.client.resume(), "resume")
 
 

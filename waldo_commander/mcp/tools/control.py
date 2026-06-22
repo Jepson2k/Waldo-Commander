@@ -10,9 +10,17 @@ from __future__ import annotations
 
 import waldoctl
 from fastmcp.server.dependencies import get_context
+from nicegui import Client
 
 from waldo_commander.mcp.server import get_mcp
-from waldo_commander.services.control_lease import MCP, control_lease
+from waldo_commander.services.control_lease import (
+    MCP,
+    arm_consent_prompt,
+    control_lease,
+    reset_consent,
+    session_consented,
+)
+from waldo_commander.state import ui_state
 
 mcp = get_mcp()
 
@@ -27,11 +35,11 @@ def _label(session_id: str) -> str:
     return f"MCP session {session_id[:8]}"
 
 
-def require_mcp_control() -> None:
-    """Gate an actuation tool on holding the control lease.
+def require_control() -> None:
+    """Gate an action on holding the control lease (no hardware-motion consent).
 
-    Implicitly acquires a free lease (the first actuation claims it); refuses if
-    a different live holder has it — the caller must ``take_control`` to seize.
+    Implicitly acquires a free lease (the first action claims it); refuses if a
+    different live holder has it — the caller must ``take_control`` to seize.
     """
     sid = _session_id()
     if control_lease.held_by(MCP, sid):
@@ -46,18 +54,37 @@ def require_mcp_control() -> None:
     )
 
 
-def require_motion_allowed() -> None:
-    """Full actuation gate: the live ``allow_motion`` safety toggle plus the
-    control lease. Used by every tool that physically moves the arm — direct
-    motion verbs and program execution alike — so the user's "Allow motion via
-    MCP" switch covers all of them, not just the motion.* namespace.
+def require_session_consent() -> None:
+    """Gate the first hardware (non-simulator) move of an MCP session on a
+    one-time human acknowledgement in the GUI.
+
+    Un-consented moves are refused and a prompt is armed; the user approves it
+    and the client retries. Refused outright when no GUI page is connected — no
+    one could consent, so a hardware-affecting action must not proceed.
     """
-    if not waldoctl.commander.settings.mcp.allow_motion:
+    sid = _session_id()
+    if session_consented(sid):
+        return
+    cid = ui_state.active_client_id
+    client = Client.instances.get(cid) if cid else None
+    if client is None or client._deleted:
         raise PermissionError(
-            "motion is disabled in WC's MCP settings "
-            "(commander.settings.mcp.allow_motion = False)"
+            "open the Waldo-Commander GUI and approve the hardware-motion prompt first"
         )
-    require_mcp_control()
+    arm_consent_prompt(sid, _label(sid))
+    raise PermissionError(
+        "first hardware move of this session needs GUI consent — approve the "
+        "prompt in Waldo-Commander, then retry"
+    )
+
+
+def require_actuation() -> None:
+    """Full actuation gate: the control lease always, plus per-session consent
+    when driving real hardware. In simulator mode only the lease is required
+    (sim playback is an informal handoff, not safety-critical)."""
+    require_control()
+    if not waldoctl.commander.status.simulator_active:
+        require_session_consent()
 
 
 @mcp.tool(name="control.take_control")
@@ -75,8 +102,10 @@ async def take_control() -> dict:
 
 @mcp.tool(name="control.release_control")
 async def release_control() -> dict:
-    """Release the lease if this MCP session holds it."""
-    control_lease.release(MCP, _session_id())
+    """Release the lease if this MCP session holds it (and clear its consent)."""
+    sid = _session_id()
+    control_lease.release(MCP, sid)
+    reset_consent(sid)
     return {"holder": control_lease.describe(), "you_hold_it": False}
 
 

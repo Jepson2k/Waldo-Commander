@@ -1,10 +1,10 @@
 """Browser (screen-fixture) test for the control-lease indicator UI.
 
 Covers the real-DOM behavior the ``user``-fixture tests can't: when an MCP
-session holds control the active browser shows a take-control banner, and the
-human's "Take control" click reclaims control and hides it again. The lease
-singleton is shared between the in-process app and the test, so the test plays
-the MCP side by seizing the lease directly.
+session holds control the active browser shows the amber AI-driving glow and an
+edge Take-control button, and the human's "Take control" click reclaims control
+and hides them again. The lease singleton is shared between the in-process app
+and the test, so the test plays the MCP side by seizing the lease directly.
 """
 
 from __future__ import annotations
@@ -39,27 +39,24 @@ def test_control_lease_indicator_and_take_control(screen: "Screen") -> None:
         # before touching the DOM (racing the control-panel build is what flaked
         # this on a slow runner). Mirrors the other screen tests.
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        # Control panel (and its lease banner) rendered.
-        assert screen_wait_for_element(screen, ".control-lease-indicator", 10.0)
+        # Control panel built (the AI-driving glow element exists in the DOM).
+        assert screen_wait_for_element(screen, ".control-lease-glow", 10.0)
         # Clear the startup tutorial dialog so its backdrop doesn't swallow clicks.
         dismiss_dialogs(screen)
 
-        # Default holder: the active browser tab is in control → banner hidden.
-        assert screen_wait_for_element_hidden(screen, ".control-lease-indicator", 5.0)
+        # Default holder: the active browser tab is in control → glow hidden.
+        assert screen_wait_for_element_hidden(screen, ".control-lease-glow", 5.0)
         assert control_lease.held_by(BROWSER, ui_state.active_client_id)
 
         # An MCP session seizes control. The 1 Hz active-tab loop (check_ping)
-        # refreshes the indicator, so the banner appears within ~1s.
+        # refreshes the indicator, so the glow + Take-control button appear ~1s.
         control_lease.seize(MCP, "screen-mcp", "MCP session screen-m")
-        assert screen_wait_for_element_visible(screen, ".control-lease-indicator", 5.0)
-        banner = screen.selenium.find_element(
-            By.CSS_SELECTOR, ".control-lease-indicator"
-        )
-        assert "controlling the robot" in banner.text
+        assert screen_wait_for_element_visible(screen, ".control-lease-glow", 5.0)
+        assert screen_wait_for_element_visible(screen, ".btn-take-control", 5.0)
 
-        # Human presses Take control → browser reclaims, banner hides again.
+        # Human presses Take control → browser reclaims, glow hides again.
         screen.selenium.find_element(By.CSS_SELECTOR, ".btn-take-control").click()
-        assert screen_wait_for_element_hidden(screen, ".control-lease-indicator", 5.0)
+        assert screen_wait_for_element_hidden(screen, ".control-lease-glow", 5.0)
         assert control_lease.held_by(BROWSER, ui_state.active_client_id)
     finally:
         control_lease.reset()

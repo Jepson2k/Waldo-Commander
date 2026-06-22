@@ -29,6 +29,9 @@ from waldo_commander.components.settings import SettingsContent
 from waldo_commander.services.control_lease import (
     BROWSER,
     control_lease,
+    deny_consent,
+    grant_consent,
+    pending_consents,
     require_browser_control,
 )
 from waldo_commander.services.motion_recorder import motion_recorder
@@ -580,10 +583,14 @@ class ControlPanel:
         self.client = client
         self._ui_client: Any = None  # NiceGUI client for background task UI ops
 
-        # Control-lease indicator (shown only when another controller — an
-        # MCP/AI session — holds the lease; offers a Take-control button).
-        self._control_indicator_row: ui.row | None = None
-        self._control_indicator_label: ui.label | None = None
+        # Control-lease indicator (glow + edge Take-control button + consent
+        # dialog), built lazily in _build_control_indicator; shown only when an
+        # MCP/AI session holds the lease.
+        self._control_glow: ui.element | None = None
+        self._take_control_btn: ui.button | None = None
+        self._consent_dialog: ui.dialog | None = None
+        self._consent_label: ui.label | None = None
+        self._consent_sid: str | None = None
 
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
@@ -1003,54 +1010,98 @@ class ControlPanel:
     # ---- Control-lease indicator ----
 
     def _build_control_indicator(self) -> None:
-        """Compact banner shown only when another controller (an MCP/AI session)
-        holds the control lease. Names the holder and offers a Take-control
-        button so the human can seize control back. Hidden while this browser
-        tab holds control (or no one does)."""
-        row = (
-            ui.row()
-            .classes(
-                "control-lease-indicator items-center gap-2 w-full px-2 py-1 "
-                "rounded-md bg-amber-500/15 border border-amber-500/30"
+        """Page-perimeter amber glow + an edge Take-control button, shown only
+        while another controller (an MCP/AI session) holds the lease, plus the
+        per-session hardware-motion consent dialog. Driven by the 1 Hz ping."""
+        # Ambient amber glow around the viewport while an AI session drives.
+        self._control_glow = (
+            ui.element("div")
+            .style(
+                "position:fixed; inset:0; pointer-events:none; z-index:9998; "
+                "box-shadow: inset 0 0 0 3px rgb(245 158 11 / 0.55), "
+                "inset 0 0 36px rgb(245 158 11 / 0.22);"
             )
-            .mark("control-lease-indicator")
+            .mark("control-lease-glow")
         )
-        self._control_indicator_row = row
-        with row:
-            ui.icon("smart_toy").classes("text-amber-600 text-base")
-            self._control_indicator_label = ui.label("").classes(
-                "text-xs text-amber-700 dark:text-amber-300 flex-grow truncate"
-            )
-            ui.button("Take control", on_click=self._take_control).props(
-                "dense flat color=amber"
-            ).classes("btn-take-control").mark("btn-take-control")
-        row.set_visibility(False)
+        self._control_glow.set_visibility(False)
+        # Always-visible (when an AI holds) edge Take-control button.
+        self._take_control_btn = (
+            ui.button("Take control", icon="smart_toy", on_click=self._take_control)
+            .props("dense color=amber")
+            .classes("btn-take-control")
+            .style("position:fixed; top:8px; right:8px; z-index:9999;")
+            .mark("btn-take-control")
+        )
+        self._take_control_btn.set_visibility(False)
+        # Per-session hardware-motion consent dialog.
+        with ui.dialog() as dlg, ui.card().classes("gap-2"):
+            ui.label("Allow AI to move the robot?").classes("text-base font-medium")
+            self._consent_label = ui.label("").classes("text-sm")
+            ui.label(
+                "An AI session is requesting its first real hardware move. Make "
+                "sure the workspace is clear before allowing."
+            ).classes("text-xs text-amber-700 dark:text-amber-300")
+            with ui.row().classes("justify-end w-full gap-2"):
+                ui.button("Deny", on_click=lambda: self._resolve_consent(False)).props(
+                    "flat"
+                ).mark("btn-consent-deny")
+                ui.button("Allow", on_click=lambda: self._resolve_consent(True)).props(
+                    "color=amber"
+                ).mark("btn-consent-allow")
+        self._consent_dialog = dlg
+        self._consent_sid: str | None = None
 
-    def _take_control(self) -> None:
-        """Explicitly seize the control lease for this browser tab — the
-        'anyone can seize, always visible' handoff, overriding a live MCP
-        holder."""
+    async def _take_control(self) -> None:
+        """Hard reclaim: seize the lease for this browser tab and halt any motion
+        the AI started (stopping is always safe)."""
         cid = ui_state.active_client_id
         if cid is None:
             return
         control_lease.seize(BROWSER, cid, "Browser")
+        try:
+            await waldoctl.commander.client.halt()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("take_control halt failed: %s", e)
         self.refresh_control_indicator()
-        ui.notify("You're in control of the robot", color="positive")
+        ui.notify("You're in control — robot halted", color="positive")
 
     def refresh_control_indicator(self) -> None:
-        """Show/hide the indicator based on who holds the lease. Driven by the
-        1 Hz active-tab ping loop (``main.check_ping``)."""
-        row = self._control_indicator_row
-        label = self._control_indicator_label
-        if row is None or label is None:
+        """Show/hide the AI-driving glow + Take-control button and surface any
+        pending hardware-motion consent prompt. Driven by the 1 Hz ping loop."""
+        glow = getattr(self, "_control_glow", None)
+        btn = getattr(self, "_take_control_btn", None)
+        if glow is None or btn is None:
             return
         h = control_lease.holder()
         other = h is not None and not control_lease.held_by(
             BROWSER, ui_state.active_client_id or ""
         )
-        if other and h is not None:
-            label.text = f"{h.label} is controlling the robot"
-        row.set_visibility(other)
+        glow.set_visibility(other)
+        btn.set_visibility(other)
+
+        dlg = self._consent_dialog
+        if dlg is not None and self._consent_sid is None:
+            pend = pending_consents()
+            if pend:
+                sid, label = next(iter(pend.items()))
+                self._consent_sid = sid
+                if self._consent_label is not None:
+                    self._consent_label.text = f"{label} wants to move the robot."
+                dlg.open()
+
+    def _resolve_consent(self, granted: bool) -> None:
+        sid = self._consent_sid
+        self._consent_sid = None
+        if self._consent_dialog is not None:
+            self._consent_dialog.close()
+        if sid is None:
+            return
+        if granted:
+            grant_consent(sid)
+            ui.notify("Hardware motion allowed for this AI session", color="positive")
+        else:
+            deny_consent(sid)
+            ui.notify("Hardware motion denied", color="warning")
 
     # ---- Joint jog methods ----
 

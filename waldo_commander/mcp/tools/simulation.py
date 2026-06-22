@@ -17,7 +17,7 @@ from nicegui import Client
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.mcp.server import get_mcp
-from waldo_commander.mcp.tools.control import require_mcp_control
+from waldo_commander.mcp.tools.control import require_actuation, require_control
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import ui_state
 
@@ -44,12 +44,16 @@ async def set_simulator(enabled: bool) -> dict:
     """Switch the controller between simulator and real-hardware mode.
 
     Mirrors the GUI's robot/sim toggle: stops any running script first (safety),
-    flips the backend, and re-enables. Requires holding the control lease.
+    flips the backend, and re-enables. A mode switch, not an actuation — needs
+    only the control lease.
     """
-    require_mcp_control()
+    require_control()
     client = waldoctl.commander.client
     if is_any_program_running():
-        await script_exec.stop()
+        # stop()'s ui.notify needs a client context (this runs in the MCP
+        # background task, which has none of its own).
+        with _page_client():
+            await script_exec.stop()
     await client.simulator(enabled)
     waldoctl.commander.status.simulator_active = enabled
     await client.resume()
@@ -72,21 +76,22 @@ async def play_pause() -> dict:
     """Toggle play/pause (mirrors the GUI play button).
 
     Controls the live script when one is running, otherwise the dry-run preview
-    timeline. Requires holding the control lease.
+    timeline. Sim-aware gate: lease-only in simulator mode, lease + hardware
+    consent otherwise (in hardware mode this can launch a real program move).
     """
-    require_mcp_control()
+    require_actuation()
     with _page_client():
-        # require_mcp_control() above is the lease gate; tell toggle_play the
-        # caller already holds control so its browser-side gate doesn't refuse
-        # (the lease is held by MCP, not the browser).
+        # require_actuation() above is the gate; tell toggle_play the caller
+        # already holds control so its browser-side gate doesn't refuse (the
+        # lease is held by MCP, not the browser).
         await playback.toggle_play(control_verified=True)
     return await get_mode()
 
 
 @mcp.tool(name="simulation.step")
 async def step() -> dict:
-    """Step forward one segment (mirrors the GUI step button). Requires control."""
-    require_mcp_control()
+    """Step forward one segment (mirrors the GUI step button)."""
+    require_actuation()
     with _page_client():
         playback.step_forward()
     return await get_mode()

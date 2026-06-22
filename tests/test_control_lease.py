@@ -131,8 +131,8 @@ async def test_mcp_blocked_while_browser_holds_then_take_control(user: User) -> 
 
 
 def test_browser_try_acquire(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The browser gate: claim a free lease, transfer between browser tabs, but
-    never steal from a live MCP holder."""
+    """The browser gate: claim a free lease, transfer between browser tabs, and
+    soft-reclaim from a live MCP holder (human actuation always seizes)."""
     control_lease.reset()
     # Make "b1"/"b2" look like live nicegui clients so the browser holder isn't
     # treated as stale.
@@ -147,10 +147,11 @@ def test_browser_try_acquire(monkeypatch: pytest.MonkeyPatch) -> None:
         assert browser_try_acquire("b2") is True
         assert control_lease.held_by(BROWSER, "b2")
         assert not control_lease.held_by(BROWSER, "b1")
-        # A live MCP holder is never stolen from by a passive browser claim.
+        # Soft reclaim: a browser claim seizes even from a live MCP holder.
         control_lease.seize(MCP, "s1", "MCP s1")
-        assert browser_try_acquire("b1") is False
-        assert control_lease.held_by(MCP, "s1")
+        assert browser_try_acquire("b1") is True
+        assert control_lease.held_by(BROWSER, "b1")
+        assert not control_lease.held_by(MCP, "s1")
         # No client id (pre-init / headless) never blocks.
         assert browser_try_acquire(None) is True
     finally:
@@ -160,7 +161,7 @@ def test_browser_try_acquire(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.integration
 async def test_browser_is_default_holder_and_can_reclaim(user: User) -> None:
     """The active browser tab holds control by default; an MCP session can seize
-    it, and the human reclaims it explicitly (the Take-control handoff)."""
+    it, and the human reclaims it by just driving (soft reclaim)."""
     await user.open("/")
     await wait_for_app_ready()
 
@@ -172,15 +173,15 @@ async def test_browser_is_default_holder_and_can_reclaim(user: User) -> None:
     mcp = get_mcp()
     try:
         async with Client(mcp) as client:
-            # MCP seizes → the browser loses control and won't steal it back
-            # passively (only the explicit Take-control button does).
+            # MCP seizes → the browser loses control.
             await client.call_tool("control.take_control")
             assert not control_lease.held_by(BROWSER, browser_id)
-            assert browser_try_acquire(browser_id) is False
 
-            # Human presses Take control → browser reclaims; MCP is now refused.
-            control_lease.seize(BROWSER, browser_id, "Browser")
+            # Soft reclaim: the human just starts driving (browser_try_acquire is
+            # the per-action browser gate) and seizes back from the AI.
+            assert browser_try_acquire(browser_id) is True
             assert control_lease.held_by(BROWSER, browser_id)
+            # The AI is now refused until it takes control again.
             with pytest.raises(ToolError, match="controlled by"):
                 await client.call_tool(
                     "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
