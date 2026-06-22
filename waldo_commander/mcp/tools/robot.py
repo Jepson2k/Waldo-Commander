@@ -33,7 +33,8 @@ async def get_capabilities() -> dict:
             {
                 "key": s.key,
                 "display_name": s.display_name,
-                "tool_type": str(s.tool_type),
+                # .value, not str(): str(ToolType.GRIPPER) is "ToolType.GRIPPER"
+                "tool_type": s.tool_type.value,
             }
             for s in r.tools.available
         ],

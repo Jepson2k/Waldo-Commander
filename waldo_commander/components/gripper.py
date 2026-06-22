@@ -351,6 +351,10 @@ class GripperPage:
         if now - self._last_slider_send < self._slider_interval:
             return
         self._last_slider_send = now
+        # Gate before mutating: don't move the target_position setting / mark
+        # lines when an MCP session holds the lease and the action is refused.
+        if not self._can_actuate():
+            return
         value = e.value
         pos = value / 100.0
         waldoctl.commander.settings.gripper.target_position = pos
