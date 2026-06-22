@@ -556,7 +556,15 @@ class SettingsContent:
 
             return _handler
 
+        # Function-level import avoids a settings<-main import cycle.
+        from waldo_commander.main import _RESERVED_TAB_IDS
+
         for cls in discovered:
+            # Skip panels that can never mount (id collides with a core tab) — a
+            # toggle for them would be a no-op. (applies_to() is context-dependent
+            # — a panel that doesn't apply to this robot still gets a toggle.)
+            if cls.id in _RESERVED_TAB_IDS:
+                continue
             panel_id = cls.id
             label = cls.display_name
             with _setting_row(label, f"Plugin id: {panel_id} (restart to apply)"):
