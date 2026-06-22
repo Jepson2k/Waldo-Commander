@@ -38,7 +38,7 @@ async def test_tool_registry_matches_robot(user: User) -> None:
     tools = robot.tools
 
     # Native count stays 5; robot.tools may compose plugin tools on top.
-    native_keys = [t.key for t in robot._native_tools.available]
+    native_keys = [t.key for t in robot.native_tools.available]
     assert len(native_keys) == 5, f"Expected 5 native tools, got {native_keys}"
     keys = [t.key for t in tools.available]
     for expected in ("NONE", "PNEUMATIC", "SSG-48", "MSG", "VACUUM"):
