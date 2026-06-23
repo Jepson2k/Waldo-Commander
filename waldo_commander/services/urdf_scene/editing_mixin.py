@@ -78,21 +78,17 @@ class EditingMixin:
 
     def _init_editing_state(self) -> None:
         """Initialize all editing state variables."""
-        # Joint transform control groups
         self._joint_control_groups: dict[int, Any] = {}
         self._joint_controls_suspended: bool = False
 
-        # Context menu
         self.context_menu: Any | None = None
         self._last_click_coords: tuple[float, float, float] | None = None
         self._right_click_start_pos: tuple[float, float] | None = None
         self._right_click_drag_threshold: float = 5.0
         self._pending_context_menu_event: Any | None = None
 
-        # Target objects
         self._target_objects: dict[str, dict[str, Any]] = {}
 
-        # Unified target editor state
         self._editing_unified_target: bool = False
         self._editing_target_id: str | None = None
         self._unified_target_mode: str = "cartesian"
@@ -103,7 +99,6 @@ class EditingMixin:
         self._original_editing_pose: list[float] | None = None
         self._original_editing_joints: list[float] | None = None
 
-        # Edit bar UI
         self._edit_bar: Any | None = None
         self._edit_bar_label: Any | None = None
         self._edit_bar_values: Any | None = None
@@ -111,7 +106,6 @@ class EditingMixin:
         self._edit_bar_container: Any | None = None
         self._current_editing_type: str | None = None
 
-        # Cached values
         self._cached_joint_axes_letters: list[str] | None = None
 
     # -------------------------------------------------------------------------
@@ -121,14 +115,12 @@ class EditingMixin:
     def enter_editing_mode(self, joint_angles: list[float]) -> None:
         """Enter editing mode at specified joint angles."""
         n = len(self.joint_names)
-        # Save current angles for restoration
         self._pre_edit_angles = list(waldoctl.commander.status.joints.angles.rad[:n])
 
-        # Set editing angles (pad or truncate to joint count)
+        # Pad or truncate to joint count
         self._editing_angles = list(joint_angles) + [0.0] * (n - len(joint_angles))
         self._editing_angles = self._editing_angles[:n]
 
-        # Reset state
         self._editing_target_type = "cartesian"
         self._joint_ring_touched = False
         self._editing_rotation_set = False
@@ -140,7 +132,6 @@ class EditingMixin:
         # Force FK recomputation — the cached pose is from LIVE mode
         self.invalidate_fk_cache()
 
-        # Setup TCP ball
         self._ensure_tcp_ball()
         if self._tcp_ball:
             self._tcp_ball.visible(True)
@@ -510,7 +501,6 @@ class EditingMixin:
             return
 
         if self._editing_target_id:
-            # Editing existing target — convert to move_j in place
             target = self._find_target_by_id(self._editing_target_id)
             n = len(self.joint_names)
             angles_deg = list(waldoctl.commander.status.joints.angles.deg[:n])
@@ -621,7 +611,7 @@ class EditingMixin:
             )
 
             if show_joints:
-                # Use pre-computed degrees from commander.status (synced from editing angles)
+                # commander.status degrees are already synced from the editing angles
                 n = len(self.joint_names)
                 angles_deg = list(waldoctl.commander.status.joints.angles.deg[:n])
                 orig_deg = self._original_editing_joints or [0.0] * n
@@ -746,8 +736,7 @@ class EditingMixin:
             simulation_state.notify_changed()
 
     def _insert_joint_target_from_editing(self) -> None:
-        """Insert joint target code."""
-        # Use the live joint angles from commander.status (synced from editing).
+        """Insert joint target code from the editing-synced commander.status angles."""
         n = len(self.joint_names)
         ui_state.editor_panel.add_joint_target_code(
             list(waldoctl.commander.status.joints.angles.deg[:n])
@@ -770,9 +759,8 @@ class EditingMixin:
                     waldoctl.commander.status.pose.y = fk[1] * 1000
                     waldoctl.commander.status.pose.z = (fk[2] + offset) * 1000
                     if len(fk) >= 6:
-                        # Set orientation from radians (computes degrees internally)
                         robot_state.orientation.set_rad(np.asarray(fk[3:6]))
-                        # Also set scalar fields for UI binding
+                        # Scalar fields are needed for UI binding
                         waldoctl.commander.status.pose.rx = robot_state.orientation.deg[
                             0
                         ]

@@ -30,8 +30,6 @@ class FileOperationsMixin:
         if dirty_dot:
             dirty_dot.set_visibility(tab.is_dirty)
 
-    # ---- Core file I/O ----
-
     async def load_program(self, filename: str | None = None) -> None:
         """Load a program file into a new tab (or switch if already open)."""
         try:
@@ -109,8 +107,6 @@ class FileOperationsMixin:
         ui.download(content.encode("utf-8"), filename)
         logger.info("Downloaded program %s", filename)
 
-    # ---- File tree helpers ----
-
     @staticmethod
     def _build_file_tree(root: Path, base: Path) -> list[dict]:
         """Build child node list for ui.tree from a directory (recursive)."""
@@ -162,8 +158,6 @@ class FileOperationsMixin:
         tree.expand()
         tree.mark(marker)
         return tree
-
-    # ---- Dialogs ----
 
     def _show_save_dialog(self) -> None:
         """Show save dialog with file tree and download option."""

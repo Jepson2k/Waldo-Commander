@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 class TCPControlsMixin:
     """Mixin providing TCP TransformControls functionality for UrdfScene."""
 
-    # These attributes are defined in the main UrdfScene class
+    # Defined in the main UrdfScene class.
     scene: Any
     _appearance_mode: RobotAppearanceMode
     _editing_angles: list[float]
@@ -41,7 +41,7 @@ class TCPControlsMixin:
     joint_trafos: dict
     joint_names: list[str]
 
-    # Methods from other mixins (for type checking)
+    # Provided by other mixins; declared here for type checking.
     def _sync_robot_state_from_editing(self) -> None: ...
 
     def _update_edit_bar_values(self, editing_type: str) -> None: ...
@@ -55,7 +55,6 @@ class TCPControlsMixin:
 
     def _init_tcp_controls_state(self) -> None:
         """Initialize TCP controls state variables."""
-        # TCP TransformControls state
         self._tcp_transform_enabled: bool = False
         self._tcp_enable_in_progress: bool = (
             False  # Guard against concurrent enablement
@@ -70,19 +69,19 @@ class TCPControlsMixin:
         self._tcp_ball_dragging: bool = False
         self._ik_solver: EditingIKSolver | None = None
         self._editing_rotation: list[float] = [0.0, 0.0, 0.0]
-        self._editing_rotation_set: bool = False  # Track if rotation was explicitly set
+        self._editing_rotation_set: bool = False
 
-        # Pre-allocated buffers to avoid per-call allocations
+        # Pre-allocated buffers to avoid per-call allocations.
         self._target_pos_buffer: np.ndarray = np.zeros(3, dtype=np.float64)
         self._target_orientation_buffer: np.ndarray = np.zeros(3, dtype=np.float64)
         self._pose_mm_buffer: list[float] = [0.0] * 6
 
-        # FK dirty checking cache - skip FK when angles unchanged
+        # FK dirty-checking cache: skip FK when angles are unchanged.
         self._last_fk_angles_tuple: tuple[float, ...] | None = None
         self._last_fk_angles_raw: np.ndarray | None = (
             None  # For fast LIVE mode comparison
         )
-        self._last_fk_pose: tuple[float, ...] | None = None  # cached FK result
+        self._last_fk_pose: tuple[float, ...] | None = None
 
     def _ensure_ik_solver(self) -> EditingIKSolver | None:
         """Lazy-initialize the FK/IK solver, returning it or None on failure."""
@@ -125,15 +124,12 @@ class TCPControlsMixin:
             visible: True to show, False to hide
         """
         if visible:
-            # Ensure jog ball exists and is visible
             self._ensure_tcp_ball()
             if self._tcp_ball:
                 self._tcp_ball.visible(True)
-            # Enable TransformControls if not already enabled
             if not self._tcp_transform_enabled:
                 self.enable_tcp_transform_controls(self._tcp_transform_mode)
         else:
-            # Disable TransformControls and hide jog ball
             if self._tcp_transform_enabled:
                 self.disable_tcp_transform_controls()
             if self._tcp_ball:
@@ -151,7 +147,6 @@ class TCPControlsMixin:
 
         self._tcp_transform_mode = "translate" if mode == "TRANSLATE" else "rotate"
 
-        # Update TCP TransformControls mode if enabled
         if self._tcp_transform_enabled:
             self.set_tcp_transform_mode(self._tcp_transform_mode)
 
@@ -161,14 +156,12 @@ class TCPControlsMixin:
         Args:
             mode: "translate" or "rotate"
         """
-        # Guard against concurrent enablement attempts
         if self._tcp_transform_enabled or self._tcp_enable_in_progress:
             return
 
         if not self.scene:
             logger.warning("Cannot enable TCP transform controls: scene not available")
             return
-        # Ensure jog ball exists
         self._ensure_tcp_ball()
         if not self._tcp_ball:
             logger.warning(
@@ -176,16 +169,13 @@ class TCPControlsMixin:
             )
             return
 
-        # Mark enablement in progress to prevent concurrent attempts
         self._tcp_enable_in_progress = True
-
-        # Store mode
         self._tcp_transform_mode = mode.lower()
 
-        # Sync jog ball to current TCP via FK before enabling (like joint edit)
+        # Sync jog ball to current TCP via FK before enabling, like joint edit.
         self._update_jog_ball_from_robot_state()
 
-        # In NiceGUI user simulation mode, no browser is running; skip JS enablement
+        # In NiceGUI user simulation mode, no browser is running; skip JS enablement.
         if is_user_simulation():
             try:
                 if self._tcp_ball:
@@ -200,13 +190,13 @@ class TCPControlsMixin:
             self._tcp_enable_in_progress = False
             return
 
-        # Enable TransformControls with a Python-side retry until the JS object exists.
-        # The per-object wrapper dispatches `scene.run_method('enable_transform_controls', id, ...)`
-        # once; if the JS side hasn't received the init_objects payload yet, the call silently no-ops.
+        # Retry enablement until the JS object exists. The per-object wrapper dispatches
+        # `scene.run_method('enable_transform_controls', id, ...)` once; if the JS side hasn't
+        # received the init_objects payload yet, the call silently no-ops, and
         # `has_transform_controls` on the scene is the only way to confirm attach succeeded.
-        # Total budget bounded by a wall-clock deadline: the first probe absorbs page-load latency
-        # (up to the full deadline); subsequent probes clamp to 1s so a stuck JS side can't tie up
-        # the enablement guard for the full 5s × N times.
+        # A wall-clock deadline bounds the budget: the first probe absorbs page-load latency (up
+        # to the full deadline); later probes clamp to 1s so a stuck JS side can't tie up the
+        # enablement guard for the full 5s x N times.
         async def _enable_with_retry():
             ball = self._tcp_ball
             if ball is None:
@@ -251,12 +241,10 @@ class TCPControlsMixin:
             return
 
         self._tcp_ball.disable_transform_controls()
-
-        # Hide jog ball when controls are disabled
         self._tcp_ball.visible(False)
 
         self._tcp_transform_enabled = False
-        self._tcp_enable_in_progress = False  # Reset guard on disable
+        self._tcp_enable_in_progress = False
         logger.debug("Disabled TCP TransformControls")
 
     def set_tcp_transform_mode(self, mode: str) -> None:
@@ -273,8 +261,7 @@ class TCPControlsMixin:
 
         self._tcp_transform_mode = mode.lower()
 
-        # Sync ball position/rotation from FK before switching modes
-        # This ensures rotate mode starts from the correct orientation
+        # Sync ball pose from FK first so rotate mode starts from the correct orientation.
         self._update_tcp_ball_position()
 
         self._tcp_ball.set_transform_mode(self._tcp_transform_mode)
@@ -299,7 +286,6 @@ class TCPControlsMixin:
             ).with_name("tcp:ball")
             ball.material(SceneColors.EDIT_GRAY_HEX, 0.9)
             self._tcp_ball = ball
-        # Initial position/orientation based on mode
         self._update_tcp_ball_position()
 
     def _snap_tcp_to_fk(self) -> None:
@@ -327,7 +313,6 @@ class TCPControlsMixin:
         if self._tcp_ball_dragging or not self._tcp_ball:
             return
 
-        # Determine whether angles changed since last FK
         n = len(self.joint_names)
         angles_changed = False
         if self._appearance_mode == RobotAppearanceMode.EDITING:
@@ -355,7 +340,7 @@ class TCPControlsMixin:
                 logger.debug("FK failed: %s", e)
                 return
 
-        # Apply pose if ball drifted (or FK just computed a new one)
+        # Apply pose if the ball drifted, or FK just computed a new one.
         p = self._last_fk_pose
         if p and (
             self._tcp_ball.x != p[0]
@@ -399,25 +384,23 @@ class TCPControlsMixin:
         Uses absolute world coordinates from the gizmo.
         """
         if self._tcp_transform_mode == "translate":
-            # Get world coordinates (prefer wx, wy, wz for absolute position)
+            # Prefer world coordinates (wx, wy, wz) for absolute position.
             new_x = getattr(e, "wx", None)
             new_y = getattr(e, "wy", None)
             new_z = getattr(e, "wz", None)
 
             if new_x is None or new_y is None or new_z is None:
-                # Fallback to local coordinates
+                # Fall back to local coordinates.
                 new_x = e.x if e.x is not None else 0.0
                 new_y = e.y if e.y is not None else 0.0
                 new_z = e.z if e.z is not None else 0.0
 
-            # Use absolute world coordinates
             if self._tcp_cartesian_move_callback:
-                # Reuse pre-allocated buffer
                 buf = self._pose_mm_buffer
-                buf[0] = float(new_x) * 1000.0  # x: m -> mm
-                buf[1] = float(new_y) * 1000.0  # y: m -> mm
-                buf[2] = float(new_z) * 1000.0  # z: m -> mm
-                # Use rotation from drag START to avoid rotation during translation
+                buf[0] = float(new_x) * 1000.0  # m -> mm
+                buf[1] = float(new_y) * 1000.0
+                buf[2] = float(new_z) * 1000.0
+                # Hold rotation from drag start so translation doesn't also rotate.
                 if self._tcp_drag_start_rot_deg is not None:
                     buf[3] = self._tcp_drag_start_rot_deg[0]
                     buf[4] = self._tcp_drag_start_rot_deg[1]
@@ -429,28 +412,24 @@ class TCPControlsMixin:
                 self._tcp_cartesian_move_callback(buf)
 
         else:  # rotate mode
-            # Use absolute rotation values
             if self._tcp_cartesian_move_callback:
-                # Get rotation values (radians from event)
-                rx = e.rx if e.rx is not None else 0.0
+                rx = e.rx if e.rx is not None else 0.0  # radians from event
                 ry = e.ry if e.ry is not None else 0.0
                 rz = e.rz if e.rz is not None else 0.0
 
-                # Reuse pre-allocated buffer
                 buf = self._pose_mm_buffer
                 buf[0] = (
                     waldoctl.commander.status.pose.x
-                )  # Keep current position (already in mm)
+                )  # keep position, already in mm
                 buf[1] = waldoctl.commander.status.pose.y
                 buf[2] = waldoctl.commander.status.pose.z
-                buf[3] = math.degrees(rx)  # rx: rad -> deg
-                buf[4] = math.degrees(ry)  # ry: rad -> deg
-                buf[5] = math.degrees(rz)  # rz: rad -> deg
+                buf[3] = math.degrees(rx)  # rad -> deg
+                buf[4] = math.degrees(ry)
+                buf[5] = math.degrees(rz)
                 self._tcp_cartesian_move_callback(buf)
 
     def _handle_tcp_transform_for_ik(self, e) -> None:
         """Handle TCP ball drag in EDITING mode - solve IK for position and/or orientation."""
-        # Ensure FK/IK solver is initialized
         if not self._ensure_ik_solver():
             return
         assert self._ik_solver is not None
@@ -459,37 +438,33 @@ class TCPControlsMixin:
         target_pos = self._target_pos_buffer
 
         if self._tcp_transform_mode == "rotate":
-            # Rotation mode: get orientation from event, keep current position
             rx = e.rx if e.rx is not None else 0.0
             ry = e.ry if e.ry is not None else 0.0
             rz = e.rz if e.rz is not None else 0.0
 
-            # Fill pre-allocated orientation buffer
             orient_buf = self._target_orientation_buffer
             orient_buf[0] = float(rx)
             orient_buf[1] = float(ry)
             orient_buf[2] = float(rz)
             target_orientation = orient_buf
 
-            # Store edited rotation for reference
             self._editing_rotation[0] = float(rx)
             self._editing_rotation[1] = float(ry)
             self._editing_rotation[2] = float(rz)
             self._editing_rotation_set = True
 
-            # Get current position from FK (maintain position while rotating)
+            # Hold the current FK position so rotating doesn't translate the TCP.
             fk_result = self._ik_solver.forward_kinematics(self._editing_angles)
             target_pos[0] = fk_result[0]
             target_pos[1] = fk_result[1]
             target_pos[2] = fk_result[2]
         else:
-            # Translate mode: get position from event
             new_x = getattr(e, "wx", None)
             new_y = getattr(e, "wy", None)
             new_z = getattr(e, "wz", None)
 
             if new_x is None or new_y is None or new_z is None:
-                # Fallback to local coordinates
+                # Fall back to local coordinates.
                 new_x = e.x if e.x is not None else 0.0
                 new_y = e.y if e.y is not None else 0.0
                 new_z = e.z if e.z is not None else 0.0
@@ -498,7 +473,7 @@ class TCPControlsMixin:
             target_pos[1] = float(new_y)
             target_pos[2] = float(new_z)
 
-            # If we have a stored rotation from previous rotate mode, use it
+            # Carry forward any orientation set in a prior rotate-mode drag.
             if self._editing_rotation_set:
                 orient_buf = self._target_orientation_buffer
                 orient_buf[0] = self._editing_rotation[0]
@@ -506,7 +481,7 @@ class TCPControlsMixin:
                 orient_buf[2] = self._editing_rotation[2]
                 target_orientation = orient_buf
 
-        # Solve IK with throttling (~30Hz)
+        # Throttled to ~30Hz; returns None when this frame is skipped.
         result = self._ik_solver.solve(
             target_pos=target_pos,
             current_angles=self._editing_angles,
@@ -514,21 +489,17 @@ class TCPControlsMixin:
             target_orientation=target_orientation,
         )
 
-        # If throttled (returns None), skip this frame
         if result is None:
             return
 
         if result.success:
-            # Update editing angles without repositioning TCP ball (user is dragging it)
+            # Update angles without repositioning the TCP ball; the user is dragging it.
             n = len(self.joint_names)
             self._editing_angles[:n] = result.angles[:n]
-            # Apply to robot joints
             for joint_name, q in zip(self.joint_names, self._editing_angles):
                 if joint_name in self.joint_groups and joint_name in self.joint_trafos:
                     t, r = self.joint_trafos[joint_name](q)
                     self.joint_groups[joint_name].move(*t).rotate(*r)
-            # Sync robot_state so readouts and control panel update
             self._sync_robot_state_from_editing()
-            # Update edit bar delta values
             if self._current_editing_type:
                 self._update_edit_bar_values(self._current_editing_type)

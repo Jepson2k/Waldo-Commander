@@ -136,7 +136,7 @@ Robot communication goes through a `waldoctl.RobotClient` ABC. Each backend (e.g
 
 ## Code Style
 
-- **Comments**: Describe the final implementation, not what changed. Avoid "changed X to Y" or "added this because..." comments.
+- **Comments**: A comment may give a short WHY, but must NOT describe WHAT the code does — that is what the code is for; delete comments that merely restate the code. Describe the final implementation, not what changed. Avoid "changed X to Y" or "added this because..." comments.
 - **Tests**: Use deterministic waits (polling for conditions) rather than blind sleeps. Exception: very small sleeps (~0.1s) for debouncing are acceptable.
 - **Exception handling**: Never use `except Exception: pass`. Either catch specific exceptions with `pass`, or if catching broad exceptions, log or handle the error meaningfully.
 

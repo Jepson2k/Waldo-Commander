@@ -71,7 +71,7 @@ class _Config:
 
     @property
     def log_level(self) -> int:
-        """Logging level from WALDO_LOG_LEVEL env var."""
+        """Logging level."""
         if "log_level" in self._overrides:
             return int(self._overrides["log_level"])  # type: ignore[call-overload]
         s = os.getenv("WALDO_LOG_LEVEL")

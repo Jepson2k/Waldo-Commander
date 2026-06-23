@@ -106,10 +106,8 @@ class MotionRecorder:
             set_tool_line = f'rbt.select_tool("{tool_key}")'
         set_tool_re = re.compile(r"^\s*rbt\.\s*select_tool\s*\(")
 
-        # Check for existing select_tool line
         for i, line in enumerate(lines):
             if set_tool_re.match(line):
-                # Update existing select_tool with current tool
                 lines[i] = set_tool_line
                 textarea.value = "\n".join(lines)
                 logger.info("Updated existing select_tool to %s", tool_key)
@@ -149,7 +147,6 @@ class MotionRecorder:
         self._active_jog = None
         self._last_action_wall_time = 0.0
 
-        # Log the initial position for reference
         if (
             len(waldoctl.commander.status.joints.angles)
             >= ui_state.active_robot.joints.count
@@ -406,11 +403,10 @@ class MotionRecorder:
             if val and not val.endswith("\n"):
                 val += "\n"
             new_value = val + snippet + "\n"
-            # Direct assignment - NiceGUI's binding handles the update
-            # This will trigger the editor's on_change -> debounced simulation
+            # Assigning value triggers the editor's on_change -> debounced simulation.
             textarea.value = new_value
 
-            # Flash the newly added line
+            # Flash the newly added line.
             new_line_number = lines_before + 1
             # Local import: motion_recorder is in services/ and decorations
             # is in components/, so a top-level import would invert the

@@ -85,9 +85,7 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = pkg_files("waldo_commander").joinpath("static")
 ng_app.add_static_files("/static", str(STATIC_DIR))
 
-# ------------------------ Global UI/state ------------------------
-
-# Global client instance - initialized in main() after CLI parsing
+# Initialized in main() after CLI parsing.
 client: RobotClient
 
 # Multicast-driven status consumer (runs once per app)
@@ -96,7 +94,7 @@ status_consumer_task: asyncio.Task | None = None
 # expected cancellation/connection errors that fire as tasks unwind.
 _shutting_down: bool = False
 
-# Component instances (assigned in main(), None until then)
+# Assigned in main(), None until then.
 control_panel: ControlPanel = None  # ty: ignore[invalid-assignment]
 readout_panel: ReadoutPanel = None  # ty: ignore[invalid-assignment]
 editor_panel: EditorPanel = None  # ty: ignore[invalid-assignment]
@@ -121,10 +119,9 @@ _pose_result_buffer: np.ndarray = np.zeros(6, dtype=np.float64)  # [x,y,z,rx,ry,
 _DEG_TO_RAD: float = math.pi / 180.0
 
 
-# Frontend timing metrics (unified via LoopMetrics)
 _ui_metrics = LoopMetrics()
 
-# Startup completion event - used by _on_shutdown() to wait for _on_startup() to finish
+# _on_shutdown() waits on this for _on_startup() to finish.
 _startup_complete: asyncio.Event = asyncio.Event()
 
 
@@ -155,14 +152,12 @@ def _update_connection_notification() -> None:
         ps.connection_notification = None
 
 
-# --------------- URDF Scene Functions ---------------
 async def initialize_urdf_scene() -> None:
     """Initialize the URDF scene with error handling."""
     robot = ui_state.active_robot
     urdf_path = Path(robot.urdf_path)
     mesh_dir = Path(robot.mesh_dir)
 
-    # Detect theme and set appropriate colors
     is_dark = is_dark_theme()
     bg_color = (
         SceneColors.BACKGROUND_DARK_HEX if is_dark else SceneColors.BACKGROUND_LIGHT_HEX
@@ -191,27 +186,24 @@ async def initialize_urdf_scene() -> None:
         )
         return ToolPose(origin=list(origin), rpy=list(rpy))
 
-    # Create UrdfScene config with all settings
     scene_config = UrdfSceneConfig(
         tool_pose_resolver=tool_pose_resolver,
-        gizmo_scale=1.35,  # Make gizmo larger (1.0 = default STL scale)
+        gizmo_scale=1.35,  # 1.0 = default STL scale
         package_map={robot.backend_package: mesh_dir},
-        # Appearance settings
         material=material_color,
         background_color=bg_color,
         sim_color=SceneColors.SIM_AMBER_HEX,
         sim_opacity=0.9,
-        # Kinematic mapping settings (defaults are fine for PAROL6)
+        # Kinematic-mapping defaults are correct for PAROL6, so none are set here.
     )
 
-    # Create new scene with config
     ui_state.urdf_scene = UrdfScene(urdf_path, config=scene_config)
     ui_state.urdf_scene.show(
         material=scene_config.material,
         background_color=scene_config.background_color,
     )
 
-    # Align TCP and load tool mesh from controller's active tool
+    # Align TCP and load tool mesh from the controller's active tool.
     try:
         result = await client.tools()
         if result and result.tool:
@@ -220,17 +212,16 @@ async def initialize_urdf_scene() -> None:
     except Exception as e:
         logger.error("Failed to sync TCP tool pose: %s", e)
 
-    # Override the scene height and set closer camera position
     if ui_state.urdf_scene.scene:
         scene: ui.scene = ui_state.urdf_scene.scene
         scene._props["grid"] = (10, 100)
-        # Fill parent container (absolute canvas): width/height 100%
+        # Fill parent container (absolute canvas).
         scene.classes(remove="h-[66vh]").style(
             "width: 100%; height: 100%; margin: 0; display: block;"
         )
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
 
-        # Add large world coordinate frame at origin (fixed)
+        # World coordinate frame at origin (fixed).
         world_axes_size = 0.30
         scene.line([0, 0, 0], [world_axes_size, 0, 0]).material(
             SceneColors.AXIS_X_HEX
@@ -242,38 +233,32 @@ async def initialize_urdf_scene() -> None:
             SceneColors.AXIS_Z_HEX
         )  # Z
 
-    # Cache joint names for mapping
     ui_state.urdf_joint_names = list(ui_state.urdf_scene.get_joint_names())
 
     logger.debug("URDF scene initialized with joints: %s", ui_state.urdf_joint_names)
 
-    # Signal URDF scene ready for tests
     readiness_state.signal_urdf_scene_ready()
 
-    # Ensure stored tool is fully applied (settings page may have built before scene was ready)
+    # Settings page may have built before the scene was ready.
     stored_tool = ng_app.storage.general.get("selected_tool")
     if stored_tool and stored_tool != "NONE" and ui_state.urdf_scene:
         vk = ng_app.storage.general.get(f"tool_variant_{stored_tool}")
         ui_state.urdf_scene.apply_tool_everywhere(stored_tool, variant_key=vk)
     else:
-        # Invalidate FK cache even without tool change (gizmo sync needs fresh FK)
+        # Gizmo sync needs fresh FK even without a tool change.
         ui_state.urdf_scene.invalidate_fk_cache()
 
-    # Generate workspace hull with correct tool offset (after tool is applied)
+    # Generate the workspace hull with the correct tool offset (after tool applied).
     if not os.environ.get("WALDO_SKIP_ENVELOPE") and not workspace_envelope.is_ready:
         workspace_envelope.generate(
             tool_offset_z=ui_state.urdf_scene._current_tool_offset_z
         )
 
-    # Sync gizmo settings to URDF scene now that it's ready
     control_panel.sync_gizmo_to_urdf()
 
-    # Apply simulator appearance if in simulator mode (scene wasn't ready earlier)
+    # Scene wasn't ready earlier, so apply simulator appearance now.
     if waldoctl.commander.status.simulator_active:
         ui_state.urdf_scene.set_simulator_appearance(True)
-
-
-# --------------- Controller controls ---------------
 
 
 async def start_controller(com_port: str | None) -> None:
@@ -295,7 +280,6 @@ async def start_controller(com_port: str | None) -> None:
             timeout=60,
         )
     else:
-        # If a controller is already running, reuse it
         if await asyncio.to_thread(
             robot.is_available,
             host=config.controller_host,
@@ -311,12 +295,10 @@ async def start_controller(com_port: str | None) -> None:
                 f"No controller found at {config.controller_host}:{config.controller_port}"
             )
 
-    # enable ping timer now that we are connected
     global status_consumer_task
     ps = _page_state
     if ps is not None and ps.ping_timer is not None:
         ps.ping_timer.active = True
-    # start multicast consumer
     if status_consumer_task is None or status_consumer_task.done():
         status_consumer_task = asyncio.create_task(_status_consumer())
     controller_state.running = True
@@ -331,7 +313,6 @@ async def stop_controller() -> None:
             logger.info("Stopping controller...")
             await asyncio.to_thread(robot.stop)
 
-        # Disable ping timer and stop multicast consumer on disconnect
         ps = _page_state
         if ps is not None and ps.ping_timer is not None:
             ps.ping_timer.active = False
@@ -347,7 +328,6 @@ async def stop_controller() -> None:
         logger.error("Stop controller failed: %s", e)
 
 
-# --------------- Connectivity Check ---------------
 async def check_ping() -> None:
     """Check connectivity via PING (1Hz) and arbitrate multi-tab ownership.
 
@@ -410,17 +390,15 @@ async def check_ping() -> None:
         control_panel.sync_gizmo_for_jog_state()
 
 
-# --------------- UI Update Functions ---------------
 def update_ui_from_status() -> None:
     """Update UI elements from robot_state (called from multicast consumer)"""
-    # Skip position/angle updates when in editing mode (editing sync handles these)
+    # Editing sync handles position/angle updates in editing mode.
     skip_position_updates = waldoctl.commander.status.editing_mode
-    # Skip URDF scene updates during sim playback/scrubbing (teleport syncs backend)
+    # Teleport syncs backend during sim playback/scrubbing.
     skip_scene_updates = (
         skip_position_updates or playback_coordination.sim_pose_override
     )
 
-    # Update URDF scene with new angles and TCP ball
     if not skip_scene_updates:
         with global_phase_timer.phase("scene"):
             update_urdf_angles(waldoctl.commander.status.joints.angles.deg)
@@ -428,7 +406,7 @@ def update_ui_from_status() -> None:
                 ui_state.urdf_scene.update_from_robot_state()
 
     if not skip_position_updates:
-        # robot_state.pose is already numpy float64 - pass directly to numba
+        # robot_state.pose is already numpy float64; pass directly to numba.
         pose_extraction_pipeline(
             robot_state.pose,
             _rotation_matrix_buffer,
@@ -491,16 +469,14 @@ def update_ui_from_status() -> None:
         except RuntimeError:
             pass
 
-    # Update control panel tool quick-action visuals
     if control_panel.tool_actions:
         control_panel.tool_actions.update_visual()
 
-    # Monitor E-STOP state changes and show/hide dialog as needed
     if control_panel.estop:
         control_panel.estop.check_state_change()
 
-    # Notify listeners that robot state has changed (for envelope proximity updates)
-    # Skip if app not ready to avoid race with NiceGUI page serialization
+    # Skip notifying listeners until app ready to avoid a race with NiceGUI
+    # page serialization (envelope proximity updates depend on this).
     if not readiness_state.app_ready.is_set():
         return
 
@@ -875,13 +851,11 @@ def _setup_panel_persistence(refs: dict) -> None:
 def build_page_content() -> None:
     """Build the Move page UI."""
 
-    # Add Lottie player script for E-STOP dialog animations (load in HEAD early)
+    # Lottie player for E-STOP dialog animations; load early in HEAD.
     ui.add_head_html(
         '<script type="module" defer src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>'
     )
-    # Add keybindings focus detection script
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
-    # Add animated robot face script
     ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
 
     with ui.column().classes("relative w-screen h-screen overflow-hidden gap-0"):
@@ -961,7 +935,7 @@ def build_page_content() -> None:
                 "color: grey; font-size: 0.9rem;"
             )
 
-        # Main content area - overlay panels and HUD elements
+        # Overlay panels and HUD elements.
         with (
             ui.column().classes("absolute inset-0 z-20").style("pointer-events: none;")
         ):
@@ -972,21 +946,18 @@ def build_page_content() -> None:
             ):
                 panel_refs = _build_left_panels(panels_wrap)
 
-        # HUD panels
         readout_panel.build("tr")
         control_panel.build("br")
 
-        # Panel resize configuration and tab state restoration
         _setup_panel_persistence(panel_refs)
 
-    # Set up global keybindings
     from waldo_commander.services.keybindings import setup_keybindings
 
     setup_keybindings(help_menu)
 
 
-# Guard against duplicate startup/shutdown handler registration during tests
-# When NiceGUI fails to reset between tests, runpy.run_path() re-executes main.py
+# Guard against duplicate startup/shutdown handler registration during tests:
+# when NiceGUI fails to reset between tests, runpy.run_path() re-executes main.py.
 
 
 def _quiet_shutdown_exception_handler(
@@ -1067,7 +1038,6 @@ def _register_handlers() -> None:
     Skip registration if NiceGUI is already started (e.g., during test reruns
     when NiceGUI didn't fully reset between tests).
     """
-    # If NiceGUI is already started, we can't register new handlers
     if ng_app.is_started:
         return
 
@@ -1176,7 +1146,7 @@ def _register_handlers() -> None:
         logger.debug("Nicegui Shutting Down...")
         camera_service.stop()
 
-        # Wait for startup to complete first (with timeout to avoid hanging forever)
+        # Timeout avoids hanging forever if startup never completes.
         try:
             await asyncio.wait_for(_startup_complete.wait(), timeout=10.0)
         except asyncio.TimeoutError:
@@ -1184,7 +1154,6 @@ def _register_handlers() -> None:
                 "Shutdown: startup did not complete within 10s, proceeding anyway"
             )
 
-        # Stop any running script processes first
         try:
             if is_any_program_running() and script_exec.script_handle:
                 logger.debug("Stopping running script process during shutdown...")
@@ -1204,7 +1173,7 @@ def _register_handlers() -> None:
         except Exception as e:
             logger.warning("Error stopping script during shutdown: %s", e)
 
-        # Cancel all timers first
+        # Cancel all timers first.
         if ui_state._joint_jog_timer is not None:
             ui_state._joint_jog_timer.cancel()
         if ui_state._cart_jog_timer is not None:
@@ -1212,7 +1181,6 @@ def _register_handlers() -> None:
         if _page_state is not None and _page_state.ping_timer is not None:
             _page_state.ping_timer.cancel()
 
-        # Cleanup component timers and listeners
         if control_panel is not None:
             control_panel.cleanup()
         if ui_state.gripper_page is not None:
@@ -1249,7 +1217,6 @@ def _register_handlers() -> None:
         except Exception as e:
             logger.debug("Error closing client: %s", e)
 
-        # Log all multiprocessing active children and alive threads
         import multiprocessing
 
         for child in multiprocessing.active_children():
@@ -1273,7 +1240,6 @@ def _register_handlers() -> None:
         waldoctl._clear_commander()
 
 
-# Register handlers at module load
 _register_handlers()
 
 
@@ -1306,11 +1272,9 @@ def _cleanup_script_processes_sync() -> None:
         logger.debug("Error in script cleanup: %s", e)
 
 
-# Register atexit cleanup for last-resort process termination
 atexit.register(_cleanup_script_processes_sync)
 
 
-# --------------- Multi-tab takeover overlay ---------------
 def _build_takeover_overlay(message: str) -> None:
     """Render the takeover overlay: scrim + glass card + wandering sad robot.
 
@@ -1429,12 +1393,10 @@ async def index_page():
         ui.timer(interval=1.0, callback=check_ping, active=True)
         return
 
-    # Theme and layout
     apply_theme("dark")
     ui.query(".nicegui-content").classes("p-0")
     inject_layout_css()
 
-    # Build UI
     build_page_content()
 
     # Plugin panels: kick off their long-running tasks now that UI is ready.
@@ -1451,7 +1413,7 @@ async def index_page():
     except Exception as e:
         logger.warning("Connectivity check failed: %s", e)
 
-    # Create jog timers and wire to ui_state so control panel can access them
+    # Wire jog timers to ui_state so the control panel can access them.
     ui_state.joint_jog_timer = ui.timer(
         interval=config.webapp_control_interval_s,
         callback=control_panel.jog_tick,
@@ -1463,7 +1425,6 @@ async def index_page():
         active=False,
     )
 
-    # Attach logging handler to response log
     if ui_state.response_log:
         attach_ui_log(ui_state.response_log)
 
@@ -1518,16 +1479,14 @@ async def _status_consumer() -> None:
         await client.wait_ready(timeout=15.0)
         async for status in client.stream_status_shared():
             try:
-                # Track loop timing via LoopMetrics
                 now = time.perf_counter()
                 _ui_metrics.tick(now)
 
-                # Rate-limited debug log every 3s
+                # Rate-limited debug log every 3s.
                 if _ui_metrics.should_log(now, 3.0):
                     for p in global_phase_timer.phases.values():
                         p.compute_stats()
 
-                    # Build phase timing string for non-zero phases
                     phase_strs = []
                     for name, phase in global_phase_timer.phases.items():
                         if phase.mean_s > 0.00001:
@@ -1621,10 +1580,8 @@ async def _status_consumer() -> None:
                     pc = ps.page_client if ps is not None else None
                     if pc is not None and not pc._deleted and pc.id in Client.instances:
                         with pc:
-                            # Update UI from status
                             update_ui_from_status()
 
-                            # Update panels
                             readout_panel.update_conn_io()
                             action_log_service.process_status(
                                 action.current_name,
@@ -1651,8 +1608,7 @@ async def _status_consumer() -> None:
 def main():
     global client, control_panel, readout_panel, editor_panel
 
-    # CLI: web bind, controller target, and log level
-    # Defaults come from config (lazy evaluation - reads env vars at access time)
+    # Defaults come from config (lazy: reads env vars at access time).
     parser = argparse.ArgumentParser(description="PAROL6 NiceGUI Webserver")
     parser.add_argument(
         "--host", default=config.server_host, help="Webserver bind host"
@@ -1793,7 +1749,6 @@ def main():
         ng_app.storage.general.get("plugins/disabled_panels", [])
     )
 
-    # Configure logging
     configure_logging(config.log_level)
     logger.debug(
         "Webserver bind: host=%s port=%s", config.server_host, config.server_port

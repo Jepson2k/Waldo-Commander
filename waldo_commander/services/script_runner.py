@@ -68,7 +68,6 @@ async def run_script(
         PermissionError: If Python executable not found/executable
         OSError: If process creation fails
     """
-    # Validate configuration
     script_path = Path(cfg["filename"])
     if not script_path.exists():
         raise FileNotFoundError(f"Script file not found: {cfg['filename']}")
@@ -80,7 +79,6 @@ async def run_script(
     if not Path(python_exe).exists():
         raise FileNotFoundError(f"Python executable not found: {python_exe}")
 
-    # Build environment variables - inherit from parent process and add config overrides
     env = {**os.environ, **cfg.get("env", {})}
     if session_id:
         env["WALDO_STEP_SESSION"] = session_id
@@ -89,19 +87,16 @@ async def run_script(
 
     env["WALDO_BACKEND_PACKAGE"] = ui_state.active_robot.backend_package
 
-    # Determine which script to run
     if session_id:
-        # Use bootstrap script to inject stepping wrapper
+        # Bootstrap script injects the stepping wrapper around the user script.
         bootstrap_path = Path(__file__).parent / "stepping_bootstrap.py"
         if not bootstrap_path.exists():
             raise FileNotFoundError(f"Bootstrap script not found: {bootstrap_path}")
         exec_args = [python_exe, "-u", str(bootstrap_path), str(script_path)]
     else:
-        # Run script directly
         exec_args = [python_exe, "-u", str(script_path)]
 
-    # Create the subprocess
-    # On Unix, create a new process group so we can kill the entire tree
+    # On Unix, create a new process group so we can kill the entire tree.
     kwargs: dict = {
         "stdout": asyncio.subprocess.PIPE,
         "stderr": asyncio.subprocess.PIPE,
@@ -109,23 +104,21 @@ async def run_script(
         "env": env,
     }
     if sys.platform != "win32":
-        # Create new process group on Unix
         kwargs["start_new_session"] = True
 
     proc = await asyncio.create_subprocess_exec(*exec_args, **kwargs)
 
-    # Start streaming tasks
     if proc.stdout:
         stdout_task = asyncio.create_task(_stream_output(proc.stdout, on_stdout))
     else:
-        stdout_task = asyncio.create_task(asyncio.sleep(0))  # no-op task
+        stdout_task = asyncio.create_task(asyncio.sleep(0))
 
     if proc.stderr:
         stderr_task = asyncio.create_task(
             _stream_output(proc.stderr, on_stderr, "[ERR] ")
         )
     else:
-        stderr_task = asyncio.create_task(asyncio.sleep(0))  # no-op task
+        stderr_task = asyncio.create_task(asyncio.sleep(0))
 
     handle: ScriptProcessHandle = {
         "proc": proc,
@@ -153,33 +146,29 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
         return
 
     try:
-        # On Unix, terminate the entire process group
+        # On Unix, signal the whole process group so child processes die too.
         if sys.platform != "win32" and proc.pid:
             try:
-                # Send SIGTERM to the process group
                 pgid = os.getpgid(proc.pid)
                 os.killpg(pgid, 15)  # SIGTERM
                 logger.debug("Sent SIGTERM to process group %s", pgid)
             except (ProcessLookupError, OSError):
-                # Fall back to regular terminate if process group doesn't exist
+                # Process group gone; fall back to the lone process.
                 proc.terminate()
         else:
-            # Graceful termination
             proc.terminate()
 
         try:
             await asyncio.wait_for(proc.wait(), timeout=timeout)
             logger.debug("Script process terminated gracefully")
         except asyncio.TimeoutError:
-            # Force kill if graceful termination failed
+            # Graceful termination timed out; escalate to SIGKILL.
             if sys.platform != "win32" and proc.pid:
                 try:
-                    # Send SIGKILL to the process group
                     pgid = os.getpgid(proc.pid)
                     os.killpg(pgid, 9)  # SIGKILL
                     logger.debug("Sent SIGKILL to process group %s", pgid)
                 except (ProcessLookupError, OSError):
-                    # Fall back to regular kill
                     proc.kill()
             else:
                 proc.kill()
@@ -187,12 +176,11 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
             logger.warning("Script process force-killed after timeout")
 
     except ProcessLookupError:
-        # Process already dead
+        # Process already dead.
         pass
     except Exception as e:
         logger.error("Error stopping script process: %s", e)
 
-    # Cancel streaming tasks
     for task in [handle["stdout_task"], handle["stderr_task"]]:
         if not task.done():
             task.cancel()

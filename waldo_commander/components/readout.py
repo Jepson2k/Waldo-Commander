@@ -144,7 +144,6 @@ class ReadoutPanel:
 
     def update_conn_io(self) -> None:
         """Update connection face and IO status. Called from status consumer."""
-        # Robot face — determine state from connection
         if self._robot_face_html and self._robot_face_container:
             sim_active = waldoctl.commander.status.simulator_active
             connected = waldoctl.commander.status.connected
@@ -165,7 +164,7 @@ class ReadoutPanel:
                     add=f"robot-face-{face.value}", remove=remove
                 )
                 self._robot_face_container.update()
-                # Restart JS face animations for the new state
+                # Restart JS animations so the new face state animates
                 ui.run_javascript(
                     "window.stopRobotFace();"
                     " window.initRobotFace('" + face.value + "');"
@@ -183,7 +182,6 @@ class ReadoutPanel:
                     )
                     self._robot_chip.update()
 
-        # Tool chip — show "w/ <tool>" when a tool is active
         tool_key = waldoctl.commander.status.tool.key
         if tool_key != self._last_tool_key:
             self._last_tool_key = tool_key
@@ -198,7 +196,6 @@ class ReadoutPanel:
                     if self._tool_separator is not None:
                         self._tool_separator.set_visibility(False)
 
-        # IO chips — update colors when values change
         if self._io_chips:
             io = waldoctl.commander.status.io
             inputs = io.inputs
@@ -245,7 +242,6 @@ class ReadoutPanel:
         """Render the top-left readout panel as an overlay card."""
         with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor}"):
             with ui.column().classes("gap-1"):
-                # Connectivity + IO row — merged into panel corner
                 with (
                     ui.row()
                     .classes("items-center w-full no-wrap gap-2")
@@ -295,7 +291,6 @@ class ReadoutPanel:
                         .style("color: var(--ctk-muted);")
                     )
                     self._tool_separator.set_visibility(False)
-                    # Tool name chip (hidden when no tool)
                     self._tool_chip = (
                         ui.chip()
                         .props("dense")
@@ -307,7 +302,6 @@ class ReadoutPanel:
                     with self._tool_chip:
                         self._tool_label = ui.label("").classes("text-lg font-medium")
                     ui.space()
-                    # IO chips — single row
                     with ui.row().classes("gap-0 no-wrap"):
                         self._io_chips = []
                         _io_init = waldoctl.commander.status.io
@@ -330,7 +324,6 @@ class ReadoutPanel:
                             )
                             self._io_chips.append(chip)
 
-                # X/Y/Z row - larger text with mm units
                 with ui.row().classes("items-center justify-between w-full no-wrap"):
                     with ui.row().classes("items-center gap-1 no-wrap"):
                         ui.label("X:").classes("text-sm tcp-x")
@@ -371,7 +364,6 @@ class ReadoutPanel:
                         )
                         ui.label("mm").classes("text-xs tcp-z")
 
-                # Rx/Ry/Rz + speed row
                 with ui.row().classes("items-center w-full no-wrap"):
                     with ui.row().classes("items-center gap-1"):
                         ui.label("Rx:").classes("text-xs tcp-rx")

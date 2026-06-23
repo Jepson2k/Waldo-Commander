@@ -34,7 +34,6 @@ class PlaybackController:
     """Owns the bottom playback bar UI and all simulation/script playback logic."""
 
     def __init__(self) -> None:
-        # Bottom playback bar elements
         self.play_btn: ui.button | None = None
         self.play_btn_tooltip: ui.tooltip | None = None
         self.stop_btn: ui.button | None = None
@@ -57,9 +56,9 @@ class PlaybackController:
         self._last_slider_update: float = 0.0  # throttle slider visual updates
         self._last_tool_selection: tuple[str, str] | None = None
 
-        # Recording widgets — the record button and its tooltip live in the
-        # playback bar so PlaybackController owns them. Notification reference
-        # is kept across toggles so it can be dismissed.
+        # The record button and its tooltip live in the playback bar, so
+        # PlaybackController owns them. The notification reference is kept
+        # across toggles so it can be dismissed.
         self.record_btn: ui.button | None = None
         self._record_btn_tooltip: ui.tooltip | None = None
         self._recording_notification: ui.notification | None = None
@@ -99,7 +98,6 @@ class PlaybackController:
             .classes("w-full items-center gap-2 bottom-playback-bar")
             .style("min-height: 48px;")
         ):
-            # 1. Play/Pause button
             self.play_btn = ui.button(
                 icon="play_arrow", on_click=self.toggle_play
             ).props("round dense color=positive unelevated")
@@ -107,7 +105,6 @@ class PlaybackController:
                 self.play_btn_tooltip = ui.tooltip("Play (Space)")
             self.play_btn.mark("editor-play-btn")
 
-            # 2. Stop button
             self.stop_btn = (
                 ui.button(icon="stop", on_click=script_exec.stop)
                 .props("round dense color=negative unelevated")
@@ -116,7 +113,6 @@ class PlaybackController:
             self.stop_btn.mark("editor-stop-btn")
             self.stop_btn.set_visibility(False)
 
-            # 3. Next step button
             self.next_btn = (
                 ui.button(icon="skip_next", on_click=self.step_forward)
                 .props("round dense flat color=white")
@@ -125,7 +121,7 @@ class PlaybackController:
             self.next_btn.mark("editor-step-next")
             self.next_btn.set_visibility(False)
 
-            # 4. Timeline scrub area — layered: segments + loading + slider
+            # Timeline scrub area — layered: segments + loading + slider.
             with ui.element("div").classes("flex-1"):
                 with (
                     ui.element("div").classes("relative w-full").style("height: 24px;")
@@ -167,7 +163,7 @@ class PlaybackController:
                     )
                     self._scrub_slider.mark("editor-scrub-slider")
 
-            # 5. Speed FAB (simulator only)
+            # Speed FAB (simulator only).
             with (
                 ui.fab(icon="1x_mobiledata", color="amber", direction="up")
                 .props("dense unelevated round size=sm")
@@ -188,7 +184,6 @@ class PlaybackController:
                     on_click=lambda: self._set_speed(2.0),
                 )
 
-            # 6. Record button
             self.record_btn = ui.button(
                 icon="fiber_manual_record", on_click=self._toggle_recording
             ).props("round dense color=negative unelevated")
@@ -196,12 +191,10 @@ class PlaybackController:
                 self._record_btn_tooltip = ui.tooltip("Start Recording")
             self.record_btn.mark("editor-record-btn")
 
-            # 7. Capture position
             ui.button(
                 icon="camera_alt", on_click=motion_recorder.capture_current_pose
             ).props("round dense unelevated").tooltip("Capture Current Pose")
 
-            # 8. Log show/hide
             log_panel.build_toggle_button()
 
     # ---- Recording lifecycle ----
@@ -683,14 +676,13 @@ class PlaybackController:
         """
         if self._sim_timer:
             self._sim_timer.active = False
-        # Let the auto-clear in main.py handle the handback after 100ms
         playback_coordination.last_teleport_ts = time.monotonic()
         active = waldoctl.commander.programs.active
         if active is not None:
             active.dry_run.playback.is_active = False
             active.dry_run.playback.is_playing = False
         self._last_tool_selection = None
-        # Snapshot so position-change checker doesn't re-sim
+        # Snapshot so the position-change checker doesn't re-sim.
         self._snapshot_joints()
         if self._scrub_slider:
             self._scrub_slider.props(remove="label-always")
@@ -821,7 +813,7 @@ class PlaybackController:
         if not self._scrub_container:
             return
 
-        # 1. Remove all children at once — the only deletion point
+        # Remove all children at once — the only deletion point.
         self._scrub_container.clear()
         self._segment_elements.clear()
         self._checkpoint_markers.clear()
@@ -833,7 +825,6 @@ class PlaybackController:
         if not segments:
             return
 
-        # 2. Rebuild timeline
         self._timeline = None
         tl = self._ensure_timeline()
         total_dur = tl.total_duration if tl else 0.0
@@ -850,7 +841,7 @@ class PlaybackController:
         seg_durs = tl.segment_durations
 
         with self._scrub_container:
-            # 3. Segment divs — absolute positioned by timeline position
+            # Segment divs, absolute-positioned by timeline position.
             for idx, segment in enumerate(segments):
                 color = segment.color or PathColors.CARTESIAN
                 is_current = idx == step
@@ -869,7 +860,7 @@ class PlaybackController:
                 )
                 self._segment_elements.append(seg_elem)
 
-            # 4. Checkpoint markers — diamonds at checkpoint times
+            # Checkpoint markers — diamonds at checkpoint times.
             for cp in tl.checkpoints:
                 left_pct = cp.time / total_dur * 100
                 marker = (
@@ -884,7 +875,7 @@ class PlaybackController:
                 )
                 self._checkpoint_markers.append(marker)
 
-            # 5. Tool action markers — full-height (blocking) or mini (overlapping)
+            # Tool action markers — full-height (blocking) or mini (overlapping).
             kf = tl.tool_keyframes
             ta = active.dry_run.tool_actions if active is not None else []
             for i in range(0, len(kf) - 1, 2):

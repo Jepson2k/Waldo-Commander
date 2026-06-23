@@ -88,7 +88,7 @@ class SettingsContent:
         if self._cam_refresh_timer is not None:
             self._cam_refresh_timer.cancel()
 
-    # ── Tool helpers (promoted from closures) ────────────────────────
+    # ── Tool helpers ─────────────────────────────────────────────────
 
     def _get_variant_key(self, tool_key: str) -> str | None:
         """Get stored variant key for a tool, or first variant key."""

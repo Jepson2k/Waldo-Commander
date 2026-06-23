@@ -18,11 +18,8 @@ from waldoctl import (
     ToolTimeSeries,
 )
 
-# Re-exports for legacy import sites — these dataclasses live in waldoctl now
-# (one canonical type per shape) but several WC modules still import them
-# from ``waldo_commander.state``. Keep the re-export so the type checker
-# resolves the names and downstream code can migrate to ``waldoctl`` at
-# its own pace.
+# Re-exports for legacy import sites: these dataclasses live in waldoctl now,
+# but several WC modules still import them here while they migrate at their own pace.
 __all__ = [
     "PathSegment",
     "ProgramTarget",
@@ -35,7 +32,7 @@ from waldo_commander.common.loop_timer import PhaseTimer
 
 logger = logging.getLogger(__name__)
 
-# Type-checking shim for bindable_dataclass to satisfy Pylance without changing runtime
+# Type-checking shim so Pylance sees bindable_dataclass as a dataclass transform.
 if TYPE_CHECKING:
     from typing import dataclass_transform
 
@@ -50,25 +47,16 @@ else:
 
 
 # ProgramTarget, PathSegment, ToolAction, ToolSelection are owned by waldoctl
-# (re-exported above from ``waldoctl``). The WC-local duplicates have been
-# removed so ``simulation_state``'s field types unify with
-# ``commander.programs.active.dry_run.*`` and the type checker stops flagging
-# cross-module list assignments.
+# (re-exported above) so simulation_state's field types unify with
+# commander.programs.active.dry_run.*.
 
 
 @bindable_dataclass
 class SimulationState(ChangeNotifierMixin):
-    # Per-program simulation results live on ``commander.programs.active
-    # .dry_run.*`` (``path_segments`` / ``targets`` / ``tool_actions`` /
-    # ``tool_selections`` / ``total_steps`` / ``total_duration``).
-    # Playback timeline scalars (``current_step`` / ``playback_time`` /
-    # ``playback_speed`` / ``is_playing`` / ``is_active`` /
-    # ``active_cursor_line``) live on ``dry_run.playback.*``.
-    #
-    # What stays here: the WC-side notification channels that consumers
-    # subscribe to globally (a single change-listener registration covers
-    # every tab switch + every dry-run update). View prefs like
-    # ``paths_visible`` now live on ``commander.settings.view``.
+    # Simulation results and playback scalars live on commander.programs.active
+    # .dry_run.*. What stays here is the WC-side notification channels consumers
+    # subscribe to globally — one change-listener registration covers every tab
+    # switch and dry-run update.
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
@@ -79,16 +67,13 @@ class SimulationState(ChangeNotifierMixin):
 # session-wide check is ``services.programs.is_any_program_recording()``.
 
 
-# Extended shared state singletons for cross-module access.
-# No fields are bindable (bindable_fields=[]); the remaining members are numpy
-# arrays / objects read imperatively, and the migrated scalar fields now live on
-# commander.status.*. Consumers read these directly, not via bindings.
+# Shared state singleton for cross-module access. No fields are bindable
+# (bindable_fields=[]) — the members are numpy arrays / objects read
+# imperatively, and the migrated scalar fields now live on commander.status.*.
 @bindable_dataclass(bindable_fields=[])
 class RobotState(ChangeNotifierMixin):
-    # ``angles`` (joint angles in deg/rad) moved to
-    # ``commander.status.joints.angles`` — same ``AngleArray`` interface.
-    # ``orientation`` stays here as a rad-access companion for FK/IK
-    # consumers that don't want to deg2rad on every read.
+    # orientation stays here as a rad-access companion for FK/IK consumers that
+    # don't want to deg2rad on every read; angles moved to commander.status.joints.
     orientation: AngleArray = field(
         default_factory=lambda: AngleArray(size=3)
     )  # rx/ry/rz (deg/rad)
@@ -99,26 +84,12 @@ class RobotState(ChangeNotifierMixin):
         default_factory=lambda: np.zeros(5, dtype=np.int32)
     )  # [inputs..., outputs..., estop] — resized at startup
     tool_status: ToolStatus = field(default_factory=ToolStatus)
-    # Movement enablement arrays live on commander.status.joints.can_jog_pos
-    # / can_jog_neg (6 bools each) and
-    # commander.status.pose.cart_jog.by_frame[<frame>].can_jog_{pos,neg}.
-    # Connection / simulator / editing-mode / last-update timestamp + TCP
-    # linear speed + Cartesian pose scalars (x/y/z/rx/ry/rz) all live on
-    # ``commander.status.{...}`` from waldoctl. IO inputs/outputs/estop
-    # live on ``commander.status.io``. The numpy ``orientation`` array
-    # stays here as a rad-access companion for FK / IK consumers.
-    # All tool fields live on commander.status.tool — readers project
-    # positions[0] / channels[0] inline when they need the single-DOF
-    # scalar. tool_time_series stays here as a WC-internal rolling buffer
-    # backing the gripper chart.
+    # tool_time_series stays here as a WC-internal rolling buffer backing the
+    # gripper chart; the rest of the tool/pose/io scalars live on commander.status.*.
     tool_time_series: ToolTimeSeries = field(default_factory=ToolTimeSeries)
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
     )  # deg/s
-    # action_current / action_state live on commander.status.action.
-    # ``action_params`` is per-command metadata for the dedup service; it
-    # flows directly from the StatusBuffer into action_log_service without
-    # a singleton mirror.
     executing_index: int = -1
     completed_index: int = -1
     _change_listeners: list[Callable[[], None]] = field(
@@ -186,10 +157,9 @@ class _RequiredField:
 
 @bindable_dataclass
 class UiState:
-    # Unified robot instance (set at startup, required)
+    # Set once at startup; required thereafter (see active_robot).
     robot: "Robot | None" = None
 
-    # URDF scene instance (holds UrdfSceneConfig)
     urdf_scene: "UrdfScene | None" = None
     urdf_joint_names: list[str] | None = None
 
@@ -223,22 +193,19 @@ class UiState:
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
 
-    # Editor widget refs — moved off the legacy ``EditorTabsState`` because
-    # NiceGUI element handles don't belong on the public ``ProgramTabs``
-    # surface. EditorPanel writes these on every tab switch / build; the
-    # sub-controllers (decorations, motion_recorder, script_execution) read
-    # the active tab's widgets without back-references into EditorPanel.
+    # Editor widget refs live here, not on the public ProgramTabs surface, since
+    # NiceGUI element handles don't belong there. EditorPanel writes them on every
+    # tab switch; sub-controllers read them without back-references into EditorPanel.
     active_textarea: Any = None  # ui.codemirror | None at runtime
     active_filename_input: Any = None  # ui.input | None at runtime
     textareas_by_tab: dict[str, Any] = field(default_factory=dict)
 
     # Plugin panels discovered via the `waldoctl.panels` entry-point group.
-    # Populated on first page build and cached for the process (cleared via
-    # reset() in tests); ordered by (slot, order, id).
+    # Populated on first page build, cached for the process; ordered by (slot, order, id).
     plugin_panels: list[Panel] = field(default_factory=list)
-    # Ids of panels whose Panel.start() has run this process. Tracked per panel
-    # (not a single flag) so a panel discovered after an empty first build still
-    # gets started, and so the start guard can't be straddled by a reload race.
+    # Ids of panels whose Panel.start() has run. Tracked per panel (not one flag) so a
+    # panel discovered after an empty first build still starts, and the start guard
+    # can't be straddled by a reload race.
     _started_panel_ids: set[str] = field(default_factory=set)
 
     # Post-init required fields (assert on access, set via assignment)
@@ -262,12 +229,9 @@ class UiState:
         self._started_panel_ids = set()
 
 
-# ===========================================================================
-# Editor tabs — migrated to ``commander.programs`` (waldoctl) with a WC-side
-# concrete subclass at ``waldo_commander.services.programs.EditorPrograms``.
-# Per-tab dry-run/log data lives on ``Program.dry_run`` and ``Program.log``.
-# Active widget refs migrated to ``UiState`` (active_textarea, etc.).
-# ===========================================================================
+# Editor tabs now live on commander.programs (waldoctl), with a WC-side concrete
+# subclass at waldo_commander.services.programs.EditorPrograms. Per-tab dry-run/log
+# data is on Program.dry_run / Program.log; active widget refs on UiState.
 
 
 @dataclass
@@ -340,11 +304,8 @@ class ReadinessState:
             logger.debug("Readiness: urdf_scene_ready signaled")
 
 
-# ===========================================================================
-# Action log — moved to ``waldo_commander.services.action_log`` and the
-# data fields (``ActionStatus`` / ``ActionLogEntry`` / ``history``) now live
-# on ``commander.status.action`` from waldoctl. Nothing remains here.
-# ===========================================================================
+# Action log now lives on waldo_commander.services.action_log; its data fields
+# (ActionStatus / ActionLogEntry / history) on commander.status.action.
 
 
 # Module-level singletons

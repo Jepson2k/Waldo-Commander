@@ -88,8 +88,7 @@ def batch_scene(scene: Any) -> Iterator[None]:
         marker attribute, which can corrupt state when the inner task
         also enters ``batch_scene`` on the same scene.
     """
-    # Check if we're already batching on this scene (nested batch_scene).
-    # If so, the outer one owns the queue; we no-op.
+    # Nested batch_scene: the outermost block owns the queue, so no-op here.
     if getattr(scene, "_wc_batched_calls", None) is not None:
         yield
         return

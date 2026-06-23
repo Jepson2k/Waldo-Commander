@@ -1,11 +1,4 @@
-"""
-Configuration dataclasses for UrdfScene.
-
-Contains:
-- RobotAppearanceMode: Enum for robot visual states (live, simulator, editing)
-- ToolPose: TCP offset and orientation for a tool
-- UrdfSceneConfig: Configuration for UrdfScene behavior, appearance, and kinematics
-"""
+"""Configuration dataclasses for UrdfScene."""
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -40,7 +33,6 @@ class ToolPose:
 class UrdfSceneConfig:
     """Configuration for UrdfScene behavior, appearance, and kinematics."""
 
-    # --- Mesh and static file settings ---
     meshes_dir: Path | None = None
     """Directory containing mesh files. If None, auto-discover from URDF location."""
 
@@ -56,14 +48,12 @@ class UrdfSceneConfig:
     scale_stls: float = 1.0
     """Scale factor for all STL files (e.g., 1e-1 if designed in mm)."""
 
-    # --- Gizmo settings ---
     gizmo_scale: float | None = None
     """Override gizmo size. If None, scales with STL scale."""
 
     draw_tcp_axes: bool = True
     """Whether to draw coordinate axes at TCP location."""
 
-    # --- Tool pose settings ---
     tool_pose_map: dict[str, "ToolPose"] = field(default_factory=lambda: {})
     """Mapping from tool names to TCP poses."""
 
@@ -73,7 +63,6 @@ class UrdfSceneConfig:
     Signature: ``(tool_key, variant_key) -> ToolPose | None``.
     """
 
-    # --- Appearance settings ---
     # Colors from theme.py SceneColors
     material: str = SceneColors.MATERIAL_DARK_HEX
     """Default material color for robot meshes."""
@@ -114,7 +103,6 @@ class UrdfSceneConfig:
     tool_moving_edit_color: str = SceneColors.TOOL_MOVING_EDIT_HEX
     """Color for tool moving parts in editing mode."""
 
-    # --- Kinematic mapping settings ---
     joint_name_order: list[str] = field(
         default_factory=lambda: ["L1", "L2", "L3", "L4", "L5", "L6"]
     )
