@@ -1560,6 +1560,13 @@ async def _status_consumer() -> None:
                             ]
                             cart_en_shadow[frame] = arr.copy()
 
+                    coll = st.collision
+                    if coll.active != status.collision_active or len(coll.pairs) != len(
+                        status.collision_pairs
+                    ):
+                        coll.active = status.collision_active
+                        coll.pairs = [(a, b) for (a, b) in status.collision_pairs]
+
                     action = st.action
                     action.current_name = status.action_current
                     action.state = status.action_state

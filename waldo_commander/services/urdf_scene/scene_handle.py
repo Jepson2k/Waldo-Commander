@@ -9,10 +9,14 @@ scene. Each ``overlay`` deletes the group's prior contents and re-adds inside a
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
+
+import waldoctl
+from waldoctl import Shape
 
 from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import ui_state
@@ -44,6 +48,35 @@ _NULL_SCENE = _NullScene()
 class WcSceneHandle:
     def __init__(self) -> None:
         self._groups: dict[str, Any] = {}
+        self._shapes: list[Shape] = []
+
+    @property
+    def shapes(self) -> list[Shape]:
+        return self._shapes
+
+    @shapes.setter
+    def shapes(self, value: list[Shape]) -> None:
+        self._shapes = list(value)
+        us = ui_state.urdf_scene
+        if us is not None:
+            us.render_shapes(self._shapes)
+        self._push_shapes()
+
+    def _push_shapes(self) -> None:
+        """Best-effort push of the active shapes to the backend's checkers."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no event loop yet — local render only
+        loop.create_task(self._push_shapes_async())
+
+    async def _push_shapes_async(self) -> None:
+        try:
+            await waldoctl.commander.client.set_shapes(self._shapes)
+        except NotImplementedError:
+            pass  # backend without shape support — local render only
+        except Exception as e:
+            logger.warning("set_shapes push failed: %s", e)
 
     def _live_scene(self) -> Any | None:
         us = ui_state.urdf_scene

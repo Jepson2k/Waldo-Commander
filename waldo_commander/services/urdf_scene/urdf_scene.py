@@ -17,6 +17,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any, NamedTuple, Sequence
 from urllib.parse import urlparse
@@ -53,6 +54,25 @@ from .envelope_renderer import EnvelopeRenderer
 from .path_renderer import PathRenderer
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
+
+# Strip a Pinocchio geometry-index suffix: "L4_0" -> "L4".
+_GEOM_INDEX_RE = re.compile(r"_\d+$")
+
+
+def _strip_geom_index(name: str) -> str:
+    return _GEOM_INDEX_RE.sub("", name)
+
+
+def _normalize_tool_geom(name: str) -> str:
+    """Canonicalize a tool mesh name; the checker uses the ``_simplified``
+    collision variant while the scene loads the plain visual mesh."""
+    base = name.rsplit("/", 1)[-1].lower()
+    if base.endswith(".stl"):
+        stem = base[:-4]
+        if stem.endswith("_simplified"):
+            stem = stem[: -len("_simplified")]
+        return stem + ".stl"
+    return base
 
 
 def _lerp_hex(c1: tuple[int, int, int], c2: tuple[int, int, int], factor: float) -> str:
@@ -252,6 +272,18 @@ class UrdfScene(
         )
 
         self._appearance_mode: RobotAppearanceMode = RobotAppearanceMode.LIVE
+
+        # Collision highlight: name -> scene objects, so reported colliding
+        # geometry (arm links, tool meshes, user shapes) can be tinted red.
+        self._link_to_meshes: dict[str, list[Any]] = {}
+        self._tool_geom_to_meshes: dict[str, list[Any]] = {}
+        self._shape_objects: dict[str, Any] = {}
+        self._shapes_group: Any | None = None
+        self._colliding_meshes: set[Any] = set()  # objects currently tinted red
+        self._collision_saved: dict[
+            int, tuple[Any, float]
+        ] = {}  # id -> (color, opacity)
+        self._last_collision_sig: tuple | None = None
 
         # Editing mode state
         n = len(self.joint_names)
@@ -1377,6 +1409,102 @@ class UrdfScene(
         self._update_jog_ball_from_robot_state()
         self._update_envelope_from_robot_state()
         self.update_tool_animation()
+        self._update_collision_highlight()
+
+    def _update_collision_highlight(self) -> None:
+        """Tint predicted-colliding geometry red.
+
+        LIVE/SIMULATOR share the live pose, so the pairs come from the
+        controller (``status.collision`` — the arm stops just short of contact,
+        so they are the predicted-config pairs). EDITING shows a different pose;
+        its client-side highlight is a follow-up.
+        """
+        if self._appearance_mode == RobotAppearanceMode.EDITING:
+            return
+        self.set_colliding(waldoctl.commander.status.collision.pairs)
+
+    def _meshes_for_collision_name(self, name: str):
+        """Reported geometry name -> the scene objects to tint."""
+        if name.startswith("shape:"):
+            obj = self._shape_objects.get(name)
+            return (obj,) if obj is not None else ()
+        if name.lower().endswith(".stl"):
+            return self._tool_geom_to_meshes.get(_normalize_tool_geom(name), ())
+        return self._link_to_meshes.get(_strip_geom_index(name), ())
+
+    def set_colliding(self, pairs) -> None:
+        """Diff-tint reported colliding geometry red; restore cleared ones.
+
+        Red overrides the appearance-mode tint and is restored to the saved
+        (mode) color when it clears. A signature short-circuits the unchanged
+        50 Hz case; only newly (un)colliding meshes are touched, batched.
+        """
+        if not self.scene:
+            return
+        sig = tuple(sorted(tuple(p) for p in pairs))
+        if sig == self._last_collision_sig:
+            return
+        self._last_collision_sig = sig
+        target: set[Any] = set()
+        for a, b in pairs:
+            for nm in (a, b):
+                target.update(self._meshes_for_collision_name(nm))
+        if target == self._colliding_meshes:
+            return
+        to_add = target - self._colliding_meshes
+        to_remove = self._colliding_meshes - target
+        with batch_scene(self.scene):
+            for m in to_add:
+                self._collision_saved.setdefault(id(m), (m.color, m.opacity))
+                m.material(SceneColors.COLLISION_HEX, m.opacity)
+            for m in to_remove:
+                saved = self._collision_saved.pop(id(m), None)
+                if saved is not None:
+                    m.material(saved[0], saved[1])
+        self._colliding_meshes = target
+
+    def _make_shape_object(self, s):
+        """Build a scene primitive for a workspace shape (visual approximation)."""
+        sc = self.scene
+        k = s.kind
+        if k == "box":
+            return sc.box(s.x, s.y, s.z)
+        if k == "sphere":
+            return sc.sphere(s.radius)
+        if k in ("cylinder", "capsule"):
+            return sc.cylinder(s.radius, s.radius, s.length)
+        if k == "cone":
+            return sc.cylinder(0.0, s.radius, s.length)
+        if k == "ellipsoid":
+            return sc.sphere(s.radius_x).scale(
+                1.0, s.radius_y / s.radius_x, s.radius_z / s.radius_x
+            )
+        if k == "plane":
+            return sc.box(2.0, 2.0, 0.002)
+        return None
+
+    def render_shapes(self, shapes) -> None:
+        """(Re)draw the workspace keep-out shapes and map them for highlighting."""
+        if not self.scene:
+            return
+        with batch_scene(self.scene):
+            with self.scene:
+                if self._shapes_group is not None:
+                    self._safe_delete(self._shapes_group)
+                self._shape_objects.clear()
+                grp = self.scene.group().with_name("shapes")
+                self._shapes_group = grp
+                with grp:
+                    for s in shapes:
+                        obj = self._make_shape_object(s)
+                        if obj is None:
+                            continue
+                        obj.move(*s.pose[:3]).rotate(*s.pose[3:6])
+                        obj.material(SceneColors.SHAPE_HEX, 0.35)
+                        obj.with_name(f"shape:{s.name}")
+                        self._shape_objects[f"shape:{s.name}"] = obj
+        # Geometry changed — force the highlight to recompute next tick.
+        self._last_collision_sig = None
 
     def set_axis_value(self, joint_name: str, val: float) -> None:
         """Set a single joint axis value.
@@ -1543,6 +1671,7 @@ class UrdfScene(
             return
 
         # Remove old tool meshes.
+        old_tool = set(self._tool_meshes)
         for mesh in self._tool_meshes:
             self._safe_delete(mesh)
         self._tool_meshes.clear()
@@ -1554,6 +1683,13 @@ class UrdfScene(
         self._tool_motion_last = ()
         self._last_tool_engaged = None
         self._tool_has_motions = False
+        # Drop collision bookkeeping for the deleted tool meshes; force a recompute
+        # so new tool meshes re-tint if still colliding.
+        self._tool_geom_to_meshes.clear()
+        self._colliding_meshes -= old_tool
+        for m in old_tool:
+            self._collision_saved.pop(id(m), None)
+        self._last_collision_sig = None
 
         try:
             tool_spec = ui_state.active_robot.tools[tool_key]
@@ -1603,6 +1739,9 @@ class UrdfScene(
                     if color is not None:
                         obj.material(color, opacity)
                     self._tool_meshes.append(obj)
+                    self._tool_geom_to_meshes.setdefault(
+                        _normalize_tool_geom(filename), []
+                    ).append(obj)
                     if not is_moving:
                         self._tool_body_meshes.append(obj)
                     if role in motion_roles:
@@ -1731,6 +1870,11 @@ class UrdfScene(
             mesh.material(moving_color, opacity)
 
         logger.debug("Robot appearance mode set to %s", mode.value)
+        # The repaint above clobbered any red collision tint; drop the
+        # bookkeeping so the next tick re-applies it from the new mode base.
+        self._colliding_meshes.clear()
+        self._collision_saved.clear()
+        self._last_collision_sig = None
 
     def set_simulator_appearance(self, active: bool) -> None:
         """Apply or remove simulator visual appearance (amber ghosting).
@@ -1857,6 +2001,8 @@ class UrdfScene(
                 obj.material(material)
             # Tracked for simulator appearance changes.
             self._robot_meshes.append(obj)
+            # Tracked by link name so reported colliding links can be tinted red.
+            self._link_to_meshes.setdefault(link.name, []).append(obj)
 
     def _stl_to_url(self, stl_path: str) -> str:
         """Convert STL file path to URL, preferring _simplified variants if they exist."""

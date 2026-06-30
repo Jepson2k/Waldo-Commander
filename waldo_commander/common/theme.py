@@ -63,6 +63,12 @@ class SceneColors:
     # Edit mode / inactive gray
     EDIT_GRAY_HEX = "#525252"
 
+    # Predicted-collision highlight (theme-independent alarm red)
+    COLLISION_HEX = "#ff1744"
+
+    # Keep-out shape / barrier (translucent slate — red highlight stands out)
+    SHAPE_HEX = "#6d8ea0"
+
     # Tool body colors (teal family — distinct from arm in every mode)
     TOOL_BODY_HEX = "#2a9d8f"
     TOOL_BODY_SIM_HEX: str = TOOL_BODY_HEX
