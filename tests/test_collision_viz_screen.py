@@ -1,5 +1,5 @@
 """Browser-level render check for collision viz: a keep-out shape renders and
-turns red when the controller reports it colliding."""
+turns red when the EDITING pose collides with it (client-side checker)."""
 
 import time
 
@@ -23,40 +23,52 @@ return 'missing';
 @pytest.mark.browser
 @skip_webgl_macos_ci
 class TestCollisionVizScreen:
-    def _poll_color(self, screen, name: str, timeout: float = 4.0) -> str | None:
+    def _poll_color(
+        self, screen, name: str, want: str, timeout: float = 4.0
+    ) -> str | None:
         deadline = time.time() + timeout
         last = None
         while time.time() < deadline:
             last = screen.selenium.execute_script(_FIND_COLOR_JS, name)
-            if last not in (None, "missing"):
+            if last == want:
                 return last
             time.sleep(0.1)
         return last
 
     def test_shape_renders_and_turns_red_on_collision(self, class_screen) -> None:
+        import waldoctl
         from waldoctl import Box
         from waldo_commander.common.theme import SceneColors
+        from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
         from waldo_commander.state import ui_state
 
         screen_wait_for_scene_ready(class_screen)
         scene = ui_state.urdf_scene
         assert scene is not None
 
-        scene.render_shapes(
-            [Box(name="wall", x=0.2, y=0.2, z=0.2, pose=(0.3, 0.0, 0.3, 0, 0, 0))]
-        )
-        normal = self._poll_color(class_screen, "shape:wall")
-        assert normal == SceneColors.SHAPE_HEX.lstrip("#"), (
-            f"shape did not render with its base color (got {normal})"
-        )
+        try:
+            # A base-encasing box collides at any pose (the base never moves),
+            # so the EDITING-pose highlight is deterministic. EDITING is also
+            # race-free here: the status consumer's LIVE path (which would
+            # restore the tint from empty status pairs each frame) is bypassed.
+            waldoctl.commander.scene.shapes = [
+                Box(name="block", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
+            ]
+            normal = self._poll_color(
+                class_screen, "shape:block", SceneColors.SHAPE_HEX.lstrip("#")
+            )
+            assert normal == SceneColors.SHAPE_HEX.lstrip("#"), (
+                f"shape did not render with its base color (got {normal})"
+            )
 
-        # Drive the highlight directly: the live status consumer would otherwise
-        # race us and overwrite commander.status.collision back to empty. The
-        # consumer -> highlight path is covered by the user-fixture test.
-        link = next(n for n, m in scene._link_to_meshes.items() if m)
-        scene.set_colliding([(f"{link}_0", "shape:wall")])
-
-        red = self._poll_color(class_screen, "shape:wall")
-        assert red == SceneColors.COLLISION_HEX.lstrip("#"), (
-            f"shape did not turn red on collision (got {red})"
-        )
+            scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+            red = self._poll_color(
+                class_screen, "shape:block", SceneColors.COLLISION_HEX.lstrip("#")
+            )
+            assert red == SceneColors.COLLISION_HEX.lstrip("#"), (
+                f"shape did not turn red on collision (got {red})"
+            )
+        finally:
+            # The checker is process-global — never leak shapes/mode.
+            waldoctl.commander.scene.shapes = []
+            scene.set_appearance_mode(RobotAppearanceMode.LIVE)

@@ -58,6 +58,8 @@ logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  #
 # Strip a Pinocchio geometry-index suffix: "L4_0" -> "L4".
 _GEOM_INDEX_RE = re.compile(r"_\d+$")
 
+SHAPE_OPACITY = 0.35
+
 
 def _strip_geom_index(name: str) -> str:
     return _GEOM_INDEX_RE.sub("", name)
@@ -284,6 +286,9 @@ class UrdfScene(
             int, tuple[Any, float]
         ] = {}  # id -> (color, opacity)
         self._last_collision_sig: tuple | None = None
+        # EDITING pose whose client-side collision query is already reflected;
+        # None forces a recompute (pose, geometry, or mode changed).
+        self._editing_collision_q: tuple | None = None
 
         # Editing mode state
         n = len(self.joint_names)
@@ -1416,10 +1421,17 @@ class UrdfScene(
 
         LIVE/SIMULATOR share the live pose, so the pairs come from the
         controller (``status.collision`` — the arm stops just short of contact,
-        so they are the predicted-config pairs). EDITING shows a different pose;
-        its client-side highlight is a follow-up.
+        so they are the predicted-config pairs). EDITING shows a different pose
+        (the editing angles), so its pairs are queried client-side against this
+        process's checker (tool + shapes applied locally).
         """
         if self._appearance_mode == RobotAppearanceMode.EDITING:
+            q = tuple(self._editing_angles)
+            if q == self._editing_collision_q:
+                return
+            self._editing_collision_q = q
+            robot = ui_state.active_robot
+            self.set_colliding(robot.colliding_pairs(np.asarray(q, dtype=np.float64)))
             return
         self.set_colliding(waldoctl.commander.status.collision.pairs)
 
@@ -1491,6 +1503,12 @@ class UrdfScene(
             with self.scene:
                 if self._shapes_group is not None:
                     self._safe_delete(self._shapes_group)
+                # Drop collision bookkeeping for the deleted shape objects so a
+                # re-render mid-collision can't restore/tint a stale object.
+                old_shapes = set(self._shape_objects.values())
+                self._colliding_meshes -= old_shapes
+                for m in old_shapes:
+                    self._collision_saved.pop(id(m), None)
                 self._shape_objects.clear()
                 grp = self.scene.group().with_name("shapes")
                 self._shapes_group = grp
@@ -1500,11 +1518,14 @@ class UrdfScene(
                         if obj is None:
                             continue
                         obj.move(*s.pose[:3]).rotate(*s.pose[3:6])
-                        obj.material(SceneColors.SHAPE_HEX, 0.35)
+                        obj.material(SceneColors.SHAPE_HEX, SHAPE_OPACITY)
                         obj.with_name(f"shape:{s.name}")
                         self._shape_objects[f"shape:{s.name}"] = obj
         # Geometry changed — force the highlight to recompute next tick.
         self._last_collision_sig = None
+        self._editing_collision_q = None
+        if self._appearance_mode == RobotAppearanceMode.EDITING:
+            self._update_collision_highlight()
 
     def set_axis_value(self, joint_name: str, val: float) -> None:
         """Set a single joint axis value.
@@ -1572,6 +1593,9 @@ class UrdfScene(
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             self._apply_joint_angles(self._editing_angles)
             self._update_tcp_ball_position()
+            # The status loop skips scene updates in EDITING, so the collision
+            # highlight is driven from here (per scrub/pose change).
+            self._update_collision_highlight()
 
     def get_editing_angles(self) -> list[float]:
         """Get current editing joint angles.
@@ -1690,6 +1714,7 @@ class UrdfScene(
         for m in old_tool:
             self._collision_saved.pop(id(m), None)
         self._last_collision_sig = None
+        self._editing_collision_q = None
 
         try:
             tool_spec = ui_state.active_robot.tools[tool_key]
@@ -1869,12 +1894,22 @@ class UrdfScene(
         for mesh in moving_meshes:
             mesh.material(moving_color, opacity)
 
+        # Shapes keep their own base color, but must be repainted with the
+        # arm/tool so a colliding one isn't re-snapshotted with red as its base.
+        for obj in self._shape_objects.values():
+            obj.material(SceneColors.SHAPE_HEX, SHAPE_OPACITY)
+
         logger.debug("Robot appearance mode set to %s", mode.value)
         # The repaint above clobbered any red collision tint; drop the
         # bookkeeping so the next tick re-applies it from the new mode base.
         self._colliding_meshes.clear()
         self._collision_saved.clear()
         self._last_collision_sig = None
+        self._editing_collision_q = None
+        if mode == RobotAppearanceMode.EDITING:
+            # The status loop won't tick the scene in EDITING; show the current
+            # editing pose's collisions immediately.
+            self._update_collision_highlight()
 
     def set_simulator_appearance(self, active: bool) -> None:
         """Apply or remove simulator visual appearance (amber ghosting).

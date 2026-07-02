@@ -52,7 +52,7 @@ from waldo_commander.components.io import IoPage
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
-from waldo_commander.constants import config, DEFAULT_CAMERA
+from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
     warmup_pipelines,
@@ -485,11 +485,6 @@ def update_ui_from_status() -> None:
         robot_state.notify_changed()
 
 
-# Core tab ids the frontend owns; a plugin claiming one would create duplicate
-# Quasar tab / tab_panel names and corrupt the layout, so discovery skips them.
-_RESERVED_TAB_IDS = frozenset({"program", "io", "gripper", "response", "log", "help"})
-
-
 def _discover_plugin_panels() -> None:
     """Populate ``ui_state.plugin_panels`` from the ``waldoctl.panels`` group.
 
@@ -509,7 +504,7 @@ def _discover_plugin_panels() -> None:
     for cls in iter_plugin_panels():
         if cls.id in disabled:
             continue
-        if cls.id in _RESERVED_TAB_IDS:
+        if cls.id in RESERVED_TAB_IDS:
             logger.warning(
                 "Skipping plugin panel %s: id %r collides with a core tab",
                 cls.__name__,
@@ -1561,11 +1556,15 @@ async def _status_consumer() -> None:
                             cart_en_shadow[frame] = arr.copy()
 
                     coll = st.collision
-                    if coll.active != status.collision_active or len(coll.pairs) != len(
-                        status.collision_pairs
+                    # Content compare (both hold (str, str) tuples) — a length
+                    # check misses same-length pair swaps. Copy: the decoder
+                    # refills status.collision_pairs in place.
+                    if (
+                        coll.active != status.collision_active
+                        or coll.pairs != status.collision_pairs
                     ):
                         coll.active = status.collision_active
-                        coll.pairs = [(a, b) for (a, b) in status.collision_pairs]
+                        coll.pairs = list(status.collision_pairs)
 
                     action = st.action
                     action.current_name = status.action_current

@@ -31,6 +31,7 @@ from waldo_commander.state import (
     ui_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
+from waldo_commander.common.theme import SceneColors
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
@@ -349,6 +350,26 @@ class PathVisualizer:
         self._simulation_count = 0
 
     @staticmethod
+    def _mark_colliding_segments(robot, segments: list[PathSegment]) -> None:
+        """Recolor segments whose trajectory collides (self / tool / shape).
+
+        Checked against this process's checker — the dry run only validates IK.
+        Each colliding segment records its first colliding waypoint so the
+        scrub bar / editing pose can land on it.
+        """
+        if not robot.has_collision_checking:
+            return
+        for seg in segments:
+            if not seg.joint_trajectory:
+                continue
+            idx = robot.check_trajectory(
+                np.asarray(seg.joint_trajectory, dtype=np.float64)
+            )
+            if idx >= 0:
+                seg.collision_step = idx
+                seg.color = SceneColors.COLLISION_HEX
+
+    @staticmethod
     def _segments_match(old: list[PathSegment], new: list[PathSegment]) -> bool:
         """Fast check whether two segment lists are visually identical."""
         if len(old) != len(new):
@@ -539,6 +560,9 @@ class PathVisualizer:
 
             if target_tab:
                 new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
+                # Mark colliding segments before the unchanged-compare so stored
+                # (already-marked) results match without re-flashing the scene.
+                self._mark_colliding_segments(robot, new_segments)
                 new_targets = [ProgramTarget.from_dict(d) for d in result["targets"]]
                 new_tool_actions = result.get("tool_actions", [])
                 new_tool_selections = result.get("tool_selections", [])

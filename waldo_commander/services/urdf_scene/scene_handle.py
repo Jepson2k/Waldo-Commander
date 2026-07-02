@@ -57,6 +57,9 @@ class WcSceneHandle:
     @shapes.setter
     def shapes(self, value: list[Shape]) -> None:
         self._shapes = list(value)
+        # Local checker first: preview / editing-pose collision queries in this
+        # process must see the same collision world the backend is given.
+        ui_state.active_robot.apply_shapes(self._shapes)
         us = ui_state.urdf_scene
         if us is not None:
             us.render_shapes(self._shapes)
