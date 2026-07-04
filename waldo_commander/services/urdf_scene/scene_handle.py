@@ -56,17 +56,19 @@ class WcSceneHandle:
 
     @shapes.setter
     def shapes(self, value: list[Shape]) -> None:
-        self._shapes = list(value)
-        # Local checker first: preview / editing-pose collision queries in this
-        # process must see the same collision world the backend is given.
-        ui_state.active_robot.apply_shapes(self._shapes)
+        # Local checker first — it validates (e.g. duplicate names raise with
+        # nothing mutated anywhere) and the preview / editing-pose collision
+        # queries in this process must see the same world the backend is given.
+        shapes = list(value)
+        ui_state.active_robot.apply_shapes(shapes)
+        self._shapes = shapes
         us = ui_state.urdf_scene
         if us is not None:
             us.render_shapes(self._shapes)
         self._push_shapes()
 
     def _push_shapes(self) -> None:
-        """Best-effort push of the active shapes to the backend's checkers."""
+        """Push the active shapes to the backend's checkers (retried)."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -74,12 +76,24 @@ class WcSceneHandle:
         loop.create_task(self._push_shapes_async())
 
     async def _push_shapes_async(self) -> None:
-        try:
-            await waldoctl.commander.client.set_shapes(self._shapes)
-        except NotImplementedError:
-            pass  # backend without shape support — local render only
-        except Exception as e:
-            logger.warning("set_shapes push failed: %s", e)
+        shapes = self._shapes
+        for attempt in range(3):
+            try:
+                await waldoctl.commander.client.set_shapes(shapes)
+                return
+            except NotImplementedError:
+                return  # backend without shape support — local render only
+            except Exception as e:
+                if shapes is not self._shapes:
+                    return  # superseded by a newer assignment — let its push win
+                if attempt == 2:
+                    logger.error(
+                        "set_shapes push failed — displayed keep-outs are NOT "
+                        "enforced by the controller: %s",
+                        e,
+                    )
+                    return
+                await asyncio.sleep(0.5 * (attempt + 1))
 
     def _live_scene(self) -> Any | None:
         us = ui_state.urdf_scene

@@ -20,6 +20,7 @@ from typing import Any, cast
 import numpy as np
 
 from nicegui import run
+from nicegui import app as ng_app
 
 import waldoctl
 from waldoctl import LinearMotion
@@ -55,6 +56,54 @@ def _warm_worker(backend_package: str = "parol6") -> bool:
     from waldo_commander.services.path_preview_client import PathPreviewClient  # noqa: F401
 
     return True
+
+
+def _mark_colliding_segments(
+    robot,
+    segment_dicts: list[dict],
+    tool_selections: list,
+    shapes_wire: list[tuple] | None,
+    initial_tool: tuple[str, str] | None,
+) -> None:
+    """Recolor segment dicts whose joint trajectory collides (self/tool/shape).
+
+    Runs in the dry-run subprocess against its own checker: keep-out shapes are
+    applied from wire form and the tool geometry replays the dry run's
+    ``select_tool`` boundaries, so each segment is checked with the tool that
+    would actually be attached (the dry run itself only validates IK). Each hit
+    records its first colliding waypoint in ``collision_step``.
+
+    The checker's tool is restored to ``initial_tool`` on exit — the rare
+    in-process fallback shares the live checker.
+    """
+    if not robot.has_collision_checking:
+        return
+    from waldoctl import shape_from_wire
+
+    if shapes_wire:
+        robot.apply_shapes([shape_from_wire(*t) for t in shapes_wire])
+    tool_key, variant = initial_tool or ("NONE", "")
+    try:
+        robot.set_active_tool(tool_key, variant_key=variant or None)
+        # A selection recorded at segment_index i applies to segments after i.
+        boundaries = sorted(
+            (ts.segment_index, ts.tool_key, ts.variant_key) for ts in tool_selections
+        )
+        bi = 0
+        for idx, d in enumerate(segment_dicts):
+            while bi < len(boundaries) and boundaries[bi][0] < idx:
+                _, b_tool, b_variant = boundaries[bi]
+                robot.set_active_tool(b_tool, variant_key=b_variant or None)
+                bi += 1
+            jt = d.get("joint_trajectory")
+            if not jt:
+                continue
+            hit = robot.check_trajectory(np.asarray(jt, dtype=np.float64))
+            if hit >= 0:
+                d["collision_step"] = int(hit)
+                d["color"] = SceneColors.COLLISION_HEX
+    finally:
+        robot.set_active_tool(tool_key, variant_key=variant or None)
 
 
 def _is_test_environment() -> bool:
@@ -108,6 +157,8 @@ def _run_simulation_isolated(
     backend_package: str = "parol6",
     dry_run_client_cls: type | None = None,
     tool_meta_registry: dict[str, dict] | None = None,
+    shapes_wire: list[tuple] | None = None,
+    initial_tool: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -330,6 +381,22 @@ def _run_simulation_isolated(
         del local_segments[max_segments:]
         truncated = True
 
+    # Collision marking runs here (normally a subprocess) so 1000s of C++
+    # checks never block the UI event loop and mid-script tool selections are
+    # honored. A marking failure must not discard an otherwise-good dry run.
+    try:
+        from waldo_commander.profiles import get_robot
+
+        _mark_colliding_segments(
+            get_robot(backend_package),
+            local_segments,
+            local_tool_selections,
+            shapes_wire,
+            initial_tool,
+        )
+    except Exception as e:
+        logger.warning("Preview collision marking failed: %s", e)
+
     return {
         "segments": local_segments,
         "targets": local_targets,
@@ -348,26 +415,6 @@ class PathVisualizer:
     def __init__(self):
         self._simulation_lock = asyncio.Lock()
         self._simulation_count = 0
-
-    @staticmethod
-    def _mark_colliding_segments(robot, segments: list[PathSegment]) -> None:
-        """Recolor segments whose trajectory collides (self / tool / shape).
-
-        Checked against this process's checker — the dry run only validates IK.
-        Each colliding segment records its first colliding waypoint so the
-        scrub bar / editing pose can land on it.
-        """
-        if not robot.has_collision_checking:
-            return
-        for seg in segments:
-            if not seg.joint_trajectory:
-                continue
-            idx = robot.check_trajectory(
-                np.asarray(seg.joint_trajectory, dtype=np.float64)
-            )
-            if idx >= 0:
-                seg.collision_step = idx
-                seg.color = SceneColors.COLLISION_HEX
 
     @staticmethod
     def _segments_match(old: list[PathSegment], new: list[PathSegment]) -> bool:
@@ -490,6 +537,21 @@ class PathVisualizer:
                 except (KeyError, AttributeError):
                     pass
 
+            # Collision-marking inputs: the live shapes (wire form crosses the
+            # process boundary) and the live tool as the checker's starting
+            # state — matching what execution-time guards would use.
+            scene_handle = waldoctl.commander.scene
+            shapes_wire = (
+                [s.to_wire() for s in scene_handle.shapes]
+                if scene_handle is not None
+                else []
+            )
+            live_tool_key = waldoctl.commander.status.tool.key or "NONE"
+            initial_tool = (
+                live_tool_key,
+                ng_app.storage.general.get(f"tool_variant_{live_tool_key}", "") or "",
+            )
+
             try:
                 result = await asyncio.wait_for(
                     run.cpu_bound(
@@ -500,6 +562,8 @@ class PathVisualizer:
                         backend_pkg,
                         dr_cls,
                         tool_meta_registry or None,
+                        shapes_wire or None,
+                        initial_tool,
                     ),
                     timeout=SIMULATION_TIMEOUT_S
                     + 2.0,  # Extra buffer for process overhead
@@ -523,6 +587,8 @@ class PathVisualizer:
                         backend_pkg,
                         dr_cls,
                         tool_meta_registry or None,
+                        shapes_wire or None,
+                        initial_tool,
                     )
                 except Exception as e2:
                     logger.error("Sync simulation also failed: %s", e2)
@@ -560,9 +626,6 @@ class PathVisualizer:
 
             if target_tab:
                 new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
-                # Mark colliding segments before the unchanged-compare so stored
-                # (already-marked) results match without re-flashing the scene.
-                self._mark_colliding_segments(robot, new_segments)
                 new_targets = [ProgramTarget.from_dict(d) for d in result["targets"]]
                 new_tool_actions = result.get("tool_actions", [])
                 new_tool_selections = result.get("tool_selections", [])

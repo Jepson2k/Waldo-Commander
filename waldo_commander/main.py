@@ -256,6 +256,13 @@ async def initialize_urdf_scene() -> None:
 
     control_panel.sync_gizmo_to_urdf()
 
+    # Keep-out shapes persist per-process on commander.scene but this scene is
+    # rebuilt per page load — re-render them or barriers turn invisible while
+    # still enforced.
+    scene_handle = waldoctl.commander.scene
+    if scene_handle is not None and scene_handle.shapes:
+        ui_state.urdf_scene.render_shapes(scene_handle.shapes)
+
     # Scene wasn't ready earlier, so apply simulator appearance now.
     if waldoctl.commander.status.simulator_active:
         ui_state.urdf_scene.set_simulator_appearance(True)
@@ -1090,6 +1097,18 @@ def _register_handlers() -> None:
                 )
         except Exception as e:
             logger.warning("startup: select_tool failed: %s", e)
+
+        # Re-push keep-out shapes so a restarted controller (whose checkers
+        # start empty) enforces what the scene displays.
+        try:
+            scene_handle = waldoctl.commander.scene
+            if scene_handle is not None and scene_handle.shapes:
+                await client.set_shapes(scene_handle.shapes)
+                logger.debug(
+                    "startup: pushed %d keep-out shape(s)", len(scene_handle.shapes)
+                )
+        except Exception as e:
+            logger.warning("startup: set_shapes failed: %s", e)
 
     @ng_app.on_startup
     async def _on_startup() -> None:

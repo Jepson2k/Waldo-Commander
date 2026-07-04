@@ -68,7 +68,22 @@ class TestCollisionVizScreen:
             assert red == SceneColors.COLLISION_HEX.lstrip("#"), (
                 f"shape did not turn red on collision (got {red})"
             )
+            scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+
+            # Shapes persist on commander.scene across page loads; the rebuilt
+            # scene must re-render them or the barrier turns invisible while
+            # still enforced.
+            class_screen.selenium.refresh()
+            screen_wait_for_scene_ready(class_screen)
+            after_reload = self._poll_color(
+                class_screen, "shape:block", SceneColors.SHAPE_HEX.lstrip("#")
+            )
+            assert after_reload == SceneColors.SHAPE_HEX.lstrip("#"), (
+                f"shape not re-rendered after page reload (got {after_reload})"
+            )
         finally:
             # The checker is process-global — never leak shapes/mode.
             waldoctl.commander.scene.shapes = []
-            scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+            current = ui_state.urdf_scene
+            if current is not None:
+                current.set_appearance_mode(RobotAppearanceMode.LIVE)

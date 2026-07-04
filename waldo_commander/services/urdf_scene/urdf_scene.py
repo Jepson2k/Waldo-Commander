@@ -25,6 +25,7 @@ from urllib.request import url2pathname
 
 import numpy as np
 from nicegui import ui, app
+from nicegui.elements.scene.scene_object3d import Object3D
 
 import waldoctl
 from waldoctl import LinearMotion, RotaryMotion, MeshRole, PartMotion
@@ -59,6 +60,49 @@ logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  #
 _GEOM_INDEX_RE = re.compile(r"_\d+$")
 
 SHAPE_OPACITY = 0.35
+
+# three.js cylinders/cones extend along +Y; coal's primitives are Z-aligned.
+# Rx(+90°) maps +Y -> +Z so the drawn shape matches the enforced volume.
+_Y_TO_Z_UP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+
+
+def _z_align_rotation(n: np.ndarray) -> np.ndarray:
+    """Rotation taking +Z to the unit vector ``n`` (Rodrigues; 180° safe)."""
+    z = np.array([0.0, 0.0, 1.0])
+    v = np.cross(z, n)
+    c = float(np.dot(z, n))
+    s2 = float(np.dot(v, v))
+    if s2 < 1e-24:
+        return np.eye(3) if c > 0.0 else np.diag([1.0, -1.0, -1.0])
+    k = np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+    return np.eye(3) + k + k @ k * ((1.0 - c) / s2)
+
+
+def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]]:
+    """World position + rotation matrix for a shape's scene object.
+
+    Corrects the Y-up axis for cylinder/capsule/cone and places a plane's slab
+    on its halfspace surface (``n·x = offset`` in the shape's local frame,
+    composed with the pose) — so what is drawn is what the checker enforces.
+    """
+    R_pose = np.array(
+        Object3D.rotation_matrix_from_euler(s.pose[3], s.pose[4], s.pose[5])
+    )
+    pos = np.asarray(s.pose[:3], dtype=np.float64)
+    if s.kind in ("cylinder", "capsule", "cone"):
+        R = R_pose @ _Y_TO_Z_UP
+    elif s.kind == "plane":
+        # The slab is a thin box whose local z is its normal — align it to n.
+        n = np.array([s.nx, s.ny, s.nz], dtype=np.float64)
+        norm = float(np.linalg.norm(n))
+        n = n / norm if norm > 1e-12 else np.array([0.0, 0.0, 1.0])
+        R = R_pose @ _z_align_rotation(n)
+        pos = pos + R_pose @ (n * s.offset)
+    else:
+        R = R_pose
+    return (float(pos[0]), float(pos[1]), float(pos[2])), [
+        [float(v) for v in row] for row in R
+    ]
 
 
 def _strip_geom_index(name: str) -> str:
@@ -1517,7 +1561,8 @@ class UrdfScene(
                         obj = self._make_shape_object(s)
                         if obj is None:
                             continue
-                        obj.move(*s.pose[:3]).rotate(*s.pose[3:6])
+                        pos, rot = _shape_render_pose(s)
+                        obj.move(*pos).rotate_R(rot)
                         obj.material(SceneColors.SHAPE_HEX, SHAPE_OPACITY)
                         obj.with_name(f"shape:{s.name}")
                         self._shape_objects[f"shape:{s.name}"] = obj
@@ -1860,15 +1905,25 @@ class UrdfScene(
 
         if self._tool_has_motions:
             # Tools with motions: activated color only on moving parts.
-            moving_meshes = {m for ms in self._tool_motion_meshes.values() for m in ms}
+            repainted = {m for ms in self._tool_motion_meshes.values() for m in ms}
             color = moving_color if engaged else body_color
-            for mesh in moving_meshes:
+            for mesh in repainted:
                 mesh.material(color, opacity)
         else:
             # Binary tools without motions (vacuum, etc.): color the whole tool.
+            repainted = set(self._tool_meshes)
             color = moving_color if engaged else body_color
-            for mesh in self._tool_meshes:
+            for mesh in repainted:
                 mesh.material(color, opacity)
+
+        # The repaint clobbered any red collision tint on these meshes and
+        # their saved base color is now stale — drop the bookkeeping so the
+        # next tick re-tints/restores from the new engaged/disengaged base.
+        if repainted & self._colliding_meshes:
+            self._colliding_meshes -= repainted
+            for m in repainted:
+                self._collision_saved.pop(id(m), None)
+            self._last_collision_sig = None
 
     def set_appearance_mode(self, mode: RobotAppearanceMode) -> None:
         """Set robot appearance mode.

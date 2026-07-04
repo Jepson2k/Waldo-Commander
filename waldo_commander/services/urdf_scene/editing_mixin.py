@@ -75,6 +75,7 @@ class EditingMixin:
     _update_envelope_from_robot_state: Any
     _apply_joint_angles: Any
     _ensure_ik_solver: Any
+    _update_collision_highlight: Any
 
     def _init_editing_state(self) -> None:
         """Initialize all editing state variables."""
@@ -277,6 +278,7 @@ class EditingMixin:
             self._editing_angles[joint_index] = angle_change
             self._update_tcp_ball_position()
             self._sync_robot_state_from_editing()
+            self._update_collision_highlight()
             if self._current_editing_type:
                 self._update_edit_bar_values(self._current_editing_type)
 
@@ -289,6 +291,7 @@ class EditingMixin:
         if angles is not None and len(angles) >= len(self.joint_names):
             self._editing_angles = list(angles)
             self._sync_robot_state_from_editing()
+            self._update_collision_highlight()
             if self._current_editing_type:
                 self._update_edit_bar_values(self._current_editing_type)
 
