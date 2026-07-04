@@ -93,11 +93,18 @@ def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]
         R = R_pose @ _Y_TO_Z_UP
     elif s.kind == "plane":
         # The slab is a thin box whose local z is its normal — align it to n.
+        # coal normalizes Halfspace(n, d) to (n/|n|, d/|n|), so the enforced
+        # surface sits at offset/|n| along n̂ — scale the offset to match.
         n = np.array([s.nx, s.ny, s.nz], dtype=np.float64)
         norm = float(np.linalg.norm(n))
-        n = n / norm if norm > 1e-12 else np.array([0.0, 0.0, 1.0])
+        if norm > 1e-12:
+            n = n / norm
+            surface_offset = s.offset / norm
+        else:
+            n = np.array([0.0, 0.0, 1.0])
+            surface_offset = s.offset
         R = R_pose @ _z_align_rotation(n)
-        pos = pos + R_pose @ (n * s.offset)
+        pos = pos + R_pose @ (n * surface_offset)
     else:
         R = R_pose
     return (float(pos[0]), float(pos[1]), float(pos[2])), [
@@ -1532,9 +1539,10 @@ class UrdfScene(
         if k == "cone":
             return sc.cylinder(0.0, s.radius, s.length)
         if k == "ellipsoid":
-            return sc.sphere(s.radius_x).scale(
-                1.0, s.radius_y / s.radius_x, s.radius_z / s.radius_x
-            )
+            # Degenerate radii render as a hair-thin ellipsoid instead of
+            # dividing by zero (the checker accepts them; keep parity).
+            rx = s.radius_x if s.radius_x > 0 else 1e-6
+            return sc.sphere(rx).scale(1.0, s.radius_y / rx, s.radius_z / rx)
         if k == "plane":
             return sc.box(2.0, 2.0, 0.002)
         return None

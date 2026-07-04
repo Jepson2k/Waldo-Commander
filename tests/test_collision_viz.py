@@ -61,14 +61,17 @@ async def test_shapes_render_and_can_be_highlighted(user: User) -> None:
 
     scene = ui_state.urdf_scene
     assert scene is not None
-    from waldoctl import Cylinder
+    from waldoctl import Cylinder, Ellipsoid
 
     scene.render_shapes(
         [
             Box(name="wall", x=0.1, y=0.1, z=0.1, pose=(0.3, 0.0, 0.3, 0, 0, 0)),
             Cylinder(name="post", radius=0.05, length=0.5),
+            # Degenerate radius must render harmlessly, not ZeroDivisionError.
+            Ellipsoid(name="dot", radius_x=0.0, radius_y=0.1, radius_z=0.1),
         ]
     )
+    assert "shape:dot" in scene._shape_objects
     assert "shape:wall" in scene._shape_objects
     shape_obj = scene._shape_objects["shape:wall"]
     assert shape_obj.color == SceneColors.SHAPE_HEX
@@ -123,9 +126,8 @@ async def test_editing_highlight_and_preview_marking_via_local_checker(
 
     try:
         # A base-encasing box collides at q=0 — deterministic at any test pose.
-        waldoctl.commander.scene.shapes = [
-            Box(name="block", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
-        ]
+        block = Box(name="block", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
+        waldoctl.commander.scene.shapes = [block]
         import numpy as np
 
         pairs = robot.colliding_pairs(np.zeros(6))
@@ -167,7 +169,11 @@ async def test_editing_highlight_and_preview_marking_via_local_checker(
             "is_valid": True,
             "line_number": 2,
         }
-        _mark_colliding_segments(robot, [seg, untouched], [], None, None)
+        # The marking applies the passed world explicitly (a reused pool
+        # worker's checker must never inherit a previous run's shapes).
+        _mark_colliding_segments(
+            robot, [seg, untouched], [], [tuple(block.to_wire())], None
+        )
         assert seg["color"] == SceneColors.COLLISION_HEX
         assert seg["collision_step"] == 0
         assert untouched["color"] == "#00ff00"
@@ -223,6 +229,16 @@ def test_preview_marking_replays_tool_boundaries() -> None:
     assert segs[2]["collision_step"] == 0
     assert robot.tool == "NONE"  # restored to the initial tool
 
+    # Back-to-back selections (same segment_index) must replay chronologically
+    # — the LAST recorded tool wins, not the alphabetically-last.
+    segs = [seg(1), seg(2)]
+    sels = [
+        ToolSelection(tool_key="SSG-48", variant_key="", segment_index=0),
+        ToolSelection(tool_key="VACUUM", variant_key="", segment_index=0),
+    ]
+    _mark_colliding_segments(_FakeRobot(), segs, sels, None, ("NONE", ""))
+    assert "collision_step" not in segs[1]  # checked with VACUUM, not SSG-48
+
 
 def test_shape_render_pose_matches_enforced_geometry() -> None:
     """Cylinders stand along coal's Z axis and planes sit on their halfspace
@@ -241,6 +257,11 @@ def test_shape_render_pose_matches_enforced_geometry() -> None:
     pos, rot = _shape_render_pose(Plane(name="ceil", nx=0, ny=0, nz=1, offset=0.4))
     assert np.allclose(pos, (0.0, 0.0, 0.4))
     assert np.allclose(rot, np.eye(3))
+
+    # Non-unit normal: coal normalizes Halfspace(n, d) to (n/|n|, d/|n|), so
+    # (0,0,2), offset 0.8 enforces z <= 0.4 — the slab must render there.
+    pos, rot = _shape_render_pose(Plane(name="c2", nx=0, ny=0, nz=2, offset=0.8))
+    assert np.allclose(pos, (0.0, 0.0, 0.4))
 
     # x-normal wall at x=0.2: slab normal (its local z) maps to +x.
     pos, rot = _shape_render_pose(Plane(name="wall", nx=1, ny=0, nz=0, offset=0.2))
@@ -281,3 +302,38 @@ async def test_engaged_repaint_keeps_collision_highlight(user: User) -> None:
     coll.pairs = []
     scene.update_from_robot_state()
     assert mesh.color != SceneColors.COLLISION_HEX  # restored, not stuck red
+
+
+async def test_stale_shape_push_never_overwrites_a_newer_one(monkeypatch) -> None:
+    """A retry waking after backoff must re-check supersession BEFORE pushing —
+    otherwise a failed old push can land after a newer successful one, leaving
+    the controller enforcing a world the UI no longer displays."""
+    import waldoctl
+    from waldo_commander.services.urdf_scene import scene_handle as sh
+
+    pushed: list[list] = []
+    fail_first = True
+
+    class _Client:
+        async def set_shapes(self, shapes):
+            nonlocal fail_first
+            if fail_first:
+                fail_first = False
+                raise ConnectionError("controller briefly unreachable")
+            pushed.append(list(shapes))
+            return 0
+
+    # Patch the client on the locator-resolved commander instance — NEVER
+    # monkeypatch `waldoctl.commander` itself: that materializes a module
+    # attribute which permanently shadows the PEP 562 locator on teardown.
+    monkeypatch.setattr(waldoctl.commander, "client", _Client())
+
+    handle = sh.WcSceneHandle.__new__(sh.WcSceneHandle)  # no app storage needed
+    handle._shapes = ["A"]
+
+    async def _backoff_with_new_assignment(_seconds: float) -> None:
+        handle._shapes = ["B"]  # newer world lands during the backoff window
+
+    monkeypatch.setattr(sh.asyncio, "sleep", _backoff_with_new_assignment)
+    await sh.WcSceneHandle._push_shapes_async(handle)
+    assert pushed == []  # the stale "A" retry bailed instead of pushing

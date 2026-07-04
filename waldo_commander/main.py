@@ -67,7 +67,10 @@ from waldo_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
-from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
+from waldo_commander.services.urdf_scene.scene_handle import (
+    SHAPES_STORAGE_KEY,
+    WcSceneHandle,
+)
 from waldo_commander.services.action_log import action_log_service
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
@@ -374,6 +377,14 @@ async def check_ping() -> None:
                 getattr(result, "hardware_connected", "N/A"),
                 result,
             )
+            if new_ok:
+                # A reconnect may be a RESTARTED controller whose checkers are
+                # empty; re-sync the keep-out world so what is displayed is
+                # enforced (shape state is not part of the status stream).
+                # Reassignment drives the full setter: local apply + push.
+                scene_handle = waldoctl.commander.scene
+                if scene_handle is not None and scene_handle.shapes:
+                    scene_handle.shapes = scene_handle.shapes
         ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
@@ -1773,6 +1784,17 @@ def main():
     commander.settings.plugins.disabled_panels = list(
         ng_app.storage.general.get("plugins/disabled_panels", [])
     )
+
+    # Restore keep-out shapes from the prior session; the setter re-applies
+    # them locally and the startup push re-enforces them on the controller.
+    stored_shapes = ng_app.storage.general.get(SHAPES_STORAGE_KEY, [])
+    scene_handle = commander.scene
+    if stored_shapes and scene_handle is not None:
+        try:
+            scene_handle.shapes = [waldoctl.shape_from_wire(*t) for t in stored_shapes]
+        except (ValueError, KeyError, TypeError) as e:
+            logger.warning("Dropping unreadable persisted shapes: %s", e)
+            ng_app.storage.general.pop(SHAPES_STORAGE_KEY, None)
 
     configure_logging(config.log_level)
     logger.debug(

@@ -80,15 +80,19 @@ def _mark_colliding_segments(
         return
     from waldoctl import shape_from_wire
 
-    if shapes_wire:
-        robot.apply_shapes([shape_from_wire(*t) for t in shapes_wire])
+    # Unconditional — including the EMPTY set: a reused pool worker keeps its
+    # process-global checker between runs, so a cleared world must clear it.
+    robot.apply_shapes([shape_from_wire(*t) for t in shapes_wire or []])
     tool_key, variant = initial_tool or ("NONE", "")
     try:
         robot.set_active_tool(tool_key, variant_key=variant or None)
         # A selection recorded at segment_index i applies to segments after i.
-        boundaries = sorted(
+        # Recorded order IS chronological (indexes are non-decreasing) — a sort
+        # would reorder same-index back-to-back selections and replay the
+        # wrong tool.
+        boundaries = [
             (ts.segment_index, ts.tool_key, ts.variant_key) for ts in tool_selections
-        )
+        ]
         bi = 0
         for idx, d in enumerate(segment_dicts):
             while bi < len(boundaries) and boundaries[bi][0] < idx:
@@ -562,7 +566,7 @@ class PathVisualizer:
                         backend_pkg,
                         dr_cls,
                         tool_meta_registry or None,
-                        shapes_wire or None,
+                        shapes_wire,
                         initial_tool,
                     ),
                     timeout=SIMULATION_TIMEOUT_S
@@ -587,7 +591,7 @@ class PathVisualizer:
                         backend_pkg,
                         dr_cls,
                         tool_meta_registry or None,
-                        shapes_wire or None,
+                        shapes_wire,
                         initial_tool,
                     )
                 except Exception as e2:

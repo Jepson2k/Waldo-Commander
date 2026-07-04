@@ -16,12 +16,15 @@ from contextlib import contextmanager
 from typing import Any
 
 import waldoctl
+from nicegui import app
 from waldoctl import Shape
 
 from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import ui_state
 
 logger = logging.getLogger(__name__)
+
+SHAPES_STORAGE_KEY = "scene/shapes"
 
 
 class _NullScene:
@@ -56,16 +59,31 @@ class WcSceneHandle:
 
     @shapes.setter
     def shapes(self, value: list[Shape]) -> None:
-        # Local checker first — it validates (e.g. duplicate names raise with
+        # Local checker first — it validates (invalid input raises with
         # nothing mutated anywhere) and the preview / editing-pose collision
         # queries in this process must see the same world the backend is given.
         shapes = list(value)
         ui_state.active_robot.apply_shapes(shapes)
         self._shapes = shapes
+        self._persist()
+        # Enforcement before cosmetics: the backend push must never be lost to
+        # a scene/render problem.
+        self._push_shapes()
         us = ui_state.urdf_scene
         if us is not None:
-            us.render_shapes(self._shapes)
-        self._push_shapes()
+            try:
+                us.render_shapes(self._shapes)
+            except Exception:
+                logger.exception("Keep-out shape render failed (still enforced)")
+
+    def _persist(self) -> None:
+        """Store the shapes so a restarted frontend restores + re-pushes them."""
+        try:
+            app.storage.general[SHAPES_STORAGE_KEY] = [
+                list(s.to_wire()) for s in self._shapes
+            ]
+        except RuntimeError:
+            pass  # storage not initialized (bare unit test) — session-only
 
     def _push_shapes(self) -> None:
         """Push the active shapes to the backend's checkers (retried)."""
@@ -78,14 +96,16 @@ class WcSceneHandle:
     async def _push_shapes_async(self) -> None:
         shapes = self._shapes
         for attempt in range(3):
+            # Re-check before EVERY attempt: a retry waking after backoff must
+            # not overwrite a newer assignment's already-completed push.
+            if shapes is not self._shapes:
+                return
             try:
                 await waldoctl.commander.client.set_shapes(shapes)
                 return
             except NotImplementedError:
                 return  # backend without shape support — local render only
             except Exception as e:
-                if shapes is not self._shapes:
-                    return  # superseded by a newer assignment — let its push win
                 if attempt == 2:
                     logger.error(
                         "set_shapes push failed — displayed keep-outs are NOT "
