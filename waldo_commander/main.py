@@ -67,10 +67,7 @@ from waldo_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
-from waldo_commander.services.urdf_scene.scene_handle import (
-    SHAPES_STORAGE_KEY,
-    WcSceneHandle,
-)
+from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
 from waldo_commander.services.action_log import action_log_service
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
@@ -263,8 +260,8 @@ async def initialize_urdf_scene() -> None:
     # rebuilt per page load — re-render them or barriers turn invisible while
     # still enforced.
     scene_handle = waldoctl.commander.scene
-    if scene_handle is not None and scene_handle.shapes:
-        ui_state.urdf_scene.render_shapes(scene_handle.shapes)
+    if scene_handle is not None:
+        scene_handle.render()
 
     # Scene wasn't ready earlier, so apply simulator appearance now.
     if waldoctl.commander.status.simulator_active:
@@ -378,13 +375,13 @@ async def check_ping() -> None:
                 result,
             )
             if new_ok:
-                # A reconnect may be a RESTARTED controller whose checkers are
-                # empty; re-sync the keep-out world so what is displayed is
-                # enforced (shape state is not part of the status stream).
-                # Reassignment drives the full setter: local apply + push.
+                # A reconnect may be a RESTARTED controller (fresh, empty
+                # program layer) or one whose world changed while we were
+                # unreachable — adopt its readback truth; never push a
+                # GUI-remembered copy.
                 scene_handle = waldoctl.commander.scene
-                if scene_handle is not None and scene_handle.shapes:
-                    scene_handle.shapes = scene_handle.shapes
+                if scene_handle is not None:
+                    asyncio.create_task(scene_handle.refresh_from_backend())
         ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
@@ -1109,17 +1106,11 @@ def _register_handlers() -> None:
         except Exception as e:
             logger.warning("startup: select_tool failed: %s", e)
 
-        # Re-push keep-out shapes so a restarted controller (whose checkers
-        # start empty) enforces what the scene displays.
-        try:
-            scene_handle = waldoctl.commander.scene
-            if scene_handle is not None and scene_handle.shapes:
-                await client.set_shapes(scene_handle.shapes)
-                logger.debug(
-                    "startup: pushed %d keep-out shape(s)", len(scene_handle.shapes)
-                )
-        except Exception as e:
-            logger.warning("startup: set_shapes failed: %s", e)
+        # Adopt the controller's applied collision world (installation shapes
+        # exist even with no program loaded — the GUI must ask, not push).
+        scene_handle = waldoctl.commander.scene
+        if scene_handle is not None:
+            await scene_handle.refresh_from_backend()
 
     @ng_app.on_startup
     async def _on_startup() -> None:
@@ -1499,6 +1490,7 @@ async def _status_consumer() -> None:
     # the copy happens on change, not every tick.
     joint_en_shadow: np.ndarray | None = None
     cart_en_shadow: dict[str, np.ndarray] = {}
+    scene_epoch_shadow: int | None = None
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1595,6 +1587,15 @@ async def _status_consumer() -> None:
                     ):
                         coll.active = status.collision_active
                         coll.pairs = list(status.collision_pairs)
+
+                    # Collision-world epoch moved (first frame after connect,
+                    # a program's set_shapes, another client, a restart) —
+                    # adopt the controller's world via readback.
+                    if status.scene_epoch != scene_epoch_shadow:
+                        scene_epoch_shadow = status.scene_epoch
+                        scene_handle = waldoctl.commander.scene
+                        if scene_handle is not None:
+                            asyncio.create_task(scene_handle.refresh_from_backend())
 
                     action = st.action
                     action.current_name = status.action_current
@@ -1784,17 +1785,6 @@ def main():
     commander.settings.plugins.disabled_panels = list(
         ng_app.storage.general.get("plugins/disabled_panels", [])
     )
-
-    # Restore keep-out shapes from the prior session; the setter re-applies
-    # them locally and the startup push re-enforces them on the controller.
-    stored_shapes = ng_app.storage.general.get(SHAPES_STORAGE_KEY, [])
-    scene_handle = commander.scene
-    if stored_shapes and scene_handle is not None:
-        try:
-            scene_handle.shapes = [waldoctl.shape_from_wire(*t) for t in stored_shapes]
-        except (ValueError, KeyError, TypeError) as e:
-            logger.warning("Dropping unreadable persisted shapes: %s", e)
-            ng_app.storage.general.pop(SHAPES_STORAGE_KEY, None)
 
     configure_logging(config.log_level)
     logger.debug(

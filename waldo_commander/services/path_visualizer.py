@@ -62,18 +62,19 @@ def _mark_colliding_segments(
     robot,
     segment_dicts: list[dict],
     tool_selections: list,
+    shape_changes: list,
     shapes_wire: list[tuple] | None,
     initial_tool: tuple[str, str] | None,
 ) -> None:
     """Recolor segment dicts whose joint trajectory collides (self/tool/shape).
 
-    Runs in the dry-run subprocess against its own checker: keep-out shapes are
-    applied from wire form and the tool geometry replays the dry run's
-    ``select_tool`` boundaries, so each segment is checked with the tool that
-    would actually be attached (the dry run itself only validates IK). Each hit
-    records its first colliding waypoint in ``collision_step``.
+    Runs in the dry-run subprocess against its own checker, replaying BOTH
+    boundary streams the dry run recorded — ``select_tool`` and ``set_shapes``
+    — so each segment is checked with the tool attached and the world active
+    at its point in the program (the dry run itself only validates IK). Each
+    hit records its first colliding waypoint in ``collision_step``.
 
-    The checker's tool is restored to ``initial_tool`` on exit — the rare
+    The checker's tool and program world are restored on exit — the rare
     in-process fallback shares the live checker.
     """
     if not robot.has_collision_checking:
@@ -82,23 +83,28 @@ def _mark_colliding_segments(
 
     # Unconditional — including the EMPTY set: a reused pool worker keeps its
     # process-global checker between runs, so a cleared world must clear it.
-    robot.apply_shapes([shape_from_wire(*t) for t in shapes_wire or []])
+    submit_world = [shape_from_wire(*t) for t in shapes_wire or []]
+    robot.apply_shapes(submit_world)
     tool_key, variant = initial_tool or ("NONE", "")
     try:
         robot.set_active_tool(tool_key, variant_key=variant or None)
-        # A selection recorded at segment_index i applies to segments after i.
+        # A boundary recorded at segment_index i applies to segments after i.
         # Recorded order IS chronological (indexes are non-decreasing) — a sort
-        # would reorder same-index back-to-back selections and replay the
-        # wrong tool.
-        boundaries = [
+        # would reorder same-index back-to-back entries and replay the wrong
+        # state.
+        tool_bounds = [
             (ts.segment_index, ts.tool_key, ts.variant_key) for ts in tool_selections
         ]
-        bi = 0
+        shape_bounds = [(sc.segment_index, sc.shapes) for sc in shape_changes]
+        ti = si = 0
         for idx, d in enumerate(segment_dicts):
-            while bi < len(boundaries) and boundaries[bi][0] < idx:
-                _, b_tool, b_variant = boundaries[bi]
+            while ti < len(tool_bounds) and tool_bounds[ti][0] < idx:
+                _, b_tool, b_variant = tool_bounds[ti]
                 robot.set_active_tool(b_tool, variant_key=b_variant or None)
-                bi += 1
+                ti += 1
+            while si < len(shape_bounds) and shape_bounds[si][0] < idx:
+                robot.apply_shapes(list(shape_bounds[si][1]))
+                si += 1
             jt = d.get("joint_trajectory")
             if not jt:
                 continue
@@ -108,6 +114,7 @@ def _mark_colliding_segments(
                 d["color"] = SceneColors.COLLISION_HEX
     finally:
         robot.set_active_tool(tool_key, variant_key=variant or None)
+        robot.apply_shapes(submit_world)
 
 
 def _is_test_environment() -> bool:
@@ -195,6 +202,7 @@ def _run_simulation_isolated(
     local_targets: list[dict] = []
     local_tool_actions: list = []
     local_tool_selections: list = []
+    local_shape_changes: list = []
     # Updated by the client on each motion.
     final_state: dict[str, Any] = {"joints_rad": None}
     truncated = False
@@ -225,6 +233,7 @@ def _run_simulation_isolated(
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
                     tool_selection_collector=local_tool_selections,
+                    shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
@@ -238,6 +247,7 @@ def _run_simulation_isolated(
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
                     tool_selection_collector=local_tool_selections,
+                    shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
@@ -249,6 +259,20 @@ def _run_simulation_isolated(
         if hasattr(backend, "client"):
             setattr(backend.client, "RobotClient", LocalPathPreviewClient)
             setattr(backend.client, "AsyncRobotClient", LocalAsyncPathPreviewClient)
+
+        # Reset this worker's program-layer world to the submit-time truth
+        # BEFORE the script runs: a reused pool worker's process-global checker
+        # otherwise carries a previous run's shapes into this run's planning
+        # guard. Empty included. Installation shapes come from robot config at
+        # backend import and are untouched.
+        from waldo_commander.profiles import get_robot
+        from waldoctl import shape_from_wire
+
+        _preview_robot = get_robot(backend_package)
+        if _preview_robot.has_collision_checking:
+            _preview_robot.apply_shapes(
+                [shape_from_wire(*t) for t in shapes_wire or []]
+            )
 
         # Inserted into sys.modules so `import time` returns this mock.
         class MockTimeModule(ModuleType):
@@ -395,6 +419,7 @@ def _run_simulation_isolated(
             get_robot(backend_package),
             local_segments,
             local_tool_selections,
+            local_shape_changes,
             shapes_wire,
             initial_tool,
         )

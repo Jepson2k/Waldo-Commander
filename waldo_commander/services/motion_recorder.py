@@ -3,7 +3,7 @@
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as _dc_fields
 
 import numpy as np
 
@@ -17,6 +17,36 @@ from waldo_commander.common.logging_config import TRACE_ENABLED
 from waldo_commander.services.command_discovery import discover_robot_commands
 
 logger = logging.getLogger(__name__)
+
+# ShapeBase's non-geometry fields — everything else on a Shape is a dimension
+# constructor kwarg.
+_SHAPE_COMMON_FIELDS = ("name", "pose", "collision", "margin")
+_SHAPE_DEFAULT_POSE = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+def _shape_to_code(s) -> str:
+    """One waldoctl Shape as a constructor call, omitting default fields."""
+    parts = [f"name={s.name!r}"]
+    for f in _dc_fields(s):
+        if f.name in _SHAPE_COMMON_FIELDS:
+            continue
+        parts.append(f"{f.name}={getattr(s, f.name)!r}")
+    if tuple(s.pose) != _SHAPE_DEFAULT_POSE:
+        parts.append(f"pose={tuple(s.pose)!r}")
+    if not s.collision:
+        parts.append("collision=False")
+    if s.margin is not None:
+        parts.append(f"margin={s.margin!r}")
+    return f"{type(s).__name__}({', '.join(parts)})"
+
+
+def shapes_to_code(shapes) -> str:
+    """A runnable ``rbt.set_shapes([...])`` block for the given world —
+    the environment's durable form is program code, not GUI state."""
+    if not shapes:
+        return "rbt.set_shapes([])"
+    body = "\n".join(f"    {_shape_to_code(s)}," for s in shapes)
+    return f"rbt.set_shapes([\n{body}\n])"
 
 
 @dataclass
@@ -211,7 +241,7 @@ class MotionRecorder:
 
         Args:
             action_type: One of "move_j", "move_l", "home",
-                        "gripper", "io", "delay"
+                        "gripper", "io", "delay", "set_shapes"
             **params: Action-specific parameters
         """
         if not is_any_program_recording():
@@ -297,6 +327,22 @@ class MotionRecorder:
         elif action_type == "delay":
             seconds = params["seconds"]
             return f"time.sleep({seconds:.2f})"
+
+        elif action_type == "set_shapes":
+            shapes = params["shapes"]
+            snippet = shapes_to_code(shapes)
+            # Prepend the constructor imports the program doesn't have yet.
+            text = (
+                (ui_state.active_textarea.value or "")
+                if ui_state.active_textarea
+                else ""
+            )
+            missing = sorted(
+                {type(s).__name__ for s in shapes if type(s).__name__ not in text}
+            )
+            if missing:
+                snippet = f"from waldoctl import {', '.join(missing)}\n{snippet}"
+            return snippet
 
         else:
             return f"# Unknown action: {action_type}"

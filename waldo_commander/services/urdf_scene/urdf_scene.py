@@ -17,7 +17,6 @@ import asyncio
 import logging
 import math
 import os
-import re
 from pathlib import Path
 from typing import Any, NamedTuple, Sequence
 from urllib.parse import urlparse
@@ -55,9 +54,6 @@ from .envelope_renderer import EnvelopeRenderer
 from .path_renderer import PathRenderer
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
-
-# Strip a Pinocchio geometry-index suffix: "L4_0" -> "L4".
-_GEOM_INDEX_RE = re.compile(r"_\d+$")
 
 SHAPE_OPACITY = 0.35
 
@@ -110,22 +106,6 @@ def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]
     return (float(pos[0]), float(pos[1]), float(pos[2])), [
         [float(v) for v in row] for row in R
     ]
-
-
-def _strip_geom_index(name: str) -> str:
-    return _GEOM_INDEX_RE.sub("", name)
-
-
-def _normalize_tool_geom(name: str) -> str:
-    """Canonicalize a tool mesh name; the checker uses the ``_simplified``
-    collision variant while the scene loads the plain visual mesh."""
-    base = name.rsplit("/", 1)[-1].lower()
-    if base.endswith(".stl"):
-        stem = base[:-4]
-        if stem.endswith("_simplified"):
-            stem = stem[: -len("_simplified")]
-        return stem + ".stl"
-    return base
 
 
 def _lerp_hex(c1: tuple[int, int, int], c2: tuple[int, int, int], factor: float) -> str:
@@ -329,7 +309,6 @@ class UrdfScene(
         # Collision highlight: name -> scene objects, so reported colliding
         # geometry (arm links, tool meshes, user shapes) can be tinted red.
         self._link_to_meshes: dict[str, list[Any]] = {}
-        self._tool_geom_to_meshes: dict[str, list[Any]] = {}
         self._shape_objects: dict[str, Any] = {}
         self._shapes_group: Any | None = None
         self._colliding_meshes: set[Any] = set()  # objects currently tinted red
@@ -1487,13 +1466,20 @@ class UrdfScene(
         self.set_colliding(waldoctl.commander.status.collision.pairs)
 
     def _meshes_for_collision_name(self, name: str):
-        """Reported geometry name -> the scene objects to tint."""
-        if name.startswith("shape:"):
+        """Reported vocabulary name -> the scene objects to tint.
+
+        Names follow the CollisionStatus contract: URDF link names,
+        ``shape:<name>`` / ``install:<name>`` keep-outs, ``tool:<key>:<part>``
+        for attached tool geometry. The checker's tool parts use simplified
+        collision meshes with no 1:1 visual counterpart, so a tool collision
+        tints the whole attached tool.
+        """
+        if name.startswith(("shape:", "install:")):
             obj = self._shape_objects.get(name)
             return (obj,) if obj is not None else ()
-        if name.lower().endswith(".stl"):
-            return self._tool_geom_to_meshes.get(_normalize_tool_geom(name), ())
-        return self._link_to_meshes.get(_strip_geom_index(name), ())
+        if name.startswith("tool:"):
+            return tuple(self._tool_meshes)
+        return self._link_to_meshes.get(name, ())
 
     def set_colliding(self, pairs) -> None:
         """Diff-tint reported colliding geometry red; restore cleared ones.
@@ -1547,10 +1533,17 @@ class UrdfScene(
             return sc.box(2.0, 2.0, 0.002)
         return None
 
-    def render_shapes(self, shapes) -> None:
-        """(Re)draw the workspace keep-out shapes and map them for highlighting."""
+    def render_shapes(self, shapes, installation=(), draft=False) -> None:
+        """(Re)draw the keep-out shapes by layer and map them for highlighting.
+
+        ``shapes`` is the program layer — amber while ``draft`` (not yet
+        confirmed by backend readback), slate once confirmed. ``installation``
+        shapes come from the backend's robot config and render in their own
+        muted color; they are never draft.
+        """
         if not self.scene:
             return
+        program_hex = SceneColors.SHAPE_DRAFT_HEX if draft else SceneColors.SHAPE_HEX
         with batch_scene(self.scene):
             with self.scene:
                 if self._shapes_group is not None:
@@ -1565,15 +1558,19 @@ class UrdfScene(
                 grp = self.scene.group().with_name("shapes")
                 self._shapes_group = grp
                 with grp:
-                    for s in shapes:
-                        obj = self._make_shape_object(s)
-                        if obj is None:
-                            continue
-                        pos, rot = _shape_render_pose(s)
-                        obj.move(*pos).rotate_R(rot)
-                        obj.material(SceneColors.SHAPE_HEX, SHAPE_OPACITY)
-                        obj.with_name(f"shape:{s.name}")
-                        self._shape_objects[f"shape:{s.name}"] = obj
+                    for prefix, layer, color in (
+                        ("install", installation, SceneColors.SHAPE_INSTALL_HEX),
+                        ("shape", shapes, program_hex),
+                    ):
+                        for s in layer:
+                            obj = self._make_shape_object(s)
+                            if obj is None:
+                                continue
+                            pos, rot = _shape_render_pose(s)
+                            obj.move(*pos).rotate_R(rot)
+                            obj.material(color, SHAPE_OPACITY)
+                            obj.with_name(f"{prefix}:{s.name}")
+                            self._shape_objects[f"{prefix}:{s.name}"] = obj
         # Geometry changed — force the highlight to recompute next tick.
         self._last_collision_sig = None
         self._editing_collision_q = None
@@ -1762,7 +1759,6 @@ class UrdfScene(
         self._tool_has_motions = False
         # Drop collision bookkeeping for the deleted tool meshes; force a recompute
         # so new tool meshes re-tint if still colliding.
-        self._tool_geom_to_meshes.clear()
         self._colliding_meshes -= old_tool
         for m in old_tool:
             self._collision_saved.pop(id(m), None)
@@ -1817,9 +1813,6 @@ class UrdfScene(
                     if color is not None:
                         obj.material(color, opacity)
                     self._tool_meshes.append(obj)
-                    self._tool_geom_to_meshes.setdefault(
-                        _normalize_tool_geom(filename), []
-                    ).append(obj)
                     if not is_moving:
                         self._tool_body_meshes.append(obj)
                     if role in motion_roles:
@@ -1959,8 +1952,13 @@ class UrdfScene(
 
         # Shapes keep their own base color, but must be repainted with the
         # arm/tool so a colliding one isn't re-snapshotted with red as its base.
-        for obj in self._shape_objects.values():
-            obj.material(SceneColors.SHAPE_HEX, SHAPE_OPACITY)
+        for name, obj in self._shape_objects.items():
+            base = (
+                SceneColors.SHAPE_INSTALL_HEX
+                if name.startswith("install:")
+                else SceneColors.SHAPE_HEX
+            )
+            obj.material(base, SHAPE_OPACITY)
 
         logger.debug("Robot appearance mode set to %s", mode.value)
         # The repaint above clobbered any red collision tint; drop the

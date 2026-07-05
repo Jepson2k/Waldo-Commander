@@ -68,6 +68,10 @@ class SceneColors:
 
     # Keep-out shape / barrier (translucent slate — red highlight stands out)
     SHAPE_HEX = "#6d8ea0"
+    # Program shape awaiting backend readback confirmation (amber = unconfirmed)
+    SHAPE_DRAFT_HEX = "#d9a05b"
+    # Installation-layer shape (robot config; not editable from the GUI)
+    SHAPE_INSTALL_HEX = "#55606a"
 
     # Tool body colors (teal family — distinct from arm in every mode)
     TOOL_BODY_HEX = "#2a9d8f"

@@ -16,15 +16,12 @@ from contextlib import contextmanager
 from typing import Any
 
 import waldoctl
-from nicegui import app
 from waldoctl import Shape
 
 from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import ui_state
 
 logger = logging.getLogger(__name__)
-
-SHAPES_STORAGE_KEY = "scene/shapes"
 
 
 class _NullScene:
@@ -49,13 +46,35 @@ _NULL_SCENE = _NullScene()
 
 
 class WcSceneHandle:
+    """Program-layer shape state.
+
+    The GUI never owns the collision world: the backend's applied world is the
+    only truth, adopted via :meth:`refresh_from_backend` (on connect, on
+    reconnect, and whenever the status stream's ``scene_epoch`` moves). A
+    ``shapes`` assignment is a *request* — pushed once with the ABC's
+    acknowledged ``set_shapes`` and rendered in draft styling until readback
+    confirms it. Nothing is persisted frontend-side.
+    """
+
     def __init__(self) -> None:
         self._groups: dict[str, Any] = {}
         self._shapes: list[Shape] = []
+        self._installation: tuple[Shape, ...] = ()
+        self._confirmed = False
 
     @property
     def shapes(self) -> list[Shape]:
         return self._shapes
+
+    @property
+    def installation(self) -> tuple[Shape, ...]:
+        """Installation-layer shapes as last reported by the backend."""
+        return self._installation
+
+    @property
+    def confirmed(self) -> bool:
+        """Whether the displayed program layer matches backend readback."""
+        return self._confirmed
 
     @shapes.setter
     def shapes(self, value: list[Shape]) -> None:
@@ -65,55 +84,102 @@ class WcSceneHandle:
         shapes = list(value)
         ui_state.active_robot.apply_shapes(shapes)
         self._shapes = shapes
-        self._persist()
+        self._confirmed = False
         # Enforcement before cosmetics: the backend push must never be lost to
         # a scene/render problem.
         self._push_shapes()
-        us = ui_state.urdf_scene
-        if us is not None:
-            try:
-                us.render_shapes(self._shapes)
-            except Exception:
-                logger.exception("Keep-out shape render failed (still enforced)")
+        self.render()
+        self._record_snippet(shapes)
 
-    def _persist(self) -> None:
-        """Store the shapes so a restarted frontend restores + re-pushes them."""
+    def render(self) -> None:
+        """(Re)draw both layers on the live scene (no-op without one)."""
+        us = ui_state.urdf_scene
+        if us is None:
+            return
         try:
-            app.storage.general[SHAPES_STORAGE_KEY] = [
-                list(s.to_wire()) for s in self._shapes
-            ]
-        except RuntimeError:
-            pass  # storage not initialized (bare unit test) — session-only
+            us.render_shapes(
+                self._shapes,
+                installation=self._installation,
+                draft=not self._confirmed,
+            )
+        except Exception:
+            logger.exception("Keep-out shape render failed (still enforced)")
+
+    def _record_snippet(self, shapes: list[Shape]) -> None:
+        """Mirror the edit into the active program as a set_shapes([...]) block
+        when recording is on (motion-recorder precedent) — the environment's
+        durable home is program code, not GUI state."""
+        from waldo_commander.services.motion_recorder import motion_recorder
+
+        try:
+            motion_recorder.record_action("set_shapes", shapes=shapes)
+        except Exception:
+            logger.exception("set_shapes code generation failed")
 
     def _push_shapes(self) -> None:
-        """Push the active shapes to the backend's checkers (retried)."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            return  # no event loop yet — local render only
+            # Assigned from outside the UI loop (a worker thread, a Selenium
+            # driver): the push must still reach the controller, or the
+            # display shows a barrier nothing enforces.
+            from nicegui import core
+
+            if core.loop is not None and core.loop.is_running():
+                asyncio.run_coroutine_threadsafe(self._push_shapes_async(), core.loop)
+            return  # no app loop at all — local render only
         loop.create_task(self._push_shapes_async())
 
     async def _push_shapes_async(self) -> None:
+        """One acknowledged push; readback confirms or the draft styling stays.
+
+        No local retry policy: the ABC ack plus the connect/epoch re-query is
+        the reliability mechanism (reconciliation, not retries).
+        """
         shapes = self._shapes
-        for attempt in range(3):
-            # Re-check before EVERY attempt: a retry waking after backoff must
-            # not overwrite a newer assignment's already-completed push.
-            if shapes is not self._shapes:
-                return
-            try:
-                await waldoctl.commander.client.set_shapes(shapes)
-                return
-            except NotImplementedError:
-                return  # backend without shape support — local render only
-            except Exception as e:
-                if attempt == 2:
-                    logger.error(
-                        "set_shapes push failed — displayed keep-outs are NOT "
-                        "enforced by the controller: %s",
-                        e,
-                    )
-                    return
-                await asyncio.sleep(0.5 * (attempt + 1))
+        err: Exception | None = None
+        try:
+            code = await waldoctl.commander.client.set_shapes(shapes)
+        except NotImplementedError:
+            return  # backend without shape support — local render only
+        except Exception as e:
+            code = -1
+            err = e
+        if shapes is not self._shapes:
+            return  # superseded by a newer assignment
+        if code > 0:
+            await self.refresh_from_backend()
+            return
+        logger.error(
+            "set_shapes push unconfirmed (code=%s%s) — displayed keep-outs are "
+            "NOT enforced by the controller until readback confirms",
+            code,
+            f": {err}" if err is not None else "",
+        )
+
+    async def refresh_from_backend(self) -> None:
+        """Adopt the backend's applied world (readback truth) for display and
+        this process's preview checker."""
+        client = waldoctl.commander.client
+        if client is None:
+            return
+        try:
+            world = await client.shapes()
+        except NotImplementedError:
+            return  # backend without shape support
+        except Exception as e:
+            logger.debug("shapes readback failed: %s", e)
+            return
+        if world is None:
+            return  # unreachable — keep current display, re-query on reconnect
+        self._installation = tuple(world.installation)
+        self._shapes = list(world.program)
+        self._confirmed = True
+        try:
+            ui_state.active_robot.apply_shapes(self._shapes)
+        except Exception:
+            logger.exception("Local checker sync from readback failed")
+        self.render()
 
     def _live_scene(self) -> Any | None:
         us = ui_state.urdf_scene
