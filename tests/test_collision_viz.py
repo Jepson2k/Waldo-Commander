@@ -108,6 +108,39 @@ async def test_shapes_render_and_can_be_highlighted(user: User) -> None:
 
 
 @pytest.mark.integration
+async def test_appearance_repaint_keeps_draft_amber(user: User) -> None:
+    """An UNCONFIRMED program layer must stay draft-amber through appearance
+    repaints (sim toggle / EDITING entry / page-load): pre-fix the repaint
+    promoted it to the confirmed slate, displaying an un-enforced keep-out as
+    controller-enforced."""
+    from waldoctl import Box
+    from waldo_commander.common.theme import SceneColors
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    pending = Box(name="pending", x=0.1, y=0.1, z=0.1, pose=(0.4, 0.0, 0.3, 0, 0, 0))
+    scene.render_shapes([pending], draft=True)
+    obj = scene._shape_objects["shape:pending"]
+    assert obj.color == SceneColors.SHAPE_DRAFT_HEX
+
+    scene.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
+    assert obj.color == SceneColors.SHAPE_DRAFT_HEX, (
+        "repaint promoted an unconfirmed keep-out to the confirmed color"
+    )
+
+    # Readback confirmation re-renders; later repaints keep the confirmed slate.
+    scene.render_shapes([pending], draft=False)
+    obj = scene._shape_objects["shape:pending"]
+    assert obj.color == SceneColors.SHAPE_HEX
+    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+    assert obj.color == SceneColors.SHAPE_HEX
+
+
+@pytest.mark.integration
 async def test_editing_highlight_and_preview_marking_via_local_checker(
     user: User,
 ) -> None:
@@ -335,7 +368,7 @@ async def test_engaged_repaint_keeps_collision_highlight(user: User) -> None:
 
     coll = waldoctl.commander.status.collision
     # tool: names tint the attached tool; link partner arrives as a plain name.
-    coll.pairs = [("tool:SSG-48:ssg48_body_simplified.stl", "L5")]
+    coll.pairs = [("tool:SSG-48:body", "L5")]
     coll.active = True
     scene.update_from_robot_state()
     assert mesh.color == SceneColors.COLLISION_HEX

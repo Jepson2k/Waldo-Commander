@@ -49,6 +49,27 @@ def shapes_to_code(shapes) -> str:
     return f"rbt.set_shapes([\n{body}\n])"
 
 
+def _imported_waldoctl_names(text: str) -> set[str]:
+    """Names bound by plain ``from waldoctl import X`` statements in *text*.
+
+    Parsed with ``ast`` — a substring scan would count comments, attribute
+    access (``waldoctl.Box``), and aliased imports (which don't bind the bare
+    name). An unparseable program yields the empty set: prepending an import
+    that turns out redundant is harmless, omitting a needed one is a NameError.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "waldoctl":
+            names.update(a.name for a in node.names if a.asname is None)
+    return names
+
+
 @dataclass
 class ActiveJog:
     """Tracks an in-progress jog action."""
@@ -337,8 +358,9 @@ class MotionRecorder:
                 if ui_state.active_textarea
                 else ""
             )
+            imported = _imported_waldoctl_names(text)
             missing = sorted(
-                {type(s).__name__ for s in shapes if type(s).__name__ not in text}
+                {type(s).__name__ for s in shapes if type(s).__name__ not in imported}
             )
             if missing:
                 snippet = f"from waldoctl import {', '.join(missing)}\n{snippet}"

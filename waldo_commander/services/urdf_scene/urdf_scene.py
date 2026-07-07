@@ -310,6 +310,9 @@ class UrdfScene(
         # geometry (arm links, tool meshes, user shapes) can be tinted red.
         self._link_to_meshes: dict[str, list[Any]] = {}
         self._shape_objects: dict[str, Any] = {}
+        # Last render's draft flag — appearance repaints must keep an
+        # unconfirmed program layer amber, not promote it to confirmed slate.
+        self._shapes_draft: bool = False
         self._shapes_group: Any | None = None
         self._colliding_meshes: set[Any] = set()  # objects currently tinted red
         self._collision_saved: dict[
@@ -1543,6 +1546,7 @@ class UrdfScene(
         """
         if not self.scene:
             return
+        self._shapes_draft = draft
         program_hex = SceneColors.SHAPE_DRAFT_HEX if draft else SceneColors.SHAPE_HEX
         with batch_scene(self.scene):
             with self.scene:
@@ -1952,11 +1956,14 @@ class UrdfScene(
 
         # Shapes keep their own base color, but must be repainted with the
         # arm/tool so a colliding one isn't re-snapshotted with red as its base.
+        program_hex = (
+            SceneColors.SHAPE_DRAFT_HEX if self._shapes_draft else SceneColors.SHAPE_HEX
+        )
         for name, obj in self._shape_objects.items():
             base = (
                 SceneColors.SHAPE_INSTALL_HEX
                 if name.startswith("install:")
-                else SceneColors.SHAPE_HEX
+                else program_hex
             )
             obj.material(base, SHAPE_OPACITY)
 
