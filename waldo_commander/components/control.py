@@ -1021,6 +1021,9 @@ class ControlPanel:
                 "box-shadow: inset 0 0 0 3px rgb(245 158 11 / 0.55), "
                 "inset 0 0 36px rgb(245 158 11 / 0.22);"
             )
+            # Real DOM class (mark() is server-side only) so browser tests can
+            # query the glow like they query .btn-take-control.
+            .classes("control-lease-glow")
             .mark("control-lease-glow")
         )
         self._control_glow.set_visibility(False)
@@ -1033,8 +1036,10 @@ class ControlPanel:
             .mark("btn-take-control")
         )
         self._take_control_btn.set_visibility(False)
-        # Per-session hardware-motion consent dialog.
-        with ui.dialog() as dlg, ui.card().classes("gap-2"):
+        # Per-session hardware-motion consent dialog. Persistent so ESC / a
+        # backdrop click can't dismiss it into limbo; the value handler below
+        # still catches any non-button close and re-arms the prompt.
+        with ui.dialog().props("persistent") as dlg, ui.card().classes("gap-2"):
             ui.label("Allow AI to move the robot?").classes("text-base font-medium")
             self._consent_label = ui.label("").classes("text-sm")
             ui.label(
@@ -1048,8 +1053,16 @@ class ControlPanel:
                 ui.button("Allow", on_click=lambda: self._resolve_consent(True)).props(
                     "color=amber"
                 ).mark("btn-consent-allow")
+        dlg.on_value_change(self._on_consent_dialog_value)
         self._consent_dialog = dlg
         self._consent_sid: str | None = None
+
+    def _on_consent_dialog_value(self, e) -> None:
+        """A close that bypassed Allow/Deny (ESC, backdrop, programmatic) is
+        "not now", not a decision: clear the armed sid so the pending request
+        re-prompts on the next indicator refresh instead of wedging forever."""
+        if not e.value and self._consent_sid is not None:
+            self._consent_sid = None
 
     async def _take_control(self) -> None:
         """Hard reclaim: seize the lease for this browser tab and halt any motion
@@ -1609,6 +1622,21 @@ class ControlPanel:
             self._robot_btn.props("color=grey-7")
             self._robot_btn.classes(add="glass-btn", remove="glass-amber")
 
+    def sync_sim_mode_visuals(self) -> None:
+        """Reflect the current simulator/robot mode across the GUI: URDF
+        ghosting, the robot/sim button, the connection/IO readout, and the
+        playback bar. Every backend mode switch — the GUI toggle and the MCP
+        ``simulation.set_simulator`` tool — must end here, or the GUI keeps
+        showing the old mode while the backend (possibly real hardware) moves."""
+        if self._is_urdf_scene_valid() and ui_state.urdf_scene:
+            ui_state.urdf_scene.set_simulator_appearance(
+                waldoctl.commander.status.simulator_active
+            )
+        self.update_robot_btn_visual()
+        if ui_state._readout_panel is not None:
+            ui_state.readout_panel.update_conn_io()
+        playback.sync_mode()
+
     async def on_toggle_sim(self) -> None:
         """Toggle between robot and simulator modes and update URDF appearance."""
         try:
@@ -1620,39 +1648,24 @@ class ControlPanel:
                 except Exception as e:
                     logger.warning("Failed to stop script before mode switch: %s", e)
 
-            # Toggle simulator mode and enable
-            if not waldoctl.commander.status.simulator_active:
-                await self.client.simulator(True)
-                waldoctl.commander.status.simulator_active = True
-                # Apply simulator visual appearance to URDF scene (amber ghosting)
-                if self._is_urdf_scene_valid() and ui_state.urdf_scene:
-                    ui_state.urdf_scene.set_simulator_appearance(True)
-                # Enable after switching to simulator
-                # (no delay needed - controller waits for first frame before responding OK)
-                try:
-                    await self.client.resume()
-                except Exception as e:
-                    logger.warning("Resume after simulator on failed: %s", e)
-            else:
-                await self.client.simulator(False)
-                waldoctl.commander.status.simulator_active = False
-                # Restore default URDF appearance (remove simulator ghosting)
-                if self._is_urdf_scene_valid() and ui_state.urdf_scene:
-                    ui_state.urdf_scene.set_simulator_appearance(False)
-                # Resume after switching back to robot mode
-                try:
-                    await self.client.resume()
-                except Exception as e:
-                    logger.warning("Resume after simulator off failed: %s", e)
-
+            enabled = not waldoctl.commander.status.simulator_active
+            await self.client.simulator(enabled)
+            waldoctl.commander.status.simulator_active = enabled
+            # Re-enable after the switch (no delay needed — the controller
+            # waits for the first frame before responding OK).
+            try:
+                await self.client.resume()
+            except Exception as e:
+                logger.warning(
+                    "Resume after simulator %s failed: %s",
+                    "on" if enabled else "off",
+                    e,
+                )
         except Exception as ex:
             ui.notify(f"Simulator toggle failed: {ex}", color="negative")
             logger.error("Simulator toggle failed: %s", ex)
         finally:
-            self.update_robot_btn_visual()
-            if ui_state._readout_panel is not None:
-                ui_state.readout_panel.update_conn_io()
-            playback.sync_mode()
+            self.sync_sim_mode_visuals()
 
     async def on_estop_click(self) -> None:
         """Trigger digital E-STOP (STOP command) and show dialog."""

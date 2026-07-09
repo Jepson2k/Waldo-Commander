@@ -294,6 +294,24 @@ class PlaybackController:
             return waldoctl.commander.programs.get(script_exec.launching_tab_id)
         return waldoctl.commander.programs.active
 
+    def set_script_playing(self, playing: bool) -> None:
+        """Pause/resume the running script AND mirror it into the play program's
+        playback state + the simulation change channel. Every pause/resume path
+        — the GUI play button and the MCP ``execution.pause/resume`` tools —
+        must go through here, or the play button desyncs from the subprocess."""
+        prog = self._play_program()
+        if playing:
+            script_exec.signal_play()
+            if prog is not None:
+                prog.dry_run.playback.is_playing = True
+            logger.debug("Script playing")
+        else:
+            script_exec.signal_pause()
+            if prog is not None:
+                prog.dry_run.playback.is_playing = False
+            logger.debug("Script paused")
+        simulation_state.notify_changed()
+
     async def toggle_play(self, *, control_verified: bool = False) -> None:
         """Toggle play/pause for script execution or simulation playback.
 
@@ -306,16 +324,9 @@ class PlaybackController:
         active = waldoctl.commander.programs.active
         if is_any_program_running():
             prog = self._play_program()
-            if prog is not None and prog.dry_run.playback.is_playing:
-                script_exec.signal_pause()
-                prog.dry_run.playback.is_playing = False
-                logger.debug("Script paused")
-            else:
-                script_exec.signal_play()
-                if prog is not None:
-                    prog.dry_run.playback.is_playing = True
-                logger.debug("Script playing")
-            simulation_state.notify_changed()
+            self.set_script_playing(
+                not (prog is not None and prog.dry_run.playback.is_playing)
+            )
         elif waldoctl.commander.status.simulator_active and (
             active is not None and active.dry_run.total_steps > 0
         ):

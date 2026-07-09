@@ -34,20 +34,38 @@ def _make_lease_touch_middleware():
     The lease ages out after a TTL of inactivity; without this, a session that
     starts a long move and then only reads status / waits would let its lease
     expire mid-motion (the "MCP is controlling" indicator would vanish while the
-    arm is still moving). Touching is best-effort — never blocks a tool call.
+    arm is still moving). A keepalive task also re-touches for the whole time a
+    call is in flight, so one blocking call longer than the TTL (a long move, a
+    ``wait_motion``) can't age the holder out either — the TTL measures session
+    absence, not call duration. Touching is best-effort — never blocks a call.
     """
+    import asyncio
+
     from fastmcp.server.middleware import Middleware
 
     class _LeaseTouchMiddleware(Middleware):
         async def on_call_tool(self, context, call_next):
+            keepalive: asyncio.Task | None = None
             try:
                 from waldo_commander.mcp.tools.control import _session_id
-                from waldo_commander.services.control_lease import MCP, control_lease
+                from waldo_commander.services import control_lease as cl
 
-                control_lease.touch(MCP, _session_id())
+                sid = _session_id()
+                cl.control_lease.touch(cl.MCP, sid)
+
+                async def _keep_touching() -> None:
+                    while True:
+                        await asyncio.sleep(cl.MCP_TTL_SECONDS / 3)
+                        cl.control_lease.touch(cl.MCP, sid)
+
+                keepalive = asyncio.create_task(_keep_touching())
             except Exception:
                 logger.debug("lease touch skipped", exc_info=True)
-            return await call_next(context)
+            try:
+                return await call_next(context)
+            finally:
+                if keepalive is not None:
+                    keepalive.cancel()
 
     return _LeaseTouchMiddleware()
 

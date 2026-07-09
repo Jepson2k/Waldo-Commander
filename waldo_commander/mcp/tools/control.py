@@ -17,6 +17,7 @@ from waldo_commander.services.control_lease import (
     MCP,
     arm_consent_prompt,
     control_lease,
+    recently_denied,
     reset_consent,
     session_consented,
 )
@@ -65,6 +66,14 @@ def require_session_consent() -> None:
     sid = _session_id()
     if session_consented(sid):
         return
+    if recently_denied(sid):
+        # Terminal for the cooldown: no prompt is re-armed, so the deny can't
+        # be nagged away by an immediate retry loop.
+        raise PermissionError(
+            "the user denied hardware motion for this session just now — do "
+            "not retry immediately; work in simulator mode or wait for the "
+            "user to initiate"
+        )
     cid = ui_state.active_client_id
     client = Client.instances.get(cid) if cid else None
     if client is None or client._deleted:

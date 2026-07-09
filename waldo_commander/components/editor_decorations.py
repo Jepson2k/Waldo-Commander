@@ -23,7 +23,6 @@ from nicegui import Client, ui
 from nicegui.elements.codemirror.codemirror import (
     DecorationSpec,
     Diagnostic,
-    LineAnchor,
 )
 
 import waldoctl
@@ -131,9 +130,16 @@ class EditorDecorations:
         For each pending edit:
         - lines marked ``-`` get a ``line`` decoration with
           ``cm-edit-remove`` (red strikethrough background).
-        - lines marked ``+`` collapse into one ``widget`` decoration
-          inserted after the hunk's location, classed ``cm-edit-add`` so
-          the editor renders a green "+ <addition>" widget.
+        - each contiguous run of ``+`` lines becomes one ``widget``
+          decoration at the position where the run occurs, classed
+          ``cm-edit-add`` so the editor renders a green "+ <addition>"
+          widget in place (interior insertions don't collapse to the
+          hunk's end).
+
+        Positions are computed against the diff's base source; once pushed,
+        CodeMirror's decoration StateField maps them through subsequent
+        document edits, so this must only be re-pushed when the pending-edits
+        list itself changes.
 
         Pending diffs are validated at ``propose()`` time, so an unparseable
         diff can't reach this list; the ``except ValueError`` is cheap
@@ -145,10 +151,13 @@ class EditorDecorations:
         # CodeMirror document positions are UTF-16 code-unit offsets, so the
         # widget anchor must accumulate UTF-16 lengths — Python's ``len`` counts
         # code points, which drifts one unit per astral-plane char (e.g. an
-        # emoji) earlier in the source.
+        # emoji) earlier in the source. Split on LF/CRLF/CR only and count
+        # every break as ONE unit: CodeMirror normalizes documents to "\n"
+        # (a CRLF counted as 2 would drift anchors +1 per preceding line) and,
+        # unlike str.splitlines, doesn't break lines on \f/\x85/U+2028.
         line_starts = [0]
-        for line in tab.source.splitlines(keepends=True):
-            line_starts.append(line_starts[-1] + len(line.encode("utf-16-le")) // 2)
+        for line in re.split(r"\r\n|\r|\n", tab.source):
+            line_starts.append(line_starts[-1] + len(line.encode("utf-16-le")) // 2 + 1)
         specs: list[DecorationSpec] = []
         for edit in tab.edits.pending:
             try:
@@ -160,10 +169,27 @@ class EditorDecorations:
                 # diverge: a pure-insertion hunk anchors after old_start.
                 cursor = h.start_index
                 added: list[str] = []
+
+                def _flush_added() -> None:
+                    if added:
+                        pos = line_starts[min(cursor, len(line_starts) - 1)]
+                        specs.append(
+                            {
+                                "kind": "widget",
+                                "position": pos,
+                                "text": "\n".join("+ " + s for s in added),
+                                "class": "cm-edit-add",
+                                "side": 1,
+                            }
+                        )
+                        added.clear()
+
                 for op, content in h.body:
                     if op == " ":
+                        _flush_added()
                         cursor += 1
                     elif op == "-":
+                        _flush_added()
                         specs.append(
                             {
                                 "kind": "line",
@@ -174,17 +200,7 @@ class EditorDecorations:
                         cursor += 1
                     elif op == "+":
                         added.append(content)
-                if added:
-                    pos = line_starts[min(cursor, len(line_starts) - 1)]
-                    specs.append(
-                        {
-                            "kind": "widget",
-                            "position": pos,
-                            "text": "\n".join("+ " + s for s in added),
-                            "class": "cm-edit-add",
-                            "side": 1,
-                        }
-                    )
+                _flush_added()
         return specs
 
     def refresh_diff_overlay(self, tab_id: str) -> None:
@@ -388,10 +404,9 @@ class EditorDecorations:
             return
         tab = waldoctl.commander.programs.get(tab_id)
         targets = tab.dry_run.targets if tab is not None else []
-        anchors: list[LineAnchor] = [
-            {"id": t.id, "line": t.line_number} for t in targets if t.line_number > 0
-        ]
-        textarea.line_anchors[:] = anchors
+        textarea.line_anchors = {
+            t.id: t.line_number for t in targets if t.line_number > 0
+        }
 
 
 decorations: EditorDecorations = EditorDecorations()

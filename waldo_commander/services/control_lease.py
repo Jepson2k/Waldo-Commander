@@ -97,6 +97,7 @@ class ControlLease:
         self._holder = None
         _consented_sessions.clear()
         _pending_consent.clear()
+        _denied_at.clear()
 
 
 control_lease = ControlLease()
@@ -115,6 +116,21 @@ def browser_try_acquire(client_id: str | None) -> bool:
         return True  # already holds — no re-seize (called on every jog tick)
     control_lease.seize(BROWSER, client_id, "Browser")
     return True
+
+
+def browser_claim_if_unheld(client_id: str | None) -> None:
+    """Claim the lease for a newly-loaded browser tab — but only when it's free
+    or held by a (stale) prior browser tab.
+
+    Unlike actuation (:func:`browser_try_acquire`), a page load carries no
+    human intent to drive, so it must never take control away from a live MCP
+    holder — an F5 while the AI is driving would silently kill its session.
+    """
+    if client_id is None:
+        return
+    h = control_lease.holder()  # drops a stale holder as a side effect
+    if h is None or h.channel == BROWSER:
+        control_lease.seize(BROWSER, client_id, "Browser")
 
 
 def require_browser_control(client_id: str | None, *, notify: bool = True) -> bool:
@@ -147,6 +163,12 @@ def require_browser_control(client_id: str | None, *, notify: bool = True) -> bo
 _consented_sessions: set[str] = set()
 _pending_consent: dict[str, str] = {}  # session_id -> human label awaiting approval
 
+# A denied prompt must not instantly re-arm (the AI's retry loop would re-open
+# the dialog ~1s after every Deny). Within the cooldown, attempts get a
+# terminal "denied" error; afterwards a fresh attempt may prompt again.
+CONSENT_DENY_COOLDOWN_SECONDS = 30.0
+_denied_at: dict[str, float] = {}  # session_id -> monotonic time of the deny
+
 
 def session_consented(session_id: str) -> bool:
     return session_id in _consented_sessions
@@ -165,12 +187,26 @@ def pending_consents() -> dict[str, str]:
 def grant_consent(session_id: str) -> None:
     _consented_sessions.add(session_id)
     _pending_consent.pop(session_id, None)
+    _denied_at.pop(session_id, None)
 
 
 def deny_consent(session_id: str) -> None:
     _pending_consent.pop(session_id, None)
+    _denied_at[session_id] = time.monotonic()
+
+
+def recently_denied(session_id: str) -> bool:
+    """True while *session_id* is inside the post-deny cooldown."""
+    t = _denied_at.get(session_id)
+    if t is None:
+        return False
+    if (time.monotonic() - t) > CONSENT_DENY_COOLDOWN_SECONDS:
+        del _denied_at[session_id]
+        return False
+    return True
 
 
 def reset_consent(session_id: str) -> None:
     _consented_sessions.discard(session_id)
     _pending_consent.pop(session_id, None)
+    _denied_at.pop(session_id, None)

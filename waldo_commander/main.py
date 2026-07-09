@@ -68,7 +68,7 @@ from waldo_commander.mcp import start_mcp_server, stop_mcp_server
 from waldo_commander.services.action_log import action_log_service
 from waldo_commander.services.control_lease import (
     BROWSER,
-    browser_try_acquire,
+    browser_claim_if_unheld,
     control_lease,
 )
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
@@ -1261,7 +1261,7 @@ async def index_page():
     if is_active:
         # The active tab is the default controller — claim the lease when it's
         # free or held by a prior browser tab (but not from a live MCP holder).
-        browser_try_acquire(this_client.id)
+        browser_claim_if_unheld(this_client.id)
 
     def _on_disconnect():
         # Synchronous handler so the active-slot release happens *inline*

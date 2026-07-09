@@ -159,6 +159,112 @@ def test_browser_try_acquire(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.integration
+async def test_page_reload_does_not_steal_lease_from_live_mcp_holder(
+    user: User,
+) -> None:
+    """A page (re)load claims the lease only when it's free or held by a prior
+    browser tab — never from a live MCP holder. Only human *actuation* soft-
+    reclaims; a mere refresh must not silently take control from the AI."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    mcp = get_mcp()
+    try:
+        async with Client(mcp) as client:
+            took = _payload(await client.call_tool("control.take_control"))
+            assert took["you_hold_it"] is True
+
+            # Refresh: the old tab's disconnect clears the active slot (as
+            # _on_disconnect does), then the page loads anew.
+            ui_state.active_client_id = None
+            await user.open("/")
+            await wait_for_app_ready()
+
+            controller = _payload(await client.call_tool("control.get_controller"))
+            assert controller["you_hold_it"] is True, (
+                "page reload must not steal the lease from a live MCP holder"
+            )
+
+        # Once the MCP holder has aged out, a reload claims as usual.
+        assert control_lease._holder is not None
+        control_lease._holder.last_seen -= MCP_TTL_SECONDS + 1
+        ui_state.active_client_id = None
+        await user.open("/")
+        await wait_for_app_ready()
+        assert control_lease.held_by(BROWSER, ui_state.active_client_id or "")
+    finally:
+        control_lease.reset()
+
+
+@pytest.mark.integration
+async def test_dismissed_consent_dialog_reprompts(user: User) -> None:
+    """ESC/backdrop-dismissing the consent dialog (no Allow/Deny click) must not
+    wedge the flow: the request stays pending and the next indicator refresh
+    re-opens the prompt."""
+    from waldo_commander.services.control_lease import (
+        arm_consent_prompt,
+        pending_consents,
+        reset_consent,
+    )
+
+    await user.open("/")
+    await wait_for_app_ready()
+    panel = ui_state.control_panel
+    ng_client = cl.Client.instances[ui_state.active_client_id]
+
+    try:
+        arm_consent_prompt("sid-dismiss", "MCP session sid-dism")
+        with ng_client:
+            panel.refresh_control_indicator()
+        assert panel._consent_sid == "sid-dismiss"
+
+        # Simulate ESC/backdrop: the dialog's value flips False, no button hit.
+        panel._consent_dialog.value = False
+        assert panel._consent_sid is None, (
+            "dismissal must clear the armed sid (it is 'not now', not a wedge)"
+        )
+
+        assert "sid-dismiss" in pending_consents()
+        with ng_client:
+            panel.refresh_control_indicator()
+        assert panel._consent_sid == "sid-dismiss"  # re-prompted
+    finally:
+        reset_consent("sid-dismiss")
+        panel._consent_sid = None
+        if panel._consent_dialog is not None:
+            panel._consent_dialog.close()
+        control_lease.reset()
+
+
+@pytest.mark.integration
+async def test_lease_survives_single_long_tool_call(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lease must stay alive for the whole of a single in-flight tool call
+    (e.g. one ``wait_motion`` spanning a long move) — the TTL measures session
+    absence, not motion duration."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    monkeypatch.setattr(cl, "MCP_TTL_SECONDS", 0.3)
+    mcp = get_mcp()
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("control.take_control")
+            # A real jog ~4x the TTL, then block in ONE wait_motion call.
+            await client.call_tool(
+                "motion.jog_j", {"joint": 0, "speed": 0.3, "duration": 1.2}
+            )
+            await client.call_tool("motion.wait_motion", {"timeout": 5.0})
+            controller = _payload(await client.call_tool("control.get_controller"))
+            assert controller["you_hold_it"] is True, (
+                "lease must survive a single tool call longer than the TTL"
+            )
+    finally:
+        control_lease.reset()
+
+
+@pytest.mark.integration
 async def test_browser_is_default_holder_and_can_reclaim(user: User) -> None:
     """The active browser tab holds control by default; an MCP session can seize
     it, and the human reclaims it by just driving (soft reclaim)."""

@@ -79,3 +79,86 @@ async def test_diff_overlay_propose_reject_approve_lifecycle(user: User) -> None
     # the pane shows stale text and the next keystroke destroys the edit.
     assert textarea.value == _AFTER
     assert _diff_specs(textarea) == []
+
+
+@pytest.mark.integration
+async def test_interior_additions_render_at_their_own_positions(user: User) -> None:
+    """Additions between context lines must render where they occur — one
+    widget per contiguous ``+`` run — not collapse into a single widget after
+    the hunk's trailing context."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    p = waldoctl.commander.programs.active
+    assert p is not None
+    p.source = "a\nb\nc\n"
+    p.edits.propose("@@ -1,3 +1,5 @@\n a\n+x\n b\n+y\n c\n")
+    await asyncio.sleep(0)
+
+    textarea = ui_state.active_textarea
+    add_specs = [s for s in textarea.decorations if s.get("class") == "cm-edit-add"]
+    # Two separate runs: "x" before line 2 ("b" at offset 2), "y" before
+    # line 3 ("c" at offset 4).
+    assert [(s["position"], s["text"]) for s in add_specs] == [
+        (2, "+ x"),
+        (4, "+ y"),
+    ]
+    p.edits.reject(p.edits.pending[0].id)
+
+
+@pytest.mark.integration
+async def test_crlf_source_widget_offsets_match_codemirror_units(user: User) -> None:
+    """CodeMirror normalizes every line break to one UTF-16 unit; widget
+    offsets must count them that way or anchors drift +1 per preceding CRLF
+    line."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    p = waldoctl.commander.programs.active
+    assert p is not None
+    p.source = "a\r\nb\r\nc\r\n"
+    p.edits.propose("@@ -3,1 +3,1 @@\n-c\n+C\n")
+    await asyncio.sleep(0)
+
+    textarea = ui_state.active_textarea
+    add_specs = [s for s in textarea.decorations if s.get("class") == "cm-edit-add"]
+    # In CM units each "X\r\n" line is 2 (char + one normalized break), so the
+    # widget after removed line 3 sits at offset 6 — not 9 (CRLF counted as 2).
+    assert len(add_specs) == 1
+    assert add_specs[0]["position"] == 6
+    p.edits.reject(p.edits.pending[0].id)
+
+
+@pytest.mark.integration
+async def test_human_keystroke_does_not_snap_overlay_to_stale_coords(
+    user: User,
+) -> None:
+    """Human typing must not re-push diff-absolute coordinates: pushed specs
+    stay put server-side (CodeMirror's decoration StateField maps them through
+    document edits client-side); only edit-flow changes re-push."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    p = waldoctl.commander.programs.active
+    assert p is not None
+    p.source = "a\nb\nc\n"
+    p.edits.propose("@@ -3,1 +3,1 @@\n-c\n+C\n")
+    await asyncio.sleep(0)
+
+    textarea = ui_state.active_textarea
+    specs_before = _diff_specs(textarea)
+    assert specs_before, "propose must render the overlay"
+
+    # The human inserts a line above the hunk through the editor's real
+    # content-change path.
+    from nicegui import Client as NgClient
+
+    editor = ui_state.editor_panel
+    with NgClient.instances[ui_state.active_client_id]:
+        editor._on_tab_content_change(p, "inserted\na\nb\nc\n")
+    await asyncio.sleep(0)
+
+    assert _diff_specs(textarea) == specs_before, (
+        "a keystroke re-pushed the overlay from stale diff-absolute coords"
+    )
+    p.edits.reject(p.edits.pending[0].id)

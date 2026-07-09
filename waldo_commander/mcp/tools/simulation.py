@@ -57,6 +57,13 @@ async def set_simulator(enabled: bool) -> dict:
     await client.simulator(enabled)
     waldoctl.commander.status.simulator_active = enabled
     await client.resume()
+    # Same GUI sync as the robot/sim toggle — the human must never see
+    # simulator styling while the backend drives real hardware. Best-effort:
+    # a headless mode switch (no page connected) is still fine.
+    with contextlib.suppress(RuntimeError):
+        with _page_client():
+            if ui_state._control_panel is not None:
+                ui_state.control_panel.sync_sim_mode_visuals()
     return {"simulator_active": enabled}
 
 

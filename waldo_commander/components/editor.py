@@ -163,7 +163,7 @@ class EditorPanel(FileOperationsMixin):
             logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
-        line_number = textarea.line_anchor_positions.get(target_id)
+        line_number = textarea.line_anchors.get(target_id)
         if line_number is None:
             logger.warning("Sync failed: Target %s not found", target_id)
             return
@@ -226,7 +226,7 @@ class EditorPanel(FileOperationsMixin):
         if not textarea:
             return
 
-        line_number = textarea.line_anchor_positions.get(target_id)
+        line_number = textarea.line_anchors.get(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
@@ -679,7 +679,7 @@ class EditorPanel(FileOperationsMixin):
                         ),
                         on_selection_change=lambda e, t=tab: self._on_cursor_line(t, e),
                         completions=completions,
-                        keybindings={
+                        keymap={
                             "Mod-s": lambda _e, t=tab: self._save_tab(t),
                         },
                         line_tooltip_html=True,
@@ -859,11 +859,11 @@ class EditorPanel(FileOperationsMixin):
 
         self._update_dirty_dot(tab)
 
-        # A pending LLM edit's diff decorations were anchored to the pre-edit
-        # source; recompute them against the now-current text so the overlay
-        # tracks the human's typing instead of freezing on stale line numbers.
-        if tab.edits.pending:
-            decorations.refresh_diff_overlay(tab.id)
+        # Pending LLM-edit decorations are NOT re-pushed here: CodeMirror's
+        # decoration StateField maps the pushed specs through the human's
+        # edits client-side, and a re-push would snap them back to the diff's
+        # base coordinates. Only edit-flow changes (propose/approve/reject)
+        # re-render the overlay.
 
         # Only run simulation for active tab
         if tab.id == waldoctl.commander.programs.active_id:

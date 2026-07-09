@@ -105,6 +105,154 @@ async def test_hardware_motion_needs_session_consent(user: User) -> None:
 
 
 @pytest.mark.integration
+async def test_denied_consent_is_terminal_for_a_cooldown(user: User) -> None:
+    """Deny in the GUI must stick: the AI's immediate retry gets a terminal
+    "denied" error and must NOT re-arm the prompt (no ~1s nag loop). After the
+    cooldown a fresh attempt may prompt once again."""
+    from fastmcp.exceptions import ToolError
+
+    from waldo_commander.services import control_lease as cl
+    from waldo_commander.services.control_lease import (
+        control_lease,
+        pending_consents,
+    )
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+
+    panel = ui_state.control_panel
+    ng_client = cl.Client.instances[ui_state.active_client_id]
+    mcp = get_mcp()
+    waldoctl.commander.status.simulator_active = False  # real hardware
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("control.take_control")
+            with pytest.raises(ToolError, match="consent|prompt"):
+                await client.call_tool(
+                    "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+                )
+
+            # The GUI surfaces the prompt; the human denies it.
+            with ng_client:
+                panel.refresh_control_indicator()
+                assert panel._consent_sid is not None
+                panel._resolve_consent(False)
+
+            # Immediate retry: terminal denied error, no prompt re-armed.
+            with pytest.raises(ToolError, match="denied"):
+                await client.call_tool(
+                    "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+                )
+            assert pending_consents() == {}
+
+            # Cooldown elapsed: the next attempt may prompt again.
+            for sid in list(cl._denied_at):
+                cl._denied_at[sid] -= cl.CONSENT_DENY_COOLDOWN_SECONDS + 1
+            with pytest.raises(ToolError, match="consent|prompt"):
+                await client.call_tool(
+                    "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+                )
+            assert pending_consents() != {}
+    finally:
+        waldoctl.commander.status.simulator_active = True
+        control_lease.reset()
+        panel._consent_sid = None
+        if panel._consent_dialog is not None:
+            panel._consent_dialog.close()
+
+
+@pytest.mark.integration
+async def test_set_simulator_syncs_gui_mode_visuals(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MCP ``simulation.set_simulator`` must drive the same GUI sync as the
+    robot/sim toggle — otherwise the mode button and playback bar keep showing
+    simulator styling while real hardware moves.
+
+    The backend flip itself is stubbed out: actually leaving simulator mode
+    makes the controller open the real serial port, which doesn't exist on a
+    test box. The subject here is the GUI-side sync."""
+    from waldo_commander.components.playback import playback
+    from waldo_commander.services import control_lease as cl
+    from waldo_commander.services.control_lease import control_lease
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+
+    panel = ui_state.control_panel
+    ng_client = cl.Client.instances[ui_state.active_client_id]
+    with ng_client:
+        panel.update_robot_btn_visual()
+        playback.sync_mode()
+    assert panel._robot_btn._props.get("color") == "amber-8"  # sim styling
+
+    flips: list[bool] = []
+
+    async def _fake_simulator(enabled: bool) -> int:
+        flips.append(enabled)
+        return 1
+
+    monkeypatch.setattr(waldoctl.commander.client, "simulator", _fake_simulator)
+
+    mcp = get_mcp()
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("control.take_control")
+            await client.call_tool("simulation.set_simulator", {"enabled": False})
+            assert flips == [False]
+            assert panel._robot_btn._props.get("color") == "grey-7", (
+                "mode button must reflect hardware mode after an MCP switch"
+            )
+            if playback.speed_fab is not None:
+                assert playback.speed_fab.visible is False
+    finally:
+        waldoctl.commander.status.simulator_active = True
+        control_lease.reset()
+        # Let the outbox flush the queued GUI updates while the app is alive —
+        # an emit racing app teardown logs the spurious reconnect_timeout error.
+        await asyncio.sleep(0.1)
+
+
+@pytest.mark.integration
+async def test_mcp_pause_resume_mirror_play_state(user: User) -> None:
+    """``execution.pause_active`` / ``resume_active`` must mirror the GUI pause
+    path — flip the active program's ``is_playing`` and fire the simulation
+    change channel — not just signal the script subprocess."""
+    from waldo_commander.services.control_lease import control_lease
+    from waldo_commander.state import simulation_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+
+    active = waldoctl.commander.programs.active
+    assert active is not None
+    active.dry_run.playback.is_playing = True
+    fired = {"n": 0}
+
+    def _on_change() -> None:
+        fired["n"] += 1
+
+    simulation_state.add_change_listener(_on_change)
+    mcp = get_mcp()
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("control.take_control")
+            await client.call_tool("execution.pause_active")
+            assert active.dry_run.playback.is_playing is False
+            assert fired["n"] >= 1, "pause must fire the simulation change channel"
+
+            await client.call_tool("execution.resume_active")
+            assert active.dry_run.playback.is_playing is True
+            assert fired["n"] >= 2, "resume must fire the simulation change channel"
+    finally:
+        simulation_state.remove_change_listener(_on_change)
+        active.dry_run.playback.is_playing = False
+        control_lease.reset()
+
+
+@pytest.mark.integration
 async def test_propose_and_cancel_edit_via_mcp(user: User) -> None:
     """``programs.propose_edit`` queues an edit; ``cancel_pending_edit``
     discards it. Source is unchanged because nothing was approved."""

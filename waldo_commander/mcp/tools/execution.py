@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import waldoctl
 
+from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.mcp.tools.control import require_actuation, require_control
@@ -51,7 +52,8 @@ async def stop_active() -> None:
 async def pause_active() -> None:
     """Pause the active program. Requires it to be running."""
     require_control()
-    script_exec.signal_pause()
+    with _page_client():
+        playback.set_script_playing(False)
 
 
 @mcp.tool(name="execution.resume_active")
@@ -61,7 +63,8 @@ async def resume_active() -> None:
     Resuming actuates the robot, so it passes the full actuation gate.
     """
     require_actuation()
-    script_exec.signal_play()
+    with _page_client():
+        playback.set_script_playing(True)
 
 
 @mcp.tool(name="execution.is_running")
