@@ -11,6 +11,8 @@ from nicegui import ui
 import waldoctl
 from waldoctl import Program
 
+from waldo_commander.components.simulation_engine import simulation
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,6 +24,7 @@ class FileOperationsMixin:
     _tab_widgets: dict[str, dict[str, Any]]
     _new_tab: Any
     _switch_to_tab: Any
+    _switch_blocked: Any
     _do_close_tab: Any
 
     def _update_dirty_dot(self, tab: Program) -> None:
@@ -51,12 +54,22 @@ class FileOperationsMixin:
                 self._switch_to_tab(existing_tab.id)
                 return
 
+            # Guard before open(): open()->switch() moves active_id and fires the
+            # reconcile listener, so the post-open _switch_to_tab guard would run
+            # too late to stop a mid-recording/playback open.
+            if self._switch_blocked():
+                return
+
             # open() reads the file, creates a non-dirty program with file_path
             # set, and switches — the editor's _reconcile_tabs listener builds
             # the tab widget off that mutation (same path an MCP open follows).
             program = waldoctl.commander.programs.open(file_path)
             self._switch_to_tab(program.id)
             self._update_dirty_dot(program)
+            # A freshly opened program has an empty dry_run; schedule the
+            # debounced path sim so the 3D preview reflects it without an edit
+            # (mirrors _new_tab).
+            simulation.schedule_debounced_simulation(tab_id=program.id)
             logger.info("Loaded program %s", name)
         except Exception as e:
             ui.notify(f"Load failed: {e}", color="negative")

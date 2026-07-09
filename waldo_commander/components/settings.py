@@ -7,7 +7,7 @@ from nicegui import app as ng_app
 from nicegui import ui
 
 import waldoctl
-from waldoctl import EnvelopeMode, RobotClient
+from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
 
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.services.camera_service import (
@@ -304,6 +304,7 @@ class SettingsContent:
             ng_app.storage.general["selected_tool"] = tool
             waldoctl.commander.status.tool.variant_key = vk or ""
             self._apply_tool_scene(tool, variant_key=vk)
+            self._apply_tool_camera(tool)
             self._rebuild_variant_selector(tool)
             self._rebuild_tcp_offset(tool)
             self._notify_and_resimulate()
@@ -335,32 +336,75 @@ class SettingsContent:
         if stored_tool:
             self._apply_tool_scene(stored_tool, variant_key=vk_initial)
 
+    def _tool_spec(self, tool_key: str):
+        """The active robot's ToolSpec for *tool_key*, or None."""
+        try:
+            return ui_state.active_robot.tools[tool_key]
+        except KeyError:
+            return None
+
+    def _apply_tool_camera(self, tool_key: str) -> None:
+        """Resolve the active tool's camera (its runtime_settings override or the
+        spec default), start/stop the camera service, and sync the dropdown.
+        Treats None / -1 as 'no camera'."""
+        spec = self._tool_spec(tool_key)
+        if spec is None:
+            return
+        stored = ng_app.storage.general.get(f"tool_camera/{tool_key}")
+        if stored is not None:
+            spec.runtime_settings.camera_device = None if stored == -1 else stored
+        device = spec.effective_camera_device
+        cam_value = -1 if device is None else device
+        if self._cam_select is not None:
+            self._cam_select.value = cam_value
+        ui_state.camera_device = cam_value
+        if device is None or device == -1:
+            camera_service.stop()
+        else:
+            camera_service.start(device)
+
     def _build_camera(self) -> None:
-        stored_cam = ng_app.storage.general.get("camera_device", -1)
         cam_devices = enumerate_video_devices()
         cam_options: dict[int | str, str] = {-1: "Disabled"}
         for dev in cam_devices:
             cam_options[dev["index"]] = str(dev["label"])
-        # Validate stored camera still exists (index may change across reboots)
-        if stored_cam not in cam_options:
-            stored_cam = -1
-            ng_app.storage.general["camera_device"] = -1
-        ui_state.camera_device = stored_cam
+
+        # Per-tool camera: the dropdown reflects / sets the *active* tool's camera
+        # (its runtime_settings override, falling back to the tool spec default).
+        active_key = ng_app.storage.general.get("selected_tool", "NONE")
+        spec = self._tool_spec(active_key)
+        if spec is not None:
+            stored = ng_app.storage.general.get(f"tool_camera/{active_key}")
+            if stored is not None:
+                spec.runtime_settings.camera_device = None if stored == -1 else stored
+        device = spec.effective_camera_device if spec is not None else -1
+        cam_value: int | str = -1 if device is None else device
+        if cam_value not in cam_options:
+            cam_value = -1
+        ui_state.camera_device = cam_value
 
         def _on_camera_change(e):
             val = e.value
-            ng_app.storage.general["camera_device"] = val
+            key = ng_app.storage.general.get("selected_tool", "NONE")
+            s = self._tool_spec(key)
+            if s is not None:
+                s.runtime_settings.camera_device = (
+                    None if (val is None or val == -1) else val
+                )
+                ng_app.storage.general[f"tool_camera/{key}"] = (
+                    -1 if val is None else val
+                )
             ui_state.camera_device = val
             if val is None or val == -1:
                 camera_service.stop()
             else:
                 camera_service.start(val)
 
-        with _setting_row("Camera", "Video device for gripper panel"):
+        with _setting_row("Camera", "Video device for the active tool"):
             self._cam_select = (
                 ui.select(
                     options=cam_options,
-                    value=stored_cam,
+                    value=cam_value,
                     on_change=_on_camera_change,
                     new_value_mode="add-unique",
                     clearable=True,
@@ -393,8 +437,8 @@ class SettingsContent:
 
         self._cam_refresh_timer = ui.timer(10.0, _refresh_camera_devices)
 
-        if stored_cam is not None and stored_cam != -1:
-            camera_service.start(stored_cam)
+        if cam_value != -1:
+            camera_service.start(cam_value)
 
     def _build_motion_profile(self, prefs: dict) -> None:
         async def _on_motion_profile_change(e):
@@ -462,23 +506,92 @@ class SettingsContent:
     def _build_plugin_panels(self) -> None:
         """Panel-enable/disable toggle list.
 
-        Each row corresponds to an installed panel plugin id; toggling
-        adds/removes the id from ``commander.settings.plugins.disabled_panels``.
-        Re-load takes effect on the next page reload. With no panel
-        plugins installed yet (PR #2 of the stack), this section shows a
-        placeholder.
+        One row per installed panel plugin (discovered via the
+        ``waldoctl.panels`` entry-point group). Toggling a row writes
+        through to ``commander.settings.plugins.disabled_panels`` and the
+        rehydrated ``app.storage.general`` slot; the change takes effect on
+        the next process start (panels are process-scoped singletons). Stale
+        ids — disabled entries whose plugin is no longer installed — are
+        stripped on each rebuild.
         """
+        from waldoctl.discovery import list_panels
+
         plugins = waldoctl.commander.settings.plugins
-        with _setting_row(
-            "Panel plugins", "Show / hide installed panel plugins (reload to apply)"
-        ):
-            # Panel plugin discovery ships in stack PR #2; until then this
-            # surface only exposes the list-of-disabled-ids that PR #2
-            # will consume.
-            count = len(plugins.disabled_panels)
-            ui.label(f"{count} disabled" if count else "No plugins installed").classes(
-                "text-xs text-[var(--ctk-muted)]"
-            ).mark("settings-plugins-summary")
+        discovered = iter_plugin_panels()
+        # "Known" = loaded plugin ids plus every installed entry-point name, so a
+        # disabled plugin that is installed but currently fails to import keeps its
+        # disabled choice; only genuinely-uninstalled ids are purged. (ep.name and
+        # cls.id usually coincide; a broken plugin whose id differs from its
+        # entry-point name is the one residual gap — its id can't be read without
+        # importing it.)
+        known_ids = {cls.id for cls in discovered} | set(list_panels())
+
+        stale = [pid for pid in plugins.disabled_panels if pid not in known_ids]
+        if stale:
+            plugins.disabled_panels = [
+                pid for pid in plugins.disabled_panels if pid in known_ids
+            ]
+            ng_app.storage.general["plugins/disabled_panels"] = list(
+                plugins.disabled_panels
+            )
+
+        if not discovered:
+            with _setting_row("Panel plugins", "Show / hide installed panel plugins"):
+                ui.label("No plugins installed").classes(
+                    "text-xs text-[var(--ctk-muted)]"
+                ).mark("settings-plugins-summary")
+            return
+
+        def _on_toggle(panel_id: str):
+            def _handler(e):
+                enabled = bool(e.value)
+                current = list(plugins.disabled_panels)
+                if enabled:
+                    current = [pid for pid in current if pid != panel_id]
+                elif panel_id not in current:
+                    current.append(panel_id)
+                plugins.disabled_panels = current
+                ng_app.storage.general["plugins/disabled_panels"] = current
+                ui.notify("Restart to apply", color="info")
+
+            return _handler
+
+        # Function-level import avoids a settings<-main import cycle.
+        from waldo_commander.main import _RESERVED_TAB_IDS
+
+        for cls in discovered:
+            # Skip panels that can never mount (id collides with a core tab) — a
+            # toggle for them would be a no-op. (applies_to() is context-dependent
+            # — a panel that doesn't apply to this robot still gets a toggle.)
+            if cls.id in _RESERVED_TAB_IDS:
+                continue
+            panel_id = cls.id
+            label = cls.display_name
+            with _setting_row(label, f"Plugin id: {panel_id} (restart to apply)"):
+                ui.switch(
+                    value=panel_id not in plugins.disabled_panels,
+                    on_change=_on_toggle(panel_id),
+                ).props("dense").mark(f"settings-plugin-{panel_id}")
+
+    def _build_plugin_settings(self) -> None:
+        """Render settings for each enabled panel plugin that contributes any.
+        Owns its leading separator so nothing dangles when no plugin does."""
+        commander = waldoctl.commander
+        contributors = [
+            p
+            for p in ui_state.plugin_panels
+            if type(p).build_settings is not Panel.build_settings
+        ]
+        for panel in contributors:
+            ui.separator().classes("my-1")
+            ui.label(panel.display_name).classes("text-sm font-medium").mark(
+                f"settings-plugin-{panel.id}-header"
+            )
+            # A plugin's build_settings() must not break the whole settings page.
+            try:
+                panel.build_settings(commander)
+            except Exception as e:
+                logger.warning("Plugin %s build_settings failed: %s", panel.id, e)
 
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):
@@ -524,5 +637,7 @@ class SettingsContent:
             section()
             if i < len(sections) - 1:
                 ui.separator().classes("my-1")
+
+        self._build_plugin_settings()
 
         simulation_state.notify_changed()

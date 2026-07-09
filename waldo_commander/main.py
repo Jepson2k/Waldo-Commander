@@ -23,9 +23,12 @@ from waldoctl import (
     FrameJogAvailability,
     GripperTool,
     LinearMotion,
+    Panel,
+    PanelSlot,
     RobotClient,
     RobotStatus,
     Settings,
+    iter_plugin_panels,
 )
 
 from waldo_commander.common.logging_config import (
@@ -64,6 +67,7 @@ from waldo_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
+from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
 from waldo_commander.services.action_log import action_log_service
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
@@ -179,18 +183,13 @@ async def initialize_urdf_scene() -> None:
             tool = r.tools[tool_key]
         except KeyError:
             return None
-        # Per-variant TCP overrides tool-level TCP
-        if variant_key is not None:
-            for v in tool.variants:
-                if v.key == variant_key and v.tcp_origin is not None:
-                    return ToolPose(
-                        origin=list(v.tcp_origin),
-                        rpy=list(v.tcp_rpy) if v.tcp_rpy else list(tool.tcp_rpy),
-                    )
-        return ToolPose(
-            origin=list(tool.tcp_origin),
-            rpy=list(tool.tcp_rpy),
+        # Resolve per-variant TCP, overriding origin and rpy independently (a
+        # variant that sets only tcp_rpy keeps its rotation — the old inline
+        # logic dropped it because it gated the whole override on tcp_origin).
+        origin, rpy = waldoctl.resolve_variant_tcp(
+            tool.tcp_origin, tool.tcp_rpy, tool.variants, variant_key
         )
+        return ToolPose(origin=list(origin), rpy=list(rpy))
 
     # Create UrdfScene config with all settings
     scene_config = UrdfSceneConfig(
@@ -510,11 +509,84 @@ def update_ui_from_status() -> None:
         robot_state.notify_changed()
 
 
+# Core tab ids the frontend owns; a plugin claiming one would create duplicate
+# Quasar tab / tab_panel names and corrupt the layout, so discovery skips them.
+_RESERVED_TAB_IDS = frozenset({"program", "io", "gripper", "response", "log", "help"})
+
+
+def _discover_plugin_panels() -> None:
+    """Populate ``ui_state.plugin_panels`` from the ``waldoctl.panels`` group.
+
+    Cached for the process: once any panel is discovered the populated list
+    short-circuits further scans (an empty result is falsy, so a no-plugins
+    install simply re-scans per page build — cheap). Plugins listed in
+    ``commander.settings.plugins.disabled_panels``, or whose id collides with a
+    core tab, are skipped; survivors whose ``applies_to(commander)`` returns
+    ``False`` are filtered out. Final order is ``(slot, order, id)`` so tab
+    layout is deterministic.
+    """
+    if ui_state.plugin_panels:
+        return
+    commander = waldoctl.commander
+    disabled = set(commander.settings.plugins.disabled_panels)
+    panels: list[Panel] = []
+    for cls in iter_plugin_panels():
+        if cls.id in disabled:
+            continue
+        if cls.id in _RESERVED_TAB_IDS:
+            logger.warning(
+                "Skipping plugin panel %s: id %r collides with a core tab",
+                cls.__name__,
+                cls.id,
+            )
+            continue
+        try:
+            p = cls()
+            if p.applies_to(commander):
+                panels.append(p)
+        except Exception as e:
+            logger.warning("Plugin panel %s init failed: %s", cls, e)
+    panels.sort(key=lambda p: (p.slot.value, p.order, p.id))
+    ui_state.plugin_panels = panels
+
+
+def _add_plugin_tabs(slot: PanelSlot) -> None:
+    """Add a ``ui.tab`` for each discovered plugin panel in *slot*.
+
+    Call inside the relevant ``ui.tabs()`` context.
+    """
+    for p in ui_state.plugin_panels:
+        if p.slot is slot:
+            tab = ui.tab(name=p.id, label="", icon=p.tab_icon or "extension")
+            if p.tab_tooltip:
+                tab.tooltip(p.tab_tooltip)
+            tab.mark(f"tab-{p.id}")
+
+
+def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
+    """Add a built ``ui.tab_panel`` for each discovered plugin panel in *slot*.
+
+    Call inside the relevant ``ui.tab_panels()`` context.
+    """
+    for p in ui_state.plugin_panels:
+        if p.slot is slot:
+            with ui.tab_panel(p.id).classes("gap-2 overlay-card overflow-hidden"):
+                # A third-party plugin's build() must not blank the whole page;
+                # leave an empty-but-valid tab panel on failure (mirrors the
+                # init guard in _discover_plugin_panels).
+                try:
+                    p.build(commander)
+                except Exception as e:
+                    logger.warning("Plugin panel %s build failed: %s", p.id, e)
+
+
 def _build_left_panels(panels_wrap: ui.element) -> dict:
     """Build top (program/io/gripper) and bottom (log/help) panel groups.
 
     Returns a dict of references needed by _setup_panel_persistence().
     """
+    _discover_plugin_panels()
+    commander = waldoctl.commander
     # ---- Top tab bar ----
     with (
         ui.tabs()
@@ -533,6 +605,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         gripper_tab.props("disable")
         gripper_tab.mark("tab-gripper")
         ui_state._gripper_tab = gripper_tab
+
+        _add_plugin_tabs(PanelSlot.LEFT_TOP_TAB)
 
     # ---- Top panels container ----
     with (
@@ -629,6 +703,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
 
             ui_state._build_gripper_content = _build_gripper_content
 
+        _add_plugin_tab_panels(PanelSlot.LEFT_TOP_TAB, commander)
+
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
             ui_state.program_panel_visible = new_tab == "program"
@@ -654,6 +730,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         help_tab = ui.tab(name="help", label="", icon="help_outline")
         help_tab.tooltip("Help")
         help_tab.mark("tab-help")
+
+        _add_plugin_tabs(PanelSlot.LEFT_BOTTOM_TAB)
 
     # ---- Bottom panels container ----
     with (
@@ -688,6 +766,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui.element("div").classes("resize-handle-top")
             ui.element("div").classes("resize-handle-right")
             ui.element("div").classes("resize-handle-corner")
+
+        _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
         def update_bottom_layout():
             is_open = bool(bottom_tabs.value)
@@ -746,9 +826,25 @@ def _setup_panel_persistence(refs: dict) -> None:
             try:
                 saved_tabs = await ui.run_javascript("PanelResize.getActiveTabs()")
                 if saved_tabs:
+                    # A persisted tab id can name a plugin that's since been
+                    # disabled / uninstalled; restoring it would select a tab
+                    # that no longer exists. Null out anything not currently a
+                    # core or discovered-plugin tab.
+                    top_valid = {"program", "io", "gripper"} | {
+                        p.id
+                        for p in ui_state.plugin_panels
+                        if p.slot is PanelSlot.LEFT_TOP_TAB
+                    }
+                    bottom_valid = {"response", "help"} | {
+                        p.id
+                        for p in ui_state.plugin_panels
+                        if p.slot is PanelSlot.LEFT_BOTTOM_TAB
+                    }
                     if "top" in saved_tabs:
                         top_tab = saved_tabs["top"]
-                        if top_tab == "gripper" and ui_state.gripper_page is None:
+                        if top_tab not in top_valid or (
+                            top_tab == "gripper" and ui_state.gripper_page is None
+                        ):
                             top_tab = None
                         side_tabs.value = top_tab
                         top_panels.value = top_tab
@@ -759,6 +855,8 @@ def _setup_panel_persistence(refs: dict) -> None:
                             )
                     if "bottom" in saved_tabs:
                         bottom_tab = saved_tabs["bottom"]
+                        if bottom_tab not in bottom_valid:
+                            bottom_tab = None
                         bottom_tabs.value = bottom_tab
                         bottom_panels.value = bottom_tab
                         update_bottom_layout()
@@ -916,6 +1014,51 @@ def _quiet_shutdown_exception_handler(
         ):
             return
     loop.default_exception_handler(context)
+
+
+async def _start_plugin_panels() -> None:
+    """Run ``Panel.start`` once per process for every discovered plugin panel.
+
+    Called after the page is built so plugin UI references are valid. Each
+    panel is marked started *before* its ``start`` is awaited, so a page reload
+    landing mid-start can't double-start it; only panels not yet started are
+    run, so a panel enabled/installed after an empty first build still starts.
+    Errors in one plugin's ``start`` do not stop the others.
+    """
+    commander = waldoctl.commander
+    pending = [
+        p for p in ui_state.plugin_panels if p.id not in ui_state._started_panel_ids
+    ]
+    if not pending:
+        return
+    ui_state._started_panel_ids.update(p.id for p in pending)
+    results = await asyncio.gather(
+        *(p.start(commander) for p in pending),
+        return_exceptions=True,
+    )
+    for p, r in zip(pending, results):
+        if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+            logger.warning("Plugin panel %r start failed: %s", p.id, r)
+
+
+async def _stop_plugin_panels() -> None:
+    """Run ``Panel.stop`` for every discovered plugin panel.
+
+    Each ``stop`` is bounded by a 2-second timeout so a misbehaving plugin
+    cannot block app shutdown, and the stops run concurrently (mirroring
+    ``_start_plugin_panels``) so N stuck plugins add ~2s to shutdown, not
+    N*2s.  Errors are logged, never raised.
+    """
+
+    async def _stop_one(p: Panel) -> None:
+        try:
+            await asyncio.wait_for(p.stop(), timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.warning("Plugin panel %r stop timed out", p.id)
+        except Exception as e:
+            logger.warning("Plugin panel %r stop failed: %s", p.id, e)
+
+    await asyncio.gather(*(_stop_one(p) for p in ui_state.plugin_panels))
 
 
 def _register_handlers() -> None:
@@ -1076,6 +1219,11 @@ def _register_handlers() -> None:
             ui_state.gripper_page.cleanup()
         if editor_panel is not None:
             editor_panel.cleanup()
+
+        # Stop plugin panels before the controller goes away so they can
+        # cancel any in-flight requests against the live client.
+        await _stop_plugin_panels()
+
         if ui_state.urdf_scene is not None:
             ui_state.urdf_scene.cleanup()
 
@@ -1288,6 +1436,9 @@ async def index_page():
 
     # Build UI
     build_page_content()
+
+    # Plugin panels: kick off their long-running tasks now that UI is ready.
+    asyncio.create_task(_start_plugin_panels())
 
     # Reflect startup-determined mode in UI; update connectivity only upward
     # (don't downgrade connected→disconnected from a transient ping failure;
@@ -1622,6 +1773,7 @@ def main():
         status=RobotStatus(),
         programs=EditorPrograms(),
         settings=Settings(),
+        scene=WcSceneHandle(),
     )
     waldoctl._set_commander(commander)
 
