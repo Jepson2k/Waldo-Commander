@@ -413,10 +413,7 @@ async def test_shape_push_honors_ack_contract(monkeypatch, caplog) -> None:
     # attribute which permanently shadows the PEP 562 locator on teardown.
     monkeypatch.setattr(waldoctl.commander, "client", client)
 
-    handle = sh.WcSceneHandle.__new__(sh.WcSceneHandle)
-    handle._groups = {}
-    handle._installation = ()
-    handle._confirmed = False
+    handle = sh.WcSceneHandle()
     handle._shapes = [box]
 
     # Unconfirmed (timeout) → still draft, loudly logged.
@@ -630,3 +627,65 @@ async def test_shape_edit_is_acked_and_display_adopts_readback(user: User) -> No
         handle.shapes = []
         await _until_confirmed()
     assert "shape:rb" not in scene._shape_objects
+
+
+@pytest.mark.integration
+async def test_stale_readback_cannot_resurrect_cleared_shapes(user: User) -> None:
+    """A readback that raced a newer edit is discarded. Pre-fix, a delayed
+    ``shapes()`` response captured before a clear re-adopted the old world and
+    re-rendered a keep-out the controller no longer enforced."""
+    import asyncio
+
+    import waldoctl
+    from waldoctl import Box
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    handle = waldoctl.commander.scene
+
+    async def _until(cond, msg: str) -> None:
+        deadline = asyncio.get_running_loop().time() + 10.0
+        while not cond():
+            assert asyncio.get_running_loop().time() < deadline, msg
+            await asyncio.sleep(0.05)
+
+    client = waldoctl.commander.client
+    real_shapes = client.shapes
+    release = asyncio.Event()
+    held = asyncio.Event()
+
+    async def _delayed_once():
+        client.shapes = real_shapes  # delay only this one response
+        world = await real_shapes()
+        held.set()
+        await release.wait()
+        return world
+
+    try:
+        handle.shapes = [
+            Box(name="rb", x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
+        ]
+        await _until(lambda: handle.confirmed, "edit never confirmed")
+
+        client.shapes = _delayed_once
+        # Same entry the app uses for epoch-moved readbacks (main.py).
+        stale = asyncio.create_task(handle.refresh_from_backend())
+        await asyncio.wait_for(held.wait(), timeout=5.0)
+
+        handle.shapes = []
+        await _until(lambda: handle.confirmed, "clear never confirmed")
+        assert "shape:rb" not in scene._shape_objects
+
+        release.set()
+        await stale
+        assert [s.name for s in handle.shapes] == []
+        assert "shape:rb" not in scene._shape_objects
+    finally:
+        client.shapes = real_shapes
+        release.set()
+        handle.shapes = []
+        await _until(
+            lambda: handle.confirmed and not handle.shapes, "cleanup never confirmed"
+        )

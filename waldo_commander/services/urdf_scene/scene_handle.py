@@ -61,6 +61,7 @@ class WcSceneHandle:
         self._shapes: list[Shape] = []
         self._installation: tuple[Shape, ...] = ()
         self._confirmed = False
+        self._refresh_seq = 0
 
     @property
     def shapes(self) -> list[Shape]:
@@ -85,6 +86,7 @@ class WcSceneHandle:
         ui_state.active_robot.apply_shapes(shapes)
         self._shapes = shapes
         self._confirmed = False
+        self._refresh_seq += 1  # in-flight readbacks predate this edit — discard them
         # Enforcement before cosmetics: the backend push must never be lost to
         # a scene/render problem.
         self._push_shapes()
@@ -163,6 +165,8 @@ class WcSceneHandle:
         client = waldoctl.commander.client
         if client is None:
             return
+        self._refresh_seq += 1
+        seq = self._refresh_seq
         try:
             world = await client.shapes()
         except NotImplementedError:
@@ -172,6 +176,8 @@ class WcSceneHandle:
             return
         if world is None:
             return  # unreachable — keep current display, re-query on reconnect
+        if seq != self._refresh_seq:
+            return  # superseded by a newer edit or readback — that one adopts
         self._installation = tuple(world.installation)
         self._shapes = list(world.program)
         self._confirmed = True
