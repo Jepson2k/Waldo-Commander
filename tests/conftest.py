@@ -17,6 +17,7 @@ from nicegui.testing.general_fixtures import (
     nicegui_reset_globals,  # noqa: F401 - required by screen fixture
 )
 from nicegui.testing.screen import Screen
+from nicegui.testing import screen_plugin as nicegui_screen_plugin
 from nicegui.testing.screen_plugin import (
     nicegui_driver,  # noqa: F401 - default driver (per-test browser)
     nicegui_remove_all_screenshots,  # noqa: F401 - clears screenshots before session
@@ -359,7 +360,10 @@ def restore_process_pool_after_nicegui_fixtures(
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers."""
+    """Register custom markers and run the screen plugin's configure hook
+    (the screen fixtures are imported, not plugin-registered, so Screen.PORT /
+    SCREENSHOT_DIR / DOWNLOAD_DIR must be set up here)."""
+    nicegui_screen_plugin.pytest_configure(config)
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"
     )

@@ -305,6 +305,7 @@ class SettingsContent:
             ng_app.storage.general["selected_tool"] = tool
             waldoctl.commander.status.tool.variant_key = vk or ""
             self._apply_tool_scene(tool, variant_key=vk)
+            self._apply_tool_camera(tool)
             self._rebuild_variant_selector(tool)
             self._rebuild_tcp_offset(tool)
             self._notify_and_resimulate()
@@ -336,32 +337,75 @@ class SettingsContent:
         if stored_tool:
             self._apply_tool_scene(stored_tool, variant_key=vk_initial)
 
+    def _tool_spec(self, tool_key: str):
+        """The active robot's ToolSpec for *tool_key*, or None."""
+        try:
+            return ui_state.active_robot.tools[tool_key]
+        except KeyError:
+            return None
+
+    def _apply_tool_camera(self, tool_key: str) -> None:
+        """Resolve the active tool's camera (its runtime_settings override or the
+        spec default), start/stop the camera service, and sync the dropdown.
+        Treats None / -1 as 'no camera'."""
+        spec = self._tool_spec(tool_key)
+        if spec is None:
+            return
+        stored = ng_app.storage.general.get(f"tool_camera/{tool_key}")
+        if stored is not None:
+            spec.runtime_settings.camera_device = None if stored == -1 else stored
+        device = spec.effective_camera_device
+        cam_value = -1 if device is None else device
+        if self._cam_select is not None:
+            self._cam_select.value = cam_value
+        ui_state.camera_device = cam_value
+        if device is None or device == -1:
+            camera_service.stop()
+        else:
+            camera_service.start(device)
+
     def _build_camera(self) -> None:
-        stored_cam = ng_app.storage.general.get("camera_device", -1)
         cam_devices = enumerate_video_devices()
         cam_options: dict[int | str, str] = {-1: "Disabled"}
         for dev in cam_devices:
             cam_options[dev["index"]] = str(dev["label"])
-        # Validate stored camera still exists (index may change across reboots)
-        if stored_cam not in cam_options:
-            stored_cam = -1
-            ng_app.storage.general["camera_device"] = -1
-        ui_state.camera_device = stored_cam
+
+        # Per-tool camera: the dropdown reflects / sets the *active* tool's camera
+        # (its runtime_settings override, falling back to the tool spec default).
+        active_key = ng_app.storage.general.get("selected_tool", "NONE")
+        spec = self._tool_spec(active_key)
+        if spec is not None:
+            stored = ng_app.storage.general.get(f"tool_camera/{active_key}")
+            if stored is not None:
+                spec.runtime_settings.camera_device = None if stored == -1 else stored
+        device = spec.effective_camera_device if spec is not None else -1
+        cam_value: int | str = -1 if device is None else device
+        if cam_value not in cam_options:
+            cam_value = -1
+        ui_state.camera_device = cam_value
 
         def _on_camera_change(e):
             val = e.value
-            ng_app.storage.general["camera_device"] = val
+            key = ng_app.storage.general.get("selected_tool", "NONE")
+            s = self._tool_spec(key)
+            if s is not None:
+                s.runtime_settings.camera_device = (
+                    None if (val is None or val == -1) else val
+                )
+                ng_app.storage.general[f"tool_camera/{key}"] = (
+                    -1 if val is None else val
+                )
             ui_state.camera_device = val
             if val is None or val == -1:
                 camera_service.stop()
             else:
                 camera_service.start(val)
 
-        with _setting_row("Camera", "Video device for gripper panel"):
+        with _setting_row("Camera", "Video device for the active tool"):
             self._cam_select = (
                 ui.select(
                     options=cam_options,
-                    value=stored_cam,
+                    value=cam_value,
                     on_change=_on_camera_change,
                     new_value_mode="add-unique",
                     clearable=True,
@@ -394,8 +438,8 @@ class SettingsContent:
 
         self._cam_refresh_timer = ui.timer(10.0, _refresh_camera_devices)
 
-        if stored_cam is not None and stored_cam != -1:
-            camera_service.start(stored_cam)
+        if cam_value != -1:
+            camera_service.start(cam_value)
 
     def _build_motion_profile(self, prefs: dict) -> None:
         async def _on_motion_profile_change(e):

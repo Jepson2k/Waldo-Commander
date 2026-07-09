@@ -8,14 +8,14 @@ dynamic = ["version"]
 description = "A web interface for controlling robotic arms"
 requires-python = ">=3.12"
 dependencies = [
-  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@4f3e88841666a98f289f00c7581f319576a636c0",
+  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@eff7a1b984d9f00345c2faa48458c6edfe64ac94",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
   "scipy>=1.10",
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.2.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.5.0",
   "opencv-python-headless>=4.8",
 
   # pinokin: Pinocchio-based FK/IK bindings
@@ -47,10 +47,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.7"]
+parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.3.0"]
 v4l2 = ["linuxpy>=0.24"]
 dev = [
-  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.7",
+  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.3.0",
   "ruff",
   "ty",
   "pytest",
