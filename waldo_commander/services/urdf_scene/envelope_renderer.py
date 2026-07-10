@@ -32,26 +32,17 @@ from waldo_commander.state import simulation_state
 logger = logging.getLogger(__name__)
 
 
-# Default sample count for envelope generation (used to find max reach)
 # 500k samples → ~9 samples per joint (9^6 = 531441 grid points)
 DEFAULT_ENVELOPE_SAMPLES = 500000
 
-# Envelope proximity clipping configuration
 ENVELOPE_CAP_DEPTH = 0.08  # 80mm visible cap depth on the sphere
 ENVELOPE_PROXIMITY_THRESHOLD = 0.10  # 100mm from boundary triggers display
 
-# Cache directory and file paths
 CACHE_DIR = Path.home() / ".waldo-commander"
 HULL_STL_FILENAME = "workspace_hull.stl"
 HULL_STL_PATH = CACHE_DIR / HULL_STL_FILENAME
 
-# Storage key for hull cache metadata
 STORAGE_KEY = "workspace_hull_cache"
-
-
-# -----------------------------------------------------------------------------
-# WorkspaceEnvelope class (generates convex hull with caching)
-# -----------------------------------------------------------------------------
 
 
 def _compute_cache_key(
@@ -84,14 +75,13 @@ def _save_hull_as_stl(vertices: np.ndarray, faces: np.ndarray, path: Path) -> bo
     try:
         from stl import mesh as stl_mesh
 
-        # Ensure cache directory exists
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create mesh from hull data using vectorized indexing
-        hull_mesh = stl_mesh.Mesh(np.zeros(len(faces), dtype=stl_mesh.Mesh.dtype))
-        hull_mesh.vectors = vertices[faces]  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
+        # Any: Mesh defines its attributes dynamically, so resolution is env-dependent
+        hull_mesh: Any = stl_mesh.Mesh(np.zeros(len(faces), dtype=stl_mesh.Mesh.dtype))
+        hull_mesh.vectors = vertices[faces]
 
-        hull_mesh.save(str(path))  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
+        hull_mesh.save(str(path))
         logger.info("Saved workspace hull STL to %s", path)
         return True
     except Exception as e:
@@ -103,8 +93,8 @@ class WorkspaceEnvelope:
     """Calculates workspace envelope using convex hull with STL caching."""
 
     def __init__(self):
-        self.max_reach: float = 0.0  # Maximum reach radius in meters
-        self.stl_url: str = ""  # URL to serve the STL file
+        self.max_reach: float = 0.0  # meters
+        self.stl_url: str = ""
         self._generated = False
         self._generating = False
         self._current_tool_offset_z: float = 0.0
@@ -135,7 +125,7 @@ class WorkspaceEnvelope:
             return None, None
         urdf_path = ui_state.active_robot.urdf_path
         joint_limits_rad = ui_state.active_robot.joints.limits.position.rad
-        # Store for cache key use — avoids TOCTOU race
+        # Stored for cache key use — avoids a TOCTOU race
         self._urdf_path = urdf_path
         self._joint_limits_rad = joint_limits_rad
         return urdf_path, joint_limits_rad.tolist()
@@ -282,13 +272,11 @@ class WorkspaceEnvelope:
         Returns:
             True if generation started or already complete
         """
-        # Resolve hull params once (stores on instance for cache key use)
         urdf_path, joint_limits_rad = self._get_hull_params()
         if urdf_path is None or joint_limits_rad is None:
             logger.warning("Cannot generate hull: no robot loaded")
             return False
 
-        # Try loading from cache first
         if self._load_from_cache(tool_offset_z):
             simulation_state.notify_changed()
             return True
@@ -300,8 +288,7 @@ class WorkspaceEnvelope:
             logger.info("Workspace generation already in progress")
             return True
 
-        # Skip actual generation in tests (WALDO_SKIP_ENVELOPE=1)
-        # Check after _generated/_generating so tests can still verify those code paths
+        # Checked after _generated/_generating so tests can still verify those paths
         if os.environ.get("WALDO_SKIP_ENVELOPE"):
             logger.debug("Skipping workspace hull generation (WALDO_SKIP_ENVELOPE)")
             return False
@@ -323,8 +310,8 @@ class WorkspaceEnvelope:
                     joint_limits_rad,
                 )
             except Exception as e:
-                # Fallback to sync in-process generation when subprocess fails
-                # (common in test environments where process pool is unavailable)
+                # Fall back to sync in-process generation when the subprocess fails
+                # (common in test environments where the process pool is unavailable)
                 logger.warning("Subprocess hull generation failed (%s), using sync", e)
                 try:
                     result = _generate_hull_cpu_bound(
@@ -341,7 +328,7 @@ class WorkspaceEnvelope:
                     simulation_state.notify_changed()
             finally:
                 self._generating = False
-                # Check for pending tool offset change queued during generation
+                # Apply a tool offset change queued while generation was running
                 pending = self._pending_tool_offset
                 if pending is not None:
                     self._pending_tool_offset = None
@@ -367,13 +354,11 @@ class WorkspaceEnvelope:
         Returns:
             True if generation successful
         """
-        # Resolve hull params once (stores on instance for cache key use)
         urdf_path, joint_limits_rad = self._get_hull_params()
         if urdf_path is None or joint_limits_rad is None:
             logger.warning("Cannot generate hull: no robot loaded")
             return False
 
-        # Try loading from cache first
         if self._load_from_cache(tool_offset_z):
             simulation_state.notify_changed()
             return True
@@ -446,14 +431,13 @@ class WorkspaceEnvelope:
         Returns:
             True if regeneration needed
         """
-        # If generation is in progress, queue for regeneration after completion
+        # Mid-generation: queue the new offset and let completion regenerate
         if self._generating:
             if abs(tool_offset_z - self._current_tool_offset_z) > 1e-6:
                 self._pending_tool_offset = tool_offset_z
             return False
         if not self._generated:
             return True
-        # Refresh stored params from ui_state
         self._get_hull_params()
         if self._urdf_path is None or self._joint_limits_rad is None:
             return True
@@ -483,8 +467,8 @@ def _generate_hull_cpu_bound(
     Returns:
         Dict with max_reach, vertices, faces, or None if failed
     """
-    # Configure logging in subprocess (each worker needs its own config)
-    # basicConfig() won't work if handlers exist, so force-add one
+    # Each worker needs its own logging config; basicConfig() is a no-op when
+    # handlers already exist, so force-add one.
     import logging as subprocess_logging
     import sys
 
@@ -506,7 +490,7 @@ def _generate_hull_cpu_bound(
         robot = Robot(urdf_path)
         limits_arr = np.array(joint_limits_rad)
 
-        # Generate evenly spaced joint configurations using a grid
+        # Evenly spaced joint configurations sampled on a grid
         num_joints = len(joint_limits_rad)
         samples_per_joint = max(2, int(round(samples ** (1 / num_joints))))
         actual_samples = samples_per_joint**num_joints
@@ -524,22 +508,19 @@ def _generate_hull_cpu_bound(
         grids = np.meshgrid(*joint_ranges, indexing="ij")
         q_samples = np.column_stack([g.ravel() for g in grids])
 
-        # Calculate FK for each configuration using batch_fk
         T_list = robot.batch_fk(q_samples)  # list of 4x4 matrices
 
-        # Extract positions (TCP positions)
-        pos = np.array([T[:3, 3] for T in T_list])  # (N, 3)
+        pos = np.array([T[:3, 3] for T in T_list])  # TCP positions, (N, 3)
 
-        # Apply tool offset along Z axis of each TCP frame
+        # Offset the TCP along its own frame Z axis
         if tool_offset_z != 0:
             z_axes = np.array([T[:3, 2] for T in T_list])  # (N, 3)
             pos += z_axes * tool_offset_z
 
-        # Calculate distances from origin (robot base)
+        # Reach is measured from the robot base at the origin
         distances = np.linalg.norm(pos, axis=1)
         max_reach = float(distances.max())
 
-        # Compute convex hull
         try:
             hull = ConvexHull(pos)
             hull_verts = pos[hull.vertices]
@@ -562,7 +543,6 @@ def _generate_hull_cpu_bound(
             }
         except Exception as e:
             sub_logger.error("ConvexHull computation failed: %s", e)
-            # Fall back to just max_reach without hull
             return None
 
     except ImportError as e:
@@ -577,11 +557,6 @@ def _generate_hull_cpu_bound(
 workspace_envelope = WorkspaceEnvelope()
 
 
-# -----------------------------------------------------------------------------
-# EnvelopeRenderer mixin
-# -----------------------------------------------------------------------------
-
-
 class EnvelopeRenderer:
     """Renderer mixin providing envelope visualization for UrdfScene.
 
@@ -590,7 +565,7 @@ class EnvelopeRenderer:
     renderer already manages — no external scene references need threading.
     """
 
-    # These attributes are defined in the main UrdfScene class
+    # Defined on the main UrdfScene class
     scene: Any
     simulation_group: Any
 
@@ -598,10 +573,9 @@ class EnvelopeRenderer:
         """Initialize envelope state variables."""
         self.envelope_object: Any | None = None
 
-        # Track envelope visibility state to avoid redundant visible() calls
+        # Cached so we skip redundant visible() calls
         self._envelope_visible: bool = False
 
-        # Track current tool offset for envelope calculations
         self._current_tool: str = "none"
         self._current_tool_offset_z: float = 0.0
 
@@ -720,33 +694,29 @@ class EnvelopeRenderer:
             dist = math.sqrt(x * x + y * y + z * z)
 
             if dist < 1e-6:
-                # Object at origin - can't determine direction, skip
+                # At the origin, direction is undefined
                 continue
 
-            # Normalize to get direction from origin to object
+            # Direction from origin to object
             nx = x / dist
             ny = y / dist
             nz = z / dist
 
-            # Calculate plane distance to show a cap
-            # How close to boundary (0 = at boundary, positive = inside)
+            # 0 = at boundary, positive = inside
             distance_to_boundary = max_reach - dist
 
-            # Adaptive cap depth: larger cap when closer to boundary
+            # Adaptive cap depth: larger cap the closer the object is to the boundary
             if distance_to_boundary < 0:
-                # Beyond boundary - show full cap
                 cap_depth = ENVELOPE_CAP_DEPTH
             elif distance_to_boundary < ENVELOPE_PROXIMITY_THRESHOLD:
-                # Within threshold - scale cap depth proportionally
                 proximity_ratio = 1.0 - (
                     distance_to_boundary / ENVELOPE_PROXIMITY_THRESHOLD
                 )
                 cap_depth = ENVELOPE_CAP_DEPTH * proximity_ratio
             else:
-                # Too far from boundary - no cap needed
+                # Too far from the boundary to need a cap
                 continue
 
-            # Plane distance
             plane_d = -(max_reach - cap_depth)
 
             planes.append(SceneClipPlane(nx=nx, ny=ny, nz=nz, d=plane_d))
@@ -764,7 +734,6 @@ class EnvelopeRenderer:
                 "Tool offset changed to %.4fm, regenerating workspace hull",
                 tool_offset_z,
             )
-            # Delete current envelope object
             if self.envelope_object:
                 try:
                     self.envelope_object.delete()
@@ -773,7 +742,6 @@ class EnvelopeRenderer:
                 self.envelope_object = None
                 self._envelope_visible = False
 
-            # Reset and regenerate
             workspace_envelope.reset()
             workspace_envelope.generate(tool_offset_z=tool_offset_z)
 

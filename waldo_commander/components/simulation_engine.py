@@ -1,16 +1,10 @@
 """Simulation engine: debounced + on-position-change path preview runs.
 
-Reads the active textarea from ``ui_state.active_textarea``, updates the
-active program's ``dry_run`` state, and drives the path-visualizer service. Diagnostics,
-line-tooltips, and target anchors are pushed directly to the ``decorations``
-singleton via method calls — these are imperative UI operations on a known
-recipient, so a state round-trip would be ceremony.
-
-Calls into ``playback`` are direct rather than listener-routed because
-the three things this module triggers — loading-progress visibility,
-timeline cache invalidation, and scrub-segment rebuild — are imperative
-UI operations, not state mutations. Inventing pseudo-state fields just
-to drive a listener would be more ceremony than the direct call.
+Drives the path-visualizer service off the active textarea and pushes
+diagnostics / line-tooltips / target anchors straight to the ``decorations``
+singleton. Calls into ``decorations`` and ``playback`` are direct rather than
+listener-routed because they are imperative UI operations on a known recipient,
+not state mutations — a state round-trip would be pure ceremony.
 """
 
 from __future__ import annotations
@@ -133,12 +127,15 @@ class SimulationEngine:
         if error == UNCHANGED:
             return None
 
-        playback.on_simulation_complete()
+        # Gate to the active tab: a background tab's sim completing must not reset
+        # the on-screen tab's playback state (same rule as the tool-selection
+        # block below).
+        if tab is not None and tab.id == waldoctl.commander.programs.active_id:
+            playback.on_simulation_complete()
 
-        # Apply initial tool selection from script to scene and controller —
-        # only when this sim's program is the one on screen. A background tab's
-        # sim completing must not swap the visible scene / live tool out from
-        # under the program the user actually switched to.
+        # Only apply the script's initial tool selection when this sim's program
+        # is on screen — a background tab's sim must not swap the visible scene /
+        # live tool out from under the program the user switched to.
         sim_tool_selections = (
             tab.dry_run.tool_selections
             if tab is not None and tab.id == waldoctl.commander.programs.active_id
@@ -197,11 +194,9 @@ class SimulationEngine:
 
         async def run_simulation_quietly():
             try:
-                # Default-script optimization: skip simulation if content
-                # is the default snippet. Deferred inside the debounced
-                # callback so the O(K) whitespace-normalize check runs once
-                # per idle window instead of on every keystroke that
-                # schedules a (re)simulation.
+                # Skip simulation for the default snippet. Checked inside the
+                # debounced callback so the O(K) whitespace-normalize runs once
+                # per idle window, not on every keystroke.
                 tab = waldoctl.commander.programs.get(tab_id)
                 if tab and is_default_script(tab.source):
                     tab.dry_run.final_joints_rad = list(get_home_joints_rad())

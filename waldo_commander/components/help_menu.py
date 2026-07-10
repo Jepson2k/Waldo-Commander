@@ -28,7 +28,6 @@ class HelpMenu:
         with self._dialog:
             with ui.card().classes("overlay-card help-dialog-card p-0 overflow-hidden"):
                 with ui.row().classes("gap-0"):
-                    # Left side: vertical tabs
                     with ui.column().classes("help-tabs-column shrink-0"):
                         with (
                             ui.tabs()
@@ -48,9 +47,7 @@ class HelpMenu:
                                 .mark("tab-quickstart")
                             )
 
-                    # Right side: content
                     with ui.column().classes("flex-1 gap-0 overflow-hidden"):
-                        # Header with close button
                         with (
                             ui.row()
                             .classes("w-full items-center px-4 py-2 shrink-0")
@@ -72,7 +69,6 @@ class HelpMenu:
                                 "flat round dense color=white"
                             )
 
-                        # Tab panels with vertical animation (matching vertical tabs)
                         with (
                             ui.tab_panels(tabs, value=quickstart_tab)
                             .classes("w-full overflow-hidden")
@@ -106,7 +102,7 @@ class HelpMenu:
                 ui.label("No keybindings registered").classes("text-gray-500")
                 return
 
-            # Sort categories for consistent display
+            # Sort categories into a fixed order for consistent display.
             category_order = [
                 "Robot Control",
                 "Playback",
@@ -126,7 +122,6 @@ class HelpMenu:
                 with ui.column().classes("w-full gap-1"):
                     ui.label(category).classes("text-sm font-medium text-gray-400")
 
-                    # Build rows with key parts as list for template rendering
                     rows = []
                     for i, binding in enumerate(bindings):
                         key_parts = []
@@ -167,7 +162,6 @@ class HelpMenu:
                         .classes("keybindings-table")
                     )
 
-                    # Custom slot to render keys as keyboard icons
                     table.add_slot(
                         "body-cell-keys",
                         """
@@ -193,9 +187,7 @@ class HelpMenu:
             include_safety_step: If True, prepend a safety acknowledgment step.
                                  Used for first-time visit dialog only.
         """
-        # Step descriptions are markdown that mirrors the relevant sections
-        # of docs/index.md so the in-app tutorial and the public docs stay
-        # in sync. Inline HTML spans are used for the colored status markers.
+        # Descriptions mirror docs/index.md to keep the in-app tutorial and public docs in sync.
         steps = [
             {
                 "title": "Basic Controls",
@@ -242,7 +234,6 @@ class HelpMenu:
                 .classes("p-0")
                 .style("width: 700px;") as self._stepper
             ):
-                # Safety step (only shown on first visit)
                 if include_safety_step:
                     with ui.step("Safety Notice").classes("gap-2").mark("safety-step"):
                         with ui.row().classes("items-center gap-2 mb-2"):
@@ -276,7 +267,6 @@ class HelpMenu:
                             ).props("color=primary")
                             next_btn.bind_enabled_from(self._safety_accepted, "value")
 
-                            # Store acknowledgment when checkbox is checked
                             def on_accept(e):
                                 if e.args:
                                     ng_app.storage.general[
@@ -291,10 +281,8 @@ class HelpMenu:
                             "w-full rounded-lg"
                         ).props('preload="metadata"').style("max-height: 360px;")
 
-                        # sanitize=False is safe here: the content is a
-                        # hardcoded literal that includes inline color spans
-                        # for the connection-status markers, and DOMPurify
-                        # would strip the inline styles otherwise.
+                        # sanitize=False: content is a hardcoded literal whose inline status-marker
+                        # color spans DOMPurify would otherwise strip.
                         ui.markdown(step["description"], sanitize=False).classes(
                             "text-md text-gray-300"
                         )
@@ -330,10 +318,9 @@ class HelpMenu:
 
     def create_first_time_dialog(self) -> ui.dialog:
         """Create and return the first-time tutorial dialog."""
-        # Persistent dialog - can't be dismissed by clicking outside
+        # Persistent so it can't be dismissed by clicking outside.
         self._dialog = ui.dialog().props("persistent")
 
-        # Check if safety was already acknowledged in a previous session
         safety_already_acknowledged = ng_app.storage.general.get(
             self.SAFETY_ACKNOWLEDGED_KEY, False
         )
@@ -341,19 +328,17 @@ class HelpMenu:
         with self._dialog:
             with ui.card().classes("overlay-card tutorial-dialog-card"):
                 with ui.column().classes("w-full h-full gap-0"):
-                    # Header
                     ui.label("Welcome to PAROL Commander!").classes("text-xl font-bold")
 
                     ui.label(
                         "Let's get you started with a quick tour of the interface."
                     ).classes("text-sm text-gray-400 mb-3 shrink-0")
 
-                    # Quick start stepper (with safety step only if not already acknowledged)
                     self._build_quickstart_stepper(
                         include_safety_step=not safety_already_acknowledged
                     )
 
-                    # Footer - hidden until safety is acknowledged (or always visible if already acknowledged)
+                    # Footer stays hidden until safety is acknowledged.
                     footer = (
                         ui.row()
                         .classes("w-full items-center pt-3 shrink-0")
@@ -381,5 +366,4 @@ class HelpMenu:
             ng_app.storage.general[self.FIRST_VISIT_KEY] = True
 
 
-# Singleton
 help_menu = HelpMenu()

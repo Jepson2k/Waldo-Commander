@@ -44,26 +44,21 @@ def load_urdf(
     if not path.exists():
         raise FileNotFoundError(f"URDF file not found: {path}")
 
-    # Read URDF and find all package:// references
     with open(path, "r") as file:
         content = file.read()
 
-    # Find all unique package names
     package_names = set(re.findall(r"package://(\w+)", content))
 
     if not package_names:
-        # No package URIs, load directly
         return URDF.load(str(path), lazy_load_meshes=lazy)
 
-    # Replace package:// URIs
     modified_content = content
     for pkg_name in package_names:
         if pkg_name in package_map:
-            # Use provided mapping
             pkg_path = package_map[pkg_name]
             replacement = pkg_path.as_uri()
         else:
-            # Fallback: use URDF parent directory
+            # Fall back to the URDF's own directory when a package isn't mapped.
             replacement = path.parent.as_uri()
             logger.warning(
                 f"Package '{pkg_name}' not in package_map; using fallback: {replacement}"
@@ -73,7 +68,6 @@ def load_urdf(
             f"package://{pkg_name}", replacement
         )
 
-    # Write to temporary file and load
     with tempfile.TemporaryDirectory() as tmpdirname:
         tmp_file_path = Path(tmpdirname) / path.name
         tmp_file_path.write_text(modified_content, encoding="utf-8")
@@ -101,12 +95,11 @@ def resolve_meshes_dir(urdf_path: Path, configured_dir: Path | None = None) -> P
             )
         return meshes_dir
 
-    # Auto-discover: check sibling "meshes" directory
+    # Auto-discover a sibling "meshes" dir, then one level up.
     meshes_link = urdf_path.parent / "meshes"
     if meshes_link.exists():
         return meshes_link
 
-    # Try parent directory
     meshes_link = urdf_path.parent.parent / "meshes"
     if meshes_link.exists():
         return meshes_link
@@ -185,7 +178,6 @@ def normalize_axis(axis) -> np.ndarray:
         except (ValueError, TypeError):
             vec = None
     else:
-        # Object with x,y,z
         try:
             x = getattr(axis, "x", None)
             y = getattr(axis, "y", None)

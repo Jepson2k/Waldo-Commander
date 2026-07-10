@@ -114,8 +114,8 @@ class ActionLogService:
             changed = True
 
         if changed:
-            # Reassign wholesale (a new list) and notify change listeners so
-            # the readout's listener rebuilds its HTML.
+            # Reassign wholesale + notify so the readout's listener rebuilds
+            # its HTML; nothing value-binds Action.history.
             action.history = list(entries)
             action.notify_changed()
             self._tail_executing = (

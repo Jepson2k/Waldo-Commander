@@ -18,17 +18,9 @@ if TYPE_CHECKING:
     from typing import Self
 
 
-# =============================================================================
-# Constants for power-of-2 buffer operations
-# =============================================================================
-# ~25 seconds of data at 20 Hz, power of 2 for fast modulo via bitmask
+# ~25 seconds of data at 20 Hz; power of 2 for fast modulo via bitmask.
 BUFFER_SIZE = 512
 BUFFER_MASK = 511
-
-
-# =============================================================================
-# Numba-accelerated statistics functions (cached to disk)
-# =============================================================================
 
 
 @njit(cache=True)
@@ -68,7 +60,6 @@ def _compute_phase_stats(
     if n == 0:
         return 0.0, 0.0, 0.0
 
-    # Compute mean and max in single pass
     total = 0.0
     max_val = samples[0]
     for i in range(n):
@@ -77,7 +68,7 @@ def _compute_phase_stats(
             max_val = samples[i]
     mean = total / n
 
-    # p99 via quickselect (copy to scratch first to preserve original)
+    # Copy to scratch first so quickselect doesn't reorder the original.
     if n >= 20:
         for i in range(n):
             scratch[i] = samples[i]
@@ -101,20 +92,18 @@ def _compute_loop_stats(
     if n == 0:
         return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
-    # Single-pass Welford's algorithm for mean and variance + min/max
+    # Welford's online algorithm for mean and variance in one pass.
     mean = 0.0
-    m2 = 0.0  # Sum of squared differences
+    m2 = 0.0  # sum of squared differences
     min_val = samples[0]
     max_val = samples[0]
 
     for i in range(n):
         x = samples[i]
-        # Welford's online algorithm
         delta = x - mean
         mean += delta / (i + 1)
         delta2 = x - mean
         m2 += delta * delta2
-        # Track min/max
         if x < min_val:
             min_val = x
         if x > max_val:
@@ -122,17 +111,14 @@ def _compute_loop_stats(
 
     std = math.sqrt(m2 / n) if n > 0 else 0.0
 
-    # p95 and p99 via quickselect with single copy
     if n >= 20:
-        # Copy to scratch once
         for i in range(n):
             scratch[i] = samples[i]
 
-        # Compute p99 first (higher index)
         k99 = int(n * 0.99)
         p99 = _quickselect(scratch[:n], k99)
 
-        # Compute p95 on same array (works because k95 < k99)
+        # Reuse the same partially-sorted scratch: valid because k95 < k99.
         k95 = int(n * 0.95)
         p95 = _quickselect(scratch[:n], k95)
     else:
@@ -140,11 +126,6 @@ def _compute_loop_stats(
         p99 = max_val
 
     return mean, std, min_val, max_val, p95, p99
-
-
-# =============================================================================
-# PhaseMetrics - regular Python class (no jitclass overhead)
-# =============================================================================
 
 
 class PhaseMetrics:
@@ -276,11 +257,6 @@ class PhaseContext:
         self._timer.stop()
 
 
-# =============================================================================
-# LoopMetrics
-# =============================================================================
-
-
 class LoopMetrics:
     """Metrics tracked by the loop timer with rolling statistics.
 
@@ -329,7 +305,6 @@ class LoopMetrics:
         self.max_period_s = 0.0
         self.p95_period_s = 0.0
         self.p99_period_s = 0.0
-        # Overshoot stats
         self.mean_overshoot_s = 0.0
         self.max_overshoot_s = 0.0
         self.p99_overshoot_s = 0.0
@@ -393,7 +368,6 @@ class LoopMetrics:
         """
         if self._target_period_s <= 0 or self.p99_period_s <= 0:
             return False, 0.0
-        # Suppress warnings during startup grace period
         if self._start_time > 0 and (now - self._start_time) < self._grace_period_s:
             return False, 0.0
         if now - self._last_warn_time < rate_limit:
@@ -431,7 +405,6 @@ class LoopMetrics:
             self.p95_period_s = p95
             self.p99_period_s = p99
 
-        # Compute overshoot stats using the simpler phase stats function
         if self._overshoot_count > 0:
             mean, max_val, p99 = _compute_phase_stats(
                 self._overshoot_buffer, self._scratch, self._overshoot_count
@@ -455,7 +428,6 @@ class LoopMetrics:
         self.max_period_s = 0.0
         self.p95_period_s = 0.0
         self.p99_period_s = 0.0
-        # Reset overshoot stats
         self._overshoot_buffer.fill(0.0)
         self._overshoot_idx = 0
         self._overshoot_count = 0

@@ -39,7 +39,7 @@ from waldo_commander.services.programs import is_any_program_running
 
 logger = logging.getLogger(__name__)
 
-# Module-level constants (avoid recreation every frame)
+# Module-level constants and precompiled regexes: avoid recreating them every frame.
 _AXIS_ORDER = (
     "X+",
     "X-",
@@ -65,8 +65,6 @@ _ICON_TRANSFORMS: dict[tuple[int, int], str] = {
 _SLOT_TRANSFORM_OVERRIDES: dict[str, str] = {
     "lr_neg": "translate(-2,-5) scale(1.4)",
 }
-# Slots that use overflow:visible style on the outer SVG
-# Regex patterns compiled once
 _RE_VIEWBOX = re.compile(r'viewBox="\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*"')
 _RE_SVG_INNER = re.compile(r"<svg[^>]*>([\s\S]*?)</svg>")
 _RE_TEXT_LABEL = re.compile(r"(<text\b[^>]*>)(.*?)(</text>)", re.DOTALL)
@@ -609,7 +607,7 @@ class ControlPanel:
         # Cartesian button slots/elements and assignment (layout fixed; labels/colors/actions dynamic)
         self._cart_slot_elems: dict[str, ui.element] = {}
         self._cart_slot_meta: dict[str, dict] = {}
-        # Assignment of axes to fixed slots: 'ud1' (first up/down column), 'lr' (left/right row), 'ud2' (second up/down column)
+        # Axes assigned to fixed slots: 'ud1' (first up/down column), 'lr' (left/right row), 'ud2' (second up/down column)
         self._cart_assignment: dict[str, str] = {"ud1": "Y", "lr": "X", "ud2": "Z"}
         self._axis_classes = {
             "x": "tcp-x",
@@ -640,11 +638,9 @@ class ControlPanel:
         self.CADENCE_TOLERANCE: float = 0.015  # 15mm
         self.STREAM_TIMEOUT_S: float = 0.1
 
-        # Cadence tracking
         self._joint_cadence = _CadenceTracker()
         self._cart_cadence = _CadenceTracker()
 
-        # Robot/Sim toggle button reference
         self._robot_btn: ui.button | None = None
 
         # E-STOP manager (initialized with ui_client in build())
@@ -683,7 +679,6 @@ class ControlPanel:
             False  # True when gizmo hidden due to jog unavailable
         )
 
-        # Pending jog end wait task (to prevent spawning multiple concurrent wait tasks)
         self._jog_end_wait_task: asyncio.Task | None = None
 
     # ---- Helper methods ----
@@ -829,9 +824,7 @@ class ControlPanel:
 
     def _refresh_cartesian_icons(self) -> None:
         """Rebuild icon SVGs and color classes for all slots; update axis->element mapping."""
-        # Reset axis mapping for pressed visuals
         self._cart_axis_imgs.clear()
-        # Known classes to remove
         remove_classes = "tcp-x tcp-y tcp-z tcp-rx tcp-ry tcp-rz"
         for slot_id, elem in self._cart_slot_elems.items():
             meta = self._cart_slot_meta.get(slot_id) or {}
@@ -843,7 +836,6 @@ class ControlPanel:
             axis_str = self._axis_string_for(assign_key, sign, rotation)
             label = axis_str
             markup = self._prepare_icon_markup(raw, vb, label, slot_id)
-            # Update HTML element content (ui.html elements, not ui.icon)
             new_html = f"""
             <svg viewBox="0 0 24 24" width="100" height="72" style="cursor:pointer;">
             <g style="pointer-events:visiblePainted;" fill="currentColor" stroke="currentColor">
@@ -853,11 +845,9 @@ class ControlPanel:
             """
             elem._props["content"] = new_html
             elem.update()
-            # Update color classes
             elem.classes(remove=remove_classes)
             letter = self._cart_assignment.get(assign_key, "X").upper()
             elem.classes(add=self._axis_color_class_for(letter, rotation=rotation))
-            # Update axis->element map for pressed visuals
             self._cart_axis_imgs[axis_str] = elem
 
     # ---- Enablement and visuals ----
@@ -1322,9 +1312,8 @@ class ControlPanel:
 
             # Priority 1: TransformControls drag actively providing absolute poses
             if self._tcp_drag_active and self._tcp_latest_pose:
-                # Only send if pose has changed (avoid flooding with duplicates)
+                # Skip resending an unchanged pose to avoid flooding duplicates.
                 if self._tcp_last_sent_pose is not None:
-                    # Compare with small epsilon for floating-point tolerance
                     epsilon = 0.01  # 0.01mm position / 0.01deg rotation tolerance
                     pose_changed = False
                     for i in range(6):
@@ -1335,7 +1324,6 @@ class ControlPanel:
                             pose_changed = True
                             break
                     if not pose_changed:
-                        # Pose hasn't changed, skip sending
                         self._cart_cadence.tick(
                             time.time(),
                             self.JOG_TICK_S,
@@ -1356,7 +1344,6 @@ class ControlPanel:
                         speed=float(speed),
                         accel=_norm_accel(),
                     )
-                    # Track what we sent to avoid duplicates
                     self._tcp_last_sent_pose = list(self._tcp_latest_pose[:6])
                 except Exception as e:
                     logger.debug("TCP Cartesian move (timer) failed: %s", e)
@@ -1369,7 +1356,7 @@ class ControlPanel:
                 )
                 return
 
-            # Priority 2: legacy cart jog buttons (streamed)
+            # Priority 2: cart jog buttons (streamed)
             axis = self._get_first_pressed_axis()
             if axis is not None:
                 axis_name, direction, frame = self._get_cart_axis_lookup()[axis]
@@ -1397,15 +1384,12 @@ class ControlPanel:
         if not self._movement_allowed(notify=False):
             return
 
-        # Force a fresh start for the drag session
         self._tcp_last_sent_pose = None
 
-        # Start drag session and recorder if not already active
         if not self._tcp_drag_active:
             self._tcp_drag_active = True
             motion_recorder.on_jog_start("cartesian", "TCP")
 
-        # Ensure movement timer is active
         t = ui_state.cart_jog_timer
         if t and not t.active:
             self._cart_cadence.reset()
@@ -1442,7 +1426,6 @@ class ControlPanel:
         if self._tcp_drag_active:
             self._tcp_drag_active = False
             self._schedule_jog_end_wait()
-        # Clear last sent pose so next drag starts fresh
         self._tcp_last_sent_pose = None
         # If no cart axis buttons are pressed, allow timer to stop
         t = ui_state.cart_jog_timer
@@ -1522,39 +1505,32 @@ class ControlPanel:
     def sync_gizmo_to_urdf(self) -> None:
         """Sync gizmo state to URDF scene after it's initialized (called once after scene is ready)."""
         if ui_state.urdf_scene:
-            # Apply current gizmo visibility
             ui_state.urdf_scene.set_gizmo_visible(
                 waldoctl.commander.settings.view.gizmo_visible
             )
-            # Apply current gizmo mode (default is Move/TRANSLATE)
             ui_state.urdf_scene.set_gizmo_display_mode("TRANSLATE")
-            # Fixed WRF orientation for cartesian UI layout
-            # WRF: X (red) vertical (ud1), Y (green) horizontal (lr), Z (blue) vertical (ud2)
+            # Fixed WRF orientation for cartesian UI layout:
+            # X (red) vertical (ud1), Y (green) horizontal (lr), Z (blue) vertical (ud2).
             self.set_axis_orientation("Y", "X", "Z")
-            # Apply enablement visuals
             self.sync_cartesian_button_states()
 
-            # Register Cartesian move callback for direct TCP position moves
             ui_state.urdf_scene.on_tcp_cartesian_move(self._handle_tcp_cartesian_move)
-            # Register drag start/end to manage state
             ui_state.urdf_scene.on_tcp_cartesian_move_start(
                 self._handle_tcp_cartesian_move_start
             )
             ui_state.urdf_scene.on_tcp_cartesian_move_end(
                 self._handle_tcp_cartesian_move_end
             )
-            # Note: set_gizmo_visible() already enables TransformControls when visible,
-            # so no need for an additional enable_tcp_transform_controls() call here.
+            # set_gizmo_visible() already enables TransformControls when visible,
+            # so no extra enable_tcp_transform_controls() call is needed here.
 
     def on_gizmo_mode_changed(self, mode: str) -> None:
         """Switch gizmo display mode between Move (translation) and Rotate."""
         if ui_state.urdf_scene is None:
             logger.warning("Cannot change gizmo mode: URDF scene not initialized")
             return
-        # Map UI values to internal mode values
         internal_mode = "TRANSLATE" if mode == "Move" else "ROTATE"
         ui_state.urdf_scene.set_gizmo_display_mode(internal_mode)
-        # Update TCP TransformControls mode (translate or rotate)
         tcp_mode = "translate" if mode == "Move" else "rotate"
         ui_state.urdf_scene.set_tcp_transform_mode(tcp_mode)
 
@@ -1565,10 +1541,7 @@ class ControlPanel:
             logger.warning("Cannot toggle gizmo: URDF scene not initialized")
             return
         ui_state.urdf_scene.set_gizmo_visible(bool(visible))
-        # Enable/disable TCP TransformControls based on visibility
         if visible:
-            # Re-enable with current mode
-            # Determine mode from current transform mode (lowercase: "translate" or "rotate")
             mode = ui_state.urdf_scene.tcp_transform_mode or "translate"
             ui_state.urdf_scene.enable_tcp_transform_controls(mode)
         else:
@@ -1577,7 +1550,7 @@ class ControlPanel:
     # ---- Robot action methods ----
 
     async def send_home(self) -> None:
-        # In editing mode, move the editing robot to home position
+        # In editing mode, home the editing robot instead of the live one.
         if waldoctl.commander.status.editing_mode:
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.apply_editing_home()
@@ -1591,7 +1564,6 @@ class ControlPanel:
             _ = await self.client.home()
             logger.info("HOME sent")
 
-            # Record the home action if recording is active
             motion_recorder.record_action("home")
         except Exception as e:
             logger.error("HOME failed: %s", e)
@@ -1948,11 +1920,10 @@ class ControlPanel:
                     cont.classes(self._axis_color_class_for(letter, rotation=rotation))
                     marker = f"axis-{axis_str.replace('+', 'plus').replace('-', 'minus').lower()}"
                     cont.mark(marker)
-                    # Events: press/hold streaming behavior (don't change)
+                    # mouseleave releases too, so a drag off the icon stops streaming.
                     cont.on("mousedown", partial(self._on_slot_press, slot_id, True))
                     cont.on("mouseup", partial(self._on_slot_press, slot_id, False))
                     cont.on("mouseleave", partial(self._on_slot_press, slot_id, False))
-                    # Store for refresh
                     self._cart_slot_elems[slot_id] = cont
                     self._cart_slot_meta[slot_id] = {
                         "assign_key": assign_key,
@@ -1963,7 +1934,7 @@ class ControlPanel:
                         "viewbox": vb,
                     }
 
-                # Translation grid (original shape): XY cross with Z column on the right
+                # Translation grid: XY cross with Z column on the right.
                 with (
                     ui.grid(
                         rows="72px 30px 72px",
@@ -2227,7 +2198,6 @@ class ControlPanel:
                 "dense round unelevated color=teal-6"
             ).tooltip("Home (H)").mark("btn-home")
 
-            # Single-button Robot/Simulator toggle
             robot_btn = (
                 ui.button(
                     icon="precision_manufacturing",
@@ -2239,7 +2209,6 @@ class ControlPanel:
             robot_btn.mark("btn-robot-toggle")
             self._robot_btn = robot_btn
 
-            # Gizmo mode button group
             selected = {"value": "Move"}
             buttons: dict[str, ui.button] = {}
 
@@ -2282,7 +2251,6 @@ class ControlPanel:
                 buttons["Rotate"].props("color=grey-7")
                 buttons["Hidden"].props("color=grey-7")
 
-            # Reset camera button
             def _reset_cam():
                 try:
                     if ui_state.urdf_scene and ui_state.urdf_scene.scene:

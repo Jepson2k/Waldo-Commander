@@ -93,6 +93,16 @@ Prefer fewer, comprehensive integration tests that mimic manual testing over a l
 - **No tautological tests.** Assert behavior, not what's true by construction — not default fields, constructor args echoed back, enum literals, `isinstance`/frozen-raises, or stub-raises-`NotImplementedError`. Drive a method/workflow and assert the outcome.
 - A single comprehensive test that exercises a complete workflow is better than many shallow tests
 - **Merge into one function** - When tests are variations of the same thing (e.g., positive/negative jog), combine into one test with multiple assertions
+
+### No testing theatre
+
+- Default to real components (fake-serial controller, simulator, `user` fixture). A hand-rolled fake is a last resort.
+- Never fake a contract you haven't read — match the real code's raise-vs-return behavior, return types/codes, and signatures.
+- If a fake must mimic protocol behavior (acks, return codes, ordering, lifecycle), the test is at the wrong layer — use the real path. Fakes are for one-line oracles only (e.g. a distance function feeding gate-logic tests).
+- Enter through the real path (dispatch / command / UI event), not internal helpers fed hand-built inputs.
+- Derive cases from the requirement, not the code under test — "rejects invalid input" means NaN/inf/negative/zero, not the cases the code already handles.
+- Assert outcomes, not interactions — "the fake was called" proves nothing.
+- A regression test must fail against the bug before the fix. Born-green regression tests are theatre.
 - **Class-level fixture sharing** - When tests are logically separate but don't need isolation, group them in a class with class-scoped fixtures to avoid per-test startup/teardown (especially important for expensive browser tests)
 - **Test results are in `test-results.xml` — ALWAYS read this file after running tests.** Pytest writes JUnit XML to `test-results.xml` automatically. It contains test names, durations, failure messages, and full tracebacks. **Do NOT re-run tests** just to capture output you missed — the XML file already has everything. Do NOT grep/tail pytest console output; read the XML file instead.
 - **NEVER run parol6 and web commander test suites in parallel** — no proper isolation, they share resources and have timing issues when resource-constrained. Always run sequentially.
@@ -136,7 +146,8 @@ Robot communication goes through a `waldoctl.RobotClient` ABC. Each backend (e.g
 
 ## Code Style
 
-- **Comments**: Describe the final implementation, not what changed. Avoid "changed X to Y" or "added this because..." comments.
+- **Comments**: A comment may give a short WHY, but must NOT describe WHAT the code does — that is what the code is for; delete comments that merely restate the code. Describe the final implementation, not what changed. Avoid "changed X to Y" or "added this because..." comments.
+- **Never ship declared-but-unimplemented API surface.** No "reserved" fields or params, no docstrings saying "not yet applied" — implement it or don't declare it.
 - **Tests**: Use deterministic waits (polling for conditions) rather than blind sleeps. Exception: very small sleeps (~0.1s) for debouncing are acceptable.
 - **Exception handling**: Never use `except Exception: pass`. Either catch specific exceptions with `pass`, or if catching broad exceptions, log or handle the error meaningfully.
 

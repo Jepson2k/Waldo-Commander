@@ -8,10 +8,7 @@ logger = logging.getLogger(__name__)
 ThemeMode = Literal["light", "dark", "system"]
 
 
-# =============================================================================
-# Centralized Color Constants
-# =============================================================================
-# Browser CSS uses Tailwind v4 CSS variables.
+# Centralized color constants. Browser CSS uses Tailwind v4 CSS variables;
 # Three.js/scene colors use hex values (Three.js can't read CSS variables).
 
 
@@ -66,6 +63,16 @@ class SceneColors:
     # Edit mode / inactive gray
     EDIT_GRAY_HEX = "#525252"
 
+    # Predicted-collision highlight (theme-independent alarm red)
+    COLLISION_HEX = "#ff1744"
+
+    # Keep-out shape / barrier (translucent slate — red highlight stands out)
+    SHAPE_HEX = "#6d8ea0"
+    # Program shape awaiting backend readback confirmation (amber = unconfirmed)
+    SHAPE_DRAFT_HEX = "#d9a05b"
+    # Installation-layer shape (robot config; not editable from the GUI)
+    SHAPE_INSTALL_HEX = "#55606a"
+
     # Tool body colors (teal family — distinct from arm in every mode)
     TOOL_BODY_HEX = "#2a9d8f"
     TOOL_BODY_SIM_HEX: str = TOOL_BODY_HEX
@@ -97,17 +104,12 @@ class PathColors:
 
 # Move type to color mapping (for path_visualizer and path_preview_client)
 MOVE_TYPE_COLORS: dict[str, str] = {
-    # Cartesian moves (green)
     "cartesian": PathColors.CARTESIAN,
-    # Joint moves (blue)
     "joints": PathColors.JOINTS,
-    # Curved/smooth moves: move_c, move_s (purple)
     "smooth": PathColors.SMOOTH,
     "smooth_arc": PathColors.SMOOTH,
     "smooth_spline": PathColors.SMOOTH,
-    # Jog (use cartesian color)
     "jog": PathColors.CARTESIAN,
-    # Status colors
     "invalid": PathColors.INVALID,
     "timing_warning": PathColors.TIMING_WARNING,
     "unknown": PathColors.CARTESIAN,
@@ -136,7 +138,7 @@ def get_color_for_move_type(move_type: str, is_valid: bool = True) -> str:
 
 def get_palette(mode: ThemeMode) -> dict[str, str]:
     """Return CTk-mapped palette tokens for the given mode."""
-    # Semantic colors are the same for light/dark - use StatusColors
+    # Semantic colors are identical across light/dark.
     semantic = {
         "accent": StatusColors.ACCENT,
         "positive": StatusColors.POSITIVE,
@@ -173,9 +175,11 @@ def get_palette(mode: ThemeMode) -> dict[str, str]:
 
 
 def _inject_tailwind_colors() -> None:
-    """Inject hidden element with Tailwind classes to force JIT to generate color vars."""
-    # Tailwind JIT only generates CSS for classes that are used.
-    # This hidden element forces generation of --color-* variables we reference.
+    """Inject hidden element with Tailwind classes to force JIT to generate color vars.
+
+    Tailwind JIT only emits CSS for classes it sees used, so referencing every
+    --color-* swatch here keeps them available to the rest of the app.
+    """
     colors = [
         "slate",
         "gray",
@@ -416,23 +420,18 @@ def apply_theme(mode: ThemeMode) -> None:
         warning=pal["warning"],
     )
 
-    # Toggle Quasar dark mode
     if choice == "dark":
         ui.dark_mode().enable()
     else:
         ui.dark_mode().disable()
 
-    # Inject Tailwind color vars (forces JIT to generate them)
     _inject_tailwind_colors()
-
-    # Inject variables and overrides
     _inject_css_vars(pal)
     _inject_component_overrides()
 
 
 def set_theme(mode: ThemeMode) -> ThemeMode:
     """Persist, set and apply theme mode."""
-    # persist selection
     app.storage.general["theme_mode"] = mode
     apply_theme(mode)
     return mode
@@ -511,13 +510,11 @@ PANEL_RESIZE_CONFIG = {
 
 def _generate_resize_handle_css() -> str:
     """Generate resize handle CSS for all panel positions."""
-    # Minimal config for handles
     specs = {
         "side": {"size": "12px", "indicator": "4px", "len": "50px"},
         "corner": {"size": "16px", "indicator": "8px"},
     }
 
-    # Define container handles: (handle_name, ...)
     containers = {
         ".top-panels-container": ["right", "bottom", "corner"],
         ".bottom-panels-container": ["right", "top", "corner"],
@@ -527,9 +524,8 @@ def _generate_resize_handle_css() -> str:
     for container, handles in containers.items():
         for name in handles:
             if name == "corner":
-                # Corner logic
                 s, i = specs["corner"]["size"], specs["corner"]["indicator"]
-                # Determine vertical position based on container type (top vs bottom)
+                # Vertical anchor flips with container type (top vs bottom).
                 v_pos = "bottom" if "top" in container else "top"
                 cursor = "nwse-resize" if "top" in container else "nesw-resize"
 
@@ -547,7 +543,7 @@ def _generate_resize_handle_css() -> str:
 }}"""
                 )
             else:
-                # Side handle logic (infer orientation from name)
+                # Orientation inferred from the handle name (left/right are vertical).
                 is_vert = name in ("left", "right")
                 dim_prop, len_prop = (
                     ("width", "height") if is_vert else ("height", "width")
@@ -1312,8 +1308,5 @@ html, body {
 """
     )
 
-    # Add generated resize handle CSS
     ui.add_css(_RESIZE_HANDLE_CSS)
-
-    # Load external JavaScript module for panel resize functionality
     ui.add_head_html('<script src="/static/js/panel-resize.js" defer></script>')

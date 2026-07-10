@@ -19,8 +19,8 @@ from typing import Any, Callable
 
 from .path_preview_client import MOTION_METHODS
 
-# Methods that trigger wait_command and stepping behavior.
-# Includes all motion methods plus non-motion commands that queue on the controller.
+# Methods that trigger wait_command and stepping: all motion methods plus
+# non-motion commands that queue on the controller.
 STEPPABLE_METHODS = frozenset(MOTION_METHODS) | frozenset(
     {"home", "tool_action", "delay"}
 )
@@ -33,7 +33,7 @@ def _atomic_write(path: Path, data: dict) -> None:
         temp_path.write_text(json.dumps(data, indent=2))
         shutil.move(str(temp_path), str(path))
     except Exception:
-        # Clean up temp file if move failed
+        # Remove the temp file so a failed move leaves no partial artifact.
         if temp_path.exists():
             temp_path.unlink()
         raise
@@ -123,22 +123,20 @@ class StepIO:
         while time.time() - start_time < timeout:
             control = _read_control(self._control_file)
 
-            # If paused is False, we're in play mode - continue immediately
+            # paused False means play mode - continue immediately
             if not control.get("paused", True):
                 return True
 
-            # Check if a step signal was sent
             step_signal = control.get("step_signal", 0)
             step_acked = control.get("step_acked", 0)
 
             if step_signal > step_acked:
-                # Step requested - acknowledge it
                 self._ack_step(control, step_signal)
                 return True
 
             time.sleep(poll_interval)
 
-        return False  # Timeout
+        return False
 
     def _ack_step(self, control: dict, step_signal: int) -> None:
         """Acknowledge a step by incrementing step_acked."""
@@ -225,7 +223,6 @@ class SteppingClientWrapper:
         return self
 
     def __exit__(self, *args: Any) -> bool | None:
-        # Flush any pending blend before closing
         if self._in_blend:
             # Only wait/complete if not exiting due to an exception
             if args[0] is None:
@@ -283,20 +280,14 @@ class SteppingClientWrapper:
 
             self._step_io.emit_event("start", name)
 
-            # Call the actual method
             result = method(*args, **kwargs)
 
-            # Wait for command to complete
             if isinstance(result, int) and result >= 0:
                 self._wrapped.wait_command(result)
 
-            # Emit complete event
             self._step_io.emit_event("complete", name)
-
-            # Increment step counter for next command
             self._step_io.increment_step_count()
 
-            # Check if we should pause for stepping
             if self._step_io.check_should_pause():
                 self._step_io.wait_for_step_or_play()
 
@@ -328,7 +319,6 @@ class GUIStepController:
                 "step_acked": 0,
             },
         )
-        # Clear any existing events
         _atomic_write(self._event_file, {"events": []})
 
     def signal_step(self) -> None:

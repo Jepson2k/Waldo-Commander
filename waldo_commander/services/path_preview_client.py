@@ -17,11 +17,10 @@ import numpy as np
 from waldoctl import DryRunResult
 
 from waldo_commander.common.theme import get_color_for_move_type
-from waldo_commander.state import ToolAction, ToolSelection
+from waldo_commander.state import ShapeChange, ToolAction, ToolSelection
 
 logger = logging.getLogger(__name__)
 
-# Pre-compiled regex patterns for performance
 _LITERAL_LIST_RE = re.compile(
     r"(?:move_j|move_l|move_c|move_s|move_p)\s*\(\s*(?:\w+\s*=\s*)?\["
     r"\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
@@ -41,10 +40,6 @@ MOTION_METHODS: dict[str, str] = {
     "servo_j": "jog",
     "servo_l": "jog",
 }
-
-# Valid method names on the real RobotClient. Anything not in this set
-# raises AttributeError so typos in user scripts fail during dry-run
-# the same way they would on real hardware.
 
 
 class _ToolCollectionProxy:
@@ -92,6 +87,7 @@ class PathPreviewClient:
         target_collector: list[dict] | None = None,
         tool_action_collector: list[ToolAction] | None = None,
         tool_selection_collector: list | None = None,
+        shape_change_collector: list | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
         tool_meta_registry: dict[str, dict] | None = None,
     ):
@@ -106,6 +102,9 @@ class PathPreviewClient:
         )
         self.tool_selection_collector: list = (
             [] if tool_selection_collector is None else tool_selection_collector
+        )
+        self.shape_change_collector: list = (
+            [] if shape_change_collector is None else shape_change_collector
         )
         self._tool_meta_registry: dict[str, dict] = tool_meta_registry or {}
         self._tool_metadata: dict | None = None
@@ -122,7 +121,7 @@ class PathPreviewClient:
         self._pending_sleep: float = 0.0
         self._last_move_non_blocking: bool = False
         self._current_tool_position: float = 0.0  # 0=open, 1=closed
-        self._first_motion_seen: bool = False  # Track travel-to-start segments
+        self._first_motion_seen: bool = False
 
         logger.debug("PathPreviewClient initialized")
 
@@ -153,7 +152,6 @@ class PathPreviewClient:
 
         line_no = self._get_caller_line_number()
 
-        # Determine target positions from the method call
         if method_name == "set_position" and args:
             target_pos = (float(args[0]),)
         elif method_name == "open":
@@ -166,8 +164,7 @@ class PathPreviewClient:
         start_pos = (self._current_tool_position,)
         self._current_tool_position = target_pos[0]
 
-        # Get TCP pose from the DryRunResult (preferred) or last segment
-        # Include all 6 elements (x,y,z,rx,ry,rz) so rotation can transform the axis
+        # Include all 6 elements (x,y,z,rx,ry,rz) so rotation can transform the axis.
         tcp_pose = None
         if result is not None and result.tcp_poses.shape[0] > 0:
             tcp_pose = result.tcp_poses[-1].tolist()
@@ -182,8 +179,8 @@ class PathPreviewClient:
         # move (wait=False), the tool fires mid-motion. Offset into the
         # preceding segment instead of using the end-of-move position.
         sleep_offset = self._pending_sleep
-        # Don't reset — let accumulation continue from move start so
-        # subsequent tool actions see the correct absolute offset.
+        # Don't reset: let accumulation continue from move start so subsequent
+        # tool actions see the correct absolute offset.
 
         pose_at_offset, tcp_path = self._slice_trajectory(sleep_offset, duration)
         if pose_at_offset is not None and tcp_pose is not None and len(tcp_pose) >= 3:
@@ -241,7 +238,6 @@ class PathPreviewClient:
             n = max(2, int(duration * 100))
             return pose, [pose] * n
 
-        # Compute index range for the slice
         dur_indices = max(1, int(n_pts * duration / seg_duration))
 
         if offset > 0:
@@ -411,8 +407,8 @@ class PathPreviewClient:
         source (e.g. computed expressions) are still rendered red but won't
         back-edit on drag — drag interaction is a separate concern.
         """
-        # Extract intended pose from args/kwargs (runtime values, regardless
-        # of whether the source line is a literal or computed expression)
+        # Runtime values, regardless of whether the source line is a literal
+        # or a computed expression.
         pose: list[float] | None = None
         pose_kwarg = kwargs.get("pose")
         if pose_kwarg is not None:
@@ -556,7 +552,7 @@ class PathPreviewClient:
             def motion_method(*args: Any, **kwargs: Any) -> bool:
                 try:
                     self._first_motion_seen = True
-                    self._pending_sleep = 0.0  # Reset sleep accumulator on new motion
+                    self._pending_sleep = 0.0
                     self._last_move_non_blocking = not kwargs.get("wait", True)
                     method = getattr(self._client, name)
                     result = method(*args, **kwargs)
@@ -645,6 +641,27 @@ class PathPreviewClient:
             self._flush_blend()
             return getattr(self._client, name)
 
+        # Intercept set_shapes — record the boundary so collision marking can
+        # replay the world that was active at each segment (like tool
+        # selections). Blend flushes first: pending motions were issued under
+        # the old world.
+        if name == "set_shapes":
+            underlying = getattr(self._client, name)
+
+            def set_shapes_wrapper(shapes: list, *args: Any, **kwargs: Any) -> Any:
+                self._flush_blend()
+                result = underlying(shapes, *args, **kwargs)
+                self.shape_change_collector.append(
+                    ShapeChange(
+                        shapes=tuple(shapes),
+                        segment_index=len(self.segment_collector) - 1,
+                        line_number=self._get_caller_line_number(),
+                    )
+                )
+                return result
+
+            return set_shapes_wrapper
+
         # All other methods: flush blend first, then delegate to backend.
         # It raises AttributeError for unknown names, catching typos.
         self._flush_blend()
@@ -661,6 +678,7 @@ class AsyncPathPreviewClient:
         target_collector: list[dict] | None = None,
         tool_action_collector: list[ToolAction] | None = None,
         tool_selection_collector: list | None = None,
+        shape_change_collector: list | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
         tool_meta_registry: dict[str, dict] | None = None,
     ):
@@ -670,6 +688,7 @@ class AsyncPathPreviewClient:
             target_collector=target_collector,
             tool_action_collector=tool_action_collector,
             tool_selection_collector=tool_selection_collector,
+            shape_change_collector=shape_change_collector,
             initial_joints=initial_joints,
             tool_meta_registry=tool_meta_registry,
         )

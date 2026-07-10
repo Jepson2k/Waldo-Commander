@@ -20,6 +20,7 @@ from typing import Any, cast
 import numpy as np
 
 from nicegui import run
+from nicegui import app as ng_app
 
 import waldoctl
 from waldoctl import LinearMotion
@@ -31,10 +32,10 @@ from waldo_commander.state import (
     ui_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
+from waldo_commander.common.theme import SceneColors
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
-# Configuration constants
 MAX_PATH_SEGMENTS = 10000
 SIMULATION_TIMEOUT_S = 5.0
 
@@ -50,12 +51,70 @@ def _warm_worker(backend_package: str = "parol6") -> bool:
     # Ignore SIGINT in worker - main process handles shutdown
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-    # Import the backend package to trigger pinokin/heavy imports.
-    # Each backend is responsible for initializing its robot model on import.
+    # Triggers pinokin/heavy imports; each backend initializes its robot model on import.
     importlib.import_module(backend_package)
     from waldo_commander.services.path_preview_client import PathPreviewClient  # noqa: F401
 
     return True
+
+
+def _mark_colliding_segments(
+    robot,
+    segment_dicts: list[dict],
+    tool_selections: list,
+    shape_changes: list,
+    shapes_wire: list[tuple] | None,
+    initial_tool: tuple[str, str] | None,
+) -> None:
+    """Recolor segment dicts whose joint trajectory collides (self/tool/shape).
+
+    Runs in the dry-run subprocess against its own checker, replaying BOTH
+    boundary streams the dry run recorded — ``select_tool`` and ``set_shapes``
+    — so each segment is checked with the tool attached and the world active
+    at its point in the program (the dry run itself only validates IK). Each
+    hit records its first colliding waypoint in ``collision_step``.
+
+    The checker's tool and program world are restored on exit — the rare
+    in-process fallback shares the live checker.
+    """
+    if not robot.has_collision_checking:
+        return
+    from waldoctl import shape_from_wire
+
+    # Unconditional — including the EMPTY set: a reused pool worker keeps its
+    # process-global checker between runs, so a cleared world must clear it.
+    submit_world = [shape_from_wire(*t) for t in shapes_wire or []]
+    robot.apply_shapes(submit_world)
+    tool_key, variant = initial_tool or ("NONE", "")
+    try:
+        robot.set_active_tool(tool_key, variant_key=variant or None)
+        # A boundary recorded at segment_index i applies to segments after i.
+        # Recorded order IS chronological (indexes are non-decreasing) — a sort
+        # would reorder same-index back-to-back entries and replay the wrong
+        # state.
+        tool_bounds = [
+            (ts.segment_index, ts.tool_key, ts.variant_key) for ts in tool_selections
+        ]
+        shape_bounds = [(sc.segment_index, sc.shapes) for sc in shape_changes]
+        ti = si = 0
+        for idx, d in enumerate(segment_dicts):
+            while ti < len(tool_bounds) and tool_bounds[ti][0] < idx:
+                _, b_tool, b_variant = tool_bounds[ti]
+                robot.set_active_tool(b_tool, variant_key=b_variant or None)
+                ti += 1
+            while si < len(shape_bounds) and shape_bounds[si][0] < idx:
+                robot.apply_shapes(list(shape_bounds[si][1]))
+                si += 1
+            jt = d.get("joint_trajectory")
+            if not jt:
+                continue
+            hit = robot.check_trajectory(np.asarray(jt, dtype=np.float64))
+            if hit >= 0:
+                d["collision_step"] = int(hit)
+                d["color"] = SceneColors.COLLISION_HEX
+    finally:
+        robot.set_active_tool(tool_key, variant_key=variant or None)
+        robot.apply_shapes(submit_world)
 
 
 def _is_test_environment() -> bool:
@@ -92,8 +151,7 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
     )
 
     try:
-        # Run warm-up in parallel across all workers
-        # Each worker will import the backend once and stay warm
+        # One import per worker, in parallel, so each stays warm for later sims.
         futures = [
             run.cpu_bound(_warm_worker, backend_package) for _ in range(worker_count)
         ]
@@ -110,6 +168,8 @@ def _run_simulation_isolated(
     backend_package: str = "parol6",
     dry_run_client_cls: type | None = None,
     tool_meta_registry: dict[str, dict] | None = None,
+    shapes_wire: list[tuple] | None = None,
+    initial_tool: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -137,12 +197,13 @@ def _run_simulation_isolated(
         - error: Error message if simulation failed, else None
         - total_steps: Number of segments generated
     """
-    # Local collectors (not shared with main process)
+    # Collectors local to this subprocess, not shared with the main process.
     local_segments: list[dict] = []
     local_targets: list[dict] = []
     local_tool_actions: list = []
     local_tool_selections: list = []
-    # Track final state (updated by client on each motion)
+    local_shape_changes: list = []
+    # Updated by the client on each motion.
     final_state: dict[str, Any] = {"joints_rad": None}
     truncated = False
     error_message: str | None = None
@@ -154,12 +215,12 @@ def _run_simulation_isolated(
         AsyncPathPreviewClient,
     )
 
-    # Track created client instances so we can read final state after execution
+    # Lets us read final state after execution.
     created_clients: list[PathPreviewClient] = []
 
     try:
-        # Import the real backend and monkeypatch RobotClient/AsyncRobotClient
-        # with preview clients. This runs in a subprocess so patching is safe.
+        # Monkeypatch RobotClient/AsyncRobotClient with preview clients; safe
+        # because this runs in a subprocess.
         backend = importlib.import_module(backend_package)
         assert dry_run_client_cls is not None
 
@@ -172,6 +233,7 @@ def _run_simulation_isolated(
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
                     tool_selection_collector=local_tool_selections,
+                    shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
@@ -185,21 +247,34 @@ def _run_simulation_isolated(
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
                     tool_selection_collector=local_tool_selections,
+                    shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
                 )
                 created_clients.append(self._sync_client)
 
-        # Monkeypatch the real backend module (subprocess-only, safe)
         setattr(backend, "RobotClient", LocalPathPreviewClient)
         setattr(backend, "AsyncRobotClient", LocalAsyncPathPreviewClient)
         if hasattr(backend, "client"):
             setattr(backend.client, "RobotClient", LocalPathPreviewClient)
             setattr(backend.client, "AsyncRobotClient", LocalAsyncPathPreviewClient)
 
-        # Create mock time module and insert into sys.modules
-        # This ensures `import time` returns our mock instead of real time module
+        # Reset this worker's program-layer world to the submit-time truth
+        # BEFORE the script runs: a reused pool worker's process-global checker
+        # otherwise carries a previous run's shapes into this run's planning
+        # guard. Empty included. Installation shapes come from robot config at
+        # backend import and are untouched.
+        from waldo_commander.profiles import get_robot
+        from waldoctl import shape_from_wire
+
+        _preview_robot = get_robot(backend_package)
+        if _preview_robot.has_collision_checking:
+            _preview_robot.apply_shapes(
+                [shape_from_wire(*t) for t in shapes_wire or []]
+            )
+
+        # Inserted into sys.modules so `import time` returns this mock.
         class MockTimeModule(ModuleType):
             """Mock time module with no-op sleep for simulation."""
 
@@ -239,48 +314,43 @@ def _run_simulation_isolated(
             def time_ns():
                 return 0
 
-        # Save original time module and replace with mock
         original_time_module = sys.modules.get("time")
         mock_time = MockTimeModule(original_time_module)
         sys.modules["time"] = mock_time
 
-        # Prepare execution environment
         sim_globals = {
             "__name__": "__simulation__",
             "__file__": "simulation_script.py",
             "__builtins__": builtins.__dict__.copy(),
-            "print": lambda *args, **kwargs: None,  # Suppress print
-            "time": mock_time,  # Provide time module for scripts using time.sleep() without import
+            "print": lambda *args, **kwargs: None,
+            "time": mock_time,  # Scripts may use time.sleep() without importing it.
         }
 
         # Populate linecache so PathPreviewClient can read source lines
-        # for literal-arg detection and line number extraction
+        # for literal-arg detection and line number extraction.
         lines = program_text.splitlines(keepends=True)
-        # Ensure lines end with newline for linecache compatibility
+        # linecache requires a trailing newline on every line.
         if lines and not lines[-1].endswith("\n"):
             lines[-1] = lines[-1] + "\n"
         linecache.cache["simulation_script.py"] = (
-            len(program_text),  # size
+            len(program_text),
             None,  # mtime
-            lines,  # lines
-            "simulation_script.py",  # filename
+            lines,
+            "simulation_script.py",
         )
 
         try:
-            # Compile the script with explicit filename so frame inspection works
-            # This allows _get_caller_line_number() to find "simulation_script.py" frames
+            # Explicit filename so _get_caller_line_number() can find
+            # "simulation_script.py" frames during inspection.
             code = compile(program_text, "simulation_script.py", "exec")
 
-            # Execute the compiled code
             exec(code, sim_globals)
 
-            # Check if there's a main() function and what type
             if "main" in sim_globals:
                 main_func = sim_globals["main"]
 
                 if asyncio.iscoroutinefunction(main_func):
-                    # Async main - need to run the coroutine
-                    # Try asyncio.run() first (subprocess context)
+                    # asyncio.run() works in the normal subprocess context.
                     try:
                         coro = main_func()
                         asyncio.run(coro)
@@ -289,12 +359,11 @@ def _run_simulation_isolated(
                             # The coroutine from asyncio.run() was never awaited;
                             # close it explicitly to suppress the RuntimeWarning.
                             coro.close()
-                            # We're in a running loop (fallback in-process mode)
-                            # Create a new event loop in a thread
+                            # Fallback in-process mode: already inside a running
+                            # loop, so spin up a fresh loop in a thread.
                             import concurrent.futures
 
                             def run_async_in_thread():
-                                """Run the async main in a new event loop in this thread."""
                                 return asyncio.run(main_func())
 
                             with concurrent.futures.ThreadPoolExecutor(
@@ -306,14 +375,12 @@ def _run_simulation_isolated(
                             raise
 
                 elif callable(main_func):
-                    # Sync main - just call it
                     cast(Callable[[], None], main_func)()
 
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
         finally:
-            # Restore original time module
             if original_time_module is not None:
                 sys.modules["time"] = original_time_module
             elif "time" in sys.modules and sys.modules["time"] is mock_time:
@@ -322,11 +389,10 @@ def _run_simulation_isolated(
     except Exception as e:
         error_message = f"Simulation setup failed: {type(e).__name__}: {e}"
 
-    # Flush pending blend buffers (handles scripts without context managers)
+    # Flush pending blend buffers, covering scripts without context managers.
     for c in created_clients:
         c.close()
 
-    # Extract final joints and accumulated errors from client instances
     if created_clients:
         last_client = created_clients[-1]
         if last_client.last_joints_rad is not None:
@@ -339,10 +405,26 @@ def _run_simulation_isolated(
                 else:
                     error_message = errors_text
 
-    # Enforce segment limit
     if len(local_segments) > max_segments:
         del local_segments[max_segments:]
         truncated = True
+
+    # Collision marking runs here (normally a subprocess) so 1000s of C++
+    # checks never block the UI event loop and mid-script tool selections are
+    # honored. A marking failure must not discard an otherwise-good dry run.
+    try:
+        from waldo_commander.profiles import get_robot
+
+        _mark_colliding_segments(
+            get_robot(backend_package),
+            local_segments,
+            local_tool_selections,
+            local_shape_changes,
+            shapes_wire,
+            initial_tool,
+        )
+    except Exception as e:
+        logger.warning("Preview collision marking failed: %s", e)
 
     return {
         "segments": local_segments,
@@ -376,7 +458,7 @@ class PathVisualizer:
                 or a.line_number != b.line_number
             ):
                 return False
-            # Compare first/last point (same as scene fingerprint)
+            # First/last point, matching the scene fingerprint.
             if a.points and b.points:
                 if a.points[0] != b.points[0] or a.points[-1] != b.points[-1]:
                     return False
@@ -404,8 +486,7 @@ class PathVisualizer:
             self._simulation_count += 1
             sim_id = self._simulation_count
 
-            # Process pool is initialized by NiceGUI at startup and warmed by warm_process_pool()
-
+            # Process pool is initialized by NiceGUI at startup and warmed by warm_process_pool().
             logger.info("Starting isolated path visualization (sim_id=%d)...", sim_id)
 
             if TRACE_ENABLED:
@@ -425,7 +506,7 @@ class PathVisualizer:
                     targets_before,
                 )
 
-            # Get current robot joint angles for initial position
+            # Current robot joint angles seed the simulation's initial position.
             initial_joints_rad: np.ndarray | None = None
             if (
                 len(waldoctl.commander.status.joints.angles)
@@ -437,7 +518,6 @@ class PathVisualizer:
                     waldoctl.commander.status.joints.angles.deg,
                 )
 
-            # Get backend info from current robot
             robot = ui_state.active_robot
             backend_pkg = robot.backend_package
             dr_instance = robot.create_dry_run_client()
@@ -486,8 +566,22 @@ class PathVisualizer:
                 except (KeyError, AttributeError):
                     pass
 
+            # Collision-marking inputs: the live shapes (wire form crosses the
+            # process boundary) and the live tool as the checker's starting
+            # state — matching what execution-time guards would use.
+            scene_handle = waldoctl.commander.scene
+            shapes_wire = (
+                [s.to_wire() for s in scene_handle.shapes]
+                if scene_handle is not None
+                else []
+            )
+            live_tool_key = waldoctl.commander.status.tool.key or "NONE"
+            initial_tool = (
+                live_tool_key,
+                ng_app.storage.general.get(f"tool_variant_{live_tool_key}", "") or "",
+            )
+
             try:
-                # Run simulation in subprocess via NiceGUI's cpu_bound
                 result = await asyncio.wait_for(
                     run.cpu_bound(
                         _run_simulation_isolated,
@@ -497,6 +591,8 @@ class PathVisualizer:
                         backend_pkg,
                         dr_cls,
                         tool_meta_registry or None,
+                        shapes_wire,
+                        initial_tool,
                     ),
                     timeout=SIMULATION_TIMEOUT_S
                     + 2.0,  # Extra buffer for process overhead
@@ -505,8 +601,8 @@ class PathVisualizer:
                 logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
                 return "Simulation timed out"
             except Exception as e:
-                # Fallback to in-process execution when subprocess fails
-                # (common in test environments where process pool is unavailable)
+                # Fall back to in-process execution; the subprocess pool is often
+                # unavailable in test environments.
                 logger.warning(
                     "Subprocess simulation failed (sim_id=%d): %s, using sync",
                     sim_id,
@@ -520,23 +616,23 @@ class PathVisualizer:
                         backend_pkg,
                         dr_cls,
                         tool_meta_registry or None,
+                        shapes_wire,
+                        initial_tool,
                     )
                 except Exception as e2:
                     logger.error("Sync simulation also failed: %s", e2)
                     return f"Simulation failed: {e2}"
 
-            # Guard against None result (can happen during shutdown/test teardown)
+            # A None result can happen during shutdown/test teardown.
             if result is None:
                 logger.warning("Simulation returned None result (sim_id=%d)", sim_id)
                 return "Simulation returned no result"
 
-            # Handle errors
             if result.get("error"):
                 logger.error(
                     "Simulation error (sim_id=%d): %s", sim_id, result["error"]
                 )
 
-            # Handle truncation warning
             if result.get("truncated"):
                 logger.warning(
                     "Simulation truncated to %d segments (sim_id=%d)",
@@ -550,7 +646,7 @@ class PathVisualizer:
                 len(result["segments"]),
             )
 
-            # Store results in the originating tab (or active tab if no tab_id)
+            # Store results in the originating tab, falling back to the active tab.
             target_tab = None
             if tab_id:
                 target_tab = waldoctl.commander.programs.get(tab_id)
@@ -580,7 +676,6 @@ class PathVisualizer:
                     )
                     return UNCHANGED
 
-                # Store simulation results in the tab
                 target_tab.dry_run.path_segments = new_segments
                 target_tab.dry_run.targets = new_targets
                 target_tab.dry_run.tool_actions = new_tool_actions
@@ -597,13 +692,10 @@ class PathVisualizer:
                         tab_id,
                     )
 
-            # Trigger scene update via event-driven notification (diff rendering
-            # handles add/remove/change without needing invalidate_paths)
+            # Diff rendering handles add/remove/change without invalidate_paths.
             simulation_state.notify_changed()
 
-            # Return error message if any
             return result.get("error")
 
 
-# Singleton instance
 path_visualizer = PathVisualizer()

@@ -37,12 +37,11 @@ def angle_pipeline(
     deg_to_rad = 0.017453292519943295
     n = len(angles_in)
 
-    # Validate all inputs first
     for i in range(n):
         if not np.isfinite(angles_in[i]):
             return False
 
-    # Combined transform: map -> sign -> offset -> rad -> reorder
+    # Fused per-element transform: map -> sign -> offset -> deg2rad -> reorder.
     for i in range(n):
         src_idx = index_mapping[i]
         val = (angles_in[src_idx] * signs[src_idx] + offsets[src_idx]) * deg_to_rad
@@ -69,7 +68,7 @@ def pose_extraction_pipeline(
     """
     rad_to_deg = 57.29577951308232
 
-    # Extract rotation matrix (row-major layout)
+    # pose is row-major; these indices pick the 3x3 rotation block.
     rot_buf[0, 0] = pose[0]
     rot_buf[0, 1] = pose[1]
     rot_buf[0, 2] = pose[2]
@@ -80,15 +79,14 @@ def pose_extraction_pipeline(
     rot_buf[2, 1] = pose[9]
     rot_buf[2, 2] = pose[10]
 
-    # Extract translation (mm)
+    # Translation in mm.
     result[0] = pose[3]
     result[1] = pose[7]
     result[2] = pose[11]
 
-    # SO3 to RPY (calls existing numba function - will be inlined)
+    # Inlined by numba.
     so3_rpy(rot_buf, rpy_buf)
 
-    # Convert to degrees
     result[3] = rpy_buf[0] * rad_to_deg
     result[4] = rpy_buf[1] * rad_to_deg
     result[5] = rpy_buf[2] * rad_to_deg
@@ -109,7 +107,6 @@ def warmup_pipelines() -> None:
     dummy_signs = np.ones(6, dtype=np.float64)
     dummy_offsets = np.zeros(6, dtype=np.float64)
 
-    # Trigger JIT compilation for each function
     angle_pipeline(
         dummy_angles,
         dummy_mapping,

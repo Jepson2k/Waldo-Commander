@@ -3,7 +3,7 @@
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as _dc_fields
 
 import numpy as np
 
@@ -17,6 +17,57 @@ from waldo_commander.common.logging_config import TRACE_ENABLED
 from waldo_commander.services.command_discovery import discover_robot_commands
 
 logger = logging.getLogger(__name__)
+
+# ShapeBase's non-geometry fields — everything else on a Shape is a dimension
+# constructor kwarg.
+_SHAPE_COMMON_FIELDS = ("name", "pose", "collision", "margin")
+_SHAPE_DEFAULT_POSE = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+def _shape_to_code(s) -> str:
+    """One waldoctl Shape as a constructor call, omitting default fields."""
+    parts = [f"name={s.name!r}"]
+    for f in _dc_fields(s):
+        if f.name in _SHAPE_COMMON_FIELDS:
+            continue
+        parts.append(f"{f.name}={getattr(s, f.name)!r}")
+    if tuple(s.pose) != _SHAPE_DEFAULT_POSE:
+        parts.append(f"pose={tuple(s.pose)!r}")
+    if not s.collision:
+        parts.append("collision=False")
+    if s.margin is not None:
+        parts.append(f"margin={s.margin!r}")
+    return f"{type(s).__name__}({', '.join(parts)})"
+
+
+def shapes_to_code(shapes) -> str:
+    """A runnable ``rbt.set_shapes([...])`` block for the given world —
+    the environment's durable form is program code, not GUI state."""
+    if not shapes:
+        return "rbt.set_shapes([])"
+    body = "\n".join(f"    {_shape_to_code(s)}," for s in shapes)
+    return f"rbt.set_shapes([\n{body}\n])"
+
+
+def _imported_waldoctl_names(text: str) -> set[str]:
+    """Names bound by plain ``from waldoctl import X`` statements in *text*.
+
+    Parsed with ``ast`` — a substring scan would count comments, attribute
+    access (``waldoctl.Box``), and aliased imports (which don't bind the bare
+    name). An unparseable program yields the empty set: prepending an import
+    that turns out redundant is harmless, omitting a needed one is a NameError.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "waldoctl":
+            names.update(a.name for a in node.names if a.asname is None)
+    return names
 
 
 @dataclass
@@ -106,10 +157,8 @@ class MotionRecorder:
             set_tool_line = f'rbt.select_tool("{tool_key}")'
         set_tool_re = re.compile(r"^\s*rbt\.\s*select_tool\s*\(")
 
-        # Check for existing select_tool line
         for i, line in enumerate(lines):
             if set_tool_re.match(line):
-                # Update existing select_tool with current tool
                 lines[i] = set_tool_line
                 textarea.value = "\n".join(lines)
                 logger.info("Updated existing select_tool to %s", tool_key)
@@ -149,7 +198,6 @@ class MotionRecorder:
         self._active_jog = None
         self._last_action_wall_time = 0.0
 
-        # Log the initial position for reference
         if (
             len(waldoctl.commander.status.joints.angles)
             >= ui_state.active_robot.joints.count
@@ -214,7 +262,7 @@ class MotionRecorder:
 
         Args:
             action_type: One of "move_j", "move_l", "home",
-                        "gripper", "io", "delay"
+                        "gripper", "io", "delay", "set_shapes"
             **params: Action-specific parameters
         """
         if not is_any_program_recording():
@@ -300,6 +348,23 @@ class MotionRecorder:
         elif action_type == "delay":
             seconds = params["seconds"]
             return f"time.sleep({seconds:.2f})"
+
+        elif action_type == "set_shapes":
+            shapes = params["shapes"]
+            snippet = shapes_to_code(shapes)
+            # Prepend the constructor imports the program doesn't have yet.
+            text = (
+                (ui_state.active_textarea.value or "")
+                if ui_state.active_textarea
+                else ""
+            )
+            imported = _imported_waldoctl_names(text)
+            missing = sorted(
+                {type(s).__name__ for s in shapes if type(s).__name__ not in imported}
+            )
+            if missing:
+                snippet = f"from waldoctl import {', '.join(missing)}\n{snippet}"
+            return snippet
 
         else:
             return f"# Unknown action: {action_type}"
@@ -406,11 +471,10 @@ class MotionRecorder:
             if val and not val.endswith("\n"):
                 val += "\n"
             new_value = val + snippet + "\n"
-            # Direct assignment - NiceGUI's binding handles the update
-            # This will trigger the editor's on_change -> debounced simulation
+            # Assigning value triggers the editor's on_change -> debounced simulation.
             textarea.value = new_value
 
-            # Flash the newly added line
+            # Flash the newly added line.
             new_line_number = lines_before + 1
             # Local import: motion_recorder is in services/ and decorations
             # is in components/, so a top-level import would invert the

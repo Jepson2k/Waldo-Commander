@@ -37,7 +37,6 @@ class IoPage:
 
         io = waldoctl.commander.status.io
         with ui.column().classes("gap-2"):
-            # Input rows + E-STOP
             with ui.row().classes("items-center gap-4"):
                 for i in range(n_in):
                     (
@@ -63,7 +62,6 @@ class IoPage:
 
             ui.separator()
 
-            # Output rows with toggle buttons
             for i in range(n_out):
                 with ui.row().classes("items-center gap-4"):
                     (

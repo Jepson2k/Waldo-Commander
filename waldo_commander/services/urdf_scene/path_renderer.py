@@ -76,19 +76,16 @@ class PathRenderer:
         pts = np.asarray(points, dtype=np.float64)
         pts_list = pts.tolist()
 
-        # Build per-vertex colors if gradient is needed
         vertex_colors = None
         if point_pair_colors is not None:
             uses_vertex_colors = True
-            # N points → N-1 pairs; each vertex gets the color of the pair it starts
-            # Last vertex gets the color of the last pair
+            # N points → N-1 pairs; each vertex gets its pair's color, final
+            # vertex reuses the last pair's color.
             vertex_colors = []
             for i, hex_c in enumerate(point_pair_colors):
                 vertex_colors.append(_hex_to_rgb(hex_c))
-            # Add final vertex color (same as last pair)
             vertex_colors.append(_hex_to_rgb(point_pair_colors[-1]))
 
-        # Single polyline for the entire segment
         line = ui.scene.polyline(
             pts_list,
             colors=vertex_colors,
@@ -97,14 +94,13 @@ class PathRenderer:
             gap_size=0.004,
         )
         if vertex_colors:
-            # Enable vertex color mode (color=None tells Three.js to use vertex colors)
+            # color=None tells Three.js to use the per-vertex colors.
             line.material(None, opacity)
         else:
             line.material(default_color, opacity)
         objects.append(line)
         object_colors.append(default_color)
 
-        # Direction arrow cones at uniform arc-length intervals
         if show_arrows:
             accum = 0.0
             for i in range(1, len(points)):
@@ -218,7 +214,6 @@ class PathRenderer:
         if action.tcp_pose is None or len(action.tcp_pose) < 3:
             return objects
 
-        # Use cascading path if available, otherwise single-point
         if action.tcp_path and len(action.tcp_path) >= 2:
             return self._render_cascading_tool_action(action, color)
 
@@ -255,7 +250,6 @@ class PathRenderer:
                 arrow_length = travel * 0.5
                 head_length = arrow_length * 0.5
                 head_width = head_length * 1.5
-                # Use start position for jaw offset (where jaws are now)
                 start_val = (
                     action.start_positions[idx]
                     if idx < len(action.start_positions)
@@ -350,8 +344,7 @@ class PathRenderer:
             head_length = arrow_scale * 0.5
             head_width = head_length * 1.5
 
-            # Use actual start/target positions for interpolation
-            # Position 0=open (offset=jaw_travel), 1=closed (offset=0)
+            # Position 0=open (offset=jaw_travel), 1=closed (offset=0).
             start_val = (
                 action.start_positions[idx]
                 if idx < len(action.start_positions)
@@ -375,7 +368,6 @@ class PathRenderer:
                 pt = path[i]
                 px, py, pz = pt[0], pt[1], pt[2]
 
-                # Combined distance: TCP movement + jaw offset change
                 tcp_dist = (
                     (px - last_px) ** 2 + (py - last_py) ** 2 + (pz - last_pz) ** 2
                 ) ** 0.5
@@ -395,9 +387,9 @@ class PathRenderer:
                         d = world_axis * sign
                         if moving_inward:
                             d = -d  # point inward
-                        # Offset the origin so the arrow HEAD is at the jaw
-                        # position. For inward arrows, shift base outward by
-                        # arrow_scale so the head lands at jaw_offset.
+                        # Offset the origin so the arrow HEAD lands at the jaw
+                        # position: inward arrows shift the base outward by
+                        # arrow_scale.
                         origin_offset = (
                             jaw_offset + arrow_scale if moving_inward else jaw_offset
                         )

@@ -47,7 +47,6 @@ class EditorPanel(FileOperationsMixin):
 
     def __init__(self) -> None:
         """Initialize editor panel with state and UI references."""
-        # Program directory
         self.PROGRAM_DIR = (
             REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
         )
@@ -56,12 +55,10 @@ class EditorPanel(FileOperationsMixin):
             self.PROGRAM_DIR.mkdir(parents=True, exist_ok=True)
         script_exec.set_program_dir(self.PROGRAM_DIR)
 
-        # Multi-tab management
         self.tabs_container: ui.tabs | None = None
         self.tab_panels_container: ui.tab_panels | None = None
-        self._tab_widgets: dict[
-            str, dict
-        ] = {}  # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
+        # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
+        self._tab_widgets: dict[str, dict] = {}
 
         # The page client whose tab widgets this panel renders into. Captured at
         # build() and used by _reconcile_tabs to enter the right context when a
@@ -153,7 +150,6 @@ class EditorPanel(FileOperationsMixin):
         if not textarea:
             return
 
-        # Check if codemirror is properly initialized
         try:
             current_value = textarea.value
             if current_value is None:
@@ -170,7 +166,7 @@ class EditorPanel(FileOperationsMixin):
 
         content = current_value
         lines = content.splitlines()
-        found_line_idx = line_number - 1  # Convert to 0-indexed
+        found_line_idx = line_number - 1
 
         if found_line_idx < 0 or found_line_idx >= len(lines):
             logger.warning("Sync failed: Line %d out of range", line_number)
@@ -178,12 +174,10 @@ class EditorPanel(FileOperationsMixin):
 
         line = lines[found_line_idx]
 
-        # Replace the coordinate list in the line
-        # Match a list of numbers: [...]
+        # Match the coordinate list (a bracketed list of numbers) in the line.
         match = re.search(r"(\[[\d\.\,\-\s]+\])", line)
 
         if match:
-            # Convert move type if requested (e.g. move_l → move_j)
             if move_type == "joints" and joint_angles_deg is not None:
                 new_values_str = (
                     "[" + ", ".join(f"{v:.3f}" for v in joint_angles_deg) + "]"
@@ -272,19 +266,15 @@ class EditorPanel(FileOperationsMixin):
             code_line = f"rbt.move_l({pose_str}, speed={speed}, accel={accel})"
 
         content = textarea.value or ""
-
-        # Count lines before adding
         lines_before = len(content.splitlines()) if content else 0
 
-        # Ensure content ends with newline
         if content and not content.endswith("\n"):
             content += "\n"
 
-        # Append new code (will trigger debounced simulation)
+        # Appending triggers a debounced simulation run.
         new_content = content + code_line + "\n"
         textarea.value = new_content
 
-        # Flash the newly added line
         new_line_number = lines_before + 1
         decorations.flash_editor_lines([new_line_number])
 
@@ -304,10 +294,8 @@ class EditorPanel(FileOperationsMixin):
 
     def _build_command_menu(self) -> None:
         """Build command palette as a dropdown menu with nested submenus."""
-        # Discover all commands dynamically
         all_commands = discover_robot_commands()
 
-        # Group by category
         categories: dict[str, list[dict[str, Any]]] = {}
         for key, cmd in all_commands.items():
             cat = cmd["category"]
@@ -315,24 +303,20 @@ class EditorPanel(FileOperationsMixin):
                 categories[cat] = []
             categories[cat].append({"key": key, **cmd})
 
-        # Build menu structure with nested submenus (following NiceGUI docs pattern)
         with ui.menu():
             for category_name, commands in sorted(categories.items()):
-                # Category as submenu parent - must disable auto_close to keep open while navigating
+                # auto_close must stay off so the submenu stays open while navigating.
                 with ui.menu_item(category_name, auto_close=False).classes(
                     "text-sm font-medium"
                 ):
-                    # Arrow indicator on the right side
                     with ui.item_section().props("side"):
                         ui.icon("keyboard_arrow_right")
-                    # Nested submenu with auto-close
                     with (
                         ui.menu()
                         .props('anchor="top end" self="top start" auto-close')
                         .classes("max-h-80 overflow-y-auto")
                     ):
                         for cmd in sorted(commands, key=lambda c: c["title"]):
-                            # Command menu item
                             item = ui.menu_item(
                                 cmd["title"],
                                 on_click=lambda e, k=cmd["key"]: self._insert_command(
@@ -340,7 +324,6 @@ class EditorPanel(FileOperationsMixin):
                                 ),
                             ).classes("text-sm")
 
-                            # Add tooltip
                             with item:
                                 tooltip_text = f"{cmd['signature']}"
                                 if cmd["docstring"]:
@@ -367,8 +350,6 @@ class EditorPanel(FileOperationsMixin):
         simulation.cleanup()
         script_exec.cleanup()
 
-    # ---- Tab Management Methods ----
-
     def _new_tab(
         self, filename: str = "untitled.py", content: str | None = None
     ) -> Program:
@@ -382,7 +363,6 @@ class EditorPanel(FileOperationsMixin):
         tab = waldoctl.commander.programs.new(source=source, filename=filename)
         self._switch_to_tab(tab.id)
 
-        # Trigger simulation at tab creation (with default script optimization)
         if is_default_script(tab.source):
             # Default script ends at home position - skip simulation;
             # other dry-run fields default to [] so no further reset needed.
@@ -454,15 +434,15 @@ class EditorPanel(FileOperationsMixin):
 
         if len(tabs) > 1:
             if closed_idx > 0:
-                new_active_id = tabs[closed_idx - 1].id  # Previous tab
+                new_active_id = tabs[closed_idx - 1].id
             else:
-                new_active_id = tabs[1].id  # Next tab if closing first
+                new_active_id = tabs[
+                    1
+                ].id  # closing the first tab: fall to its successor
 
-        # Remove tab widgets, then drop the program from state.
         self._remove_tab_widgets(tab_id)
         waldoctl.commander.programs.close(tab_id)
 
-        # Create new tab if all tabs closed
         if not waldoctl.commander.programs.items:
             self._new_tab()
         elif new_active_id:
@@ -484,16 +464,13 @@ class EditorPanel(FileOperationsMixin):
                 widgets["panel"].delete()
         ui_state.textareas_by_tab.pop(tab_id, None)
 
-    def _switch_to_tab(self, tab_id: str) -> None:
-        """Switch to a specific tab (blocked during recording/playback)."""
-
-        # Block tab switching during recording or playback
+    def _switch_blocked(self) -> bool:
+        """True (and notifies) when recording or active script playback should
+        block a tab switch or file open. Shared with file_operations.load_program
+        so the open() path is guarded before it mutates active_id."""
         if is_any_program_recording():
             ui.notify("Cannot switch tabs while recording", color="warning")
-            # Reset UI to current active tab since the click already changed it visually
-            if self.tabs_container and waldoctl.commander.programs.active_id:
-                self.tabs_container.set_value(waldoctl.commander.programs.active_id)
-            return
+            return True
         # The running script's play state lives on the launching program, which
         # may differ from the active tab (switching is allowed while paused), so
         # resolve the lock against launching_tab_id like playback.toggle_play.
@@ -506,11 +483,17 @@ class EditorPanel(FileOperationsMixin):
             lock_prog is not None and lock_prog.dry_run.playback.is_playing
         ):
             ui.notify("Cannot switch tabs during script playback", color="warning")
+            return True
+        return False
+
+    def _switch_to_tab(self, tab_id: str) -> None:
+        """Switch to a specific tab (blocked during recording/playback)."""
+        if self._switch_blocked():
+            # Reset UI to the active tab since the click already moved it visually.
             if self.tabs_container and waldoctl.commander.programs.active_id:
                 self.tabs_container.set_value(waldoctl.commander.programs.active_id)
             return
 
-        # Stop simulation playback on tab switch (non-blocking)
         self.playback.stop_playback()
         self.playback.invalidate_timeline()
 
@@ -526,11 +509,9 @@ class EditorPanel(FileOperationsMixin):
         waldoctl.commander.programs.switch(tab_id)
         tab.dry_run.playback.active_cursor_line = 0
 
-        # Update tab panels value
         if self.tab_panels_container:
             self.tab_panels_container.set_value(tab_id)
 
-        # Update tabs container value
         if self.tabs_container:
             self.tabs_container.set_value(tab_id)
 
@@ -602,16 +583,14 @@ class EditorPanel(FileOperationsMixin):
             tab_element.mark(f"editor-tab-{tab.id}")
             with tab_element:
                 with ui.row().classes("items-center gap-1 no-wrap"):
-                    # Dirty indicator (orange dot)
+                    # Dirty indicator (orange dot).
                     dirty_dot = (
                         ui.icon("fiber_manual_record", size="xs")
                         .classes("text-amber-500")
                         .style("font-size: 8px;")
                     )
-                    # Bind visibility to dirty state - update on content change
                     dirty_dot.bind_visibility_from(tab, "is_dirty", lambda d: d)
 
-                    # Filename input (compact)
                     filename_input = (
                         ui.input(value=tab.filename)
                         .props("dense borderless")
@@ -620,7 +599,6 @@ class EditorPanel(FileOperationsMixin):
                     )
                     filename_input.mark(f"editor-tab-filename-{tab.id}")
 
-                    # Close button
                     close_btn = (
                         ui.button(
                             icon="close", on_click=lambda _e, t=tab: self._close_tab(t)
@@ -631,7 +609,6 @@ class EditorPanel(FileOperationsMixin):
                     )
                     close_btn.mark(f"editor-tab-close-{tab.id}")
 
-            # Store tab element reference
             if tab.id not in self._tab_widgets:
                 self._tab_widgets[tab.id] = {}
             self._tab_widgets[tab.id]["tab_element"] = tab_element
@@ -665,10 +642,9 @@ class EditorPanel(FileOperationsMixin):
                 edits_banner.set_visibility(False)
                 edits_banner.mark(f"edits-banner-{tab.id}")
 
-                # Generate completions
                 completions = generate_completions_from_commands()
 
-                # CodeMirror editor - fill entire panel (uses its own internal scrolling)
+                # Fills the panel and uses CodeMirror's own internal scrolling.
                 textarea = (
                     ui.codemirror(
                         value=tab.source,
@@ -688,7 +664,6 @@ class EditorPanel(FileOperationsMixin):
                     .style("min-height: 100%;")
                 )
 
-                # Initialize theme
                 try:
                     mode = get_theme()
                     effective = "light" if mode == "light" else "dark"
@@ -696,7 +671,6 @@ class EditorPanel(FileOperationsMixin):
                 except (KeyError, ValueError):
                     textarea.theme = "oneDark"
 
-            # Store references
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
             self._tab_widgets[tab.id]["edits_banner"] = edits_banner
@@ -883,7 +857,6 @@ class EditorPanel(FileOperationsMixin):
         # Periodic check: re-run path preview when robot position changes
         ui.timer(1.0, simulation.check_position_changed)
 
-        # Main editor container
         with (
             ui.column()
             .classes("w-full h-full gap-0")
@@ -895,7 +868,6 @@ class EditorPanel(FileOperationsMixin):
                 .classes("w-full items-center gap-2 px-2")
                 .style("height: 42px;")
             ):
-                # Title
                 ui.label("Program").classes("text-lg font-medium whitespace-nowrap")
 
                 # Tabs area (horizontal scroll)
@@ -905,7 +877,6 @@ class EditorPanel(FileOperationsMixin):
                     .style("height: 42px;")
                 ):
                     with ui.row().classes("items-center gap-0 flex-nowrap"):
-                        # Tabs container
                         self.tabs_container = (
                             ui.tabs()
                             .props("dense inline-label")
@@ -925,7 +896,6 @@ class EditorPanel(FileOperationsMixin):
                         )
                         new_tab_btn.mark("editor-new-tab-btn")
 
-                # Open button
                 open_btn = (
                     ui.button(icon="folder", on_click=self._show_open_dialog)
                     .props("flat dense color=white")
@@ -933,7 +903,6 @@ class EditorPanel(FileOperationsMixin):
                 )
                 open_btn.mark("editor-open-btn")
 
-                # Save button
                 save_btn = (
                     ui.button(icon="save", on_click=self._show_save_dialog)
                     .props("flat dense color=white")
@@ -941,7 +910,6 @@ class EditorPanel(FileOperationsMixin):
                 )
                 save_btn.mark("editor-save-btn")
 
-                # Command palette menu
                 commands_btn = (
                     ui.button(icon="library_add")
                     .props("flat dense color=white")
@@ -951,7 +919,6 @@ class EditorPanel(FileOperationsMixin):
                 with commands_btn:
                     self._build_command_menu()
 
-                # X close button
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(
                         "flat round dense color=white"
@@ -988,7 +955,6 @@ class EditorPanel(FileOperationsMixin):
                 with splitter.after:
                     log_panel.build_log_area()
 
-        # Set up playback timers and listeners
         self.playback.setup_timers()
 
         # Render program mutations into this page's tab bar for the page's
@@ -1017,5 +983,4 @@ class EditorPanel(FileOperationsMixin):
             if waldoctl.commander.programs.active is not None:
                 self._invalidate_for_tab_switch()
         else:
-            # No existing tabs - create initial tab
             self._new_tab()

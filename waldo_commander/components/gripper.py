@@ -19,7 +19,6 @@ from waldo_commander.state import robot_state, ui_state
 
 logger = logging.getLogger(__name__)
 
-# Chart colors
 _CLR_POS = "#2dd4bf"  # teal-400
 _CLR_CUR = "#fbbf24"  # amber-400
 
@@ -51,12 +50,10 @@ class GripperPage:
         self.client = client
         self._last_current_tool_key: str | None = None
         self._current_range_listener: Callable | None = None
-        # Live slider state
         self._slider_drag_ts: float = 0.0
         self._last_slider_send: float = 0.0
         self._last_lease_block_notify: float = 0.0
         self._user_dragging: bool = False
-        # Target position initialized flag
         self._target_initialized: bool = False
 
     # ---- Helpers ----
@@ -119,24 +116,21 @@ class GripperPage:
         self._camera_image: ui.interactive_image | None = None
         self._last_camera_active: bool = camera_service.active
 
-        # Status elements (updated from status consumer)
         self._state_dot: ui.icon | None = None
         self._state_label: ui.label | None = None
         self._part_dot: ui.icon | None = None
         self._engaged_dot: ui.icon | None = None
         self._fault_label: ui.label | None = None
 
-        # Dirty checking for status updates
         self._last_status_key: tuple = ()
 
-        # Current max for chart Y axis — set when chart is built lazily
+        # Chart Y-axis current max; set lazily when the chart is built.
         self._current_max: float = 0.0
-        # Dirty flag for markLine-only changes (avoids competing update() calls)
+        # Defer markLine-only changes to the next update_chart tick to avoid competing update() calls.
         self._mark_lines_dirty: bool = False
 
         _tile = "bg-neutral-800 p-2 rounded"
         with ui.column().classes("w-full gap-2"):
-            # Camera section (visible when camera is active)
             self._camera_card = (
                 ui.card()
                 .props("flat")
@@ -256,7 +250,6 @@ class GripperPage:
         tool = self._get_active_gripper()
         if tool is None:
             return False
-        # Compute current max from tool spec
         if isinstance(tool, ElectricGripperTool):
             for ch in tool.channel_descriptors:
                 if ch.name == "Current" and ch.max > 0:
@@ -303,7 +296,6 @@ class GripperPage:
                 },
             )
         else:
-            # markLines-only update (no new time series data)
             self._combined_chart.run_chart_method(  # ty: ignore[unresolved-attribute]
                 "setOption",
                 {
@@ -370,7 +362,6 @@ class GripperPage:
             return
         if not self._can_actuate():
             return
-        # Send position command with current target position and updated current limit
         tool = self._get_active_gripper()
         if isinstance(tool, ElectricGripperTool):
             try:
@@ -385,7 +376,6 @@ class GripperPage:
 
     def update_status(self) -> None:
         """Update all status fields from robot_state. Called from status consumer."""
-        # Sync camera card visibility and panel size
         if self._camera_card is not None:
             cam_active = camera_service.active
             self._camera_card.set_visibility(cam_active)
@@ -393,7 +383,7 @@ class GripperPage:
                 self._last_camera_active = cam_active
                 preset = "camera" if cam_active else "default"
                 ui.run_javascript(f'PanelResize.resizePanel("gripper", "{preset}")')
-                # Force MJPEG stream reconnect by re-setting the source
+                # Re-set the source to force the MJPEG stream to reconnect.
                 if cam_active and self._camera_image is not None:
                     self._camera_image.set_source(
                         f"/tool/camera/stream?t={time.time()}"
@@ -415,14 +405,13 @@ class GripperPage:
             return
         self._last_status_key = status_key
 
-        # Initialize target from feedback on first status
+        # Seed the target from feedback on the first non-zero status.
         if not self._target_initialized and tool_position > 0:
             self._target_initialized = True
             waldoctl.commander.settings.gripper.target_position = tool_position
             if self._pos_slider is not None:
                 self._pos_slider.set_value(round(tool_position * 100))
 
-        # State dot + label
         s = ts.state
         color, label = _STATE_DOTS.get(s, _STATE_DOTS[0])
         if self._state_dot is not None:
@@ -430,19 +419,16 @@ class GripperPage:
         if self._state_label is not None:
             self._state_label.text = label
 
-        # Part detected dot
         if self._part_dot is not None:
             part_color = (
                 "var(--color-emerald-400)" if ts.part_detected else "var(--ctk-muted)"
             )
             self._part_dot.style(f"font-size: 10px; color: {part_color};")
 
-        # Engaged dot
         if self._engaged_dot is not None:
             eng_color = "var(--color-emerald-400)" if ts.engaged else "var(--ctk-muted)"
             self._engaged_dot.style(f"font-size: 10px; color: {eng_color};")
 
-        # Fault code
         if self._fault_label is not None:
             if ts.fault_code != 0:
                 self._fault_label.text = f"Fault: {ts.fault_code}"
@@ -458,15 +444,13 @@ class GripperPage:
         with ui.grid(columns="auto auto 3.5rem").classes(
             "gap-x-1 gap-y-1 items-center"
         ):
-            # State
             ui.label("State").classes(_lbl)
             self._state_dot = ui.icon("circle").style(
                 f"{_dot_s} color: var(--ctk-muted);"
             )
             self._state_label = ui.label("Off").classes("text-xs")
 
-            # Position — bind to the bindable ``positions`` tuple and project
-            # the first DOF for single-axis gripper display.
+            # Project the first DOF of the bindable ``positions`` tuple for single-axis gripper display.
             ui.label("Position").classes(_lbl)
             ui.icon("circle").style(f"{_dot_s} color: {_CLR_POS};")
             (
@@ -479,7 +463,7 @@ class GripperPage:
                 )
             )
 
-            # Current — bind to ``channels`` tuple, project first channel.
+            # Project the first channel of the bindable ``channels`` tuple.
             ui.label("Current").classes(_lbl)
             ui.icon("circle").style(f"{_dot_s} color: {_CLR_CUR};")
             (
@@ -492,21 +476,18 @@ class GripperPage:
                 )
             )
 
-            # Part detected
             ui.label("Part").classes(_lbl)
             self._part_dot = ui.icon("circle").style(
                 f"{_dot_s} color: var(--ctk-muted);"
             )
             ui.label()
 
-            # Engaged
             ui.label("Engaged").classes(_lbl)
             self._engaged_dot = ui.icon("circle").style(
                 f"{_dot_s} color: var(--ctk-muted);"
             )
             ui.label()
 
-            # Fault code
             self._fault_label = ui.label("").classes(
                 "text-xs text-[var(--color-red-400)] col-span-3"
             )
@@ -524,7 +505,7 @@ class GripperPage:
     def _build_sliders(self) -> None:
         self._slider_interval = config.webapp_control_interval_s
 
-        # Position slider + input (target-only: init from feedback, then tracks target)
+        # Target-only slider: seeded from feedback, then tracks the target.
         ui.label("Pos").classes("text-xs text-[var(--ctk-muted)]")
         self._pos_slider = (
             ui.slider(min=0, max=100, value=0, step=1)
@@ -534,7 +515,7 @@ class GripperPage:
         pos_input = ui.number(min=0, max=100, step=1, value=0).props("dense borderless")
         pos_input.bind_value_from(self._pos_slider, "value")
 
-        # Current slider + input (electric only)
+        # Current slider, shown for electric grippers only.
         def _electric_visible(k: str) -> bool:
             return k != "NONE" and self._is_electric()
 
@@ -562,7 +543,6 @@ class GripperPage:
             backward=_electric_visible,
         )
 
-        # Update current slider range when tool changes
         def _update_current_range() -> None:
             if self._cur_slider is None:
                 return

@@ -360,13 +360,9 @@ def restore_process_pool_after_nicegui_fixtures(
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers and run the screen plugin's configure hook.
-
-    The screen fixtures are imported from ``nicegui.testing.screen_plugin``
-    rather than the module being registered as a plugin, so its
-    ``pytest_configure`` (Screen.PORT / SCREENSHOT_DIR / DOWNLOAD_DIR) must be
-    invoked here or per-test ``screen`` fixtures refuse to build.
-    """
+    """Register custom markers and run the screen plugin's configure hook
+    (the screen fixtures are imported, not plugin-registered, so Screen.PORT /
+    SCREENSHOT_DIR / DOWNLOAD_DIR must be set up here)."""
     nicegui_screen_plugin.pytest_configure(config)
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"

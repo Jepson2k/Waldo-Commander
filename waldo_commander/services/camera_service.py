@@ -31,10 +31,6 @@ from nicegui import app as ng_app, run
 logging.getLogger("linuxpy").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Placeholder
-# ---------------------------------------------------------------------------
-
 _BLACK_1PX = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6Q"
     "AAAA1JREFUGFdjYGBg+A8AAQQBAHAgZQsAAAAASUVORK5CYII="
@@ -43,11 +39,6 @@ _PLACEHOLDER = Response(content=_BLACK_1PX, media_type="image/png")
 
 _STREAM_FPS = 30
 _STREAM_BOUNDARY = b"frame"
-
-
-# ---------------------------------------------------------------------------
-# Capture backends
-# ---------------------------------------------------------------------------
 
 
 class CaptureBackend(Protocol):
@@ -66,7 +57,7 @@ class LinuxpyBackend:
     """
 
     def __init__(self) -> None:
-        self._capture = None  # linuxpy.video.device.VideoCapture
+        self._capture = None
 
     def open(self, device: int | str, width: int, height: int) -> bool:
         try:
@@ -131,7 +122,7 @@ class OpenCVBackend:
     """Fallback backend using OpenCV.  Decodes + re-encodes to JPEG."""
 
     def __init__(self) -> None:
-        self._cap = None  # cv2.VideoCapture
+        self._cap = None
 
     def open(self, device: int | str, width: int, height: int) -> bool:
         try:
@@ -170,11 +161,6 @@ class OpenCVBackend:
             self._cap = None
 
 
-# ---------------------------------------------------------------------------
-# Service
-# ---------------------------------------------------------------------------
-
-
 class CameraService:
     """Manages a single camera and caches the latest JPEG frame."""
 
@@ -194,13 +180,11 @@ class CameraService:
 
         backend: CaptureBackend | None = None
 
-        # Try linuxpy first on Linux
         if sys.platform == "linux" and isinstance(device, int):
             candidate = LinuxpyBackend()
             if candidate.open(device, width, height):
                 backend = candidate
 
-        # Fall back to OpenCV
         if backend is None:
             candidate_cv = OpenCVBackend()
             if candidate_cv.open(device, width, height):
@@ -248,11 +232,6 @@ class CameraService:
 
 # Module-level singleton
 camera_service = CameraService()
-
-
-# ---------------------------------------------------------------------------
-# Device enumeration
-# ---------------------------------------------------------------------------
 
 
 def enumerate_video_devices(max_check: int = 10) -> list[dict[str, int | str]]:
@@ -319,11 +298,6 @@ def _enumerate_opencv(max_check: int) -> list[dict[str, int | str]]:
                 devices.append({"index": i, "label": f"Camera {i}"})
             cap.release()
     return devices
-
-
-# ---------------------------------------------------------------------------
-# FastAPI endpoints
-# ---------------------------------------------------------------------------
 
 
 async def _mjpeg_generator():

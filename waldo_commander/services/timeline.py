@@ -79,7 +79,6 @@ class Timeline:
         until the tool finishes.  Non-blocking tool actions (sleep_offset > 0)
         overlap with the preceding segment.
         """
-        # Collect blocking tool action durations keyed by segment_index
         blocking_gap: dict[int, float] = {}
         if tool_actions:
             for act in tool_actions:
@@ -190,7 +189,6 @@ class Timeline:
         if not self._segments:
             return TimelineSample(segment_index=0, joints=None, fraction=0.0, time=0.0)
 
-        # Clamp
         t = max(0.0, min(t, self.total_duration))
 
         # Binary search: find rightmost cum_time <= t
