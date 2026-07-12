@@ -83,10 +83,10 @@ async def play_pause() -> dict:
     """Toggle play/pause (mirrors the GUI play button).
 
     Controls the live script when one is running, otherwise the dry-run preview
-    timeline. Sim-aware gate: lease-only in simulator mode, lease + hardware
-    consent otherwise (in hardware mode this can launch a real program move).
+    timeline. Passes the mode-aware actuation gate (in hardware mode this can
+    launch a real program move).
     """
-    require_actuation()
+    require_actuation("play/pause the timeline")
     with _page_client():
         # require_actuation() above is the gate; tell toggle_play the caller
         # already holds control so its browser-side gate doesn't refuse (the
@@ -98,7 +98,7 @@ async def play_pause() -> dict:
 @mcp.tool(name="simulation.step")
 async def step() -> dict:
     """Step forward one segment (mirrors the GUI step button)."""
-    require_actuation()
+    require_actuation("step the timeline forward")
     with _page_client():
         playback.step_forward()
     return await get_mode()

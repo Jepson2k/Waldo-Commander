@@ -76,17 +76,22 @@ async def test_settings_tool_writes_propagate(user: User) -> None:
 
 @pytest.mark.integration
 async def test_hardware_motion_needs_session_consent(user: User) -> None:
-    """In hardware mode the first real move of an MCP session is refused until a
-    human grants consent in the GUI; the refusal (a ``ToolError`` on the client
-    side) tells the LLM to approve the prompt and retry."""
+    """The Autopilot hardware floor: even with motion auto-approved, the first
+    real move of an MCP session is refused until a human grants consent in the
+    GUI; the refusal (a ``ToolError``) tells the LLM to approve and retry."""
     from fastmcp.exceptions import ToolError
 
-    from waldo_commander.services.control_lease import control_lease
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_lease,
+        set_control_mode,
+    )
 
     await user.open("/")
     await wait_for_app_ready()
 
     mcp = get_mcp()
+    set_control_mode(ControlMode.AUTOPILOT)  # motion auto — only the HW floor remains
     waldoctl.commander.status.simulator_active = False  # real hardware
     try:
         async with Client(mcp) as client:
@@ -101,7 +106,7 @@ async def test_hardware_motion_needs_session_consent(user: User) -> None:
                 )
     finally:
         waldoctl.commander.status.simulator_active = True
-        control_lease.reset()
+        control_lease.reset()  # also restores INSPECT mode
 
 
 @pytest.mark.integration
@@ -113,8 +118,10 @@ async def test_denied_consent_is_terminal_for_a_cooldown(user: User) -> None:
 
     from waldo_commander.services import control_lease as cl
     from waldo_commander.services.control_lease import (
+        ControlMode,
         control_lease,
         pending_consents,
+        set_control_mode,
     )
     from waldo_commander.state import ui_state
 
@@ -124,6 +131,7 @@ async def test_denied_consent_is_terminal_for_a_cooldown(user: User) -> None:
     panel = ui_state.control_panel
     ng_client = cl.Client.instances[ui_state.active_client_id]
     mcp = get_mcp()
+    set_control_mode(ControlMode.AUTOPILOT)  # exercise the hardware-consent floor
     waldoctl.commander.status.simulator_active = False  # real hardware
     try:
         async with Client(mcp) as client:
@@ -136,8 +144,8 @@ async def test_denied_consent_is_terminal_for_a_cooldown(user: User) -> None:
             # The GUI surfaces the prompt; the human denies it.
             with ng_client:
                 panel.refresh_control_indicator()
-                assert panel._consent_sid is not None
-                panel._resolve_consent(False)
+                assert panel._approval_sid is not None
+                panel._resolve_approval(False)
 
             # Immediate retry: terminal denied error, no prompt re-armed.
             with pytest.raises(ToolError, match="denied"):
@@ -157,7 +165,7 @@ async def test_denied_consent_is_terminal_for_a_cooldown(user: User) -> None:
     finally:
         waldoctl.commander.status.simulator_active = True
         control_lease.reset()
-        panel._consent_sid = None
+        panel._approval_sid = None
         if panel._consent_dialog is not None:
             panel._consent_dialog.close()
 
@@ -220,12 +228,17 @@ async def test_mcp_pause_resume_mirror_play_state(user: User) -> None:
     """``execution.pause_active`` / ``resume_active`` must mirror the GUI pause
     path — flip the active program's ``is_playing`` and fire the simulation
     change channel — not just signal the script subprocess."""
-    from waldo_commander.services.control_lease import control_lease
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_lease,
+        set_control_mode,
+    )
     from waldo_commander.state import simulation_state
 
     await user.open("/")
     await wait_for_app_ready()
 
+    set_control_mode(ControlMode.AUTOPILOT)  # subject is pause/resume mirroring
     active = waldoctl.commander.programs.active
     assert active is not None
     active.dry_run.playback.is_playing = True
@@ -335,6 +348,88 @@ async def test_mcp_program_verbs_render_in_editor(user: User, tmp_path) -> None:
 
 
 @pytest.mark.integration
+async def test_control_modes_gate_edits_and_motion(user: User) -> None:
+    """The three control modes govern MCP edits + motion end-to-end (simulator):
+
+    - **Inspect**: a proposed edit stays pending (human approves in the editor)
+      and a move is refused until the human approves that specific action, after
+      which the retry runs.
+    - **Auto-edits**: a proposed edit auto-applies; a move still prompts.
+    - **Autopilot**: a move runs with no prompt (simulator).
+    """
+    from fastmcp.exceptions import ToolError
+
+    from waldo_commander.services import control_lease as cl
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_lease,
+        set_control_mode,
+    )
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+
+    panel = ui_state.control_panel
+    ng_client = cl.Client.instances[ui_state.active_client_id]
+    p = waldoctl.commander.programs.active
+    assert p is not None
+    p.source = "a\nb\nc\n"
+    _DIFF_BB = "@@ -2,1 +2,1 @@\n-b\n+B\n"
+
+    mcp = get_mcp()
+    waldoctl.commander.status.simulator_active = True
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("control.take_control")
+
+            # ---- Inspect: edit stays pending, move needs per-action approval --
+            set_control_mode(ControlMode.INSPECT)
+            eid = _payload(
+                await client.call_tool("programs.propose_edit", {"diff": _DIFF_BB})
+            )
+            await asyncio.sleep(0)
+            assert p.edits.pending and p.source == "a\nb\nc\n", "Inspect must not apply"
+
+            with pytest.raises(ToolError, match="approval|approve"):
+                await client.call_tool(
+                    "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+                )
+            with ng_client:
+                panel.refresh_control_indicator()
+                assert panel._approval_kind == "action"
+                panel._resolve_approval(True)
+            # Retry the same move: the one-shot approval lets it through.
+            await client.call_tool(
+                "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+            )
+            await client.call_tool("programs.cancel_pending_edit", {"edit_id": eid})
+
+            # ---- Auto-edits: edit auto-applies; move still prompts ------------
+            set_control_mode(ControlMode.AUTO_EDITS)
+            await client.call_tool("programs.propose_edit", {"diff": _DIFF_BB})
+            await asyncio.sleep(0)
+            assert p.edits.pending == [] and p.source == "a\nB\nc\n", (
+                "Auto-edits must apply the proposed edit without manual approval"
+            )
+            with pytest.raises(ToolError, match="approval|approve"):
+                await client.call_tool(
+                    "motion.jog_j", {"joint": 1, "speed": 0.1, "duration": 0.01}
+                )
+
+            # ---- Autopilot: move runs with no prompt (simulator) -------------
+            set_control_mode(ControlMode.AUTOPILOT)
+            await client.call_tool(
+                "motion.jog_j", {"joint": 2, "speed": 0.1, "duration": 0.01}
+            )
+    finally:
+        control_lease.reset()  # restores INSPECT
+        panel._approval_sid = None
+        if panel._consent_dialog is not None:
+            panel._consent_dialog.close()
+
+
+@pytest.mark.integration
 async def test_play_pause_starts_preview_when_mcp_holds_lease(
     user: User, monkeypatch
 ) -> None:
@@ -344,12 +439,14 @@ async def test_play_pause_starts_preview_when_mcp_holds_lease(
     tool silently no-oped while popping a misleading toast.
     """
     from waldo_commander.components.playback import playback
+    from waldo_commander.services.control_lease import ControlMode, set_control_mode
 
     await user.open("/")
     await wait_for_app_ready()
     mcp = get_mcp()
 
     # A previewable program in simulator mode, preview not yet active.
+    set_control_mode(ControlMode.AUTOPILOT)  # subject is preview start, not the gate
     waldoctl.commander.status.simulator_active = True
     active = waldoctl.commander.programs.active
     assert active is not None

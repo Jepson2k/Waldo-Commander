@@ -15,6 +15,7 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
+from waldo_commander.services.control_lease import control_mode
 from waldo_commander.state import (
     simulation_state,
     ui_state,
@@ -59,6 +60,10 @@ class EditorPanel(FileOperationsMixin):
         self.tab_panels_container: ui.tab_panels | None = None
         # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
         self._tab_widgets: dict[str, dict] = {}
+        # tab_id -> pending edit-id .values already seen, so a *newly* proposed
+        # edit flashes once (like a motion-recorder insert) without re-flashing
+        # on the approve/reject that only shrinks the pending list.
+        self._seen_edit_ids: dict[str, set[str]] = {}
 
         # The page client whose tab widgets this panel renders into. Captured at
         # build() and used by _reconcile_tabs to enter the right context when a
@@ -463,6 +468,7 @@ class EditorPanel(FileOperationsMixin):
             if widgets.get("panel"):
                 widgets["panel"].delete()
         ui_state.textareas_by_tab.pop(tab_id, None)
+        self._seen_edit_ids.pop(tab_id, None)
 
     def _switch_blocked(self) -> bool:
         """True (and notifies) when recording or active script playback should
@@ -629,7 +635,7 @@ class EditorPanel(FileOperationsMixin):
             panel = (
                 ui.tab_panel(name=tab.id)
                 .classes("editor-tab-panel")
-                .style("padding: 0; width: 100%; height: 100%;")
+                .style("padding: 0; width: 100%; height: 100%; gap: 0;")
             )
             with panel:
                 # Pending-LLM-edits banner (one row per proposed edit).
@@ -644,25 +650,22 @@ class EditorPanel(FileOperationsMixin):
 
                 completions = generate_completions_from_commands()
 
-                # Fills the panel and uses CodeMirror's own internal scrolling.
-                textarea = (
-                    ui.codemirror(
-                        value=tab.source,
-                        language="Python",
-                        line_wrapping=True,
-                        on_change=lambda e, t=tab: self._on_tab_content_change(
-                            t, e.value
-                        ),
-                        on_selection_change=lambda e, t=tab: self._on_cursor_line(t, e),
-                        completions=completions,
-                        keymap={
-                            "Mod-s": lambda _e, t=tab: self._save_tab(t),
-                        },
-                        line_tooltip_html=True,
-                    )
-                    .classes("w-full h-full")
-                    .style("min-height: 100%;")
-                )
+                # Flex-fills the space left below the edits banner and uses
+                # CodeMirror's own internal scrolling. min-h-0 lets it shrink so
+                # the banner and the editor share the panel instead of the
+                # editor overflowing (and being clipped) when the banner shows.
+                textarea = ui.codemirror(
+                    value=tab.source,
+                    language="Python",
+                    line_wrapping=True,
+                    on_change=lambda e, t=tab: self._on_tab_content_change(t, e.value),
+                    on_selection_change=lambda e, t=tab: self._on_cursor_line(t, e),
+                    completions=completions,
+                    keymap={
+                        "Mod-s": lambda _e, t=tab: self._save_tab(t),
+                    },
+                    line_tooltip_html=True,
+                ).classes("w-full flex-1 min-h-0")
 
                 try:
                     mode = get_theme()
@@ -692,9 +695,43 @@ class EditorPanel(FileOperationsMixin):
         def _on_edits_changed(tab_id: str = tab.id) -> None:
             self._refresh_edits_banner(tab_id)
             decorations.refresh_diff_overlay(tab_id)
+            self._on_new_edits(tab_id)
 
         tab.edits.add_change_listener(_on_edits_changed)
         self._tab_widgets[tab.id]["edits_listener"] = _on_edits_changed
+
+    def _on_new_edits(self, tab_id: str) -> None:
+        """React to *newly* proposed edits: flash their lines (like a
+        motion-recorder insert) and, in an auto-apply control mode, approve
+        them. Guards on a per-tab seen-set so the approve/reject that only
+        shrinks ``pending`` never re-flashes or re-applies.
+
+        Enters the captured page client (like ``_reconcile_tabs``) because an
+        edit proposed via an MCP tool fires this listener off the event loop
+        with no page context, and both the flash (``ui.timer``) and the
+        auto-approve UI push need one."""
+        tab = waldoctl.commander.programs.get(tab_id)
+        pending = list(tab.edits.pending) if tab is not None else []
+        current = {e.id.value for e in pending}
+        seen = self._seen_edit_ids.setdefault(tab_id, set())
+        new_ids = current - seen
+        self._seen_edit_ids[tab_id] = current
+        if not new_ids:
+            return
+        client = self._client
+        if client is None or client._deleted:
+            return
+        with client:
+            # Flash always (every mode) so an incoming edit is noticed, including
+            # when it's about to be auto-applied. Flashes target the active tab.
+            if tab_id == waldoctl.commander.programs.active_id:
+                lines = decorations.diff_touched_lines(tab_id, new_ids)
+                if lines:
+                    decorations.flash_editor_lines(lines)
+            if control_mode().auto_applies_edits:
+                for edit in pending:
+                    if edit.id.value in new_ids:
+                        self._approve_edit(tab_id, edit.id)
 
     def _unsubscribe_from_edits(self, tab_id: str) -> None:
         """Remove the edit-lifecycle listener registered by

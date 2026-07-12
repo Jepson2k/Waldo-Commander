@@ -334,6 +334,17 @@ def _register_default_keybindings() -> None:
 
     keybindings_manager.register(
         Keybinding(
+            key="m",
+            display="Alt+M",
+            requires_alt=True,
+            description="Cycle AI control mode",
+            action=lambda: cp.cycle_mode(),
+            category="Robot Control",
+        )
+    )
+
+    keybindings_manager.register(
+        Keybinding(
             key=" ",
             display="Space",
             description="Play/Pause",

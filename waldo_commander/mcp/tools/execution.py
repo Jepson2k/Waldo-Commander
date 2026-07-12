@@ -30,12 +30,13 @@ async def run_active() -> None:
     """Start the active program. Raises if a program is already running.
 
     Running a program actuates the robot, so it passes the full actuation gate
-    (the control lease plus, on real hardware, one-time per-session consent).
+    (the control lease plus mode-dependent approval — per-action in
+    Inspect/Auto-edits, auto in Autopilot with a hardware consent floor).
     """
     if is_any_program_running():
         raise RuntimeError("a program is already running; stop it first")
     _ensure_active()
-    require_actuation()
+    require_actuation("run the active program")
     with _page_client():
         await script_exec.start()
 
@@ -62,7 +63,7 @@ async def resume_active() -> None:
 
     Resuming actuates the robot, so it passes the full actuation gate.
     """
-    require_actuation()
+    require_actuation("resume the active program")
     with _page_client():
         playback.set_script_playing(True)
 

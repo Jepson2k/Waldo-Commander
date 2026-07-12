@@ -28,11 +28,17 @@ from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import SettingsContent
 from waldo_commander.services.control_lease import (
     BROWSER,
+    ControlMode,
     control_lease,
+    control_mode,
+    deny_action,
     deny_consent,
+    grant_action,
     grant_consent,
+    pending_actions,
     pending_consents,
     require_browser_control,
+    set_control_mode,
 )
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
@@ -587,8 +593,13 @@ class ControlPanel:
         self._control_glow: ui.element | None = None
         self._take_control_btn: ui.button | None = None
         self._consent_dialog: ui.dialog | None = None
-        self._consent_label: ui.label | None = None
-        self._consent_sid: str | None = None
+        self._approval_label: ui.label | None = None
+        self._approval_hint: ui.label | None = None
+        self._approval_sid: str | None = None
+        self._approval_kind: str | None = None
+        # AI control-mode selector (built in _build_control_mode_selector).
+        self._mode_toggle: ui.toggle | None = None
+        self._suppress_mode_toggle: bool = False
 
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
@@ -999,17 +1010,30 @@ class ControlPanel:
 
     # ---- Control-lease indicator ----
 
+    # Perimeter-glow color per control mode (rgb triples, no alpha), so the
+    # ambient AI-driving glow tells the human which mode is active at a glance.
+    _MODE_GLOW_RGB = {
+        ControlMode.INSPECT: "245 158 11",  # amber — approve everything
+        ControlMode.AUTO_EDITS: "56 189 248",  # sky — edits auto, moves ask
+        ControlMode.AUTOPILOT: "167 139 250",  # violet — full autopilot
+    }
+
+    def _glow_shadow(self, mode: ControlMode) -> str:
+        rgb = self._MODE_GLOW_RGB[mode]
+        return f"inset 0 0 0 3px rgb({rgb} / 0.55), inset 0 0 36px rgb({rgb} / 0.22)"
+
     def _build_control_indicator(self) -> None:
-        """Page-perimeter amber glow + an edge Take-control button, shown only
-        while another controller (an MCP/AI session) holds the lease, plus the
-        per-session hardware-motion consent dialog. Driven by the 1 Hz ping."""
-        # Ambient amber glow around the viewport while an AI session drives.
+        """Page-perimeter glow (colored by control mode) + an edge Take-control
+        button, shown only while another controller (an MCP/AI session) holds
+        the lease, plus the approval dialog (per-action move approvals and the
+        one-time hardware-consent floor). Driven by the 1 Hz ping."""
+        # Ambient glow around the viewport while an AI session drives; its color
+        # encodes the current control mode (updated in refresh / on mode switch).
         self._control_glow = (
             ui.element("div")
             .style(
                 "position:fixed; inset:0; pointer-events:none; z-index:9998; "
-                "box-shadow: inset 0 0 0 3px rgb(245 158 11 / 0.55), "
-                "inset 0 0 36px rgb(245 158 11 / 0.22);"
+                f"box-shadow: {self._glow_shadow(control_mode())};"
             )
             # Real DOM class (mark() is server-side only) so browser tests can
             # query the glow like they query .btn-take-control.
@@ -1026,33 +1050,35 @@ class ControlPanel:
             .mark("btn-take-control")
         )
         self._take_control_btn.set_visibility(False)
-        # Per-session hardware-motion consent dialog. Persistent so ESC / a
-        # backdrop click can't dismiss it into limbo; the value handler below
-        # still catches any non-button close and re-arms the prompt.
+        # Approval dialog. Persistent so ESC / a backdrop click can't dismiss it
+        # into limbo; the value handler below catches any non-button close and
+        # re-arms the prompt. Serves both per-action move approvals (Inspect /
+        # Auto-edits) and the one-time hardware-consent floor (Autopilot).
         with ui.dialog().props("persistent") as dlg, ui.card().classes("gap-2"):
-            ui.label("Allow AI to move the robot?").classes("text-base font-medium")
-            self._consent_label = ui.label("").classes("text-sm")
-            ui.label(
-                "An AI session is requesting its first real hardware move. Make "
-                "sure the workspace is clear before allowing."
-            ).classes("text-xs text-amber-700 dark:text-amber-300")
+            ui.label("Allow AI action?").classes("text-base font-medium")
+            self._approval_label = ui.label("").classes("text-sm")
+            self._approval_hint = ui.label("").classes(
+                "text-xs text-amber-700 dark:text-amber-300"
+            )
             with ui.row().classes("justify-end w-full gap-2"):
-                ui.button("Deny", on_click=lambda: self._resolve_consent(False)).props(
+                ui.button("Deny", on_click=lambda: self._resolve_approval(False)).props(
                     "flat"
                 ).mark("btn-consent-deny")
-                ui.button("Allow", on_click=lambda: self._resolve_consent(True)).props(
+                ui.button("Allow", on_click=lambda: self._resolve_approval(True)).props(
                     "color=amber"
                 ).mark("btn-consent-allow")
         dlg.on_value_change(self._on_consent_dialog_value)
         self._consent_dialog = dlg
-        self._consent_sid: str | None = None
+        self._approval_sid: str | None = None
+        self._approval_kind: str | None = None
 
     def _on_consent_dialog_value(self, e) -> None:
         """A close that bypassed Allow/Deny (ESC, backdrop, programmatic) is
         "not now", not a decision: clear the armed sid so the pending request
         re-prompts on the next indicator refresh instead of wedging forever."""
-        if not e.value and self._consent_sid is not None:
-            self._consent_sid = None
+        if not e.value and self._approval_sid is not None:
+            self._approval_sid = None
+            self._approval_kind = None
 
     async def _take_control(self) -> None:
         """Hard reclaim: seize the lease for this browser tab and halt any motion
@@ -1069,8 +1095,9 @@ class ControlPanel:
         ui.notify("You're in control — robot halted", color="positive")
 
     def refresh_control_indicator(self) -> None:
-        """Show/hide the AI-driving glow + Take-control button and surface any
-        pending hardware-motion consent prompt. Driven by the 1 Hz ping loop."""
+        """Show/hide the AI-driving glow + Take-control button, keep the glow
+        color in sync with the mode, and surface any pending approval. Driven by
+        the 1 Hz ping loop."""
         glow = getattr(self, "_control_glow", None)
         btn = getattr(self, "_take_control_btn", None)
         if glow is None or btn is None:
@@ -1081,30 +1108,113 @@ class ControlPanel:
         )
         glow.set_visibility(other)
         btn.set_visibility(other)
+        if other:
+            glow.style(f"box-shadow: {self._glow_shadow(control_mode())};")
 
         dlg = self._consent_dialog
-        if dlg is not None and self._consent_sid is None:
-            pend = pending_consents()
-            if pend:
-                sid, label = next(iter(pend.items()))
-                self._consent_sid = sid
-                if self._consent_label is not None:
-                    self._consent_label.text = f"{label} wants to move the robot."
+        title = self._approval_label
+        hint = self._approval_hint
+        if (
+            dlg is not None
+            and title is not None
+            and hint is not None
+            and self._approval_sid is None
+        ):
+            actions = pending_actions()
+            consents = pending_consents()
+            if actions:
+                sid, desc = next(iter(actions.items()))
+                self._approval_sid = sid
+                self._approval_kind = "action"
+                title.text = desc
+                hint.text = "Approve this AI action to let it proceed."
+                dlg.open()
+            elif consents:
+                sid, label = next(iter(consents.items()))
+                self._approval_sid = sid
+                self._approval_kind = "session"
+                title.text = f"{label} wants to move the robot."
+                hint.text = (
+                    "First real hardware move of this AI session — make sure "
+                    "the workspace is clear before allowing."
+                )
                 dlg.open()
 
-    def _resolve_consent(self, granted: bool) -> None:
-        sid = self._consent_sid
-        self._consent_sid = None
+    def _resolve_approval(self, granted: bool) -> None:
+        sid = self._approval_sid
+        kind = self._approval_kind
+        self._approval_sid = None
+        self._approval_kind = None
         if self._consent_dialog is not None:
             self._consent_dialog.close()
         if sid is None:
             return
-        if granted:
-            grant_consent(sid)
-            ui.notify("Hardware motion allowed for this AI session", color="positive")
-        else:
-            deny_consent(sid)
-            ui.notify("Hardware motion denied", color="warning")
+        if kind == "action":
+            if granted:
+                grant_action(sid)
+                ui.notify("Action approved", color="positive")
+            else:
+                deny_action(sid)
+                ui.notify("Action denied", color="warning")
+        else:  # one-time hardware-consent floor
+            if granted:
+                grant_consent(sid)
+                ui.notify(
+                    "Hardware motion allowed for this AI session", color="positive"
+                )
+            else:
+                deny_consent(sid)
+                ui.notify("Hardware motion denied", color="warning")
+
+    # ---- AI control mode (Inspect / Auto-edits / Autopilot) ----
+
+    def _apply_mode(self, mode: ControlMode) -> None:
+        """Commit a control-mode change: update the service, recolor the glow,
+        sync the toggle, and toast. Single funnel for the settings toggle and
+        the keyboard shortcut so the toast fires exactly once per switch."""
+        set_control_mode(mode)
+        ui.notify(f"AI control mode: {mode.label}", color="info")
+        glow = getattr(self, "_control_glow", None)
+        if glow is not None:
+            glow.style(f"box-shadow: {self._glow_shadow(mode)};")
+        toggle = getattr(self, "_mode_toggle", None)
+        if toggle is not None and toggle.value != mode.value:
+            self._suppress_mode_toggle = True
+            toggle.value = mode.value
+            self._suppress_mode_toggle = False
+
+    def _on_mode_toggle(self, value: str | None) -> None:
+        if getattr(self, "_suppress_mode_toggle", False) or value is None:
+            return
+        self._apply_mode(ControlMode(value))
+
+    def cycle_mode(self) -> None:
+        """Advance Inspect → Auto-edits → Autopilot → Inspect (keyboard shortcut)."""
+        order = list(ControlMode)
+        nxt = order[(order.index(control_mode()) + 1) % len(order)]
+        self._apply_mode(nxt)
+
+    def _build_control_mode_selector(self) -> None:
+        """AI control-mode selector for the control panel's Settings tab —
+        mirrors the perimeter glow and the Alt+M shortcut."""
+        with ui.column().classes("w-full gap-1 p-2"):
+            with ui.row().classes("items-center gap-1"):
+                ui.icon("smart_toy", size="sm")
+                ui.label("AI control mode").classes("text-sm font-medium")
+            self._mode_toggle = (
+                ui.toggle(
+                    {m.value: m.label for m in ControlMode},
+                    value=control_mode().value,
+                    on_change=lambda e: self._on_mode_toggle(e.value),
+                )
+                .props("no-caps dense")
+                .classes("w-full")
+                .mark("control-mode-toggle")
+            )
+            ui.label(
+                "Inspect: approve each edit + move · Auto-edits: edits auto, "
+                "moves ask · Autopilot: all auto (hardware asks once). Shortcut: Alt+M"
+            ).classes("text-xs opacity-70")
 
     # ---- Joint jog methods ----
 
@@ -1977,6 +2087,7 @@ class ControlPanel:
 
             # Settings panel
             with ui.tab_panel(settings_tab).classes("gap-0 p-0"):
+                self._build_control_mode_selector()
                 with ui.scroll_area().classes("w-full h-full p-0"):
                     self._settings_content = SettingsContent(self.client)
                     self._settings_content.build_embedded()

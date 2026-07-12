@@ -216,21 +216,21 @@ async def test_dismissed_consent_dialog_reprompts(user: User) -> None:
         arm_consent_prompt("sid-dismiss", "MCP session sid-dism")
         with ng_client:
             panel.refresh_control_indicator()
-        assert panel._consent_sid == "sid-dismiss"
+        assert panel._approval_sid == "sid-dismiss"
 
         # Simulate ESC/backdrop: the dialog's value flips False, no button hit.
         panel._consent_dialog.value = False
-        assert panel._consent_sid is None, (
+        assert panel._approval_sid is None, (
             "dismissal must clear the armed sid (it is 'not now', not a wedge)"
         )
 
         assert "sid-dismiss" in pending_consents()
         with ng_client:
             panel.refresh_control_indicator()
-        assert panel._consent_sid == "sid-dismiss"  # re-prompted
+        assert panel._approval_sid == "sid-dismiss"  # re-prompted
     finally:
         reset_consent("sid-dismiss")
-        panel._consent_sid = None
+        panel._approval_sid = None
         if panel._consent_dialog is not None:
             panel._consent_dialog.close()
         control_lease.reset()
@@ -243,10 +243,13 @@ async def test_lease_survives_single_long_tool_call(
     """The lease must stay alive for the whole of a single in-flight tool call
     (e.g. one ``wait_motion`` spanning a long move) — the TTL measures session
     absence, not motion duration."""
+    from waldo_commander.services.control_lease import ControlMode, set_control_mode
+
     await user.open("/")
     await wait_for_app_ready()
 
     monkeypatch.setattr(cl, "MCP_TTL_SECONDS", 0.3)
+    set_control_mode(ControlMode.AUTOPILOT)  # subject is the TTL, not the gate
     mcp = get_mcp()
     try:
         async with Client(mcp) as client:

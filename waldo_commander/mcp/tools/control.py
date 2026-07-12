@@ -15,11 +15,14 @@ from nicegui import Client
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.services.control_lease import (
     MCP,
+    arm_action_prompt,
     arm_consent_prompt,
     control_lease,
+    control_mode,
     recently_denied,
     reset_consent,
     session_consented,
+    take_approved_action,
 )
 from waldo_commander.state import ui_state
 
@@ -87,13 +90,47 @@ def require_session_consent() -> None:
     )
 
 
-def require_actuation() -> None:
-    """Full actuation gate: the control lease always, plus per-session consent
-    when driving real hardware. In simulator mode only the lease is required
-    (sim playback is an informal handoff, not safety-critical)."""
+def require_action_approval(description: str) -> None:
+    """Per-action approval gate (Inspect / Auto-edits modes): every move is
+    OK'd individually in the GUI. Arms a prompt and refuses-with-retry until
+    the human approves this specific action; the grant is one-shot and matched
+    to ``description`` so the retry of the same call passes but a different move
+    re-prompts."""
+    sid = _session_id()
+    if take_approved_action(sid, description):
+        return
+    if recently_denied(sid):
+        raise PermissionError(
+            f"the user just denied '{description}' — do not retry immediately; "
+            "wait for the user or take a different approach"
+        )
+    cid = ui_state.active_client_id
+    client = Client.instances.get(cid) if cid else None
+    if client is None or client._deleted:
+        raise PermissionError(
+            "open the Waldo-Commander GUI and approve the action prompt first"
+        )
+    arm_action_prompt(sid, description)
+    raise PermissionError(
+        f"this action needs approval: {description} — approve the prompt in "
+        "Waldo-Commander, then retry"
+    )
+
+
+def require_actuation(description: str) -> None:
+    """Full actuation gate, mode-aware. Always requires the control lease, then:
+
+    - **Autopilot**: motion is auto-approved; real hardware still needs the
+      one-time per-session consent floor (simulator needs only the lease).
+    - **Inspect / Auto-edits**: every move needs per-action GUI approval
+      (this subsumes the hardware floor — a human is in the loop each time).
+    """
     require_control()
-    if not waldoctl.commander.status.simulator_active:
-        require_session_consent()
+    if control_mode().auto_approves_motion:
+        if not waldoctl.commander.status.simulator_active:
+            require_session_consent()
+    else:
+        require_action_approval(description)
 
 
 @mcp.tool(name="control.take_control")
@@ -120,8 +157,15 @@ async def release_control() -> dict:
 
 @mcp.tool(name="control.get_controller")
 async def get_controller() -> dict:
-    """Report who currently holds control (read-only — never gated)."""
+    """Report who holds control and the human's current control mode (read-only,
+    never gated). ``mode`` is one of ``inspect`` / ``auto_edits`` / ``autopilot``
+    and is set by the human, not the LLM — it governs whether your edits apply
+    immediately and whether each move needs per-action approval."""
+    mode = control_mode()
     return {
         "holder": control_lease.describe(),
         "you_hold_it": control_lease.held_by(MCP, _session_id()),
+        "mode": mode.value,
+        "mode_auto_applies_edits": mode.auto_applies_edits,
+        "mode_auto_approves_motion": mode.auto_approves_motion,
     }

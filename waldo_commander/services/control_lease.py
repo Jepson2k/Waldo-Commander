@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from enum import Enum
 
 from nicegui import Client
 
@@ -31,6 +32,58 @@ MCP = "mcp"
 
 # How long an MCP holder stays "live" without a gated call before it ages out.
 MCP_TTL_SECONDS = 30.0
+
+
+class ControlMode(Enum):
+    """How much per-action human approval an MCP-driven action needs.
+
+    Global and human-set (the control-panel toggle / keybinding); mirrors
+    Claude Code's ask → auto-accept-edits → bypass ladder. Governs whichever
+    MCP session is driving. Independent of the lease (who holds control).
+    """
+
+    INSPECT = "inspect"  # approve every edit and every move
+    AUTO_EDITS = "auto_edits"  # edits auto-apply; moves still approved per-action
+    AUTOPILOT = "autopilot"  # edits + moves auto (hardware keeps a one-time floor)
+
+    @property
+    def auto_applies_edits(self) -> bool:
+        return self in (ControlMode.AUTO_EDITS, ControlMode.AUTOPILOT)
+
+    @property
+    def auto_approves_motion(self) -> bool:
+        return self is ControlMode.AUTOPILOT
+
+    @property
+    def label(self) -> str:
+        return {
+            ControlMode.INSPECT: "Inspect",
+            ControlMode.AUTO_EDITS: "Auto-edits",
+            ControlMode.AUTOPILOT: "Autopilot",
+        }[self]
+
+
+# Global control mode. Defaults to the safest rung; runtime-only (resets on
+# restart, like Claude Code's per-session mode). Only a human changes it.
+_control_mode: ControlMode = ControlMode.INSPECT
+
+
+def control_mode() -> ControlMode:
+    return _control_mode
+
+
+def set_control_mode(mode: ControlMode) -> None:
+    global _control_mode
+    _control_mode = mode
+
+
+def cycle_control_mode() -> ControlMode:
+    """Advance Inspect → Auto-edits → Autopilot → Inspect and return the new
+    mode. Backs the control-panel toggle and the keyboard shortcut."""
+    global _control_mode
+    order = list(ControlMode)
+    _control_mode = order[(order.index(_control_mode) + 1) % len(order)]
+    return _control_mode
 
 
 @dataclass
@@ -98,6 +151,9 @@ class ControlLease:
         _consented_sessions.clear()
         _pending_consent.clear()
         _denied_at.clear()
+        _pending_action.clear()
+        _approved_action.clear()
+        set_control_mode(ControlMode.INSPECT)
 
 
 control_lease = ControlLease()
@@ -210,3 +266,51 @@ def reset_consent(session_id: str) -> None:
     _consented_sessions.discard(session_id)
     _pending_consent.pop(session_id, None)
     _denied_at.pop(session_id, None)
+    _pending_action.pop(session_id, None)
+    _approved_action.pop(session_id, None)
+
+
+# --- Per-action motion approval (Inspect / Auto-edits modes) ---------------
+# In Inspect and Auto-edits, every MCP motion command is approved individually
+# (vs. the one-time per-session hardware consent used as Autopilot's floor).
+# Same arm → refuse-with-retry → grant → retry flow, but the grant is one-shot
+# and matched to the action's description so a stale approval can't ride a
+# different move. Denials share the consent cooldown above.
+_pending_action: dict[
+    str, str
+] = {}  # session_id -> action description awaiting approval
+_approved_action: dict[
+    str, str
+] = {}  # session_id -> approved, not-yet-consumed description
+
+
+def arm_action_prompt(session_id: str, description: str) -> None:
+    """Record that *session_id* is awaiting GUI approval for a specific move."""
+    _pending_action[session_id] = description
+
+
+def pending_actions() -> dict[str, str]:
+    """Sessions awaiting per-action approval (session_id -> description)."""
+    return dict(_pending_action)
+
+
+def grant_action(session_id: str) -> None:
+    """Approve the session's pending action; the next matching gated call passes."""
+    description = _pending_action.pop(session_id, None)
+    if description is not None:
+        _approved_action[session_id] = description
+    _denied_at.pop(session_id, None)
+
+
+def deny_action(session_id: str) -> None:
+    _pending_action.pop(session_id, None)
+    _denied_at[session_id] = time.monotonic()
+
+
+def take_approved_action(session_id: str, description: str) -> bool:
+    """Consume a one-shot approval iff it matches *description*. A retry of the
+    same refused call matches; a different move does not (it re-prompts)."""
+    if _approved_action.get(session_id) == description:
+        del _approved_action[session_id]
+        return True
+    return False

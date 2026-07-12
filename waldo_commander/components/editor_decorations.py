@@ -190,6 +190,38 @@ class EditorDecorations:
                 _flush_added()
         return specs
 
+    def diff_touched_lines(
+        self, tab_id: str, edit_ids: set[str] | None = None
+    ) -> list[int]:
+        """1-based line numbers touched by a tab's pending edits — each removed
+        line and each addition's anchor line. Used to flash a freshly proposed
+        edit the same way the motion recorder flashes an insert. ``edit_ids``
+        (edit-id ``.value`` strings) limits the walk to specific edits; ``None``
+        means all pending. Mirrors the cursor walk in ``_diff_decoration_specs``.
+        """
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is None or not tab.edits.pending:
+            return []
+        lines: set[int] = set()
+        for edit in tab.edits.pending:
+            if edit_ids is not None and edit.id.value not in edit_ids:
+                continue
+            try:
+                hunks = waldoctl.parse_unified_diff(edit.diff)
+            except ValueError:
+                continue
+            for h in hunks:
+                cursor = h.start_index
+                for op, _content in h.body:
+                    if op == " ":
+                        cursor += 1
+                    elif op == "-":
+                        lines.add(cursor + 1)
+                        cursor += 1
+                    elif op == "+":
+                        lines.add(cursor + 1)
+        return sorted(lines)
+
     def refresh_diff_overlay(self, tab_id: str) -> None:
         """Re-render decorations for ``tab_id`` after its pending-edits list
         changed. Public entry point for the editor's edit-listener wiring."""

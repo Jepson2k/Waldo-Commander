@@ -82,6 +82,41 @@ async def test_diff_overlay_propose_reject_approve_lifecycle(user: User) -> None
 
 
 @pytest.mark.integration
+async def test_proposed_edit_flashes_its_lines(user: User) -> None:
+    """A freshly proposed edit flashes its changed lines (``cm-line-flash``),
+    the way the motion recorder flashes an inserted line — and approving does
+    NOT spawn a second flash (only a genuinely new edit flashes)."""
+    from waldo_commander.components.editor_decorations import decorations
+
+    await user.open("/")
+    await wait_for_app_ready()
+    ui_state.program_panel_visible = True  # flash the lines, not the tab
+
+    p = waldoctl.commander.programs.active
+    assert p is not None
+    p.source = _BEFORE
+
+    def _flash_specs(textarea):
+        return [s for s in textarea.decorations if s.get("class") == "cm-line-flash"]
+
+    edit_id = p.edits.propose(_DIFF, "tweak y")
+    await asyncio.sleep(0)
+
+    textarea = ui_state.active_textarea
+    assert textarea is not None
+    assert _flash_specs(textarea), "a freshly proposed edit must flash its line"
+    flashes_after_propose = len(decorations._active_flashes)
+
+    # Approve: applies the edit but must not re-flash — only a new proposal does.
+    user.find(marker=f"approve-edit-{edit_id.value}").click()
+    await asyncio.sleep(0)
+    assert p.source == _AFTER
+    assert len(decorations._active_flashes) == flashes_after_propose, (
+        "approve/reject must not add a flash; only a newly proposed edit flashes"
+    )
+
+
+@pytest.mark.integration
 async def test_interior_additions_render_at_their_own_positions(user: User) -> None:
     """Additions between context lines must render where they occur — one
     widget per contiguous ``+`` run — not collapse into a single widget after

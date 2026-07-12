@@ -1,15 +1,17 @@
 """MCP tools for direct motion commands — ``commander.client.*``.
 
-Every **actuating** tool here passes :func:`require_actuation` — the
-single-controller lease, plus a one-time per-session human consent in the GUI
-when driving real hardware (skipped in simulator mode). The deliberately ungated
-tools are ``halt`` (stopping is always safe) and ``wait_motion`` (passive).
+Every **actuating** tool here passes :func:`require_actuation` with a short
+human description — the single-controller lease plus mode-dependent approval
+(per-action in Inspect/Auto-edits; auto in Autopilot, with a one-time hardware
+consent floor). The deliberately ungated tools are ``halt`` (stopping is always
+safe) and ``wait_motion`` (passive).
 
 These wrappers are deliberately a flat subset of the full client surface: the
-most common motion verbs an LLM is likely to issue. Advanced moves
-(``move_c``, ``move_s``, ``move_p``, servo modes) are intentionally not exposed
-for v1 — let the LLM compose them through ``programs.propose_edit`` +
-``execution.run_active`` instead.
+most common motion verbs an LLM is likely to issue, for single ad-hoc nudges.
+Prefer building any multi-step sequence as a visible program via
+``programs.propose_edit`` + ``execution.run_active`` — the human can then
+preview and scrub the path. Advanced moves (``move_c``, ``move_s``, ``move_p``,
+servo modes) are intentionally not exposed for v1 for the same reason.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ async def move_j(
     wait: bool = False,
 ) -> int:
     """Joint-space move to ``angles`` (degrees). Returns the command index."""
-    require_actuation()
+    require_actuation(f"move joints to {angles}°")
     return _dispatched(
         await waldoctl.commander.client.move_j(
             angles, speed=speed, accel=accel, wait=wait
@@ -64,7 +66,7 @@ async def move_l(
     wait: bool = False,
 ) -> int:
     """Linear Cartesian move to ``pose = [x,y,z,rx,ry,rz]`` (mm, deg)."""
-    require_actuation()
+    require_actuation(f"linear move to {pose}")
     return _dispatched(
         await waldoctl.commander.client.move_l(
             pose, frame=frame, speed=speed, accel=accel, wait=wait
@@ -76,14 +78,14 @@ async def move_l(
 @mcp.tool(name="motion.home")
 async def home(wait: bool = False) -> int:
     """Move to the robot's home position."""
-    require_actuation()
+    require_actuation("move to home position")
     return _dispatched(await waldoctl.commander.client.home(wait=wait), "home")
 
 
 @mcp.tool(name="motion.jog_j")
 async def jog_j(joint: int, speed: float, duration: float = 0.1) -> int:
     """Velocity jog one joint for ``duration`` seconds."""
-    require_actuation()
+    require_actuation(f"jog joint {joint} at speed {speed}")
     return _dispatched(
         await waldoctl.commander.client.jog_j(joint, speed, duration), "jog_j"
     )
@@ -97,7 +99,7 @@ async def jog_l(
     duration: float = 0.1,
 ) -> int:
     """Velocity jog one Cartesian axis for ``duration`` seconds."""
-    require_actuation()
+    require_actuation(f"jog {frame} {axis} at speed {speed}")
     return _dispatched(
         await waldoctl.commander.client.jog_l(frame, axis, speed, duration), "jog_l"
     )
@@ -116,7 +118,7 @@ async def halt() -> int:
 @mcp.tool(name="motion.resume")
 async def resume() -> int:
     """Re-enable the robot after halt / e-stop."""
-    require_actuation()
+    require_actuation("resume / re-enable the robot")
     return _dispatched(await waldoctl.commander.client.resume(), "resume")
 
 
