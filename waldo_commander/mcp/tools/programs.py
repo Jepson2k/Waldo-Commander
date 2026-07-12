@@ -136,11 +136,17 @@ async def propose_edit(
 ) -> str:
     """Queue a unified-diff edit on ``program_id`` (defaults to active).
 
+    This is the preferred way to author ANY code — a repeatable routine or a
+    quick throwaway — because the edit shows up in the human's editor as a diff
+    they can see and scrub. Create/switch to a target program first with
+    ``programs.new`` / ``programs.open`` / ``programs.switch``.
+
     The diff must apply cleanly against the program's current source;
     invalid or non-applicable diffs raise immediately so the caller can
-    retry. Returns the new pending edit's id. The edit is **not**
-    applied — a human must approve it in WC's editor before the source
-    actually changes.
+    retry. Returns the new pending edit's id. Whether the edit applies
+    immediately or waits for human approval depends on the control mode
+    (Inspect requires approval; Auto-edits / Autopilot auto-apply) — read
+    ``control.get_controller``.
     """
     p = _program(program_id)
     return p.edits.propose(diff, description).value

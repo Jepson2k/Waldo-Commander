@@ -8,6 +8,7 @@ https://github.com/user-attachments/assets/61c5aec4-9611-4f61-b1b0-35f25931e11e
 - **Python programs.** Write robot programs in Python with loops, math, and libraries. Built-in editor with auto-complete, live output, and step-through debugging.
 - **3D simulation.** Preview motion paths, check reachability, and scrub through the timeline — no physical robot needed.
 - **Teach by demonstration.** Control the robot live and record the motions as Python code.
+- **AI control (MCP).** A built-in [Model Context Protocol](https://modelcontextprotocol.io) server lets an LLM (Claude Code, Claude Desktop, …) read status, author and run programs, and drive the arm — with per-mode approval you control. See [AI Control (MCP)](https://jepson2k.github.io/Waldo-Commander/guides/mcp/).
 - **Backend-agnostic.** Robot-specific logic lives behind the [waldoctl](https://github.com/Jepson2k/waldoctl) abstraction layer. Other robots can be integrated by implementing the same interfaces — see the [Backend Development Guide](https://jepson2k.github.io/Waldo-Commander/guides/backend-development/).
 
 ## Quick start

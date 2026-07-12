@@ -87,11 +87,26 @@ def get_mcp() -> "FastMCP":
         _mcp = FastMCP(
             name="waldo-commander",
             instructions=(
-                "Drive a PAROL6 robot arm through Waldo-Commander. "
-                "Read live status, edit and run programs, and (when "
-                "permitted) issue motion commands. Code edits go through "
-                "propose_edit and require human approval in the editor "
-                "before they apply."
+                "Drive a PAROL6 robot arm through Waldo-Commander, a GUI the "
+                "human is watching. Read live status freely.\n\n"
+                "Put ALL code you write into a VISIBLE program in the editor so "
+                "the human can see and scrub it — even a quick throwaway. Create "
+                "or switch to a program with programs.new / programs.open / "
+                "programs.switch, build it with programs.propose_edit (a "
+                "unified diff), let the dry-run path render, optionally preview "
+                "it with simulation.play_pause / simulation.step, then run it "
+                "with execution.run_active. Never run code that doesn't appear "
+                "in the editor, and don't fire a long series of direct motion "
+                "commands when a program would let the human watch the path.\n\n"
+                "Reserve the direct motion.* tools (jog_j, jog_l, move_j, "
+                "move_l, home) for single ad-hoc nudges.\n\n"
+                "Approval depends on the human's control mode (read it via "
+                "control.get_controller): in Inspect, every edit and every move "
+                "is approved individually; in Auto-edits, edits apply "
+                "immediately but each move is still approved; in Autopilot, both "
+                "are automatic (real hardware still asks once per session). When "
+                "a call is refused pending approval, wait for the human and "
+                "retry — do not loop."
             ),
         )
         # Refresh the holding session's lease on every tool call (not just
