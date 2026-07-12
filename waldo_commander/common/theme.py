@@ -63,8 +63,8 @@ class SceneColors:
     # Edit mode / inactive gray
     EDIT_GRAY_HEX = "#525252"
 
-    # Predicted-collision highlight (theme-independent alarm red)
-    COLLISION_HEX = "#ff1744"
+    # Predicted-collision highlight (theme-independent deep alarm red)
+    COLLISION_HEX = "#b00020"
 
     # Keep-out shape / barrier (translucent slate — red highlight stands out)
     SHAPE_HEX = "#6d8ea0"
