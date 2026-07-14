@@ -1079,10 +1079,14 @@ class ControlPanel:
                     on_click=self.cycle_mode,
                 )
                 .props("dense clickable")
+                # Real DOM class (mark() is server-side only) for browser tests.
+                .classes("control-mode-chip")
                 .style(self._mode_chip_style(control_mode()))
                 .tooltip("AI control mode — click or press Alt+M to cycle")
                 .mark("control-mode-chip")
             )
+            # Hidden until an MCP client is around, like the glow.
+            self._mode_chip.set_visibility(False)
             self._take_control_btn = (
                 ui.button("Take control", icon="smart_toy", on_click=self._take_control)
                 .props("dense unelevated")
@@ -1151,6 +1155,9 @@ class ControlPanel:
         connected = mcp_connected()
         glow.set_visibility(other or connected)
         btn.set_visibility(other)
+        chip = getattr(self, "_mode_chip", None)
+        if chip is not None:
+            chip.set_visibility(other or connected)
         if other or connected:
             glow.style(
                 f"box-shadow: {self._glow_shadow(control_mode())}; "

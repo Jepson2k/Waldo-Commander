@@ -44,14 +44,17 @@ def test_control_lease_indicator_and_take_control(screen: "Screen") -> None:
         # Clear the startup tutorial dialog so its backdrop doesn't swallow clicks.
         dismiss_dialogs(screen)
 
-        # Default holder: the active browser tab is in control → glow hidden.
+        # Default holder: the active browser tab is in control and no MCP
+        # client is around → glow and mode chip both hidden.
         assert screen_wait_for_element_hidden(screen, ".control-lease-glow", 5.0)
+        assert screen_wait_for_element_hidden(screen, ".control-mode-chip", 5.0)
         assert control_lease.held_by(BROWSER, ui_state.active_client_id)
 
         # An MCP session seizes control. The 1 Hz active-tab loop (check_ping)
         # refreshes the indicator, so the glow + Take-control button appear ~1s.
         control_lease.seize(MCP, "screen-mcp", "MCP session screen-m")
         assert screen_wait_for_element_visible(screen, ".control-lease-glow", 5.0)
+        assert screen_wait_for_element_visible(screen, ".control-mode-chip", 5.0)
         assert screen_wait_for_element_visible(screen, ".btn-take-control", 5.0)
 
         # The glow must wrap the whole viewport, not the control panel: an
@@ -73,9 +76,10 @@ def test_control_lease_indicator_and_take_control(screen: "Screen") -> None:
             ".classList.contains('control-glow-breathe');"
         ), "glow must carry the breathing animation while the AI drives"
 
-        # Human presses Take control → browser reclaims, glow hides again.
+        # Human presses Take control → browser reclaims, glow + chip hide again.
         screen.selenium.find_element(By.CSS_SELECTOR, ".btn-take-control").click()
         assert screen_wait_for_element_hidden(screen, ".control-lease-glow", 5.0)
+        assert screen_wait_for_element_hidden(screen, ".control-mode-chip", 5.0)
         assert control_lease.held_by(BROWSER, ui_state.active_client_id)
     finally:
         control_lease.reset()
