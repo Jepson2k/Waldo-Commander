@@ -1020,7 +1020,10 @@ class ControlPanel:
 
     def _glow_shadow(self, mode: ControlMode) -> str:
         rgb = self._MODE_GLOW_RGB[mode]
-        return f"inset 0 0 0 3px rgb({rgb} / 0.55), inset 0 0 36px rgb({rgb} / 0.22)"
+        return (
+            f"inset 0 0 24px 4px rgb({rgb} / 0.45), "
+            f"inset 0 0 80px 12px rgb({rgb} / 0.18)"
+        )
 
     def _build_control_indicator(self) -> None:
         """Page-perimeter glow (colored by control mode) + an edge Take-control
