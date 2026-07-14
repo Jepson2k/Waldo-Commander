@@ -1017,7 +1017,7 @@ class ControlPanel:
     # ambient AI-driving glow tells the human which mode is active at a glance.
     _MODE_GLOW_RGB = {
         # No amber/orange here — that's the robot arm's own color.
-        ControlMode.INSPECT: "244 114 182",  # pink — approve everything
+        ControlMode.INSPECT: "52 211 153",  # emerald — approve everything
         ControlMode.AUTO_EDITS: "56 189 248",  # sky — edits auto, moves ask
         ControlMode.AUTOPILOT: "167 139 250",  # violet — full autopilot
     }
@@ -1025,8 +1025,8 @@ class ControlPanel:
     def _glow_shadow(self, mode: ControlMode) -> str:
         rgb = self._MODE_GLOW_RGB[mode]
         return (
-            f"inset 0 0 24px 4px rgb({rgb} / 0.45), "
-            f"inset 0 0 80px 12px rgb({rgb} / 0.18)"
+            f"inset 0 0 18px 2px rgb({rgb} / 0.30), "
+            f"inset 0 0 60px 8px rgb({rgb} / 0.12)"
         )
 
     def _mode_chip_style(self, mode: ControlMode) -> str:

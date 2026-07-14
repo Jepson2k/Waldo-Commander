@@ -64,7 +64,7 @@ selector in the control panel's Settings tab, by clicking the mode chip at the
 top of the screen, or by cycling with **Alt+M**. A perimeter glow appears
 whenever an MCP client is connected — faint while you hold control, breathing
 at full strength while the AI is driving — and its color tracks the mode
-(pink Inspect, sky Auto-edits, violet Autopilot).
+(emerald Inspect, sky Auto-edits, violet Autopilot).
 
 | Mode | Program edits | Robot motion |
 |------|---------------|--------------|
