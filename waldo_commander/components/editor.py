@@ -728,6 +728,27 @@ class EditorPanel(FileOperationsMixin):
                     if edit.id.value in new_ids:
                         self._approve_edit(tab_id, edit.id)
 
+    def auto_apply_pending_edits(self) -> None:
+        """Apply every pending edit across open tabs. Called when the control
+        mode switches to an auto-applying one, so edits proposed under Inspect
+        don't keep waiting for a click. Flashes like a fresh proposal."""
+        client = self._client
+        if client is None or client._deleted:
+            return
+        with client:
+            for tab in list(waldoctl.commander.programs.items):
+                pending = list(tab.edits.pending)
+                if not pending:
+                    continue
+                if tab.id == waldoctl.commander.programs.active_id:
+                    lines = decorations.diff_touched_lines(
+                        tab.id, {e.id.value for e in pending}
+                    )
+                    if lines:
+                        decorations.flash_editor_lines(lines)
+                for edit in pending:
+                    self._approve_edit(tab.id, edit.id)
+
     def _unsubscribe_from_edits(self, tab_id: str) -> None:
         """Remove the edit-lifecycle listener registered by
         :meth:`_subscribe_to_edits`. Safe to call multiple times."""

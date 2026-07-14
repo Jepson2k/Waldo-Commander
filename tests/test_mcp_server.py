@@ -392,9 +392,7 @@ async def test_control_modes_gate_edits_and_motion(user: User) -> None:
 
             # ---- Inspect: edit stays pending, move needs per-action approval --
             set_control_mode(ControlMode.INSPECT)
-            eid = _payload(
-                await client.call_tool("programs.propose_edit", {"diff": _DIFF_BB})
-            )
+            await client.call_tool("programs.propose_edit", {"diff": _DIFF_BB})
             await asyncio.sleep(0)
             assert p.edits.pending and p.source == "a\nb\nc\n", "Inspect must not apply"
 
@@ -410,13 +408,21 @@ async def test_control_modes_gate_edits_and_motion(user: User) -> None:
             await client.call_tool(
                 "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
             )
-            await client.call_tool("programs.cancel_pending_edit", {"edit_id": eid})
 
-            # ---- Auto-edits: edit auto-applies; move still prompts ------------
-            set_control_mode(ControlMode.AUTO_EDITS)
-            await client.call_tool("programs.propose_edit", {"diff": _DIFF_BB})
+            # ---- Auto-edits: switching through the human funnel (the settings
+            # toggle) sweeps in the edit left pending under Inspect ------------
+            with ng_client:
+                panel._on_mode_toggle(ControlMode.AUTO_EDITS.value)
             await asyncio.sleep(0)
             assert p.edits.pending == [] and p.source == "a\nB\nc\n", (
+                "switching to Auto-edits must apply edits already pending"
+            )
+            # A freshly proposed edit also auto-applies; a move still prompts.
+            await client.call_tool(
+                "programs.propose_edit", {"diff": "@@ -3,1 +3,1 @@\n-c\n+C\n"}
+            )
+            await asyncio.sleep(0)
+            assert p.edits.pending == [] and p.source == "a\nB\nC\n", (
                 "Auto-edits must apply the proposed edit without manual approval"
             )
             with pytest.raises(ToolError, match="approval|approve"):

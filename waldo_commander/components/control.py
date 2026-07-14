@@ -600,6 +600,8 @@ class ControlPanel:
         # AI control-mode selector (built in _build_control_mode_selector).
         self._mode_toggle: ui.toggle | None = None
         self._suppress_mode_toggle: bool = False
+        # Always-visible mode chip in the action row (click to cycle).
+        self._mode_chip: ui.chip | None = None
 
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
@@ -1025,6 +1027,9 @@ class ControlPanel:
             f"inset 0 0 80px 12px rgb({rgb} / 0.18)"
         )
 
+    def _mode_chip_style(self, mode: ControlMode) -> str:
+        return f"background-color: rgb({self._MODE_GLOW_RGB[mode]}); color: black;"
+
     def _build_control_indicator(self) -> None:
         """Page-perimeter glow (colored by control mode) + an edge Take-control
         button, shown only while another controller (an MCP/AI session) holds
@@ -1183,19 +1188,26 @@ class ControlPanel:
     # ---- AI control mode (Inspect / Auto-edits / Autopilot) ----
 
     def _apply_mode(self, mode: ControlMode) -> None:
-        """Commit a control-mode change: update the service, recolor the glow,
-        sync the toggle, and toast. Single funnel for the settings toggle and
-        the keyboard shortcut so the toast fires exactly once per switch."""
+        """Commit a control-mode change: update the service, recolor the glow
+        and mode chip, sync the toggle, toast, and sweep any already-pending
+        edits when the new mode auto-applies them. Single funnel for the
+        settings toggle, the mode chip, and the keyboard shortcut."""
         set_control_mode(mode)
         ui.notify(f"AI control mode: {mode.label}", color="info")
         glow = getattr(self, "_control_glow", None)
         if glow is not None:
             glow.style(f"box-shadow: {self._glow_shadow(mode)};")
+        chip = getattr(self, "_mode_chip", None)
+        if chip is not None:
+            chip.text = mode.label
+            chip.style(self._mode_chip_style(mode))
         toggle = getattr(self, "_mode_toggle", None)
         if toggle is not None and toggle.value != mode.value:
             self._suppress_mode_toggle = True
             toggle.value = mode.value
             self._suppress_mode_toggle = False
+        if mode.auto_applies_edits and ui_state.editor_panel is not None:
+            ui_state.editor_panel.auto_apply_pending_edits()
 
     def _on_mode_toggle(self, value: str | None) -> None:
         if getattr(self, "_suppress_mode_toggle", False) or value is None:
@@ -2322,6 +2334,19 @@ class ControlPanel:
             ui.button(icon="home", on_click=self.send_home).props(
                 "dense round unelevated color=teal-6"
             ).tooltip("Home (H)").mark("btn-home")
+
+            # Always-visible AI control-mode indicator, colored like the glow.
+            self._mode_chip = (
+                ui.chip(
+                    control_mode().label,
+                    icon="smart_toy",
+                    on_click=self.cycle_mode,
+                )
+                .props("dense clickable")
+                .style(self._mode_chip_style(control_mode()))
+                .tooltip("AI control mode — click or press Alt+M to cycle")
+                .mark("control-mode-chip")
+            )
 
             robot_btn = (
                 ui.button(

@@ -284,6 +284,17 @@ def setup_keybindings(help_menu: Any) -> None:
                 emitEvent('keybindings_focus_change', { focused: focused });
             });
         }
+        // ui.keyboard ignores key events while a <button> has focus, so a
+        // mouse click on any button would silence every global shortcut
+        // until focus moves. Drop the lingering focus after mouse clicks;
+        // keyboard (Tab) focus is unaffected.
+        if (!window._wcButtonBlurInstalled) {
+            window._wcButtonBlurInstalled = true;
+            document.addEventListener('click', function(e) {
+                const b = e.target.closest && e.target.closest('button');
+                if (b && e.detail > 0) b.blur();
+            });
+        }
         """
     )
 
