@@ -16,9 +16,12 @@ This is loop-affine, which is why the tools must run on the loop.
 
 from __future__ import annotations
 
+import ast
+
 import waldoctl
 from waldoctl import EditId
 
+from waldo_commander.constants import default_program_dir
 from waldo_commander.mcp.server import get_mcp
 
 mcp = get_mcp()
@@ -76,9 +79,36 @@ async def get_source(program_id: str | None = None) -> str:
     return _program(program_id).source
 
 
+@mcp.tool(name="programs.list_library")
+async def list_library() -> list[dict]:
+    """On-disk program library — saved programs and worked examples, openable
+    with ``programs.open``.
+
+    Programs are plain Python scripts run in a subprocess; they drive the
+    robot through the backend client library (NOT these MCP tools). Do not
+    guess that API: before authoring your first program, open an example
+    from here and read its imports and motion calls.
+    """
+    out = []
+    for f in sorted(default_program_dir().glob("*.py")):
+        try:
+            doc = ast.get_docstring(ast.parse(f.read_text())) or ""
+        except (OSError, SyntaxError):
+            doc = ""
+        out.append(
+            {
+                "filename": f.name,
+                "path": str(f),
+                "summary": doc.splitlines()[0] if doc else "",
+            }
+        )
+    return out
+
+
 @mcp.tool(name="programs.open")
 async def open_program(path: str) -> str:
-    """Open a program by file path. Returns the new (or focused) program id."""
+    """Open a program by file path (see ``programs.list_library`` for what's
+    on disk). Returns the new (or focused) program id."""
     return waldoctl.commander.programs.open(path).id
 
 

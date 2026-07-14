@@ -53,6 +53,10 @@ quick throwaway — into a **visible program** in the editor (via
 dry-run path, and scrub the timeline before anything runs. Direct motion tools
 (`motion.jog_*`, `motion.move_*`) are reserved for single ad-hoc nudges.
 
+They're also pointed at the on-disk program library (`programs.list_library`,
+the repo's `programs/` directory) and told to open a worked example to learn
+the program-side motion API instead of guessing it.
+
 ## Control modes
 
 You decide how much the LLM can do on its own, from the **AI control mode**

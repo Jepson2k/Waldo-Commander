@@ -319,6 +319,13 @@ async def test_mcp_program_verbs_render_in_editor(user: User, tmp_path) -> None:
     mcp = get_mcp()
 
     async with Client(mcp) as client:
+        # list_library(): the on-disk examples are discoverable with their
+        # docstring summaries, so an LLM can open one and learn the program-side
+        # motion API instead of guessing it.
+        lib = _payload(await client.call_tool("programs.list_library"))
+        example = next(e for e in lib if e["filename"] == "draw_circle.py")
+        assert example["summary"], "library entries must carry a docstring summary"
+
         # new(): a tab the browser renders, with no GUI button pressed.
         new_id = _payload(
             await client.call_tool(

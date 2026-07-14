@@ -7,6 +7,16 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def default_program_dir() -> Path:
+    """The on-disk program library (example + saved programs)."""
+    legacy = REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
+    if legacy.exists():
+        return legacy
+    d = REPO_ROOT / "programs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 class _Config:
     """Lazy configuration that reads environment variables at access time.
 

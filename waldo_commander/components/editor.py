@@ -10,7 +10,7 @@ from nicegui import Client, context, ui
 from waldoctl import EditId, Program
 
 from waldo_commander.common.theme import get_theme
-from waldo_commander.constants import REPO_ROOT
+from waldo_commander.constants import default_program_dir
 from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
@@ -48,12 +48,7 @@ class EditorPanel(FileOperationsMixin):
 
     def __init__(self) -> None:
         """Initialize editor panel with state and UI references."""
-        self.PROGRAM_DIR = (
-            REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
-        )
-        if not self.PROGRAM_DIR.exists():
-            self.PROGRAM_DIR = REPO_ROOT / "programs"
-            self.PROGRAM_DIR.mkdir(parents=True, exist_ok=True)
+        self.PROGRAM_DIR = default_program_dir()
         script_exec.set_program_dir(self.PROGRAM_DIR)
 
         self.tabs_container: ui.tabs | None = None
