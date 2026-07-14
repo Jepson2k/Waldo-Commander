@@ -62,6 +62,7 @@ class WcSceneHandle:
         self._installation: tuple[Shape, ...] = ()
         self._confirmed = False
         self._refresh_seq = 0
+        self._pushes_inflight = 0
 
     @property
     def shapes(self) -> list[Shape]:
@@ -140,6 +141,7 @@ class WcSceneHandle:
         """
         shapes = self._shapes
         err: Exception | None = None
+        self._pushes_inflight += 1
         try:
             code = await waldoctl.commander.client.set_shapes(shapes)
         except NotImplementedError:
@@ -147,10 +149,12 @@ class WcSceneHandle:
         except Exception as e:
             code = -1
             err = e
+        finally:
+            self._pushes_inflight -= 1
         if shapes is not self._shapes:
             return  # superseded by a newer assignment
         if code > 0:
-            await self.refresh_from_backend()
+            await self._adopt_backend_world()
             return
         logger.error(
             "set_shapes push unconfirmed (code=%s%s) — displayed keep-outs are "
@@ -161,7 +165,17 @@ class WcSceneHandle:
 
     async def refresh_from_backend(self) -> None:
         """Adopt the backend's applied world (readback truth) for display and
-        this process's preview checker."""
+        this process's preview checker.
+
+        No-op while a shapes push is awaiting its ack: a readback started in
+        that window queries the pre-edit world and would resurrect it (and the
+        push's supersession check then skips its own corrective refresh). The
+        push adopts the applied world itself once acked."""
+        if self._pushes_inflight:
+            return
+        await self._adopt_backend_world()
+
+    async def _adopt_backend_world(self) -> None:
         client = waldoctl.commander.client
         if client is None:
             return
