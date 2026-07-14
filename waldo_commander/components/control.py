@@ -1057,18 +1057,34 @@ class ControlPanel:
             .mark("control-lease-glow")
         )
         self._control_glow.set_visibility(False)
-        # Always-visible (when an AI holds) edge Take-control button.
-        self._take_control_btn = (
-            ui.button("Take control", icon="smart_toy", on_click=self._take_control)
-            .props("dense color=amber")
-            .classes("btn-take-control")
+        # Fixed top-center cluster: the always-visible mode chip and, while an
+        # AI session drives, the Take-control button.
+        with (
+            ui.row()
+            .classes("items-center gap-2")
             .style(
                 "position:fixed; top:8px; left:50%; transform:translateX(-50%); "
                 "z-index:9999;"
             )
-            .mark("btn-take-control")
-        )
-        self._take_control_btn.set_visibility(False)
+        ):
+            self._mode_chip = (
+                ui.chip(
+                    control_mode().label,
+                    icon="smart_toy",
+                    on_click=self.cycle_mode,
+                )
+                .props("dense clickable")
+                .style(self._mode_chip_style(control_mode()))
+                .tooltip("AI control mode — click or press Alt+M to cycle")
+                .mark("control-mode-chip")
+            )
+            self._take_control_btn = (
+                ui.button("Take control", icon="smart_toy", on_click=self._take_control)
+                .props("dense color=amber")
+                .classes("btn-take-control")
+                .mark("btn-take-control")
+            )
+            self._take_control_btn.set_visibility(False)
         # Approval dialog. Persistent so ESC / a backdrop click can't dismiss it
         # into limbo; the value handler below catches any non-button close and
         # re-arms the prompt. Serves both per-action move approvals (Inspect /
@@ -2334,19 +2350,6 @@ class ControlPanel:
             ui.button(icon="home", on_click=self.send_home).props(
                 "dense round unelevated color=teal-6"
             ).tooltip("Home (H)").mark("btn-home")
-
-            # Always-visible AI control-mode indicator, colored like the glow.
-            self._mode_chip = (
-                ui.chip(
-                    control_mode().label,
-                    icon="smart_toy",
-                    on_click=self.cycle_mode,
-                )
-                .props("dense clickable")
-                .style(self._mode_chip_style(control_mode()))
-                .tooltip("AI control mode — click or press Alt+M to cycle")
-                .mark("control-mode-chip")
-            )
 
             robot_btn = (
                 ui.button(
