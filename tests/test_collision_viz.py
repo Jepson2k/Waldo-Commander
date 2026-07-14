@@ -416,15 +416,18 @@ async def test_shape_push_honors_ack_contract(monkeypatch, caplog) -> None:
     handle = sh.WcSceneHandle()
     handle._shapes = [box]
 
-    # Unconfirmed (timeout) → still draft, loudly logged.
+    # Unconfirmed (timeout) → still draft, loudly logged. The setter bumps
+    # the readback gate before scheduling the push; mirror that here.
     with caplog.at_level(logging.ERROR):
-        await sh.WcSceneHandle._push_shapes_async(handle)
+        handle._pushes_inflight += 1
+        await sh.WcSceneHandle._push_shapes_async(handle, handle._shapes)
     assert handle.confirmed is False
     assert any("NOT enforced" in r.message for r in caplog.records)
 
     # Confirmed → readback adopted, draft cleared.
     client.code = 1
-    await sh.WcSceneHandle._push_shapes_async(handle)
+    handle._pushes_inflight += 1
+    await sh.WcSceneHandle._push_shapes_async(handle, handle._shapes)
     assert handle.confirmed is True
     assert [s.name for s in handle.shapes] == ["A"]
 
@@ -456,7 +459,10 @@ async def test_stale_shape_push_never_overwrites_a_newer_one(monkeypatch) -> Non
     handle = sh.WcSceneHandle()
     handle._shapes = [old]
 
-    task = asyncio.create_task(sh.WcSceneHandle._push_shapes_async(handle))
+    handle._pushes_inflight += 1  # the setter bumps the gate before scheduling
+    task = asyncio.create_task(
+        sh.WcSceneHandle._push_shapes_async(handle, handle._shapes)
+    )
     await asyncio.sleep(0)
     handle._shapes = [new]  # newer assignment supersedes the in-flight push
     release.set()
