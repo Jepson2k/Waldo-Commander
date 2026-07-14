@@ -1085,8 +1085,9 @@ class ControlPanel:
             )
             self._take_control_btn = (
                 ui.button("Take control", icon="smart_toy", on_click=self._take_control)
-                .props("dense color=amber")
+                .props("dense unelevated")
                 .classes("btn-take-control")
+                .style(self._mode_chip_style(control_mode()))
                 .mark("btn-take-control")
             )
             self._take_control_btn.set_visibility(False)
@@ -1231,6 +1232,9 @@ class ControlPanel:
         if chip is not None:
             chip.text = mode.label
             chip.style(self._mode_chip_style(mode))
+        btn = getattr(self, "_take_control_btn", None)
+        if btn is not None:
+            btn.style(self._mode_chip_style(mode))
         toggle = getattr(self, "_mode_toggle", None)
         if toggle is not None and toggle.value != mode.value:
             self._suppress_mode_toggle = True
