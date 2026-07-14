@@ -60,8 +60,11 @@ the program-side motion API instead of guessing it.
 ## Control modes
 
 You decide how much the LLM can do on its own, from the **AI control mode**
-selector in the control panel's Settings tab, or by cycling with **Alt+M**. The
-perimeter glow while an AI session is driving is colored by the current mode.
+selector in the control panel's Settings tab, by clicking the mode chip at the
+top of the screen, or by cycling with **Alt+M**. A perimeter glow appears
+whenever an MCP client is connected — faint while you hold control, breathing
+at full strength while the AI is driving — and its color tracks the mode
+(pink Inspect, sky Auto-edits, violet Autopilot).
 
 | Mode | Program edits | Robot motion |
 |------|---------------|--------------|

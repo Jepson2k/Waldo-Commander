@@ -35,6 +35,7 @@ from waldo_commander.services.control_lease import (
     deny_consent,
     grant_action,
     grant_consent,
+    mcp_connected,
     pending_actions,
     pending_consents,
     require_browser_control,
@@ -1015,7 +1016,8 @@ class ControlPanel:
     # Perimeter-glow color per control mode (rgb triples, no alpha), so the
     # ambient AI-driving glow tells the human which mode is active at a glance.
     _MODE_GLOW_RGB = {
-        ControlMode.INSPECT: "245 158 11",  # amber — approve everything
+        # No amber/orange here — that's the robot arm's own color.
+        ControlMode.INSPECT: "244 114 182",  # pink — approve everything
         ControlMode.AUTO_EDITS: "56 189 248",  # sky — edits auto, moves ask
         ControlMode.AUTOPILOT: "167 139 250",  # violet — full autopilot
     }
@@ -1133,9 +1135,10 @@ class ControlPanel:
         ui.notify("You're in control — robot halted", color="positive")
 
     def refresh_control_indicator(self) -> None:
-        """Show/hide the AI-driving glow + Take-control button, keep the glow
-        color in sync with the mode, and surface any pending approval. Driven by
-        the 1 Hz ping loop."""
+        """Drive the ambient glow, Take-control button, and pending approvals
+        from the 1 Hz ping loop. Glow states: hidden (no MCP client around),
+        faint (a client is connected but the human holds control), breathing
+        at full strength (an AI session holds the lease)."""
         glow = getattr(self, "_control_glow", None)
         btn = getattr(self, "_take_control_btn", None)
         if glow is None or btn is None:
@@ -1144,10 +1147,18 @@ class ControlPanel:
         other = h is not None and not control_lease.held_by(
             BROWSER, ui_state.active_client_id or ""
         )
-        glow.set_visibility(other)
+        connected = mcp_connected()
+        glow.set_visibility(other or connected)
         btn.set_visibility(other)
-        if other:
-            glow.style(f"box-shadow: {self._glow_shadow(control_mode())};")
+        if other or connected:
+            glow.style(
+                f"box-shadow: {self._glow_shadow(control_mode())}; "
+                f"opacity: {'1' if other else '0.35'};"
+            )
+            if other:
+                glow.classes(add="control-glow-breathe")
+            else:
+                glow.classes(remove="control-glow-breathe")
 
         dlg = self._consent_dialog
         title = self._approval_label

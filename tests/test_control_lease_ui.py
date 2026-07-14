@@ -67,6 +67,11 @@ def test_control_lease_indicator_and_take_control(screen: "Screen") -> None:
         assert (left, top) == (0, 0) and width >= vw - 1 and height >= vh - 1, (
             f"glow does not cover the viewport: {rect}"
         )
+        # While an AI session holds the lease the glow breathes.
+        assert screen.selenium.execute_script(
+            "return document.querySelector('.control-lease-glow')"
+            ".classList.contains('control-glow-breathe');"
+        ), "glow must carry the breathing animation while the AI drives"
 
         # Human presses Take control → browser reclaims, glow hides again.
         screen.selenium.find_element(By.CSS_SELECTOR, ".btn-take-control").click()

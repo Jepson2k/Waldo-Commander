@@ -108,6 +108,13 @@ async def test_mcp_blocked_while_browser_holds_then_take_control(user: User) -> 
             assert controller["holder"] == "Browser tab"
             assert controller["you_hold_it"] is False
 
+            # Any message marks an MCP client as connected (ambient glow) —
+            # presence, not control. It decays after the connected-TTL.
+            assert cl.mcp_connected()
+            for s in cl._mcp_last_message:
+                cl._mcp_last_message[s] -= cl.MCP_CONNECTED_TTL_SECONDS + 1
+            assert not cl.mcp_connected()
+
             # Actuation is refused while the browser holds control.
             with pytest.raises(ToolError, match="controlled by"):
                 await client.call_tool(

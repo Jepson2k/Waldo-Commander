@@ -667,6 +667,13 @@ html, body {
 
 /* ========== Overlays ========== */
 
+/* AI-driving perimeter glow: breathes while an AI session holds the lease */
+@keyframes wc-glow-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.control-glow-breathe { animation: wc-glow-breathe 2.6s ease-in-out infinite; }
+
 /* Overlay panels with frosted glass effect */
 .overlay-panel { position: absolute; z-index: 10; pointer-events: auto; }
 .overlay-card {

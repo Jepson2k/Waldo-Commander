@@ -153,10 +153,39 @@ class ControlLease:
         _denied_at.clear()
         _pending_action.clear()
         _approved_action.clear()
+        _mcp_last_message.clear()
         set_control_mode(ControlMode.INSPECT)
 
 
 control_lease = ControlLease()
+
+
+# --------------------------------------------------------------------------
+# MCP connection presence (any session, holder or not)
+# --------------------------------------------------------------------------
+
+MCP_CONNECTED_TTL_SECONDS = 300.0
+
+_mcp_last_message: dict[str, float] = {}  # session_id -> monotonic last message
+
+
+def mcp_touch(session_id: str) -> None:
+    """Record MCP activity for ``session_id`` (any message, not just tools)."""
+    _mcp_last_message[session_id] = time.monotonic()
+
+
+def mcp_connected() -> bool:
+    """Whether any MCP session has been heard from recently.
+
+    Presence, not control: drives the faint ambient glow that says an AI
+    client is attached even while the human holds the lease."""
+    now = time.monotonic()
+    stale = [
+        s for s, t in _mcp_last_message.items() if now - t > MCP_CONNECTED_TTL_SECONDS
+    ]
+    for s in stale:
+        del _mcp_last_message[s]
+    return bool(_mcp_last_message)
 
 
 def browser_try_acquire(client_id: str | None) -> bool:

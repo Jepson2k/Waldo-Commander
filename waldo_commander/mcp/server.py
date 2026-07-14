@@ -44,6 +44,18 @@ def _make_lease_touch_middleware():
     from fastmcp.server.middleware import Middleware
 
     class _LeaseTouchMiddleware(Middleware):
+        async def on_message(self, context, call_next):
+            # Presence, not control: any message (initialize, list_tools, ping)
+            # marks an MCP client as connected for the ambient glow.
+            try:
+                from waldo_commander.mcp.tools.control import _session_id
+                from waldo_commander.services import control_lease as cl
+
+                cl.mcp_touch(_session_id())
+            except Exception:
+                logger.debug("mcp presence touch skipped", exc_info=True)
+            return await call_next(context)
+
         async def on_call_tool(self, context, call_next):
             keepalive: asyncio.Task | None = None
             try:
