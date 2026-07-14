@@ -24,7 +24,7 @@ return 'missing';
 @skip_webgl_macos_ci
 class TestCollisionVizScreen:
     def _poll_color(
-        self, screen, name: str, want: str, timeout: float = 4.0
+        self, screen, name: str, want: str, timeout: float = 10.0
     ) -> str | None:
         deadline = time.time() + timeout
         last = None

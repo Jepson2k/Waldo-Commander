@@ -689,3 +689,72 @@ async def test_stale_readback_cannot_resurrect_cleared_shapes(user: User) -> Non
         await _until(
             lambda: handle.confirmed and not handle.shapes, "cleanup never confirmed"
         )
+
+
+@pytest.mark.integration
+async def test_refresh_during_unacked_clear_does_not_resurrect(user: User) -> None:
+    """The complementary race to the delayed-response one above: a readback
+    that *starts* after a clear's local apply but before its controller ack
+    queries the pre-clear world. Pre-fix it passed the seq guard (it bumped
+    the seq itself), adopted the resurrected world, and the clear's own
+    post-ack refresh then skipped as superseded — leaving a cleared shape
+    rendered and confirmed. Epoch-driven refreshes must wait out in-flight
+    pushes (the push adopts readback itself once acked)."""
+    import asyncio
+
+    import waldoctl
+    from waldoctl import Box
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    handle = waldoctl.commander.scene
+
+    async def _until(cond, msg: str) -> None:
+        deadline = asyncio.get_running_loop().time() + 10.0
+        while not cond():
+            assert asyncio.get_running_loop().time() < deadline, msg
+            await asyncio.sleep(0.05)
+
+    client = waldoctl.commander.client
+    real_set_shapes = client.set_shapes
+    release = asyncio.Event()
+    held = asyncio.Event()
+
+    async def _held_once(shapes):
+        client.set_shapes = real_set_shapes  # hold only this one push's ack
+        held.set()
+        await release.wait()
+        return await real_set_shapes(shapes)
+
+    try:
+        handle.shapes = [
+            Box(name="ep", x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
+        ]
+        await _until(lambda: handle.confirmed, "edit never confirmed")
+
+        client.set_shapes = _held_once
+        handle.shapes = []  # local clear renders immediately; ack held
+        await asyncio.wait_for(held.wait(), timeout=5.0)
+
+        # The first edit's scene_epoch move lands now — the watcher fires a
+        # refresh (same entry as main.py) while the clear is still un-acked,
+        # so the controller would still report the pre-clear world.
+        await handle.refresh_from_backend()
+        assert "shape:ep" not in scene._shape_objects, (
+            "a readback during an un-acked clear resurrected the cleared shape"
+        )
+
+        release.set()
+        await _until(
+            lambda: handle.confirmed and not handle.shapes, "clear never confirmed"
+        )
+        assert "shape:ep" not in scene._shape_objects
+    finally:
+        client.set_shapes = real_set_shapes
+        release.set()
+        handle.shapes = []
+        await _until(
+            lambda: handle.confirmed and not handle.shapes, "cleanup never confirmed"
+        )
