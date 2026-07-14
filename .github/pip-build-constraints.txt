@@ -1,0 +1,6 @@
+# Applied to every pip install (and PEP 517 build env) in CI via PIP_CONSTRAINT.
+# scikit-build-core 1.0 (2026-07-06) hard-errors on ruckig's sdist build config
+# ("Use build.targets instead of cmake.targets"); ruckig publishes no wheels
+# for current Pythons, so cold-cache jobs build the sdist and die. Drop this
+# once a ruckig release builds under scikit-build-core >= 1.
+scikit-build-core<1
