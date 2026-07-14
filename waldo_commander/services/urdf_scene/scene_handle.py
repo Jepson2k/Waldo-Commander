@@ -120,6 +120,11 @@ class WcSceneHandle:
             logger.exception("set_shapes code generation failed")
 
     def _push_shapes(self) -> None:
+        # The pushed world is bound HERE and the in-flight count bumped HERE,
+        # synchronously: a refresh task created before this edit must see the
+        # gate closed when it runs, and the push coroutine must not re-read
+        # self._shapes at start (a raced adopt may have changed it by then).
+        shapes = self._shapes
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -129,39 +134,42 @@ class WcSceneHandle:
             from nicegui import core
 
             if core.loop is not None and core.loop.is_running():
-                asyncio.run_coroutine_threadsafe(self._push_shapes_async(), core.loop)
+                self._pushes_inflight += 1
+                asyncio.run_coroutine_threadsafe(
+                    self._push_shapes_async(shapes), core.loop
+                )
             return  # no app loop at all — local render only
-        loop.create_task(self._push_shapes_async())
+        self._pushes_inflight += 1
+        loop.create_task(self._push_shapes_async(shapes))
 
-    async def _push_shapes_async(self) -> None:
+    async def _push_shapes_async(self, shapes: list[Shape]) -> None:
         """One acknowledged push; readback confirms or the draft styling stays.
 
         No local retry policy: the ABC ack plus the connect/epoch re-query is
         the reliability mechanism (reconciliation, not retries).
         """
-        shapes = self._shapes
         err: Exception | None = None
-        self._pushes_inflight += 1
         try:
-            code = await waldoctl.commander.client.set_shapes(shapes)
-        except NotImplementedError:
-            return  # backend without shape support — local render only
-        except Exception as e:
-            code = -1
-            err = e
+            try:
+                code = await waldoctl.commander.client.set_shapes(shapes)
+            except NotImplementedError:
+                return  # backend without shape support — local render only
+            except Exception as e:
+                code = -1
+                err = e
+            if shapes is not self._shapes:
+                return  # superseded by a newer assignment
+            if code > 0:
+                await self._adopt_backend_world()
+                return
+            logger.error(
+                "set_shapes push unconfirmed (code=%s%s) — displayed keep-outs are "
+                "NOT enforced by the controller until readback confirms",
+                code,
+                f": {err}" if err is not None else "",
+            )
         finally:
             self._pushes_inflight -= 1
-        if shapes is not self._shapes:
-            return  # superseded by a newer assignment
-        if code > 0:
-            await self._adopt_backend_world()
-            return
-        logger.error(
-            "set_shapes push unconfirmed (code=%s%s) — displayed keep-outs are "
-            "NOT enforced by the controller until readback confirms",
-            code,
-            f": {err}" if err is not None else "",
-        )
 
     async def refresh_from_backend(self) -> None:
         """Adopt the backend's applied world (readback truth) for display and
