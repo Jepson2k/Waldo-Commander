@@ -1057,7 +1057,10 @@ class ControlPanel:
             ui.button("Take control", icon="smart_toy", on_click=self._take_control)
             .props("dense color=amber")
             .classes("btn-take-control")
-            .style("position:fixed; top:8px; right:8px; z-index:9999;")
+            .style(
+                "position:fixed; top:8px; left:50%; transform:translateX(-50%); "
+                "z-index:9999;"
+            )
             .mark("btn-take-control")
         )
         self._take_control_btn.set_visibility(False)
