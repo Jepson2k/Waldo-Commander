@@ -25,7 +25,7 @@ from waldo_commander.state import (
 )
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.settings import SettingsContent
+from waldo_commander.components.settings import SettingsContent, _setting_row
 from waldo_commander.services.control_lease import (
     BROWSER,
     ControlMode,
@@ -1071,6 +1071,9 @@ class ControlPanel:
                 ui.chip(
                     control_mode().label,
                     icon="smart_toy",
+                    # None skips Quasar's bg-primary (!important) class so the
+                    # per-mode inline background below can take effect.
+                    color=None,
                     on_click=self.cycle_mode,
                 )
                 .props("dense clickable")
@@ -1237,26 +1240,23 @@ class ControlPanel:
         self._apply_mode(nxt)
 
     def _build_control_mode_selector(self) -> None:
-        """AI control-mode selector for the control panel's Settings tab —
-        mirrors the perimeter glow and the Alt+M shortcut."""
-        with ui.column().classes("w-full gap-1 p-2"):
-            with ui.row().classes("items-center gap-1"):
-                ui.icon("smart_toy", size="sm")
-                ui.label("AI control mode").classes("text-sm font-medium")
+        """AI control-mode row for the control panel's Settings tab — mirrors
+        the mode chip, the perimeter glow, and the Alt+M shortcut."""
+        with _setting_row("AI Control Mode", "AI autonomy level · Alt+M cycles"):
             self._mode_toggle = (
                 ui.toggle(
                     {m.value: m.label for m in ControlMode},
                     value=control_mode().value,
                     on_change=lambda e: self._on_mode_toggle(e.value),
                 )
-                .props("no-caps dense")
-                .classes("w-full")
+                .props("no-caps dense unelevated")
                 .mark("control-mode-toggle")
             )
-            ui.label(
-                "Inspect: approve each edit + move · Auto-edits: edits auto, "
-                "moves ask · Autopilot: all auto (hardware asks once). Shortcut: Alt+M"
-            ).classes("text-xs opacity-70")
+            self._mode_toggle.tooltip(
+                "Inspect: approve each edit and move · Auto-edits: edits apply "
+                "immediately, moves ask · Autopilot: all automatic (real hardware "
+                "asks once per session)"
+            )
 
     # ---- Joint jog methods ----
 
@@ -2129,8 +2129,9 @@ class ControlPanel:
 
             # Settings panel
             with ui.tab_panel(settings_tab).classes("gap-0 p-0"):
-                self._build_control_mode_selector()
                 with ui.scroll_area().classes("w-full h-full p-0"):
+                    self._build_control_mode_selector()
+                    ui.separator().classes("my-1")
                     self._settings_content = SettingsContent(self.client)
                     self._settings_content.build_embedded()
 
