@@ -599,7 +599,7 @@ class ControlPanel:
         self._approval_sid: str | None = None
         self._approval_kind: str | None = None
         # AI control-mode selector (built in _build_control_mode_selector).
-        self._mode_toggle: ui.toggle | None = None
+        self._mode_toggle: ui.select | None = None
         self._suppress_mode_toggle: bool = False
         # Always-visible mode chip in the action row (click to cycle).
         self._mode_chip: ui.chip | None = None
@@ -1266,13 +1266,14 @@ class ControlPanel:
         the mode chip, the perimeter glow, and the Alt+M shortcut."""
         with _setting_row("AI Control Mode", "AI autonomy level · Alt+M cycles"):
             self._mode_toggle = (
-                ui.toggle(
+                ui.select(
                     {m.value: m.label for m in ControlMode},
                     value=control_mode().value,
                     on_change=lambda e: self._on_mode_toggle(e.value),
                 )
-                .props("no-caps dense unelevated")
-                .mark("control-mode-toggle")
+                .classes("w-32")
+                .props("dense")
+                .mark("select-control-mode")
             )
             self._mode_toggle.tooltip(
                 "Inspect: approve each edit and move · Auto-edits: edits apply "
