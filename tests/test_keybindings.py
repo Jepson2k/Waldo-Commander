@@ -12,7 +12,13 @@ from __future__ import annotations
 
 import pytest
 import waldoctl
-from nicegui import app
+from nicegui import Client, app
+from nicegui.events import (
+    KeyboardAction,
+    KeyboardKey,
+    KeyboardModifiers,
+    KeyEventArguments,
+)
 from nicegui.testing import User
 
 from tests.helpers.wait import wait_for_app_ready
@@ -101,3 +107,52 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
         assert icon.props.get("color") == colors[9]
     finally:
         cp.adjust_rating("jog_speed", 50 - waldoctl.commander.settings.jog.speed)
+
+
+@pytest.mark.integration
+async def test_alt_m_cycles_mode_on_all_keyboard_layouts(user: User) -> None:
+    """Alt+M must cycle the AI control mode from both event shapes browsers
+    send: Linux/Windows report ``key: "m"`` with altKey, but macOS Option
+    *composes* a character (Option+M → ``key: "µ"``), so matching must fall
+    back to the physical key code (``KeyM``). Regression for the shortcut
+    being dead on Macs because the manager matched only ``e.key.name``."""
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_mode,
+        set_control_mode,
+    )
+    from waldo_commander.services.keybindings import keybindings_manager
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    assert ui_state.active_client_id is not None
+    ng_client = Client.instances[ui_state.active_client_id]
+
+    def alt_m(name: str, *, keydown: bool) -> KeyEventArguments:
+        return KeyEventArguments(
+            sender=ng_client.layout,
+            client=ng_client,
+            action=KeyboardAction(keydown=keydown, keyup=not keydown, repeat=False),
+            key=KeyboardKey(name=name, code="KeyM", location=0),
+            modifiers=KeyboardModifiers(alt=True, ctrl=False, meta=False, shift=False),
+        )
+
+    set_control_mode(ControlMode.INSPECT)
+    try:
+        with ng_client:
+            # macOS shape: Option composes "µ"; only the code says KeyM.
+            keybindings_manager.handle_key(alt_m("µ", keydown=True))
+            keybindings_manager.handle_key(alt_m("µ", keydown=False))
+        assert control_mode() is ControlMode.AUTO_EDITS, (
+            "macOS Option+M (key 'µ', code KeyM) must cycle the mode"
+        )
+        with ng_client:
+            # Linux/Windows shape: plain "m" with altKey.
+            keybindings_manager.handle_key(alt_m("m", keydown=True))
+            keybindings_manager.handle_key(alt_m("m", keydown=False))
+        assert control_mode() is ControlMode.AUTOPILOT, (
+            "plain Alt+M (key 'm') must still cycle the mode"
+        )
+    finally:
+        set_control_mode(ControlMode.INSPECT)

@@ -110,6 +110,15 @@ class KeybindingsManager:
             return
 
         key = self._normalize_key(e.key.name)
+        if e.modifiers.alt:
+            # macOS Option composes characters (Option+M -> "µ"), so the key
+            # *name* never matches an Alt+letter binding there. The physical
+            # key *code* ("KeyM", "Digit3") is OS/layout-stable — use it.
+            code = e.key.code or ""
+            if code.startswith("Key"):
+                key = code[len("Key") :].lower()
+            elif code.startswith("Digit"):
+                key = code[len("Digit") :]
         is_keydown = e.action.keydown
         is_keyup = e.action.keyup
 
