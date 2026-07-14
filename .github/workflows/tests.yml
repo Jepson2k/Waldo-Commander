@@ -8,6 +8,10 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # Constrains PEP 517 build environments too (see the file for why).
+  PIP_CONSTRAINT: ${{ github.workspace }}/.github/pip-build-constraints.txt
+
 jobs:
   lint:
     name: Lint (pre-commit)
