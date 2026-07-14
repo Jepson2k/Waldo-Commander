@@ -53,6 +53,11 @@ class EditorPanel(FileOperationsMixin):
 
         self.tabs_container: ui.tabs | None = None
         self.tab_panels_container: ui.tab_panels | None = None
+        # Pending-edit review cluster in the header row: while the active tab
+        # has a proposed edit awaiting review it swaps in for the toolbar
+        # buttons (which would mutate the source under the diff).
+        self._edit_review_row: ui.row | None = None
+        self._toolbar_btns: list[ui.button] = []
         # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
         self._tab_widgets: dict[str, dict] = {}
         # tab_id -> pending edit-id .values already seen, so a *newly* proposed
@@ -531,6 +536,7 @@ class EditorPanel(FileOperationsMixin):
         widgets = self._tab_widgets.get(tab_id, {})
         ui_state.active_textarea = widgets.get("textarea")
         ui_state.active_filename_input = widgets.get("filename_input")
+        self._refresh_edits_banner(tab_id)
 
     def _invalidate_for_tab_switch(self) -> None:
         """Defer expensive path re-rendering after a tab switch.
@@ -633,22 +639,10 @@ class EditorPanel(FileOperationsMixin):
                 .style("padding: 0; width: 100%; height: 100%; gap: 0;")
             )
             with panel:
-                # Pending-LLM-edits banner (one row per proposed edit).
-                # Hidden until at least one edit is queued.
-                edits_banner = (
-                    ui.column()
-                    .classes("w-full pending-edits-banner")
-                    .style("gap: 4px; padding: 4px 8px;")
-                )
-                edits_banner.set_visibility(False)
-                edits_banner.mark(f"edits-banner-{tab.id}")
-
                 completions = generate_completions_from_commands()
 
-                # Flex-fills the space left below the edits banner and uses
-                # CodeMirror's own internal scrolling. min-h-0 lets it shrink so
-                # the banner and the editor share the panel instead of the
-                # editor overflowing (and being clipped) when the banner shows.
+                # Flex-fills the panel and uses CodeMirror's own internal
+                # scrolling; min-h-0 lets it shrink within the fixed height.
                 textarea = ui.codemirror(
                     value=tab.source,
                     language="Python",
@@ -671,7 +665,6 @@ class EditorPanel(FileOperationsMixin):
 
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
-            self._tab_widgets[tab.id]["edits_banner"] = edits_banner
             ui_state.textareas_by_tab[tab.id] = textarea
 
             # Subscribe to LLM-edit lifecycle so the banner + diff overlay
@@ -763,43 +756,48 @@ class EditorPanel(FileOperationsMixin):
             tab.edits.remove_change_listener(listener)
 
     def _refresh_edits_banner(self, tab_id: str) -> None:
-        """Rebuild the per-edit chip row above the CodeMirror editor."""
-        widgets = self._tab_widgets.get(tab_id)
-        if not widgets:
+        """Sync the header row's review cluster with the *active* tab's pending
+        edits. While one is pending the cluster (description + Approve/Reject)
+        swaps in for the toolbar buttons — Open/Save/Insert would mutate the
+        source under the diff. Edits queue up: one is shown at a time and
+        resolving it surfaces the next."""
+        active_id = waldoctl.commander.programs.active_id
+        if active_id is not None and tab_id != active_id:
             return
-        banner = widgets.get("edits_banner")
-        if banner is None:
+        row = self._edit_review_row
+        if row is None:
             return
-        tab = waldoctl.commander.programs.get(tab_id)
-        pending = tab.edits.pending if tab is not None else []
-        banner.clear()
-        if not pending:
-            banner.set_visibility(False)
+        tab = waldoctl.commander.programs.get(active_id) if active_id else None
+        pending = list(tab.edits.pending) if tab is not None else []
+        row.clear()
+        row.set_visibility(bool(pending))
+        for btn in self._toolbar_btns:
+            btn.set_visibility(not pending)
+        if tab is None or not pending:
             return
-        banner.set_visibility(True)
-        with banner:
-            for edit in pending:
-                with ui.row().classes("w-full items-center").style("gap: 6px;"):
-                    label = edit.description or "(no description)"
-                    ui.label(label).classes("text-xs flex-grow truncate").mark(
-                        f"edit-label-{edit.id.value}"
-                    )
-                    ui.button(
-                        icon="check",
-                        on_click=lambda _e, eid=edit.id, tid=tab_id: self._approve_edit(
-                            tid, eid
-                        ),
-                    ).props("dense flat color=positive").mark(
-                        f"approve-edit-{edit.id.value}"
-                    )
-                    ui.button(
-                        icon="close",
-                        on_click=lambda _e, eid=edit.id, tid=tab_id: self._reject_edit(
-                            tid, eid
-                        ),
-                    ).props("dense flat color=negative").mark(
-                        f"reject-edit-{edit.id.value}"
-                    )
+        edit = pending[0]
+        tab_id = tab.id
+        with row:
+            label = edit.description or "(no description)"
+            ui.label(label).classes("text-xs truncate").style(
+                "max-width: 16rem;"
+            ).tooltip(label).mark(f"edit-label-{edit.id.value}")
+            if len(pending) > 1:
+                ui.label(f"+{len(pending) - 1}").classes(
+                    "text-xs text-grey-6 whitespace-nowrap"
+                ).tooltip(f"{len(pending) - 1} more edit(s) queued")
+            ui.button(
+                icon="check",
+                on_click=lambda _e, eid=edit.id, tid=tab_id: self._approve_edit(
+                    tid, eid
+                ),
+            ).props("dense flat color=positive").mark(f"approve-edit-{edit.id.value}")
+            ui.button(
+                icon="close",
+                on_click=lambda _e, eid=edit.id, tid=tab_id: self._reject_edit(
+                    tid, eid
+                ),
+            ).props("dense flat color=negative").mark(f"reject-edit-{edit.id.value}")
 
     def _approve_edit(self, tab_id: str, edit_id: EditId) -> None:
         tab = waldoctl.commander.programs.get(tab_id)
@@ -871,6 +869,7 @@ class EditorPanel(FileOperationsMixin):
                 widgets = self._tab_widgets[active_id]
                 ui_state.active_textarea = widgets.get("textarea")
                 ui_state.active_filename_input = widgets.get("filename_input")
+                self._refresh_edits_banner(active_id)
 
     def _on_cursor_line(self, tab: Program, e) -> None:
         """Handle cursor line change from CodeMirror."""
@@ -949,9 +948,17 @@ class EditorPanel(FileOperationsMixin):
                         )
                         new_tab_btn.mark("editor-new-tab-btn")
 
+                self._edit_review_row = (
+                    ui.row()
+                    .classes("items-center no-wrap pending-edits-banner")
+                    .style("gap: 4px; min-width: 0;")
+                )
+                self._edit_review_row.set_visibility(False)
+
                 open_btn = (
                     ui.button(icon="folder", on_click=self._show_open_dialog)
                     .props("flat dense color=white")
+                    .classes("editor-toolbar-btn")
                     .tooltip("Open")
                 )
                 open_btn.mark("editor-open-btn")
@@ -959,6 +966,7 @@ class EditorPanel(FileOperationsMixin):
                 save_btn = (
                     ui.button(icon="save", on_click=self._show_save_dialog)
                     .props("flat dense color=white")
+                    .classes("editor-toolbar-btn")
                     .tooltip("Save")
                 )
                 save_btn.mark("editor-save-btn")
@@ -966,11 +974,13 @@ class EditorPanel(FileOperationsMixin):
                 commands_btn = (
                     ui.button(icon="library_add")
                     .props("flat dense color=white")
+                    .classes("editor-toolbar-btn")
                     .tooltip("Insert Command")
                 )
                 commands_btn.mark("editor-commands-btn")
                 with commands_btn:
                     self._build_command_menu()
+                self._toolbar_btns = [open_btn, save_btn, commands_btn]
 
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(

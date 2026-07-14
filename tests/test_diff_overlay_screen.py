@@ -1,9 +1,10 @@
 """Browser-level layout check for the LLM diff overlay.
 
 Regression for "I could see either the diff OR the Approve/Reject buttons, but
-not both": the pending-edits banner and the in-editor diff decorations must be
-visible together in one panel — the CodeMirror editor must flex-shrink to make
-room for the banner instead of overflowing the fixed-height panel and being
+not both": the review controls and the in-editor diff decorations must be
+visible together. The controls live in the editor's header row (swapping in
+for the toolbar buttons while an edit is pending), and the CodeMirror editor
+must stay within its fixed-height panel instead of overflowing and being
 clipped by the ancestor ``overflow:hidden`` + bottom mask.
 """
 
@@ -18,8 +19,9 @@ from tests.helpers.browser_helpers import (
     wait_for_codemirror_ready,
 )
 
-# Measures whether the banner (with its Approve/Reject buttons) and the diff
-# decorations both render, and whether the editor stays within the panel.
+# Measures whether the review cluster (with its Approve/Reject buttons) and the
+# diff decorations both render, whether the toolbar buttons yielded their spot,
+# and whether the editor stays within the panel.
 _LAYOUT_JS = """
 const panel = document.querySelector('.editor-tab-panel');
 const banner = document.querySelector('.pending-edits-banner');
@@ -32,9 +34,13 @@ const bannerButtons = banner
 const bannerVisible = !!banner
   && banner.getBoundingClientRect().height > 0
   && getComputedStyle(banner).display !== 'none';
+const toolbarVisible = [...document.querySelectorAll('.editor-toolbar-btn')]
+  .some((el) => el.getBoundingClientRect().height > 0
+    && getComputedStyle(el).display !== 'none');
 return {
   bannerVisible: bannerVisible,
   bannerButtons: bannerButtons,
+  toolbarVisible: toolbarVisible,
   hasDiffDecoration: !!document.querySelector('.cm-edit-remove, .cm-edit-add'),
   editorWithinPanel: er.bottom <= pr.bottom + 2 && er.top >= pr.top - 2,
 };
@@ -42,7 +48,7 @@ return {
 
 
 @pytest.mark.browser
-def test_banner_and_diff_coexist_without_clipping(screen) -> None:
+def test_review_controls_and_diff_coexist_without_clipping(screen) -> None:
     screen.open("/")
     dismiss_dialogs(screen)
     click_tab(screen, "program")
@@ -67,7 +73,11 @@ def test_banner_and_diff_coexist_without_clipping(screen) -> None:
 
         assert info is not None, "editor panel never rendered"
         assert info["bannerVisible"] and info["bannerButtons"] >= 2, (
-            f"Approve/Reject banner not visible with its buttons: {info}"
+            f"Approve/Reject review cluster not visible with its buttons: {info}"
+        )
+        assert not info["toolbarVisible"], (
+            f"toolbar buttons must yield to the review cluster while an edit "
+            f"is pending: {info}"
         )
         assert info["hasDiffDecoration"], f"diff decorations not rendered: {info}"
         assert info["editorWithinPanel"], (

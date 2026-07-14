@@ -989,10 +989,12 @@ html, body {
   white-space: pre;
 }
 
-/* Pending-edit chip row above the CodeMirror editor. */
+/* Pending-edit review cluster — swaps in for the editor toolbar buttons. */
 .pending-edits-banner {
   background-color: rgba(76, 175, 80, 0.08);
-  border-bottom: 1px solid rgba(76, 175, 80, 0.25);
+  border: 1px solid rgba(76, 175, 80, 0.25);
+  border-radius: 6px;
+  padding: 0 2px 0 10px;
 }
 
 
