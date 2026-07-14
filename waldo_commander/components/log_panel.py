@@ -17,9 +17,8 @@ from waldo_commander.state import simulation_state
 
 logger = logging.getLogger(__name__)
 
-# Splitter values: the editor-vs-log splitter is sized as % to the editor side.
-# Collapsed pins the log to a thin strip; the threshold determines whether a
-# user drag should be treated as a collapse vs an expand.
+# Splitter is sized as % to the editor side. Collapsed pins the log to a thin
+# strip; the threshold decides whether a user drag is a collapse vs an expand.
 LOG_COLLAPSED_VALUE: float = 94.0
 LOG_EXPAND_THRESHOLD: float = 90.0
 
@@ -43,25 +42,21 @@ class LogPanelController:
         simulation_state.add_change_listener(self._on_state_change)
 
     def cleanup(self) -> None:
-        """Per-page cleanup. No-op: the change listener was registered in
-        ``__init__`` (process-wide, single instance), not in a per-page
-        setup, so there's nothing to deregister. Method exists for symmetry
-        with the other singletons."""
+        """Per-page cleanup. No-op: the change listener is registered once in
+        ``__init__`` (process-wide), not per page, so there's nothing to
+        deregister. Exists for symmetry with the other singletons."""
 
     def reset_for_test(self) -> None:
         """Restore field defaults by replaying ``__init__`` on this instance."""
         self.cleanup()
         type(self).__init__(self)
 
-    # ---- State listener: auto-expand on script start ----
-
     def _on_state_change(self) -> None:
+        # Auto-expand the log on the rising edge of a script starting.
         running = is_any_program_running()
         if running and not self._last_script_running and not self._log_expanded:
             self.expand()
         self._last_script_running = running
-
-    # ---- Widget construction ----
 
     def build_toggle_button(self) -> ui.button:
         """Create the show/hide toggle button. Call inside the playback bar."""
@@ -93,8 +88,6 @@ class LogPanelController:
 
     def attach_splitter(self, splitter: ui.splitter) -> None:
         self.editor_splitter = splitter
-
-    # ---- Toggle semantics ----
 
     def _set_toggle_visual(self, expanded: bool) -> None:
         if not self.log_toggle_btn:
@@ -137,8 +130,6 @@ class LogPanelController:
             self._log_expanded = True
             self._splitter_value_when_expanded = value
             self._set_toggle_visual(True)
-
-    # ---- Log content ----
 
     def push(self, line: str) -> None:
         if self.program_log:

@@ -34,11 +34,7 @@ def init_buffers(num_joints: int) -> None:
 
 
 def _init_config() -> None:
-    """Initialize config arrays from urdf_scene.config.
-
-    Call this once after URDF scene is initialized to precompute the mappings
-    needed by the numba angle_pipeline function.
-    """
+    """Precompute the index/sign/offset mappings the numba kernel needs, once after URDF scene init."""
     global _config_valid
 
     if not ui_state.urdf_scene:
@@ -53,14 +49,12 @@ def _init_config() -> None:
 
         num_joints = ui_state.active_robot.joints.count
 
-        # Build combined mapping: for each output position, which input index to use
-        # and what sign/offset to apply
+        # For each output position: which input index to read, plus its sign/offset.
         for i in range(num_joints):
             if i < len(index_mapping) and index_mapping[i] < num_joints:
                 controller_idx = index_mapping[i]
                 _index_mapping_array[i] = controller_idx
 
-                # Sign correction
                 if controller_idx < len(config.angle_signs):
                     _angle_signs_array[i] = (
                         1.0 if config.angle_signs[controller_idx] >= 0 else -1.0
@@ -68,7 +62,6 @@ def _init_config() -> None:
                 else:
                     _angle_signs_array[i] = 1.0
 
-                # Offset
                 if controller_idx < len(config.angle_offsets):
                     _angle_offsets_array[i] = config.angle_offsets[controller_idx]
                 else:
@@ -101,7 +94,6 @@ def update_urdf_angles(angles_deg: np.ndarray) -> None:
     if not ui_state.urdf_scene or len(angles_deg) < ui_state.active_robot.joints.count:
         return
 
-    # Initialize config on first call
     if not _config_valid:
         _init_config()
 

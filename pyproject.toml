@@ -8,49 +8,49 @@ dynamic = ["version"]
 description = "A web interface for controlling robotic arms"
 requires-python = ">=3.12"
 dependencies = [
-  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@4f3e88841666a98f289f00c7581f319576a636c0",
+  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@eff7a1b984d9f00345c2faa48458c6edfe64ac94",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
   "scipy>=1.10",
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.2.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.6.2",
   "opencv-python-headless>=4.8",
 
   # pinokin: Pinocchio-based FK/IK bindings
-  # https://github.com/Jepson2k/pinokin/releases/tag/v0.1.6
+  # https://github.com/Jepson2k/pinokin/releases/tag/v0.1.8
 
   # macOS ARM64 (Apple Silicon)
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp311-cp311-macosx_15_0_arm64.whl ; python_version == '3.11' and platform_system == 'Darwin' and platform_machine == 'arm64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp312-cp312-macosx_15_0_arm64.whl ; python_version == '3.12' and platform_system == 'Darwin' and platform_machine == 'arm64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp313-cp313-macosx_15_0_arm64.whl ; python_version == '3.13' and platform_system == 'Darwin' and platform_machine == 'arm64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp314-cp314-macosx_15_0_arm64.whl ; python_version == '3.14' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp311-cp311-macosx_15_0_arm64.whl ; python_version == '3.11' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp312-cp312-macosx_15_0_arm64.whl ; python_version == '3.12' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp313-cp313-macosx_15_0_arm64.whl ; python_version == '3.13' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp314-cp314-macosx_15_0_arm64.whl ; python_version == '3.14' and platform_system == 'Darwin' and platform_machine == 'arm64'",
 
   # Windows AMD64
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp311-cp311-win_amd64.whl ; python_version == '3.11' and platform_system == 'Windows' and platform_machine == 'AMD64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp312-cp312-win_amd64.whl ; python_version == '3.12' and platform_system == 'Windows' and platform_machine == 'AMD64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp313-cp313-win_amd64.whl ; python_version == '3.13' and platform_system == 'Windows' and platform_machine == 'AMD64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp314-cp314-win_amd64.whl ; python_version == '3.14' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp311-cp311-win_amd64.whl ; python_version == '3.11' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp312-cp312-win_amd64.whl ; python_version == '3.12' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp313-cp313-win_amd64.whl ; python_version == '3.13' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp314-cp314-win_amd64.whl ; python_version == '3.14' and platform_system == 'Windows' and platform_machine == 'AMD64'",
 
   # Linux x86_64
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp311-cp311-manylinux_2_39_x86_64.whl ; python_version == '3.11' and platform_system == 'Linux' and platform_machine == 'x86_64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp312-cp312-manylinux_2_39_x86_64.whl ; python_version == '3.12' and platform_system == 'Linux' and platform_machine == 'x86_64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp313-cp313-manylinux_2_39_x86_64.whl ; python_version == '3.13' and platform_system == 'Linux' and platform_machine == 'x86_64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp314-cp314-manylinux_2_39_x86_64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp311-cp311-manylinux_2_39_x86_64.whl ; python_version == '3.11' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp312-cp312-manylinux_2_39_x86_64.whl ; python_version == '3.12' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp313-cp313-manylinux_2_39_x86_64.whl ; python_version == '3.13' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp314-cp314-manylinux_2_39_x86_64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'x86_64'",
 
   # Linux aarch64 (ARM64)
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp311-cp311-manylinux_2_39_aarch64.whl ; python_version == '3.11' and platform_system == 'Linux' and platform_machine == 'aarch64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp312-cp312-manylinux_2_39_aarch64.whl ; python_version == '3.12' and platform_system == 'Linux' and platform_machine == 'aarch64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp313-cp313-manylinux_2_39_aarch64.whl ; python_version == '3.13' and platform_system == 'Linux' and platform_machine == 'aarch64'",
-  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.6/pinokin-0.1.6-cp314-cp314-manylinux_2_39_aarch64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp311-cp311-manylinux_2_39_aarch64.whl ; python_version == '3.11' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp312-cp312-manylinux_2_39_aarch64.whl ; python_version == '3.12' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp313-cp313-manylinux_2_39_aarch64.whl ; python_version == '3.13' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.8/pinokin-0.1.8-cp314-cp314-manylinux_2_39_aarch64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'aarch64'",
 ]
 
 [project.optional-dependencies]
-parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.7"]
+parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.3.1"]
 v4l2 = ["linuxpy>=0.24"]
 dev = [
-  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.2.7",
+  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.3.1",
   "ruff",
   "ty",
   "pytest",

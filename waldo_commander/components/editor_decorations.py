@@ -1,16 +1,10 @@
 """CodeMirror decoration controller: flash, executing-line highlight, diagnostics, line tooltips, and target anchors.
 
-Decoration writes are routed to a specific tab's textarea by tab_id (looked
-up via ``ui_state.textareas_by_tab``). Sub-controllers that own a
-tab context pass that tab_id — simulation_engine for diagnostics / line
-metadata / target anchors (the simulated tab), script_exec for the
-executing-line highlight (the launching tab). Flash decorations stay on
-the active tab because their callers (``EditorPanel.add_target_code`` and
-the motion recorder) always target the user's current edit surface.
-
-Clears the executing-line highlight automatically on the
-``is_any_program_running()`` True→False edge (via the state listener
-registered in __init__).
+Decoration writes are routed to a specific tab's textarea by tab_id. Callers that
+own a tab context pass that tab_id; flash decorations always target the active tab
+because their callers write to the user's current edit surface. The executing-line
+highlight is cleared automatically on the ``is_any_program_running()`` True→False
+edge, via the state listener registered in __init__.
 """
 
 from __future__ import annotations
@@ -23,7 +17,6 @@ from nicegui import Client, ui
 from nicegui.elements.codemirror.codemirror import (
     DecorationSpec,
     Diagnostic,
-    LineAnchor,
 )
 
 import waldoctl
@@ -42,7 +35,7 @@ _ERROR_LINE_RE = re.compile(
 
 class EditorDecorations:
     """Owns CodeMirror decoration state (flash + executing-line highlight) and
-    diagnostics/tooltip/anchor pushes for whichever tab is currently active.
+    diagnostics/tooltip/anchor pushes.
 
     Construction registers a ``simulation_state`` change listener that clears
     the executing-line highlight on the script-stop edge.
@@ -51,20 +44,18 @@ class EditorDecorations:
     def __init__(self) -> None:
         self._active_flashes: list[tuple[int, set[int]]] = []
         self._flash_token: int = 0
-        # Executing-line is tracked per launching tab so the highlight
-        # persists on that tab even when the user switches away while a
-        # script is running.
+        # Tracked per launching tab so the highlight persists when the user
+        # switches away mid-run.
         self._executing_line_by_tab: dict[str, int] = {}
         self._ui_client: Client | None = None
         self._last_script_running: bool = False
         simulation_state.add_change_listener(self._on_state_change)
 
     def cleanup(self) -> None:
-        """Per-page cleanup. Clears in-flight decoration state so a flash
-        timer that died with the client doesn't leave stale entries that
-        the next page's apply routine would aggregate onto the new
-        textarea. The change listener stays registered (process-wide,
-        single instance — nothing to deregister)."""
+        """Per-page cleanup. Clears in-flight decoration state so a flash timer
+        that died with the client doesn't leave stale entries that the next page
+        aggregates onto its textarea. The change listener stays registered
+        (process-wide single instance — nothing to deregister)."""
         self._active_flashes.clear()
         self._executing_line_by_tab.clear()
         self._flash_token = 0
@@ -72,11 +63,9 @@ class EditorDecorations:
     def reset_for_test(self) -> None:
         """Restore field defaults by replaying ``__init__`` on this instance.
         Listener re-registration is idempotent via ``add_change_listener``'s
-        ``not in`` check (bound-method equality fixed in state.py)."""
+        ``not in`` check (relies on the bound-method equality fix in state.py)."""
         self.cleanup()
         type(self).__init__(self)
-
-    # ---- Wiring ----
 
     def set_ui_client(self, client: Client | None) -> None:
         """Store the page client for JS execution from background tasks."""
@@ -85,14 +74,11 @@ class EditorDecorations:
     def _on_state_change(self) -> None:
         running = is_any_program_running()
         if self._last_script_running and not running:
-            # Script stopped — clear every tracked executing-line highlight
-            # (in practice there's at most one, since only one script can
-            # run at a time, but the dict is the source of truth).
+            # In practice there's at most one (only one script runs at a time),
+            # but the dict is the source of truth.
             for tab_id in list(self._executing_line_by_tab):
                 self.clear_executing_line_highlight(tab_id)
         self._last_script_running = running
-
-    # ---- Decoration application ----
 
     def _apply_decorations_to_tab(self, tab_id: str) -> None:
         """Write the aggregated decoration spec list for one tab's textarea.
@@ -181,8 +167,8 @@ class EditorDecorations:
         try:
             ui.run_javascript(js_code)
         except (RuntimeError, AssertionError):
-            # No active client context — try the stored page client; if none,
-            # we're likely in a unit test where the JS hook is moot.
+            # No active client context — fall back to the stored page client;
+            # if none, we're likely in a unit test where the JS hook is moot.
             if self._ui_client:
                 try:
                     self._ui_client.run_javascript(js_code)
@@ -190,8 +176,6 @@ class EditorDecorations:
                     pass
             else:
                 logger.debug("Cannot flash editor tab: no client available")
-
-    # ---- Executing-line highlight ----
 
     def highlight_executing_line(self, step_index: int, tab_id: str) -> None:
         """Highlight the source line on the launching tab for the current step.
@@ -229,8 +213,6 @@ class EditorDecorations:
         if tab_id in self._executing_line_by_tab:
             del self._executing_line_by_tab[tab_id]
             self._apply_decorations_to_tab(tab_id)
-
-    # ---- Diagnostics ----
 
     def apply_diagnostics(self, error: str | None, tab_id: str) -> None:
         """Apply CM6 lint diagnostics for simulation errors and timing
@@ -278,8 +260,6 @@ class EditorDecorations:
 
         textarea.diagnostics = diagnostics
 
-    # ---- Line metadata + target anchors ----
-
     def push_line_metadata(self, tab_id: str) -> None:
         """Push per-line metadata to CM6 for hover tooltips on the
         simulated tab's textarea."""
@@ -319,10 +299,9 @@ class EditorDecorations:
             return
         tab = waldoctl.commander.programs.get(tab_id)
         targets = tab.dry_run.targets if tab is not None else []
-        anchors: list[LineAnchor] = [
-            {"id": t.id, "line": t.line_number} for t in targets if t.line_number > 0
-        ]
-        textarea.line_anchors[:] = anchors
+        textarea.line_anchors = {
+            t.id: t.line_number for t in targets if t.line_number > 0
+        }
 
 
 decorations: EditorDecorations = EditorDecorations()

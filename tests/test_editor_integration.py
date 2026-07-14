@@ -105,6 +105,48 @@ async def test_run_button_toggles(user: User) -> None:
 
 
 @pytest.mark.integration
+async def test_program_playback_step_channel_fires_during_run(user: User) -> None:
+    """The per-program step channel (waldoctl ``Playback.add_step_listener``)
+    fires during a real script run: the host drives it whenever the
+    ``executing_step_*`` fields advance, so a plugin can track this program's
+    steps without listening to the global stream."""
+    import waldoctl
+
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    assert ui_state.editor_panel is not None
+
+    programs = waldoctl.commander.programs
+    program = programs.get(programs.active_id)
+    assert program is not None
+    fired = 0
+
+    def _on_step() -> None:
+        nonlocal fired
+        fired += 1
+
+    program.dry_run.playback.add_step_listener(_on_step)
+    try:
+        user.find(marker="editor-play-btn").click()
+        for _ in range(200):  # the watcher polls at 20Hz; fires on script start
+            if fired:
+                break
+            await asyncio.sleep(0.05)
+        assert fired > 0, "per-program step channel never fired during the run"
+    finally:
+        program.dry_run.playback.remove_step_listener(_on_step)
+        if is_any_program_running():
+            user.find(marker="editor-stop-btn").click()
+            await asyncio.sleep(0.2)
+
+
+@pytest.mark.integration
 async def test_log_toggle_expands_log(user: User) -> None:
     """Test that the log toggle button expands/collapses the log panel.
 

@@ -317,6 +317,42 @@ class TestMotionRecorder:
         inserted_code = mock_textarea.value
         assert "rbt.write_io(1, 1)" in inserted_code
 
+    def test_record_set_shapes_prepends_import_unless_truly_imported(
+        self, mock_textarea
+    ):
+        """Import detection parses import statements: an incidental mention of
+        the class name (comment, attribute access, alias) must not suppress
+        the needed ``from waldoctl import`` — the recorded program must stay
+        runnable — while a genuine import must not be duplicated."""
+        from waldoctl import Box
+
+        recorder = MotionRecorder()
+        set_active_recording(True)
+        box = Box(name="cage", x=0.1, y=0.1, z=0.1)
+
+        # A comment mention is not an import.
+        mock_textarea.value = "# put a Box near the origin\n"
+        recorder.record_action("set_shapes", shapes=[box])
+        assert "from waldoctl import Box" in mock_textarea.value
+        assert "rbt.set_shapes(" in mock_textarea.value
+
+        # Attribute-style usage binds no bare name.
+        mock_textarea.value = (
+            "import waldoctl\nw = waldoctl.Box(name='b', x=1, y=1, z=1)\n"
+        )
+        recorder.record_action("set_shapes", shapes=[box])
+        assert "from waldoctl import Box" in mock_textarea.value
+
+        # An aliased import doesn't bind the bare name either.
+        mock_textarea.value = "from waldoctl import Box as KeepOut\n"
+        recorder.record_action("set_shapes", shapes=[box])
+        assert "from waldoctl import Box\n" in mock_textarea.value
+
+        # A genuine import must not be duplicated.
+        mock_textarea.value = "from waldoctl import Box\n"
+        recorder.record_action("set_shapes", shapes=[box])
+        assert mock_textarea.value.count("from waldoctl import Box") == 1
+
     def test_record_action_ignored_when_not_recording(self, mock_textarea):
         """record_action should be ignored when not recording."""
         recorder = MotionRecorder()

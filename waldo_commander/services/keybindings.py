@@ -29,20 +29,18 @@ logger = logging.getLogger(__name__)
 class Keybinding:
     """Definition of a keyboard shortcut."""
 
-    key: str  # Key identifier (e.g., "h", " ", "Escape")
-    display: str  # Display string for UI (e.g., "H", "Space", "Esc")
-    description: str  # Human-readable description
-    action: Callable  # Function to call when triggered
-    category: str  # Category for help menu grouping
+    key: str
+    display: str
+    description: str
+    action: Callable
+    category: str
     requires_shift: bool = False
     requires_ctrl: bool = False
     requires_alt: bool = False
     holdable: bool = False  # If True, supports click vs hold behavior
     on_release: Callable | None = None  # Called on keyup for holdable keys
-    enabled_check: Callable[[], bool] | None = None  # Dynamic enable check
-    _accepts_press_kwargs: bool = field(
-        default=False, repr=False
-    )  # Set at registration
+    enabled_check: Callable[[], bool] | None = None
+    _accepts_press_kwargs: bool = field(default=False, repr=False)
 
 
 class KeybindingsManager:
@@ -57,7 +55,7 @@ class KeybindingsManager:
         self._hold_start_times: dict[str, float] = {}
         self._hold_timers: dict[str, ui.timer] = {}
         self._holding_active: set[str] = set()
-        self._keys_down: set[str] = set()  # Track currently pressed keys
+        self._keys_down: set[str] = set()
 
     def register(self, binding: Keybinding) -> None:
         """Register a keybinding."""
@@ -97,9 +95,8 @@ class KeybindingsManager:
 
     def _normalize_key(self, key: str) -> str:
         """Normalize key name for consistent matching."""
-        # NiceGUI keyboard events use specific key names
         key = key.lower()
-        # Space is reported as " " in some cases
+        # Space is reported as " " in some cases.
         if key == " ":
             return " "
         return key
@@ -109,7 +106,6 @@ class KeybindingsManager:
         if not self._enabled:
             return
 
-        # Check if editor/input is focused
         if self._editor_focused:
             return
 
@@ -117,7 +113,6 @@ class KeybindingsManager:
         is_keydown = e.action.keydown
         is_keyup = e.action.keyup
 
-        # Build key ID with modifiers
         key_id = self._make_key_id(
             key,
             e.modifiers.shift,
@@ -149,24 +144,20 @@ class KeybindingsManager:
     ) -> None:
         """Handle click vs hold behavior for holdable keys."""
         if is_keydown:
-            # Ignore repeat keydown events
             if key_id in self._keys_down:
                 return
             self._keys_down.add(key_id)
 
-            # Cancel any existing timer
             old_timer = self._hold_timers.pop(key_id, None)
             if old_timer:
                 old_timer.active = False
 
-            # Record start time
             self._hold_start_times[key_id] = time.time()
 
-            # Start timer for hold detection
             def start_hold():
                 self._holding_active.add(key_id)
                 self._hold_timers.pop(key_id, None)
-                # Execute action for continuous jog start
+                # Hold threshold elapsed: start continuous jog.
                 self._execute_action(
                     binding.action,
                     is_press=True,
@@ -179,7 +170,7 @@ class KeybindingsManager:
                         CLICK_HOLD_THRESHOLD_S, start_hold, once=True
                     )
             except Exception:
-                # If no client context, fall back to simple execution
+                # No client context: fall back to immediate execution.
                 self._execute_action(
                     binding.action,
                     is_press=True,
@@ -189,7 +180,6 @@ class KeybindingsManager:
         elif is_keyup:
             self._keys_down.discard(key_id)
 
-            # Cancel timer if still running
             timer = self._hold_timers.pop(key_id, None)
             was_holding = key_id in self._holding_active
             self._holding_active.discard(key_id)
@@ -197,7 +187,7 @@ class KeybindingsManager:
 
             if timer and timer.active:
                 timer.active = False
-                # Was a click (quick press) - execute single step action
+                # Released before threshold: a click, so do a single step.
                 self._execute_action(
                     binding.action,
                     is_press=False,
@@ -205,7 +195,7 @@ class KeybindingsManager:
                     accepts_kwargs=binding._accepts_press_kwargs,
                 )
             elif was_holding and binding.on_release:
-                # Was a hold - execute release action
+                # Released after a hold: run the release action.
                 self._execute_action(binding.on_release)
 
     def _execute_action(
@@ -280,14 +270,12 @@ keybindings_manager = KeybindingsManager()
 def setup_keybindings(help_menu: Any) -> None:
     """Set up global keyboard handler, focus detection, register bindings,
     and trigger first-time tutorial check."""
-    # Add global keyboard handler
     ui.keyboard(on_key=keybindings_manager.handle_key)
 
-    # Set up JavaScript callback for focus detection
     def on_focus_change(focused: bool) -> None:
         keybindings_manager.set_editor_focused(focused)
 
-    # Expose the callback to JavaScript and initialize the focus detector
+    # Expose the callback to JS and initialize the focus detector.
     ui.run_javascript(
         """
         if (window.KeybindingsFocusDetector) {
@@ -299,16 +287,13 @@ def setup_keybindings(help_menu: Any) -> None:
         """
     )
 
-    # Listen for focus change events from JavaScript
     ui.on(
         "keybindings_focus_change",
         lambda e: on_focus_change(e.args.get("focused", False)),
     )
 
-    # Register all keybindings
     _register_default_keybindings()
 
-    # Set up first-time tutorial dialog
     ui_client = ui.context.client
 
     async def check_first_visit():
@@ -327,7 +312,6 @@ def _register_default_keybindings() -> None:
 
     cp = ui_state.control_panel
 
-    # Robot Control
     keybindings_manager.register(
         Keybinding(
             key="h",
@@ -348,7 +332,6 @@ def _register_default_keybindings() -> None:
         )
     )
 
-    # Playback Controls
     keybindings_manager.register(
         Keybinding(
             key=" ",
@@ -371,8 +354,7 @@ def _register_default_keybindings() -> None:
         )
     )
 
-    # Cartesian Jog - WASD + Q/E
-    # These are holdable: click = single step, hold = continuous jog
+    # Holdable jog keys: click = single step, hold = continuous jog.
     _register_cartesian_jog_keybindings(cp)
 
     # Speed Control — delegated to control panel so the rating widget,
@@ -397,7 +379,6 @@ def _register_default_keybindings() -> None:
         )
     )
 
-    # Target insertion
     keybindings_manager.register(
         Keybinding(
             key="t",
@@ -462,15 +443,14 @@ def _handle_jog_key(
 ) -> None:
     """Handle jog key press/click for cartesian movement."""
     if is_click:
-        # Single step movement
+        # Click: press then auto-release for a single step.
         asyncio.create_task(cp.set_axis_pressed(axis, True))
 
-        # Small delay then release
         async def release():
             await asyncio.sleep(0.05)
             await cp.set_axis_pressed(axis, False)
 
         asyncio.create_task(release())
     elif is_press:
-        # Start continuous jog
+        # Hold: start continuous jog (released via on_release).
         asyncio.create_task(cp.set_axis_pressed(axis, True))

@@ -71,7 +71,7 @@ class _Config:
 
     @property
     def log_level(self) -> int:
-        """Logging level from WALDO_LOG_LEVEL env var."""
+        """Logging level."""
         if "log_level" in self._overrides:
             return int(self._overrides["log_level"])  # type: ignore[call-overload]
         s = os.getenv("WALDO_LOG_LEVEL")
@@ -114,5 +114,11 @@ WAYPOINT_SIZE_SMALL = 0.004  # Non-editable segment endpoints
 
 # Click vs hold threshold for jog buttons and keyboard shortcuts
 CLICK_HOLD_THRESHOLD_S: float = 0.15
+
+# Core panel tab ids a plugin panel may never claim. Lives here (not main.py)
+# so components can import it without importing main — importing main from a
+# component re-executes it under screen tests (main runs via runpy there) and
+# re-registers "/" with a handler whose panel globals were never initialized.
+RESERVED_TAB_IDS = frozenset({"program", "io", "gripper", "response", "log", "help"})
 
 config = _Config()

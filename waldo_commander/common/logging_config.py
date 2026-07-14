@@ -16,7 +16,7 @@ _LEVEL_COLORS = {
     "CRITICAL": "\033[41m",  # red background
 }
 
-# CSS classes used for NiceGUI log lines (mirrors CLI color semantics)
+# Mirrors CLI color semantics for NiceGUI log lines.
 _LEVEL_CLASSES = {
     "TRACE": "log-trace",
     "DEBUG": "log-debug",
@@ -63,7 +63,6 @@ class AnsiColorFormatter(logging.Formatter):
         base = super().format(record)
         if not self.colored:
             return base
-        # Colorize level name and dim the timestamp
         level = record.levelname.upper()
         color = _LEVEL_COLORS.get(level, "")
         # Expect format "HH:MM:SS LEVEL logger: msg"
@@ -87,7 +86,6 @@ class NiceGuiLogHandler(logging.Handler):
 
     def __init__(self, level: int = logging.INFO) -> None:
         super().__init__(level=level)
-        # Basic, non-colored format for UI (timestamp + level + message)
         self.setFormatter(
             logging.Formatter(
                 "%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%H:%M:%S"
@@ -107,8 +105,7 @@ class NiceGuiLogHandler(logging.Handler):
                 if widget is None:
                     stale.append(ref)
                     continue
-                # Check if the widget's client is still valid before pushing
-                # This prevents the "Client has been deleted" warning from NiceGUI
+                # Skip dead clients to avoid NiceGUI's "Client has been deleted" warning.
                 try:
                     client_ref = widget._client()
                     if client_ref is None or client_ref.id not in Client.instances:
@@ -120,7 +117,6 @@ class NiceGuiLogHandler(logging.Handler):
                 try:
                     widget.push(msg, classes=classes)
                 except Exception:
-                    # If widget is gone or not available, mark as stale
                     stale.append(ref)
             for ref in stale:
                 _ui_log_targets.discard(ref)

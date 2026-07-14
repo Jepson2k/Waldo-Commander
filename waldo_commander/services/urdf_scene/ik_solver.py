@@ -1,9 +1,4 @@
-"""
-IK Solver for editing mode.
-
-Uses the Robot ABC for forward and inverse kinematics,
-eliminating direct backend imports.
-"""
+"""IK solver for editing mode, using the Robot ABC for FK/IK."""
 
 import time
 import logging
@@ -55,7 +50,6 @@ class EditingIKSolver:
         self._fk_result_buffer = np.zeros(6, dtype=np.float64)
         self._pose_buf = np.zeros(6, dtype=np.float64)
 
-        # Throttling
         self._last_solve_time = 0.0
         self._min_solve_interval = 0.033  # ~30Hz
 
