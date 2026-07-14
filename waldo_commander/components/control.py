@@ -1026,7 +1026,15 @@ class ControlPanel:
         """Page-perimeter glow (colored by control mode) + an edge Take-control
         button, shown only while another controller (an MCP/AI session) holds
         the lease, plus the approval dialog (per-action move approvals and the
-        one-time hardware-consent floor). Driven by the 1 Hz ping."""
+        one-time hardware-consent floor). Driven by the 1 Hz ping.
+
+        Parented at the page root: the overlay-card's ``backdrop-filter``
+        creates a containing block that would trap these ``position:fixed``
+        overlays inside the panel instead of the viewport."""
+        with self._ui_client.content:
+            self._build_control_indicator_elements()
+
+    def _build_control_indicator_elements(self) -> None:
         # Ambient glow around the viewport while an AI session drives; its color
         # encodes the current control mode (updated in refresh / on mode switch).
         self._control_glow = (

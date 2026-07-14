@@ -54,6 +54,20 @@ def test_control_lease_indicator_and_take_control(screen: "Screen") -> None:
         assert screen_wait_for_element_visible(screen, ".control-lease-glow", 5.0)
         assert screen_wait_for_element_visible(screen, ".btn-take-control", 5.0)
 
+        # The glow must wrap the whole viewport, not the control panel: an
+        # ancestor with backdrop-filter (the overlay-card) turns position:fixed
+        # into panel-relative and shrinks the "screen edge" glow to the card.
+        rect = screen.selenium.execute_script(
+            "const r = document.querySelector('.control-lease-glow')"
+            ".getBoundingClientRect();"
+            "return [r.left, r.top, r.width, r.height,"
+            " window.innerWidth, window.innerHeight];"
+        )
+        left, top, width, height, vw, vh = rect
+        assert (left, top) == (0, 0) and width >= vw - 1 and height >= vh - 1, (
+            f"glow does not cover the viewport: {rect}"
+        )
+
         # Human presses Take control → browser reclaims, glow hides again.
         screen.selenium.find_element(By.CSS_SELECTOR, ".btn-take-control").click()
         assert screen_wait_for_element_hidden(screen, ".control-lease-glow", 5.0)
