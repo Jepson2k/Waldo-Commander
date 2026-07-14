@@ -732,13 +732,15 @@ async def test_refresh_during_unacked_clear_does_not_resurrect(user: User) -> No
         await _until(lambda: handle.confirmed, "edit never confirmed")
 
         client.set_shapes = _held_once
+        # The first edit's scene_epoch move lands about now: the watcher's
+        # refresh task (same entry as main.py) is created BEFORE the clear,
+        # so it runs before the clear's push coroutine even starts — the
+        # exact CI interleaving. The controller still reports the pre-clear
+        # world at that point.
+        epoch_refresh = asyncio.create_task(handle.refresh_from_backend())
         handle.shapes = []  # local clear renders immediately; ack held
+        await asyncio.wait_for(epoch_refresh, timeout=5.0)
         await asyncio.wait_for(held.wait(), timeout=5.0)
-
-        # The first edit's scene_epoch move lands now — the watcher fires a
-        # refresh (same entry as main.py) while the clear is still un-acked,
-        # so the controller would still report the pre-clear world.
-        await handle.refresh_from_backend()
         assert "shape:ep" not in scene._shape_objects, (
             "a readback during an un-acked clear resurrected the cleared shape"
         )
