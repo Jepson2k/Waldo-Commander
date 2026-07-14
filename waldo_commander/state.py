@@ -12,6 +12,7 @@ from waldoctl import (
     Panel,
     PathSegment,
     ProgramTarget,
+    ShapeChange,
     ToolAction,
     ToolSelection,
     ToolStatus,
@@ -23,6 +24,7 @@ from waldoctl import (
 __all__ = [
     "PathSegment",
     "ProgramTarget",
+    "ShapeChange",
     "ToolAction",
     "ToolSelection",
 ]

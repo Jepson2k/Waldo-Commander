@@ -28,6 +28,9 @@ jobs:
       - name: Install dependencies for pre-commit hooks
         run: |
           python -m pip install --upgrade pip
+          # ruckig 0.17.3 sdist doesn't build under scikit-build-core 1.0;
+          # pre-install the fixed commit until a release lands (pantor/ruckig#262).
+          pip install "ruckig @ git+https://github.com/pantor/ruckig@2249d57ffaa19ecdadeaab62daf97857813629ff"
           pip install -e ".[dev]"
           # Override the pinned waldoctl/parol6 with the matching feature branch
           # if one exists, AFTER ".[dev]" so its pinned tags don't clobber it.
@@ -73,6 +76,9 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
+          # ruckig 0.17.3 sdist doesn't build under scikit-build-core 1.0;
+          # pre-install the fixed commit until a release lands (pantor/ruckig#262).
+          pip install "ruckig @ git+https://github.com/pantor/ruckig@2249d57ffaa19ecdadeaab62daf97857813629ff"
           pip install ".[dev]"
           # Override the pinned waldoctl/parol6 with the matching feature branch
           # if one exists, AFTER ".[dev]" so its pinned tags don't clobber it.

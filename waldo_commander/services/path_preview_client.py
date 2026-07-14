@@ -17,7 +17,7 @@ import numpy as np
 from waldoctl import DryRunResult
 
 from waldo_commander.common.theme import get_color_for_move_type
-from waldo_commander.state import ToolAction, ToolSelection
+from waldo_commander.state import ShapeChange, ToolAction, ToolSelection
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,7 @@ class PathPreviewClient:
         target_collector: list[dict] | None = None,
         tool_action_collector: list[ToolAction] | None = None,
         tool_selection_collector: list | None = None,
+        shape_change_collector: list | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
         tool_meta_registry: dict[str, dict] | None = None,
     ):
@@ -101,6 +102,9 @@ class PathPreviewClient:
         )
         self.tool_selection_collector: list = (
             [] if tool_selection_collector is None else tool_selection_collector
+        )
+        self.shape_change_collector: list = (
+            [] if shape_change_collector is None else shape_change_collector
         )
         self._tool_meta_registry: dict[str, dict] = tool_meta_registry or {}
         self._tool_metadata: dict | None = None
@@ -637,6 +641,27 @@ class PathPreviewClient:
             self._flush_blend()
             return getattr(self._client, name)
 
+        # Intercept set_shapes — record the boundary so collision marking can
+        # replay the world that was active at each segment (like tool
+        # selections). Blend flushes first: pending motions were issued under
+        # the old world.
+        if name == "set_shapes":
+            underlying = getattr(self._client, name)
+
+            def set_shapes_wrapper(shapes: list, *args: Any, **kwargs: Any) -> Any:
+                self._flush_blend()
+                result = underlying(shapes, *args, **kwargs)
+                self.shape_change_collector.append(
+                    ShapeChange(
+                        shapes=tuple(shapes),
+                        segment_index=len(self.segment_collector) - 1,
+                        line_number=self._get_caller_line_number(),
+                    )
+                )
+                return result
+
+            return set_shapes_wrapper
+
         # All other methods: flush blend first, then delegate to backend.
         # It raises AttributeError for unknown names, catching typos.
         self._flush_blend()
@@ -653,6 +678,7 @@ class AsyncPathPreviewClient:
         target_collector: list[dict] | None = None,
         tool_action_collector: list[ToolAction] | None = None,
         tool_selection_collector: list | None = None,
+        shape_change_collector: list | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
         tool_meta_registry: dict[str, dict] | None = None,
     ):
@@ -662,6 +688,7 @@ class AsyncPathPreviewClient:
             target_collector=target_collector,
             tool_action_collector=tool_action_collector,
             tool_selection_collector=tool_selection_collector,
+            shape_change_collector=shape_change_collector,
             initial_joints=initial_joints,
             tool_meta_registry=tool_meta_registry,
         )

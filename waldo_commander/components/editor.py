@@ -159,7 +159,7 @@ class EditorPanel(FileOperationsMixin):
             logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
-        line_number = textarea.line_anchor_positions.get(target_id)
+        line_number = textarea.line_anchors.get(target_id)
         if line_number is None:
             logger.warning("Sync failed: Target %s not found", target_id)
             return
@@ -220,7 +220,7 @@ class EditorPanel(FileOperationsMixin):
         if not textarea:
             return
 
-        line_number = textarea.line_anchor_positions.get(target_id)
+        line_number = textarea.line_anchors.get(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
@@ -638,7 +638,7 @@ class EditorPanel(FileOperationsMixin):
                         ),
                         on_selection_change=lambda e, t=tab: self._on_cursor_line(t, e),
                         completions=completions,
-                        keybindings={
+                        keymap={
                             "Mod-s": lambda _e, t=tab: self._save_tab(t),
                         },
                         line_tooltip_html=True,

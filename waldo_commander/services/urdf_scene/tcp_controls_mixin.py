@@ -46,6 +46,8 @@ class TCPControlsMixin:
 
     def _update_edit_bar_values(self, editing_type: str) -> None: ...
 
+    def _update_collision_highlight(self) -> None: ...
+
     _current_editing_type: str | None
 
     @property
@@ -501,5 +503,6 @@ class TCPControlsMixin:
                     t, r = self.joint_trafos[joint_name](q)
                     self.joint_groups[joint_name].move(*t).rotate(*r)
             self._sync_robot_state_from_editing()
+            self._update_collision_highlight()
             if self._current_editing_type:
                 self._update_edit_bar_values(self._current_editing_type)

@@ -77,10 +77,11 @@ def _save_hull_as_stl(vertices: np.ndarray, faces: np.ndarray, path: Path) -> bo
 
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        hull_mesh = stl_mesh.Mesh(np.zeros(len(faces), dtype=stl_mesh.Mesh.dtype))
-        hull_mesh.vectors = vertices[faces]  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
+        # Any: Mesh defines its attributes dynamically, so resolution is env-dependent
+        hull_mesh: Any = stl_mesh.Mesh(np.zeros(len(faces), dtype=stl_mesh.Mesh.dtype))
+        hull_mesh.vectors = vertices[faces]
 
-        hull_mesh.save(str(path))  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
+        hull_mesh.save(str(path))
         logger.info("Saved workspace hull STL to %s", path)
         return True
     except Exception as e:

@@ -52,7 +52,7 @@ from waldo_commander.components.io import IoPage
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
-from waldo_commander.constants import config, DEFAULT_CAMERA
+from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
     warmup_pipelines,
@@ -256,6 +256,13 @@ async def initialize_urdf_scene() -> None:
 
     control_panel.sync_gizmo_to_urdf()
 
+    # Keep-out shapes persist per-process on commander.scene but this scene is
+    # rebuilt per page load — re-render them or barriers turn invisible while
+    # still enforced.
+    scene_handle = waldoctl.commander.scene
+    if scene_handle is not None:
+        scene_handle.render()
+
     # Scene wasn't ready earlier, so apply simulator appearance now.
     if waldoctl.commander.status.simulator_active:
         ui_state.urdf_scene.set_simulator_appearance(True)
@@ -367,6 +374,14 @@ async def check_ping() -> None:
                 getattr(result, "hardware_connected", "N/A"),
                 result,
             )
+            if new_ok:
+                # A reconnect may be a RESTARTED controller (fresh, empty
+                # program layer) or one whose world changed while we were
+                # unreachable — adopt its readback truth; never push a
+                # GUI-remembered copy.
+                scene_handle = waldoctl.commander.scene
+                if scene_handle is not None:
+                    asyncio.create_task(scene_handle.refresh_from_backend())
         ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
@@ -485,11 +500,6 @@ def update_ui_from_status() -> None:
         robot_state.notify_changed()
 
 
-# Core tab ids the frontend owns; a plugin claiming one would create duplicate
-# Quasar tab / tab_panel names and corrupt the layout, so discovery skips them.
-_RESERVED_TAB_IDS = frozenset({"program", "io", "gripper", "response", "log", "help"})
-
-
 def _discover_plugin_panels() -> None:
     """Populate ``ui_state.plugin_panels`` from the ``waldoctl.panels`` group.
 
@@ -509,7 +519,7 @@ def _discover_plugin_panels() -> None:
     for cls in iter_plugin_panels():
         if cls.id in disabled:
             continue
-        if cls.id in _RESERVED_TAB_IDS:
+        if cls.id in RESERVED_TAB_IDS:
             logger.warning(
                 "Skipping plugin panel %s: id %r collides with a core tab",
                 cls.__name__,
@@ -1096,6 +1106,12 @@ def _register_handlers() -> None:
         except Exception as e:
             logger.warning("startup: select_tool failed: %s", e)
 
+        # Adopt the controller's applied collision world (installation shapes
+        # exist even with no program loaded — the GUI must ask, not push).
+        scene_handle = waldoctl.commander.scene
+        if scene_handle is not None:
+            await scene_handle.refresh_from_backend()
+
     @ng_app.on_startup
     async def _on_startup() -> None:
         """NiceGUI startup hook.
@@ -1474,6 +1490,7 @@ async def _status_consumer() -> None:
     # the copy happens on change, not every tick.
     joint_en_shadow: np.ndarray | None = None
     cart_en_shadow: dict[str, np.ndarray] = {}
+    scene_epoch_shadow: int | None = None
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1559,6 +1576,26 @@ async def _status_consumer() -> None:
                                 bool(arr[2 * i + 1]) for i in range(n_axes)
                             ]
                             cart_en_shadow[frame] = arr.copy()
+
+                    coll = st.collision
+                    # Content compare (both hold (str, str) tuples) — a length
+                    # check misses same-length pair swaps. Copy: the decoder
+                    # refills status.collision_pairs in place.
+                    if (
+                        coll.active != status.collision_active
+                        or coll.pairs != status.collision_pairs
+                    ):
+                        coll.active = status.collision_active
+                        coll.pairs = list(status.collision_pairs)
+
+                    # Collision-world epoch moved (first frame after connect,
+                    # a program's set_shapes, another client, a restart) —
+                    # adopt the controller's world via readback.
+                    if status.scene_epoch != scene_epoch_shadow:
+                        scene_epoch_shadow = status.scene_epoch
+                        scene_handle = waldoctl.commander.scene
+                        if scene_handle is not None:
+                            asyncio.create_task(scene_handle.refresh_from_backend())
 
                     action = st.action
                     action.current_name = status.action_current

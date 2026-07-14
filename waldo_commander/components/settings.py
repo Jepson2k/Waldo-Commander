@@ -10,6 +10,7 @@ import waldoctl
 from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
 
 from waldo_commander.components.simulation_engine import simulation
+from waldo_commander.constants import RESERVED_TAB_IDS
 from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
@@ -556,14 +557,11 @@ class SettingsContent:
 
             return _handler
 
-        # Function-level import avoids a settings<-main import cycle.
-        from waldo_commander.main import _RESERVED_TAB_IDS
-
         for cls in discovered:
             # Skip panels that can never mount (id collides with a core tab) — a
             # toggle for them would be a no-op. (applies_to() is context-dependent
             # — a panel that doesn't apply to this robot still gets a toggle.)
-            if cls.id in _RESERVED_TAB_IDS:
+            if cls.id in RESERVED_TAB_IDS:
                 continue
             panel_id = cls.id
             label = cls.display_name

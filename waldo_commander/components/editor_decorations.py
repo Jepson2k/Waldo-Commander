@@ -17,7 +17,6 @@ from nicegui import Client, ui
 from nicegui.elements.codemirror.codemirror import (
     DecorationSpec,
     Diagnostic,
-    LineAnchor,
 )
 
 import waldoctl
@@ -300,10 +299,9 @@ class EditorDecorations:
             return
         tab = waldoctl.commander.programs.get(tab_id)
         targets = tab.dry_run.targets if tab is not None else []
-        anchors: list[LineAnchor] = [
-            {"id": t.id, "line": t.line_number} for t in targets if t.line_number > 0
-        ]
-        textarea.line_anchors[:] = anchors
+        textarea.line_anchors = {
+            t.id: t.line_number for t in targets if t.line_number > 0
+        }
 
 
 decorations: EditorDecorations = EditorDecorations()

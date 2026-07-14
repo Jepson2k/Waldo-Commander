@@ -2,7 +2,6 @@
 
 import logging
 import os
-import random
 import subprocess
 import sys
 import asyncio
@@ -17,6 +16,7 @@ from nicegui.testing.general_fixtures import (
     nicegui_reset_globals,  # noqa: F401 - required by screen fixture
 )
 from nicegui.testing.screen import Screen
+from nicegui.testing import screen_plugin as nicegui_screen_plugin
 from nicegui.testing.screen_plugin import (
     nicegui_driver,  # noqa: F401 - default driver (per-test browser)
     nicegui_remove_all_screenshots,  # noqa: F401 - clears screenshots before session
@@ -58,12 +58,26 @@ skip_webgl_macos_ci = pytest.mark.skipif(
 )
 
 # ============================================================================
-# Port Configuration (session-randomized to avoid conflicts)
+# Port Configuration (kernel-allocated per session to avoid conflicts)
 # ============================================================================
-# Generate unique ports per test session to avoid conflicts between test runs
-_SESSION_PORT_BASE = random.randint(10000, 50000)
-CONTROLLER_PORT = _SESSION_PORT_BASE
-MULTICAST_PORT = _SESSION_PORT_BASE + 1
+
+
+def _free_udp_port() -> int:
+    """Allocate a free UDP port from the OS ephemeral range.
+
+    Binds ("", 0) so the kernel hands back a usable port — never one in a
+    reserved or excluded range. A random pick occasionally landed inside a
+    Windows/Hyper-V reserved range on CI and every bind in the session died
+    with WinError 10013 (same fix as parol6's tests/conftest.py)."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind(("", 0))
+        return sock.getsockname()[1]
+
+
+CONTROLLER_PORT = _free_udp_port()
+MULTICAST_PORT = _free_udp_port()
 
 
 def _get_test_ports() -> tuple[int, int]:
@@ -359,7 +373,10 @@ def restore_process_pool_after_nicegui_fixtures(
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers."""
+    """Register custom markers and run the screen plugin's configure hook
+    (the screen fixtures are imported, not plugin-registered, so Screen.PORT /
+    SCREENSHOT_DIR / DOWNLOAD_DIR must be set up here)."""
+    nicegui_screen_plugin.pytest_configure(config)
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"
     )

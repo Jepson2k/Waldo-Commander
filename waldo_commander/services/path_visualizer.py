@@ -20,6 +20,7 @@ from typing import Any, cast
 import numpy as np
 
 from nicegui import run
+from nicegui import app as ng_app
 
 import waldoctl
 from waldoctl import LinearMotion
@@ -31,6 +32,7 @@ from waldo_commander.state import (
     ui_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
+from waldo_commander.common.theme import SceneColors
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
@@ -54,6 +56,65 @@ def _warm_worker(backend_package: str = "parol6") -> bool:
     from waldo_commander.services.path_preview_client import PathPreviewClient  # noqa: F401
 
     return True
+
+
+def _mark_colliding_segments(
+    robot,
+    segment_dicts: list[dict],
+    tool_selections: list,
+    shape_changes: list,
+    shapes_wire: list[tuple] | None,
+    initial_tool: tuple[str, str] | None,
+) -> None:
+    """Recolor segment dicts whose joint trajectory collides (self/tool/shape).
+
+    Runs in the dry-run subprocess against its own checker, replaying BOTH
+    boundary streams the dry run recorded — ``select_tool`` and ``set_shapes``
+    — so each segment is checked with the tool attached and the world active
+    at its point in the program (the dry run itself only validates IK). Each
+    hit records its first colliding waypoint in ``collision_step``.
+
+    The checker's tool and program world are restored on exit — the rare
+    in-process fallback shares the live checker.
+    """
+    if not robot.has_collision_checking:
+        return
+    from waldoctl import shape_from_wire
+
+    # Unconditional — including the EMPTY set: a reused pool worker keeps its
+    # process-global checker between runs, so a cleared world must clear it.
+    submit_world = [shape_from_wire(*t) for t in shapes_wire or []]
+    robot.apply_shapes(submit_world)
+    tool_key, variant = initial_tool or ("NONE", "")
+    try:
+        robot.set_active_tool(tool_key, variant_key=variant or None)
+        # A boundary recorded at segment_index i applies to segments after i.
+        # Recorded order IS chronological (indexes are non-decreasing) — a sort
+        # would reorder same-index back-to-back entries and replay the wrong
+        # state.
+        tool_bounds = [
+            (ts.segment_index, ts.tool_key, ts.variant_key) for ts in tool_selections
+        ]
+        shape_bounds = [(sc.segment_index, sc.shapes) for sc in shape_changes]
+        ti = si = 0
+        for idx, d in enumerate(segment_dicts):
+            while ti < len(tool_bounds) and tool_bounds[ti][0] < idx:
+                _, b_tool, b_variant = tool_bounds[ti]
+                robot.set_active_tool(b_tool, variant_key=b_variant or None)
+                ti += 1
+            while si < len(shape_bounds) and shape_bounds[si][0] < idx:
+                robot.apply_shapes(list(shape_bounds[si][1]))
+                si += 1
+            jt = d.get("joint_trajectory")
+            if not jt:
+                continue
+            hit = robot.check_trajectory(np.asarray(jt, dtype=np.float64))
+            if hit >= 0:
+                d["collision_step"] = int(hit)
+                d["color"] = SceneColors.COLLISION_HEX
+    finally:
+        robot.set_active_tool(tool_key, variant_key=variant or None)
+        robot.apply_shapes(submit_world)
 
 
 def _is_test_environment() -> bool:
@@ -107,6 +168,8 @@ def _run_simulation_isolated(
     backend_package: str = "parol6",
     dry_run_client_cls: type | None = None,
     tool_meta_registry: dict[str, dict] | None = None,
+    shapes_wire: list[tuple] | None = None,
+    initial_tool: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -139,6 +202,7 @@ def _run_simulation_isolated(
     local_targets: list[dict] = []
     local_tool_actions: list = []
     local_tool_selections: list = []
+    local_shape_changes: list = []
     # Updated by the client on each motion.
     final_state: dict[str, Any] = {"joints_rad": None}
     truncated = False
@@ -169,6 +233,7 @@ def _run_simulation_isolated(
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
                     tool_selection_collector=local_tool_selections,
+                    shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
@@ -182,6 +247,7 @@ def _run_simulation_isolated(
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
                     tool_selection_collector=local_tool_selections,
+                    shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
@@ -193,6 +259,20 @@ def _run_simulation_isolated(
         if hasattr(backend, "client"):
             setattr(backend.client, "RobotClient", LocalPathPreviewClient)
             setattr(backend.client, "AsyncRobotClient", LocalAsyncPathPreviewClient)
+
+        # Reset this worker's program-layer world to the submit-time truth
+        # BEFORE the script runs: a reused pool worker's process-global checker
+        # otherwise carries a previous run's shapes into this run's planning
+        # guard. Empty included. Installation shapes come from robot config at
+        # backend import and are untouched.
+        from waldo_commander.profiles import get_robot
+        from waldoctl import shape_from_wire
+
+        _preview_robot = get_robot(backend_package)
+        if _preview_robot.has_collision_checking:
+            _preview_robot.apply_shapes(
+                [shape_from_wire(*t) for t in shapes_wire or []]
+            )
 
         # Inserted into sys.modules so `import time` returns this mock.
         class MockTimeModule(ModuleType):
@@ -328,6 +408,23 @@ def _run_simulation_isolated(
     if len(local_segments) > max_segments:
         del local_segments[max_segments:]
         truncated = True
+
+    # Collision marking runs here (normally a subprocess) so 1000s of C++
+    # checks never block the UI event loop and mid-script tool selections are
+    # honored. A marking failure must not discard an otherwise-good dry run.
+    try:
+        from waldo_commander.profiles import get_robot
+
+        _mark_colliding_segments(
+            get_robot(backend_package),
+            local_segments,
+            local_tool_selections,
+            local_shape_changes,
+            shapes_wire,
+            initial_tool,
+        )
+    except Exception as e:
+        logger.warning("Preview collision marking failed: %s", e)
 
     return {
         "segments": local_segments,
@@ -469,6 +566,21 @@ class PathVisualizer:
                 except (KeyError, AttributeError):
                     pass
 
+            # Collision-marking inputs: the live shapes (wire form crosses the
+            # process boundary) and the live tool as the checker's starting
+            # state — matching what execution-time guards would use.
+            scene_handle = waldoctl.commander.scene
+            shapes_wire = (
+                [s.to_wire() for s in scene_handle.shapes]
+                if scene_handle is not None
+                else []
+            )
+            live_tool_key = waldoctl.commander.status.tool.key or "NONE"
+            initial_tool = (
+                live_tool_key,
+                ng_app.storage.general.get(f"tool_variant_{live_tool_key}", "") or "",
+            )
+
             try:
                 result = await asyncio.wait_for(
                     run.cpu_bound(
@@ -479,6 +591,8 @@ class PathVisualizer:
                         backend_pkg,
                         dr_cls,
                         tool_meta_registry or None,
+                        shapes_wire,
+                        initial_tool,
                     ),
                     timeout=SIMULATION_TIMEOUT_S
                     + 2.0,  # Extra buffer for process overhead
@@ -502,6 +616,8 @@ class PathVisualizer:
                         backend_pkg,
                         dr_cls,
                         tool_meta_registry or None,
+                        shapes_wire,
+                        initial_tool,
                     )
                 except Exception as e2:
                     logger.error("Sync simulation also failed: %s", e2)

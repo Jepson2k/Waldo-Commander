@@ -63,6 +63,16 @@ class SceneColors:
     # Edit mode / inactive gray
     EDIT_GRAY_HEX = "#525252"
 
+    # Predicted-collision highlight (theme-independent deep alarm red)
+    COLLISION_HEX = "#b00020"
+
+    # Keep-out shape / barrier (translucent slate — red highlight stands out)
+    SHAPE_HEX = "#6d8ea0"
+    # Program shape awaiting backend readback confirmation (amber = unconfirmed)
+    SHAPE_DRAFT_HEX = "#d9a05b"
+    # Installation-layer shape (robot config; not editable from the GUI)
+    SHAPE_INSTALL_HEX = "#55606a"
+
     # Tool body colors (teal family — distinct from arm in every mode)
     TOOL_BODY_HEX = "#2a9d8f"
     TOOL_BODY_SIM_HEX: str = TOOL_BODY_HEX
