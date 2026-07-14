@@ -511,6 +511,19 @@ def reset_state(request: pytest.FixtureRequest):
 
     reset_all_state()
 
+    # The keybindings manager is a module singleton: a browser test that
+    # focuses the editor leaves _editor_focused=True behind (no blur event
+    # fires when Selenium tears down), silently muting every shortcut in
+    # later tests. Same for a key left "down". Fresh per test, like a fresh
+    # process would be.
+    from waldo_commander.services.keybindings import keybindings_manager
+
+    keybindings_manager.set_editor_focused(False)
+    keybindings_manager._keys_down.clear()
+    keybindings_manager._holding_active.clear()
+    keybindings_manager._hold_start_times.clear()
+    keybindings_manager._hold_timers.clear()
+
     # Test-specific overrides (differ from zero defaults). _install_test_commander()
     # above guarantees the locator is registered, so these need no guards.
     from waldoctl import FrameJogAvailability
