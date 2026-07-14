@@ -453,10 +453,7 @@ async def test_stale_shape_push_never_overwrites_a_newer_one(monkeypatch) -> Non
 
     monkeypatch.setattr(waldoctl.commander, "client", _Client())
 
-    handle = sh.WcSceneHandle.__new__(sh.WcSceneHandle)
-    handle._groups = {}
-    handle._installation = ()
-    handle._confirmed = False
+    handle = sh.WcSceneHandle()
     handle._shapes = [old]
 
     task = asyncio.create_task(sh.WcSceneHandle._push_shapes_async(handle))
