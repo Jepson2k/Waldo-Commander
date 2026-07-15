@@ -36,20 +36,32 @@ def _session_id() -> str:
 
 
 def _label(session_id: str) -> str:
+    """Human-facing holder label — the MCP client's self-reported name when
+    the session sent one at initialize, else a generic tag."""
+    params = get_context().session.client_params
+    name = params.clientInfo.name if params is not None else ""
+    if name:
+        return f"{name} ({session_id[:8]})"
     return f"MCP session {session_id[:8]}"
 
 
 def require_control() -> None:
     """Gate an action on holding the control lease (no hardware-motion consent).
 
-    Implicitly acquires a free lease (the first action claims it); refuses if a
-    different live holder has it — the caller must ``take_control`` to seize.
+    Implicitly acquires a free lease (the first action claims it), and
+    inherits one held by another MCP session — session ids churn on every
+    reconnect, so MCP sessions form one interchangeable holder class (two
+    genuinely concurrent AI clients would trade the lease rather than fight;
+    the per-session hardware-consent floor still applies to each). Refuses
+    only when a live Browser holder has it — the caller must ``take_control``
+    to seize from the human.
     """
     sid = _session_id()
     if control_lease.held_by(MCP, sid):
         control_lease.touch(MCP, sid)
         return
-    if control_lease.is_free():
+    h = control_lease.holder()
+    if h is None or h.channel == MCP:
         control_lease.seize(MCP, sid, _label(sid))
         return
     raise PermissionError(
@@ -137,9 +149,11 @@ def require_actuation(description: str) -> None:
 async def take_control() -> dict:
     """Seize the single-controller lease for this MCP session.
 
-    Anyone can take control; the displaced holder (a browser tab or another MCP
-    session) is then blocked from actuating and can see that you hold it. Reads
-    are never blocked for anyone.
+    Only needed to take over from the human's browser tab: a free lease is
+    claimed by your first gated action, and a lease held by a previous MCP
+    session transfers to you automatically. The displaced holder is blocked
+    from actuating and can see that you hold it. Reads are never blocked for
+    anyone.
     """
     sid = _session_id()
     control_lease.seize(MCP, sid, _label(sid))

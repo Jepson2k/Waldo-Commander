@@ -60,6 +60,9 @@ class ScriptExecutionController:
         # Tab whose content was launched. Output is appended to that tab's
         # ``Program.log`` so switching tabs preserves the originating tab's log.
         self._script_tab_id: str | None = None
+        # Exit code of the most recently finished run (None while running or
+        # before any run) — lets execution.wait_active report success/crash.
+        self.last_exit_code: int | None = None
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel the event watcher bound to this page.
@@ -190,6 +193,7 @@ class ScriptExecutionController:
             self._step_controller = GUIStepController(self._step_session_id)
             self._step_controller.initialize()
 
+            self.last_exit_code = None
             self.script_handle = await run_script(
                 script_config, on_stdout, on_stderr, session_id=self._step_session_id
             )
@@ -344,6 +348,7 @@ class ScriptExecutionController:
                 with contextlib.suppress(Exception):
                     await t
             if self.script_handle is handle:
+                self.last_exit_code = rc
                 with ui_client:
                     self._reset_state()
                     logger.info("Script %s finished with code %s", filename, rc)

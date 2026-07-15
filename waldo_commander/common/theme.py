@@ -674,6 +674,106 @@ html, body {
 }
 .control-glow-breathe { animation: wc-glow-breathe 2.6s ease-in-out infinite; }
 
+/* ---- AI control cluster ----
+   One --mode-accent per control mode themes the perimeter glow, the
+   top-center capsule, and the approval dialog. No amber/orange accents
+   here — amber is the physical arm's color (see .consent-hw below). */
+.wc-mode-inspect    { --mode-accent: var(--color-emerald-400); --mode-accent-text: var(--color-emerald-300); }
+.wc-mode-auto-edits { --mode-accent: var(--color-sky-400);     --mode-accent-text: var(--color-sky-300); }
+.wc-mode-autopilot  { --mode-accent: var(--color-violet-400);  --mode-accent-text: var(--color-violet-300); }
+body.body--light .wc-mode-inspect    { --mode-accent-text: var(--color-emerald-700); }
+body.body--light .wc-mode-auto-edits { --mode-accent-text: var(--color-sky-700); }
+body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-700); }
+
+/* CSS-variable scope over glow + capsule; generates no box, so the fixed
+   children still position against the viewport. */
+.ai-mode-scope { display: contents; }
+
+.control-lease-glow {
+  position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+  box-shadow: inset 0 0 18px 2px color-mix(in srgb, var(--mode-accent) 30%, transparent),
+              inset 0 0 60px 8px color-mix(in srgb, var(--mode-accent) 12%, transparent);
+}
+/* An MCP client is connected but the human drives. */
+.control-lease-glow.glow-faint { opacity: 0.35; }
+
+/* Glass capsule holding the mode chip + Take-control button. Its own
+   backdrop-filter makes it a containing block — fine while it has no
+   position:fixed descendants (the glow is a sibling). */
+.ai-cluster {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9999;
+  display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 9999px;
+  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2));
+  backdrop-filter: var(--glass-backdrop);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  border: 1px solid color-mix(in srgb, var(--mode-accent) 35%, transparent);
+  box-shadow: var(--glass-box-shadow);
+  isolation: isolate;
+  color: var(--glass-fg);
+  transition: border-color 0.3s ease;
+}
+.ai-cluster.ai-driving { border-color: color-mix(in srgb, var(--mode-accent) 65%, transparent); }
+
+.ai-cluster .control-mode-chip {
+  background: color-mix(in srgb, var(--mode-accent) 15%, transparent) !important;
+  color: var(--mode-accent-text) !important;
+  border-radius: 9999px; font-weight: 500; margin: 0;
+}
+.ai-cluster .control-mode-chip:hover {
+  background: color-mix(in srgb, var(--mode-accent) 25%, transparent) !important;
+}
+
+/* The only solid-filled element in the capsule: pops out when the AI takes
+   the lease (the entry animation replays on every hidden -> visible flip)
+   and pulses on the glow-breathe clock. */
+.ai-cluster .btn-take-control {
+  background: var(--mode-accent) !important;
+  color: var(--color-neutral-900) !important;
+  border-radius: 9999px; font-weight: 600;
+  animation: wc-popout 0.28s cubic-bezier(0.34, 1.56, 0.64, 1),
+             wc-btn-pulse 2.6s ease-in-out infinite;
+}
+@keyframes wc-popout {
+  from { transform: translateX(-10px) scale(0.85); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+@keyframes wc-btn-pulse {
+  0%, 100% { box-shadow: 0 0 10px 2px color-mix(in srgb, var(--mode-accent) 55%, transparent); }
+  50%      { box-shadow: 0 0 2px 0   color-mix(in srgb, var(--mode-accent) 20%, transparent); }
+}
+
+/* Approval dialog: glass card with a mode-accent top bar; the hardware
+   consent variant switches the accent to amber = the physical arm. */
+.ai-approval-card {
+  min-width: 320px; max-width: 440px;
+  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
+  backdrop-filter: var(--glass-backdrop);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  border: 0; border-top: 2px solid var(--mode-accent);
+  border-radius: 10px; color: var(--glass-fg);
+  box-shadow: var(--glass-box-shadow),
+              0 0 24px color-mix(in srgb, var(--mode-accent) 25%, transparent);
+}
+.ai-approval-card .ai-approval-icon { color: var(--mode-accent-text); }
+.ai-approval-card .ai-approval-desc {
+  background: color-mix(in srgb, var(--mode-accent) 8%, transparent);
+  border-left: 2px solid var(--mode-accent);
+  border-radius: 4px; padding: 6px 10px;
+}
+.ai-approval-card .btn-consent-allow {
+  background: var(--mode-accent) !important;
+  color: var(--color-neutral-900) !important;
+}
+.ai-approval-card.consent-hw { border-top-color: var(--sim-amber); }
+.ai-approval-card.consent-hw .btn-consent-allow {
+  background: var(--sim-amber) !important;
+  color: var(--on-warning) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-glow-breathe, .ai-cluster .btn-take-control { animation: none !important; }
+}
+
 /* Overlay panels with frosted glass effect */
 .overlay-panel { position: absolute; z-index: 10; pointer-events: auto; }
 .overlay-card {

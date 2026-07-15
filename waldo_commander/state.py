@@ -331,9 +331,11 @@ def reset_all_state() -> None:
     # cleared alongside the public surface it writes to.
     from waldo_commander.services.action_log import action_log_service
     from waldo_commander.services.control_lease import control_lease
+    from waldo_commander.services.edit_decisions import clear as clear_edit_decisions
 
     action_log_service.clear()
     control_lease.reset()
+    clear_edit_decisions()
     import waldoctl
 
     try:

@@ -278,7 +278,14 @@ async def test_propose_and_cancel_edit_via_mcp(user: User) -> None:
 
     mcp = get_mcp()
     async with Client(mcp) as client:
-        edit_id = _payload(
+        numbered = _payload(
+            await client.call_tool("programs.get_source", {"numbered": True})
+        )
+        assert numbered.splitlines() == ["1\ta", "2\tb", "3\tc"], (
+            "numbered source is what diff hunks are authored against"
+        )
+
+        proposed = _payload(
             await client.call_tool(
                 "programs.propose_edit",
                 {
@@ -287,7 +294,8 @@ async def test_propose_and_cancel_edit_via_mcp(user: User) -> None:
                 },
             )
         )
-        assert isinstance(edit_id, str) and edit_id
+        assert proposed["status"] == "pending", "Inspect mode: human must approve"
+        edit_id = proposed["id"]
 
         pending = _payload(await client.call_tool("programs.list_pending_edits"))
         assert len(pending) == 1
@@ -299,6 +307,14 @@ async def test_propose_and_cancel_edit_via_mcp(user: User) -> None:
         pending_after = _payload(await client.call_tool("programs.list_pending_edits"))
         assert pending_after == []
         assert p.source == "a\nb\nc\n"  # never applied
+
+        # The withdrawal is on record — a waiter learns it immediately.
+        decision = _payload(
+            await client.call_tool(
+                "programs.wait_edit_decision", {"edit_id": edit_id, "timeout": 5}
+            )
+        )
+        assert decision == {"status": "withdrawn"}
 
 
 @pytest.mark.integration
@@ -355,6 +371,152 @@ async def test_mcp_program_verbs_render_in_editor(user: User, tmp_path) -> None:
 
 
 @pytest.mark.integration
+async def test_programs_new_becomes_active_and_reuses_same_filename(
+    user: User,
+) -> None:
+    """``programs.new`` must make the created tab ACTIVE — ``propose_edit``
+    defaults to the active program, and in the field every edit silently landed
+    on the human's untitled scratch tab instead of the tab just created. A
+    repeated ``new`` with the same filename (a retried call after an MCP
+    reconnect) must reuse the open tab, not stack duplicates; the default
+    ``untitled.py`` name is exempt so the human's scratch tab is never hijacked.
+    """
+    await user.open("/")
+    await wait_for_app_ready()
+
+    mcp = get_mcp()
+    async with Client(mcp) as client:
+        new_id = _payload(
+            await client.call_tool("programs.new", {"filename": "wave.py"})
+        )
+        assert waldoctl.commander.programs.active_id == new_id, (
+            "programs.new must switch to the tab it created"
+        )
+
+        # No program_id: the edit must land on the tab just created.
+        await client.call_tool(
+            "programs.propose_edit", {"diff": "@@ -0,0 +1,1 @@\n+print(1)\n"}
+        )
+        p = waldoctl.commander.programs.get(new_id)
+        assert p is not None and p.edits.pending, (
+            "propose_edit after programs.new must target the created tab"
+        )
+
+        again = _payload(
+            await client.call_tool("programs.new", {"filename": "wave.py"})
+        )
+        assert again == new_id, "same filename must reuse the open tab"
+        open_waves = [
+            t for t in waldoctl.commander.programs.items if t.filename == "wave.py"
+        ]
+        assert len(open_waves) == 1, "no duplicate tabs for the same filename"
+
+        u1 = _payload(await client.call_tool("programs.new", {}))
+        u2 = _payload(await client.call_tool("programs.new", {}))
+        assert u1 != u2, "untitled.py tabs are never deduped"
+
+
+@pytest.mark.integration
+async def test_mcp_lease_survives_session_churn(user: User) -> None:
+    """A reconnected MCP session (fresh session id) must inherit a lease held
+    by a previous MCP session instead of being refused — one field session
+    churned through 9 session ids and needed ``take_control`` after every
+    reconnect. Seizing from the Browser still requires an explicit
+    ``take_control``."""
+    from fastmcp.exceptions import ToolError
+
+    from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+
+    mcp = get_mcp()
+    try:
+        # Lease held by a prior MCP session that is still within its TTL.
+        control_lease.seize(MCP, "stale-session", "MCP session stale-se")
+        async with Client(mcp) as client:
+            # Gated by require_control only; a no-op while nothing is running.
+            await client.call_tool("execution.stop_active")
+            h = control_lease.holder()
+            assert h is not None and h.channel == MCP and h.id != "stale-session", (
+                "a new MCP session must inherit the lease from a prior one"
+            )
+
+        # A live Browser holder is a real arbitration boundary — still refused.
+        # Must be the real page client id: liveness for BROWSER holders checks
+        # Client.instances, so a made-up id would be dropped as stale.
+        assert ui_state.active_client_id is not None
+        control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
+        async with Client(mcp) as client:
+            with pytest.raises(ToolError, match="take_control"):
+                await client.call_tool("execution.stop_active")
+    finally:
+        control_lease.reset()
+
+
+@pytest.mark.integration
+async def test_program_stderr_lines_carry_a_single_err_prefix(user: User) -> None:
+    """Regression: stderr lines were prefixed ``[ERR] `` twice — once by the
+    script runner's stream reader and again by ``_record_line`` — so every
+    traceback line read ``[ERR] [ERR] ...`` in the editor log and via
+    ``programs.get_log``."""
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_lease,
+        set_control_mode,
+    )
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    p = waldoctl.commander.programs.active
+    assert p is not None
+    # A crashing program (nonzero exit). Program source is ALSO exec'd
+    # in-process by the dry-run simulation, so the crash is gated to the real
+    # subprocess (the stepping bootstrap sets WALDO_STEP_SESSION there):
+    # unconditional SystemExit would sail through the dry-run into the app,
+    # and an unconditional RuntimeError would log a simulation ERROR that
+    # trips the unexpected-ERROR-logs teardown check.
+    code = (
+        "import os, sys\n"
+        'sys.stderr.write("boom\\n")\n'
+        'if os.environ.get("WALDO_STEP_SESSION"):\n'
+        '    raise RuntimeError("crash")\n'
+    )
+    textarea = ui_state.active_textarea
+    assert textarea is not None
+    textarea.value = code
+
+    mcp = get_mcp()
+    set_control_mode(ControlMode.AUTOPILOT)  # simulator: no prompts
+    waldoctl.commander.status.simulator_active = True
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("control.take_control")
+            await client.call_tool("execution.run_active")
+            result = _payload(
+                await client.call_tool("execution.wait_active", {"timeout": 20})
+            )
+            log = _payload(await client.call_tool("programs.get_log"))
+        assert result["finished"] is True
+        assert result["exit_ok"] is False, "a crashed program must not read as ok"
+        tail_texts = [e["text"] for e in result["log_tail"]]
+        assert "[ERR] boom" in tail_texts, f"log tail: {tail_texts}"
+        stderr_lines = [e["text"] for e in log if e["stream"] == "stderr"]
+        assert "[ERR] boom" in stderr_lines, f"stderr lines: {stderr_lines}"
+        assert not any(t.startswith("[ERR] [ERR]") for t in stderr_lines), (
+            f"doubled [ERR] prefix: {stderr_lines}"
+        )
+    finally:
+        waldoctl.commander.status.simulator_active = True
+        control_lease.reset()
+
+
+@pytest.mark.integration
 async def test_control_modes_gate_edits_and_motion(user: User) -> None:
     """The three control modes govern MCP edits + motion end-to-end (simulator):
 
@@ -392,7 +554,10 @@ async def test_control_modes_gate_edits_and_motion(user: User) -> None:
 
             # ---- Inspect: edit stays pending, move needs per-action approval --
             set_control_mode(ControlMode.INSPECT)
-            await client.call_tool("programs.propose_edit", {"diff": _DIFF_BB})
+            proposed = _payload(
+                await client.call_tool("programs.propose_edit", {"diff": _DIFF_BB})
+            )
+            assert proposed["status"] == "pending"
             await asyncio.sleep(0)
             assert p.edits.pending and p.source == "a\nb\nc\n", "Inspect must not apply"
 
@@ -417,9 +582,15 @@ async def test_control_modes_gate_edits_and_motion(user: User) -> None:
             assert p.edits.pending == [] and p.source == "a\nB\nc\n", (
                 "switching to Auto-edits must apply edits already pending"
             )
-            # A freshly proposed edit also auto-applies; a move still prompts.
-            await client.call_tool(
-                "programs.propose_edit", {"diff": "@@ -3,1 +3,1 @@\n-c\n+C\n"}
+            # A freshly proposed edit also auto-applies (and the tool says so);
+            # a move still prompts.
+            proposed = _payload(
+                await client.call_tool(
+                    "programs.propose_edit", {"diff": "@@ -3,1 +3,1 @@\n-c\n+C\n"}
+                )
+            )
+            assert proposed["status"] == "applied", (
+                "propose_edit must report the synchronous auto-apply"
             )
             await asyncio.sleep(0)
             assert p.edits.pending == [] and p.source == "a\nB\nC\n", (
@@ -440,6 +611,66 @@ async def test_control_modes_gate_edits_and_motion(user: User) -> None:
         panel._approval_sid = None
         if panel._consent_dialog is not None:
             panel._consent_dialog.close()
+
+
+@pytest.mark.integration
+async def test_wait_edit_decision_resolves_on_human_decision(user: User) -> None:
+    """``programs.wait_edit_decision`` must block through the pending window
+    and resolve as soon as the human clicks Approve/Reject in the editor —
+    the replacement for spinning on ``list_pending_edits``."""
+    from waldoctl import EditId
+
+    from waldo_commander.services import control_lease as cl
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    ng_client = cl.Client.instances[ui_state.active_client_id]
+    p = waldoctl.commander.programs.active
+    assert editor is not None and p is not None
+    p.source = "a\nb\nc\n"
+
+    mcp = get_mcp()
+    async with Client(mcp) as client:
+
+        async def _propose_and_wait(diff: str) -> tuple[str, asyncio.Task]:
+            proposed = _payload(
+                await client.call_tool("programs.propose_edit", {"diff": diff})
+            )
+            assert proposed["status"] == "pending"
+            waiter = asyncio.create_task(
+                client.call_tool(
+                    "programs.wait_edit_decision",
+                    {"edit_id": proposed["id"], "timeout": 10},
+                )
+            )
+            await asyncio.sleep(0.1)  # waiter is inside its poll loop
+            assert not waiter.done(), "must still be waiting while pending"
+            return proposed["id"], waiter
+
+        edit_id, waiter = await _propose_and_wait("@@ -2,1 +2,1 @@\n-b\n+B\n")
+        with ng_client:
+            editor._approve_edit(p.id, EditId(edit_id))
+        assert _payload(await waiter) == {"status": "applied"}
+        assert p.source == "a\nB\nc\n"
+
+        edit_id, waiter = await _propose_and_wait("@@ -3,1 +3,1 @@\n-c\n+C\n")
+        with ng_client:
+            editor._reject_edit(p.id, EditId(edit_id))
+        assert _payload(await waiter) == {"status": "rejected"}
+        assert p.source == "a\nB\nc\n"
+
+        unknown = _payload(
+            await client.call_tool(
+                "programs.wait_edit_decision",
+                {"edit_id": "no-such-edit", "timeout": 5},
+            )
+        )
+        assert unknown == {"status": "unknown"}
 
 
 @pytest.mark.integration

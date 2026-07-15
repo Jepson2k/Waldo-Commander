@@ -17,12 +17,14 @@ This is loop-affine, which is why the tools must run on the loop.
 from __future__ import annotations
 
 import ast
+import asyncio
 
 import waldoctl
 from waldoctl import EditId
 
 from waldo_commander.constants import default_program_dir
 from waldo_commander.mcp.server import get_mcp
+from waldo_commander.services import edit_decisions
 
 mcp = get_mcp()
 
@@ -74,9 +76,18 @@ async def get_active() -> dict | None:
 
 
 @mcp.tool(name="programs.get_source")
-async def get_source(program_id: str | None = None) -> str:
-    """Current editor source for ``program_id`` (defaults to active)."""
-    return _program(program_id).source
+async def get_source(program_id: str | None = None, numbered: bool = False) -> str:
+    """Current editor source for ``program_id`` (defaults to active).
+
+    Pass ``numbered=True`` for ``N<TAB>line`` output — read that immediately
+    before ``programs.propose_edit`` so your hunk headers and context lines
+    match the real line numbers and text exactly (diffs are applied with NO
+    fuzzy matching).
+    """
+    src = _program(program_id).source
+    if not numbered:
+        return src
+    return "\n".join(f"{n}\t{line}" for n, line in enumerate(src.splitlines(), 1))
 
 
 @mcp.tool(name="programs.list_library")
@@ -130,10 +141,23 @@ async def new_program(
     filename: str = "untitled.py",
     file_path: str | None = None,
 ) -> str:
-    """Create a new program tab. Returns its id."""
-    return waldoctl.commander.programs.new(
-        source=source, filename=filename, file_path=file_path
-    ).id
+    """Create a new program tab, make it ACTIVE, and return its id.
+
+    Name your program (don't leave the default ``untitled.py``). If a tab
+    with the same filename is already open — e.g. this call is a retry after
+    a reconnect — that tab is switched to and its id returned unchanged
+    instead of stacking a duplicate; ``untitled.py`` is exempt so the human's
+    scratch tab is never taken over.
+    """
+    tabs = waldoctl.commander.programs
+    if filename != "untitled.py":
+        existing = next((p for p in tabs.items if p.filename == filename), None)
+        if existing is not None:
+            tabs.switch(existing.id)
+            return existing.id
+    program = tabs.new(source=source, filename=filename, file_path=file_path)
+    tabs.switch(program.id)
+    return program.id
 
 
 @mcp.tool(name="programs.save")
@@ -163,23 +187,29 @@ async def propose_edit(
     diff: str,
     description: str = "",
     program_id: str | None = None,
-) -> str:
+) -> dict:
     """Queue a unified-diff edit on ``program_id`` (defaults to active).
 
     This is the preferred way to author ANY code — a repeatable routine or a
     quick throwaway — because the edit shows up in the human's editor as a diff
     they can see and scrub. Create/switch to a target program first with
-    ``programs.new`` / ``programs.open`` / ``programs.switch``.
+    ``programs.new`` / ``programs.open`` / ``programs.switch``, and read
+    ``programs.get_source(numbered=True)`` immediately before proposing: the
+    diff must apply against the current source EXACTLY (line numbers, context,
+    whitespace — no fuzzy matching). Invalid or non-applicable diffs raise
+    immediately so the caller can fix and retry.
 
-    The diff must apply cleanly against the program's current source;
-    invalid or non-applicable diffs raise immediately so the caller can
-    retry. Returns the new pending edit's id. Whether the edit applies
-    immediately or waits for human approval depends on the control mode
-    (Inspect requires approval; Auto-edits / Autopilot auto-apply) — read
-    ``control.get_controller``.
+    Returns ``{"id", "status"}`` where ``status`` is ``"applied"`` (the
+    control mode auto-applies edits and it's already in the source) or
+    ``"pending"`` (a human must approve it in the editor — tell them what you
+    proposed, then await the outcome with ``programs.wait_edit_decision``).
     """
     p = _program(program_id)
-    return p.edits.propose(diff, description).value
+    edit_id = p.edits.propose(diff, description).value
+    # Auto-apply (Auto-edits / Autopilot) runs synchronously in the editor's
+    # edit-change listener, so by now the edit either left pending or didn't.
+    pending = any(e.id.value == edit_id for e in p.edits.pending)
+    return {"id": edit_id, "status": "pending" if pending else "applied"}
 
 
 @mcp.tool(name="programs.list_pending_edits")
@@ -206,3 +236,34 @@ async def cancel_pending_edit(edit_id: str, program_id: str | None = None) -> No
     """
     p = _program(program_id)
     p.edits.reject(EditId(edit_id))
+    edit_decisions.record(edit_id, "withdrawn")
+
+
+def _edit_pending_anywhere(edit_id: str) -> bool:
+    return any(
+        e.id.value == edit_id
+        for p in waldoctl.commander.programs.items
+        for e in p.edits.pending
+    )
+
+
+@mcp.tool(name="programs.wait_edit_decision")
+async def wait_edit_decision(edit_id: str, timeout: float = 45.0) -> dict:
+    """Block until the human decides a pending edit, up to ``timeout`` seconds.
+
+    Returns ``{"status": ...}`` — ``"applied"`` / ``"rejected"`` /
+    ``"withdrawn"`` once decided, ``"pending"`` if the timeout expired first
+    (just call again to keep waiting), or ``"unknown"`` for an id that is
+    neither pending nor on record. Use this instead of polling
+    ``programs.list_pending_edits`` in a loop.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        outcome = edit_decisions.get(edit_id)
+        if outcome is not None:
+            return {"status": outcome}
+        if not _edit_pending_anywhere(edit_id):
+            return {"status": "unknown"}
+        if asyncio.get_event_loop().time() >= deadline:
+            return {"status": "pending"}
+        await asyncio.sleep(0.5)

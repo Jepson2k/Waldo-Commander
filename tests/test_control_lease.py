@@ -304,3 +304,85 @@ async def test_browser_is_default_holder_and_can_reclaim(user: User) -> None:
                 )
     finally:
         control_lease.reset()
+
+
+@pytest.mark.integration
+async def test_mode_theme_classes_and_approval_card_kinds(user: User) -> None:
+    """The ``wc-mode-*`` class is the single theming source of truth:
+    ``_apply_mode`` stamps it on the scope div (glow + capsule) and on the
+    approval card (which teleports to <body> and can't inherit). Glow intensity
+    is class-driven — faint while the human drives with an AI connected,
+    breathing when an AI session holds the lease — and the approval card
+    switches to the amber hardware variant only for the session-consent kind."""
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        arm_action_prompt,
+        arm_consent_prompt,
+        mcp_touch,
+    )
+
+    await user.open("/")
+    await wait_for_app_ready()
+
+    panel = ui_state.control_panel
+    ng_client = cl.Client.instances[ui_state.active_client_id]
+    try:
+        with ng_client:
+            panel._apply_mode(ControlMode.AUTOPILOT)
+        for el in (panel._mode_scope, panel._approval_card):
+            assert "wc-mode-autopilot" in el.classes
+            assert "wc-mode-inspect" not in el.classes
+            assert "wc-mode-auto-edits" not in el.classes
+        assert panel._mode_chip.text == "Autopilot"
+        with ng_client:
+            panel._apply_mode(ControlMode.INSPECT)
+        assert "wc-mode-inspect" in panel._mode_scope.classes
+        assert "wc-mode-autopilot" not in panel._mode_scope.classes
+
+        # No MCP client at all: the capsule is hidden entirely — an empty
+        # glass pill floating at top-center is a visual bug.
+        control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
+        with ng_client:
+            panel.refresh_control_indicator()
+        assert panel._cluster_row.visible is False
+
+        # AI connected, human driving: faint glow, capsule ring stays calm.
+        mcp_touch("sess-x")
+        with ng_client:
+            panel.refresh_control_indicator()
+        assert panel._cluster_row.visible is True
+        assert "glow-faint" in panel._control_glow.classes
+        assert "control-glow-breathe" not in panel._control_glow.classes
+        assert "ai-driving" not in panel._cluster_row.classes
+
+        # AI seizes: breathing at full strength, capsule ring brightens.
+        control_lease.seize(MCP, "sess-x", "MCP session sess-x")
+        with ng_client:
+            panel.refresh_control_indicator()
+        assert "control-glow-breathe" in panel._control_glow.classes
+        assert "glow-faint" not in panel._control_glow.classes
+        assert "ai-driving" in panel._cluster_row.classes
+
+        # Per-action approval: neutral (mode-accent) card variant.
+        arm_action_prompt("sess-x", "jog joint 1")
+        with ng_client:
+            panel.refresh_control_indicator()
+        assert panel._approval_title.text == "Allow AI action?"
+        assert panel._approval_label.text == "jog joint 1"
+        assert "consent-hw" not in panel._approval_card.classes
+        with ng_client:
+            panel._resolve_approval(False)
+
+        # Hardware consent: the amber physical-arm variant.
+        arm_consent_prompt("sess-x", "MCP session sess-x")
+        with ng_client:
+            panel.refresh_control_indicator()
+        assert panel._approval_title.text == "Allow hardware motion?"
+        assert "consent-hw" in panel._approval_card.classes
+        with ng_client:
+            panel._resolve_approval(False)
+    finally:
+        control_lease.reset()
+        panel._approval_sid = None
+        if panel._consent_dialog is not None:
+            panel._consent_dialog.close()

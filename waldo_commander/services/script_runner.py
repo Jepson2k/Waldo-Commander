@@ -30,9 +30,11 @@ class ScriptProcessHandle(TypedDict):
 
 
 async def _stream_output(
-    stream: asyncio.StreamReader, callback: Callable[[str], None], prefix: str = ""
+    stream: asyncio.StreamReader, callback: Callable[[str], None]
 ) -> None:
-    """Read lines from stream and forward to callback with optional prefix."""
+    """Read lines from stream and forward to callback. Lines are forwarded
+    verbatim — stream tagging (e.g. the ``[ERR]`` marker) is the log
+    recorder's job, so it happens exactly once."""
     try:
         while True:
             line_bytes = await stream.readline()
@@ -40,7 +42,7 @@ async def _stream_output(
                 break
             line = line_bytes.decode("utf-8", errors="ignore").rstrip()
             if line:
-                callback(f"{prefix}{line}")
+                callback(line)
     except Exception as e:
         logger.error("Stream reader error: %s", e)
 
@@ -114,9 +116,7 @@ async def run_script(
         stdout_task = asyncio.create_task(asyncio.sleep(0))
 
     if proc.stderr:
-        stderr_task = asyncio.create_task(
-            _stream_output(proc.stderr, on_stderr, "[ERR] ")
-        )
+        stderr_task = asyncio.create_task(_stream_output(proc.stderr, on_stderr))
     else:
         stderr_task = asyncio.create_task(asyncio.sleep(0))
 

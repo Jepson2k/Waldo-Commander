@@ -15,6 +15,7 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
+from waldo_commander.services import edit_decisions
 from waldo_commander.services.control_lease import control_mode
 from waldo_commander.state import (
     simulation_state,
@@ -779,8 +780,11 @@ class EditorPanel(FileOperationsMixin):
         tab_id = tab.id
         with row:
             label = edit.description or "(no description)"
+            # min-width:0 so the label truncates when the header is tight —
+            # otherwise the whole cluster wraps under the CodeMirror or pushes
+            # the Approve/Reject buttons off the panel.
             ui.label(label).classes("text-xs truncate").style(
-                "max-width: 16rem;"
+                "max-width: 16rem; min-width: 0;"
             ).tooltip(label).mark(f"edit-label-{edit.id.value}")
             if len(pending) > 1:
                 ui.label(f"+{len(pending) - 1}").classes(
@@ -811,6 +815,7 @@ class EditorPanel(FileOperationsMixin):
         except KeyError:
             ui.notify("Edit no longer pending", color="info")
             return
+        edit_decisions.record(edit_id.value, "applied")
         # approve() rewrote tab.source; push it into CodeMirror so the visible
         # editor matches (the value= arg is initial-only and the edit listener
         # only rebuilds the banner/overlay). Without this the pane shows stale
@@ -827,7 +832,8 @@ class EditorPanel(FileOperationsMixin):
         try:
             tab.edits.reject(edit_id)
         except KeyError:
-            pass
+            return
+        edit_decisions.record(edit_id.value, "rejected")
 
     def _reconcile_tabs(self) -> None:
         """Render ``commander.programs`` into this page's tab bar — the single
@@ -915,9 +921,13 @@ class EditorPanel(FileOperationsMixin):
             .style("height: 100%; min-height: 0; padding-bottom: 16px;")
         ):
             # ---- Header Row (title + tabs + cmd + X) ----
+            # no-wrap + min-width:0 on the tab scroller: the review cluster
+            # must stay on the header line (a wrapped second line paints
+            # underneath the CodeMirror), so the tab strip shrinks/scrolls
+            # instead of forcing a wrap.
             with (
                 ui.row()
-                .classes("w-full items-center gap-2 px-2")
+                .classes("w-full items-center gap-2 px-2 no-wrap")
                 .style("height: 42px;")
             ):
                 ui.label("Program").classes("text-lg font-medium whitespace-nowrap")
@@ -926,7 +936,7 @@ class EditorPanel(FileOperationsMixin):
                 with (
                     ui.scroll_area()
                     .classes("flex-1 no-wrap items-start editor-tabs-scroll")
-                    .style("height: 42px;")
+                    .style("height: 42px; min-width: 0;")
                 ):
                     with ui.row().classes("items-center gap-0 flex-nowrap"):
                         self.tabs_container = (

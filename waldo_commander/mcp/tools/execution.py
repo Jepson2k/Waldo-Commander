@@ -8,6 +8,8 @@ context. Running or resuming actuates the robot, so they pass the full
 
 from __future__ import annotations
 
+import asyncio
+
 import waldoctl
 
 from waldo_commander.components.playback import playback
@@ -27,7 +29,11 @@ def _ensure_active() -> None:
 
 @mcp.tool(name="execution.run_active")
 async def run_active() -> None:
-    """Start the active program. Raises if a program is already running.
+    """Start the active program and return immediately (it runs in a
+    subprocess). Raises if a program is already running.
+
+    Follow up with ``execution.wait_active`` — a program that crashed on its
+    first line looks exactly like one that finished until you read its log.
 
     Running a program actuates the robot, so it passes the full actuation gate
     (the control lease plus mode-dependent approval — per-action in
@@ -72,3 +78,36 @@ async def resume_active() -> None:
 async def is_running() -> bool:
     """Whether a program is currently executing."""
     return is_any_program_running()
+
+
+@mcp.tool(name="execution.wait_active")
+async def wait_active(timeout: float = 60.0) -> dict:
+    """Block until the running program finishes, up to ``timeout`` seconds.
+
+    Returns ``{"finished": False}`` on timeout (call again to keep waiting),
+    or ``{"finished": True, "exit_ok": ..., "log_tail": [...]}`` once it
+    stops — ``exit_ok`` is False when the program crashed (``None`` if it was
+    stopped externally) and ``log_tail`` is the last ~20 output lines, where
+    any traceback will be. Read the tail (or ``programs.get_log``) after
+    EVERY run before claiming success. Passive and ungated — it only waits.
+    """
+    programs = waldoctl.commander.programs
+    # The log lives on the tab that launched the run, which may no longer be
+    # the active tab by the time it finishes — grab it while it's running.
+    p = next((t for t in programs.items if t.execution.is_running), None)
+    deadline = asyncio.get_event_loop().time() + timeout
+    while is_any_program_running():
+        if asyncio.get_event_loop().time() >= deadline:
+            return {"finished": False}
+        await asyncio.sleep(0.3)
+    rc = script_exec.last_exit_code
+    if p is None:
+        p = programs.active
+    tail = [{"stream": e.stream, "text": e.text} for e in (p.log.entries if p else [])][
+        -20:
+    ]
+    return {
+        "finished": True,
+        "exit_ok": rc == 0 if rc is not None else None,
+        "log_tail": tail,
+    }

@@ -43,6 +43,10 @@ return {
   toolbarVisible: toolbarVisible,
   hasDiffDecoration: !!document.querySelector('.cm-edit-remove, .cm-edit-add'),
   editorWithinPanel: er.bottom <= pr.bottom + 2 && er.top >= pr.top - 2,
+  bannerAboveEditor: !!banner
+    && banner.getBoundingClientRect().bottom <= er.top + 2,
+  bannerWithinPanel: !!banner
+    && banner.getBoundingClientRect().right <= pr.right + 2,
 };
 """
 
@@ -50,6 +54,9 @@ return {
 @pytest.mark.browser
 def test_review_controls_and_diff_coexist_without_clipping(screen) -> None:
     screen.open("/")
+    # Narrow window: in the app the editor lives in a ~380px overlay panel,
+    # so the header must cope with tight widths.
+    screen.selenium.set_window_size(760, 900)
     dismiss_dialogs(screen)
     click_tab(screen, "program")
     wait_for_codemirror_ready(screen)
@@ -59,9 +66,22 @@ def test_review_controls_and_diff_coexist_without_clipping(screen) -> None:
     # A tall program + an edit near the bottom: a clipped editor would push the
     # decoration out of the visible panel.
     p.source = "\n".join(f"line_{i} = {i}" for i in range(40)) + "\n"
+    # A second, very wide tab: the header must shrink the tab strip (it
+    # scrolls horizontally) rather than wrap the review cluster onto a second
+    # line underneath the CodeMirror.
+    second = waldoctl.commander.programs.new(
+        filename="a_very_long_program_filename_that_widens_the_tab_strip_far_beyond"
+        "_any_reasonable_header_width.py"
+    )
 
     try:
-        p.edits.propose("@@ -38,1 +38,1 @@\n-line_37 = 37\n+line_37 = 3737\n", "tweak")
+        # A long description like an LLM writes: the label must truncate
+        # instead of wrapping the cluster or pushing its buttons off-panel.
+        p.edits.propose(
+            "@@ -38,1 +38,1 @@\n-line_37 = 37\n+line_37 = 3737\n",
+            "Home safely before the wave (a blind joint move from a folded "
+            "pose can self-collide)",
+        )
 
         deadline = time.time() + 6.0
         info = None
@@ -83,6 +103,14 @@ def test_review_controls_and_diff_coexist_without_clipping(screen) -> None:
         assert info["editorWithinPanel"], (
             f"editor overflows/clips the panel — the 'diff OR buttons' bug: {info}"
         )
+        assert info["bannerAboveEditor"], (
+            f"review cluster wrapped below the header and is painted under "
+            f"the editor: {info}"
+        )
+        assert info["bannerWithinPanel"], (
+            f"review cluster overflows the panel — Approve/Reject unreachable: {info}"
+        )
     finally:
         for e in list(p.edits.pending):
             p.edits.reject(e.id)
+        waldoctl.commander.programs.close(second.id)

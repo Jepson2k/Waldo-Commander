@@ -593,7 +593,11 @@ class ControlPanel:
         # MCP/AI session holds the lease.
         self._control_glow: ui.element | None = None
         self._take_control_btn: ui.button | None = None
+        self._mode_scope: ui.element | None = None
+        self._cluster_row: ui.row | None = None
         self._consent_dialog: ui.dialog | None = None
+        self._approval_card: ui.card | None = None
+        self._approval_title: ui.label | None = None
         self._approval_label: ui.label | None = None
         self._approval_hint: ui.label | None = None
         self._approval_sid: str | None = None
@@ -1013,24 +1017,27 @@ class ControlPanel:
 
     # ---- Control-lease indicator ----
 
-    # Perimeter-glow color per control mode (rgb triples, no alpha), so the
-    # ambient AI-driving glow tells the human which mode is active at a glance.
-    _MODE_GLOW_RGB = {
-        # No amber/orange here — that's the robot arm's own color.
-        ControlMode.INSPECT: "52 211 153",  # emerald — approve everything
-        ControlMode.AUTO_EDITS: "56 189 248",  # sky — edits auto, moves ask
-        ControlMode.AUTOPILOT: "167 139 250",  # violet — full autopilot
+    # Per-mode theme class (theme.py) setting --mode-accent, the single
+    # source of truth for the glow, capsule, and approval-dialog colors.
+    _MODE_CLASS = {
+        ControlMode.INSPECT: "wc-mode-inspect",
+        ControlMode.AUTO_EDITS: "wc-mode-auto-edits",
+        ControlMode.AUTOPILOT: "wc-mode-autopilot",
     }
 
-    def _glow_shadow(self, mode: ControlMode) -> str:
-        rgb = self._MODE_GLOW_RGB[mode]
-        return (
-            f"inset 0 0 18px 2px rgb({rgb} / 0.30), "
-            f"inset 0 0 60px 8px rgb({rgb} / 0.12)"
-        )
-
-    def _mode_chip_style(self, mode: ControlMode) -> str:
-        return f"background-color: rgb({self._MODE_GLOW_RGB[mode]}); color: black;"
+    def _set_mode_theme(self, mode: ControlMode) -> None:
+        """Swap the mode class on every themed root. The approval card carries
+        its own copy because dialogs teleport to <body> and can't inherit the
+        scope div's CSS variables."""
+        for el in (
+            getattr(self, "_mode_scope", None),
+            getattr(self, "_approval_card", None),
+        ):
+            if el is not None:
+                el.classes(
+                    remove=" ".join(self._MODE_CLASS.values()),
+                    add=self._MODE_CLASS[mode],
+                )
 
     def _build_control_indicator(self) -> None:
         """Page-perimeter glow (colored by control mode) + an edge Take-control
@@ -1045,73 +1052,88 @@ class ControlPanel:
             self._build_control_indicator_elements()
 
     def _build_control_indicator_elements(self) -> None:
-        # Ambient glow around the viewport while an AI session drives; its color
-        # encodes the current control mode (updated in refresh / on mode switch).
-        self._control_glow = (
-            ui.element("div")
-            .style(
-                "position:fixed; inset:0; pointer-events:none; z-index:9998; "
-                f"box-shadow: {self._glow_shadow(control_mode())};"
-            )
-            # Real DOM class (mark() is server-side only) so browser tests can
-            # query the glow like they query .btn-take-control.
-            .classes("control-lease-glow")
-            .mark("control-lease-glow")
+        # display:contents scope carrying the wc-mode-* class: one place themes
+        # the glow and the capsule together (the approval dialog teleports to
+        # <body>, so _set_mode_theme stamps it separately).
+        self._mode_scope = ui.element("div").classes(
+            f"ai-mode-scope {self._MODE_CLASS[control_mode()]}"
         )
-        self._control_glow.set_visibility(False)
-        # Fixed top-center cluster: the always-visible mode chip and, while an
-        # AI session drives, the Take-control button.
-        with (
-            ui.row()
-            .classes("items-center gap-2")
-            .style(
-                "position:fixed; top:8px; left:50%; transform:translateX(-50%); "
-                "z-index:9999;"
+        with self._mode_scope:
+            # Ambient glow around the viewport while an AI session drives; its
+            # color encodes the current control mode.
+            self._control_glow = (
+                ui.element("div")
+                # Real DOM class (mark() is server-side only) so browser tests
+                # can query the glow like they query .btn-take-control.
+                .classes("control-lease-glow")
+                .mark("control-lease-glow")
             )
-        ):
-            self._mode_chip = (
-                ui.chip(
-                    control_mode().label,
-                    icon="smart_toy",
-                    # None skips Quasar's bg-primary (!important) class so the
-                    # per-mode inline background below can take effect.
-                    color=None,
-                    on_click=self.cycle_mode,
+            self._control_glow.set_visibility(False)
+            # Glass capsule at top-center: the mode chip and, while an AI
+            # session drives, the Take-control button popping out beside it.
+            # Hidden with its contents — an empty capsule is a floating blob.
+            self._cluster_row = ui.row().classes("ai-cluster items-center no-wrap")
+            self._cluster_row.set_visibility(False)
+            with self._cluster_row:
+                self._mode_chip = (
+                    ui.chip(
+                        control_mode().label,
+                        icon="smart_toy",
+                        # None skips Quasar's bg-primary (!important) class so
+                        # the .ai-cluster background can take effect.
+                        color=None,
+                        on_click=self.cycle_mode,
+                    )
+                    .props("dense clickable")
+                    .classes("control-mode-chip")
+                    .tooltip("AI control mode — click or press Alt+M to cycle")
+                    .mark("control-mode-chip")
                 )
-                .props("dense clickable")
-                # Real DOM class (mark() is server-side only) for browser tests.
-                .classes("control-mode-chip")
-                .style(self._mode_chip_style(control_mode()))
-                .tooltip("AI control mode — click or press Alt+M to cycle")
-                .mark("control-mode-chip")
-            )
-            # Hidden until an MCP client is around, like the glow.
-            self._mode_chip.set_visibility(False)
-            self._take_control_btn = (
-                ui.button("Take control", icon="smart_toy", on_click=self._take_control)
-                .props("dense unelevated")
-                .classes("btn-take-control")
-                .style(self._mode_chip_style(control_mode()))
-                .mark("btn-take-control")
-            )
-            self._take_control_btn.set_visibility(False)
+                # Hidden until an MCP client is around, like the glow.
+                self._mode_chip.set_visibility(False)
+                self._take_control_btn = (
+                    ui.button(
+                        "Take control",
+                        icon="back_hand",
+                        # None skips Quasar's bg-primary/text-white (!important)
+                        # so the .ai-cluster mode-accent styling can take effect.
+                        color=None,
+                        on_click=self._take_control,
+                    )
+                    .props("dense unelevated")
+                    .classes("btn-take-control")
+                    .tooltip("Reclaim control and halt the robot")
+                    .mark("btn-take-control")
+                )
+                self._take_control_btn.set_visibility(False)
         # Approval dialog. Persistent so ESC / a backdrop click can't dismiss it
         # into limbo; the value handler below catches any non-button close and
         # re-arms the prompt. Serves both per-action move approvals (Inspect /
         # Auto-edits) and the one-time hardware-consent floor (Autopilot).
-        with ui.dialog().props("persistent") as dlg, ui.card().classes("gap-2"):
-            ui.label("Allow AI action?").classes("text-base font-medium")
-            self._approval_label = ui.label("").classes("text-sm")
-            self._approval_hint = ui.label("").classes(
-                "text-xs text-amber-700 dark:text-amber-300"
+        with (
+            ui.dialog().props("persistent") as dlg,
+            ui.card().classes(
+                f"ai-approval-card gap-2 {self._MODE_CLASS[control_mode()]}"
+            ) as self._approval_card,
+        ):
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                ui.icon("smart_toy", size="sm").classes("ai-approval-icon")
+                self._approval_title = ui.label("Allow AI action?").classes(
+                    "text-base font-medium"
+                )
+            self._approval_label = ui.label("").classes(
+                "text-sm font-medium ai-approval-desc w-full"
             )
+            self._approval_hint = ui.label("").classes("text-xs opacity-80")
             with ui.row().classes("justify-end w-full gap-2"):
-                ui.button("Deny", on_click=lambda: self._resolve_approval(False)).props(
-                    "flat"
-                ).mark("btn-consent-deny")
-                ui.button("Allow", on_click=lambda: self._resolve_approval(True)).props(
-                    "color=amber"
-                ).mark("btn-consent-allow")
+                # Real DOM classes (mark() is server-side only) so the
+                # .ai-approval-card button styling in theme.py applies.
+                ui.button(
+                    "Deny", color=None, on_click=lambda: self._resolve_approval(False)
+                ).props("outline").classes("btn-consent-deny").mark("btn-consent-deny")
+                ui.button(
+                    "Allow", color=None, on_click=lambda: self._resolve_approval(True)
+                ).classes("btn-consent-allow").mark("btn-consent-allow")
         dlg.on_value_change(self._on_consent_dialog_value)
         self._consent_dialog = dlg
         self._approval_sid: str | None = None
@@ -1158,39 +1180,51 @@ class ControlPanel:
         chip = getattr(self, "_mode_chip", None)
         if chip is not None:
             chip.set_visibility(other or connected)
-        if other or connected:
-            glow.style(
-                f"box-shadow: {self._glow_shadow(control_mode())}; "
-                f"opacity: {'1' if other else '0.35'};"
-            )
+        if other:
+            glow.classes(add="control-glow-breathe", remove="glow-faint")
+        else:
+            glow.classes(add="glow-faint", remove="control-glow-breathe")
+        cluster = getattr(self, "_cluster_row", None)
+        if cluster is not None:
+            cluster.set_visibility(other or connected)
             if other:
-                glow.classes(add="control-glow-breathe")
+                cluster.classes(add="ai-driving")
             else:
-                glow.classes(remove="control-glow-breathe")
+                cluster.classes(remove="ai-driving")
 
         dlg = self._consent_dialog
-        title = self._approval_label
+        desc_label = self._approval_label
         hint = self._approval_hint
         if (
             dlg is not None
-            and title is not None
+            and desc_label is not None
             and hint is not None
             and self._approval_sid is None
         ):
             actions = pending_actions()
             consents = pending_consents()
+            card = getattr(self, "_approval_card", None)
+            title = getattr(self, "_approval_title", None)
             if actions:
                 sid, desc = next(iter(actions.items()))
                 self._approval_sid = sid
                 self._approval_kind = "action"
-                title.text = desc
+                if title is not None:
+                    title.text = "Allow AI action?"
+                if card is not None:
+                    card.classes(remove="consent-hw")
+                desc_label.text = desc
                 hint.text = "Approve this AI action to let it proceed."
                 dlg.open()
             elif consents:
                 sid, label = next(iter(consents.items()))
                 self._approval_sid = sid
                 self._approval_kind = "session"
-                title.text = f"{label} wants to move the robot."
+                if title is not None:
+                    title.text = "Allow hardware motion?"
+                if card is not None:
+                    card.classes(add="consent-hw")
+                desc_label.text = f"{label} wants to move the robot."
                 hint.text = (
                     "First real hardware move of this AI session — make sure "
                     "the workspace is clear before allowing."
@@ -1232,16 +1266,10 @@ class ControlPanel:
         settings toggle, the mode chip, and the keyboard shortcut."""
         set_control_mode(mode)
         ui.notify(f"AI control mode: {mode.label}", color="info")
-        glow = getattr(self, "_control_glow", None)
-        if glow is not None:
-            glow.style(f"box-shadow: {self._glow_shadow(mode)};")
+        self._set_mode_theme(mode)
         chip = getattr(self, "_mode_chip", None)
         if chip is not None:
             chip.text = mode.label
-            chip.style(self._mode_chip_style(mode))
-        btn = getattr(self, "_take_control_btn", None)
-        if btn is not None:
-            btn.style(self._mode_chip_style(mode))
         toggle = getattr(self, "_mode_toggle", None)
         if toggle is not None and toggle.value != mode.value:
             self._suppress_mode_toggle = True
