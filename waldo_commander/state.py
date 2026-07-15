@@ -92,6 +92,9 @@ class RobotState(ChangeNotifierMixin):
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
     )  # deg/s
+    # All joints homed, from the status stream. Seeds dry-run previews so an
+    # unhomed robot's preview mirrors the controller's planned-motion gate.
+    homed: bool = True
     executing_index: int = -1
     completed_index: int = -1
     _change_listeners: list[Callable[[], None]] = field(
@@ -106,6 +109,7 @@ class RobotState(ChangeNotifierMixin):
         self.tool_status = ToolStatus()
         self.tool_time_series.clear()
         self.speeds[:] = 0.0
+        self.homed = True
         self.executing_index = -1
         self.completed_index = -1
 

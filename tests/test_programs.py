@@ -42,3 +42,33 @@ def test_program_simulates(script):
         dry_run_client_cls=DryRunRobotClient,
     )
     assert result["error"] is None, f"{script} simulation failed:\n{result['error']}"
+
+
+def test_preview_mirrors_unhomed_motion_gate():
+    """Seeded from an unhomed robot, the preview refuses planned moves with
+    the actionable not-homed error — matching the controller's gate — and a
+    home() line establishes references, so the first move after it previews
+    cleanly."""
+    template = (
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient(host='127.0.0.1', port=5001)\n"
+    )
+    move = "rbt.move_j([90.0, -90.0, 180.0, 0.0, 0.0, 170.0], speed=0.5)\n"
+
+    blind = _run_simulation_isolated(
+        template + move,
+        dry_run_client_cls=DryRunRobotClient,
+        initial_homed=False,
+    )
+    assert blind["error"] is not None and "not homed" in blind["error"], (
+        f"unhomed preview must refuse a planned move: {blind['error']!r}"
+    )
+
+    homed_first = _run_simulation_isolated(
+        template + "rbt.home()\n" + move,
+        dry_run_client_cls=DryRunRobotClient,
+        initial_homed=False,
+    )
+    assert homed_first["error"] is None, (
+        f"the first move after home() must preview cleanly: {homed_first['error']!r}"
+    )

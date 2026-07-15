@@ -26,6 +26,7 @@ import waldoctl
 from waldoctl import LinearMotion
 
 from waldo_commander.state import (
+    robot_state,
     simulation_state,
     PathSegment,
     ProgramTarget,
@@ -170,6 +171,7 @@ def _run_simulation_isolated(
     tool_meta_registry: dict[str, dict] | None = None,
     shapes_wire: list[tuple] | None = None,
     initial_tool: tuple[str, str] | None = None,
+    initial_homed: bool = True,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -235,6 +237,7 @@ def _run_simulation_isolated(
                     tool_selection_collector=local_tool_selections,
                     shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
+                    initial_homed=initial_homed,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
                 )
@@ -249,6 +252,7 @@ def _run_simulation_isolated(
                     tool_selection_collector=local_tool_selections,
                     shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
+                    initial_homed=initial_homed,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
                 )
@@ -580,6 +584,10 @@ class PathVisualizer:
                 live_tool_key,
                 ng_app.storage.general.get(f"tool_variant_{live_tool_key}", "") or "",
             )
+            # Live homed state seeds the preview so it mirrors the controller's
+            # planned-motion gate: an unhomed robot's preview refuses planned
+            # moves until the script homes.
+            initial_homed = robot_state.homed
 
             try:
                 result = await asyncio.wait_for(
@@ -593,6 +601,7 @@ class PathVisualizer:
                         tool_meta_registry or None,
                         shapes_wire,
                         initial_tool,
+                        initial_homed,
                     ),
                     timeout=SIMULATION_TIMEOUT_S
                     + 2.0,  # Extra buffer for process overhead
@@ -618,6 +627,7 @@ class PathVisualizer:
                         tool_meta_registry or None,
                         shapes_wire,
                         initial_tool,
+                        initial_homed,
                     )
                 except Exception as e2:
                     logger.error("Sync simulation also failed: %s", e2)

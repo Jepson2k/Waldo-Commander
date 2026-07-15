@@ -1546,6 +1546,7 @@ async def _status_consumer() -> None:
 
                     # Speeds arrive as rad/s from backend — convert to deg/s for display
                     np.rad2deg(status.speeds, out=robot_state.speeds)
+                    robot_state.homed = status.homed
                     pose = st.pose
                     pose.tcp_speed = 0.3 * status.tcp_speed + 0.7 * pose.tcp_speed
 
