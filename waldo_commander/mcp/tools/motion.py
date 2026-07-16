@@ -77,7 +77,8 @@ async def move_l(
 
 @mcp.tool(name="motion.home")
 async def home(wait: bool = False) -> int:
-    """Move to the robot's home position."""
+    """Move to the robot's home position (runs the full homing/referencing
+    sequence first if the robot is unhomed)."""
     require_actuation("move to home position")
     return _dispatched(await waldoctl.commander.client.home(wait=wait), "home")
 
