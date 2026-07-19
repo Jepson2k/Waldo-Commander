@@ -9,6 +9,8 @@ Two layers:
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
@@ -307,13 +309,64 @@ async def test_browser_is_default_holder_and_can_reclaim(user: User) -> None:
 
 
 @pytest.mark.integration
+async def test_hard_reclaim_leaves_robot_drivable(user: User) -> None:
+    """Clicking TAKE CONTROL halts whatever the AI started, but must hand the
+    human a live robot: pre-fix, the halt latched the controller disabled and
+    every subsequent human move was silently rejected."""
+    import time
+
+    import waldoctl
+    from parol6 import MotionError
+
+    await user.open("/")
+    await wait_for_app_ready()
+    browser_id = ui_state.active_client_id
+    assert browser_id
+
+    mcp = get_mcp()
+    panel = ui_state.control_panel
+    assert panel is not None
+    ng_client = cl.Client.instances[browser_id]
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("control.take_control")
+        assert not control_lease.held_by(BROWSER, browser_id)
+        # Reveal the TAKE CONTROL button (normally the 1 Hz ping's job).
+        with ng_client:
+            panel.refresh_control_indicator()
+
+        user.find(marker="btn-take-control").click()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not control_lease.held_by(
+            BROWSER, browser_id
+        ):
+            await asyncio.sleep(0.02)
+        assert control_lease.held_by(BROWSER, browser_id)
+
+        # The reclaim's halt/resume round-trips race this first move; poll
+        # until the controller accepts motion again (home is valid in any
+        # referencing state).
+        deadline = time.monotonic() + 3.0
+        while True:
+            try:
+                assert await waldoctl.commander.client.home() >= 0
+                break
+            except MotionError as e:
+                if time.monotonic() >= deadline:
+                    pytest.fail(f"robot still rejects motion after hard reclaim: {e}")
+                await asyncio.sleep(0.05)
+    finally:
+        control_lease.reset()
+
+
+@pytest.mark.integration
 async def test_mode_theme_classes_and_approval_card_kinds(user: User) -> None:
     """The ``wc-mode-*`` class is the single theming source of truth:
-    ``_apply_mode`` stamps it on the scope div (glow + capsule) and on the
-    approval card (which teleports to <body> and can't inherit). Glow intensity
-    is class-driven — faint while the human drives with an AI connected,
-    breathing when an AI session holds the lease — and the approval card
-    switches to the amber hardware variant only for the session-consent kind."""
+    ``_apply_mode`` stamps it on the scope div (glow + capsule). The approval
+    card stays app-styled (no mode class). Glow intensity is class-driven —
+    faint while the human drives with an AI connected, breathing when an AI
+    session holds the lease — and the approval card switches to the amber
+    hardware variant only for the session-consent kind."""
     from waldo_commander.services.control_lease import (
         ControlMode,
         arm_action_prompt,
@@ -329,10 +382,11 @@ async def test_mode_theme_classes_and_approval_card_kinds(user: User) -> None:
     try:
         with ng_client:
             panel._apply_mode(ControlMode.AUTOPILOT)
-        for el in (panel._mode_scope, panel._approval_card):
-            assert "wc-mode-autopilot" in el.classes
-            assert "wc-mode-inspect" not in el.classes
-            assert "wc-mode-auto-edits" not in el.classes
+        assert "wc-mode-autopilot" in panel._mode_scope.classes
+        assert "wc-mode-inspect" not in panel._mode_scope.classes
+        assert "wc-mode-auto-edits" not in panel._mode_scope.classes
+        # The approval card is app-styled — mode classes never land on it.
+        assert not any(c.startswith("wc-mode-") for c in panel._approval_card.classes)
         assert panel._mode_chip.text == "Autopilot"
         with ng_client:
             panel._apply_mode(ControlMode.INSPECT)
@@ -386,3 +440,39 @@ async def test_mode_theme_classes_and_approval_card_kinds(user: User) -> None:
         panel._approval_sid = None
         if panel._consent_dialog is not None:
             panel._consent_dialog.close()
+
+
+@pytest.mark.integration
+async def test_control_mode_persists_across_restart(user: User) -> None:
+    """The human's mode choice survives an app restart: the settings funnel
+    writes it to general storage, startup's restore_control_mode() reads it
+    back, and the between-test isolation reset bypasses persistence (a reset
+    is not a human choice)."""
+    from nicegui import app as ng_app
+
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_mode,
+        restore_control_mode,
+    )
+
+    await user.open("/")
+    await wait_for_app_ready()
+
+    panel = ui_state.control_panel
+    ng_client = cl.Client.instances[ui_state.active_client_id]
+    try:
+        with ng_client:
+            panel._on_mode_toggle(ControlMode.AUTOPILOT.value)
+        assert ng_app.storage.general.get("control_mode") == "autopilot"
+
+        # Simulated restart: the isolation reset restores the Inspect default
+        # without touching storage; the startup restore brings the choice back.
+        control_lease.reset()
+        assert control_mode() is ControlMode.INSPECT
+        assert ng_app.storage.general.get("control_mode") == "autopilot"
+        restore_control_mode()
+        assert control_mode() is ControlMode.AUTOPILOT
+    finally:
+        ng_app.storage.general.pop("control_mode", None)
+        control_lease.reset()

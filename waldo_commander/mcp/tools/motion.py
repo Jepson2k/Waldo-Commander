@@ -106,21 +106,17 @@ async def jog_l(
     )
 
 
-@mcp.tool(name="motion.halt")
-async def halt() -> int:
-    """Immediate stop — halt all motion and disable.
+@mcp.tool(name="motion.stop")
+async def stop() -> int:
+    """Stop all motion — cancel the active move and clear the queue. The
+    robot stays enabled and accepts the next command immediately.
 
-    Deliberately ungated: stopping is always safe, so ``halt`` needs no lease or
-    consent (it and ``wait_motion`` are the exceptions).
+    Deliberately ungated: stopping is always safe, so ``stop`` needs no lease
+    or consent (it and ``wait_motion`` are the exceptions). There is no MCP
+    way to latch or unlatch the protective stop (estop) — that belongs to the
+    human in the GUI.
     """
-    return _dispatched(await waldoctl.commander.client.halt(), "halt")
-
-
-@mcp.tool(name="motion.resume")
-async def resume() -> int:
-    """Re-enable the robot after halt / e-stop."""
-    require_actuation("resume / re-enable the robot")
-    return _dispatched(await waldoctl.commander.client.resume(), "resume")
+    return _dispatched(await waldoctl.commander.client.stop(), "stop")
 
 
 @mcp.tool(name="motion.wait_motion")

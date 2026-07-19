@@ -135,8 +135,10 @@ def get_mcp() -> "FastMCP":
                 "is approved individually; in Auto-edits, edits apply "
                 "immediately but each move is still approved; in Autopilot, "
                 "both are automatic (real hardware still asks once per "
-                "session). A refusal names what's pending — let the human act, "
-                "then retry once; a denial means change approach, not retry."
+                "session). A refusal names what's pending — block on "
+                "control.wait_approval and retry once it reports allowed; "
+                "never spin the refused call. A denial means change approach, "
+                "not retry."
             ),
         )
         # Refresh the holding session's lease on every tool call (not just

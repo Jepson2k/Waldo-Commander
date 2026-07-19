@@ -671,7 +671,7 @@ def session_client(
     async def setup():
         await client.wait_ready(timeout=10.0)
         await client.simulator(True)
-        await client.resume()
+        await client.reset()
 
     loop = asyncio.new_event_loop()
     try:
@@ -720,8 +720,8 @@ async def controller_reset(
         async with AsyncRobotClient(
             host="127.0.0.1", port=controller_port, timeout=5.0
         ) as client:
+            await client.reset_state()
             await client.reset()
-            await client.resume()
             # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
             # Use short timeouts since simulator homing is instant
             await client.home(wait=True, timeout=10.0)

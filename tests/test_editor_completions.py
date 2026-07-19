@@ -39,7 +39,7 @@ def test_completions_include_async_robot_client_methods() -> None:
     completions = command_discovery.generate_completions_from_commands()
     completion_labels = {c["label"] for c in completions}
 
-    expected_methods = ["home", "resume", "halt", "status"]
+    expected_methods = ["home", "stop", "estop", "reset", "status"]
 
     for method in expected_methods:
         expected_label = f"rbt.{method}"
@@ -106,7 +106,7 @@ def test_categories_from_docstrings() -> None:
     """Categories are parsed from backend docstrings, not heuristics."""
     commands = command_discovery.discover_robot_commands()
     assert commands["home"]["category"] == "Motion"
-    assert commands["resume"]["category"] == "Control"
+    assert commands["stop"]["category"] == "Control"
     assert commands["jog_j"]["category"] == "Jog"
     assert commands["status"]["category"] == "Query"
     assert commands["move_j"]["category"] == "Motion"

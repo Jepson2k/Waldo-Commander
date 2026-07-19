@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
-from nicegui import Client
+from nicegui import Client, app
 
 BROWSER = "browser"
 MCP = "mcp"
@@ -63,9 +63,12 @@ class ControlMode(Enum):
         }[self]
 
 
-# Global control mode. Defaults to the safest rung; runtime-only (resets on
-# restart, like Claude Code's per-session mode). Only a human changes it.
+# Global control mode. Defaults to the safest rung; the human's choice is
+# persisted (restore_control_mode at startup) so it survives app restarts.
+# Only a human changes it.
 _control_mode: ControlMode = ControlMode.INSPECT
+
+_MODE_STORAGE_KEY = "control_mode"
 
 
 def control_mode() -> ControlMode:
@@ -75,15 +78,24 @@ def control_mode() -> ControlMode:
 def set_control_mode(mode: ControlMode) -> None:
     global _control_mode
     _control_mode = mode
+    app.storage.general[_MODE_STORAGE_KEY] = mode.value
 
 
 def cycle_control_mode() -> ControlMode:
     """Advance Inspect → Auto-edits → Autopilot → Inspect and return the new
     mode. Backs the control-panel toggle and the keyboard shortcut."""
-    global _control_mode
     order = list(ControlMode)
-    _control_mode = order[(order.index(_control_mode) + 1) % len(order)]
+    set_control_mode(order[(order.index(_control_mode) + 1) % len(order)])
     return _control_mode
+
+
+def restore_control_mode() -> None:
+    """Load the persisted mode at app startup (unknown/absent → Inspect)."""
+    global _control_mode
+    try:
+        _control_mode = ControlMode(app.storage.general.get(_MODE_STORAGE_KEY, ""))
+    except ValueError:
+        _control_mode = ControlMode.INSPECT
 
 
 @dataclass
@@ -147,6 +159,7 @@ class ControlLease:
 
     def reset(self) -> None:
         """Drop any holder (used by ``reset_all_state`` between test sessions)."""
+        global _control_mode
         self._holder = None
         _consented_sessions.clear()
         _pending_consent.clear()
@@ -154,7 +167,8 @@ class ControlLease:
         _pending_action.clear()
         _approved_action.clear()
         _mcp_last_message.clear()
-        set_control_mode(ControlMode.INSPECT)
+        # Test-isolation default, not a human choice — bypass persistence.
+        _control_mode = ControlMode.INSPECT
 
 
 control_lease = ControlLease()
@@ -343,3 +357,16 @@ def take_approved_action(session_id: str, description: str) -> bool:
         del _approved_action[session_id]
         return True
     return False
+
+
+def has_approved_action(session_id: str) -> bool:
+    """A granted, not-yet-consumed action approval exists (observed, not consumed)."""
+    return session_id in _approved_action
+
+
+def action_prompt_pending(session_id: str) -> bool:
+    return session_id in _pending_action
+
+
+def consent_prompt_pending(session_id: str) -> bool:
+    return session_id in _pending_consent

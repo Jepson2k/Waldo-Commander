@@ -674,6 +674,75 @@ async def test_wait_edit_decision_resolves_on_human_decision(user: User) -> None
 
 
 @pytest.mark.integration
+async def test_wait_approval_resolves_on_human_decision(user: User) -> None:
+    """``control.wait_approval`` must block while an action prompt is armed and
+    resolve the moment the human clicks Allow/Deny — the replacement for
+    blind-retrying a refused gated call. With nothing armed it reports
+    nothing_pending instead of parking."""
+    from fastmcp.exceptions import ToolError
+
+    from waldo_commander.services import control_lease as cl
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_lease,
+        set_control_mode,
+    )
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+
+    panel = ui_state.control_panel
+    ng_client = cl.Client.instances[ui_state.active_client_id]
+
+    mcp = get_mcp()
+    waldoctl.commander.status.simulator_active = True
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("control.take_control")
+            set_control_mode(ControlMode.INSPECT)
+
+            nothing = _payload(
+                await client.call_tool("control.wait_approval", {"timeout": 0.1})
+            )
+            assert nothing == {"outcome": "nothing_pending"}
+
+            async def _refuse_and_wait(joint: int) -> asyncio.Task:
+                with pytest.raises(ToolError, match="wait_approval"):
+                    await client.call_tool(
+                        "motion.jog_j", {"joint": joint, "speed": 0.1, "duration": 0.01}
+                    )
+                waiter = asyncio.create_task(
+                    client.call_tool("control.wait_approval", {"timeout": 10})
+                )
+                await asyncio.sleep(0.1)  # waiter is inside its poll loop
+                assert not waiter.done(), "must still be waiting while armed"
+                return waiter
+
+            waiter = await _refuse_and_wait(0)
+            with ng_client:
+                panel.refresh_control_indicator()
+                assert panel._approval_kind == "action"
+                panel._resolve_approval(True)
+            assert _payload(await waiter) == {"outcome": "allowed"}
+            # The one-shot grant lets the retried call through.
+            await client.call_tool(
+                "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+            )
+
+            waiter = await _refuse_and_wait(1)
+            with ng_client:
+                panel.refresh_control_indicator()
+                panel._resolve_approval(False)
+            assert _payload(await waiter) == {"outcome": "denied"}
+    finally:
+        control_lease.reset()
+        panel._approval_sid = None
+        if panel._consent_dialog is not None:
+            panel._consent_dialog.close()
+
+
+@pytest.mark.integration
 async def test_play_pause_starts_preview_when_mcp_holds_lease(
     user: User, monkeypatch
 ) -> None:

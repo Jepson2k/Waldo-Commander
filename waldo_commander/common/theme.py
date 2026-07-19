@@ -675,9 +675,9 @@ html, body {
 .control-glow-breathe { animation: wc-glow-breathe 2.6s ease-in-out infinite; }
 
 /* ---- AI control cluster ----
-   One --mode-accent per control mode themes the perimeter glow, the
-   top-center capsule, and the approval dialog. No amber/orange accents
-   here — amber is the physical arm's color (see .consent-hw below). */
+   One --mode-accent per control mode themes the perimeter glow and the
+   top-center capsule. No amber/orange accents here — amber is the
+   physical arm's color (see .consent-hw below). */
 .wc-mode-inspect    { --mode-accent: var(--color-emerald-400); --mode-accent-text: var(--color-emerald-300); }
 .wc-mode-auto-edits { --mode-accent: var(--color-sky-400);     --mode-accent-text: var(--color-sky-300); }
 .wc-mode-autopilot  { --mode-accent: var(--color-violet-400);  --mode-accent-text: var(--color-violet-300); }
@@ -714,13 +714,15 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 }
 .ai-cluster.ai-driving { border-color: color-mix(in srgb, var(--mode-accent) 65%, transparent); }
 
+/* Text-only at rest so the capsule reads as one pill (no pill-in-pill);
+   the hover tint is the click affordance. */
 .ai-cluster .control-mode-chip {
-  background: color-mix(in srgb, var(--mode-accent) 15%, transparent) !important;
+  background: transparent !important;
   color: var(--mode-accent-text) !important;
   border-radius: 9999px; font-weight: 500; margin: 0;
 }
 .ai-cluster .control-mode-chip:hover {
-  background: color-mix(in srgb, var(--mode-accent) 25%, transparent) !important;
+  background: color-mix(in srgb, var(--mode-accent) 15%, transparent) !important;
 }
 
 /* The only solid-filled element in the capsule: pops out when the AI takes
@@ -730,9 +732,12 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   background: var(--mode-accent) !important;
   color: var(--color-neutral-900) !important;
   border-radius: 9999px; font-weight: 600;
+  /* Chip-height so the capsule doesn't grow when the button pops in. */
+  font-size: 0.75rem; min-height: 0; padding: 1px 10px;
   animation: wc-popout 0.28s cubic-bezier(0.34, 1.56, 0.64, 1),
              wc-btn-pulse 2.6s ease-in-out infinite;
 }
+.ai-cluster .btn-take-control .q-icon { font-size: 1.3em; }
 @keyframes wc-popout {
   from { transform: translateX(-10px) scale(0.85); opacity: 0; }
   to   { transform: none; opacity: 1; }
@@ -742,29 +747,32 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   50%      { box-shadow: 0 0 2px 0   color-mix(in srgb, var(--mode-accent) 20%, transparent); }
 }
 
-/* Approval dialog: glass card with a mode-accent top bar; the hardware
-   consent variant switches the accent to amber = the physical arm. */
+/* Approval dialog: a standard app glass panel — mode accents stay in the
+   top capsule. Allow is an ordinary primary button; the hardware consent
+   variant goes amber = the physical arm. */
 .ai-approval-card {
   min-width: 320px; max-width: 440px;
   background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
   backdrop-filter: var(--glass-backdrop);
   -webkit-backdrop-filter: var(--glass-backdrop);
-  border: 0; border-top: 2px solid var(--mode-accent);
+  border: 1px solid var(--glass-border);
   border-radius: 10px; color: var(--glass-fg);
-  box-shadow: var(--glass-box-shadow),
-              0 0 24px color-mix(in srgb, var(--mode-accent) 25%, transparent);
+  box-shadow: var(--glass-box-shadow);
 }
-.ai-approval-card .ai-approval-icon { color: var(--mode-accent-text); }
 .ai-approval-card .ai-approval-desc {
-  background: color-mix(in srgb, var(--mode-accent) 8%, transparent);
-  border-left: 2px solid var(--mode-accent);
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  border-left: 2px solid var(--ctk-primary);
   border-radius: 4px; padding: 6px 10px;
 }
 .ai-approval-card .btn-consent-allow {
-  background: var(--mode-accent) !important;
-  color: var(--color-neutral-900) !important;
+  background: var(--ctk-primary) !important;
+  color: var(--ctk-on-primary) !important;
 }
-.ai-approval-card.consent-hw { border-top-color: var(--sim-amber); }
+.ai-approval-card .btn-consent-allow:hover {
+  background: var(--ctk-primary-hover) !important;
+}
+.ai-approval-card.consent-hw .ai-approval-icon { color: var(--sim-amber); }
+.ai-approval-card.consent-hw .ai-approval-desc { border-left-color: var(--sim-amber); }
 .ai-approval-card.consent-hw .btn-consent-allow {
   background: var(--sim-amber) !important;
   color: var(--on-warning) !important;

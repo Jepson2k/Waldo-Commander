@@ -1,6 +1,7 @@
 """Settings component for serial port, theme, and visualization preferences."""
 
 import logging
+from collections.abc import Callable
 from contextlib import contextmanager
 
 from nicegui import app as ng_app
@@ -673,8 +674,14 @@ class SettingsContent:
 
     # ── Main entry point ─────────────────────────────────────────────
 
-    def build_embedded(self) -> None:
-        """Build the settings content for embedding in control panel."""
+    def build_embedded(
+        self, ai_control_section: Callable[[], None] | None = None
+    ) -> None:
+        """Build the settings content for embedding in control panel.
+
+        ``ai_control_section`` is the control panel's AI mode row, slotted in
+        with the other AI/MCP settings so hardware settings stay on top.
+        """
         prefs = self._load_preferences()
 
         sections = [
@@ -688,6 +695,7 @@ class SettingsContent:
             self._build_reference_frames,
             self._build_backend_selector,
             self._build_plugin_panels,
+            *([ai_control_section] if ai_control_section else []),
             self._build_mcp_server,
         ]
 

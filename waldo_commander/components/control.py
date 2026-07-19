@@ -168,18 +168,18 @@ class _EStopManager:
                     )
                     ui.label("Robot motion has been stopped.").classes("text-center")
 
-                    async def resume():
+                    async def reset():
                         try:
-                            await self._client.resume()
+                            await self._client.reset()
                             self._digital_active = False
                             if self._dialog:
                                 self._dialog.close()
                                 self._dialog = None
                         except Exception as e:
-                            logger.error("Resume after digital E-STOP failed: %s", e)
+                            logger.error("Reset after digital E-STOP failed: %s", e)
 
                     with ui.row().classes("gap-2 justify-center w-full mt-4"):
-                        ui.button("Resume", on_click=resume).props(
+                        ui.button("Reset", on_click=reset).props(
                             "color=positive size=lg"
                         ).mark("btn-estop-resume")
 
@@ -1026,18 +1026,14 @@ class ControlPanel:
     }
 
     def _set_mode_theme(self, mode: ControlMode) -> None:
-        """Swap the mode class on every themed root. The approval card carries
-        its own copy because dialogs teleport to <body> and can't inherit the
-        scope div's CSS variables."""
-        for el in (
-            getattr(self, "_mode_scope", None),
-            getattr(self, "_approval_card", None),
-        ):
-            if el is not None:
-                el.classes(
-                    remove=" ".join(self._MODE_CLASS.values()),
-                    add=self._MODE_CLASS[mode],
-                )
+        """Swap the mode class on the capsule/glow scope. The approval card
+        is deliberately unthemed — it uses the app's standard panel style."""
+        el = getattr(self, "_mode_scope", None)
+        if el is not None:
+            el.classes(
+                remove=" ".join(self._MODE_CLASS.values()),
+                add=self._MODE_CLASS[mode],
+            )
 
     def _build_control_indicator(self) -> None:
         """Page-perimeter glow (colored by control mode) + an edge Take-control
@@ -1053,8 +1049,7 @@ class ControlPanel:
 
     def _build_control_indicator_elements(self) -> None:
         # display:contents scope carrying the wc-mode-* class: one place themes
-        # the glow and the capsule together (the approval dialog teleports to
-        # <body>, so _set_mode_theme stamps it separately).
+        # the glow and the capsule together.
         self._mode_scope = ui.element("div").classes(
             f"ai-mode-scope {self._MODE_CLASS[control_mode()]}"
         )
@@ -1102,7 +1097,7 @@ class ControlPanel:
                     )
                     .props("dense unelevated")
                     .classes("btn-take-control")
-                    .tooltip("Reclaim control and halt the robot")
+                    .tooltip("Reclaim control and stop the robot")
                     .mark("btn-take-control")
                 )
                 self._take_control_btn.set_visibility(False)
@@ -1112,9 +1107,7 @@ class ControlPanel:
         # Auto-edits) and the one-time hardware-consent floor (Autopilot).
         with (
             ui.dialog().props("persistent") as dlg,
-            ui.card().classes(
-                f"ai-approval-card gap-2 {self._MODE_CLASS[control_mode()]}"
-            ) as self._approval_card,
+            ui.card().classes("ai-approval-card gap-2") as self._approval_card,
         ):
             with ui.row().classes("items-center gap-2 no-wrap"):
                 ui.icon("smart_toy", size="sm").classes("ai-approval-icon")
@@ -1148,18 +1141,19 @@ class ControlPanel:
             self._approval_kind = None
 
     async def _take_control(self) -> None:
-        """Hard reclaim: seize the lease for this browser tab and halt any motion
-        the AI started (stopping is always safe)."""
+        """Hard reclaim: seize the lease for this browser tab and stop any
+        motion the AI started — the robot stays enabled so the human can
+        drive immediately."""
         cid = ui_state.active_client_id
         if cid is None:
             return
         control_lease.seize(BROWSER, cid, "Browser")
         try:
-            await waldoctl.commander.client.halt()
+            await waldoctl.commander.client.stop()
         except Exception as e:  # noqa: BLE001
-            logger.debug("take_control halt failed: %s", e)
+            logger.debug("take_control stop failed: %s", e)
         self.refresh_control_indicator()
-        ui.notify("You're in control — robot halted", color="positive")
+        ui.notify("You're in control — robot stopped", color="positive")
 
     def refresh_control_indicator(self) -> None:
         """Drive the ambient glow, Take-control button, and pending approvals
@@ -1826,13 +1820,13 @@ class ControlPanel:
             enabled = not waldoctl.commander.status.simulator_active
             await self.client.simulator(enabled)
             waldoctl.commander.status.simulator_active = enabled
-            # Re-enable after the switch (no delay needed — the controller
-            # waits for the first frame before responding OK).
+            # Clear any latched stop after the switch (no delay needed — the
+            # controller waits for the first frame before responding OK).
             try:
-                await self.client.resume()
+                await self.client.reset()
             except Exception as e:
                 logger.warning(
-                    "Resume after simulator %s failed: %s",
+                    "Reset after simulator %s failed: %s",
                     "on" if enabled else "off",
                     e,
                 )
@@ -1843,12 +1837,12 @@ class ControlPanel:
             self.sync_sim_mode_visuals()
 
     async def on_estop_click(self) -> None:
-        """Trigger digital E-STOP (STOP command) and show dialog."""
+        """Trigger digital E-STOP (protective stop, latched until Reset)."""
         if waldoctl.commander.status.io.estop == 0:
             ui.notify("Physical E-STOP is active - release it first", color="warning")
             return
 
-        await self.client.halt()
+        await self.client.estop()
         if self.estop:
             self.estop._digital_active = True
             self.estop.show(is_physical=False)
@@ -2181,10 +2175,10 @@ class ControlPanel:
             # Settings panel
             with ui.tab_panel(settings_tab).classes("gap-0 p-0"):
                 with ui.scroll_area().classes("w-full h-full p-0"):
-                    self._build_control_mode_selector()
-                    ui.separator().classes("my-1")
                     self._settings_content = SettingsContent(self.client)
-                    self._settings_content.build_embedded()
+                    self._settings_content.build_embedded(
+                        ai_control_section=self._build_control_mode_selector
+                    )
 
     _PREF_TARGETS = {
         "jog_speed": ("jog", "speed"),

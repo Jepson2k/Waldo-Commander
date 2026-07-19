@@ -74,6 +74,7 @@ from waldo_commander.services.control_lease import (
     BROWSER,
     browser_claim_if_unheld,
     control_lease,
+    restore_control_mode,
 )
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
@@ -909,7 +910,7 @@ def build_page_content() -> None:
                     waldoctl.commander.status.simulator_active = False
                     try:
                         await client.simulator(False)
-                        await client.resume()
+                        await client.reset()
                     except Exception as e:
                         logger.warning("auto robot-mode switch failed: %s", e)
                 waldoctl.commander.status.connected = hw_now
@@ -1083,9 +1084,9 @@ def _register_handlers() -> None:
                 logger.error("startup: simulator(True) failed: %s", e)
             waldoctl.commander.status.simulator_active = True
         try:
-            await client.resume()
+            await client.reset()
         except Exception as e:
-            logger.warning("startup: resume failed (may retry): %s", e)
+            logger.warning("startup: reset failed (may retry): %s", e)
 
     async def _restore_settings() -> None:
         """Restore persisted motion profile and tool selection."""
@@ -1739,6 +1740,10 @@ def main():
     elif args.quiet:
         config.set("log_level", logging.WARNING)
     # else: use env var default (no override needed)
+
+    # The human's AI control mode (Inspect/Auto-edits/Autopilot) survives
+    # restarts like the other persisted settings.
+    restore_control_mode()
 
     # Initialize robot, client, and component instances. The persisted GUI
     # backend selection is honored below an explicit --robot / WALDO_ROBOT

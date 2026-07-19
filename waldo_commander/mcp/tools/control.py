@@ -8,6 +8,8 @@ session is identified by FastMCP's per-request session id.
 
 from __future__ import annotations
 
+import asyncio
+
 import waldoctl
 from fastmcp.server.dependencies import get_context
 from nicegui import Client
@@ -15,10 +17,13 @@ from nicegui import Client
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.services.control_lease import (
     MCP,
+    action_prompt_pending,
     arm_action_prompt,
     arm_consent_prompt,
+    consent_prompt_pending,
     control_lease,
     control_mode,
+    has_approved_action,
     recently_denied,
     reset_consent,
     session_consented,
@@ -97,8 +102,8 @@ def require_session_consent() -> None:
         )
     arm_consent_prompt(sid, _label(sid))
     raise PermissionError(
-        "first hardware move of this session needs GUI consent — approve the "
-        "prompt in Waldo-Commander, then retry"
+        "first hardware move of this session needs GUI consent — call "
+        "control.wait_approval, then retry once it reports allowed"
     )
 
 
@@ -124,8 +129,8 @@ def require_action_approval(description: str) -> None:
         )
     arm_action_prompt(sid, description)
     raise PermissionError(
-        f"this action needs approval: {description} — approve the prompt in "
-        "Waldo-Commander, then retry"
+        f"this action needs approval: {description} — call "
+        "control.wait_approval, then retry once it reports allowed"
     )
 
 
@@ -167,6 +172,47 @@ async def release_control() -> dict:
     control_lease.release(MCP, sid)
     reset_consent(sid)
     return {"holder": control_lease.describe(), "you_hold_it": False}
+
+
+@mcp.tool(name="control.wait_approval")
+async def wait_approval(timeout: float = 60.0) -> dict:
+    """Block until the human resolves this session's armed approval prompt
+    (per-action move approval or the one-time hardware consent), up to
+    ``timeout`` seconds.
+
+    Call this after a gated call is refused with an armed prompt, instead of
+    retrying blind. Returns ``{"outcome": ...}`` — ``"allowed"`` (retry the
+    refused call once; the grant is one-shot and matched to it), ``"denied"``
+    (change approach — do not retry), ``"pending"`` (timeout expired
+    undecided; call again to keep waiting), or ``"nothing_pending"`` (no
+    prompt is armed for this session). Passive and deliberately ungated — it
+    only waits, never actuates.
+    """
+    sid = _session_id()
+    if action_prompt_pending(sid):
+        kind = "action"
+    elif consent_prompt_pending(sid):
+        kind = "consent"
+    else:
+        # The human may have decided before this wait started.
+        if has_approved_action(sid) or session_consented(sid):
+            return {"outcome": "allowed"}
+        if recently_denied(sid):
+            return {"outcome": "denied"}
+        return {"outcome": "nothing_pending"}
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while True:
+        if recently_denied(sid):
+            return {"outcome": "denied"}
+        granted = (
+            has_approved_action(sid) if kind == "action" else session_consented(sid)
+        )
+        if granted:
+            return {"outcome": "allowed"}
+        if loop.time() >= deadline:
+            return {"outcome": "pending"}
+        await asyncio.sleep(0.5)
 
 
 @mcp.tool(name="control.get_controller")
