@@ -95,9 +95,11 @@ addopts = [
     "--junitxml=test-results.xml",
     "-p nicegui.testing.user_plugin",
 ]
-# Global per-test timeout (90s to accommodate JIT warmup and teardown on slow CI runners)
+# Global per-test timeout (90s to accommodate JIT warmup and teardown on slow CI runners).
+# Signal method (POSIX; auto-falls back to thread on Windows): a hung test fails
+# individually with a real main-thread stack instead of killing the whole session.
 timeout = 90
-timeout_method = "thread"
+timeout_method = "signal"
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",
