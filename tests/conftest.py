@@ -48,6 +48,7 @@ if not os.environ.get("HEADED") and os.environ.get("DISPLAY", "").startswith(
 if TYPE_CHECKING:
     from parol6 import AsyncRobotClient
 
+
 # ============================================================================
 # Skip marker for WebGL-dependent tests on macOS CI
 # ============================================================================
@@ -376,6 +377,11 @@ def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers and run the screen plugin's configure hook
     (the screen fixtures are imported, not plugin-registered, so Screen.PORT /
     SCREENSHOT_DIR / DOWNLOAD_DIR must be set up here)."""
+    # Windows has no SIGALRM and pytest-timeout hard-errors on the signal
+    # timeout method rather than falling back — force thread there. POSIX
+    # keeps signal so a hung test fails with a stack, not a killed session.
+    if sys.platform == "win32":
+        config.option.timeout_method = "thread"
     nicegui_screen_plugin.pytest_configure(config)
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"
