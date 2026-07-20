@@ -15,8 +15,9 @@ dependencies = [
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.6.2",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.7.0",
   "opencv-python-headless>=4.8",
+  "fastmcp>=3.0,<4",
 
   # pinokin: Pinocchio-based FK/IK bindings
   # https://github.com/Jepson2k/pinokin/releases/tag/v0.1.8
@@ -47,10 +48,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.3.1"]
+parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0"]
 v4l2 = ["linuxpy>=0.24"]
 dev = [
-  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.3.1",
+  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0",
   "ruff",
   "ty",
   "pytest",
@@ -94,9 +95,11 @@ addopts = [
     "--junitxml=test-results.xml",
     "-p nicegui.testing.user_plugin",
 ]
-# Global per-test timeout (90s to accommodate JIT warmup and teardown on slow CI runners)
+# Global per-test timeout (90s to accommodate JIT warmup and teardown on slow CI runners).
+# Signal method (POSIX; auto-falls back to thread on Windows): a hung test fails
+# individually with a real main-thread stack instead of killing the whole session.
 timeout = 90
-timeout_method = "thread"
+timeout_method = "signal"
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",

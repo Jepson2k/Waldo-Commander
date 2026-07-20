@@ -13,8 +13,9 @@ from waldoctl import (
 
 from waldo_commander.constants import config
 from waldo_commander.services.camera_service import camera_service
+from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.motion_recorder import motion_recorder
-from waldo_commander.state import robot_state
+from waldo_commander.state import robot_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class GripperPage:
         self._current_range_listener: Callable | None = None
         self._slider_drag_ts: float = 0.0
         self._last_slider_send: float = 0.0
+        self._last_lease_block_notify: float = 0.0
         self._user_dragging: bool = False
         self._target_initialized: bool = False
 
@@ -69,7 +71,20 @@ class GripperPage:
 
     # ---- Actions ----
 
+    def _can_actuate(self) -> bool:
+        """Lease gate for the gripper slider paths. The toast is debounced to
+        once per few seconds so a sustained drag while an MCP session holds
+        control doesn't stack dozens of identical warnings per gesture."""
+        now = time.monotonic()
+        should_notify = now - self._last_lease_block_notify > 3.0
+        ok = require_browser_control(ui_state.active_client_id, notify=should_notify)
+        if not ok and should_notify:
+            self._last_lease_block_notify = now
+        return ok
+
     async def _grip_set(self, position: float, label: str) -> None:
+        if not self._can_actuate():
+            return
         try:
             tool = self._get_active_gripper()
             if tool is None:
@@ -328,6 +343,10 @@ class GripperPage:
         if now - self._last_slider_send < self._slider_interval:
             return
         self._last_slider_send = now
+        # Gate before mutating: don't move the target_position setting / mark
+        # lines when an MCP session holds the lease and the action is refused.
+        if not self._can_actuate():
+            return
         value = e.value
         pos = value / 100.0
         waldoctl.commander.settings.gripper.target_position = pos
@@ -340,6 +359,8 @@ class GripperPage:
         waldoctl.commander.settings.gripper.current = int(value)
         self._mark_lines_dirty = True
         if not self._user_dragging:
+            return
+        if not self._can_actuate():
             return
         tool = self._get_active_gripper()
         if isinstance(tool, ElectricGripperTool):

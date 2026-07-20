@@ -667,6 +667,121 @@ html, body {
 
 /* ========== Overlays ========== */
 
+/* AI-driving perimeter glow: breathes while an AI session holds the lease */
+@keyframes wc-glow-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.control-glow-breathe { animation: wc-glow-breathe 2.6s ease-in-out infinite; }
+
+/* ---- AI control cluster ----
+   One --mode-accent per control mode themes the perimeter glow and the
+   top-center capsule. No amber/orange accents here — amber is the
+   physical arm's color (see .consent-hw below). */
+.wc-mode-inspect    { --mode-accent: var(--color-emerald-400); --mode-accent-text: var(--color-emerald-300); }
+.wc-mode-auto-edits { --mode-accent: var(--color-sky-400);     --mode-accent-text: var(--color-sky-300); }
+.wc-mode-autopilot  { --mode-accent: var(--color-violet-400);  --mode-accent-text: var(--color-violet-300); }
+body.body--light .wc-mode-inspect    { --mode-accent-text: var(--color-emerald-700); }
+body.body--light .wc-mode-auto-edits { --mode-accent-text: var(--color-sky-700); }
+body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-700); }
+
+/* CSS-variable scope over glow + capsule; generates no box, so the fixed
+   children still position against the viewport. */
+.ai-mode-scope { display: contents; }
+
+.control-lease-glow {
+  position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+  box-shadow: inset 0 0 18px 2px color-mix(in srgb, var(--mode-accent) 30%, transparent),
+              inset 0 0 60px 8px color-mix(in srgb, var(--mode-accent) 12%, transparent);
+}
+/* An MCP client is connected but the human drives. */
+.control-lease-glow.glow-faint { opacity: 0.35; }
+
+/* Glass capsule holding the mode chip + Take-control button. Its own
+   backdrop-filter makes it a containing block — fine while it has no
+   position:fixed descendants (the glow is a sibling). */
+.ai-cluster {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9999;
+  display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 9999px;
+  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2));
+  backdrop-filter: var(--glass-backdrop);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  border: 1px solid color-mix(in srgb, var(--mode-accent) 35%, transparent);
+  box-shadow: var(--glass-box-shadow);
+  isolation: isolate;
+  color: var(--glass-fg);
+  transition: border-color 0.3s ease;
+}
+.ai-cluster.ai-driving { border-color: color-mix(in srgb, var(--mode-accent) 65%, transparent); }
+
+/* Text-only at rest so the capsule reads as one pill (no pill-in-pill);
+   the hover tint is the click affordance. */
+.ai-cluster .control-mode-chip {
+  background: transparent !important;
+  color: var(--mode-accent-text) !important;
+  border-radius: 9999px; font-weight: 500; margin: 0;
+}
+.ai-cluster .control-mode-chip:hover {
+  background: color-mix(in srgb, var(--mode-accent) 15%, transparent) !important;
+}
+
+/* The only solid-filled element in the capsule: pops out when the AI takes
+   the lease (the entry animation replays on every hidden -> visible flip)
+   and pulses on the glow-breathe clock. */
+.ai-cluster .btn-take-control {
+  background: var(--mode-accent) !important;
+  color: var(--color-neutral-900) !important;
+  border-radius: 9999px; font-weight: 600;
+  /* Chip-height so the capsule doesn't grow when the button pops in. */
+  font-size: 0.75rem; min-height: 0; padding: 1px 10px;
+  animation: wc-popout 0.28s cubic-bezier(0.34, 1.56, 0.64, 1),
+             wc-btn-pulse 2.6s ease-in-out infinite;
+}
+.ai-cluster .btn-take-control .q-icon { font-size: 1.3em; }
+@keyframes wc-popout {
+  from { transform: translateX(-10px) scale(0.85); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+@keyframes wc-btn-pulse {
+  0%, 100% { box-shadow: 0 0 10px 2px color-mix(in srgb, var(--mode-accent) 55%, transparent); }
+  50%      { box-shadow: 0 0 2px 0   color-mix(in srgb, var(--mode-accent) 20%, transparent); }
+}
+
+/* Approval dialog: a standard app glass panel — mode accents stay in the
+   top capsule. Allow is an ordinary primary button; the hardware consent
+   variant goes amber = the physical arm. */
+.ai-approval-card {
+  min-width: 320px; max-width: 440px;
+  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
+  backdrop-filter: var(--glass-backdrop);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px; color: var(--glass-fg);
+  box-shadow: var(--glass-box-shadow);
+}
+.ai-approval-card .ai-approval-desc {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  border-left: 2px solid var(--ctk-primary);
+  border-radius: 4px; padding: 6px 10px;
+}
+.ai-approval-card .btn-consent-allow {
+  background: var(--ctk-primary) !important;
+  color: var(--ctk-on-primary) !important;
+}
+.ai-approval-card .btn-consent-allow:hover {
+  background: var(--ctk-primary-hover) !important;
+}
+.ai-approval-card.consent-hw .ai-approval-icon { color: var(--sim-amber); }
+.ai-approval-card.consent-hw .ai-approval-desc { border-left-color: var(--sim-amber); }
+.ai-approval-card.consent-hw .btn-consent-allow {
+  background: var(--sim-amber) !important;
+  color: var(--on-warning) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-glow-breathe, .ai-cluster .btn-take-control { animation: none !important; }
+}
+
 /* Overlay panels with frosted glass effect */
 .overlay-panel { position: absolute; z-index: 10; pointer-events: auto; }
 .overlay-card {
@@ -965,6 +1080,29 @@ html, body {
    highlight_lines() built-in style. */
 .cm-line.cm-highlighted {
   background-color: rgba(255, 255, 0, 0.3);
+}
+
+/* LLM-proposed edits — red strikethrough on removed lines, green
+   widget for additions. Rendered by EditorDecorations._diff_decoration_specs. */
+.cm-line.cm-edit-remove {
+  background-color: rgba(244, 67, 54, 0.18);
+  text-decoration: line-through;
+  text-decoration-color: rgba(244, 67, 54, 0.7);
+}
+.cm-edit-add {
+  background-color: rgba(76, 175, 80, 0.18);
+  color: var(--ctk-text, #cbd5e1);
+  padding: 0 4px;
+  border-left: 3px solid rgba(76, 175, 80, 0.7);
+  white-space: pre;
+}
+
+/* Pending-edit review cluster — swaps in for the editor toolbar buttons. */
+.pending-edits-banner {
+  background-color: rgba(76, 175, 80, 0.08);
+  border: 1px solid rgba(76, 175, 80, 0.25);
+  border-radius: 6px;
+  padding: 0 2px 0 10px;
 }
 
 

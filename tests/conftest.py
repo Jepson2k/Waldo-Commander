@@ -15,8 +15,8 @@ from nicegui.testing import general as nicegui_testing_general
 from nicegui.testing.general_fixtures import (
     nicegui_reset_globals,  # noqa: F401 - required by screen fixture
 )
-from nicegui.testing.screen import Screen
 from nicegui.testing import screen_plugin as nicegui_screen_plugin
+from nicegui.testing.screen import Screen
 from nicegui.testing.screen_plugin import (
     nicegui_driver,  # noqa: F401 - default driver (per-test browser)
     nicegui_remove_all_screenshots,  # noqa: F401 - clears screenshots before session
@@ -47,6 +47,7 @@ if not os.environ.get("HEADED") and os.environ.get("DISPLAY", "").startswith(
 
 if TYPE_CHECKING:
     from parol6 import AsyncRobotClient
+
 
 # ============================================================================
 # Skip marker for WebGL-dependent tests on macOS CI
@@ -376,6 +377,11 @@ def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers and run the screen plugin's configure hook
     (the screen fixtures are imported, not plugin-registered, so Screen.PORT /
     SCREENSHOT_DIR / DOWNLOAD_DIR must be set up here)."""
+    # Windows has no SIGALRM and pytest-timeout hard-errors on the signal
+    # timeout method rather than falling back — force thread there. POSIX
+    # keeps signal so a hung test fails with a stack, not a killed session.
+    if sys.platform == "win32":
+        config.option.timeout_method = "thread"
     nicegui_screen_plugin.pytest_configure(config)
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"
@@ -524,6 +530,19 @@ def reset_state(request: pytest.FixtureRequest):
 
     reset_all_state()
 
+    # The keybindings manager is a module singleton: a browser test that
+    # focuses the editor leaves _editor_focused=True behind (no blur event
+    # fires when Selenium tears down), silently muting every shortcut in
+    # later tests. Same for a key left "down". Fresh per test, like a fresh
+    # process would be.
+    from waldo_commander.services.keybindings import keybindings_manager
+
+    keybindings_manager.set_editor_focused(False)
+    keybindings_manager._keys_down.clear()
+    keybindings_manager._holding_active.clear()
+    keybindings_manager._hold_start_times.clear()
+    keybindings_manager._hold_timers.clear()
+
     # Test-specific overrides (differ from zero defaults). _install_test_commander()
     # above guarantees the locator is registered, so these need no guards.
     from waldoctl import FrameJogAvailability
@@ -658,7 +677,7 @@ def session_client(
     async def setup():
         await client.wait_ready(timeout=10.0)
         await client.simulator(True)
-        await client.resume()
+        await client.reset()
 
     loop = asyncio.new_event_loop()
     try:
@@ -707,8 +726,8 @@ async def controller_reset(
         async with AsyncRobotClient(
             host="127.0.0.1", port=controller_port, timeout=5.0
         ) as client:
+            await client.reset_state()
             await client.reset()
-            await client.resume()
             # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
             # Use short timeouts since simulator homing is instant
             await client.home(wait=True, timeout=10.0)

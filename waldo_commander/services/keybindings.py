@@ -110,6 +110,15 @@ class KeybindingsManager:
             return
 
         key = self._normalize_key(e.key.name)
+        if e.modifiers.alt:
+            # macOS Option composes characters (Option+M -> "µ"), so the key
+            # *name* never matches an Alt+letter binding there. The physical
+            # key *code* ("KeyM", "Digit3") is OS/layout-stable — use it.
+            code = e.key.code or ""
+            if code.startswith("Key"):
+                key = code[len("Key") :].lower()
+            elif code.startswith("Digit"):
+                key = code[len("Digit") :]
         is_keydown = e.action.keydown
         is_keyup = e.action.keyup
 
@@ -284,6 +293,17 @@ def setup_keybindings(help_menu: Any) -> None:
                 emitEvent('keybindings_focus_change', { focused: focused });
             });
         }
+        // ui.keyboard ignores key events while a <button> has focus, so a
+        // mouse click on any button would silence every global shortcut
+        // until focus moves. Drop the lingering focus after mouse clicks;
+        // keyboard (Tab) focus is unaffected.
+        if (!window._wcButtonBlurInstalled) {
+            window._wcButtonBlurInstalled = true;
+            document.addEventListener('click', function(e) {
+                const b = e.target.closest && e.target.closest('button');
+                if (b && e.detail > 0) b.blur();
+            });
+        }
         """
     )
 
@@ -328,6 +348,17 @@ def _register_default_keybindings() -> None:
             display="Esc",
             description="Emergency Stop",
             action=lambda: asyncio.create_task(cp.on_estop_click()),
+            category="Robot Control",
+        )
+    )
+
+    keybindings_manager.register(
+        Keybinding(
+            key="m",
+            display="Alt+M",
+            requires_alt=True,
+            description="Cycle AI control mode",
+            action=lambda: cp.cycle_mode(),
             category="Robot Control",
         )
     )

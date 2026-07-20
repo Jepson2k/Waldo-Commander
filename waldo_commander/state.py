@@ -92,6 +92,9 @@ class RobotState(ChangeNotifierMixin):
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
     )  # deg/s
+    # All joints homed, from the status stream. Seeds dry-run previews so an
+    # unhomed robot's preview mirrors the controller's planned-motion gate.
+    homed: bool = True
     executing_index: int = -1
     completed_index: int = -1
     _change_listeners: list[Callable[[], None]] = field(
@@ -106,6 +109,7 @@ class RobotState(ChangeNotifierMixin):
         self.tool_status = ToolStatus()
         self.tool_time_series.clear()
         self.speeds[:] = 0.0
+        self.homed = True
         self.executing_index = -1
         self.completed_index = -1
 
@@ -330,8 +334,12 @@ def reset_all_state() -> None:
     # their services so each service's own bookkeeping (dedup cursors) is
     # cleared alongside the public surface it writes to.
     from waldo_commander.services.action_log import action_log_service
+    from waldo_commander.services.control_lease import control_lease
+    from waldo_commander.services.edit_decisions import clear as clear_edit_decisions
 
     action_log_service.clear()
+    control_lease.reset()
+    clear_edit_decisions()
     import waldoctl
 
     try:

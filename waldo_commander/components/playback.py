@@ -14,6 +14,7 @@ from waldo_commander.common.theme import PathColors
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
+from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.services.programs import (
@@ -286,29 +287,47 @@ class PlaybackController:
             return waldoctl.commander.programs.get(script_exec.launching_tab_id)
         return waldoctl.commander.programs.active
 
-    async def toggle_play(self) -> None:
-        """Toggle play/pause for script execution or simulation playback."""
+    def set_script_playing(self, playing: bool) -> None:
+        """Pause/resume the running script AND mirror it into the play program's
+        playback state + the simulation change channel. Every pause/resume path
+        — the GUI play button and the MCP ``execution.pause/resume`` tools —
+        must go through here, or the play button desyncs from the subprocess."""
+        prog = self._play_program()
+        if playing:
+            script_exec.signal_play()
+            if prog is not None:
+                prog.dry_run.playback.is_playing = True
+            logger.debug("Script playing")
+        else:
+            script_exec.signal_pause()
+            if prog is not None:
+                prog.dry_run.playback.is_playing = False
+            logger.debug("Script paused")
+        simulation_state.notify_changed()
+
+    async def toggle_play(self, *, control_verified: bool = False) -> None:
+        """Toggle play/pause for script execution or simulation playback.
+
+        ``control_verified`` lets a caller that has already confirmed it holds
+        the control lease (e.g. the MCP ``simulation.play_pause`` tool, after
+        ``require_actuation()``) start playback without re-running the
+        browser-side gate — which would refuse, since the lease is held by MCP,
+        not the browser. The GUI button leaves it False and gates as before.
+        """
         active = waldoctl.commander.programs.active
         if is_any_program_running():
             prog = self._play_program()
-            if prog is not None and prog.dry_run.playback.is_playing:
-                script_exec.signal_pause()
-                prog.dry_run.playback.is_playing = False
-                logger.debug("Script paused")
-            else:
-                script_exec.signal_play()
-                if prog is not None:
-                    prog.dry_run.playback.is_playing = True
-                logger.debug("Script playing")
-            simulation_state.notify_changed()
+            self.set_script_playing(
+                not (prog is not None and prog.dry_run.playback.is_playing)
+            )
         elif waldoctl.commander.status.simulator_active and (
             active is not None and active.dry_run.total_steps > 0
         ):
             if active.dry_run.playback.is_active:
-                self._pause_sim_playback()
-            else:
+                self._pause_sim_playback()  # pausing is always allowed
+            elif control_verified or require_browser_control(ui_state.active_client_id):
                 self._start_sim_playback()
-        else:
+        elif control_verified or require_browser_control(ui_state.active_client_id):
             await script_exec.start()
 
     def step_forward(self) -> None:

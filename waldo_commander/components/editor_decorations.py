@@ -85,8 +85,9 @@ class EditorDecorations:
 
         Combines whatever flash decorations are active (flashes are always
         on the active tab, so they only appear when tab_id == active) with
-        that tab's executing-line highlight. Result is assigned to the
-        tab's CodeMirror ``decorations`` in a single round-trip.
+        that tab's executing-line highlight and any pending LLM-proposed
+        edits. Result is assigned to the tab's CodeMirror ``decorations``
+        in a single round-trip.
         """
         textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
@@ -107,7 +108,124 @@ class EditorDecorations:
                     "class": "cm-highlighted",
                 }
             )
+        specs.extend(self._diff_decoration_specs(tab_id))
         textarea.decorations[:] = specs
+
+    def _diff_decoration_specs(self, tab_id: str) -> list[DecorationSpec]:
+        """Build decoration specs from this tab's pending LLM edits.
+
+        For each pending edit:
+        - lines marked ``-`` get a ``line`` decoration with
+          ``cm-edit-remove`` (red strikethrough background).
+        - each contiguous run of ``+`` lines becomes one ``widget``
+          decoration at the position where the run occurs, classed
+          ``cm-edit-add`` so the editor renders a green "+ <addition>"
+          widget in place (interior insertions don't collapse to the
+          hunk's end).
+
+        Positions are computed against the diff's base source; once pushed,
+        CodeMirror's decoration StateField maps them through subsequent
+        document edits, so this must only be re-pushed when the pending-edits
+        list itself changes.
+
+        Pending diffs are validated at ``propose()`` time, so an unparseable
+        diff can't reach this list; the ``except ValueError`` is cheap
+        insurance for a directly-constructed PendingEdit.
+        """
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is None or not tab.edits.pending:
+            return []
+        # CodeMirror document positions are UTF-16 code-unit offsets, so the
+        # widget anchor must accumulate UTF-16 lengths — Python's ``len`` counts
+        # code points, which drifts one unit per astral-plane char (e.g. an
+        # emoji) earlier in the source. Split on LF/CRLF/CR only and count
+        # every break as ONE unit: CodeMirror normalizes documents to "\n"
+        # (a CRLF counted as 2 would drift anchors +1 per preceding line) and,
+        # unlike str.splitlines, doesn't break lines on \f/\x85/U+2028.
+        line_starts = [0]
+        for line in re.split(r"\r\n|\r|\n", tab.source):
+            line_starts.append(line_starts[-1] + len(line.encode("utf-16-le")) // 2 + 1)
+        specs: list[DecorationSpec] = []
+        for edit in tab.edits.pending:
+            try:
+                hunks = waldoctl.parse_unified_diff(edit.diff)
+            except ValueError:
+                continue
+            for h in hunks:
+                # Shared with the apply path so preview and approve can't
+                # diverge: a pure-insertion hunk anchors after old_start.
+                cursor = h.start_index
+                added: list[str] = []
+
+                def _flush_added() -> None:
+                    if added:
+                        pos = line_starts[min(cursor, len(line_starts) - 1)]
+                        specs.append(
+                            {
+                                "kind": "widget",
+                                "position": pos,
+                                "text": "\n".join("+ " + s for s in added),
+                                "class": "cm-edit-add",
+                                "side": 1,
+                            }
+                        )
+                        added.clear()
+
+                for op, content in h.body:
+                    if op == " ":
+                        _flush_added()
+                        cursor += 1
+                    elif op == "-":
+                        _flush_added()
+                        specs.append(
+                            {
+                                "kind": "line",
+                                "line": cursor + 1,
+                                "class": "cm-edit-remove",
+                            }
+                        )
+                        cursor += 1
+                    elif op == "+":
+                        added.append(content)
+                _flush_added()
+        return specs
+
+    def diff_touched_lines(
+        self, tab_id: str, edit_ids: set[str] | None = None
+    ) -> list[int]:
+        """1-based line numbers touched by a tab's pending edits — each removed
+        line and each addition's anchor line. Used to flash a freshly proposed
+        edit the same way the motion recorder flashes an insert. ``edit_ids``
+        (edit-id ``.value`` strings) limits the walk to specific edits; ``None``
+        means all pending. Mirrors the cursor walk in ``_diff_decoration_specs``.
+        """
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is None or not tab.edits.pending:
+            return []
+        lines: set[int] = set()
+        for edit in tab.edits.pending:
+            if edit_ids is not None and edit.id.value not in edit_ids:
+                continue
+            try:
+                hunks = waldoctl.parse_unified_diff(edit.diff)
+            except ValueError:
+                continue
+            for h in hunks:
+                cursor = h.start_index
+                for op, _content in h.body:
+                    if op == " ":
+                        cursor += 1
+                    elif op == "-":
+                        lines.add(cursor + 1)
+                        cursor += 1
+                    elif op == "+":
+                        lines.add(cursor + 1)
+        return sorted(lines)
+
+    def refresh_diff_overlay(self, tab_id: str) -> None:
+        """Re-render decorations for ``tab_id`` after its pending-edits list
+        changed. Public entry point for the editor's edit-listener wiring."""
+        self._apply_decorations_to_tab(tab_id)
 
     def _apply_active_tab_decorations(self) -> None:
         """Re-render decorations on whichever tab is currently active.

@@ -89,6 +89,7 @@ class PathPreviewClient:
         tool_selection_collector: list | None = None,
         shape_change_collector: list | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
+        initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
     ):
         self.segment_collector: list[dict] = (
@@ -114,7 +115,9 @@ class PathPreviewClient:
         if initial_joints is not None:
             init_deg = np.degrees(np.asarray(initial_joints, dtype=np.float64)).tolist()
 
-        self._client = dry_run_client_cls(initial_joints_deg=init_deg)
+        self._client = dry_run_client_cls(
+            initial_joints_deg=init_deg, initial_homed=initial_homed
+        )
         self._tool_proxy = _ToolCollectionProxy(self)
         self.last_joints_rad: list[float] | None = None
         self._blend_move_type: str = ""
@@ -680,6 +683,7 @@ class AsyncPathPreviewClient:
         tool_selection_collector: list | None = None,
         shape_change_collector: list | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
+        initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
     ):
         self._sync_client = PathPreviewClient(
@@ -690,6 +694,7 @@ class AsyncPathPreviewClient:
             tool_selection_collector=tool_selection_collector,
             shape_change_collector=shape_change_collector,
             initial_joints=initial_joints,
+            initial_homed=initial_homed,
             tool_meta_registry=tool_meta_registry,
         )
 

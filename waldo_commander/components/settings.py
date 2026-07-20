@@ -1,6 +1,7 @@
 """Settings component for serial port, theme, and visualization preferences."""
 
 import logging
+from collections.abc import Callable
 from contextlib import contextmanager
 
 from nicegui import app as ng_app
@@ -591,6 +592,65 @@ class SettingsContent:
             except Exception as e:
                 logger.warning("Plugin %s build_settings failed: %s", panel.id, e)
 
+    def _build_mcp_server(self) -> None:
+        """MCP server controls.
+
+        ``enabled``, ``host``, and ``port`` bind at server start, so we notify
+        "Restart to apply" when those change. On a trusted LAN the server
+        runs over plain HTTP with no auth — single-controller arbitration is
+        the control lease (take_control), not a token.
+        """
+        mcp = waldoctl.commander.settings.mcp
+
+        # host / port commit on blur / enter (DOM "change"), not per keystroke,
+        # so a half-typed address is never persisted; every handler dirty-checks
+        # so an unchanged commit writes nothing and shows no toast.
+        def _on_enabled_change(e):
+            val = bool(e.value)
+            if val == mcp.enabled:
+                return
+            mcp.enabled = val
+            ng_app.storage.general["mcp/enabled"] = val
+            ui.notify("Restart to apply", color="info")
+
+        def _on_host_change(e):
+            host = (e.args or "").strip() or "127.0.0.1"
+            if host == mcp.host:
+                return
+            mcp.host = host
+            ng_app.storage.general["mcp/host"] = host
+            ui.notify("Restart to apply", color="info")
+
+        def _on_port_change(e):
+            try:
+                port = int(e.args)
+            except (TypeError, ValueError):
+                return
+            if not (1 <= port <= 65535) or port == mcp.port:
+                return
+            mcp.port = port
+            ng_app.storage.general["mcp/port"] = port
+            ui.notify("Restart to apply", color="info")
+
+        with _setting_row(
+            "MCP server", "Expose commander.* to an MCP client (restart to apply)"
+        ):
+            ui.switch(value=mcp.enabled, on_change=_on_enabled_change).props(
+                "dense"
+            ).mark("settings-mcp-enabled")
+
+        with _setting_row(
+            "MCP host", "Bind address — 127.0.0.1 (local) or a LAN address / 0.0.0.0"
+        ):
+            ui.input(value=mcp.host).classes("w-40").props("dense").on(
+                "change", _on_host_change
+            ).mark("settings-mcp-host")
+
+        with _setting_row("MCP port", "Listening port for streamable HTTP"):
+            ui.number(value=mcp.port, min=1, max=65535).classes("w-24").props(
+                "dense"
+            ).on("change", _on_port_change).mark("settings-mcp-port")
+
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):
             with ui.element("span").tooltip(
@@ -614,8 +674,14 @@ class SettingsContent:
 
     # ── Main entry point ─────────────────────────────────────────────
 
-    def build_embedded(self) -> None:
-        """Build the settings content for embedding in control panel."""
+    def build_embedded(
+        self, ai_control_section: Callable[[], None] | None = None
+    ) -> None:
+        """Build the settings content for embedding in control panel.
+
+        ``ai_control_section`` is the control panel's AI mode row, slotted in
+        with the other AI/MCP settings so hardware settings stay on top.
+        """
         prefs = self._load_preferences()
 
         sections = [
@@ -629,6 +695,8 @@ class SettingsContent:
             self._build_reference_frames,
             self._build_backend_selector,
             self._build_plugin_panels,
+            *([ai_control_section] if ai_control_section else []),
+            self._build_mcp_server,
         ]
 
         for i, section in enumerate(sections):

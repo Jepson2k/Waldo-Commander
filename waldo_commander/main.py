@@ -67,8 +67,15 @@ from waldo_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
+from waldo_commander.mcp import start_mcp_server, stop_mcp_server
 from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
 from waldo_commander.services.action_log import action_log_service
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    browser_claim_if_unheld,
+    control_lease,
+    restore_control_mode,
+)
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
@@ -403,6 +410,7 @@ async def check_ping() -> None:
         readout_panel.update_conn_io()
     if control_panel is not None:
         control_panel.sync_gizmo_for_jog_state()
+        control_panel.refresh_control_indicator()
 
 
 def update_ui_from_status() -> None:
@@ -902,7 +910,7 @@ def build_page_content() -> None:
                     waldoctl.commander.status.simulator_active = False
                     try:
                         await client.simulator(False)
-                        await client.resume()
+                        await client.reset()
                     except Exception as e:
                         logger.warning("auto robot-mode switch failed: %s", e)
                 waldoctl.commander.status.connected = hw_now
@@ -1076,9 +1084,9 @@ def _register_handlers() -> None:
                 logger.error("startup: simulator(True) failed: %s", e)
             waldoctl.commander.status.simulator_active = True
         try:
-            await client.resume()
+            await client.reset()
         except Exception as e:
-            logger.warning("startup: resume failed (may retry): %s", e)
+            logger.warning("startup: reset failed (may retry): %s", e)
 
     async def _restore_settings() -> None:
         """Restore persisted motion profile and tool selection."""
@@ -1139,6 +1147,8 @@ def _register_handlers() -> None:
             await _restore_settings()
             # Sync editor slider mode now that simulator_active is known
             playback.sync_mode()
+            # Spawn the MCP server if the user has opted in (no-op otherwise).
+            await start_mcp_server()
             logger.info(
                 "waldo-commander ready on http://%s:%s",
                 config.server_host,
@@ -1161,6 +1171,8 @@ def _register_handlers() -> None:
         _shutting_down = True
         logger.debug("Nicegui Shutting Down...")
         camera_service.stop()
+        # Stop the MCP server (no-op if it was never started).
+        await stop_mcp_server()
 
         # Timeout avoids hanging forever if startup never completes.
         try:
@@ -1375,6 +1387,10 @@ async def index_page():
     if held_id is None or held_id not in Client.instances:
         ui_state.active_client_id = this_client.id
     is_active = ui_state.active_client_id == this_client.id
+    if is_active:
+        # The active tab is the default controller — claim the lease when it's
+        # free or held by a prior browser tab (but not from a live MCP holder).
+        browser_claim_if_unheld(this_client.id)
 
     def _on_disconnect():
         # Synchronous handler so the active-slot release happens *inline*
@@ -1383,6 +1399,7 @@ async def index_page():
         # on refresh.
         global _page_state
         if ui_state.active_client_id == this_client.id:
+            control_lease.release(BROWSER, this_client.id)
             ui_state.active_client_id = None
         # Editor + page-state teardown must only run for the active client.
         # A shadow tab disconnecting must not touch the active tab's
@@ -1530,6 +1547,7 @@ async def _status_consumer() -> None:
 
                     # Speeds arrive as rad/s from backend — convert to deg/s for display
                     np.rad2deg(status.speeds, out=robot_state.speeds)
+                    robot_state.homed = status.homed
                     pose = st.pose
                     pose.tcp_speed = 0.3 * status.tcp_speed + 0.7 * pose.tcp_speed
 
@@ -1723,6 +1741,10 @@ def main():
         config.set("log_level", logging.WARNING)
     # else: use env var default (no override needed)
 
+    # The human's AI control mode (Inspect/Auto-edits/Autopilot) survives
+    # restarts like the other persisted settings.
+    restore_control_mode()
+
     # Initialize robot, client, and component instances. The persisted GUI
     # backend selection is honored below an explicit --robot / WALDO_ROBOT
     # override, and only when that backend is actually installed.
@@ -1784,6 +1806,18 @@ def main():
     commander.settings.plugins.backend = ng_app.storage.general.get("plugins/backend")
     commander.settings.plugins.disabled_panels = list(
         ng_app.storage.general.get("plugins/disabled_panels", [])
+    )
+
+    # Restore MCP server settings from prior session. `enabled` defaults to
+    # False so the server stays off until the user explicitly opts in.
+    commander.settings.mcp.enabled = bool(
+        ng_app.storage.general.get("mcp/enabled", False)
+    )
+    commander.settings.mcp.host = str(
+        ng_app.storage.general.get("mcp/host", commander.settings.mcp.host)
+    )
+    commander.settings.mcp.port = int(
+        ng_app.storage.general.get("mcp/port", commander.settings.mcp.port)
     )
 
     configure_logging(config.log_level)

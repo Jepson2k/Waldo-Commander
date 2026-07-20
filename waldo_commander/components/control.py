@@ -25,7 +25,22 @@ from waldo_commander.state import (
 )
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.settings import SettingsContent
+from waldo_commander.components.settings import SettingsContent, _setting_row
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    ControlMode,
+    control_lease,
+    control_mode,
+    deny_action,
+    deny_consent,
+    grant_action,
+    grant_consent,
+    mcp_connected,
+    pending_actions,
+    pending_consents,
+    require_browser_control,
+    set_control_mode,
+)
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 
@@ -153,18 +168,18 @@ class _EStopManager:
                     )
                     ui.label("Robot motion has been stopped.").classes("text-center")
 
-                    async def resume():
+                    async def reset():
                         try:
-                            await self._client.resume()
+                            await self._client.reset()
                             self._digital_active = False
                             if self._dialog:
                                 self._dialog.close()
                                 self._dialog = None
                         except Exception as e:
-                            logger.error("Resume after digital E-STOP failed: %s", e)
+                            logger.error("Reset after digital E-STOP failed: %s", e)
 
                     with ui.row().classes("gap-2 justify-center w-full mt-4"):
-                        ui.button("Resume", on_click=resume).props(
+                        ui.button("Reset", on_click=reset).props(
                             "color=positive size=lg"
                         ).mark("btn-estop-resume")
 
@@ -573,6 +588,26 @@ class ControlPanel:
         self.client = client
         self._ui_client: Any = None  # NiceGUI client for background task UI ops
 
+        # Control-lease indicator (glow + edge Take-control button + consent
+        # dialog), built lazily in _build_control_indicator; shown only when an
+        # MCP/AI session holds the lease.
+        self._control_glow: ui.element | None = None
+        self._take_control_btn: ui.button | None = None
+        self._mode_scope: ui.element | None = None
+        self._cluster_row: ui.row | None = None
+        self._consent_dialog: ui.dialog | None = None
+        self._approval_card: ui.card | None = None
+        self._approval_title: ui.label | None = None
+        self._approval_label: ui.label | None = None
+        self._approval_hint: ui.label | None = None
+        self._approval_sid: str | None = None
+        self._approval_kind: str | None = None
+        # AI control-mode selector (built in _build_control_mode_selector).
+        self._mode_toggle: ui.select | None = None
+        self._suppress_mode_toggle: bool = False
+        # Always-visible mode chip in the action row (click to cycle).
+        self._mode_chip: ui.chip | None = None
+
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
         self._joint_right_btns: dict[int, ui.button] = {}
@@ -965,6 +1000,8 @@ class ControlPanel:
             if notify:
                 ui.notify("Script is running — jog disabled", color="warning")
             return False
+        if not require_browser_control(ui_state.active_client_id, notify=notify):
+            return False
         if (
             waldoctl.commander.status.simulator_active
             or waldoctl.commander.status.connected
@@ -977,6 +1014,294 @@ class ControlPanel:
                 icon="error",
             )
         return False
+
+    # ---- Control-lease indicator ----
+
+    # Per-mode theme class (theme.py) setting --mode-accent, the single
+    # source of truth for the glow, capsule, and approval-dialog colors.
+    _MODE_CLASS = {
+        ControlMode.INSPECT: "wc-mode-inspect",
+        ControlMode.AUTO_EDITS: "wc-mode-auto-edits",
+        ControlMode.AUTOPILOT: "wc-mode-autopilot",
+    }
+
+    def _set_mode_theme(self, mode: ControlMode) -> None:
+        """Swap the mode class on the capsule/glow scope. The approval card
+        is deliberately unthemed — it uses the app's standard panel style."""
+        el = getattr(self, "_mode_scope", None)
+        if el is not None:
+            el.classes(
+                remove=" ".join(self._MODE_CLASS.values()),
+                add=self._MODE_CLASS[mode],
+            )
+
+    def _build_control_indicator(self) -> None:
+        """Page-perimeter glow (colored by control mode) + an edge Take-control
+        button, shown only while another controller (an MCP/AI session) holds
+        the lease, plus the approval dialog (per-action move approvals and the
+        one-time hardware-consent floor). Driven by the 1 Hz ping.
+
+        Parented at the page root: the overlay-card's ``backdrop-filter``
+        creates a containing block that would trap these ``position:fixed``
+        overlays inside the panel instead of the viewport."""
+        with self._ui_client.content:
+            self._build_control_indicator_elements()
+
+    def _build_control_indicator_elements(self) -> None:
+        # display:contents scope carrying the wc-mode-* class: one place themes
+        # the glow and the capsule together.
+        self._mode_scope = ui.element("div").classes(
+            f"ai-mode-scope {self._MODE_CLASS[control_mode()]}"
+        )
+        with self._mode_scope:
+            # Ambient glow around the viewport while an AI session drives; its
+            # color encodes the current control mode.
+            self._control_glow = (
+                ui.element("div")
+                # Real DOM class (mark() is server-side only) so browser tests
+                # can query the glow like they query .btn-take-control.
+                .classes("control-lease-glow")
+                .mark("control-lease-glow")
+            )
+            self._control_glow.set_visibility(False)
+            # Glass capsule at top-center: the mode chip and, while an AI
+            # session drives, the Take-control button popping out beside it.
+            # Hidden with its contents — an empty capsule is a floating blob.
+            self._cluster_row = ui.row().classes("ai-cluster items-center no-wrap")
+            self._cluster_row.set_visibility(False)
+            with self._cluster_row:
+                self._mode_chip = (
+                    ui.chip(
+                        control_mode().label,
+                        icon="smart_toy",
+                        # None skips Quasar's bg-primary (!important) class so
+                        # the .ai-cluster background can take effect.
+                        color=None,
+                        on_click=self.cycle_mode,
+                    )
+                    .props("dense clickable")
+                    .classes("control-mode-chip")
+                    .tooltip("AI control mode — click or press Alt+M to cycle")
+                    .mark("control-mode-chip")
+                )
+                # Hidden until an MCP client is around, like the glow.
+                self._mode_chip.set_visibility(False)
+                self._take_control_btn = (
+                    ui.button(
+                        "Take control",
+                        icon="back_hand",
+                        # None skips Quasar's bg-primary/text-white (!important)
+                        # so the .ai-cluster mode-accent styling can take effect.
+                        color=None,
+                        on_click=self._take_control,
+                    )
+                    .props("dense unelevated")
+                    .classes("btn-take-control")
+                    .tooltip("Reclaim control and stop the robot")
+                    .mark("btn-take-control")
+                )
+                self._take_control_btn.set_visibility(False)
+        # Approval dialog. Persistent so ESC / a backdrop click can't dismiss it
+        # into limbo; the value handler below catches any non-button close and
+        # re-arms the prompt. Serves both per-action move approvals (Inspect /
+        # Auto-edits) and the one-time hardware-consent floor (Autopilot).
+        with (
+            ui.dialog().props("persistent") as dlg,
+            ui.card().classes("ai-approval-card gap-2") as self._approval_card,
+        ):
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                ui.icon("smart_toy", size="sm").classes("ai-approval-icon")
+                self._approval_title = ui.label("Allow AI action?").classes(
+                    "text-base font-medium"
+                )
+            self._approval_label = ui.label("").classes(
+                "text-sm font-medium ai-approval-desc w-full"
+            )
+            self._approval_hint = ui.label("").classes("text-xs opacity-80")
+            with ui.row().classes("justify-end w-full gap-2"):
+                # Real DOM classes (mark() is server-side only) so the
+                # .ai-approval-card button styling in theme.py applies.
+                ui.button(
+                    "Deny", color=None, on_click=lambda: self._resolve_approval(False)
+                ).props("outline").classes("btn-consent-deny").mark("btn-consent-deny")
+                ui.button(
+                    "Allow", color=None, on_click=lambda: self._resolve_approval(True)
+                ).classes("btn-consent-allow").mark("btn-consent-allow")
+        dlg.on_value_change(self._on_consent_dialog_value)
+        self._consent_dialog = dlg
+        self._approval_sid: str | None = None
+        self._approval_kind: str | None = None
+
+    def _on_consent_dialog_value(self, e) -> None:
+        """A close that bypassed Allow/Deny (ESC, backdrop, programmatic) is
+        "not now", not a decision: clear the armed sid so the pending request
+        re-prompts on the next indicator refresh instead of wedging forever."""
+        if not e.value and self._approval_sid is not None:
+            self._approval_sid = None
+            self._approval_kind = None
+
+    async def _take_control(self) -> None:
+        """Hard reclaim: seize the lease for this browser tab and stop any
+        motion the AI started — the robot stays enabled so the human can
+        drive immediately."""
+        cid = ui_state.active_client_id
+        if cid is None:
+            return
+        control_lease.seize(BROWSER, cid, "Browser")
+        try:
+            await waldoctl.commander.client.stop()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("take_control stop failed: %s", e)
+        self.refresh_control_indicator()
+        ui.notify("You're in control — robot stopped", color="positive")
+
+    def refresh_control_indicator(self) -> None:
+        """Drive the ambient glow, Take-control button, and pending approvals
+        from the 1 Hz ping loop. Glow states: hidden (no MCP client around),
+        faint (a client is connected but the human holds control), breathing
+        at full strength (an AI session holds the lease)."""
+        glow = getattr(self, "_control_glow", None)
+        btn = getattr(self, "_take_control_btn", None)
+        if glow is None or btn is None:
+            return
+        h = control_lease.holder()
+        other = h is not None and not control_lease.held_by(
+            BROWSER, ui_state.active_client_id or ""
+        )
+        connected = mcp_connected()
+        glow.set_visibility(other or connected)
+        btn.set_visibility(other)
+        chip = getattr(self, "_mode_chip", None)
+        if chip is not None:
+            chip.set_visibility(other or connected)
+        if other:
+            glow.classes(add="control-glow-breathe", remove="glow-faint")
+        else:
+            glow.classes(add="glow-faint", remove="control-glow-breathe")
+        cluster = getattr(self, "_cluster_row", None)
+        if cluster is not None:
+            cluster.set_visibility(other or connected)
+            if other:
+                cluster.classes(add="ai-driving")
+            else:
+                cluster.classes(remove="ai-driving")
+
+        dlg = self._consent_dialog
+        desc_label = self._approval_label
+        hint = self._approval_hint
+        if (
+            dlg is not None
+            and desc_label is not None
+            and hint is not None
+            and self._approval_sid is None
+        ):
+            actions = pending_actions()
+            consents = pending_consents()
+            card = getattr(self, "_approval_card", None)
+            title = getattr(self, "_approval_title", None)
+            if actions:
+                sid, desc = next(iter(actions.items()))
+                self._approval_sid = sid
+                self._approval_kind = "action"
+                if title is not None:
+                    title.text = "Allow AI action?"
+                if card is not None:
+                    card.classes(remove="consent-hw")
+                desc_label.text = desc
+                hint.text = "Approve this AI action to let it proceed."
+                dlg.open()
+            elif consents:
+                sid, label = next(iter(consents.items()))
+                self._approval_sid = sid
+                self._approval_kind = "session"
+                if title is not None:
+                    title.text = "Allow hardware motion?"
+                if card is not None:
+                    card.classes(add="consent-hw")
+                desc_label.text = f"{label} wants to move the robot."
+                hint.text = (
+                    "First real hardware move of this AI session — make sure "
+                    "the workspace is clear before allowing."
+                )
+                dlg.open()
+
+    def _resolve_approval(self, granted: bool) -> None:
+        sid = self._approval_sid
+        kind = self._approval_kind
+        self._approval_sid = None
+        self._approval_kind = None
+        if self._consent_dialog is not None:
+            self._consent_dialog.close()
+        if sid is None:
+            return
+        if kind == "action":
+            if granted:
+                grant_action(sid)
+                ui.notify("Action approved", color="positive")
+            else:
+                deny_action(sid)
+                ui.notify("Action denied", color="warning")
+        else:  # one-time hardware-consent floor
+            if granted:
+                grant_consent(sid)
+                ui.notify(
+                    "Hardware motion allowed for this AI session", color="positive"
+                )
+            else:
+                deny_consent(sid)
+                ui.notify("Hardware motion denied", color="warning")
+
+    # ---- AI control mode (Inspect / Auto-edits / Autopilot) ----
+
+    def _apply_mode(self, mode: ControlMode) -> None:
+        """Commit a control-mode change: update the service, recolor the glow
+        and mode chip, sync the toggle, toast, and sweep any already-pending
+        edits when the new mode auto-applies them. Single funnel for the
+        settings toggle, the mode chip, and the keyboard shortcut."""
+        set_control_mode(mode)
+        ui.notify(f"AI control mode: {mode.label}", color="info")
+        self._set_mode_theme(mode)
+        chip = getattr(self, "_mode_chip", None)
+        if chip is not None:
+            chip.text = mode.label
+        toggle = getattr(self, "_mode_toggle", None)
+        if toggle is not None and toggle.value != mode.value:
+            self._suppress_mode_toggle = True
+            toggle.value = mode.value
+            self._suppress_mode_toggle = False
+        if mode.auto_applies_edits and ui_state.editor_panel is not None:
+            ui_state.editor_panel.auto_apply_pending_edits()
+
+    def _on_mode_toggle(self, value: str | None) -> None:
+        if getattr(self, "_suppress_mode_toggle", False) or value is None:
+            return
+        self._apply_mode(ControlMode(value))
+
+    def cycle_mode(self) -> None:
+        """Advance Inspect → Auto-edits → Autopilot → Inspect (keyboard shortcut)."""
+        order = list(ControlMode)
+        nxt = order[(order.index(control_mode()) + 1) % len(order)]
+        self._apply_mode(nxt)
+
+    def _build_control_mode_selector(self) -> None:
+        """AI control-mode row for the control panel's Settings tab — mirrors
+        the mode chip, the perimeter glow, and the Alt+M shortcut."""
+        with _setting_row("AI Control Mode", "AI autonomy level · Alt+M cycles"):
+            self._mode_toggle = (
+                ui.select(
+                    {m.value: m.label for m in ControlMode},
+                    value=control_mode().value,
+                    on_change=lambda e: self._on_mode_toggle(e.value),
+                )
+                .classes("w-32")
+                .props("dense")
+                .mark("select-control-mode")
+            )
+            self._mode_toggle.tooltip(
+                "Inspect: approve each edit and move · Auto-edits: edits apply "
+                "immediately, moves ask · Autopilot: all automatic (real hardware "
+                "asks once per session)"
+            )
 
     # ---- Joint jog methods ----
 
@@ -1466,6 +1791,21 @@ class ControlPanel:
             self._robot_btn.props("color=grey-7")
             self._robot_btn.classes(add="glass-btn", remove="glass-amber")
 
+    def sync_sim_mode_visuals(self) -> None:
+        """Reflect the current simulator/robot mode across the GUI: URDF
+        ghosting, the robot/sim button, the connection/IO readout, and the
+        playback bar. Every backend mode switch — the GUI toggle and the MCP
+        ``simulation.set_simulator`` tool — must end here, or the GUI keeps
+        showing the old mode while the backend (possibly real hardware) moves."""
+        if self._is_urdf_scene_valid() and ui_state.urdf_scene:
+            ui_state.urdf_scene.set_simulator_appearance(
+                waldoctl.commander.status.simulator_active
+            )
+        self.update_robot_btn_visual()
+        if ui_state._readout_panel is not None:
+            ui_state.readout_panel.update_conn_io()
+        playback.sync_mode()
+
     async def on_toggle_sim(self) -> None:
         """Toggle between robot and simulator modes and update URDF appearance."""
         try:
@@ -1477,42 +1817,32 @@ class ControlPanel:
                 except Exception as e:
                     logger.warning("Failed to stop script before mode switch: %s", e)
 
-            if not waldoctl.commander.status.simulator_active:
-                await self.client.simulator(True)
-                waldoctl.commander.status.simulator_active = True
-                if self._is_urdf_scene_valid() and ui_state.urdf_scene:
-                    ui_state.urdf_scene.set_simulator_appearance(True)
-                # No delay needed: controller waits for first frame before responding OK.
-                try:
-                    await self.client.resume()
-                except Exception as e:
-                    logger.warning("Resume after simulator on failed: %s", e)
-            else:
-                await self.client.simulator(False)
-                waldoctl.commander.status.simulator_active = False
-                if self._is_urdf_scene_valid() and ui_state.urdf_scene:
-                    ui_state.urdf_scene.set_simulator_appearance(False)
-                try:
-                    await self.client.resume()
-                except Exception as e:
-                    logger.warning("Resume after simulator off failed: %s", e)
-
+            enabled = not waldoctl.commander.status.simulator_active
+            await self.client.simulator(enabled)
+            waldoctl.commander.status.simulator_active = enabled
+            # Clear any latched stop after the switch (no delay needed — the
+            # controller waits for the first frame before responding OK).
+            try:
+                await self.client.reset()
+            except Exception as e:
+                logger.warning(
+                    "Reset after simulator %s failed: %s",
+                    "on" if enabled else "off",
+                    e,
+                )
         except Exception as ex:
             ui.notify(f"Simulator toggle failed: {ex}", color="negative")
             logger.error("Simulator toggle failed: %s", ex)
         finally:
-            self.update_robot_btn_visual()
-            if ui_state._readout_panel is not None:
-                ui_state.readout_panel.update_conn_io()
-            playback.sync_mode()
+            self.sync_sim_mode_visuals()
 
     async def on_estop_click(self) -> None:
-        """Trigger digital E-STOP (STOP command) and show dialog."""
+        """Trigger digital E-STOP (protective stop, latched until Reset)."""
         if waldoctl.commander.status.io.estop == 0:
             ui.notify("Physical E-STOP is active - release it first", color="warning")
             return
 
-        await self.client.halt()
+        await self.client.estop()
         if self.estop:
             self.estop._digital_active = True
             self.estop.show(is_physical=False)
@@ -1846,7 +2176,9 @@ class ControlPanel:
             with ui.tab_panel(settings_tab).classes("gap-0 p-0"):
                 with ui.scroll_area().classes("w-full h-full p-0"):
                     self._settings_content = SettingsContent(self.client)
-                    self._settings_content.build_embedded()
+                    self._settings_content.build_embedded(
+                        ai_control_section=self._build_control_mode_selector
+                    )
 
     _PREF_TARGETS = {
         "jog_speed": ("jog", "speed"),
@@ -1973,6 +2305,7 @@ class ControlPanel:
                     self.tool_actions.build()
 
                 self._build_action_row()
+                self._build_control_indicator()
 
             # Jog controls (tabs + grids)
             self.render_jog_content()

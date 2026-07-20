@@ -7,14 +7,16 @@ from typing import Any, Callable
 
 import waldoctl
 from nicegui import Client, context, ui
-from waldoctl import Program
+from waldoctl import EditId, Program
 
 from waldo_commander.common.theme import get_theme
-from waldo_commander.constants import REPO_ROOT
+from waldo_commander.constants import default_program_dir
 from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
+from waldo_commander.services import edit_decisions
+from waldo_commander.services.control_lease import control_mode
 from waldo_commander.state import (
     simulation_state,
     ui_state,
@@ -47,18 +49,22 @@ class EditorPanel(FileOperationsMixin):
 
     def __init__(self) -> None:
         """Initialize editor panel with state and UI references."""
-        self.PROGRAM_DIR = (
-            REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
-        )
-        if not self.PROGRAM_DIR.exists():
-            self.PROGRAM_DIR = REPO_ROOT / "programs"
-            self.PROGRAM_DIR.mkdir(parents=True, exist_ok=True)
+        self.PROGRAM_DIR = default_program_dir()
         script_exec.set_program_dir(self.PROGRAM_DIR)
 
         self.tabs_container: ui.tabs | None = None
         self.tab_panels_container: ui.tab_panels | None = None
+        # Pending-edit review cluster in the header row: while the active tab
+        # has a proposed edit awaiting review it swaps in for the toolbar
+        # buttons (which would mutate the source under the diff).
+        self._edit_review_row: ui.row | None = None
+        self._toolbar_btns: list[ui.button] = []
         # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
         self._tab_widgets: dict[str, dict] = {}
+        # tab_id -> pending edit-id .values already seen, so a *newly* proposed
+        # edit flashes once (like a motion-recorder insert) without re-flashing
+        # on the approve/reject that only shrinks the pending list.
+        self._seen_edit_ids: dict[str, set[str]] = {}
 
         # The page client whose tab widgets this panel renders into. Captured at
         # build() and used by _reconcile_tabs to enter the right context when a
@@ -337,6 +343,10 @@ class EditorPanel(FileOperationsMixin):
         during ``build()``. Idempotent: safe to call from both
         ``_on_disconnect`` and ``_on_shutdown``."""
         waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
+        # Edit listeners live on the process-global tab.edits notifier; drop
+        # them so closures don't accumulate across page (re)builds.
+        for tab_id in list(self._tab_widgets):
+            self._unsubscribe_from_edits(tab_id)
         if self._tab_switch_render_task is not None:
             self._tab_switch_render_task.cancel()
             self._tab_switch_render_task = None
@@ -449,6 +459,9 @@ class EditorPanel(FileOperationsMixin):
         """Delete a tab's DOM elements and drop its references. Idempotent —
         the shared teardown for both the GUI close path and ``_reconcile_tabs``
         (a program closed via an MCP tool)."""
+        # Drop the LLM-edit listener first, while its reference is still on the
+        # widget dict, so it can't fire against half-deleted elements.
+        self._unsubscribe_from_edits(tab_id)
         widgets = self._tab_widgets.pop(tab_id, None)
         if widgets:
             if widgets.get("tab_element"):
@@ -456,6 +469,7 @@ class EditorPanel(FileOperationsMixin):
             if widgets.get("panel"):
                 widgets["panel"].delete()
         ui_state.textareas_by_tab.pop(tab_id, None)
+        self._seen_edit_ids.pop(tab_id, None)
 
     def _switch_blocked(self) -> bool:
         """True (and notifies) when recording or active script playback should
@@ -523,6 +537,7 @@ class EditorPanel(FileOperationsMixin):
         widgets = self._tab_widgets.get(tab_id, {})
         ui_state.active_textarea = widgets.get("textarea")
         ui_state.active_filename_input = widgets.get("filename_input")
+        self._refresh_edits_banner(tab_id)
 
     def _invalidate_for_tab_switch(self) -> None:
         """Defer expensive path re-rendering after a tab switch.
@@ -622,30 +637,25 @@ class EditorPanel(FileOperationsMixin):
             panel = (
                 ui.tab_panel(name=tab.id)
                 .classes("editor-tab-panel")
-                .style("padding: 0; width: 100%; height: 100%;")
+                .style("padding: 0; width: 100%; height: 100%; gap: 0;")
             )
             with panel:
                 completions = generate_completions_from_commands()
 
-                # Fills the panel and uses CodeMirror's own internal scrolling.
-                textarea = (
-                    ui.codemirror(
-                        value=tab.source,
-                        language="Python",
-                        line_wrapping=True,
-                        on_change=lambda e, t=tab: self._on_tab_content_change(
-                            t, e.value
-                        ),
-                        on_selection_change=lambda e, t=tab: self._on_cursor_line(t, e),
-                        completions=completions,
-                        keymap={
-                            "Mod-s": lambda _e, t=tab: self._save_tab(t),
-                        },
-                        line_tooltip_html=True,
-                    )
-                    .classes("w-full h-full")
-                    .style("min-height: 100%;")
-                )
+                # Flex-fills the panel and uses CodeMirror's own internal
+                # scrolling; min-h-0 lets it shrink within the fixed height.
+                textarea = ui.codemirror(
+                    value=tab.source,
+                    language="Python",
+                    line_wrapping=True,
+                    on_change=lambda e, t=tab: self._on_tab_content_change(t, e.value),
+                    on_selection_change=lambda e, t=tab: self._on_cursor_line(t, e),
+                    completions=completions,
+                    keymap={
+                        "Mod-s": lambda _e, t=tab: self._save_tab(t),
+                    },
+                    line_tooltip_html=True,
+                ).classes("w-full flex-1 min-h-0")
 
                 try:
                     mode = get_theme()
@@ -658,7 +668,172 @@ class EditorPanel(FileOperationsMixin):
             self._tab_widgets[tab.id]["textarea"] = textarea
             ui_state.textareas_by_tab[tab.id] = textarea
 
+            # Subscribe to LLM-edit lifecycle so the banner + diff overlay
+            # rebuild whenever propose / approve / reject fires.
+            self._subscribe_to_edits(tab)
+            self._refresh_edits_banner(tab.id)
+
         return panel
+
+    def _subscribe_to_edits(self, tab: Program) -> None:
+        """Register a change listener on ``tab.edits`` for the lifetime of
+        the tab. The listener rebuilds the banner and the CodeMirror diff
+        overlay. Stored on ``self._tab_widgets`` so the matching close path
+        can remove it."""
+
+        def _on_edits_changed(tab_id: str = tab.id) -> None:
+            self._refresh_edits_banner(tab_id)
+            decorations.refresh_diff_overlay(tab_id)
+            self._on_new_edits(tab_id)
+
+        tab.edits.add_change_listener(_on_edits_changed)
+        self._tab_widgets[tab.id]["edits_listener"] = _on_edits_changed
+
+    def _on_new_edits(self, tab_id: str) -> None:
+        """React to *newly* proposed edits: flash their lines (like a
+        motion-recorder insert) and, in an auto-apply control mode, approve
+        them. Guards on a per-tab seen-set so the approve/reject that only
+        shrinks ``pending`` never re-flashes or re-applies.
+
+        Enters the captured page client (like ``_reconcile_tabs``) because an
+        edit proposed via an MCP tool fires this listener off the event loop
+        with no page context, and both the flash (``ui.timer``) and the
+        auto-approve UI push need one."""
+        tab = waldoctl.commander.programs.get(tab_id)
+        pending = list(tab.edits.pending) if tab is not None else []
+        current = {e.id.value for e in pending}
+        seen = self._seen_edit_ids.setdefault(tab_id, set())
+        new_ids = current - seen
+        self._seen_edit_ids[tab_id] = current
+        if not new_ids:
+            return
+        client = self._client
+        if client is None or client._deleted:
+            return
+        with client:
+            # Flash always (every mode) so an incoming edit is noticed, including
+            # when it's about to be auto-applied. Flashes target the active tab.
+            if tab_id == waldoctl.commander.programs.active_id:
+                lines = decorations.diff_touched_lines(tab_id, new_ids)
+                if lines:
+                    decorations.flash_editor_lines(lines)
+            if control_mode().auto_applies_edits:
+                for edit in pending:
+                    if edit.id.value in new_ids:
+                        self._approve_edit(tab_id, edit.id)
+
+    def auto_apply_pending_edits(self) -> None:
+        """Apply every pending edit across open tabs. Called when the control
+        mode switches to an auto-applying one, so edits proposed under Inspect
+        don't keep waiting for a click. Flashes like a fresh proposal."""
+        client = self._client
+        if client is None or client._deleted:
+            return
+        with client:
+            for tab in list(waldoctl.commander.programs.items):
+                pending = list(tab.edits.pending)
+                if not pending:
+                    continue
+                if tab.id == waldoctl.commander.programs.active_id:
+                    lines = decorations.diff_touched_lines(
+                        tab.id, {e.id.value for e in pending}
+                    )
+                    if lines:
+                        decorations.flash_editor_lines(lines)
+                for edit in pending:
+                    self._approve_edit(tab.id, edit.id)
+
+    def _unsubscribe_from_edits(self, tab_id: str) -> None:
+        """Remove the edit-lifecycle listener registered by
+        :meth:`_subscribe_to_edits`. Safe to call multiple times."""
+        widgets = self._tab_widgets.get(tab_id)
+        if not widgets:
+            return
+        listener = widgets.pop("edits_listener", None)
+        if listener is None:
+            return
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is not None:
+            tab.edits.remove_change_listener(listener)
+
+    def _refresh_edits_banner(self, tab_id: str) -> None:
+        """Sync the header row's review cluster with the *active* tab's pending
+        edits. While one is pending the cluster (description + Approve/Reject)
+        swaps in for the toolbar buttons — Open/Save/Insert would mutate the
+        source under the diff. Edits queue up: one is shown at a time and
+        resolving it surfaces the next."""
+        active_id = waldoctl.commander.programs.active_id
+        if active_id is not None and tab_id != active_id:
+            return
+        row = self._edit_review_row
+        if row is None:
+            return
+        tab = waldoctl.commander.programs.get(active_id) if active_id else None
+        pending = list(tab.edits.pending) if tab is not None else []
+        row.clear()
+        row.set_visibility(bool(pending))
+        for btn in self._toolbar_btns:
+            btn.set_visibility(not pending)
+        if tab is None or not pending:
+            return
+        edit = pending[0]
+        tab_id = tab.id
+        with row:
+            label = edit.description or "(no description)"
+            # min-width:0 so the label truncates when the header is tight —
+            # otherwise the whole cluster wraps under the CodeMirror or pushes
+            # the Approve/Reject buttons off the panel.
+            ui.label(label).classes("text-xs truncate").style(
+                "max-width: 16rem; min-width: 0;"
+            ).tooltip(label).mark(f"edit-label-{edit.id.value}")
+            if len(pending) > 1:
+                ui.label(f"+{len(pending) - 1}").classes(
+                    "text-xs text-grey-6 whitespace-nowrap"
+                ).tooltip(f"{len(pending) - 1} more edit(s) queued")
+            ui.button(
+                icon="check",
+                on_click=lambda _e, eid=edit.id, tid=tab_id: self._approve_edit(
+                    tid, eid
+                ),
+            ).props("dense flat color=positive").mark(f"approve-edit-{edit.id.value}")
+            ui.button(
+                icon="close",
+                on_click=lambda _e, eid=edit.id, tid=tab_id: self._reject_edit(
+                    tid, eid
+                ),
+            ).props("dense flat color=negative").mark(f"reject-edit-{edit.id.value}")
+
+    def _approve_edit(self, tab_id: str, edit_id: EditId) -> None:
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is None:
+            return
+        try:
+            tab.edits.approve(edit_id)
+        except ValueError as e:
+            ui.notify(f"Could not apply edit: {e}", color="warning")
+            return
+        except KeyError:
+            ui.notify("Edit no longer pending", color="info")
+            return
+        edit_decisions.record(edit_id.value, "applied")
+        # approve() rewrote tab.source; push it into CodeMirror so the visible
+        # editor matches (the value= arg is initial-only and the edit listener
+        # only rebuilds the banner/overlay). Without this the pane shows stale
+        # text and the next keystroke writes it back, destroying the edit.
+        widgets = self._tab_widgets.get(tab_id)
+        textarea = widgets.get("textarea") if widgets else None
+        if textarea is not None:
+            textarea.value = tab.source
+
+    def _reject_edit(self, tab_id: str, edit_id: EditId) -> None:
+        tab = waldoctl.commander.programs.get(tab_id)
+        if tab is None:
+            return
+        try:
+            tab.edits.reject(edit_id)
+        except KeyError:
+            return
+        edit_decisions.record(edit_id.value, "rejected")
 
     def _reconcile_tabs(self) -> None:
         """Render ``commander.programs`` into this page's tab bar — the single
@@ -700,6 +875,7 @@ class EditorPanel(FileOperationsMixin):
                 widgets = self._tab_widgets[active_id]
                 ui_state.active_textarea = widgets.get("textarea")
                 ui_state.active_filename_input = widgets.get("filename_input")
+                self._refresh_edits_banner(active_id)
 
     def _on_cursor_line(self, tab: Program, e) -> None:
         """Handle cursor line change from CodeMirror."""
@@ -714,6 +890,12 @@ class EditorPanel(FileOperationsMixin):
         tab.source = new_value
 
         self._update_dirty_dot(tab)
+
+        # Pending LLM-edit decorations are NOT re-pushed here: CodeMirror's
+        # decoration StateField maps the pushed specs through the human's
+        # edits client-side, and a re-push would snap them back to the diff's
+        # base coordinates. Only edit-flow changes (propose/approve/reject)
+        # re-render the overlay.
 
         # Only run simulation for active tab
         if tab.id == waldoctl.commander.programs.active_id:
@@ -739,9 +921,13 @@ class EditorPanel(FileOperationsMixin):
             .style("height: 100%; min-height: 0; padding-bottom: 16px;")
         ):
             # ---- Header Row (title + tabs + cmd + X) ----
+            # no-wrap + min-width:0 on the tab scroller: the review cluster
+            # must stay on the header line (a wrapped second line paints
+            # underneath the CodeMirror), so the tab strip shrinks/scrolls
+            # instead of forcing a wrap.
             with (
                 ui.row()
-                .classes("w-full items-center gap-2 px-2")
+                .classes("w-full items-center gap-2 px-2 no-wrap")
                 .style("height: 42px;")
             ):
                 ui.label("Program").classes("text-lg font-medium whitespace-nowrap")
@@ -750,7 +936,7 @@ class EditorPanel(FileOperationsMixin):
                 with (
                     ui.scroll_area()
                     .classes("flex-1 no-wrap items-start editor-tabs-scroll")
-                    .style("height: 42px;")
+                    .style("height: 42px; min-width: 0;")
                 ):
                     with ui.row().classes("items-center gap-0 flex-nowrap"):
                         self.tabs_container = (
@@ -772,9 +958,17 @@ class EditorPanel(FileOperationsMixin):
                         )
                         new_tab_btn.mark("editor-new-tab-btn")
 
+                self._edit_review_row = (
+                    ui.row()
+                    .classes("items-center no-wrap pending-edits-banner")
+                    .style("gap: 4px; min-width: 0;")
+                )
+                self._edit_review_row.set_visibility(False)
+
                 open_btn = (
                     ui.button(icon="folder", on_click=self._show_open_dialog)
                     .props("flat dense color=white")
+                    .classes("editor-toolbar-btn")
                     .tooltip("Open")
                 )
                 open_btn.mark("editor-open-btn")
@@ -782,6 +976,7 @@ class EditorPanel(FileOperationsMixin):
                 save_btn = (
                     ui.button(icon="save", on_click=self._show_save_dialog)
                     .props("flat dense color=white")
+                    .classes("editor-toolbar-btn")
                     .tooltip("Save")
                 )
                 save_btn.mark("editor-save-btn")
@@ -789,11 +984,13 @@ class EditorPanel(FileOperationsMixin):
                 commands_btn = (
                     ui.button(icon="library_add")
                     .props("flat dense color=white")
+                    .classes("editor-toolbar-btn")
                     .tooltip("Insert Command")
                 )
                 commands_btn.mark("editor-commands-btn")
                 with commands_btn:
                     self._build_command_menu()
+                self._toolbar_btns = [open_btn, save_btn, commands_btn]
 
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(
@@ -841,9 +1038,13 @@ class EditorPanel(FileOperationsMixin):
         # Restore tabs from existing state (page refresh) or create initial tab
         if waldoctl.commander.programs.items:
             # Drop stale references from a previous page load; the reconciler
-            # rebuilds every tab and follows the active one. active_id is set
-            # directly (not via _switch_to_tab, whose recording/playback guards
-            # are for user-initiated switches, not page-load restoration).
+            # rebuilds every tab and follows the active one. Unsubscribe the
+            # edit listeners first — they live on the process-global tab.edits
+            # notifier, so clearing _tab_widgets without removing them leaks a
+            # closure set per page (re)build. active_id is set directly (not via
+            # _switch_to_tab, whose guards are for user-initiated switches).
+            for tab_id in list(self._tab_widgets):
+                self._unsubscribe_from_edits(tab_id)
             self._tab_widgets.clear()
             if not waldoctl.commander.programs.active_id:
                 waldoctl.commander.programs.active_id = (

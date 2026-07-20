@@ -1080,28 +1080,43 @@ async def main():
 class TestHomeAndCheckpoints:
     """Tests for home teleport and checkpoint marker creation."""
 
-    def test_home_segment_is_zero_duration_checkpoint(self):
-        """home() produces a zero-duration segment with checkpoint='home' and correct joints."""
+    def test_home_segment_mirrors_referencing_state(self):
+        """home() is tagged checkpoint='home' and ends at the home joints —
+        a planned return move (real duration) when the preview is seeded
+        homed, an instant referencing snap when seeded unhomed."""
         from parol6.config import HOME_ANGLES_DEG
+
+        home_rad = np.radians(HOME_ANGLES_DEG)
 
         segments: list[dict] = []
         client = PathPreviewClient(
             dry_run_client_cls=DryRunRobotClient,
             segment_collector=segments,
         )
-
-        # Start from non-home position, then home
         client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.home()
 
         assert len(segments) == 2
         home_seg = segments[1]
         assert home_seg["checkpoint"] == "home"
-        assert home_seg["estimated_duration"] == pytest.approx(0.0)
+        assert home_seg["estimated_duration"] > 0.0
         assert home_seg["joints"] is not None
-        # Joints should be at home position (in radians)
-        home_rad = np.radians(HOME_ANGLES_DEG)
         assert np.allclose(home_seg["joints"], home_rad, atol=0.01)
+
+        segments.clear()
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+            initial_homed=False,
+        )
+        client.home()
+
+        assert len(segments) == 1
+        snap_seg = segments[0]
+        assert snap_seg["checkpoint"] == "home"
+        assert snap_seg["estimated_duration"] == pytest.approx(0.0)
+        assert snap_seg["joints"] is not None
+        assert np.allclose(snap_seg["joints"], home_rad, atol=0.01)
 
     def test_home_updates_planner_for_subsequent_moves(self):
         """After home(), subsequent move_j starts from home position."""
