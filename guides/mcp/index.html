@@ -8,25 +8,31 @@
       
       
       
+        <link rel="canonical" href="https://jepson2k.github.io/Waldo-Commander/guides/mcp/">
       
+      
+        <link rel="prev" href="../writing-programs/">
+      
+      
+        <link rel="next" href="../api-reference/">
       
       
         
       
       
-      <link rel="icon" href="/Waldo-Commander/assets/images/favicon.png">
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
-        <title>Waldo Commander</title>
+        <title>AI Control (MCP) - Waldo Commander</title>
       
     
     
-      <link rel="stylesheet" href="/Waldo-Commander/assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
-        <link rel="stylesheet" href="/Waldo-Commander/assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -45,9 +51,9 @@
       
     
     
-      <link rel="stylesheet" href="/Waldo-Commander/assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
     
-    <script>__md_scope=new URL("/Waldo-Commander/",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -71,6 +77,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#ai-control-via-mcp" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -83,7 +94,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="/Waldo-Commander/." title="Waldo Commander" class="md-header__button md-logo" aria-label="Waldo Commander" data-md-component="logo">
+    <a href="../.." title="Waldo Commander" class="md-header__button md-logo" aria-label="Waldo Commander" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -103,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              
+              AI Control (MCP)
             
           </span>
         </div>
@@ -219,7 +230,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="/Waldo-Commander/." title="Waldo Commander" class="md-nav__button md-logo" aria-label="Waldo Commander" data-md-component="logo">
+    <a href="../.." title="Waldo Commander" class="md-nav__button md-logo" aria-label="Waldo Commander" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -249,7 +260,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/Waldo-Commander/." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -276,7 +287,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/Waldo-Commander/guides/writing-programs/" class="md-nav__link">
+      <a href="../writing-programs/" class="md-nav__link">
         
   
   
@@ -300,10 +311,37 @@
       
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="/Waldo-Commander/guides/mcp/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AI Control (MCP)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -319,6 +357,70 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#enable-the-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enable the server
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#register-it-with-claude-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Register it with Claude Code
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-llm-should-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the LLM should work
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#control-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Control modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -330,7 +432,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/Waldo-Commander/guides/api-reference/" class="md-nav__link">
+      <a href="../api-reference/" class="md-nav__link">
         
   
   
@@ -357,7 +459,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/Waldo-Commander/guides/backend-development/" class="md-nav__link">
+      <a href="../backend-development/" class="md-nav__link">
         
   
   
@@ -394,6 +496,60 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#enable-the-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enable the server
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#register-it-with-claude-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Register it with Claude Code
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-llm-should-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the LLM should work
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#control-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Control modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -406,8 +562,105 @@
               
               <article class="md-content__inner md-typeset">
                 
-  <h1>404 - Not found</h1>
+                  
 
+
+  
+  
+
+
+<h1 id="ai-control-via-mcp">AI control via MCP<a class="headerlink" href="#ai-control-via-mcp" title="Permanent link">&para;</a></h1>
+<p>Waldo Commander ships a built-in <a href="https://modelcontextprotocol.io">Model Context Protocol</a>
+server so an LLM client (Claude Code, Claude Desktop, …) can read the robot's
+state, author and run programs, and — when you allow it — drive the arm. The
+server runs <strong>inside</strong> the Waldo Commander process; there is nothing separate to
+launch.</p>
+<h2 id="enable-the-server">Enable the server<a class="headerlink" href="#enable-the-server" title="Permanent link">&para;</a></h2>
+<p>The server is <strong>off by default</strong>. Turn it on in the control panel's <strong>Settings</strong>
+tab under <strong>MCP server</strong>:</p>
+<ul>
+<li><strong>Enabled</strong> — start the server on the next app launch.</li>
+<li><strong>Host</strong> — <code>127.0.0.1</code> (loopback) by default. Set <code>0.0.0.0</code> to expose it on
+  your LAN.</li>
+<li><strong>Port</strong> — <code>7400</code> by default.</li>
+</ul>
+<p>Changing any of these shows a <em>"restart to apply"</em> hint; they bind when the
+server starts. Restart Waldo Commander after enabling. The endpoint is:</p>
+<div class="highlight"><pre><span></span><code>http://&lt;host&gt;:&lt;port&gt;/mcp
+</code></pre></div>
+<p>i.e. <code>http://127.0.0.1:7400/mcp</code> with the defaults.</p>
+<h2 id="register-it-with-claude-code">Register it with Claude Code<a class="headerlink" href="#register-it-with-claude-code" title="Permanent link">&para;</a></h2>
+<p>The repository ships a project-scoped <a href="https://docs.claude.com/en/docs/claude-code/mcp"><code>.mcp.json</code></a>
+pointing at the default endpoint, so a Claude Code session started in the project
+directory discovers it automatically (approve it when prompted). To register it
+by hand, or for a different host/port:</p>
+<div class="highlight"><pre><span></span><code>claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>--transport<span class="w"> </span>http<span class="w"> </span>waldo-commander<span class="w"> </span>http://127.0.0.1:7400/mcp
+</code></pre></div>
+<p>Confirm it's connected:</p>
+<div class="highlight"><pre><span></span><code>claude<span class="w"> </span>mcp<span class="w"> </span>list
+</code></pre></div>
+<p><code>waldo-commander</code> should report <strong>connected</strong> — only while the app is running
+with the server enabled.</p>
+<h2 id="how-the-llm-should-work">How the LLM should work<a class="headerlink" href="#how-the-llm-should-work" title="Permanent link">&para;</a></h2>
+<p>The server's instructions steer the LLM to put <strong>all</strong> code it writes — even a
+quick throwaway — into a <strong>visible program</strong> in the editor (via
+<code>programs.new</code> / <code>programs.propose_edit</code>), so you can see the diff, watch the
+dry-run path, and scrub the timeline before anything runs. Direct motion tools
+(<code>motion.jog_*</code>, <code>motion.move_*</code>) are reserved for single ad-hoc nudges.</p>
+<p>They're also pointed at the on-disk program library (<code>programs.list_library</code>,
+the repo's <code>programs/</code> directory) and told to open a worked example to learn
+the program-side motion API instead of guessing it.</p>
+<h2 id="control-modes">Control modes<a class="headerlink" href="#control-modes" title="Permanent link">&para;</a></h2>
+<p>You decide how much the LLM can do on its own, from the <strong>AI control mode</strong>
+selector in the control panel's Settings tab, by clicking the mode chip at the
+top of the screen, or by cycling with <strong>Alt+M</strong>. A perimeter glow appears
+whenever an MCP client is connected — faint while you hold control, breathing
+at full strength while the AI is driving — and its color tracks the mode
+(emerald Inspect, sky Auto-edits, violet Autopilot).</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Program edits</th>
+<th>Robot motion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Inspect</strong></td>
+<td>you approve each edit in the editor</td>
+<td>you approve each move</td>
+</tr>
+<tr>
+<td><strong>Auto-edits</strong></td>
+<td>applied immediately (flashed so you see them)</td>
+<td>you approve each move</td>
+</tr>
+<tr>
+<td><strong>Autopilot</strong></td>
+<td>applied immediately</td>
+<td>runs automatically*</td>
+</tr>
+</tbody>
+</table>
+<p>* In simulator mode everything is automatic. On <strong>real hardware</strong>, the first
+move of an AI session always asks for a one-time confirmation, even in Autopilot.</p>
+<p>At any time the amber <strong>Take control</strong> button (top-right, shown while an AI
+holds control) seizes control back for you and halts any motion the AI started.
+<code>motion.halt</code> and status reads are never gated.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
               </article>
             </div>
           
@@ -444,10 +697,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "/Waldo-Commander/", "features": ["navigation.sections", "content.code.copy", "toc.follow"], "search": "/Waldo-Commander/assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="/Waldo-Commander/assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

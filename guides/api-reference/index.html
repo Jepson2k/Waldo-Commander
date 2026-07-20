@@ -11,7 +11,7 @@
         <link rel="canonical" href="https://jepson2k.github.io/Waldo-Commander/guides/api-reference/">
       
       
-        <link rel="prev" href="../writing-programs/">
+        <link rel="prev" href="../mcp/">
       
       
         <link rel="next" href="../backend-development/">
@@ -21,7 +21,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -29,7 +29,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -311,6 +311,33 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AI Control (MCP)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -423,6 +450,17 @@
     <span class="md-ellipsis">
       
         tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.native_tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        native_tools
       
     </span>
   </a>
@@ -584,6 +622,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.Robot.has_collision_checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        has_collision_checking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.Robot.fk" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -643,6 +692,61 @@
     <span class="md-ellipsis">
       
         ik_batch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.in_collision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        in_collision
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.colliding_pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        colliding_pairs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.check_trajectory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check_trajectory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.min_distance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        min_distance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.apply_shapes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_shapes
       
     </span>
   </a>
@@ -964,10 +1068,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#waldoctl.RobotClient.resume" class="md-nav__link">
+  <a href="#waldoctl.RobotClient.stop" class="md-nav__link">
     <span class="md-ellipsis">
       
-        resume
+        stop
       
     </span>
   </a>
@@ -975,10 +1079,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#waldoctl.RobotClient.halt" class="md-nav__link">
+  <a href="#waldoctl.RobotClient.estop" class="md-nav__link">
     <span class="md-ellipsis">
       
-        halt
+        estop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        reset
       
     </span>
   </a>
@@ -1034,6 +1149,28 @@
     <span class="md-ellipsis">
       
         is_freedrive
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.set_shapes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        set_shapes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.shapes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        shapes
       
     </span>
   </a>
@@ -1250,10 +1387,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#waldoctl.RobotClient.reset" class="md-nav__link">
+  <a href="#waldoctl.RobotClient.reset_state" class="md-nav__link">
     <span class="md-ellipsis">
       
-        reset
+        reset_state
       
     </span>
   </a>
@@ -1991,6 +2128,50 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.collision_active" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        collision_active
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.collision_pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        collision_pairs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.scene_epoch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        scene_epoch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.homed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        homed
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2311,6 +2492,39 @@
     <span class="md-ellipsis">
       
         channel_descriptors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolSpec.camera_spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        camera_spec
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolSpec.runtime_settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        runtime_settings
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolSpec.effective_camera_device" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        effective_camera_device
       
     </span>
   </a>
@@ -2734,6 +2948,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.ToolStatus.variant_key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        variant_key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.ToolStatus.state" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2793,6 +3018,28 @@
     <span class="md-ellipsis">
       
         channels
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolStatus.position" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        position
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolStatus.current" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        current
       
     </span>
   </a>
@@ -3376,6 +3623,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.Robot.native_tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        native_tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.Robot.cartesian_limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3530,6 +3788,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.Robot.has_collision_checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        has_collision_checking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.Robot.fk" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3589,6 +3858,61 @@
     <span class="md-ellipsis">
       
         ik_batch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.in_collision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        in_collision
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.colliding_pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        colliding_pairs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.check_trajectory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check_trajectory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.min_distance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        min_distance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.Robot.apply_shapes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_shapes
       
     </span>
   </a>
@@ -3910,10 +4234,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#waldoctl.RobotClient.resume" class="md-nav__link">
+  <a href="#waldoctl.RobotClient.stop" class="md-nav__link">
     <span class="md-ellipsis">
       
-        resume
+        stop
       
     </span>
   </a>
@@ -3921,10 +4245,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#waldoctl.RobotClient.halt" class="md-nav__link">
+  <a href="#waldoctl.RobotClient.estop" class="md-nav__link">
     <span class="md-ellipsis">
       
-        halt
+        estop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        reset
       
     </span>
   </a>
@@ -3980,6 +4315,28 @@
     <span class="md-ellipsis">
       
         is_freedrive
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.set_shapes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        set_shapes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.shapes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        shapes
       
     </span>
   </a>
@@ -4196,10 +4553,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#waldoctl.RobotClient.reset" class="md-nav__link">
+  <a href="#waldoctl.RobotClient.reset_state" class="md-nav__link">
     <span class="md-ellipsis">
       
-        reset
+        reset_state
       
     </span>
   </a>
@@ -4937,6 +5294,50 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.collision_active" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        collision_active
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.collision_pairs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        collision_pairs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.scene_epoch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        scene_epoch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.homed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        homed
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -5257,6 +5658,39 @@
     <span class="md-ellipsis">
       
         channel_descriptors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolSpec.camera_spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        camera_spec
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolSpec.runtime_settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        runtime_settings
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolSpec.effective_camera_device" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        effective_camera_device
       
     </span>
   </a>
@@ -5680,6 +6114,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.ToolStatus.variant_key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        variant_key
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.ToolStatus.state" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5739,6 +6184,28 @@
     <span class="md-ellipsis">
       
         channels
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolStatus.position" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        position
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ToolStatus.current" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        current
       
     </span>
   </a>
@@ -6325,7 +6792,6 @@ capabilities have concrete defaults that backends override as needed.</p>
             <code class="highlight language-python"><span class="n">tools</span><span class="p">:</span> <span class="n">ToolsSpec</span></code>
 
   <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
       <small class="doc doc-label doc-label-property"><code>property</code></small>
   </span>
 
@@ -6334,7 +6800,33 @@ capabilities have concrete defaults that backends override as needed.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Available end-effector tools and their capabilities.</p>
+        <p>Backend-native tools composed with plugins registered via
+<code>waldoctl.tools</code>. Cached per instance (entry points are static).</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.Robot.native_tools" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">native_tools</span><span class="p">:</span> <span class="n">ToolsSpec</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#waldoctl.Robot.native_tools" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The backend's own tools; composed with plugin tools by :attr:<code>tools</code>.</p>
+<p>Backends implement this; consumers read :attr:<code>tools</code> (which adds plugin
+tools).</p>
 
     </div>
 
@@ -6665,6 +7157,28 @@ Convention: backends export this class at their package level.</p>
 
 </div>
 
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.Robot.has_collision_checking" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">has_collision_checking</span><span class="p">:</span> <span class="nb">bool</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#waldoctl.Robot.has_collision_checking" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Whether collision checking (self + workspace shapes) is available.</p>
+
+    </div>
+
+</div>
+
 
 
 
@@ -6804,6 +7318,100 @@ on top of the tool's registered transform.
     <div class="doc doc-contents ">
 
         <p>Batch IK: <code>(N, 6)</code> poses -&gt; list of <code>IKResult</code> (radians).</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.Robot.in_collision" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">in_collision</span><span class="p">(</span><span class="n">q_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span></code>
+
+<a href="#waldoctl.Robot.in_collision" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Whether <code>q_rad</code> (radians) collides — with itself, the attached
+tool, or a workspace keep-out shape.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.Robot.colliding_pairs" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">colliding_pairs</span><span class="p">(</span><span class="n">q_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span></code>
+
+<a href="#waldoctl.Robot.colliding_pairs" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Colliding (name, name) geometry/link pairs at <code>q_rad</code>.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.Robot.check_trajectory" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">check_trajectory</span><span class="p">(</span><span class="n">q_path_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+
+<a href="#waldoctl.Robot.check_trajectory" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>First colliding row index in <code>(N, num_joints)</code> path, or -1 if clear.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.Robot.min_distance" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">min_distance</span><span class="p">(</span><span class="n">q_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">float</span></code>
+
+<a href="#waldoctl.Robot.min_distance" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Min clearance at <code>q_rad</code> (signed; negative = penetration).</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.Robot.apply_shapes" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">apply_shapes</span><span class="p">(</span><span class="n">shapes</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Shape</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span></code>
+
+<a href="#waldoctl.Robot.apply_shapes" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Apply workspace keep-out shapes to this process's local checker.</p>
+<p>Local-only twin of <code>RobotClient.set_shapes</code> (which updates the
+<em>backend's</em> checkers) — feeds client-side preview / editing-pose
+collision queries. No-op on backends without collision checking.</p>
 
 
     </div>
@@ -6977,6 +7585,20 @@ their docstrings.  The editor parses these at startup to build the palette.</p>
 <li><code>Category: &lt;name&gt;</code> — groups the command in the palette UI.</li>
 <li><code>Example:</code> — the first indented line becomes the insertion snippet.</li>
 </ul>
+<p><strong>Command return codes:</strong> Command methods declared <code>-&gt; int</code> follow one
+convention, which backends MUST honor:</p>
+<ul>
+<li>Queued motion commands (Category: Motion) return the command's queue
+  index (<code>&gt;= 0</code>) once the backend acknowledges it; <code>&lt; 0</code> when the
+  command could not be confirmed or was rejected.</li>
+<li>Every other command returns <code>1</code> when the backend confirmed it applied
+  the command, <code>0</code> when unconfirmed (unreachable, or no reply in time —
+  the command may or may not have been applied), and <code>&lt; 0</code> on rejection.
+  A backend may raise instead of returning a negative code on active
+  rejection; callers must treat both as failure.</li>
+</ul>
+<p>A backend that cannot confirm application must never report success.
+Success is <code>&gt;= 0</code> for queued motion, <code>&gt; 0</code> for everything else.</p>
 
 
 
@@ -7544,26 +8166,28 @@ Multi axis:  <code>jog_l("WRF", axes=["X", "Y"], speeds_list=[0.5, -0.3])</code>
 <div class="doc doc-object doc-function">
 
 
-<h3 id="waldoctl.RobotClient.resume" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">resume</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+<h3 id="waldoctl.RobotClient.stop" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">stop</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
       <small class="doc doc-label doc-label-async"><code>async</code></small>
   </span>
 
-<a href="#waldoctl.RobotClient.resume" class="headerlink" title="Permanent link">&para;</a></h3>
+<a href="#waldoctl.RobotClient.stop" class="headerlink" title="Permanent link">&para;</a></h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Re-enable the robot after an e-stop or disable.</p>
+        <p>Stop all motion — cancel the active move and clear the queue.</p>
+<p>The controller stays enabled and holding position; the next motion
+command is accepted immediately.</p>
 <p>Category: Control</p>
 
 
 <details class="example" open>
   <summary>Example</summary>
-  <p>rbt.resume()</p>
+  <p>rbt.stop()</p>
 </details>
 
     </div>
@@ -7573,26 +8197,56 @@ Multi axis:  <code>jog_l("WRF", axes=["X", "Y"], speeds_list=[0.5, -0.3])</code>
 <div class="doc doc-object doc-function">
 
 
-<h3 id="waldoctl.RobotClient.halt" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">halt</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+<h3 id="waldoctl.RobotClient.estop" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">estop</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
       <small class="doc doc-label doc-label-async"><code>async</code></small>
   </span>
 
-<a href="#waldoctl.RobotClient.halt" class="headerlink" title="Permanent link">&para;</a></h3>
+<a href="#waldoctl.RobotClient.estop" class="headerlink" title="Permanent link">&para;</a></h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Immediate stop — halt all motion and disable.</p>
+        <p>Protective stop: stop all motion and latch the controller
+disabled until <code>reset()</code>.</p>
 <p>Category: Control</p>
 
 
 <details class="example" open>
   <summary>Example</summary>
-  <p>rbt.halt()</p>
+  <p>rbt.estop()</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.RobotClient.reset" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">reset</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.RobotClient.reset" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Clear a latched protective stop, re-enabling motion.</p>
+<p>Category: Control</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>rbt.reset()</p>
 </details>
 
     </div>
@@ -7723,6 +8377,77 @@ rbt.teleport([0, -90, 0, 0, 0, 0], tool_positions=[1.0])</p>
 
         <p>Query whether freedrive / teach mode is active.</p>
 
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.RobotClient.set_shapes" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">set_shapes</span><span class="p">(</span><span class="n">shapes</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Shape</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.RobotClient.set_shapes" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Replace the program-layer keep-out / marker shapes (the collision world).</p>
+<p>Collision-enabled shapes are added to the backend's collision checkers so
+motion is blocked against them; an empty list clears all program-layer
+shapes.  Installation-layer shapes (declared in the backend's robot
+config) are unaffected — programs inherit them and cannot remove them.</p>
+<p>The change also invalidates committed motion: the backend re-guards
+the currently-streaming trajectory's remaining path and every queued
+trajectory before it starts, halting with a collision error rather
+than driving into a keep-out declared after the motion was planned.</p>
+<p>Returns <code>1</code> only after the backend confirms the world was applied;
+<code>0</code> if unconfirmed, <code>&lt; 0</code> if the backend rejected the shapes (see
+the class docstring's return-code convention).</p>
+<p>Category: Configuration</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>rbt.set_shapes([Box(name="table", x=0.6, y=0.4, z=0.02,
+                    pose=(0.3, 0, -0.01, 0, 0, 0))])</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.RobotClient.shapes" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">shapes</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">ShapeWorld</span> <span class="o">|</span> <span class="kc">None</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.RobotClient.shapes" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The collision world the backend is currently enforcing, by layer.</p>
+<p>Readback truth: displays should render this — not a locally stored
+copy — re-querying whenever <code>StatusBuffer.scene_epoch</code> changes.
+Returns None if the backend is unreachable.</p>
+<p>Category: Query</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>world = rbt.shapes()</p>
+</details>
 
     </div>
 
@@ -8273,25 +8998,25 @@ Call with (0, 0, 0) to reset. Changing tools resets the offset.</p>
 <div class="doc doc-object doc-function">
 
 
-<h3 id="waldoctl.RobotClient.reset" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">reset</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+<h3 id="waldoctl.RobotClient.reset_state" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">reset_state</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-async"><code>async</code></small>
   </span>
 
-<a href="#waldoctl.RobotClient.reset" class="headerlink" title="Permanent link">&para;</a></h3>
+<a href="#waldoctl.RobotClient.reset_state" class="headerlink" title="Permanent link">&para;</a></h3>
 
 
     <div class="doc doc-contents ">
 
-        <p>Reset controller state.</p>
+        <p>Reset controller state (world shapes, tool selection, errors).</p>
 <p>Category: Control</p>
 
 
 <details class="example" open>
   <summary>Example</summary>
-  <p>rbt.reset()</p>
+  <p>rbt.reset_state()</p>
 </details>
 
     </div>
@@ -9925,6 +10650,100 @@ joint state.</p>
 
 </div>
 
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.StatusBuffer.collision_active" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">collision_active</span><span class="p">:</span> <span class="nb">bool</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#waldoctl.StatusBuffer.collision_active" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Whether a motion was blocked/stopped by a predicted collision.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.StatusBuffer.collision_pairs" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">collision_pairs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#waldoctl.StatusBuffer.collision_pairs" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Colliding pairs at the predicted colliding config.  Names are URDF link
+names, <code>shape:&lt;name&gt;</code> (program keep-out), <code>install:&lt;name&gt;</code>
+(installation keep-out), or <code>tool:&lt;key&gt;:&lt;part&gt;</code> (attached tool geometry)
+— never backend-internal geometry identifiers.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.StatusBuffer.scene_epoch" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">scene_epoch</span><span class="p">:</span> <span class="nb">int</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#waldoctl.StatusBuffer.scene_epoch" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Monotonic counter bumped on every collision-world change; displays
+re-query <code>RobotClient.shapes()</code> when it moves.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.StatusBuffer.homed" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">homed</span><span class="p">:</span> <span class="nb">bool</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#waldoctl.StatusBuffer.homed" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>All joints homed. Until homing, reported joint positions are
+unreferenced and backends refuse planned motion; frontends seed dry-run
+previews with this so previews mirror that gate.</p>
+
+    </div>
+
+</div>
+
 
 
 
@@ -10155,7 +10974,7 @@ joint state.</p>
 
 
 <h2 id="waldoctl.ToolSpec" class="doc doc-heading">
-              <code class="highlight language-python"><span class="n">waldoctl</span><span class="o">.</span><span class="n">ToolSpec</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">display_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">tool_type</span><span class="p">:</span> <span class="n">ToolType</span><span class="p">,</span> <span class="n">tcp_origin</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span> <span class="n">tcp_rpy</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span> <span class="n">description</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span><span class="p">,</span> <span class="n">meshes</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">MeshSpec</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span> <span class="n">motions</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">PartMotion</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span> <span class="n">variants</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">ToolVariant</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span> <span class="n">activation_type</span><span class="p">:</span> <span class="n">ActivationType</span> <span class="o">=</span> <span class="n">ActivationType</span><span class="o">.</span><span class="n">PROGRESSIVE</span><span class="p">,</span> <span class="n">action_l_labels</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_l_icons</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_l_mode</span><span class="p">:</span> <span class="n">ToggleMode</span> <span class="o">=</span> <span class="n">ToggleMode</span><span class="o">.</span><span class="n">TOGGLE</span><span class="p">,</span> <span class="n">adjust_step</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">adjust_labels</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">adjust_icons</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_r_labels</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_r_icons</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_r_mode</span><span class="p">:</span> <span class="n">ToggleMode</span> <span class="o">=</span> <span class="n">ToggleMode</span><span class="o">.</span><span class="n">TRIGGER</span><span class="p">)</span></code>
+              <code class="highlight language-python"><span class="n">waldoctl</span><span class="o">.</span><span class="n">ToolSpec</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">display_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">tool_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">ToolType</span><span class="p">,</span> <span class="n">tcp_origin</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span> <span class="n">tcp_rpy</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span> <span class="n">description</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span><span class="p">,</span> <span class="n">meshes</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">MeshSpec</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span> <span class="n">motions</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">PartMotion</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span> <span class="n">variants</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">ToolVariant</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span> <span class="n">activation_type</span><span class="p">:</span> <span class="n">ActivationType</span> <span class="o">=</span> <span class="n">ActivationType</span><span class="o">.</span><span class="n">PROGRESSIVE</span><span class="p">,</span> <span class="n">action_l_labels</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_l_icons</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_l_mode</span><span class="p">:</span> <span class="n">ToggleMode</span> <span class="o">=</span> <span class="n">ToggleMode</span><span class="o">.</span><span class="n">TOGGLE</span><span class="p">,</span> <span class="n">adjust_step</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">adjust_labels</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">adjust_icons</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_r_labels</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_r_icons</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">action_r_mode</span><span class="p">:</span> <span class="n">ToggleMode</span> <span class="o">=</span> <span class="n">ToggleMode</span><span class="o">.</span><span class="n">TRIGGER</span><span class="p">,</span> <span class="n">camera_spec</span><span class="p">:</span> <span class="n">CameraSpec</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#waldoctl.ToolSpec" class="headerlink" title="Permanent link">&para;</a></h2>
 
@@ -10169,9 +10988,9 @@ joint state.</p>
         <p>Base contract every tool must satisfy.</p>
 <p><code>key</code> is unique per tool instance (e.g. <code>"pneumatic_left"</code>).
 <code>tool_type</code> determines which GUI panel category the tool belongs to.</p>
-<p>All tool configuration is immutable — fields are stored privately
-and exposed via read-only properties.  Action methods (e.g. toggle)
-are abstract — backends provide concrete implementations.</p>
+<p>Immutable spec fields are stored privately and exposed via read-only
+properties. :attr:<code>runtime_settings</code> is the mutable, bindable layer for
+user overrides (currently camera device; tools can extend it).</p>
 
 
 
@@ -10240,7 +11059,7 @@ are abstract — backends provide concrete implementations.</p>
 
 
 <h3 id="waldoctl.ToolSpec.tool_type" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">tool_type</span><span class="p">:</span> <span class="n">ToolType</span></code>
+            <code class="highlight language-python"><span class="n">tool_type</span><span class="p">:</span> <span class="nb">str</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-property"><code>property</code></small>
@@ -10252,6 +11071,10 @@ are abstract — backends provide concrete implementations.</p>
     <div class="doc doc-contents ">
 
         <p>GUI category — determines which panel (if any) is shown.</p>
+<p>Returns a <code>str</code> so third-party tools can introduce new categories
+beyond the built-in :class:<code>ToolType</code> values.  Comparison with
+<code>ToolType.GRIPPER</code> etc. still works because <code>ToolType</code> is a
+<code>StrEnum</code>.</p>
 
     </div>
 
@@ -10631,6 +11454,82 @@ are abstract — backends provide concrete implementations.</p>
 
 </div>
 
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.ToolSpec.camera_spec" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">camera_spec</span><span class="p">:</span> <span class="n">CameraSpec</span> <span class="o">|</span> <span class="kc">None</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#waldoctl.ToolSpec.camera_spec" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Spec-time default camera attached to this tool, if any.</p>
+<p>Returns <code>None</code> when the tool has no camera. The user can still
+override via :attr:<code>runtime_settings</code>; consumers should resolve the
+effective device via :attr:<code>effective_camera_device</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.ToolSpec.runtime_settings" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">runtime_settings</span><span class="p">:</span> <span class="s1">&#39;ToolRuntimeSettings&#39;</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#waldoctl.ToolSpec.runtime_settings" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>User-tweakable runtime overrides for this tool.</p>
+<p>Bindable. The host application persists these per tool key to
+:attr:<code>nicegui.app.storage.general</code> so user choices survive restarts.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.ToolSpec.effective_camera_device" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">effective_camera_device</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#waldoctl.ToolSpec.effective_camera_device" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Resolved camera device after applying any runtime override.</p>
+<p>Resolution order: <code>runtime_settings.camera_device</code> if set, else
+<code>camera_spec.device</code> if a <code>camera_spec</code> exists, else <code>None</code>.</p>
+<p>Two values mean "no camera": <code>None</code> (no spec or override supplies a
+device) and <code>-1</code> (a spec is present but set to <code>CameraSpec.device</code>'s
+no-camera sentinel). Callers must treat both as absent.</p>
+
+    </div>
+
+</div>
+
 
 
 
@@ -10697,7 +11596,8 @@ are abstract — backends provide concrete implementations.</p>
 
         <p>Query current tool status from the controller.</p>
 <p>Returns the live tool status (state, engaged, positions, channels).
-Only works on client-bound tools — raises <code>RuntimeError</code> if unbound.</p>
+The base <code>ToolSpec</code> raises <code>NotImplementedError</code>; client-bound
+tool subclasses override it against the controller.</p>
 
 
     </div>
@@ -10848,7 +11748,7 @@ or <code>str</code> (specific key exists?).</p>
 
 
 <h3 id="waldoctl.ToolsSpec.by_type" class="doc doc-heading">
-            <code class="highlight language-python"><span class="n">by_type</span><span class="p">(</span><span class="n">tool_type</span><span class="p">:</span> <span class="n">ToolType</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">ToolSpec</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span></code>
+            <code class="highlight language-python"><span class="n">by_type</span><span class="p">(</span><span class="n">tool_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">ToolType</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">ToolSpec</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-abstractmethod"><code>abstractmethod</code></small>
@@ -10860,6 +11760,8 @@ or <code>str</code> (specific key exists?).</p>
     <div class="doc doc-contents ">
 
         <p>Return all tools matching the given category.</p>
+<p>Accepts a plain <code>str</code> so third-party tool categories work without
+extending the built-in :class:<code>ToolType</code> enum.</p>
 
 
     </div>
@@ -10886,7 +11788,7 @@ or <code>str</code> (specific key exists?).</p>
 
     <div class="doc doc-contents first">
             <p class="doc doc-class-bases">
-              Bases: <code><a class="autorefs autorefs-internal" title="waldoctl.ToolSpec(*, key: str, display_name: str, tool_type: ToolType, tcp_origin: tuple[float, float, float], tcp_rpy: tuple[float, float, float], description: str = '', meshes: tuple[MeshSpec, ...] = (), motions: tuple[PartMotion, ...] = (), variants: tuple[ToolVariant, ...] = (), activation_type: ActivationType = ActivationType.PROGRESSIVE, action_l_labels: tuple[str, str] | None = None, action_l_icons: tuple[str, str] | None = None, action_l_mode: ToggleMode = ToggleMode.TOGGLE, adjust_step: int | None = None, adjust_labels: tuple[str, str] | None = None, adjust_icons: tuple[str, str] | None = None, action_r_labels: tuple[str, str] | None = None, action_r_icons: tuple[str, str] | None = None, action_r_mode: ToggleMode = ToggleMode.TRIGGER) (waldoctl.tools.ToolSpec)" href="#waldoctl.ToolSpec">ToolSpec</a></code></p>
+              Bases: <code><a class="autorefs autorefs-internal" title="waldoctl.ToolSpec(*, key: str, display_name: str, tool_type: str | ToolType, tcp_origin: tuple[float, float, float], tcp_rpy: tuple[float, float, float], description: str = '', meshes: tuple[MeshSpec, ...] = (), motions: tuple[PartMotion, ...] = (), variants: tuple[ToolVariant, ...] = (), activation_type: ActivationType = ActivationType.PROGRESSIVE, action_l_labels: tuple[str, str] | None = None, action_l_icons: tuple[str, str] | None = None, action_l_mode: ToggleMode = ToggleMode.TOGGLE, adjust_step: int | None = None, adjust_labels: tuple[str, str] | None = None, adjust_icons: tuple[str, str] | None = None, action_r_labels: tuple[str, str] | None = None, action_r_icons: tuple[str, str] | None = None, action_r_mode: ToggleMode = ToggleMode.TRIGGER, camera_spec: CameraSpec | None = None) (waldoctl.tools.ToolSpec)" href="#waldoctl.ToolSpec">ToolSpec</a></code></p>
 
 
 
@@ -11301,11 +12203,14 @@ implementations.</p>
 
     <div class="doc doc-contents first">
             <p class="doc doc-class-bases">
-              Bases: <code><span title="enum.Enum">Enum</span></code></p>
+              Bases: <code><span title="enum.StrEnum">StrEnum</span></code></p>
 
 
 
         <p>Tool categories the web commander has GUI support for.</p>
+<p><code>StrEnum</code> so third-party tools can pass arbitrary category strings
+via <code>waldoctl.tools</code> entry points while <code>ToolType.GRIPPER == "gripper"</code>
+keeps existing equality checks working.</p>
 
 
 
@@ -11632,11 +12537,8 @@ so the simulator can animate transitions.</p>
 
 
 <h2 id="waldoctl.ToolStatus" class="doc doc-heading">
-              <code class="highlight language-python"><span class="n">waldoctl</span><span class="o">.</span><span class="n">ToolStatus</span><span class="p">(</span><span class="n">key</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;NONE&#39;</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">ToolState</span> <span class="o">=</span> <span class="n">ToolState</span><span class="o">.</span><span class="n">OFF</span><span class="p">,</span> <span class="n">engaged</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n">part_detected</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n">fault_code</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span> <span class="n">positions</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span> <span class="n">channels</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="p">())</span></code>
+            <code>waldoctl.ToolStatus</code>
 
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
-  </span>
 
 <a href="#waldoctl.ToolStatus" class="headerlink" title="Permanent link">&para;</a></h2>
 
@@ -11645,12 +12547,20 @@ so the simulator can animate transitions.</p>
 
 
 
-        <p>Universal end-of-arm tool status.</p>
-<p>Populated by the controller at the status broadcast rate (50 Hz).
-Consumers combine <code>positions[i]</code> with <code>ToolSpec.motions[i]</code> to
-reconstruct the physical state of each DOF without knowing the tool type.
-Tool-specific process data is in <code>channels</code>, described by the tool's
-<code>channel_descriptors</code>.</p>
+        <p>Universal end-of-arm tool status — the bindable surface exposed at
+<code>commander.status.tool</code>.</p>
+<p>Populated by the host application's status loop at the controller's
+broadcast rate. Consumers combine <code>positions[i]</code> with
+<code>ToolSpec.motions[i]</code> to reconstruct the physical state of each DOF
+without knowing the tool type. Tool-specific process data is in
+<code>channels</code>, described by the tool's <code>channel_descriptors</code>.</p>
+<p>Decorated with <code>@bindable_dataclass</code> so UI elements can bind to leaf
+fields directly: <code>bind_text_from(commander.status.tool, "key")</code>,
+<code>bind_value_from(commander.status.tool, "engaged")</code>, etc. Field
+reassignment by the status loop fires bindings synchronously.</p>
+<p><strong>Mutate-in-place invariant</strong>: this is a sub-object of <code>RobotStatus</code> —
+its fields are written individually by the status loop. The instance
+itself is never swapped.</p>
 
 
 
@@ -11688,6 +12598,29 @@ Tool-specific process data is in <code>channels</code>, described by the tool's
     <div class="doc doc-contents ">
 
         <p>Attached tool key.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.ToolStatus.variant_key" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">variant_key</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-class-attribute"><code>class-attribute</code></small>
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#waldoctl.ToolStatus.variant_key" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Active variant within the attached tool (empty if the tool has no variants).</p>
 
     </div>
 
@@ -11826,6 +12759,56 @@ Tool-specific process data is in <code>channels</code>, described by the tool's
     <div class="doc doc-contents ">
 
         <p>Tool-specific process data, described by ChannelDescriptor.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.ToolStatus.position" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">position</span><span class="p">:</span> <span class="nb">float</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#waldoctl.ToolStatus.position" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Primary DOF position (<code>positions[0]</code> if any, else 0.0).</p>
+<p>Convenience accessor for the common single-DOF case (gripper open/
+close, etc.). Not bindable — bind to <code>positions</code> and use a backward
+function if reactive display of the primary value is needed.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.ToolStatus.current" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">current</span><span class="p">:</span> <span class="nb">float</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#waldoctl.ToolStatus.current" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Primary process-channel value (<code>channels[0]</code> if any, else 0.0).</p>
+<p>Convenience accessor for the common case (e.g. gripper motor current).
+Not bindable — bind to <code>channels</code> with a backward function for
+reactive display.</p>
 
     </div>
 
@@ -12887,7 +13870,7 @@ in the channels tuple corresponds to <code>channel_descriptors[i]</code>.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

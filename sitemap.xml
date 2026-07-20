@@ -2,18 +2,22 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://jepson2k.github.io/Waldo-Commander/</loc>
-         <lastmod>2026-05-21</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://jepson2k.github.io/Waldo-Commander/guides/api-reference/</loc>
-         <lastmod>2026-05-21</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://jepson2k.github.io/Waldo-Commander/guides/backend-development/</loc>
-         <lastmod>2026-05-21</lastmod>
+         <lastmod>2026-07-20</lastmod>
+    </url>
+    <url>
+         <loc>https://jepson2k.github.io/Waldo-Commander/guides/mcp/</loc>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://jepson2k.github.io/Waldo-Commander/guides/writing-programs/</loc>
-         <lastmod>2026-05-21</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
 </urlset>
