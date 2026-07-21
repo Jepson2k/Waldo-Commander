@@ -460,6 +460,190 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User) -> None:
     )
 
 
+@pytest.mark.integration
+async def test_translation_frame_toggle_changes_jog_frame(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Translation RF setting must drive the frame argument of both
+    cartesian jog paths: incremental clicks (move_l) and streamed holds
+    (jog_l, whose memoized axis lookup must be invalidated on toggle).
+    Rotation clicks stay in TRF regardless of the selection.
+    """
+    import time
+
+    from nicegui import app as ng_app
+
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+
+    cp = ui_state.control_panel
+    moves: list[str] = []
+    jogs: list[str] = []
+    real_move_l = cp.client.move_l
+    real_jog_l = cp.client.jog_l
+
+    async def move_l_spy(pose, **kwargs):
+        moves.append(kwargs.get("frame", "WRF"))
+        return await real_move_l(pose, **kwargs)
+
+    async def jog_l_spy(frame, *args, **kwargs):
+        jogs.append(frame)
+        return await real_jog_l(frame, *args, **kwargs)
+
+    monkeypatch.setattr(cp.client, "move_l", move_l_spy)
+    monkeypatch.setattr(cp.client, "jog_l", jog_l_spy)
+
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    frame_select = next(iter(user.find(marker="select-translation-frame").elements))
+    user.find(marker="tab-cartesian").click()
+    await asyncio.sleep(0)
+
+    async def select_frame(value: str) -> None:
+        frame_select.set_value(value)
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if cp.translation_frame == value:
+                return
+        assert cp.translation_frame == value, (
+            f"translation_frame should hydrate to {value}"
+        )
+
+    async def hold_axis(marker: str) -> None:
+        """Hold an axis button past the click threshold until a jog_l streams."""
+        n_before = len(jogs)
+        user.find(marker=marker).trigger("mousedown")
+        try:
+            deadline = time.time() + 5.0
+            while time.time() < deadline and len(jogs) == n_before:
+                await asyncio.sleep(0.05)
+        finally:
+            user.find(marker=marker).trigger("mouseup")
+        assert len(jogs) > n_before, "expected a streamed jog_l while holding"
+
+    async def click_axis(marker: str) -> None:
+        """Click an axis and wait until its move_l has been issued."""
+        n_before = len(moves)
+        await simulate_click(user, marker)
+        for _ in range(50):
+            if len(moves) > n_before:
+                break
+            await asyncio.sleep(0.1)
+        assert len(moves) > n_before, f"expected a move_l after clicking {marker}"
+
+    waldoctl.commander.settings.jog.joint_step_deg = 5.0
+    try:
+        # Tool frame: incremental click sends move_l(frame="TRF")
+        await select_frame("TRF")
+        assert ng_app.storage.general["translation_frame"] == "TRF"
+        await wait_for_motion_stable(lambda: float(waldoctl.commander.status.pose.z))
+        await click_axis("axis-zplus")
+        assert moves[-1] == "TRF", f"expected TRF move_l, got {moves}"
+        await wait_for_motion_start()
+        await wait_for_motion_stable(lambda: float(waldoctl.commander.status.pose.z))
+
+        # Tool frame: streamed hold sends jog_l("TRF", ...)
+        await hold_axis("axis-zminus")
+        assert jogs[-1] == "TRF", f"expected TRF jog_l, got {jogs}"
+        await wait_for_motion_stable(lambda: float(waldoctl.commander.status.pose.z))
+
+        # Back to world frame: the memoized lookup must not keep serving TRF
+        await select_frame("WRF")
+        await hold_axis("axis-zplus")
+        assert jogs[-1] == "WRF", f"expected WRF jog_l after toggle back, got {jogs}"
+        await wait_for_motion_stable(lambda: float(waldoctl.commander.status.pose.z))
+
+        # Rotation clicks stay in TRF even with WRF translation selected
+        await click_axis("axis-rzplus")
+        assert moves[-1] == "TRF", f"rotation click must stay TRF, got {moves}"
+    finally:
+        frame_select.set_value("WRF")
+        await asyncio.sleep(0)
+
+
+@pytest.mark.integration
+async def test_jog_arrow_inversion_flips_button_direction_and_label(user: User) -> None:
+    """The Invert X Jog switch must flip what the physical X arrow slot
+    commands AND its label/marker in lockstep: the left arrow sends X+ by
+    default (camera-matched inversion) and X- when inverted, so the glyph,
+    the marker, and the actual motion never disagree.
+    """
+    from nicegui import app as ng_app
+
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+
+    cp = ui_state.control_panel
+    user.find(marker="tab-cartesian").click()
+    await asyncio.sleep(0)
+
+    waldoctl.commander.settings.jog.joint_step_deg = 5.0
+
+    # The physical left-arrow slot commands X+ by default
+    slot = next(iter(user.find(marker="axis-xplus").elements))
+    assert slot is cp._cart_slot_elems["lr_neg"], (
+        "axis-xplus should be the left-arrow slot by default"
+    )
+
+    initial_x = await wait_for_motion_stable(
+        lambda: float(waldoctl.commander.status.pose.x)
+    )
+    await simulate_click(user, "axis-xplus")
+    await wait_for_motion_start()
+    final_x = await wait_for_motion_stable(
+        lambda: float(waldoctl.commander.status.pose.x)
+    )
+    assert 4.9 <= final_x - initial_x <= 5.1, (
+        f"left arrow should move X +5.0mm by default, moved {final_x - initial_x:.2f}mm"
+    )
+
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    invert_switch = next(iter(user.find(marker="switch-invert-x").elements))
+    try:
+        invert_switch.set_value(True)
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if cp.invert_x:
+                break
+        assert cp.invert_x, "invert_x should hydrate from the switch"
+        assert ng_app.storage.general["jog_invert_x"] is True
+
+        # Same physical slot now advertises and commands X-
+        assert slot._markers == ["axis-xminus"], (
+            f"left arrow should re-mark to axis-xminus, got {slot._markers}"
+        )
+        assert "X-" in slot._props["content"], "left arrow label should read X-"
+
+        user.find(marker="tab-cartesian").click()
+        await asyncio.sleep(0)
+        assert next(iter(user.find(marker="axis-xminus").elements)) is slot
+
+        initial_x = await wait_for_motion_stable(
+            lambda: float(waldoctl.commander.status.pose.x)
+        )
+        await simulate_click(user, "axis-xminus")
+        await wait_for_motion_start()
+        final_x = await wait_for_motion_stable(
+            lambda: float(waldoctl.commander.status.pose.x)
+        )
+        assert 4.9 <= initial_x - final_x <= 5.1, (
+            f"inverted left arrow should move X -5.0mm, "
+            f"moved {final_x - initial_x:.2f}mm"
+        )
+    finally:
+        invert_switch.set_value(False)
+        await asyncio.sleep(0)
+
+
 # ============================================================================
 # Editing Mode Control Panel Tests
 # ============================================================================

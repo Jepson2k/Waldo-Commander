@@ -425,48 +425,60 @@ def _register_default_keybindings() -> None:
     )
 
 
+# Map keys to axes: W/S = Y, A/D = X, Q/E = Z
+_JOG_KEY_MAP = {
+    "w": "Y+",
+    "s": "Y-",
+    "a": "X-",
+    "d": "X+",
+    "q": "Z-",
+    "e": "Z+",
+}
+
+
 def _register_cartesian_jog_keybindings(cp: Any) -> None:
     """Register WASD + Q/E keybindings for cartesian jogging."""
-    # Map keys to axes: W/S = Y, A/D = X, Q/E = Z
-    jog_key_map = {
-        "w": "Y+",
-        "s": "Y-",
-        "a": "X-",
-        "d": "X+",
-        "q": "Z-",
-        "e": "Z+",
-    }
-
-    for key, axis in jog_key_map.items():
+    for key, axis in _JOG_KEY_MAP.items():
+        action, release = _make_jog_callbacks(cp, axis)
         keybindings_manager.register(
             Keybinding(
                 key=key,
                 display=key.upper(),
                 description=f"Jog {axis}",
-                action=_make_jog_action(cp, axis),
-                on_release=_make_jog_release(cp, axis),
+                action=action,
+                on_release=release,
                 category="Cartesian Jog",
                 holdable=True,
             )
         )
+    refresh_jog_key_descriptions(cp)
 
 
-def _make_jog_action(cp: Any, axis: str) -> Callable:
-    """Create a jog action callback for the given axis."""
+def refresh_jog_key_descriptions(cp: Any) -> None:
+    """Sync the help-menu descriptions of the jog keys with the control
+    panel's X/Y inversion, so help never advertises the wrong direction."""
+    for key, axis in _JOG_KEY_MAP.items():
+        binding = keybindings_manager._bindings.get(key)
+        if binding is not None and binding.category == "Cartesian Jog":
+            binding.description = f"Jog {cp.apply_jog_inversion(axis)}"
+
+
+def _make_jog_callbacks(cp: Any, base_axis: str) -> tuple[Callable, Callable]:
+    """Create press/release callbacks that apply the control panel's X/Y
+    inversion at press time, matching the arrow buttons. The resolved axis
+    is captured on press so a mid-hold settings change still releases the
+    axis that is actually streaming."""
+    resolved = base_axis
 
     def action(is_press: bool = True, is_click: bool = False) -> None:
-        _handle_jog_key(cp, axis, is_press, is_click)
-
-    return action
-
-
-def _make_jog_release(cp: Any, axis: str) -> Callable:
-    """Create a jog release callback for the given axis."""
+        nonlocal resolved
+        resolved = cp.apply_jog_inversion(base_axis)
+        _handle_jog_key(cp, resolved, is_press, is_click)
 
     def release() -> None:
-        asyncio.create_task(cp.set_axis_pressed(axis, False))
+        asyncio.create_task(cp.set_axis_pressed(resolved, False))
 
-    return release
+    return action, release
 
 
 def _handle_jog_key(

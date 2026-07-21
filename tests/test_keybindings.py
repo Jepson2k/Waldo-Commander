@@ -10,6 +10,8 @@ exactly the code that broke.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import waldoctl
 from nicegui import Client, app
@@ -21,7 +23,13 @@ from nicegui.events import (
 )
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import (
+    enable_sim,
+    ensure_robot_ready_for_motion,
+    wait_for_app_ready,
+    wait_for_motion_stable,
+    wait_for_motion_start,
+)
 
 
 @pytest.mark.integration
@@ -156,3 +164,79 @@ async def test_alt_m_cycles_mode_on_all_keyboard_layouts(user: User) -> None:
         )
     finally:
         set_control_mode(ControlMode.INSPECT)
+
+
+@pytest.mark.integration
+async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
+    """The Invert X/Y Jog settings must flip the WASD jog keys through the
+    same funnel as the arrow buttons: 'd' commands X+ by default and X- when
+    invert-X is on; 'w' commands Y+ by default and Y- when invert-Y is on.
+    (The matching arrow-button flip is covered in test_control_panel_jogging.)
+    """
+    from waldo_commander.services.keybindings import keybindings_manager
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+
+    assert ui_state.active_client_id is not None
+    ng_client = Client.instances[ui_state.active_client_id]
+
+    def key_event(name: str, *, keydown: bool) -> KeyEventArguments:
+        return KeyEventArguments(
+            sender=ng_client.layout,
+            client=ng_client,
+            action=KeyboardAction(keydown=keydown, keyup=not keydown, repeat=False),
+            key=KeyboardKey(name=name, code=f"Key{name.upper()}", location=0),
+            modifiers=KeyboardModifiers(alt=False, ctrl=False, meta=False, shift=False),
+        )
+
+    async def tap_key(name: str, axis_attr: str) -> float:
+        """Tap a jog key (keydown+keyup = click step) and return the axis delta."""
+        initial = await wait_for_motion_stable(
+            lambda: float(getattr(waldoctl.commander.status.pose, axis_attr))
+        )
+        with ng_client:
+            # No await between the events, so the hold timer can never fire:
+            # this is deterministically a click (single step).
+            keybindings_manager.handle_key(key_event(name, keydown=True))
+            keybindings_manager.handle_key(key_event(name, keydown=False))
+        await wait_for_motion_start()
+        final = await wait_for_motion_stable(
+            lambda: float(getattr(waldoctl.commander.status.pose, axis_attr))
+        )
+        return final - initial
+
+    waldoctl.commander.settings.jog.joint_step_deg = 5.0
+
+    invert_x = next(iter(user.find(marker="switch-invert-x").elements))
+    invert_y = next(iter(user.find(marker="switch-invert-y").elements))
+    try:
+        delta = await tap_key("d", "x")
+        assert 4.9 <= delta <= 5.1, f"d should command X+5mm, moved {delta:.2f}mm"
+
+        invert_x.set_value(True)
+        await asyncio.sleep(0)
+        assert keybindings_manager._bindings["d"].description == "Jog X-", (
+            "help-menu description must follow the inversion"
+        )
+        delta = await tap_key("d", "x")
+        assert -5.1 <= delta <= -4.9, (
+            f"d should command X-5mm with invert-X on, moved {delta:.2f}mm"
+        )
+
+        delta = await tap_key("w", "y")
+        assert 4.9 <= delta <= 5.1, f"w should command Y+5mm, moved {delta:.2f}mm"
+
+        invert_y.set_value(True)
+        await asyncio.sleep(0)
+        delta = await tap_key("w", "y")
+        assert -5.1 <= delta <= -4.9, (
+            f"w should command Y-5mm with invert-Y on, moved {delta:.2f}mm"
+        )
+    finally:
+        invert_x.set_value(False)
+        invert_y.set_value(False)
+        await asyncio.sleep(0)

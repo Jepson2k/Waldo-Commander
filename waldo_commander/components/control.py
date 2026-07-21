@@ -41,6 +41,7 @@ from waldo_commander.services.control_lease import (
     require_browser_control,
     set_control_mode,
 )
+from waldo_commander.services.keybindings import refresh_jog_key_descriptions
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 
@@ -627,6 +628,10 @@ class ControlPanel:
         self._cart_slot_meta: dict[str, dict] = {}
         # Axes assigned to fixed slots: 'ud1' (first up/down column), 'lr' (left/right row), 'ud2' (second up/down column)
         self._cart_assignment: dict[str, str] = {"ud1": "Y", "lr": "X", "ud2": "Z"}
+        # Cartesian jog preferences, hydrated from storage by the Settings tab.
+        self.translation_frame: str = "WRF"
+        self.invert_x: bool = False
+        self.invert_y: bool = False
         self._axis_classes = {
             "x": "tcp-x",
             "y": "tcp-y",
@@ -692,6 +697,9 @@ class ControlPanel:
         self._last_cart_wrf_neg: list[bool] | None = None
         self._last_cart_trf_pos: list[bool] | None = None
         self._last_cart_trf_neg: list[bool] | None = None
+        # Selected-frame part of the cart dirty check; set to None to force a
+        # resync (frame toggle, invert toggles remapping axis -> element).
+        self._last_cart_trans_frame: str | None = None
         self._last_editing_mode: bool | None = None
         self._gizmo_auto_hidden: bool = (
             False  # True when gizmo hidden due to jog unavailable
@@ -704,20 +712,21 @@ class ControlPanel:
     def _get_cart_axis_lookup(self) -> dict[str, tuple[Axis, float, str]]:
         """Build cartesian axis lookup from the active robot's frame names.
 
-        Translation axes (X, Y, Z) use the first frame (world),
-        rotation axes (RX, RY, RZ) use the second frame (tool).
+        Translation axes (X, Y, Z) use the selected translation frame,
+        rotation axes (RX, RY, RZ) always use the tool frame. Memoized;
+        ``set_translation_frame`` invalidates it.
         """
         if self._cart_axis_lookup is not None:
             return self._cart_axis_lookup
-        frames = ui_state.active_robot.cartesian_frames
-        wrf, trf = frames[0], frames[1]
+        trans = self._translation_frame_name()
+        trf = ui_state.active_robot.cartesian_frames[1]
         self._cart_axis_lookup = {
-            "X+": ("X", 1.0, wrf),
-            "X-": ("X", -1.0, wrf),
-            "Y+": ("Y", 1.0, wrf),
-            "Y-": ("Y", -1.0, wrf),
-            "Z+": ("Z", 1.0, wrf),
-            "Z-": ("Z", -1.0, wrf),
+            "X+": ("X", 1.0, trans),
+            "X-": ("X", -1.0, trans),
+            "Y+": ("Y", 1.0, trans),
+            "Y-": ("Y", -1.0, trans),
+            "Z+": ("Z", 1.0, trans),
+            "Z-": ("Z", -1.0, trans),
             "RX+": ("RX", 1.0, trf),
             "RX-": ("RX", -1.0, trf),
             "RY+": ("RY", 1.0, trf),
@@ -726,6 +735,45 @@ class ControlPanel:
             "RZ-": ("RZ", -1.0, trf),
         }
         return self._cart_axis_lookup
+
+    def _translation_frame_name(self) -> str:
+        """Resolve the selected translation frame to the robot's frame name."""
+        frames = ui_state.active_robot.cartesian_frames
+        if self.translation_frame == "TRF" and len(frames) > 1:
+            return frames[1]
+        return frames[0]
+
+    def set_translation_frame(self, frame: str) -> None:
+        """Select WRF or TRF for cartesian translation jogs (rotation stays TRF)."""
+        self.translation_frame = frame
+        self._cart_axis_lookup = None
+        self._last_cart_trans_frame = None
+        self.sync_cartesian_button_states()
+
+    def apply_jog_inversion(self, axis: str) -> str:
+        """Flip an X/Y translation axis string when its invert switch is on.
+
+        Single flip point shared by the arrow slots (via ``_axis_string_for``)
+        and the WASD jog keys, so labels, enablement keys, and motion stay
+        coherent. Rotation axes pass through unchanged.
+        """
+        letter = axis[:-1]
+        if (letter == "X" and self.invert_x) or (letter == "Y" and self.invert_y):
+            return f"{letter}{'-' if axis.endswith('+') else '+'}"
+        return axis
+
+    def set_jog_inversion(
+        self, *, invert_x: bool | None = None, invert_y: bool | None = None
+    ) -> None:
+        """Update X/Y arrow inversion and re-derive labels, markers, and visuals."""
+        if invert_x is not None:
+            self.invert_x = invert_x
+        if invert_y is not None:
+            self.invert_y = invert_y
+        self._refresh_cartesian_icons()
+        self._last_cart_trans_frame = None
+        self.sync_cartesian_button_states()
+        refresh_jog_key_descriptions(self)
 
     def _apply_pressed_style(self, widget: ui.element | None, pressed: bool) -> None:
         if not widget:
@@ -773,7 +821,14 @@ class ControlPanel:
     ) -> str:
         """Compose axis string like 'X+' or 'RX-' for a given slot assignment."""
         letter = self._cart_assignment.get(assign_key, "X").upper()
-        return f"R{letter}{sign}" if rotation else f"{letter}{sign}"
+        if rotation:
+            return f"R{letter}{sign}"
+        return self.apply_jog_inversion(f"{letter}{sign}")
+
+    @staticmethod
+    def _axis_marker(axis_str: str) -> str:
+        """Test marker for the element commanding *axis_str* (e.g. 'axis-xplus')."""
+        return f"axis-{axis_str.replace('+', 'plus').replace('-', 'minus').lower()}"
 
     @staticmethod
     def _read_icon_svg(svg_filename: str) -> tuple[str, list[int]]:
@@ -866,7 +921,14 @@ class ControlPanel:
             elem.classes(remove=remove_classes)
             letter = self._cart_assignment.get(assign_key, "X").upper()
             elem.classes(add=self._axis_color_class_for(letter, rotation=rotation))
+            elem.mark(self._axis_marker(axis_str))
             self._cart_axis_imgs[axis_str] = elem
+
+        # Re-derive pressed highlights for the remapped axis -> element
+        # mapping, so a remap mid-hold can't strand "is-pressed" on a slot
+        # that no longer commands the streaming axis.
+        for ax, img in self._cart_axis_imgs.items():
+            self._apply_pressed_style(img, bool(self._cart_pressed_axes.get(ax)))
 
     # ---- Enablement and visuals ----
 
@@ -917,12 +979,13 @@ class ControlPanel:
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
 
-        Translation axes use WRF enablement, rotation axes use TRF enablement
-        (matching the actual jog frame convention).
+        Translation axes use the selected translation frame's enablement,
+        rotation axes always use TRF enablement.
         """
         editing_mode = waldoctl.commander.status.editing_mode
         frames = ui_state.active_robot.cartesian_frames
         wrf, trf = frames[0], frames[1]
+        trans_frame = self._translation_frame_name()
         by_frame = waldoctl.commander.status.pose.cart_jog.by_frame
         av_wrf = by_frame.get(wrf)
         av_trf = by_frame.get(trf)
@@ -936,6 +999,7 @@ class ControlPanel:
         # flatten / tuple allocation.
         if (
             editing_mode == self._last_editing_mode
+            and trans_frame == self._last_cart_trans_frame
             and wrf_pos is self._last_cart_wrf_pos
             and wrf_neg is self._last_cart_wrf_neg
             and trf_pos is self._last_cart_trf_pos
@@ -943,6 +1007,7 @@ class ControlPanel:
         ):
             return
         self._last_editing_mode = editing_mode
+        self._last_cart_trans_frame = trans_frame
         self._last_cart_wrf_pos = wrf_pos
         self._last_cart_wrf_neg = wrf_neg
         self._last_cart_trf_pos = trf_pos
@@ -956,11 +1021,12 @@ class ControlPanel:
                 self._set_strong_disabled(elem, True)
             return
 
-        # 2D icons: translation axes (i<6) use WRF, rotation axes use TRF.
-        # _AXIS_ORDER is (X+, X-, Y+, Y-, ...), so axis = i // 2 and the
-        # per-direction list is chosen by i % 2 (0 = pos, 1 = neg).
+        # 2D icons: translation axes (i<6) use the selected frame, rotation
+        # axes use TRF. _AXIS_ORDER is (X+, X-, Y+, Y-, ...), so axis = i // 2
+        # and the per-direction list is chosen by i % 2 (0 = pos, 1 = neg).
+        av_trans = av_wrf if trans_frame == wrf else av_trf
         for i, ax in enumerate(_AXIS_ORDER):
-            av = av_wrf if i < 6 else av_trf
+            av = av_trans if i < 6 else av_trf
             axis = i // 2
             lst = (
                 None
@@ -1428,12 +1494,12 @@ class ControlPanel:
         else:
             self._schedule_jog_end_wait()
 
-        # Check enablement: translation uses WRF, rotation uses TRF
+        # Check enablement: translation uses the selected frame, rotation uses TRF
         frames = ui_state.active_robot.cartesian_frames
         allowed = True
         if axis in _AXIS_ORDER:
             idx = _AXIS_ORDER.index(axis)
-            frame = frames[1] if idx >= 6 else frames[0]
+            frame = frames[1] if idx >= 6 else self._translation_frame_name()
             frame_av = waldoctl.commander.status.pose.cart_jog.by_frame.get(frame)
             if frame_av is not None:
                 axis_idx = idx // 2
@@ -1463,12 +1529,12 @@ class ControlPanel:
                 axis_letter = axis.rstrip("+-")
                 direction = 1.0 if axis.endswith("+") else -1.0
                 is_rotation = axis_letter.startswith("R")
-                # Use relative move: translation in WRF, rotation in TRF
-                # (matches jog_l hold behavior)
+                # Use relative move: translation in the selected frame,
+                # rotation in TRF (matches jog_l hold behavior)
                 rel_pose = [0.0] * 6
                 if axis_letter in _AXIS_MAP:
                     rel_pose[_AXIS_MAP[axis_letter]] = direction * step
-                    frame = "TRF" if is_rotation else "WRF"
+                    frame = frames[1] if is_rotation else self._translation_frame_name()
                     await self.client.move_l(
                         rel_pose,
                         frame=frame,
@@ -1706,8 +1772,8 @@ class ControlPanel:
                 waldoctl.commander.settings.view.gizmo_visible
             )
             ui_state.urdf_scene.set_gizmo_display_mode("TRANSLATE")
-            # Fixed WRF orientation for cartesian UI layout:
-            # X (red) vertical (ud1), Y (green) horizontal (lr), Z (blue) vertical (ud2).
+            # Fixed axis-to-slot layout for the cartesian jog grid:
+            # Y (green) vertical (ud1), X (red) horizontal (lr), Z (blue) vertical (ud2).
             self.set_axis_orientation("Y", "X", "Z")
             self.sync_cartesian_button_states()
 
@@ -2115,8 +2181,7 @@ class ControlPanel:
                     )
                     letter = self._cart_assignment.get(assign_key, "X").upper()
                     cont.classes(self._axis_color_class_for(letter, rotation=rotation))
-                    marker = f"axis-{axis_str.replace('+', 'plus').replace('-', 'minus').lower()}"
-                    cont.mark(marker)
+                    cont.mark(self._axis_marker(axis_str))
                     # mouseleave releases too, so a drag off the icon stops streaming.
                     cont.on("mousedown", partial(self._on_slot_press, slot_id, True))
                     cont.on("mouseup", partial(self._on_slot_press, slot_id, False))
