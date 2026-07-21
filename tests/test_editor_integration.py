@@ -630,6 +630,179 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     assert _active_for_steps.dry_run.playback.is_active is False
 
 
+_THREE_MOVE_SCRIPT = """from parol6 import RobotClient
+rbt = RobotClient()
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
+rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+"""
+
+
+async def _open_simulated_three_move_program(user: User):
+    """Open the editor, load a three-move program, and dry-run simulate it.
+    Returns ``(editor, tab)`` once the playback timeline is built."""
+    from waldo_commander.components.simulation_engine import simulation as _sim
+    from waldo_commander.state import ui_state
+    import waldoctl
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    assert editor is not None
+    tab = waldoctl.commander.programs.active
+    assert tab is not None
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = _THREE_MOVE_SCRIPT
+    tab.source = _THREE_MOVE_SCRIPT
+
+    await _sim.run_simulation()
+    # The timeline is built by a deferred scrub-segment rebuild.
+    for _ in range(30):
+        if editor.playback._timeline is not None:
+            break
+        await asyncio.sleep(0.1)
+    assert editor.playback._timeline is not None, "timeline never built after sim"
+    return editor, tab
+
+
+async def _wait_j1_near(target: float, timeout_s: float = 3.0) -> None:
+    """Wait until joint 1 settles within 1 degree of ``target``."""
+    import waldoctl
+
+    interval = 0.05
+    j1 = float(waldoctl.commander.status.joints.angles.deg[0])
+    for _ in range(int(timeout_s / interval)):
+        if abs(j1 - target) < 1.0:
+            return
+        await asyncio.sleep(interval)
+        j1 = float(waldoctl.commander.status.joints.angles.deg[0])
+    raise AssertionError(f"J1 never reached {target}: J1={j1}")
+
+
+@pytest.mark.integration
+async def test_step_program_runs_one_command_per_press(user: User) -> None:
+    """The Step-program button executes exactly one program command per press.
+
+    From idle, a press launches the subprocess with the stepping IPC left
+    paused: the first motion command runs, then the script blocks — running
+    but not playing, not finished. A second press advances exactly one more
+    command. While the program runs, the sim Previous-step button is hidden
+    (live stepping is forward-only); it reappears after the run stops.
+    """
+    editor, tab = await _open_simulated_three_move_program(user)
+
+    prev_btn = editor.playback.prev_btn
+    assert prev_btn is not None
+    assert prev_btn.visible is True, "prev button should be visible when idle"
+
+    pb = tab.dry_run.playback
+
+    async def wait_step_complete(step: int, timeout_s: float) -> None:
+        interval = 0.05
+        for _ in range(int(timeout_s / interval)):
+            if pb.executing_step_index == step and pb.executing_step_at_end:
+                return
+            await asyncio.sleep(interval)
+        tail = [entry.text for entry in tab.log[-5:]]
+        raise TimeoutError(
+            f"step {step} never completed: index={pb.executing_step_index}, "
+            f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
+            f"log tail={tail}"
+        )
+
+    try:
+        # First press from idle: subprocess starts paused, runs command #1 only.
+        user.find(marker="editor-step-program").click()
+        await wait_step_complete(0, timeout_s=30.0)
+
+        assert pb.is_playing is False, "paused start must not enter play mode"
+        assert prev_btn.visible is False, "prev button must hide during a live run"
+        await _wait_j1_near(85.0)
+
+        # Exactly one command: even given time to continue, the script must
+        # still be blocked on command #1.
+        await asyncio.sleep(0.5)
+        assert pb.executing_step_index == 0, "paused start ran more than one command"
+        assert is_any_program_running() is True, "program must be paused, not finished"
+
+        # Second press while running-paused: exactly one more command.
+        user.find(marker="editor-step-program").click()
+        await wait_step_complete(1, timeout_s=15.0)
+        assert pb.is_playing is False
+        await _wait_j1_near(95.0)
+        assert is_any_program_running() is True, "still paused after the second step"
+    finally:
+        if is_any_program_running():
+            user.find(marker="editor-stop-btn").click()
+            for _ in range(50):
+                if not is_any_program_running():
+                    break
+                await asyncio.sleep(0.1)
+
+    assert is_any_program_running() is False
+    assert prev_btn.visible is True, "prev button should reappear after the run"
+
+
+@pytest.mark.integration
+async def test_prev_step_scrubs_sim_preview_back(user: User) -> None:
+    """The Previous-step button scrubs the sim preview back one segment and
+    clamps at step 0.
+
+    Disabled at step 0; after Next it becomes enabled and a press moves
+    ``current_step``/``playback_time`` back. Its enabled state tracks slider
+    scrubs, and a racing press at step 0 clamps instead of going negative.
+    """
+    editor, tab = await _open_simulated_three_move_program(user)
+    pbc = editor.playback
+
+    prev_btn = pbc.prev_btn
+    assert prev_btn is not None
+    assert prev_btn.visible is True, "prev button should be visible after simulation"
+    assert prev_btn._props.get("disable") is True, "prev must be disabled at step 0"
+    assert tab.dry_run.playback.current_step == 0
+
+    # Next → step 1; prev becomes enabled.
+    user.find(marker="editor-step-next").click()
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 1
+    assert prev_btn._props.get("disable") is not True
+
+    # Prev → back one segment, to the very start.
+    user.find(marker="editor-step-prev").click()
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 0
+    assert tab.dry_run.playback.playback_time == 0.0
+    assert prev_btn._props.get("disable") is True, "prev must re-disable at step 0"
+
+    # Slider scrubs move current_step without a button press; the enabled
+    # state must follow.
+    user.find(marker="editor-step-next").click()
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 1
+    scrub_slider = pbc._scrub_slider
+    assert scrub_slider is not None
+    with scrub_slider.client:
+        scrub_slider.value = pbc._timeline.cumulative_times[1] * 0.5
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 0
+    assert prev_btn._props.get("disable") is True, (
+        "prev enabled state must track slider scrubs"
+    )
+
+    # A double-click race can deliver a second press at step 0 before the
+    # disable round-trips to the browser; the handler clamps at the start.
+    with prev_btn.client:
+        pbc.step_backward()
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 0
+    assert tab.dry_run.playback.playback_time == 0.0
+
+
 @pytest.mark.integration
 async def test_simulation_creates_targets_for_literal_moves(
     user: User,
