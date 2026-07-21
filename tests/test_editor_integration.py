@@ -8,6 +8,10 @@ from nicegui.testing import User
 from tests.helpers.wait import (
     wait_for_app_ready,
     enable_sim,
+    ensure_robot_ready_for_motion,
+    simulate_click,
+    wait_for_motion_stable,
+    wait_for_motion_start,
 )
 from waldo_commander.services.programs import (
     is_any_program_recording,
@@ -682,4 +686,141 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     updated_content = ui_state.active_textarea.value
     assert "# TARGET:" not in updated_content, (
         "Source code should not contain TARGET markers"
+    )
+
+
+@pytest.mark.integration
+async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
+    """Re-teach overwrites the move line under the cursor with the robot's
+    current position: joint angles for move_j, WRF pose for move_l. On a
+    non-target line, or a multi-pose target (move_c), the button is disabled
+    and a click is a no-op.
+    """
+    import re
+
+    import numpy as np
+    import waldoctl
+    from nicegui import ui
+
+    from waldo_commander.components.simulation_engine import simulation as _sim
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    assert editor is not None
+    tab = waldoctl.commander.programs.active
+    assert tab is not None
+
+    move_l_line = (
+        "rbt.move_l([150.000, 100.000, 250.000, 0.000, 0.000, 0.000], speed=0.5)"
+    )
+    move_c_line = (
+        "rbt.move_c([165.000, 105.000, 255.000, 0.000, 0.000, 0.000], "
+        "[150.000, 130.000, 250.000, 0.000, 0.000, 0.000], speed=0.5)"
+    )
+    script = (
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "# approach\n"
+        "rbt.move_j([85.000, -85.000, 175.000, 5.000, 5.000, 175.000], speed=0.5)\n"
+        f"{move_l_line}\n"
+        f"{move_c_line}\n"
+    )
+    textarea = ui_state.active_textarea
+    assert textarea is not None
+    textarea.value = script
+    tab.source = script
+
+    await _sim.run_simulation()
+    await asyncio.sleep(0.1)
+    targets_by_line = {t.line_number: t for t in tab.dry_run.targets}
+    assert {4, 5, 6} <= targets_by_line.keys(), (
+        f"Expected targets at lines 4-6, got {sorted(targets_by_line)}"
+    )
+    assert targets_by_line[6].move_type == "smooth_arc"
+
+    cm = user.find(kind=ui.codemirror)
+    # The browser echoes declared anchors back via "anchor-positions"; the
+    # user fixture has no JS, so replay that echo through the real event.
+    cm.trigger("anchor-positions", {"anchors": dict(textarea._props["line-anchors"])})
+    await asyncio.sleep(0)
+
+    def bracket_floats(line: str) -> list[float]:
+        m = re.search(r"\[([^\]]+)\]", line)
+        assert m is not None, f"No bracketed list in {line!r}"
+        return [float(v) for v in m.group(1).split(",")]
+
+    # Cursor on the comment line: button disabled (not hidden), click no-ops.
+    cm.trigger("selection-change", {"line": 3, "column": 0})
+    await asyncio.sleep(0)
+    reteach_btn = editor._reteach_btn
+    assert reteach_btn is not None
+    assert reteach_btn.visible is True
+    assert reteach_btn.enabled is False
+    user.find(marker="editor-reteach").click()
+    await asyncio.sleep(0)
+    assert textarea.value == script, (
+        "Re-teach on a non-target line must not modify source"
+    )
+
+    # Cursor on the move_c line: a smooth_arc target exists there, but a
+    # single pose can't re-teach a via+end arc, so the button stays disabled.
+    cm.trigger("selection-change", {"line": 6, "column": 0})
+    await asyncio.sleep(0)
+    assert reteach_btn.enabled is False
+    user.find(marker="editor-reteach").click()
+    await asyncio.sleep(0)
+    assert textarea.value == script, "Re-teach must not modify a move_c line"
+
+    # Move the robot so the current pose differs from the taught values.
+    waldoctl.commander.settings.jog.joint_step_deg = 10.0
+    await simulate_click(user, "btn-j1-plus")
+    await wait_for_motion_start()
+    await wait_for_motion_stable(lambda: waldoctl.commander.status.joints.angles[0])
+
+    # Cursor on the move_j line: click rewrites its joint angles in place.
+    cm.trigger("selection-change", {"line": 4, "column": 0})
+    await asyncio.sleep(0)
+    assert reteach_btn.enabled is True
+    user.find(marker="editor-reteach").click()
+    await asyncio.sleep(0)
+
+    n = ui_state.active_robot.joints.count
+    current_angles = list(waldoctl.commander.status.joints.angles.deg[:n])
+    lines = textarea.value.splitlines()
+    assert lines[3].startswith("rbt.move_j("), (
+        "Re-teach must keep move_j lines as move_j"
+    )
+    assert np.allclose(bracket_floats(lines[3]), current_angles, atol=0.1), (
+        f"move_j line should hold current angles {current_angles}, got {lines[3]}"
+    )
+    assert lines[4] == move_l_line, (
+        "Re-teaching the move_j line must not touch the move_l line"
+    )
+
+    # Cursor on the move_l line: click rewrites the current WRF pose.
+    cm.trigger("selection-change", {"line": 5, "column": 0})
+    await asyncio.sleep(0)
+    assert reteach_btn.enabled is True
+    user.find(marker="editor-reteach").click()
+    await asyncio.sleep(0)
+
+    pose = waldoctl.commander.status.pose
+    current_pose = [pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz]
+    lines = textarea.value.splitlines()
+    assert lines[4].startswith("rbt.move_l("), (
+        "Re-teach must keep move_l lines as move_l"
+    )
+    assert np.allclose(bracket_floats(lines[4]), current_pose, atol=0.5), (
+        f"move_l line should hold current WRF pose {current_pose}, got {lines[4]}"
+    )
+    assert lines[5] == move_c_line, (
+        "Re-teaching neighbors must not touch the move_c line"
     )

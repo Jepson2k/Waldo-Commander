@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import waldoctl
 from nicegui import Client, context, ui
-from waldoctl import EditId, Program
+from waldoctl import EditId, Program, ProgramTarget
 
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import default_program_dir
@@ -59,6 +59,7 @@ class EditorPanel(FileOperationsMixin):
         # buttons (which would mutate the source under the diff).
         self._edit_review_row: ui.row | None = None
         self._toolbar_btns: list[ui.button] = []
+        self._reteach_btn: ui.button | None = None
         # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
         self._tab_widgets: dict[str, dict] = {}
         # tab_id -> pending edit-id .values already seen, so a *newly* proposed
@@ -217,6 +218,77 @@ class EditorPanel(FileOperationsMixin):
                 "Sync failed: Could not find coordinate list in line: %s", line
             )
 
+    # Single-pose targets only: multi-pose lines (move_c via+end) can't be
+    # re-taught from one pose — sync would overwrite just the first bracket.
+    _RETEACHABLE_MOVE_TYPES = ("joints", "cartesian", "pose")
+
+    def _target_at_cursor(self) -> ProgramTarget | None:
+        """Re-teachable dry-run target whose line the editor cursor is on.
+
+        Also requires the target's live line anchor to still sit on the cursor
+        line: after an edit, targets keep sim-time line numbers until the
+        debounced re-sim, while sync_code_from_target writes at the tracked
+        anchor — without this check a click could rewrite a line the cursor
+        isn't on.
+        """
+        tab = waldoctl.commander.programs.active
+        textarea = ui_state.active_textarea
+        if tab is None or textarea is None:
+            return None
+        line = tab.dry_run.playback.active_cursor_line
+        if line <= 0:
+            return None
+        anchors = textarea.line_anchors
+        for t in tab.dry_run.targets:
+            if (
+                t.line_number == line
+                and t.move_type in self._RETEACHABLE_MOVE_TYPES
+                and anchors.get(t.id) == line
+            ):
+                return t
+        return None
+
+    def _update_reteach_button(self) -> None:
+        btn = self._reteach_btn
+        if btn is None or btn.is_deleted:
+            return
+        btn.set_enabled(self._target_at_cursor() is not None)
+
+    def _reteach_at_cursor(self) -> None:
+        """Overwrite the move at the cursor with the robot's current position.
+
+        move_j lines get the current joint angles; move_l lines get the
+        current WRF pose — passing a pose against a joint-angle list (or vice
+        versa) would corrupt the line.
+        """
+        target = self._target_at_cursor()
+        if target is None:
+            return
+        n = ui_state.active_robot.joints.count
+        angles = list(waldoctl.commander.status.joints.angles.deg[:n])
+        if len(angles) < n:
+            # No status frames yet — overwriting would replace the taught
+            # values with zeros (pose) or a truncated list (joints).
+            return
+        if target.move_type == "joints":
+            self.sync_code_from_target(
+                target.id, target.pose, move_type="joints", joint_angles_deg=angles
+            )
+        else:
+            pose = waldoctl.commander.status.pose
+            # sync_code_from_target expects scene units (m); status pose is mm.
+            self.sync_code_from_target(
+                target.id,
+                [
+                    pose.x / 1000.0,
+                    pose.y / 1000.0,
+                    pose.z / 1000.0,
+                    pose.rx,
+                    pose.ry,
+                    pose.rz,
+                ],
+            )
+
     def delete_target_code(self, target_id: str) -> None:
         """Delete the code line corresponding to the target and re-simulate.
 
@@ -343,6 +415,8 @@ class EditorPanel(FileOperationsMixin):
         during ``build()``. Idempotent: safe to call from both
         ``_on_disconnect`` and ``_on_shutdown``."""
         waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
+        simulation_state.remove_change_listener(self._update_reteach_button)
+        self._reteach_btn = None
         # Edit listeners live on the process-global tab.edits notifier; drop
         # them so closures don't accumulate across page (re)builds.
         for tab_id in list(self._tab_widgets):
@@ -515,6 +589,7 @@ class EditorPanel(FileOperationsMixin):
         # needed on tab switch beyond resetting playback's per-tab scratch.
         waldoctl.commander.programs.switch(tab_id)
         tab.dry_run.playback.active_cursor_line = 0
+        self._update_reteach_button()
 
         if self.tab_panels_container:
             self.tab_panels_container.set_value(tab_id)
@@ -667,6 +742,10 @@ class EditorPanel(FileOperationsMixin):
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
             ui_state.textareas_by_tab[tab.id] = textarea
+
+            # Re-teach enablement needs the live anchor mirror, which the
+            # browser echoes only after the sim-completion notify has fired.
+            textarea.on_anchor_change(lambda _e: self._update_reteach_button())
 
             # Subscribe to LLM-edit lifecycle so the banner + diff overlay
             # rebuild whenever propose / approve / reject fires.
@@ -876,12 +955,14 @@ class EditorPanel(FileOperationsMixin):
                 ui_state.active_textarea = widgets.get("textarea")
                 ui_state.active_filename_input = widgets.get("filename_input")
                 self._refresh_edits_banner(active_id)
+            self._update_reteach_button()
 
     def _on_cursor_line(self, tab: Program, e) -> None:
         """Handle cursor line change from CodeMirror."""
         if tab.id != waldoctl.commander.programs.active_id:
             return
         tab.dry_run.playback.active_cursor_line = e.line
+        self._update_reteach_button()
         if ui_state.urdf_scene and waldoctl.commander.settings.view.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
 
@@ -965,6 +1046,18 @@ class EditorPanel(FileOperationsMixin):
                 )
                 self._edit_review_row.set_visibility(False)
 
+                reteach_btn = (
+                    ui.button(icon="my_location", on_click=self._reteach_at_cursor)
+                    .props("flat dense color=white")
+                    .classes("editor-toolbar-btn")
+                    .tooltip(
+                        "Re-teach: overwrite this step with the current robot position"
+                    )
+                )
+                reteach_btn.mark("editor-reteach")
+                reteach_btn.disable()
+                self._reteach_btn = reteach_btn
+
                 open_btn = (
                     ui.button(icon="folder", on_click=self._show_open_dialog)
                     .props("flat dense color=white")
@@ -990,7 +1083,7 @@ class EditorPanel(FileOperationsMixin):
                 commands_btn.mark("editor-commands-btn")
                 with commands_btn:
                     self._build_command_menu()
-                self._toolbar_btns = [open_btn, save_btn, commands_btn]
+                self._toolbar_btns = [reteach_btn, open_btn, save_btn, commands_btn]
 
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(
@@ -1034,6 +1127,9 @@ class EditorPanel(FileOperationsMixin):
         # lifetime — whoever makes them (a GUI button or an MCP programs.* tool).
         # add_change_listener dedups, and cleanup() drops it on disconnect.
         waldoctl.commander.programs.add_change_listener(self._reconcile_tabs)
+        # Re-teach enablement tracks dry-run results, which refresh through
+        # this channel (sim completion, tab switch).
+        simulation_state.add_change_listener(self._update_reteach_button)
 
         # Restore tabs from existing state (page refresh) or create initial tab
         if waldoctl.commander.programs.items:
