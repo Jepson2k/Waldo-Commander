@@ -17,6 +17,7 @@ from waldo_commander.services.programs import (
 )
 from waldo_commander.services import edit_decisions
 from waldo_commander.services.control_lease import control_mode
+from waldo_commander.services.motion_recorder import blend_r_arg
 from waldo_commander.state import (
     simulation_state,
     ui_state,
@@ -101,7 +102,9 @@ class EditorPanel(FileOperationsMixin):
             speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
             accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
             angles = list(waldoctl.commander.status.joints.angles.deg)
-            snippet = f"rbt.move_j({angles}, speed={speed}, accel={accel})"
+            snippet = (
+                f"rbt.move_j({angles}, speed={speed}, accel={accel}{blend_r_arg()})"
+            )
         elif method_name == "move_l":
             speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
             accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
@@ -117,7 +120,7 @@ class EditorPanel(FileOperationsMixin):
             )
             snippet = (
                 f"rbt.move_l([{x:.3f}, {y:.3f}, {z:.3f}, "
-                f"{rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel})"
+                f"{rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel}{blend_r_arg()})"
             )
         else:
             all_commands = discover_robot_commands()
@@ -267,9 +270,13 @@ class EditorPanel(FileOperationsMixin):
         pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose) + "]"
 
         if move_type == "joints":
-            code_line = f"rbt.move_j({pose_str}, speed={speed}, accel={accel})"
+            code_line = (
+                f"rbt.move_j({pose_str}, speed={speed}, accel={accel}{blend_r_arg()})"
+            )
         else:
-            code_line = f"rbt.move_l({pose_str}, speed={speed}, accel={accel})"
+            code_line = (
+                f"rbt.move_l({pose_str}, speed={speed}, accel={accel}{blend_r_arg()})"
+            )
 
         content = textarea.value or ""
         lines_before = len(content.splitlines()) if content else 0

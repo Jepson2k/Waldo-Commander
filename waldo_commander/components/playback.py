@@ -194,7 +194,9 @@ class PlaybackController:
 
             ui.button(
                 icon="camera_alt", on_click=motion_recorder.capture_current_pose
-            ).props("round dense unelevated").tooltip("Capture Current Pose")
+            ).props("round dense unelevated").tooltip("Capture Current Pose").mark(
+                "editor-capture-pose-btn"
+            )
 
             log_panel.build_toggle_button()
 

@@ -1,11 +1,14 @@
 """Motion recorder for capturing robot actions as code during teaching."""
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, fields as _dc_fields
 
 import numpy as np
+
+from nicegui import app as ng_app
 
 import waldoctl
 
@@ -47,6 +50,27 @@ def shapes_to_code(shapes) -> str:
         return "rbt.set_shapes([])"
     body = "\n".join(f"    {_shape_to_code(s)}," for s in shapes)
     return f"rbt.set_shapes([\n{body}\n])"
+
+
+JOG_BLEND_R_MAX = 100.0
+
+
+def jog_blend_r() -> float:
+    """Default blend radius for generated moves (mm); 0 = exact stop."""
+    # Storage is user-editable JSON — a bad value must not break code generation.
+    try:
+        r = float(ng_app.storage.general.get("jog_blend_r", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(r):
+        return 0.0
+    return min(max(r, 0.0), JOG_BLEND_R_MAX)
+
+
+def blend_r_arg() -> str:
+    """``, r=<v>`` code fragment when the blend-radius setting is positive."""
+    r = jog_blend_r()
+    return f", r={r:g}" if r > 0 else ""
 
 
 def _imported_waldoctl_names(text: str) -> set[str]:
@@ -236,7 +260,7 @@ class MotionRecorder:
                 args = ", ".join(f"{a:.2f}" for a in angles)
                 spd = waldoctl.commander.settings.jog.speed / 100.0
                 acc = waldoctl.commander.settings.jog.accel / 100.0
-                anchor_snippet = f"rbt.move_j([{args}], speed={spd}, accel={acc})  # Recording start position"
+                anchor_snippet = f"rbt.move_j([{args}], speed={spd}, accel={acc}{blend_r_arg()})  # Recording start position"
                 self._insert_snippet(anchor_snippet)
                 logger.info(
                     "Inserted recording start anchor at joints: %s",
@@ -311,7 +335,7 @@ class MotionRecorder:
             acc = waldoctl.commander.settings.jog.accel / 100.0
             args = ", ".join(f"{a:.2f}" for a in angles)
             wait_str = ", wait=False" if not params.get("wait", True) else ""
-            return f"rbt.move_j([{args}], speed={spd}, accel={acc}{wait_str})"
+            return f"rbt.move_j([{args}], speed={spd}, accel={acc}{blend_r_arg()}{wait_str})"
 
         elif action_type == "move_l":
             pose = params["pose"]
@@ -319,7 +343,7 @@ class MotionRecorder:
             acc = waldoctl.commander.settings.jog.accel / 100.0
             args = ", ".join(f"{p:.3f}" for p in pose)
             wait_str = ", wait=False" if not params.get("wait", True) else ""
-            return f"rbt.move_l([{args}], speed={spd}, accel={acc}{wait_str})"
+            return f"rbt.move_l([{args}], speed={spd}, accel={acc}{blend_r_arg()}{wait_str})"
 
         elif action_type == "home":
             return "rbt.home()"
