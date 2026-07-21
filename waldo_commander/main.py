@@ -77,6 +77,7 @@ from waldo_commander.services.control_lease import (
     restore_control_mode,
 )
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
+from waldo_commander.services import startup_mode
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
     robot_state,
@@ -138,8 +139,10 @@ def _update_connection_notification() -> None:
     if ps is None:
         return
 
-    # Skip if app not ready - avoid modifying elements during page serialization
-    if not readiness_state.app_ready.is_set():
+    # Gate on scene-ready (not app_ready) so the banner still works when the
+    # backend never streams a STATUS frame; the scene signal also guarantees
+    # the page is past serialization, so elements are safe to modify.
+    if not readiness_state.urdf_scene_ready.is_set():
         return
 
     needs_warning = (
@@ -402,10 +405,12 @@ async def check_ping() -> None:
         return
 
     # Update robot connectivity status. The multicast status consumer drives
-    # the joint/cartesian button sync at status rate; the two calls below
-    # cover the "stream went silent" path that the consumer cannot, since
-    # they read waldoctl.commander.status.connected directly.
+    # the joint/cartesian button sync at status rate; the calls below cover
+    # the "no STATUS frames" paths (stream went silent, or none ever arrived)
+    # that the consumer cannot, since they read
+    # waldoctl.commander.status.connected directly.
     waldoctl.commander.status.connected = ps.last_ping_ok
+    _update_connection_notification()
     if readout_panel is not None:
         readout_panel.update_conn_io()
     if control_panel is not None:
@@ -498,9 +503,11 @@ def update_ui_from_status() -> None:
     if control_panel.estop:
         control_panel.estop.check_state_change()
 
-    # Skip notifying listeners until app ready to avoid a race with NiceGUI
-    # page serialization (envelope proximity updates depend on this).
-    if not readiness_state.app_ready.is_set():
+    # Skip notifying listeners until the scene is built to avoid a race with
+    # NiceGUI page serialization (envelope proximity updates depend on this).
+    # Scene-ready rather than app_ready so a boot without a STATUS frame
+    # (robot unplugged) still drives the status-dependent UI.
+    if not readiness_state.urdf_scene_ready.is_set():
         return
 
     _update_connection_notification()
@@ -882,19 +889,16 @@ def build_page_content() -> None:
             async def _init():
                 try:
                     await asyncio.wait_for(
-                        readiness_state.app_ready.wait(), timeout=20.0
+                        readiness_state.app_ready.wait(), timeout=3.0
                     )
                 except asyncio.TimeoutError:
+                    # No STATUS frame (com_port configured but no robot wired).
+                    # The scene only needs local URDF assets and guarded client
+                    # calls, so render it anyway instead of blocking the page.
                     loading_spinner.set_visibility(False)
                     loading_status.text = (
-                        "Could not connect to controller. "
-                        "Check that the controller is running and refresh the page."
+                        "Robot disconnected — proceeding without live data"
                     )
-                    loading_status.style(
-                        "color: #ef4444; font-size: 1rem; text-align: center; "
-                        "max-width: 400px;"
-                    )
-                    return
 
                 await initialize_urdf_scene()
 
@@ -906,13 +910,18 @@ def build_page_content() -> None:
                 except Exception:
                     hw_now = False
                 if hw_now and waldoctl.commander.status.simulator_active:
-                    logger.info("Hardware detected — switching to robot mode")
-                    waldoctl.commander.status.simulator_active = False
-                    try:
-                        await client.simulator(False)
-                        await client.reset()
-                    except Exception as e:
-                        logger.warning("auto robot-mode switch failed: %s", e)
+                    if startup_mode.stored_startup_mode() == startup_mode.SIM:
+                        logger.info(
+                            "Hardware detected but simulator mode is pinned — staying in simulator"
+                        )
+                    else:
+                        logger.info("Hardware detected — switching to robot mode")
+                        waldoctl.commander.status.simulator_active = False
+                        try:
+                            await client.simulator(False)
+                            await client.reset()
+                        except Exception as e:
+                            logger.warning("auto robot-mode switch failed: %s", e)
                 waldoctl.commander.status.connected = hw_now
 
                 control_panel.update_robot_btn_visual()
@@ -927,6 +936,10 @@ def build_page_content() -> None:
                         ui_state._build_gripper_content()
                     if ui_state._gripper_tab is not None:
                         ui_state._gripper_tab.props(remove="disable")
+
+                if not readiness_state.app_ready.is_set():
+                    # No STATUS frame will trigger the banner update — show it now.
+                    _update_connection_notification()
 
                 scene_loading_overlay.classes("opacity-0 pointer-events-none")
                 await asyncio.sleep(0.4)
@@ -1050,6 +1063,35 @@ async def _stop_plugin_panels() -> None:
     await asyncio.gather(*(_stop_one(p) for p in ui_state.plugin_panels))
 
 
+async def _set_initial_mode(port: str) -> None:
+    """Pick the boot mode: the persisted ``startup_mode`` preference wins,
+    otherwise fall back to port-based detection.
+
+    Without a stored preference: when a port is configured the controller
+    already has a real serial transport — don't replace it with simulator.
+    The page-load ping in ``_init`` will set
+    ``waldoctl.commander.status.simulator_active`` based on whether hardware
+    is actually connected (unless simulator mode is pinned).
+    """
+    stored = startup_mode.stored_startup_mode()
+    if stored == startup_mode.SIM:
+        use_sim = True
+    elif stored == startup_mode.HARDWARE:
+        use_sim = False
+    else:
+        use_sim = not port
+    if use_sim:
+        try:
+            await client.simulator(True)
+        except Exception as e:
+            logger.error("startup: simulator(True) failed: %s", e)
+        waldoctl.commander.status.simulator_active = True
+    try:
+        await client.reset()
+    except Exception as e:
+        logger.warning("startup: reset failed (may retry): %s", e)
+
+
 def _register_handlers() -> None:
     """Register startup/shutdown handlers only once.
 
@@ -1068,25 +1110,6 @@ def _register_handlers() -> None:
             await client.wait_ready(timeout=15.0)
         except (TimeoutError, ConnectionError, OSError) as e:
             logger.debug("startup: wait_ready failed: %s", e)
-
-    async def _set_initial_mode(port: str) -> None:
-        """Start streaming; defer mode decision to page load.
-
-        When a port is configured the controller already has a real serial
-        transport — don't replace it with simulator.  The page-load ping
-        in ``_init`` will set ``waldoctl.commander.status.simulator_active`` based on
-        whether hardware is actually connected.
-        """
-        if not port:
-            try:
-                await client.simulator(True)
-            except Exception as e:
-                logger.error("startup: simulator(True) failed: %s", e)
-            waldoctl.commander.status.simulator_active = True
-        try:
-            await client.reset()
-        except Exception as e:
-            logger.warning("startup: reset failed (may retry): %s", e)
 
     async def _restore_settings() -> None:
         """Restore persisted motion profile and tool selection."""
