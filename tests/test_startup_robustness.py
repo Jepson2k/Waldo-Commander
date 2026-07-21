@@ -126,7 +126,10 @@ async def test_page_renders_without_backend_status(
     monkeypatch.setattr(readiness_state, "mark_backend_done", lambda: None)
     monkeypatch.setattr(readiness_state, "_backend_done", False)
 
-    # A robot-less hardware boot: the user last ran in hardware mode.
+    # A robot-less hardware boot: the user last ran in hardware mode. The
+    # preference must be stored — app startup runs inside ``user.open`` and
+    # ``_set_initial_mode`` would otherwise fall back to simulator (no port).
+    ng_app.storage.general["startup_mode"] = "hardware"
     waldoctl.commander.status.simulator_active = False
     waldoctl.commander.status.connected = False
 
@@ -141,4 +144,5 @@ async def test_page_renders_without_backend_status(
         # The banner appears from the explicit page-init call, no STATUS needed.
         await user.should_see("Robot mode requires a hardware connection", retries=30)
     finally:
+        ng_app.storage.general.pop("startup_mode", None)
         waldoctl.commander.status.simulator_active = True
