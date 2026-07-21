@@ -6,6 +6,7 @@ import time
 import pytest
 
 from tests.conftest import skip_webgl_macos_ci
+from tests.helpers.browser_helpers import run_in_app
 from tests.helpers.wait import screen_wait_for_scene_ready
 
 _FIND_COLOR_JS = """
@@ -51,9 +52,14 @@ class TestCollisionVizScreen:
             # so the EDITING-pose highlight is deterministic. EDITING is also
             # race-free here: the status consumer's LIVE path (which would
             # restore the tint from empty status pairs each frame) is bypassed.
-            waldoctl.commander.scene.shapes = [
-                Box(name="block", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
-            ]
+            def _place_block():
+                waldoctl.commander.scene.shapes = [
+                    Box(
+                        name="block", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0)
+                    )
+                ]
+
+            run_in_app(_place_block)
             normal = self._poll_color(
                 class_screen, "shape:block", SceneColors.SHAPE_HEX.lstrip("#")
             )
@@ -61,14 +67,14 @@ class TestCollisionVizScreen:
                 f"shape did not render with its base color (got {normal})"
             )
 
-            scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+            run_in_app(lambda: scene.set_appearance_mode(RobotAppearanceMode.EDITING))
             red = self._poll_color(
                 class_screen, "shape:block", SceneColors.COLLISION_HEX.lstrip("#")
             )
             assert red == SceneColors.COLLISION_HEX.lstrip("#"), (
                 f"shape did not turn red on collision (got {red})"
             )
-            scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+            run_in_app(lambda: scene.set_appearance_mode(RobotAppearanceMode.LIVE))
 
             # Shapes persist on commander.scene across page loads; the rebuilt
             # scene must re-render them or the barrier turns invisible while
@@ -83,7 +89,10 @@ class TestCollisionVizScreen:
             )
         finally:
             # The checker is process-global — never leak shapes/mode.
-            waldoctl.commander.scene.shapes = []
-            current = ui_state.urdf_scene
-            if current is not None:
-                current.set_appearance_mode(RobotAppearanceMode.LIVE)
+            def _reset_scene():
+                waldoctl.commander.scene.shapes = []
+                current = ui_state.urdf_scene
+                if current is not None:
+                    current.set_appearance_mode(RobotAppearanceMode.LIVE)
+
+            run_in_app(_reset_scene)

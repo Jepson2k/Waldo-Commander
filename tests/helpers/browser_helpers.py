@@ -4,8 +4,10 @@ These helpers are used across multiple browser test files and provide
 consistent patterns for interacting with the UI via Selenium.
 """
 
-from typing import TYPE_CHECKING, Any
+import concurrent.futures
+from typing import TYPE_CHECKING, Any, Callable
 
+from nicegui import core
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
@@ -20,6 +22,27 @@ if TYPE_CHECKING:
 def js(screen: "Screen", script: str, *args) -> Any:
     """Execute JavaScript and return result."""
     return screen.selenium.execute_script(script, *args)
+
+
+def run_in_app(func: Callable[[], Any], timeout: float = 5.0) -> Any:
+    """Run ``func`` on the app's event loop and return its result.
+
+    Screen tests execute in the pytest thread while the app (and NiceGUI's
+    outbox serializer) runs in the server thread. Commander calls that build
+    or mutate UI elements must run on the loop: constructing an element from
+    the test thread races the outbox serializing it mid-``__init__``.
+    """
+    assert core.loop is not None, "app event loop not running"
+    future: concurrent.futures.Future = concurrent.futures.Future()
+
+    def _invoke() -> None:
+        try:
+            future.set_result(func())
+        except BaseException as exc:  # noqa: BLE001 — re-raised in the test thread
+            future.set_exception(exc)
+
+    core.loop.call_soon_threadsafe(_invoke)
+    return future.result(timeout)
 
 
 def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:

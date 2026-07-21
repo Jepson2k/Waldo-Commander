@@ -16,6 +16,7 @@ import waldoctl
 from tests.helpers.browser_helpers import (
     click_tab,
     dismiss_dialogs,
+    run_in_app,
     wait_for_codemirror_ready,
 )
 
@@ -61,26 +62,32 @@ def test_review_controls_and_diff_coexist_without_clipping(screen) -> None:
     click_tab(screen, "program")
     wait_for_codemirror_ready(screen)
 
-    p = waldoctl.commander.programs.active
-    assert p is not None
-    # A tall program + an edit near the bottom: a clipped editor would push the
-    # decoration out of the visible panel.
-    p.source = "\n".join(f"line_{i} = {i}" for i in range(40)) + "\n"
-    # A second, very wide tab: the header must shrink the tab strip (it
-    # scrolls horizontally) rather than wrap the review cluster onto a second
-    # line underneath the CodeMirror.
-    second = waldoctl.commander.programs.new(
-        filename="a_very_long_program_filename_that_widens_the_tab_strip_far_beyond"
-        "_any_reasonable_header_width.py"
-    )
+    def _build_programs():
+        p = waldoctl.commander.programs.active
+        assert p is not None
+        # A tall program + an edit near the bottom: a clipped editor would push
+        # the decoration out of the visible panel.
+        p.source = "\n".join(f"line_{i} = {i}" for i in range(40)) + "\n"
+        # A second, very wide tab: the header must shrink the tab strip (it
+        # scrolls horizontally) rather than wrap the review cluster onto a
+        # second line underneath the CodeMirror.
+        second = waldoctl.commander.programs.new(
+            filename="a_very_long_program_filename_that_widens_the_tab_strip_"
+            "far_beyond_any_reasonable_header_width.py"
+        )
+        return p, second
+
+    p, second = run_in_app(_build_programs)
 
     try:
         # A long description like an LLM writes: the label must truncate
         # instead of wrapping the cluster or pushing its buttons off-panel.
-        p.edits.propose(
-            "@@ -38,1 +38,1 @@\n-line_37 = 37\n+line_37 = 3737\n",
-            "Home safely before the wave (a blind joint move from a folded "
-            "pose can self-collide)",
+        run_in_app(
+            lambda: p.edits.propose(
+                "@@ -38,1 +38,1 @@\n-line_37 = 37\n+line_37 = 3737\n",
+                "Home safely before the wave (a blind joint move from a folded "
+                "pose can self-collide)",
+            )
         )
 
         deadline = time.time() + 6.0
@@ -111,6 +118,10 @@ def test_review_controls_and_diff_coexist_without_clipping(screen) -> None:
             f"review cluster overflows the panel — Approve/Reject unreachable: {info}"
         )
     finally:
-        for e in list(p.edits.pending):
-            p.edits.reject(e.id)
-        waldoctl.commander.programs.close(second.id)
+
+        def _cleanup():
+            for e in list(p.edits.pending):
+                p.edits.reject(e.id)
+            waldoctl.commander.programs.close(second.id)
+
+        run_in_app(_cleanup)
