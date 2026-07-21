@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "A web interface for controlling robotic arms"
 requires-python = ">=3.12"
 dependencies = [
-  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@e666dab04082812b1f62fcbbdb3a0e3f27b15609",
+  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@ce1bfa17a50d4ed876969a266eb86e00c0c4956f",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
   "scipy>=1.10",
