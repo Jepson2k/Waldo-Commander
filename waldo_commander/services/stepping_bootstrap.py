@@ -58,6 +58,11 @@ def main() -> None:
             """RobotClient replacement that wraps with SteppingClientWrapper."""
 
             def __new__(cls, *args, **kwargs):
+                # Follow the controller the GUI is connected to when the
+                # script doesn't pick a port itself (args: host, port, ...).
+                env_port = os.environ.get("PAROL6_CONTROLLER_PORT")
+                if env_port and len(args) < 2 and "port" not in kwargs:
+                    kwargs["port"] = int(env_port)
                 original = _original_robot_client(*args, **kwargs)
                 return SteppingClientWrapper(original, step_io)
 

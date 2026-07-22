@@ -8,6 +8,7 @@ from nicegui.testing import User
 from tests.helpers.wait import (
     wait_for_app_ready,
     enable_sim,
+    ensure_robot_ready_for_motion,
 )
 from waldo_commander.services.programs import (
     is_any_program_recording,
@@ -648,6 +649,7 @@ async def _open_simulated_three_move_program(user: User):
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -661,12 +663,14 @@ async def _open_simulated_three_move_program(user: User):
     tab.source = _THREE_MOVE_SCRIPT
 
     await _sim.run_simulation()
-    # The timeline is built by a deferred scrub-segment rebuild.
     for _ in range(30):
-        if editor.playback._timeline is not None:
+        if tab.dry_run.path_segments:
             break
         await asyncio.sleep(0.1)
-    assert editor.playback._timeline is not None, "timeline never built after sim"
+    assert tab.dry_run.path_segments, "simulation produced no path segments"
+    # The timeline is lazy — built on the first playback interaction. Build it
+    # up front exactly as pressing any step control would.
+    assert editor.playback._ensure_timeline() is not None, "timeline build failed"
     return editor, tab
 
 
@@ -708,7 +712,7 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
             if pb.executing_step_index == step and pb.executing_step_at_end:
                 return
             await asyncio.sleep(interval)
-        tail = [entry.text for entry in tab.log[-5:]]
+        tail = [entry.text for entry in tab.log.entries[-5:]]
         raise TimeoutError(
             f"step {step} never completed: index={pb.executing_step_index}, "
             f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
