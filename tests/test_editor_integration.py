@@ -689,6 +689,32 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     )
 
 
+def _fire_editor_event(textarea, event_type: str, args: dict) -> None:
+    """Drive a CodeMirror event through the element's real event listener —
+    the same path a browser event takes. ``Element.on`` stores listener types
+    camelCased, so kebab-case names are converted before matching."""
+    from nicegui.helpers import event_type_to_camel_case
+
+    wanted = event_type_to_camel_case(event_type)
+    listener = next(
+        (
+            listener
+            for listener in textarea._event_listeners.values()
+            if listener.type == wanted
+        ),
+        None,
+    )
+    assert listener is not None, f"no {event_type} listener registered"
+    with textarea.client:
+        textarea._handle_event({"listener_id": listener.id, "args": args})
+
+
+def _set_cursor_line(textarea, line: int) -> None:
+    """Place the cursor like a user click: focus, then a selection change."""
+    _fire_editor_event(textarea, "focus-change", {"focused": True})
+    _fire_editor_event(textarea, "selection-change", {"line": line, "column": 1})
+
+
 @pytest.mark.integration
 async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
     """Re-teach overwrites the move line under the cursor with the robot's
@@ -700,7 +726,6 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
 
     import numpy as np
     import waldoctl
-    from nicegui import ui
 
     from waldo_commander.components.simulation_engine import simulation as _sim
     from waldo_commander.state import ui_state
@@ -746,10 +771,11 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
     )
     assert targets_by_line[6].move_type == "smooth_arc"
 
-    cm = user.find(kind=ui.codemirror)
     # The browser echoes declared anchors back via "anchor-positions"; the
     # user fixture has no JS, so replay that echo through the real event.
-    cm.trigger("anchor-positions", {"anchors": dict(textarea._props["line-anchors"])})
+    _fire_editor_event(
+        textarea, "anchor-positions", {"anchors": dict(textarea._props["line-anchors"])}
+    )
     await asyncio.sleep(0)
 
     def bracket_floats(line: str) -> list[float]:
@@ -758,7 +784,7 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
         return [float(v) for v in m.group(1).split(",")]
 
     # Cursor on the comment line: button disabled (not hidden), click no-ops.
-    cm.trigger("selection-change", {"line": 3, "column": 0})
+    _set_cursor_line(textarea, 3)
     await asyncio.sleep(0)
     reteach_btn = editor._reteach_btn
     assert reteach_btn is not None
@@ -772,7 +798,7 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
 
     # Cursor on the move_c line: a smooth_arc target exists there, but a
     # single pose can't re-teach a via+end arc, so the button stays disabled.
-    cm.trigger("selection-change", {"line": 6, "column": 0})
+    _set_cursor_line(textarea, 6)
     await asyncio.sleep(0)
     assert reteach_btn.enabled is False
     user.find(marker="editor-reteach").click()
@@ -785,8 +811,21 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
     await wait_for_motion_start()
     await wait_for_motion_stable(lambda: waldoctl.commander.status.joints.angles[0])
 
+    # The jog can re-simulate (position-change checker), re-declaring anchors
+    # and dropping the echoed positions; replay the browser echo again.
+    for _ in range(50):
+        if {t.id for t in tab.dry_run.targets} <= set(
+            dict(textarea._props["line-anchors"])
+        ):
+            break
+        await asyncio.sleep(0.1)
+    _fire_editor_event(
+        textarea, "anchor-positions", {"anchors": dict(textarea._props["line-anchors"])}
+    )
+    await asyncio.sleep(0)
+
     # Cursor on the move_j line: click rewrites its joint angles in place.
-    cm.trigger("selection-change", {"line": 4, "column": 0})
+    _set_cursor_line(textarea, 4)
     await asyncio.sleep(0)
     assert reteach_btn.enabled is True
     user.find(marker="editor-reteach").click()
@@ -806,7 +845,7 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
     )
 
     # Cursor on the move_l line: click rewrites the current WRF pose.
-    cm.trigger("selection-change", {"line": 5, "column": 0})
+    _set_cursor_line(textarea, 5)
     await asyncio.sleep(0)
     assert reteach_btn.enabled is True
     user.find(marker="editor-reteach").click()
