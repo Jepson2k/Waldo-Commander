@@ -14,6 +14,7 @@ import asyncio
 
 import pytest
 import waldoctl
+from waldoctl import ActionState
 from nicegui import Client, app
 from nicegui.events import (
     KeyboardAction,
@@ -27,7 +28,6 @@ from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
-    wait_for_motion_stable,
     wait_for_motion_start,
 )
 
@@ -184,6 +184,16 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
     assert ui_state.active_client_id is not None
     ng_client = Client.instances[ui_state.active_client_id]
 
+    # Earlier suite tests leave the arm at arbitrary poses where a WRF X/Y
+    # step can be refused; start each direction check from the home pose.
+    panel = ui_state.control_panel
+    assert panel is not None
+    await panel.client.teleport([90.0, -90.0, 180.0, 0.0, 0.0, 180.0])
+    for _ in range(50):
+        if abs(float(waldoctl.commander.status.joints.angles.deg[0]) - 90.0) < 1.0:
+            break
+        await asyncio.sleep(0.1)
+
     def key_event(name: str, *, keydown: bool) -> KeyEventArguments:
         return KeyEventArguments(
             sender=ng_client.layout,
@@ -193,21 +203,26 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
             modifiers=KeyboardModifiers(alt=False, ctrl=False, meta=False, shift=False),
         )
 
+    async def wait_idle() -> None:
+        for _ in range(100):
+            if waldoctl.commander.status.action.state == ActionState.IDLE:
+                return
+            await asyncio.sleep(0.1)
+
     async def tap_key(name: str, axis_attr: str) -> float:
         """Tap a jog key (keydown+keyup = click step) and return the axis delta."""
-        initial = await wait_for_motion_stable(
-            lambda: float(getattr(waldoctl.commander.status.pose, axis_attr))
-        )
+        # The 5mm move_l has a sub-tolerance creep phase before its main ramp,
+        # so value-stability would trigger early — gate on action state.
+        await wait_idle()
+        initial = float(getattr(waldoctl.commander.status.pose, axis_attr))
         with ng_client:
             # No await between the events, so the hold timer can never fire:
             # this is deterministically a click (single step).
             keybindings_manager.handle_key(key_event(name, keydown=True))
             keybindings_manager.handle_key(key_event(name, keydown=False))
         await wait_for_motion_start()
-        final = await wait_for_motion_stable(
-            lambda: float(getattr(waldoctl.commander.status.pose, axis_attr))
-        )
-        return final - initial
+        await wait_idle()
+        return float(getattr(waldoctl.commander.status.pose, axis_attr)) - initial
 
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
 

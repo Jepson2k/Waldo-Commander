@@ -585,6 +585,13 @@ async def test_jog_arrow_inversion_flips_button_direction_and_label(user: User) 
     user.find(marker="tab-cartesian").click()
     await asyncio.sleep(0)
 
+    # Let the ready-for-motion teleport settle before clicking, or the
+    # incremental move_l lands on a busy controller and is dropped.
+    for _ in range(50):
+        if waldoctl.commander.status.action.state == ActionState.IDLE:
+            break
+        await asyncio.sleep(0.1)
+
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
 
     # The physical left-arrow slot commands X+ by default
@@ -594,13 +601,17 @@ async def test_jog_arrow_inversion_flips_button_direction_and_label(user: User) 
     )
 
     initial_x = await wait_for_motion_stable(
-        lambda: float(waldoctl.commander.status.pose.x)
+        lambda: float(waldoctl.commander.status.pose.x), tolerance=0.05, stable_ticks=30
     )
     await simulate_click(user, "axis-xplus")
     await wait_for_motion_start()
-    final_x = await wait_for_motion_stable(
-        lambda: float(waldoctl.commander.status.pose.x)
-    )
+    # The 5mm move_l has a sub-tolerance creep phase before its main ramp, so
+    # value-stability would trigger early — wait for the action to finish.
+    for _ in range(100):
+        if waldoctl.commander.status.action.state == ActionState.IDLE:
+            break
+        await asyncio.sleep(0.1)
+    final_x = float(waldoctl.commander.status.pose.x)
     assert 4.9 <= final_x - initial_x <= 5.1, (
         f"left arrow should move X +5.0mm by default, moved {final_x - initial_x:.2f}mm"
     )
@@ -628,13 +639,17 @@ async def test_jog_arrow_inversion_flips_button_direction_and_label(user: User) 
         assert next(iter(user.find(marker="axis-xminus").elements)) is slot
 
         initial_x = await wait_for_motion_stable(
-            lambda: float(waldoctl.commander.status.pose.x)
+            lambda: float(waldoctl.commander.status.pose.x),
+            tolerance=0.05,
+            stable_ticks=30,
         )
         await simulate_click(user, "axis-xminus")
         await wait_for_motion_start()
-        final_x = await wait_for_motion_stable(
-            lambda: float(waldoctl.commander.status.pose.x)
-        )
+        for _ in range(100):
+            if waldoctl.commander.status.action.state == ActionState.IDLE:
+                break
+            await asyncio.sleep(0.1)
+        final_x = float(waldoctl.commander.status.pose.x)
         assert 4.9 <= initial_x - final_x <= 5.1, (
             f"inverted left arrow should move X -5.0mm, "
             f"moved {final_x - initial_x:.2f}mm"

@@ -486,14 +486,14 @@ def _handle_jog_key(
 ) -> None:
     """Handle jog key press/click for cartesian movement."""
     if is_click:
-        # Click: press then auto-release for a single step.
-        asyncio.create_task(cp.set_axis_pressed(axis, True))
-
-        async def release():
-            await asyncio.sleep(0.05)
+        # Click: press and auto-release in one task. A sleep between them
+        # would race the click-vs-hold threshold under event-loop load,
+        # turning the tap into a zero-tick hold that never moves.
+        async def click():
+            await cp.set_axis_pressed(axis, True)
             await cp.set_axis_pressed(axis, False)
 
-        asyncio.create_task(release())
+        asyncio.create_task(click())
     elif is_press:
         # Hold: start continuous jog (released via on_release).
         asyncio.create_task(cp.set_axis_pressed(axis, True))
