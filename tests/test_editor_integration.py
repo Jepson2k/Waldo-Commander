@@ -795,6 +795,7 @@ async def test_manual_inserts_follow_cursor(user: User) -> None:
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
+    ui_state.program_panel_visible = True  # flash the lines, not the tab
 
     editor = ui_state.editor_panel
     tab = waldoctl.commander.programs.active
