@@ -147,6 +147,12 @@ async def test_home_output_tracks_home_pose(user: User) -> None:
     io = waldoctl.commander.status.io
     angles = waldoctl.commander.status.joints.angles
 
+    # Earlier suite tests leave the arm at arbitrary poses, and STATUS frames
+    # re-publish the controller's real pose over the fixture's seeded angles —
+    # the first ON transition needs the robot actually at home.
+    await client.teleport(home.tolist())
+    assert await _wait_for(lambda: abs(angles.deg[0] - home[0]) < 0.1)
+
     writes: list[tuple[int, int]] = []
     orig_write = client.write_io
 
