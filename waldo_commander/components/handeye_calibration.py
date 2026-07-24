@@ -96,6 +96,9 @@ class HandEyeCalibrationPanel(Panel):
         self._stored_container: ui.column | None = None
         self._scene_switch: ui.switch | None = None
         self._commander: Commander | None = None
+        self._last_status_text: str | None = None
+        self._last_overlay_content: str | None = None
+        self._last_capture_enabled: bool | None = None
 
     # ------------------------------------------------------------------ build
 
@@ -313,22 +316,29 @@ class HandEyeCalibrationPanel(Panel):
             self._detect_busy = False
 
     def _set_detection(self, detection: handeye.Detection | None, message: str) -> None:
+        """Reflect the detection in the UI, writing only what changed — the
+        tick repeats the same idle state 5x/s and must not flood the outbox."""
         self._last_detection = detection
-        if self._status_label is not None:
+        if self._status_label is not None and message != self._last_status_text:
+            self._last_status_text = message
             self._status_label.set_text(message)
         if self._image is not None:
-            if detection is None:
-                self._image.set_content("")
-            else:
-                self._image.set_content(
-                    "".join(
-                        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" '
-                        'stroke="#2dd4bf" stroke-width="1.5" fill="none"/>'
-                        for x, y in detection.corners.reshape(-1, 2)
-                    )
+            content = (
+                ""
+                if detection is None
+                else "".join(
+                    f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" '
+                    'stroke="#2dd4bf" stroke-width="1.5" fill="none"/>'
+                    for x, y in detection.corners.reshape(-1, 2)
                 )
-        if self._capture_btn is not None:
-            self._capture_btn.set_enabled(detection is not None)
+            )
+            if content != self._last_overlay_content:
+                self._last_overlay_content = content
+                self._image.set_content(content)
+        enabled = detection is not None
+        if self._capture_btn is not None and enabled != self._last_capture_enabled:
+            self._last_capture_enabled = enabled
+            self._capture_btn.set_enabled(enabled)
 
     # --------------------------------------------------------------- capture
 
