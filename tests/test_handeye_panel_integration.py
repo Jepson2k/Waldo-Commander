@@ -123,6 +123,7 @@ async def test_handeye_panel_workflow(
         user.find(kind=ui.tab, content="Settings").click()
         await asyncio.sleep(0)
         tool_select = next(iter(user.find(marker="select-tool").elements))
+        assert isinstance(tool_select, ui.select)
         tool_select.set_value("MSG")
         await _wait_for(
             lambda: ng_app.storage.general.get("selected_tool") == "MSG",
