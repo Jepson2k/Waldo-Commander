@@ -30,6 +30,10 @@ _SHAPE_DEFAULT_POSE = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 _SELECT_TOOL_RE = re.compile(r"^\s*rbt\.\s*select_tool\s*\(")
 
+# Line-anchor id for the recording insertion cursor: the browser remaps it
+# across user edits so recorded snippets follow the code, not a line number.
+_RECORD_ANCHOR_ID = "__recording_insert__"
+
 
 def _shape_to_code(s) -> str:
     """One waldoctl Shape as a constructor call, omitting default fields."""
@@ -148,15 +152,19 @@ class MotionRecorder:
             if info["category"] in ("Motion", "Jog", "Streaming")
         )
 
-    def _ensure_select_tool(self, tool_key: str, variant_key: str = "") -> None:
+    def _ensure_select_tool(self, tool_key: str, variant_key: str = "") -> int | None:
         """Ensure rbt.select_tool() is in the script before the first move command.
 
         If an existing select_tool line is found, update it. Otherwise insert one
         before the first motion command (home, move_j, move_l, etc.).
+
+        Returns the 1-indexed line a new line was inserted at, or ``None``
+        when a line was updated in place or appended via ``_insert_snippet``
+        (which advances the session cursor itself).
         """
         textarea = ui_state.active_textarea
         if not textarea:
-            return
+            return None
         val: str = str(textarea.value or "")
         lines: list[str] = val.split("\n")
 
@@ -172,7 +180,7 @@ class MotionRecorder:
                 lines[i] = set_tool_line
                 textarea.value = "\n".join(lines)
                 logger.info("Updated existing select_tool to %s", tool_key)
-                return
+                return None
 
         # No existing select_tool — insert before first motion command
         motion_names = self._get_motion_cmd_names()
@@ -186,23 +194,35 @@ class MotionRecorder:
                 logger.info(
                     "Inserted select_tool before first motion at line %d", i + 1
                 )
-                return
+                return i + 1
 
         # No motion commands found — just append
         self._insert_snippet(set_tool_line)
+        return None
 
-    def _shift_past_external_insert(self, before: str, after: str) -> None:
-        """Keep the recording insertion cursor on the same code when
-        ``_ensure_select_tool`` inserted a line directly above it."""
-        if not self._insert_line:
-            return
-        b, a = before.split("\n"), after.split("\n")
-        grown = len(a) - len(b)
-        if grown <= 0:
-            return
-        first_diff = next((i for i, line in enumerate(b) if a[i] != line), len(b))
-        if first_diff < self._insert_line:
-            self._insert_line += grown
+    def _declare_insert_anchor(self, textarea) -> None:
+        if self._insert_line:
+            textarea.line_anchors = {
+                **textarea._props["line-anchors"],
+                _RECORD_ANCHOR_ID: self._insert_line,
+            }
+
+    def _retract_insert_anchor(self, textarea) -> None:
+        declared = dict(textarea._props["line-anchors"])
+        if declared.pop(_RECORD_ANCHOR_ID, None) is not None:
+            textarea.line_anchors = declared
+
+    def insertion_anchor(self) -> dict[str, int]:
+        """Declared position for the recording insertion cursor: the live
+        mirror when the browser has echoed one, else the tracked line.
+        Empty outside a session or in append mode."""
+        if not self._insert_line or not is_any_program_recording():
+            return {}
+        textarea = ui_state.active_textarea
+        line = self._insert_line
+        if textarea is not None:
+            line = textarea.line_anchors.get(_RECORD_ANCHOR_ID, line)
+        return {_RECORD_ANCHOR_ID: line}
 
     def _clamp_below_select_tool(self, text: str) -> None:
         """Recorded motions must play back after the tool selection, so the
@@ -253,17 +273,18 @@ class MotionRecorder:
         # Ensure select_tool is before the first move command in the script
         tool_key = waldoctl.commander.status.tool.key
         if tool_key and tool_key != "NONE":
-            textarea = ui_state.active_textarea
-            before = str(textarea.value or "") if textarea else ""
-            prev_insert = self._insert_line
-            self._ensure_select_tool(
+            inserted = self._ensure_select_tool(
                 tool_key, variant_key=waldoctl.commander.status.tool.variant_key
             )
+            if (
+                inserted is not None
+                and self._insert_line
+                and inserted <= self._insert_line
+            ):
+                self._insert_line += 1
+            textarea = ui_state.active_textarea
             if textarea:
-                after = str(textarea.value or "")
-                if self._insert_line == prev_insert:
-                    self._shift_past_external_insert(before, after)
-                self._clamp_below_select_tool(after)
+                self._clamp_below_select_tool(str(textarea.value or ""))
 
         # Insert anchor move_j to establish recording start position — but only
         # if the robot has moved away from where the script's simulation ends.
@@ -287,11 +308,21 @@ class MotionRecorder:
             else:
                 logger.info("Skipped anchor — robot matches script end position")
 
+        # One declaration at the settled cursor: _start_recording is
+        # synchronous, so no user edit can interleave before this point.
+        textarea = ui_state.active_textarea
+        if textarea is not None:
+            self._declare_insert_anchor(textarea)
+
     def _stop_recording(self) -> None:
         """Stop recording session."""
         # If there's an active jog, end it first
         if self._active_jog:
             self.on_jog_end()
+
+        textarea = ui_state.active_textarea
+        if textarea is not None:
+            self._retract_insert_anchor(textarea)
 
         # Clear is_recording on every program — the invariant says only one
         # could have been True, but the sweep makes the stop idempotent.
@@ -518,6 +549,11 @@ class MotionRecorder:
         after = (
             self._insert_line if self._insert_line is not None else active_cursor_line()
         )
+        if self._insert_line:
+            # The browser remaps the anchor across user edits; the tracked
+            # int is the fallback until an echo arrives (or when a deletion
+            # swallowed the anchor line).
+            after = textarea.line_anchors.get(_RECORD_ANCHOR_ID, self._insert_line)
         new_value, first_line, count = insert_below_line(val, snippet, after)
         # Assigning value triggers the editor's on_change -> debounced simulation.
         textarea.value = new_value
@@ -529,6 +565,7 @@ class MotionRecorder:
             # The session cursor advances past each insert so recorded steps
             # stay chronological while the user's cursor stays put.
             self._insert_line = last_line
+            self._declare_insert_anchor(textarea)
 
         # Local import: motion_recorder is in services/ and decorations
         # is in components/, so a top-level import would invert the

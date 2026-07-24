@@ -781,6 +781,71 @@ async def test_recorded_steps_insert_below_cursor(user: User) -> None:
 
 
 @pytest.mark.integration
+async def test_recording_cursor_tracks_user_edits(user: User) -> None:
+    """User edits during a recording session shift the insertion cursor with
+    the code: the browser remaps the session's line anchor and the recorder
+    reads the echoed position back, so recorded steps keep landing at the
+    taught spot instead of a stale line number."""
+    import waldoctl
+    from waldo_commander.services.motion_recorder import (
+        _RECORD_ANCHOR_ID,
+        motion_recorder,
+    )
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    tab = waldoctl.commander.programs.active
+    textarea = ui_state.active_textarea
+    assert tab is not None and textarea is not None
+
+    textarea.value = "# head\n# taught spot\n# tail\n"
+    _set_cursor_line(textarea, 2)
+    tab.dry_run.final_joints_rad = None
+
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0.1)
+    assert is_any_program_recording()
+    tracked = textarea._props["line-anchors"].get(_RECORD_ANCHOR_ID)
+    assert tracked, "session cursor must be declared as a line anchor"
+
+    # The user types two lines at the top mid-session; the browser remaps the
+    # anchor and echoes the shifted position (replayed here — the user
+    # fixture runs no JS).
+    textarea.value = "# note 1\n# note 2\n" + str(textarea.value)
+    _fire_editor_event(
+        textarea,
+        "anchor-positions",
+        {
+            "anchors": {
+                **textarea._props["line-anchors"],
+                _RECORD_ANCHOR_ID: tracked + 2,
+            }
+        },
+    )
+
+    motion_recorder.record_action("io", port=1, state=1)
+
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0.1)
+    assert not is_any_program_recording()
+
+    lines = textarea.value.splitlines()
+    io_idx = lines.index("rbt.write_io(1, 1)")
+    assert io_idx == tracked + 2, (
+        f"recorded step must land below the shifted anchor line: {lines}"
+    )
+    assert lines.index("# tail") > io_idx, "original tail stays below the step"
+    assert _RECORD_ANCHOR_ID not in textarea._props["line-anchors"], (
+        "stopping the session must retract its anchor"
+    )
+
+
+@pytest.mark.integration
 async def test_manual_inserts_follow_cursor(user: User) -> None:
     """Palette, gizmo, and capture-pose inserts land below the cursor line and
     consecutive inserts stay in order; with the cursor unset or on the last
@@ -846,3 +911,10 @@ async def test_manual_inserts_follow_cursor(user: User) -> None:
     lines = textarea.value.splitlines()
     assert lines[-1].startswith("rbt.move_l(")
     assert lines[-2] == "time.sleep(1.0)"
+    # Indented anchor: the insert matches the body's indentation instead of
+    # splitting the suite at column 0.
+    textarea.value = "def run():\n    rbt.home()\n"
+    _set_cursor_line(textarea, 2)
+    with textarea.client:
+        editor._insert_command("delay")
+    assert textarea.value.splitlines()[2] == "    time.sleep(1.0)"
