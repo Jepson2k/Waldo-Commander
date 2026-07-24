@@ -446,10 +446,7 @@ class PlaybackController:
         which honors the same recording lockout."""
         for btn in (self.play_btn, self.speed_fab):
             if btn:
-                if enabled:
-                    btn.enable()
-                else:
-                    btn.disable()
+                btn.set_enabled(enabled)
 
     # ---- Script execution: state-driven listener ----
 
@@ -867,25 +864,16 @@ class PlaybackController:
         if self.next_btn:
             self.next_btn.set_visibility(has_steps)
             at_last = (current_step >= total_steps - 1) if has_steps else True
-            self._set_btn_enabled(
-                self.next_btn, not recording and (script_running or not at_last)
-            )
+            self.next_btn.set_enabled(not recording and (script_running or not at_last))
 
         # Hidden during a live run: IPC stepping is forward-only, no rewind.
         if self.prev_btn:
             self.prev_btn.set_visibility(has_steps and not script_running)
-            self._set_btn_enabled(self.prev_btn, not recording and current_step > 0)
+            self.prev_btn.set_enabled(not recording and current_step > 0)
 
         if self.step_program_btn:
             can_step = not play_is_playing if script_running else active is not None
-            self._set_btn_enabled(self.step_program_btn, not recording and can_step)
-
-    @staticmethod
-    def _set_btn_enabled(btn: ui.button, enabled: bool) -> None:
-        if enabled:
-            btn.enable()
-        else:
-            btn.disable()
+            self.step_program_btn.set_enabled(not recording and can_step)
 
     # ---- Scrub bar segments ----
 
