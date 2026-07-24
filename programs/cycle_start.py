@@ -11,7 +11,7 @@ a program, so no GUI configuration is needed:
 
 from parol6 import RobotClient
 
-rbt = RobotClient(host="127.0.0.1", port=5001)
+rbt = RobotClient()
 
 HOME = [90.0, -90.0, 180.0, 0.0, 0.0, 180.0]
 AT_HOME_OUTPUT = 1  # "OUTPUT 2" on the I/O panel
