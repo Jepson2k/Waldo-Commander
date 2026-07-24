@@ -57,6 +57,7 @@ def main() -> None:
     import importlib
 
     from waldo_commander.services.stepping_client import (
+        AsyncSteppingClientWrapper,
         SteppingClientWrapper,
         StepIO,
     )
@@ -93,6 +94,34 @@ def main() -> None:
         client_mod_name = f"{backend_package}.client"
         if client_mod_name in sys.modules:
             setattr(sys.modules[client_mod_name], "RobotClient", WrappedRobotClient)
+
+        # Async surface is optional for third-party backends.
+        OriginalAsyncRobotClient = getattr(backend, "AsyncRobotClient", None)
+        if OriginalAsyncRobotClient is not None:
+
+            class WrappedAsyncRobotClient:
+                """AsyncRobotClient replacement wrapping AsyncSteppingClientWrapper."""
+
+                def __new__(cls, *args, **kwargs):
+                    kwargs = _apply_gui_endpoint(args, kwargs)
+                    original = OriginalAsyncRobotClient(*args, **kwargs)
+                    return AsyncSteppingClientWrapper(original, step_io)
+
+            setattr(backend, "AsyncRobotClient", WrappedAsyncRobotClient)
+            if hasattr(backend, "client"):
+                setattr(backend.client, "AsyncRobotClient", WrappedAsyncRobotClient)
+            if backend_package in sys.modules:
+                setattr(
+                    sys.modules[backend_package],
+                    "AsyncRobotClient",
+                    WrappedAsyncRobotClient,
+                )
+            if client_mod_name in sys.modules:
+                setattr(
+                    sys.modules[client_mod_name],
+                    "AsyncRobotClient",
+                    WrappedAsyncRobotClient,
+                )
 
     except ImportError as e:
         print(f"Failed to import {backend_package}: {e}", file=sys.stderr)

@@ -9,6 +9,7 @@ Provides a wrapper around RobotClient that:
 Cross-platform compatible (Windows, macOS, Linux).
 """
 
+import asyncio
 import json
 import os
 import shutil
@@ -45,6 +46,11 @@ def _read_control(control_file: Path) -> dict:
         return json.loads(control_file.read_text())
     except (json.JSONDecodeError, OSError):
         return {"paused": True, "step_signal": 0, "step_acked": 0}
+
+
+def _is_blended(kwargs: dict) -> bool:
+    """Check if motion kwargs specify a blend radius."""
+    return float(kwargs.get("r", 0)) > 0
 
 
 class StepIO:
@@ -129,6 +135,11 @@ class StepIO:
         means paused until the operator says otherwise."""
         while not self._step_released():
             time.sleep(poll_interval)
+
+    async def wait_for_step_or_play_async(self, poll_interval: float = 0.05) -> None:
+        """Async twin of ``wait_for_step_or_play`` for the async wrapper."""
+        while not self._step_released():
+            await asyncio.sleep(poll_interval)
 
     def _ack_step(self, control: dict, step_signal: int) -> None:
         """Acknowledge a step by incrementing step_acked."""
@@ -244,16 +255,11 @@ class SteppingClientWrapper:
         self._flush_blend()
         return attr
 
-    @staticmethod
-    def _is_blended(kwargs: dict) -> bool:
-        """Check if motion kwargs specify a blend radius."""
-        return float(kwargs.get("r", 0)) > 0
-
     def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
         """Create a wrapper function for a motion method."""
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            is_blended = self._is_blended(kwargs)
+            is_blended = _is_blended(kwargs)
 
             if is_blended and self._step_io.check_should_pause():
                 # Stepping: run this group member as an exact stop so one
@@ -297,6 +303,142 @@ class SteppingClientWrapper:
 
             if self._step_io.check_should_pause():
                 self._step_io.wait_for_step_or_play()
+
+            return result
+
+        return wrapper
+
+
+class _AsyncSteppingToolProxy:
+    """Async twin of ``_SteppingToolProxy``. Holds the owner wrapper so the
+    first awaited action can flush a pending blend group (a property can't)."""
+
+    def __init__(self, async_tool: Any, owner: "AsyncSteppingClientWrapper") -> None:
+        self._tool = async_tool
+        self._owner = owner
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._tool, name)
+        if not callable(attr) or name not in _STEPPABLE_TOOL_METHODS:
+            return attr
+
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            await self._owner._flush_blend()
+            step_io = self._owner._step_io
+            step_io.emit_event("start", "tool_action")
+            result = await attr(*args, **kwargs)
+            step_io.emit_event("complete", "tool_action")
+            step_io.increment_step_count()
+            if step_io.check_should_pause():
+                await step_io.wait_for_step_or_play_async()
+            return result
+
+        return wrapper
+
+
+class AsyncSteppingClientWrapper:
+    """Async twin of ``SteppingClientWrapper`` for AsyncRobotClient scripts.
+
+    Same stepping semantics; the wrapper is the completion barrier (the async
+    client's motion methods default to ``wait=False``), and pause polling
+    yields to the script's event loop instead of blocking it.
+    """
+
+    def __init__(self, wrapped_client: Any, step_io: StepIO) -> None:
+        self._wrapped = wrapped_client
+        self._step_io = step_io
+        self._in_blend = False
+        self._last_blend_index: int = -1
+
+    async def finalize(self) -> None:
+        """Barrier for a pending blend group: wait it out, emit completion,
+        clear. No pause gate — callers add one where stepping applies."""
+        if not self._in_blend:
+            return
+        if self._last_blend_index >= 0:
+            await self._wrapped.wait_command(self._last_blend_index)
+        self._in_blend = False
+        self._last_blend_index = -1
+        self._step_io.emit_event("complete", "blend_group")
+        self._step_io.increment_step_count()
+
+    async def _flush_blend(self) -> None:
+        if not self._in_blend:
+            return
+        await self.finalize()
+        if self._step_io.check_should_pause():
+            await self._step_io.wait_for_step_or_play_async()
+
+    @property
+    def tool(self):
+        """Return the async tool with stepping behavior on action methods."""
+        return _AsyncSteppingToolProxy(self._wrapped.tool, self)
+
+    async def __aenter__(self) -> "AsyncSteppingClientWrapper":
+        await self._wrapped.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            await self.finalize()
+        else:
+            self._in_blend = False
+            self._last_blend_index = -1
+        return await self._wrapped.__aexit__(exc_type, exc, tb)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._wrapped, name)
+
+        if name in STEPPABLE_METHODS and callable(attr):
+            return self._wrap_motion_method(name, attr)
+
+        if asyncio.iscoroutinefunction(attr):
+
+            async def passthrough(*args: Any, **kwargs: Any) -> Any:
+                await self._flush_blend()
+                return await attr(*args, **kwargs)
+
+            return passthrough
+
+        return attr
+
+    def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            is_blended = _is_blended(kwargs)
+
+            if is_blended and self._step_io.check_should_pause():
+                # Stepping: exact-stop group members, one per step grant,
+                # with events at group granularity (see the sync wrapper).
+                if not self._in_blend:
+                    self._step_io.emit_event("start", name, blend=True)
+                    self._in_blend = True
+                result = await method(*args, **{**kwargs, "r": 0.0})
+                if isinstance(result, int) and result >= 0:
+                    await self._wrapped.wait_command(result)
+                if self._step_io.check_should_pause():
+                    await self._step_io.wait_for_step_or_play_async()
+                return result
+
+            if is_blended:
+                if not self._in_blend:
+                    self._step_io.emit_event("start", name, blend=True)
+                    self._in_blend = True
+                result = await method(*args, **kwargs)
+                if isinstance(result, int) and result >= 0:
+                    self._last_blend_index = result
+                return result
+
+            await self.finalize()
+
+            self._step_io.emit_event("start", name)
+            result = await method(*args, **kwargs)
+            if isinstance(result, int) and result >= 0:
+                await self._wrapped.wait_command(result)
+            self._step_io.emit_event("complete", name)
+            self._step_io.increment_step_count()
+
+            if self._step_io.check_should_pause():
+                await self._step_io.wait_for_step_or_play_async()
 
             return result
 

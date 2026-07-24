@@ -116,6 +116,34 @@ class TestStepIO:
         step_io.wait_for_step_or_play(poll_interval=0.01)
         assert time.monotonic() - start < 1.0
 
+    async def test_wait_for_step_async_blocks_and_releases(self, tmp_path, monkeypatch):
+        """The async wait mirrors the sync semantics: blocks while paused,
+        releases on a granted step, returns immediately with no control file."""
+        import asyncio
+
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_async_wait")
+        controller.initialize()
+        step_io = StepIO("test_async_wait")
+
+        task = asyncio.ensure_future(
+            step_io.wait_for_step_or_play_async(poll_interval=0.01)
+        )
+        await asyncio.sleep(0.3)
+        assert not task.done(), "paused session must keep blocking"
+        controller.signal_step()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        controller.cleanup()
+        await asyncio.wait_for(
+            step_io.wait_for_step_or_play_async(poll_interval=0.01), timeout=1.0
+        )
+
 
 # ============================================================================
 # Unit Tests - GUIStepController (GUI-side IPC)

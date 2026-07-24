@@ -828,6 +828,69 @@ async def test_step_program_blended_moves_run_one_per_press(user: User) -> None:
                 await asyncio.sleep(0.1)
 
 
+_ASYNC_THREE_MOVE_SCRIPT = """import asyncio
+from parol6 import AsyncRobotClient
+
+async def main():
+    async with AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+        await rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
+        await rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+
+asyncio.run(main())
+"""
+
+
+@pytest.mark.integration
+async def test_step_program_async_client_runs_one_per_press(user: User) -> None:
+    """Async programs step exactly like sync ones: the bootstrap wraps
+    AsyncRobotClient too, so each press runs one command and the pause holds.
+
+    Without the async wrapper the client is unpatched: the program free-runs
+    with no step events and completes on the first press.
+    """
+    editor, tab = await _open_simulated_three_move_program(
+        user, script=_ASYNC_THREE_MOVE_SCRIPT
+    )
+    pb = tab.dry_run.playback
+
+    async def wait_step_complete(step: int, timeout_s: float) -> None:
+        interval = 0.05
+        for _ in range(int(timeout_s / interval)):
+            if pb.executing_step_index == step and pb.executing_step_at_end:
+                return
+            await asyncio.sleep(interval)
+        tail = [entry.text for entry in tab.log.entries[-5:]]
+        raise TimeoutError(
+            f"step {step} never completed: index={pb.executing_step_index}, "
+            f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
+            f"log tail={tail}"
+        )
+
+    try:
+        user.find(marker="editor-step-program").click()
+        await wait_step_complete(0, timeout_s=30.0)
+        await _wait_j1_near(85.0)
+
+        await asyncio.sleep(0.5)
+        assert pb.executing_step_index == 0, "paused start ran more than one command"
+        assert is_any_program_running() is True, "program must be paused, not finished"
+
+        user.find(marker="editor-step-program").click()
+        await wait_step_complete(1, timeout_s=15.0)
+        await _wait_j1_near(95.0)
+        assert is_any_program_running() is True, "still paused after the second step"
+    finally:
+        if is_any_program_running():
+            user.find(marker="editor-stop-btn").click()
+            for _ in range(50):
+                if not is_any_program_running():
+                    break
+                await asyncio.sleep(0.1)
+
+    assert is_any_program_running() is False
+
+
 @pytest.mark.integration
 async def test_prev_step_scrubs_sim_preview_back(user: User) -> None:
     """The Previous-step button scrubs the sim preview back one segment and
