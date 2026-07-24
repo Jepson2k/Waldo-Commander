@@ -20,6 +20,24 @@ import sys
 from pathlib import Path
 
 
+def _apply_gui_endpoint(args: tuple, kwargs: dict) -> dict:
+    """Follow the GUI's controller only when the script picked neither host
+    nor port — an explicit endpoint choice is always respected."""
+    if args or "host" in kwargs or "port" in kwargs:
+        return kwargs
+    out = dict(kwargs)
+    host = os.environ.get("WALDO_CONTROLLER_IP")
+    if host:
+        out["host"] = host
+    port = os.environ.get("WALDO_CONTROLLER_PORT")
+    if port:
+        try:
+            out["port"] = int(port)
+        except ValueError:
+            print(f"Ignoring invalid WALDO_CONTROLLER_PORT={port!r}", file=sys.stderr)
+    return out
+
+
 def main() -> None:
     """Bootstrap and run user script with stepping wrapper."""
     if len(sys.argv) < 2:
@@ -60,11 +78,7 @@ def main() -> None:
             """RobotClient replacement that wraps with SteppingClientWrapper."""
 
             def __new__(cls, *args, **kwargs):
-                # Follow the controller the GUI is connected to when the
-                # script doesn't pick a port itself (args: host, port, ...).
-                env_port = os.environ.get("PAROL6_CONTROLLER_PORT")
-                if env_port and len(args) < 2 and "port" not in kwargs:
-                    kwargs["port"] = int(env_port)
+                kwargs = _apply_gui_endpoint(args, kwargs)
                 original = _original_robot_client(*args, **kwargs)
                 wrapper = SteppingClientWrapper(original, step_io)
                 created_wrappers.append(wrapper)
