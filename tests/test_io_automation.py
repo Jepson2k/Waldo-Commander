@@ -10,7 +10,6 @@ goes through the controller and is observed back on ``status.io.outputs``.
 """
 
 import asyncio
-import contextlib
 import time
 
 import pytest
@@ -20,6 +19,7 @@ from nicegui.testing import User
 
 from tests.helpers.wait import enable_sim, wait_for_app_ready
 from waldo_commander.components.script_execution import script_exec
+from waldo_commander.services.control_lease import MCP, control_lease
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import automation_state, ui_state
 
@@ -118,6 +118,19 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     _pulse_input_1()
     assert await _wait_for(lambda: script_exec.last_exit_code == 0, timeout=15.0)
 
+    # An AI/MCP control holder does not block the hardware trigger — the
+    # cell input starts the program regardless of who holds the lease.
+    control_lease.seize(MCP, "test-ai", "Test AI")
+    try:
+        automation_state._cycle_last_fire = time.monotonic() - 2.0
+        script_exec.last_exit_code = None
+        _pulse_input_1()
+        assert await _wait_for(lambda: script_exec.last_exit_code == 0, timeout=15.0), (
+            "cycle start must fire even while an MCP session holds control"
+        )
+    finally:
+        control_lease.reset()
+
     # Guard: a pulse while a program is running neither starts nor queues one.
     slow_script = "import time\ntime.sleep(1.5)\n"
     ui_state.active_textarea.value = slow_script
@@ -133,7 +146,9 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_home_output_tracks_home_pose(user: User) -> None:
+async def test_home_output_tracks_home_pose(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Output 2 turns on within tolerance of home, holds through the
     hysteresis band, drops when clearly away, and writes only on transitions."""
     await user.open("/")
@@ -160,7 +175,7 @@ async def test_home_output_tracks_home_pose(user: User) -> None:
         writes.append((index, value))
         return await orig_write(index, value)
 
-    client.write_io = counting_write  # type: ignore[method-assign]
+    monkeypatch.setattr(client, "write_io", counting_write)
     try:
         # Robot sits at the home pose (per-test reset homes it): enabling the
         # switch is the first ON transition, observed via the controller echo.
@@ -208,8 +223,6 @@ async def test_home_output_tracks_home_pose(user: User) -> None:
     finally:
         automation_state.home_output_enabled = False
         automation_state._home_out_on = False
-        with contextlib.suppress(AttributeError):
-            del client.write_io
 
 
 @pytest.mark.integration

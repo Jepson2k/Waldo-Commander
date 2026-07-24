@@ -142,6 +142,7 @@ class AutomationState:
     _cycle_io_fresh: bool = False
     _cycle_last_fire: float = float("-inf")
     _home_out_on: bool = False
+    _home_write_inflight: bool = False
 
     def reset(self) -> None:
         self.cycle_start_enabled = False
@@ -151,6 +152,7 @@ class AutomationState:
         self._cycle_io_fresh = False
         self._cycle_last_fire = float("-inf")
         self._home_out_on = False
+        self._home_write_inflight = False
 
 
 @dataclass
