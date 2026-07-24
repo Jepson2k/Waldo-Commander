@@ -17,7 +17,7 @@ from waldo_commander.services.programs import (
 )
 from waldo_commander.services import edit_decisions
 from waldo_commander.services.control_lease import control_mode
-from waldo_commander.services.motion_recorder import blend_r_arg
+from waldo_commander.services.motion_recorder import move_snippet
 from waldo_commander.state import (
     simulation_state,
     ui_state,
@@ -102,26 +102,19 @@ class EditorPanel(FileOperationsMixin):
             speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
             accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
             angles = list(waldoctl.commander.status.joints.angles.deg)
-            snippet = (
-                f"rbt.move_j({angles}, speed={speed}, accel={accel}{blend_r_arg()})"
-            )
+            snippet = move_snippet("move_j", angles, speed=speed, accel=accel)
         elif method_name == "move_l":
             speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
             accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
-            x, y, z = (
+            pose = [
                 waldoctl.commander.status.pose.x,
                 waldoctl.commander.status.pose.y,
                 waldoctl.commander.status.pose.z,
-            )
-            rx, ry, rz = (
                 waldoctl.commander.status.pose.rx,
                 waldoctl.commander.status.pose.ry,
                 waldoctl.commander.status.pose.rz,
-            )
-            snippet = (
-                f"rbt.move_l([{x:.3f}, {y:.3f}, {z:.3f}, "
-                f"{rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel}{blend_r_arg()})"
-            )
+            ]
+            snippet = move_snippet("move_l", pose, speed=speed, accel=accel)
         else:
             all_commands = discover_robot_commands()
             snippet = all_commands.get(method_name, {}).get(
@@ -267,16 +260,8 @@ class EditorPanel(FileOperationsMixin):
         speed = max(0.01, min(1.0, waldoctl.commander.settings.jog.speed / 100.0))
         accel = max(0.01, min(1.0, waldoctl.commander.settings.jog.accel / 100.0))
 
-        pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose) + "]"
-
-        if move_type == "joints":
-            code_line = (
-                f"rbt.move_j({pose_str}, speed={speed}, accel={accel}{blend_r_arg()})"
-            )
-        else:
-            code_line = (
-                f"rbt.move_l({pose_str}, speed={speed}, accel={accel}{blend_r_arg()})"
-            )
+        method = "move_j" if move_type == "joints" else "move_l"
+        code_line = move_snippet(method, pose, speed=speed, accel=accel)
 
         content = textarea.value or ""
         lines_before = len(content.splitlines()) if content else 0

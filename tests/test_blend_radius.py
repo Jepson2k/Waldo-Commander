@@ -47,37 +47,39 @@ async def test_blend_radius_setting_controls_r_in_generated_code(user: User) -> 
     textarea = ui_state.active_textarea
     assert textarea is not None
 
-    # Default (0): palette insert emits no r argument
+    # Default (0): palette insert emits neither r nor a gratuitous wait
     textarea.value = ""
     _click_palette_item(user, "rbt.move_j(...)")
     await asyncio.sleep(0)
     assert "rbt.move_j(" in textarea.value
     assert "r=" not in textarea.value
+    assert "wait=" not in textarea.value
 
     # Raise the setting through the real settings row
     user.find(kind=ui.tab, content="Settings").click()
     await asyncio.sleep(0)
     await _set_blend_radius(user, 5)
 
-    # Insert-command palette: move_j and move_l carry r=5
+    # Insert-command palette: blended moves queue (r=5 plus wait=False — the
+    # controller can only blend commands it sees together)
     textarea.value = ""
     _click_palette_item(user, "rbt.move_j(...)")
     await asyncio.sleep(0)
     _click_palette_item(user, "rbt.move_l(...)")
     await asyncio.sleep(0)
-    assert textarea.value.count(", r=5)") == 2, textarea.value
+    assert textarea.value.count(", r=5, wait=False)") == 2, textarea.value
 
     # Capture Current Pose: recorded move_l carries r=5
     user.find(marker="editor-capture-pose-btn").click()
     await asyncio.sleep(0)
-    assert textarea.value.count(", r=5)") == 3, textarea.value
+    assert textarea.value.count(", r=5, wait=False)") == 3, textarea.value
 
     # Gizmo target insert: both move_l and move_j branches carry r=5
     editor = ui_state.editor_panel
     assert editor is not None
     editor.add_target_code([100.0, 0.0, 200.0, 0.0, 0.0, 0.0], "cartesian")
     editor.add_target_code([10.0, -60.0, 100.0, 5.0, 5.0, 5.0], "joints")
-    assert textarea.value.count(", r=5)") == 5, textarea.value
+    assert textarea.value.count(", r=5, wait=False)") == 5, textarea.value
 
     # Recording-start anchor: pin the dry-run end away from the robot so the
     # anchor move_j is inserted, then start recording via the record button.
@@ -91,19 +93,37 @@ async def test_blend_radius_setting_controls_r_in_generated_code(user: User) -> 
     anchor_lines = [
         ln for ln in textarea.value.splitlines() if "Recording start position" in ln
     ]
-    assert anchor_lines and ", r=5)" in anchor_lines[0], textarea.value
+    assert anchor_lines and ", r=5, wait=False)" in anchor_lines[0], textarea.value
     user.find(marker="editor-record-btn").click()
     await asyncio.sleep(0)
+
+    # Stopping a blended session appends exactly one wait_motion barrier,
+    # after the recorded moves.
+    lines = textarea.value.splitlines()
+    anchor_idx = next(
+        i for i, ln in enumerate(lines) if "Recording start position" in ln
+    )
+    barrier_idx = [i for i, ln in enumerate(lines) if ln.strip() == "rbt.wait_motion()"]
+    assert len(barrier_idx) == 1 and barrier_idx[0] > anchor_idx, textarea.value
 
     # Non-integer radii keep their decimal; back to 0 removes r entirely
     await _set_blend_radius(user, 2.5)
     textarea.value = ""
     _click_palette_item(user, "rbt.move_l(...)")
     await asyncio.sleep(0)
-    assert ", r=2.5)" in textarea.value
+    assert ", r=2.5, wait=False)" in textarea.value
 
     await _set_blend_radius(user, 0)
     textarea.value = ""
     _click_palette_item(user, "rbt.move_l(...)")
     await asyncio.sleep(0)
     assert "r=" not in textarea.value
+    assert "wait=" not in textarea.value
+
+    # A radius-0 recording session gets no terminator
+    tab.dry_run.final_joints_rad = list(np.radians([10.0, -60.0, 100.0, 5.0, 5.0, 5.0]))
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0)
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0)
+    assert "rbt.wait_motion()" not in textarea.value
