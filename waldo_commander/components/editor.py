@@ -60,6 +60,7 @@ class EditorPanel(FileOperationsMixin):
         self._edit_review_row: ui.row | None = None
         self._toolbar_btns: list[ui.button] = []
         self._reteach_btn: ui.button | None = None
+        self._reteach_tooltip: ui.tooltip | None = None
         # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
         self._tab_widgets: dict[str, dict] = {}
         # tab_id -> pending edit-id .values already seen, so a *newly* proposed
@@ -221,23 +222,29 @@ class EditorPanel(FileOperationsMixin):
     # Single-pose targets only: multi-pose lines (move_c via+end) can't be
     # re-taught from one pose — sync would overwrite just the first bracket.
     _RETEACHABLE_MOVE_TYPES = ("joints", "cartesian", "pose")
+    # sync_code_from_target rewrites only the bracketed list and keeps every
+    # kwarg — absolute current-position values under rel=/frame=/pose=
+    # semantics would corrupt the move (e.g. a 250mm relative lunge).
+    _RETEACH_KWARG_RE = re.compile(r"\b(?:rel|frame|pose)\s*=")
+    _RETEACH_TIP = "Re-teach: overwrite this step with the current robot position"
+    _RETEACH_TIP_BLOCKED = "Re-teach unavailable: this move uses rel=, frame=, or pose="
 
-    def _target_at_cursor(self) -> ProgramTarget | None:
-        """Re-teachable dry-run target whose line the editor cursor is on.
+    def _reteach_state(self) -> tuple[ProgramTarget | None, bool]:
+        """(target, blocked) for the cursor line; blocked means a target sits
+        there but its kwargs make a bracket rewrite unsafe.
 
-        Also requires the target's live line anchor to still sit on the cursor
-        line: after an edit, targets keep sim-time line numbers until the
-        debounced re-sim, while sync_code_from_target writes at the tracked
-        anchor — without this check a click could rewrite a line the cursor
-        isn't on.
+        The target's live line anchor must still sit on the cursor line:
+        after an edit, targets keep sim-time line numbers until the debounced
+        re-sim, while sync_code_from_target writes at the tracked anchor —
+        without this check a click could rewrite a line the cursor isn't on.
         """
         tab = waldoctl.commander.programs.active
         textarea = ui_state.active_textarea
         if tab is None or textarea is None:
-            return None
+            return None, False
         line = tab.dry_run.playback.active_cursor_line
         if line <= 0:
-            return None
+            return None, False
         anchors = textarea.line_anchors
         for t in tab.dry_run.targets:
             if (
@@ -245,14 +252,26 @@ class EditorPanel(FileOperationsMixin):
                 and t.move_type in self._RETEACHABLE_MOVE_TYPES
                 and anchors.get(t.id) == line
             ):
-                return t
-        return None
+                lines = str(textarea.value or "").split("\n")
+                text = lines[line - 1] if line <= len(lines) else ""
+                if self._RETEACH_KWARG_RE.search(text):
+                    return None, True
+                return t, False
+        return None, False
+
+    def _target_at_cursor(self) -> ProgramTarget | None:
+        """Re-teachable dry-run target whose line the editor cursor is on."""
+        return self._reteach_state()[0]
 
     def _update_reteach_button(self) -> None:
         btn = self._reteach_btn
         if btn is None or btn.is_deleted:
             return
-        btn.set_enabled(self._target_at_cursor() is not None)
+        target, blocked = self._reteach_state()
+        btn.set_enabled(target is not None)
+        tip = self._reteach_tooltip
+        if tip is not None and not tip.is_deleted:
+            tip.set_text(self._RETEACH_TIP_BLOCKED if blocked else self._RETEACH_TIP)
 
     def _reteach_at_cursor(self) -> None:
         """Overwrite the move at the cursor with the robot's current position.
@@ -417,6 +436,7 @@ class EditorPanel(FileOperationsMixin):
         waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
         simulation_state.remove_change_listener(self._update_reteach_button)
         self._reteach_btn = None
+        self._reteach_tooltip = None
         # Edit listeners live on the process-global tab.edits notifier; drop
         # them so closures don't accumulate across page (re)builds.
         for tab_id in list(self._tab_widgets):
@@ -1050,10 +1070,9 @@ class EditorPanel(FileOperationsMixin):
                     ui.button(icon="my_location", on_click=self._reteach_at_cursor)
                     .props("flat dense color=white")
                     .classes("editor-toolbar-btn")
-                    .tooltip(
-                        "Re-teach: overwrite this step with the current robot position"
-                    )
                 )
+                with reteach_btn:
+                    self._reteach_tooltip = ui.tooltip(self._RETEACH_TIP)
                 reteach_btn.mark("editor-reteach")
                 reteach_btn.disable()
                 self._reteach_btn = reteach_btn

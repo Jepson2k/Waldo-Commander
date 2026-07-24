@@ -750,6 +750,9 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
         "rbt.move_c([165.000, 105.000, 255.000, 0.000, 0.000, 0.000], "
         "[150.000, 130.000, 250.000, 0.000, 0.000, 0.000], speed=0.5)"
     )
+    move_rel_line = (
+        "rbt.move_l([0.000, 0.000, -20.000, 0.000, 0.000, 0.000], rel=True, speed=0.5)"
+    )
     script = (
         "from parol6 import RobotClient\n"
         "rbt = RobotClient()\n"
@@ -757,6 +760,7 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
         "rbt.move_j([85.000, -85.000, 175.000, 5.000, 5.000, 175.000], speed=0.5)\n"
         f"{move_l_line}\n"
         f"{move_c_line}\n"
+        f"{move_rel_line}\n"
     )
     textarea = ui_state.active_textarea
     assert textarea is not None
@@ -766,8 +770,8 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
     await _sim.run_simulation()
     await asyncio.sleep(0.1)
     targets_by_line = {t.line_number: t for t in tab.dry_run.targets}
-    assert {4, 5, 6} <= targets_by_line.keys(), (
-        f"Expected targets at lines 4-6, got {sorted(targets_by_line)}"
+    assert {4, 5, 6, 7} <= targets_by_line.keys(), (
+        f"Expected targets at lines 4-7, got {sorted(targets_by_line)}"
     )
     assert targets_by_line[6].move_type == "smooth_arc"
 
@@ -863,3 +867,21 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
     assert lines[5] == move_c_line, (
         "Re-teaching neighbors must not touch the move_c line"
     )
+
+    # rel=True line: a target sits there, but rewriting the bracket with an
+    # absolute position would corrupt the relative move — blocked, with the
+    # tooltip explaining why.
+    src_before = textarea.value
+    _set_cursor_line(textarea, 7)
+    await asyncio.sleep(0)
+    assert reteach_btn.enabled is False, "rel= moves must not be re-teachable"
+    assert editor._reteach_tooltip is not None
+    assert editor._reteach_tooltip.text == editor._RETEACH_TIP_BLOCKED
+    user.find(marker="editor-reteach").click()
+    await asyncio.sleep(0)
+    assert textarea.value == src_before, "Re-teach must not modify a rel= move"
+
+    # Back on a plain line the tooltip returns to the default.
+    _set_cursor_line(textarea, 5)
+    await asyncio.sleep(0)
+    assert editor._reteach_tooltip.text == editor._RETEACH_TIP
