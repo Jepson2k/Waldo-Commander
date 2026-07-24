@@ -626,9 +626,12 @@ class ControlPanel:
         # Cartesian button slots/elements and assignment (layout fixed; labels/colors/actions dynamic)
         self._cart_slot_elems: dict[str, ui.element] = {}
         self._cart_slot_meta: dict[str, dict] = {}
+        # Axis string captured per slot at press; releases reuse it (see
+        # _on_slot_press).
+        self._slot_pressed_axis: dict[str, str] = {}
         # Axes assigned to fixed slots: 'ud1' (first up/down column), 'lr' (left/right row), 'ud2' (second up/down column)
         self._cart_assignment: dict[str, str] = {"ud1": "Y", "lr": "X", "ud2": "Z"}
-        # Cartesian jog preferences, hydrated from storage by the Settings tab.
+        # Cartesian jog preferences, hydrated from storage in main().
         self.translation_frame: str = "WRF"
         self.invert_x: bool = False
         self.invert_y: bool = False
@@ -745,6 +748,8 @@ class ControlPanel:
 
     def set_translation_frame(self, frame: str) -> None:
         """Select WRF or TRF for cartesian translation jogs (rotation stays TRF)."""
+        if frame == self.translation_frame:
+            return
         self.translation_frame = frame
         self._cart_axis_lookup = None
         self._last_cart_trans_frame = None
@@ -766,10 +771,12 @@ class ControlPanel:
         self, *, invert_x: bool | None = None, invert_y: bool | None = None
     ) -> None:
         """Update X/Y arrow inversion and re-derive labels, markers, and visuals."""
-        if invert_x is not None:
-            self.invert_x = invert_x
-        if invert_y is not None:
-            self.invert_y = invert_y
+        new_x = self.invert_x if invert_x is None else invert_x
+        new_y = self.invert_y if invert_y is None else invert_y
+        if new_x == self.invert_x and new_y == self.invert_y:
+            return
+        self.invert_x = new_x
+        self.invert_y = new_y
         self._refresh_cartesian_icons()
         self._last_cart_trans_frame = None
         self.sync_cartesian_button_states()
@@ -880,13 +887,27 @@ class ControlPanel:
         return _RE_WHITESPACE.sub(" ", svg).strip()
 
     async def _on_slot_press(self, slot_id: str, is_pressed: bool) -> None:
-        """Event bridge: map fixed slot to current axis string and call set_axis_pressed."""
-        meta = self._cart_slot_meta.get(slot_id) or {}
-        assign_key = meta.get("assign_key", "ud1")
-        sign = meta.get("sign", "+")
-        rotation = bool(meta.get("rotation", False))
-        axis_str = self._axis_string_for(assign_key, sign, rotation)
-        await self.set_axis_pressed(axis_str, bool(is_pressed))
+        """Event bridge: map fixed slot to its axis string.
+
+        The resolution is captured at press so a mid-hold inversion or frame
+        change still releases the axis that is actually streaming — a
+        re-resolve at release would target a different axis string and leave
+        the held one pressed forever.
+        """
+        if is_pressed:
+            meta = self._cart_slot_meta.get(slot_id) or {}
+            axis_str = self._axis_string_for(
+                meta.get("assign_key", "ud1"),
+                meta.get("sign", "+"),
+                bool(meta.get("rotation", False)),
+            )
+            self._slot_pressed_axis[slot_id] = axis_str
+        else:
+            captured = self._slot_pressed_axis.pop(slot_id, None)
+            if captured is None:
+                return
+            axis_str = captured
+        await self.set_axis_pressed(axis_str, is_pressed)
 
     def set_axis_orientation(self, ud1: str, lr: str, ud2: str) -> None:
         """Update axis assignment for fixed slots and refresh labels/colors/actions."""

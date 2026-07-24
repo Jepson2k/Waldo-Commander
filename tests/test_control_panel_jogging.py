@@ -518,8 +518,8 @@ async def test_translation_frame_toggle_changes_jog_frame(
         n_before = len(jogs)
         user.find(marker=marker).trigger("mousedown")
         try:
-            deadline = time.time() + 5.0
-            while time.time() < deadline and len(jogs) == n_before:
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and len(jogs) == n_before:
                 await asyncio.sleep(0.05)
         finally:
             user.find(marker=marker).trigger("mouseup")
@@ -657,6 +657,62 @@ async def test_jog_arrow_inversion_flips_button_direction_and_label(user: User) 
     finally:
         invert_switch.set_value(False)
         await asyncio.sleep(0)
+
+
+@pytest.mark.integration
+async def test_inversion_mid_hold_releases_captured_axis(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flipping Invert X while an arrow is held must still stop the stream on
+    release: the axis is captured at press, so the release targets what is
+    actually streaming instead of the re-resolved (flipped) axis."""
+    import time
+
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+
+    cp = ui_state.control_panel
+    user.find(marker="tab-cartesian").click()
+    await asyncio.sleep(0)
+
+    jogs: list = []
+    orig_jog_l = cp.client.jog_l
+
+    async def jog_l_spy(*args, **kwargs):
+        jogs.append(kwargs)
+        return await orig_jog_l(*args, **kwargs)
+
+    monkeypatch.setattr(cp.client, "jog_l", jog_l_spy)
+
+    user.find(marker="axis-xplus").trigger("mousedown")
+    try:
+        n = len(jogs)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and len(jogs) == n:
+            await asyncio.sleep(0.05)
+        assert len(jogs) > n, "expected a streamed jog_l while holding"
+
+        cp.set_jog_inversion(invert_x=True)  # what the settings switch does
+        await asyncio.sleep(0)
+    finally:
+        # The flip re-marked the held slot from axis-xplus to axis-xminus.
+        # The release handler is async: let it run while inversion is still
+        # flipped before restoring, or the test wouldn't exercise the race.
+        user.find(marker="axis-xminus").trigger("mouseup")
+        await asyncio.sleep(0.3)
+        cp.set_jog_inversion(invert_x=False)
+
+    await asyncio.sleep(0.3)
+    settled = len(jogs)
+    await asyncio.sleep(0.5)
+    assert len(jogs) == settled, "release must stop the captured axis's stream"
+    assert not any(cp._cart_pressed_axes.values()), (
+        f"no axis may stay pressed after release: {cp._cart_pressed_axes}"
+    )
 
 
 # ============================================================================

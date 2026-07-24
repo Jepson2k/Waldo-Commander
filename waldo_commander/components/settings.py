@@ -686,8 +686,6 @@ class SettingsContent:
                     "Tool-frame jogging is unavailable for this robot"
                 )
 
-        cp.set_translation_frame(value)
-
         ui.separator().classes("my-1")
 
         with _setting_row("Rotation RF", "Reference frame for rotation moves"):
@@ -721,10 +719,6 @@ class SettingsContent:
             ui.switch(value=prefs["jog_invert_y"], on_change=_on_invert_y).props(
                 "dense"
             ).mark("switch-invert-y")
-
-        cp.set_jog_inversion(
-            invert_x=prefs["jog_invert_x"], invert_y=prefs["jog_invert_y"]
-        )
 
     # ── Main entry point ─────────────────────────────────────────────
 

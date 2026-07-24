@@ -1820,6 +1820,17 @@ def main():
         ng_app.storage.general.get("mcp/port", commander.settings.mcp.port)
     )
 
+    # Restore jog preferences here rather than in the Settings section build,
+    # so a page variant without that section can't leave the control panel at
+    # defaults. The setters no-op on unchanged values and empty widget state.
+    control_panel.set_translation_frame(
+        str(ng_app.storage.general.get("translation_frame", "WRF"))
+    )
+    control_panel.set_jog_inversion(
+        invert_x=bool(ng_app.storage.general.get("jog_invert_x", False)),
+        invert_y=bool(ng_app.storage.general.get("jog_invert_y", False)),
+    )
+
     configure_logging(config.log_level)
     logger.debug(
         "Webserver bind: host=%s port=%s", config.server_host, config.server_port
