@@ -84,10 +84,17 @@ async def test_set_initial_mode_honors_stored_preference(
         # main() has not run in this module instance, so bind a real client.
         monkeypatch.setattr(wc_main, "client", client, raising=False)
         try:
-            # "hardware" with no port: the port-based fallback would force sim.
+            # "hardware" with no port would boot with no transport at all (a
+            # dead app) — the no-port invariant wins and forces simulator.
             ng_app.storage.general["startup_mode"] = "hardware"
             status.simulator_active = False
             await wc_main._set_initial_mode("")
+            assert status.simulator_active is True
+
+            # "hardware" with a port: the real transport is kept.
+            ng_app.storage.general["startup_mode"] = "hardware"
+            status.simulator_active = False
+            await wc_main._set_initial_mode("/dev/ttyACM0")
             assert status.simulator_active is False
 
             # "sim" with a port: port-based detection would keep the transport.
@@ -96,7 +103,7 @@ async def test_set_initial_mode_honors_stored_preference(
             await wc_main._set_initial_mode("/dev/ttyACM0")
             assert status.simulator_active is True
 
-            # Unset: today's fallback — no port means simulator.
+            # Unset: no port means simulator.
             ng_app.storage.general.pop("startup_mode", None)
             status.simulator_active = False
             await wc_main._set_initial_mode("")
@@ -113,10 +120,11 @@ async def test_page_renders_without_backend_status(
 ) -> None:
     """With no STATUS frame the page must still render, not block forever.
 
-    A com_port configured with no robot wired means ``app_ready`` never
-    fires. The page-init fall-through must build the URDF scene anyway,
-    show the degraded-boot status line, and raise the disconnect banner
-    without waiting for a STATUS frame.
+    A boot where no STATUS frame ever arrives means ``app_ready`` never
+    fires. The page-init fall-through must build the URDF scene anyway and
+    show the degraded-boot status line. (A robot-less boot lands in
+    simulator mode — the no-port invariant — so no hardware banner is
+    expected here.)
     """
     from waldo_commander.state import readiness_state
 
@@ -126,23 +134,63 @@ async def test_page_renders_without_backend_status(
     monkeypatch.setattr(readiness_state, "mark_backend_done", lambda: None)
     monkeypatch.setattr(readiness_state, "_backend_done", False)
 
-    # A robot-less hardware boot: the user last ran in hardware mode. The
-    # preference must be stored — app startup runs inside ``user.open`` and
-    # ``_set_initial_mode`` would otherwise fall back to simulator (no port).
-    ng_app.storage.general["startup_mode"] = "hardware"
-    waldoctl.commander.status.simulator_active = False
-    waldoctl.commander.status.connected = False
+    await user.open("/")
+    # Covers the 3 s app_ready wait plus the scene build on slow runners.
+    await wait_for_urdf_ready(timeout_s=20.0)
+    assert not readiness_state.app_ready.is_set()
 
+    # Degraded status line replaces the red full-page blocker.
+    await user.should_see("Robot disconnected — proceeding without live data")
+
+
+@pytest.mark.integration
+async def test_hardware_autodetect_retries_after_slow_boot(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sim→robot auto-switch lives in check_ping and retries, so
+    hardware that produces its first frames after the page-load window
+    still flips the mode; a pinned sim preference suppresses the switch.
+
+    The running app's module globals live in a runpy namespace the test
+    can't reach, so the fakes go on the shared client instance and the
+    pinned-sim leg runs first — the one-shot switch latch would otherwise
+    confound the negative assertion.
+    """
+
+    class _HwPing:
+        hardware_connected = True
+
+    async def fake_ping():
+        return _HwPing()
+
+    async def fake_simulator(enabled: bool) -> int:
+        return 1
+
+    await user.open("/")
+    await wait_for_app_ready()
+    assert waldoctl.commander.status.simulator_active is True
+
+    # Hardware "appears" only after the page finished loading.
+    client = ui_state.control_panel.client
+    monkeypatch.setattr(client, "ping", fake_ping)
+    monkeypatch.setattr(client, "simulator", fake_simulator)
     try:
-        await user.open("/")
-        # Covers the 3 s app_ready wait plus the scene build on slow runners.
-        await wait_for_urdf_ready(timeout_s=20.0)
-        assert not readiness_state.app_ready.is_set()
+        # Pinned sim preference: no auto-switch even with hardware present.
+        ng_app.storage.general["startup_mode"] = "sim"
+        await asyncio.sleep(2.5)  # negative window: > 2 ping ticks at 1 Hz
+        assert waldoctl.commander.status.simulator_active is True, (
+            "a pinned sim preference must suppress the auto-switch"
+        )
 
-        # Degraded status line replaces the red full-page blocker.
-        await user.should_see("Robot disconnected — proceeding without live data")
-        # The banner appears from the explicit page-init call, no STATUS needed.
-        await user.should_see("Robot mode requires a hardware connection", retries=30)
+        # Unpinned: the retrying detect flips out of simulator.
+        ng_app.storage.general.pop("startup_mode", None)
+        for _ in range(60):  # check_ping fires at 1 Hz
+            if waldoctl.commander.status.simulator_active is False:
+                break
+            await asyncio.sleep(0.1)
+        assert waldoctl.commander.status.simulator_active is False, (
+            "late hardware must still flip out of simulator"
+        )
     finally:
         ng_app.storage.general.pop("startup_mode", None)
         waldoctl.commander.status.simulator_active = True

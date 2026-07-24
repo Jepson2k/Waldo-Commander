@@ -345,6 +345,27 @@ async def stop_controller() -> None:
         logger.error("Stop controller failed: %s", e)
 
 
+# One auto-switch per app run: set when the switch begins (blocks re-entry
+# while in flight) and cleared only if it fails, so check_ping keeps retrying
+# until the first success and never flips the user back afterwards.
+_hw_auto_switched: bool = False
+
+
+async def _switch_to_hardware() -> None:
+    """One-time simulator→robot switch once hardware appears."""
+    global _hw_auto_switched
+    _hw_auto_switched = True
+    try:
+        await client.simulator(False)
+        await client.reset()
+    except Exception as e:
+        _hw_auto_switched = False
+        logger.warning("auto robot-mode switch failed: %s", e)
+        return
+    logger.info("Hardware detected — switching to robot mode")
+    waldoctl.commander.status.simulator_active = False
+
+
 async def check_ping() -> None:
     """Check connectivity via PING (1Hz) and arbitrate multi-tab ownership.
 
@@ -403,6 +424,16 @@ async def check_ping() -> None:
     # _clear_commander has run; bail before touching the commander surface.
     if _shutting_down:
         return
+
+    # Hardware auto-detect: a slow-booting controller misses the page-load
+    # window, so the switch retries here until its first success.
+    if (
+        ps.last_ping_ok
+        and waldoctl.commander.status.simulator_active
+        and not _hw_auto_switched
+        and startup_mode.stored_startup_mode() != startup_mode.SIM
+    ):
+        await _switch_to_hardware()
 
     # Update robot connectivity status. The multicast status consumer drives
     # the joint/cartesian button sync at status rate; the calls below cover
@@ -902,26 +933,15 @@ def build_page_content() -> None:
 
                 await initialize_urdf_scene()
 
-                # By now the serial transport has had time to receive
-                # frames.  If hardware is detected, switch to robot mode.
+                # Seed connectivity for the first render; the hardware
+                # auto-detect lives in check_ping, which keeps retrying, so
+                # a controller that boots slower than the page still flips
+                # out of simulator when its first frames arrive.
                 try:
                     result = await client.ping()
                     hw_now = bool(result.hardware_connected) if result else False
                 except Exception:
                     hw_now = False
-                if hw_now and waldoctl.commander.status.simulator_active:
-                    if startup_mode.stored_startup_mode() == startup_mode.SIM:
-                        logger.info(
-                            "Hardware detected but simulator mode is pinned — staying in simulator"
-                        )
-                    else:
-                        logger.info("Hardware detected — switching to robot mode")
-                        waldoctl.commander.status.simulator_active = False
-                        try:
-                            await client.simulator(False)
-                            await client.reset()
-                        except Exception as e:
-                            logger.warning("auto robot-mode switch failed: %s", e)
                 waldoctl.commander.status.connected = hw_now
 
                 control_panel.update_robot_btn_visual()
@@ -1064,22 +1084,15 @@ async def _stop_plugin_panels() -> None:
 
 
 async def _set_initial_mode(port: str) -> None:
-    """Pick the boot mode: the persisted ``startup_mode`` preference wins,
-    otherwise fall back to port-based detection.
-
-    Without a stored preference: when a port is configured the controller
-    already has a real serial transport — don't replace it with simulator.
-    The page-load ping in ``_init`` will set
-    ``waldoctl.commander.status.simulator_active`` based on whether hardware
-    is actually connected (unless simulator mode is pinned).
+    """Pick the boot mode: without a serial port the simulator always runs
+    (a stored HARDWARE preference would otherwise boot with no transport at
+    all — a dead app); with a port, the persisted ``startup_mode``
+    preference wins, else keep the real transport and let the hardware
+    auto-detect in ``check_ping`` flip out of simulator when frames arrive
+    (unless simulator mode is pinned).
     """
     stored = startup_mode.stored_startup_mode()
-    if stored == startup_mode.SIM:
-        use_sim = True
-    elif stored == startup_mode.HARDWARE:
-        use_sim = False
-    else:
-        use_sim = not port
+    use_sim = not port or stored == startup_mode.SIM
     if use_sim:
         try:
             await client.simulator(True)
