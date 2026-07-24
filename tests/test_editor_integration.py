@@ -639,7 +639,9 @@ rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
 """
 
 
-async def _open_simulated_three_move_program(user: User):
+async def _open_simulated_three_move_program(
+    user: User, script: str = _THREE_MOVE_SCRIPT
+):
     """Open the editor, load a three-move program, and dry-run simulate it.
     Returns ``(editor, tab)`` once the playback timeline is built."""
     from waldo_commander.components.simulation_engine import simulation as _sim
@@ -659,8 +661,8 @@ async def _open_simulated_three_move_program(user: User):
     tab = waldoctl.commander.programs.active
     assert tab is not None
     assert ui_state.active_textarea is not None
-    ui_state.active_textarea.value = _THREE_MOVE_SCRIPT
-    tab.source = _THREE_MOVE_SCRIPT
+    ui_state.active_textarea.value = script
+    tab.source = script
 
     await _sim.run_simulation()
     for _ in range(30):
@@ -750,6 +752,80 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
 
     assert is_any_program_running() is False
     assert prev_btn.visible is True, "prev button should reappear after the run"
+
+
+_BLENDED_SCRIPT = """from parol6 import RobotClient
+rbt = RobotClient()
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0, r=15, wait=False)
+rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0, r=15, wait=False)
+rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+rbt.wait_motion()
+"""
+
+
+@pytest.mark.integration
+async def test_step_program_blended_moves_run_one_per_press(user: User) -> None:
+    """Stepping a blended program executes exactly one exact-stop move per
+    press (industrial step-mode semantics: blends only apply in play mode).
+
+    Without the paused-mode member strip, the wrapper's blend branch executes
+    r>0 moves with no pause check and one press free-runs the whole program.
+    Assertions read the controller directly: during a live run the published
+    angles show the preview timeline's pose, not the robot's.
+    """
+    from waldo_commander.state import ui_state
+
+    editor, tab = await _open_simulated_three_move_program(user, script=_BLENDED_SCRIPT)
+    client = ui_state.control_panel.client
+
+    async def wait_controller_j1(target: float, timeout_s: float = 30.0) -> None:
+        j1 = None
+        for _ in range(int(timeout_s / 0.1)):
+            s = await client.status()
+            j1 = s.angles[0] if s else None
+            if j1 is not None and abs(j1 - target) < 1.0:
+                return
+            await asyncio.sleep(0.1)
+        tail = [entry.text for entry in tab.log.entries[-5:]]
+        raise TimeoutError(
+            f"controller J1 never reached {target}: J1={j1}, "
+            f"running={is_any_program_running()}, log tail={tail}"
+        )
+
+    try:
+        # Each press executes exactly one group member as an exact stop.
+        user.find(marker="editor-step-program").click()
+        await wait_controller_j1(85.0)
+        await asyncio.sleep(0.5)
+        s = await client.status()
+        assert abs(s.angles[0] - 85.0) < 1.0, "one press must run one member only"
+        assert is_any_program_running() is True, "program must be paused, not finished"
+
+        user.find(marker="editor-step-program").click()
+        await wait_controller_j1(95.0)
+        assert is_any_program_running() is True, "still paused after the second member"
+
+        # Third press: the non-blended move closes the group (step 1 in the
+        # timeline, which renders the blend pair as one segment).
+        user.find(marker="editor-step-program").click()
+        await wait_controller_j1(90.0)
+        assert tab.dry_run.playback.executing_step_index == 1
+        assert is_any_program_running() is True
+
+        # Play resumes normal execution through to completion.
+        await editor.playback.toggle_play()
+        for _ in range(300):
+            if not is_any_program_running():
+                break
+            await asyncio.sleep(0.1)
+        assert is_any_program_running() is False, "play should run to completion"
+    finally:
+        if is_any_program_running():
+            user.find(marker="editor-stop-btn").click()
+            for _ in range(50):
+                if not is_any_program_running():
+                    break
+                await asyncio.sleep(0.1)
 
 
 @pytest.mark.integration

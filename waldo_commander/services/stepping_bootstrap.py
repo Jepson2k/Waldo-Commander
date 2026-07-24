@@ -48,6 +48,8 @@ def main() -> None:
     # Set by the GUI process.
     backend_package = os.environ.get("WALDO_BACKEND_PACKAGE", "parol6")
 
+    created_wrappers: list[SteppingClientWrapper] = []
+
     try:
         backend = importlib.import_module(backend_package)
         OriginalRobotClient = backend.RobotClient
@@ -64,7 +66,9 @@ def main() -> None:
                 if env_port and len(args) < 2 and "port" not in kwargs:
                     kwargs["port"] = int(env_port)
                 original = _original_robot_client(*args, **kwargs)
-                return SteppingClientWrapper(original, step_io)
+                wrapper = SteppingClientWrapper(original, step_io)
+                created_wrappers.append(wrapper)
+                return wrapper
 
         setattr(backend, "RobotClient", WrappedRobotClient)
         if hasattr(backend, "client"):
@@ -95,6 +99,10 @@ def main() -> None:
         # Compile with the script's filename for proper tracebacks.
         code = compile(script_code, str(script_path), "exec")
         exec(code, script_globals)
+        # Bare-construction scripts never hit __exit__: barrier any queued
+        # blended moves so the process doesn't exit while the arm still runs.
+        for wrapper in created_wrappers:
+            wrapper.finalize()
     except SystemExit:
         # Let normal script termination propagate unchanged.
         raise

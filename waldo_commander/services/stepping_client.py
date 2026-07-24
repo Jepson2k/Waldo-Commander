@@ -175,7 +175,9 @@ class SteppingClientWrapper:
     - Emits start/complete events for GUI visualization
     - Calls wait_command() after each motion command
     - Optionally pauses for stepping based on control file
-    - Blended commands (r > 0) are grouped as a single step
+    - Blended commands (r > 0) are grouped as a single step in play mode;
+      while stepping, each group member executes as an exact stop, one per
+      step grant, with events still emitted at group granularity
     """
 
     def __init__(self, wrapped_client: Any, step_io: StepIO) -> None:
@@ -191,8 +193,9 @@ class SteppingClientWrapper:
         self._in_blend = False
         self._last_blend_index: int = -1
 
-    def _flush_blend(self) -> None:
-        """Flush any pending blend group, emit events, and pause if stepping."""
+    def finalize(self) -> None:
+        """Barrier for a pending blend group: wait it out, emit completion,
+        clear. No pause gate — callers add one where stepping applies."""
         if not self._in_blend:
             return
         if self._last_blend_index >= 0:
@@ -201,6 +204,12 @@ class SteppingClientWrapper:
         self._last_blend_index = -1
         self._step_io.emit_event("complete", "blend_group")
         self._step_io.increment_step_count()
+
+    def _flush_blend(self) -> None:
+        """Flush any pending blend group, emit events, and pause if stepping."""
+        if not self._in_blend:
+            return
+        self.finalize()
         if self._step_io.check_should_pause():
             self._step_io.wait_for_step_or_play()
 
@@ -215,13 +224,9 @@ class SteppingClientWrapper:
         return self
 
     def __exit__(self, *args: Any) -> bool | None:
-        if self._in_blend:
-            # Only wait/complete if not exiting due to an exception
-            if args[0] is None:
-                if self._last_blend_index >= 0:
-                    self._wrapped.wait_command(self._last_blend_index)
-                self._step_io.emit_event("complete", "blend_group")
-                self._step_io.increment_step_count()
+        if args[0] is None:
+            self.finalize()
+        else:
             self._in_blend = False
             self._last_blend_index = -1
         return self._wrapped.__exit__(*args)
@@ -250,6 +255,22 @@ class SteppingClientWrapper:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             is_blended = self._is_blended(kwargs)
 
+            if is_blended and self._step_io.check_should_pause():
+                # Stepping: run this group member as an exact stop so one
+                # press moves exactly one command (industrial step-mode
+                # semantics). Events stay grouped — the preview timeline
+                # renders the blend as a single segment, so per-member
+                # events would desync the executing-step highlight.
+                if not self._in_blend:
+                    self._step_io.emit_event("start", name, blend=True)
+                    self._in_blend = True
+                result = method(*args, **{**kwargs, "r": 0.0})
+                if isinstance(result, int) and result >= 0:
+                    self._wrapped.wait_command(result)
+                if self._step_io.check_should_pause():
+                    self._step_io.wait_for_step_or_play()
+                return result
+
             if is_blended:
                 # Blended command — emit start event on first blend command,
                 # then execute without waiting or stepping
@@ -262,13 +283,7 @@ class SteppingClientWrapper:
                 return result
 
             # Non-blended command — flush any pending blend group first
-            if self._in_blend:
-                if self._last_blend_index >= 0:
-                    self._wrapped.wait_command(self._last_blend_index)
-                self._in_blend = False
-                self._last_blend_index = -1
-                self._step_io.emit_event("complete", "blend_group")
-                self._step_io.increment_step_count()
+            self.finalize()
 
             self._step_io.emit_event("start", name)
 
