@@ -82,6 +82,40 @@ class TestStepIO:
 
         assert step_io.check_should_pause() is False
 
+    def test_wait_for_step_blocks_paused_and_releases(self, tmp_path, monkeypatch):
+        """A paused session blocks until a step is granted; a missing control
+        file means the session is no longer GUI-controlled and must not block."""
+        import threading
+        import time
+
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_wait")
+        controller.initialize()
+        step_io = StepIO("test_wait")
+
+        waiter = threading.Thread(
+            target=lambda: step_io.wait_for_step_or_play(poll_interval=0.01)
+        )
+        waiter.start()
+        time.sleep(0.3)
+        assert waiter.is_alive(), "paused session must keep blocking"
+
+        controller.signal_step()
+        waiter.join(timeout=1.0)
+        assert not waiter.is_alive(), "a granted step must release the wait"
+
+        # Control file deleted mid-session: not GUI-controlled anymore, so the
+        # wait returns immediately instead of polling the paused default.
+        controller.cleanup()
+        start = time.monotonic()
+        step_io.wait_for_step_or_play(poll_interval=0.01)
+        assert time.monotonic() - start < 1.0
+
 
 # ============================================================================
 # Unit Tests - GUIStepController (GUI-side IPC)

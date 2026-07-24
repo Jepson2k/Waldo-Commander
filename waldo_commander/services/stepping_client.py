@@ -109,34 +109,26 @@ class StepIO:
         control = _read_control(self._control_file)
         return control.get("paused", True)
 
-    def wait_for_step_or_play(
-        self, timeout: float = 300.0, poll_interval: float = 0.05
-    ) -> bool:
-        """
-        Wait until either:
-        - step_signal > step_acked (step forward requested)
-        - paused becomes False (play mode activated)
-
-        Returns True if should continue, False on timeout.
-        """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            control = _read_control(self._control_file)
-
-            # paused False means play mode - continue immediately
-            if not control.get("paused", True):
-                return True
-
-            step_signal = control.get("step_signal", 0)
-            step_acked = control.get("step_acked", 0)
-
-            if step_signal > step_acked:
-                self._ack_step(control, step_signal)
-                return True
-
-            time.sleep(poll_interval)
-
+    def _step_released(self) -> bool:
+        """One poll of the control file. True when the script may proceed:
+        play mode, a granted step, or the control file is gone (the session
+        is no longer GUI-controlled, so blocking would hang the script)."""
+        if not self._control_file.exists():
+            return True
+        control = _read_control(self._control_file)
+        if not control.get("paused", True):
+            return True
+        step_signal = control.get("step_signal", 0)
+        if step_signal > control.get("step_acked", 0):
+            self._ack_step(control, step_signal)
+            return True
         return False
+
+    def wait_for_step_or_play(self, poll_interval: float = 0.05) -> None:
+        """Block until the GUI signals step or play. No timeout: paused
+        means paused until the operator says otherwise."""
+        while not self._step_released():
+            time.sleep(poll_interval)
 
     def _ack_step(self, control: dict, step_signal: int) -> None:
         """Acknowledge a step by incrementing step_acked."""
