@@ -1628,12 +1628,17 @@ async def _status_consumer() -> None:
                     # Auto-clear scrub override after teleport has had time to propagate
                     _maybe_clear_sim_pose_override()
 
-                    # Both checks needed: _deleted guards the brief window
-                    # between NiceGUI marking the client dead and removing it
-                    # from Client.instances.
+                    # Registry membership is the authoritative liveness check
+                    # (delete() removes from Client.instances before setting
+                    # the deleted flag); is_deleted additionally catches a
+                    # client stranded un-flagged by a failed delete().
                     ps = _page_state
                     pc = ps.page_client if ps is not None else None
-                    if pc is not None and not pc._deleted and pc.id in Client.instances:
+                    if (
+                        pc is not None
+                        and not pc.is_deleted
+                        and pc.id in Client.instances
+                    ):
                         with pc:
                             update_ui_from_status()
 
