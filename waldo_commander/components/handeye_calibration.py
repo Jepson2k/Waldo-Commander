@@ -96,9 +96,11 @@ class HandEyeCalibrationPanel(Panel):
         self._stored_container: ui.column | None = None
         self._scene_switch: ui.switch | None = None
         self._commander: Commander | None = None
+        self._camera_hint_label: ui.label | None = None
         self._last_status_text: str | None = None
         self._last_overlay_content: str | None = None
         self._last_capture_enabled: bool | None = None
+        self._last_hint_text: str | None = None
 
     # ------------------------------------------------------------------ build
 
@@ -221,7 +223,7 @@ class HandEyeCalibrationPanel(Panel):
         self._camera_hint = ui.row().classes("items-center")
         with self._camera_hint:
             ui.icon("videocam_off").classes("text-grey")
-            ui.label("No camera active — enable a tool camera in Settings.").classes(
+            self._camera_hint_label = ui.label(self._camera_hint_text()).classes(
                 "text-caption text-grey"
             )
         self._status_label = ui.label("No board detected").classes("text-caption")
@@ -274,11 +276,33 @@ class HandEyeCalibrationPanel(Panel):
 
     # ------------------------------------------------------------- detection
 
+    def _camera_hint_text(self) -> str:
+        """Tool-aware guidance for the camera-off state: a tool that declares
+        a camera mount (like the MSG) gets pointed at its device assignment."""
+        commander = self._commander
+        spec = None
+        if commander is not None:
+            try:
+                spec = commander.robot.tools[_selected_tool_key()]
+            except KeyError:
+                spec = None
+        if spec is not None and spec.camera_spec is not None:
+            return (
+                f"{spec.display_name} has a camera mount but no video device "
+                "assigned — pick one in Settings → Camera."
+            )
+        return "No camera active — enable a tool camera in Settings."
+
     def _set_camera_visibility(self, active: bool) -> None:
         if self._camera_card is not None:
             self._camera_card.set_visibility(active)
         if self._camera_hint is not None:
             self._camera_hint.set_visibility(not active)
+        if not active and self._camera_hint_label is not None:
+            hint = self._camera_hint_text()
+            if hint != self._last_hint_text:
+                self._last_hint_text = hint
+                self._camera_hint_label.set_text(hint)
         if active and not self._camera_was_active and self._image is not None:
             # Force the browser to reconnect the MJPEG stream.
             self._image.set_source(f"/tool/camera/stream?t={time.time()}")

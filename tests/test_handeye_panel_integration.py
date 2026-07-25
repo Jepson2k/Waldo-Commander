@@ -112,33 +112,49 @@ async def test_handeye_panel_workflow(
     ui_state.plugin_panels = []
     ui_state._started_panel_ids = set()
 
-    # The camera rides the MSG gripper's mount: assign it to the tool, then
-    # select MSG through the settings UI so the TCP switch and the per-tool
-    # camera plumbing (which starts the camera service) both engage.
-    ng_app.storage.general["tool_camera/MSG"] = 0
     try:
         await user.open("/")
         await wait_for_app_ready()
 
+        # The camera rides the MSG gripper's built-in mount. Select MSG
+        # through the settings UI so the TCP switch and per-tool camera
+        # plumbing both engage.
         user.find(kind=ui.tab, content="Settings").click()
         await asyncio.sleep(0)
         tool_select = next(iter(user.find(marker="select-tool").elements))
         assert isinstance(tool_select, ui.select)
-        tool_select.set_value("MSG")
-        await _wait_for(
-            lambda: ng_app.storage.general.get("selected_tool") == "MSG",
-            message="MSG tool selection did not apply",
-        )
-        await _wait_for(
-            lambda: camera_service.active,
-            message="MSG tool camera did not start",
-        )
+
+        async def select_tool(key: str) -> None:
+            tool_select.set_value(key)
+            await _wait_for(
+                lambda: ng_app.storage.general.get("selected_tool") == key,
+                message=f"{key} tool selection did not apply",
+            )
+
+        await select_tool("MSG")
 
         # The in-tree entry point surfaces the tab without monkeypatched discovery.
         await user.should_see(marker="tab-handeye")
         user.find(marker="tab-handeye").click()
         await asyncio.sleep(0)
         await user.should_see(marker="handeye-capture")
+
+        # When the installed parol6 declares MSG's built-in camera mount, the
+        # panel points at the device assignment instead of the generic hint.
+        # Gated on the spec so this passes against parol6 versions from
+        # before the mount declaration (CI falls back to the pinned tag
+        # until the matching parol6 branch lands).
+        if waldoctl.commander.robot.tools["MSG"].camera_spec is not None:
+            await user.should_see("has a camera mount")
+
+        # Assign a device to the mount and re-run the tool-camera flow.
+        ng_app.storage.general["tool_camera/MSG"] = 0
+        await select_tool("NONE")
+        await select_tool("MSG")
+        await _wait_for(
+            lambda: camera_service.active,
+            message="MSG tool camera did not start",
+        )
 
         panel = next(p for p in ui_state.plugin_panels if p.id == "handeye")
         assert isinstance(panel, HandEyeCalibrationPanel)
