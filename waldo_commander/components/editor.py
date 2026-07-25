@@ -708,7 +708,7 @@ class EditorPanel(FileOperationsMixin):
         if not new_ids:
             return
         client = self._client
-        if client is None or client._deleted:
+        if client is None or client.is_deleted:
             return
         with client:
             # Flash always (every mode) so an incoming edit is noticed, including
@@ -727,7 +727,7 @@ class EditorPanel(FileOperationsMixin):
         mode switches to an auto-applying one, so edits proposed under Inspect
         don't keep waiting for a click. Flashes like a fresh proposal."""
         client = self._client
-        if client is None or client._deleted:
+        if client is None or client.is_deleted:
             return
         with client:
             for tab in list(waldoctl.commander.programs.items):
@@ -846,7 +846,7 @@ class EditorPanel(FileOperationsMixin):
         nested same-client entry during a GUI call is harmless.
         """
         client = self._client
-        if client is None or client._deleted:
+        if client is None or client.is_deleted:
             if client is not None:
                 # The page is gone — stop listening so we don't touch dead UI.
                 waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
