@@ -632,7 +632,8 @@ async def test_jog_arrow_inversion_flips_button_direction_and_label(user: User) 
         assert slot._markers == ["axis-xminus"], (
             f"left arrow should re-mark to axis-xminus, got {slot._markers}"
         )
-        assert "X-" in slot._props["content"], "left arrow label should read X-"
+        label = cp._cart_slot_meta["lr_neg"]["label"]
+        assert label.text == "X-", "left arrow label should read X-"
 
         user.find(marker="tab-cartesian").click()
         await asyncio.sleep(0)
