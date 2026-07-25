@@ -589,48 +589,45 @@ class PathVisualizer:
             # moves until the script homes.
             initial_homed = robot_state.homed
 
-            try:
-                result = await asyncio.wait_for(
-                    run.cpu_bound(
-                        _run_simulation_isolated,
-                        program_text,
-                        initial_joints_rad,
-                        MAX_PATH_SEGMENTS,
-                        backend_pkg,
-                        dr_cls,
-                        tool_meta_registry or None,
-                        shapes_wire,
-                        initial_tool,
-                        initial_homed,
-                    ),
-                    timeout=SIMULATION_TIMEOUT_S
-                    + 2.0,  # Extra buffer for process overhead
-                )
-            except asyncio.TimeoutError:
-                logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
-                return "Simulation timed out"
-            except Exception as e:
-                # Fall back to in-process execution; the subprocess pool is often
-                # unavailable in test environments.
-                logger.warning(
-                    "Subprocess simulation failed (sim_id=%d): %s, using sync",
-                    sim_id,
-                    e,
-                )
+            sim_args = (
+                program_text,
+                initial_joints_rad,
+                MAX_PATH_SEGMENTS,
+                backend_pkg,
+                dr_cls,
+                tool_meta_registry or None,
+                shapes_wire,
+                initial_tool,
+                initial_homed,
+            )
+            # Tests always simulate in-process: the pool is rebuilt per test
+            # with warm-up disabled, so a cold spawn worker could not meet the
+            # timeout even when submission succeeds. The pool remains a
+            # best-effort optimization elsewhere, with the same in-process
+            # path as fallback.
+            use_pool = run.process_pool is not None and not _is_test_environment()
+            if use_pool:
                 try:
-                    result = _run_simulation_isolated(
-                        program_text,
-                        initial_joints_rad,
-                        MAX_PATH_SEGMENTS,
-                        backend_pkg,
-                        dr_cls,
-                        tool_meta_registry or None,
-                        shapes_wire,
-                        initial_tool,
-                        initial_homed,
+                    result = await asyncio.wait_for(
+                        run.cpu_bound(_run_simulation_isolated, *sim_args),
+                        timeout=SIMULATION_TIMEOUT_S
+                        + 2.0,  # Extra buffer for process overhead
                     )
+                except asyncio.TimeoutError:
+                    logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
+                    return "Simulation timed out"
+                except Exception as e:
+                    logger.warning(
+                        "Subprocess simulation failed (sim_id=%d): %s, using sync",
+                        sim_id,
+                        e,
+                    )
+                    use_pool = False
+            if not use_pool:
+                try:
+                    result = _run_simulation_isolated(*sim_args)
                 except Exception as e2:
-                    logger.error("Sync simulation also failed: %s", e2)
+                    logger.error("In-process simulation failed: %s", e2)
                     return f"Simulation failed: {e2}"
 
             # A None result can happen during shutdown/test teardown.
