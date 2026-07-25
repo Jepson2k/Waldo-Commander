@@ -4,7 +4,6 @@ import asyncio
 import dataclasses
 import logging
 import time
-import re
 import math
 from functools import partial
 from typing import Any, Callable
@@ -63,20 +62,6 @@ _AXIS_ORDER = (
     "RZ-",
 )
 _AXIS_MAP = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
-
-# SVG icon transform lookup: (vb_width, vb_height) -> default transform
-_ICON_TRANSFORMS: dict[tuple[int, int], str] = {
-    (32, 32): "translate(-2,-2) scale(0.85)",
-    (24, 24): "translate(-5,-5) scale(1.4)",
-}
-# Per-slot transform overrides (takes precedence over dimension-based lookup)
-_SLOT_TRANSFORM_OVERRIDES: dict[str, str] = {
-    "lr_neg": "translate(-2,-5) scale(1.4)",
-}
-_RE_VIEWBOX = re.compile(r'viewBox="\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*"')
-_RE_SVG_INNER = re.compile(r"<svg[^>]*>([\s\S]*?)</svg>")
-_RE_TEXT_LABEL = re.compile(r"(<text\b[^>]*>)(.*?)(</text>)", re.DOTALL)
-_RE_WHITESPACE = re.compile(r"\s+")
 
 
 @dataclasses.dataclass
@@ -838,53 +823,15 @@ class ControlPanel:
         return f"axis-{axis_str.replace('+', 'plus').replace('-', 'minus').lower()}"
 
     @staticmethod
-    def _read_icon_svg(svg_filename: str) -> tuple[str, list[int]]:
-        """Load SVG text via package resources and extract viewBox size."""
-        raw = (
+    def _read_icon_svg(svg_filename: str) -> str:
+        """Load SVG markup via package resources.
+
+        The assets are self-contained: each carries a viewBox that frames its
+        glyph and inherits ``currentColor``, so no runtime rewriting is needed.
+        """
+        return (
             pkg_resources.files("waldo_commander.static.icons") / svg_filename
         ).read_text(encoding="utf-8")
-        m = _RE_VIEWBOX.search(raw)
-        vb = [int(m.group(i)) if m else 24 for i in range(1, 5)]
-        return raw, vb
-
-    @staticmethod
-    def _prepare_icon_markup(
-        raw_svg: str, viewbox_wh: list[int], label: str, slot_id: str = ""
-    ) -> str:
-        """Return wrapped SVG markup with enlarged glyph and updated label."""
-        inner_match = _RE_SVG_INNER.search(raw_svg)
-        inner = inner_match.group(1) if inner_match else raw_svg
-
-        inner = _RE_TEXT_LABEL.sub(r"\1" + label + r"\3", inner)
-        raw_svg_processed = _RE_TEXT_LABEL.sub(r"\1" + label + r"\3", raw_svg)
-
-        vb_min_x, vb_min_y, vb_width, vb_height = viewbox_wh
-
-        # Determine transform: slot override > dimension lookup > fallback
-        if slot_id in _SLOT_TRANSFORM_OVERRIDES:
-            transform = _SLOT_TRANSFORM_OVERRIDES[slot_id]
-        elif (vb_width, vb_height) in _ICON_TRANSFORMS:
-            transform = _ICON_TRANSFORMS[(vb_width, vb_height)]
-        elif vb_min_y == 17:
-            transform = "translate(-5,12)"
-        else:
-            transform = "translate(-5,-12)"
-
-        # Cropped icons (height == 7) use the full SVG with overflow:visible
-        if vb_height == 7:
-            content = raw_svg_processed
-            style = ' style="overflow:visible"'
-        else:
-            content = inner
-            style = ""
-
-        svg = (
-            f'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"'
-            f' preserveAspectRatio="xMidYMid meet"{style}>'
-            f'<g transform="{transform}" fill="currentColor" stroke="currentColor">'
-            f"{content}</g></svg>"
-        )
-        return _RE_WHITESPACE.sub(" ", svg).strip()
 
     async def _on_slot_press(self, slot_id: str, is_pressed: bool) -> None:
         """Event bridge: map fixed slot to its axis string.
@@ -917,33 +864,20 @@ class ControlPanel:
         self._refresh_cartesian_icons()
 
     def _refresh_cartesian_icons(self) -> None:
-        """Rebuild icon SVGs and color classes for all slots; update axis->element mapping."""
+        """Re-derive label text, color class, and marker for every slot; update axis->element mapping."""
         self._cart_axis_imgs.clear()
         remove_classes = "tcp-x tcp-y tcp-z tcp-rx tcp-ry tcp-rz"
-        for slot_id, elem in self._cart_slot_elems.items():
-            meta = self._cart_slot_meta.get(slot_id) or {}
-            assign_key = meta.get("assign_key", "ud1")
-            sign = meta.get("sign", "+")
-            rotation = bool(meta.get("rotation", False))
-            raw = meta.get("raw", "")
-            vb = meta.get("viewbox", (24, 24))
-            axis_str = self._axis_string_for(assign_key, sign, rotation)
-            label = axis_str
-            markup = self._prepare_icon_markup(raw, vb, label, slot_id)
-            new_html = f"""
-            <svg viewBox="0 0 24 24" width="100" height="72" style="cursor:pointer;">
-            <g style="pointer-events:visiblePainted;" fill="currentColor" stroke="currentColor">
-                {markup}
-            </g>
-            </svg>
-            """
-            elem._props["content"] = new_html
-            elem.update()
-            elem.classes(remove=remove_classes)
+        for slot_id, cont in self._cart_slot_elems.items():
+            meta = self._cart_slot_meta[slot_id]
+            assign_key = meta["assign_key"]
+            rotation = meta["rotation"]
+            axis_str = self._axis_string_for(assign_key, meta["sign"], rotation)
+            meta["label"].set_text(axis_str)
+            cont.classes(remove=remove_classes)
             letter = self._cart_assignment.get(assign_key, "X").upper()
-            elem.classes(add=self._axis_color_class_for(letter, rotation=rotation))
-            elem.mark(self._axis_marker(axis_str))
-            self._cart_axis_imgs[axis_str] = elem
+            cont.classes(add=self._axis_color_class_for(letter, rotation=rotation))
+            cont.mark(self._axis_marker(axis_str))
+            self._cart_axis_imgs[axis_str] = cont
 
         # Re-derive pressed highlights for the remapped axis -> element
         # mapping, so a remap mid-hold can't strand "is-pressed" on a slot
@@ -2185,21 +2119,12 @@ class ControlPanel:
                     sign: str,
                     rotation: bool,
                 ) -> None:
-                    raw, vb = self._read_icon_svg(svg_filename)
                     axis_str = self._axis_string_for(assign_key, sign, rotation)
-                    label = axis_str
-                    markup = self._prepare_icon_markup(raw, vb, label, slot_id)
-                    cont = ui.html(
-                        f"""
-                        <svg viewBox="0 0 24 24" width="100" height="72"
-                            style="cursor:pointer;">
-                        <g style="pointer-events:visiblePainted;" fill="currentColor" stroke="currentColor">
-                            {markup}
-                        </g>
-                        </svg>
-                        """,
-                        sanitize=False,
-                    )
+                    with ui.element("div").classes("cart-jog-slot") as cont:
+                        ui.html(
+                            self._read_icon_svg(svg_filename), sanitize=False
+                        ).classes("cart-jog-glyph")
+                        label = ui.label(axis_str).classes("cart-jog-label")
                     letter = self._cart_assignment.get(assign_key, "X").upper()
                     cont.classes(self._axis_color_class_for(letter, rotation=rotation))
                     cont.mark(self._axis_marker(axis_str))
@@ -2212,9 +2137,7 @@ class ControlPanel:
                         "assign_key": assign_key,
                         "sign": sign,
                         "rotation": rotation,
-                        "svg_filename": svg_filename,
-                        "raw": raw,
-                        "viewbox": vb,
+                        "label": label,
                     }
 
                 # Translation grid: XY cross with Z column on the right.
