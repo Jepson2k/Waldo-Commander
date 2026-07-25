@@ -48,6 +48,14 @@ if not os.environ.get("HEADED") and os.environ.get("DISPLAY", "").startswith(
 if TYPE_CHECKING:
     from parol6 import AsyncRobotClient
 
+# NiceGUI's nicegui_reset_globals teardown pops every module that owns a page
+# route from sys.modules — including "__main__", because the user/screen
+# fixtures execute waldo_commander/main.py via runpy under that name. A
+# missing "__main__" breaks multiprocessing's spawn/forkserver worker launch
+# (its preparation data reads sys.modules["__main__"] unguarded), taking the
+# process pool down for the rest of the session on macOS/Windows/Py3.14.
+_MAIN_MODULE = sys.modules["__main__"]
+
 
 # ============================================================================
 # Skip marker for WebGL-dependent tests on macOS CI
@@ -359,12 +367,14 @@ def reset_editor_singletons(
 def restore_process_pool_after_nicegui_fixtures(
     request: pytest.FixtureRequest,
 ) -> Generator[None, None, None]:
-    """Re-setup process pool after tests using NiceGUI's user or screen fixtures.
+    """Repair interpreter state after tests using NiceGUI's user or screen fixtures.
 
-    These fixtures use nicegui_reset_globals which calls run.reset(),
-    clearing the process pool. This fixture re-sets it up after such tests.
+    Their nicegui_reset_globals teardown calls run.reset() (clearing the
+    process pool) and pops "__main__" from sys.modules (breaking any later
+    multiprocessing spawn/forkserver launch). Restore both.
     """
     yield
+    sys.modules.setdefault("__main__", _MAIN_MODULE)
     # Re-setup if this test used user or screen fixture (not class_screen, which handles it)
     uses_nicegui_fixture = "user" in request.fixturenames or (
         "screen" in request.fixturenames and "class_screen" not in request.fixturenames
