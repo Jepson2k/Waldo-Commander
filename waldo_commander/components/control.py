@@ -2151,6 +2151,9 @@ class ControlPanel:
                 ):
                     # Row 1:    [UD2+, UD1-, empty, RUD2+, empty, RUD1+, empty]
                     _add_slot("ud2_up", "arrow-small-up-cropped.svg", "ud2", "+", False)
+                    # Z chevrons hug the column's outer edge, keeping a clear
+                    # gap to the XY arrow pad beside them.
+                    self._cart_slot_elems["ud2_up"].classes("justify-self-start")
                     _add_slot("ud1_up", "arrow-small-up.svg", "ud1", "-", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_plus", "curved-arrow-down.svg", "ud2", "+", True)
@@ -2171,6 +2174,7 @@ class ControlPanel:
                     _add_slot(
                         "ud2_down", "arrow-small-down-cropped.svg", "ud2", "-", False
                     )
+                    self._cart_slot_elems["ud2_down"].classes("justify-self-start")
                     _add_slot("ud1_down", "arrow-small-down.svg", "ud1", "+", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_minus", "curved-arrow-up.svg", "ud2", "-", True)

@@ -647,8 +647,8 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 800;
   letter-spacing: 1px;
   color: #000;
   pointer-events: none;
