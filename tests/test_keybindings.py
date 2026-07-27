@@ -203,17 +203,33 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
             modifiers=KeyboardModifiers(alt=False, ctrl=False, meta=False, shift=False),
         )
 
-    async def wait_idle() -> None:
-        for _ in range(100):
-            if waldoctl.commander.status.action.state == ActionState.IDLE:
-                return
+    async def wait_settled(axis_attr: str) -> None:
+        """Wait until the arm is idle and the measured axis has stopped moving.
+
+        A lone IDLE sample is not completion: the click step's move_l can
+        surface a transient IDLE status frame between its sub-tolerance creep
+        phase and the main ramp, so require IDLE plus an unchanged pose across
+        consecutive polls.
+        """
+        stable = 0
+        last = float(getattr(waldoctl.commander.status.pose, axis_attr))
+        for _ in range(200):
             await asyncio.sleep(0.1)
+            cur = float(getattr(waldoctl.commander.status.pose, axis_attr))
+            if (
+                waldoctl.commander.status.action.state == ActionState.IDLE
+                and cur == last
+            ):
+                stable += 1
+                if stable >= 3:
+                    return
+            else:
+                stable = 0
+            last = cur
 
     async def tap_key(name: str, axis_attr: str) -> float:
         """Tap a jog key (keydown+keyup = click step) and return the axis delta."""
-        # The 5mm move_l has a sub-tolerance creep phase before its main ramp,
-        # so value-stability would trigger early — gate on action state.
-        await wait_idle()
+        await wait_settled(axis_attr)
         initial = float(getattr(waldoctl.commander.status.pose, axis_attr))
         with ng_client:
             # No await between the events, so the hold timer can never fire:
@@ -221,7 +237,7 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
             keybindings_manager.handle_key(key_event(name, keydown=True))
             keybindings_manager.handle_key(key_event(name, keydown=False))
         await wait_for_motion_start()
-        await wait_idle()
+        await wait_settled(axis_attr)
         return float(getattr(waldoctl.commander.status.pose, axis_attr)) - initial
 
     waldoctl.commander.settings.jog.joint_step_deg = 5.0

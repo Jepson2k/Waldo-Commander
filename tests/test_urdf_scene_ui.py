@@ -106,10 +106,16 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
 
     # Now set envelope mode to 'on'
     waldoctl.commander.settings.view.envelope_mode = EnvelopeMode.ON
-    await asyncio.sleep(0.2)  # Let update timer run
 
-    # Envelope data should exist
-    assert workspace_envelope._generated is True, "Expected envelope to be generated"
+    # Generation runs in the background and a tool change during startup may
+    # have reset the singleton, forcing a full cold rebuild — poll instead of
+    # assuming a warm cache.
+    for _ in range(300):  # Up to 30 seconds
+        if workspace_envelope.is_ready:
+            break
+        await asyncio.sleep(0.1)
+    assert workspace_envelope.is_ready, "Expected envelope to be generated"
+    await asyncio.sleep(0.2)  # Let update timer apply visibility
 
     # Envelope object should be created and visible
     # Note: envelope_object may be created lazily on first 'on' mode
