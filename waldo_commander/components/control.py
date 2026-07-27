@@ -6,7 +6,7 @@ import logging
 import time
 import math
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 import importlib.resources as pkg_resources
 
 import numpy as np
@@ -832,6 +832,24 @@ class ControlPanel:
         return (
             pkg_resources.files("waldo_commander.static.icons") / svg_filename
         ).read_text(encoding="utf-8")
+
+    # Axis-label placement per glyph, as (left%, top%, font px) of the slot:
+    # the label's left edge, vertical midline, and size. Anchors sit in the
+    # glyph's widest region — the arrowhead — and the sizes keep the original
+    # hierarchy (straight > chevron > curved); both were measured from the
+    # <text> the assets carried before labels moved to an HTML overlay.
+    _LABEL_ANCHORS: ClassVar[dict[str, tuple[float, float, int]]] = {
+        "arrow-small-up.svg": (32.6, 36.2, 20),
+        "arrow-small-down.svg": (32.6, 65.2, 20),
+        "arrow-small-left.svg": (32.6, 47.8, 20),
+        "arrow-small-right.svg": (32.6, 47.8, 20),
+        "arrow-small-up-cropped.svg": (33.3, 53.6, 14),
+        "arrow-small-down-cropped.svg": (33.3, 42.5, 14),
+        "curved-arrow-up.svg": (38.3, 36.3, 12),
+        "curved-arrow-down.svg": (30.5, 61.1, 12),
+        "curved-arrow-left.svg": (30.5, 43.4, 12),
+        "curved-arrow-right.svg": (41.8, 54.0, 12),
+    }
 
     async def _on_slot_press(self, slot_id: str, is_pressed: bool) -> None:
         """Event bridge: map fixed slot to its axis string.
@@ -2120,11 +2138,19 @@ class ControlPanel:
                     rotation: bool,
                 ) -> None:
                     axis_str = self._axis_string_for(assign_key, sign, rotation)
+                    anchor_left, anchor_top, font_px = self._LABEL_ANCHORS[svg_filename]
                     with ui.element("div").classes("cart-jog-slot") as cont:
                         ui.html(
                             self._read_icon_svg(svg_filename), sanitize=False
                         ).classes("cart-jog-glyph")
-                        label = ui.label(axis_str).classes("cart-jog-label")
+                        label = (
+                            ui.label(axis_str)
+                            .classes("cart-jog-label")
+                            .style(
+                                f"left: {anchor_left}%; top: {anchor_top}%; "
+                                f"font-size: {font_px}px"
+                            )
+                        )
                     letter = self._cart_assignment.get(assign_key, "X").upper()
                     cont.classes(self._axis_color_class_for(letter, rotation=rotation))
                     cont.mark(self._axis_marker(axis_str))
