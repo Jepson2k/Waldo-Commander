@@ -36,8 +36,8 @@ from waldo_commander.services import handeye
 from waldo_commander.services.camera_service import camera_service
 from waldo_commander.state import robot_state, ui_state
 
-IMAGE_SIZE = (640, 480)
-K_TRUE = np.array([[800.0, 0.0, 320.0], [0.0, 800.0, 240.0], [0.0, 0.0, 1.0]])
+IMAGE_SIZE = (1280, 960)
+K_TRUE = np.array([[1600.0, 0.0, 640.0], [0.0, 1600.0, 480.0], [0.0, 0.0, 1.0]])
 
 X_TRUE = np.eye(4)
 X_TRUE[:3, :3] = Rotation.from_rotvec(np.radians([5.0, -4.0, 88.0])).as_matrix()
@@ -49,15 +49,34 @@ X_TRUE[:3, 3] = (35.0, -20.0, 55.0)
 # moves translate the camera to vary the viewing distance. With the MSG
 # gripper attached, negative J5 folds its body toward the forearm and the
 # controller rejects the move as a predicted self-collision — J5 deltas must
-# stay non-negative from the standby pose.
+# stay non-negative from the standby pose, and the same collision boxes J2/J3
+# depth excursions to roughly -10..+6 deg. Within that envelope focal length
+# (and thus depth) stays only marginally observable, so the intrinsics solve
+# amplifies corner noise into hand-eye translation error; fifteen views
+# (rather than a minimal set) average that noise down.
+#
+# Consecutive views also constrain each other: joint-space paths that swing
+# J4 while J2/J3 are extended skirt the L4/MSG collision margin so closely
+# that sub-degree start differences flip the controller's verdict. The order
+# below keeps large J4 swings at home J2/J3, changes rolls (J6) freely, and
+# walks J2/J3 depth excursions in small steps, so every segment clears the
+# margin structurally rather than marginally.
 VIEW_DELTAS_DEG = [
     (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
     (0.0, 0.0, 0.0, 0.0, 0.0, 35.0),
     (0.0, 5.0, -7.0, 0.0, 0.0, -30.0),
+    (0.0, 6.0, -8.0, 0.0, 2.0, 20.0),
     (0.0, -5.0, 7.0, 0.0, 7.0, 15.0),
     (0.0, 0.0, 0.0, 12.0, 7.0, -20.0),
+    (0.0, 0.0, 0.0, 18.0, 7.0, 20.0),
+    (0.0, 0.0, 0.0, -12.0, 5.0, -30.0),
     (0.0, 4.0, -5.0, -12.0, 5.0, 0.0),
     (4.0, -3.0, 4.0, 0.0, 6.0, 25.0),
+    (0.0, -8.0, 11.0, 0.0, 5.0, 0.0),
+    (0.0, -6.0, 8.0, 6.0, 6.0, 30.0),
+    (-6.0, -6.0, 8.0, 0.0, 6.0, -25.0),
+    (-5.0, -10.0, 14.0, 0.0, 8.0, 25.0),
+    (0.0, -5.0, 7.0, 0.0, 6.0, -15.0),
 ]
 
 
@@ -246,7 +265,12 @@ async def test_handeye_panel_workflow(
         assert stored["n_samples"] == n_views
 
         # Without a detectable board the capture path stays gated.
-        _FrameBackend.holder["jpeg"] = _blank_jpeg()
+        blank = _blank_jpeg()
+        _FrameBackend.holder["jpeg"] = blank
+        await _wait_for(
+            lambda: camera_service.get_latest_frame() == blank,
+            message="camera loop did not pick up the blank frame",
+        )
         await user.should_see("No board detected")
         user.find(marker="handeye-capture").click()
         await asyncio.sleep(0.2)

@@ -22,9 +22,14 @@ from waldo_commander.services import handeye
 
 _FLAT_PX_PER_MM = 8
 
+_flat_cache: dict[handeye.BoardSpec, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
 
 def _flat_board(spec: handeye.BoardSpec) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(flat image, corner pixels (N,2), corner object points mm (N,3)) by id."""
+    cached = _flat_cache.get(spec)
+    if cached is not None:
+        return cached
     board = handeye.make_board(spec)
     margin_px = round(spec.square_mm * _FLAT_PX_PER_MM)
     w = round(spec.squares_x * spec.square_mm * _FLAT_PX_PER_MM) + 2 * margin_px
@@ -37,7 +42,9 @@ def _flat_board(spec: handeye.BoardSpec) -> tuple[np.ndarray, np.ndarray, np.nda
     assert detection is not None, "board must be detectable in its own image"
     all_obj = np.asarray(board.getChessboardCorners(), dtype=np.float64)
     ids = detection.ids.ravel()
-    return flat, detection.corners.reshape(-1, 2).astype(np.float64), all_obj[ids]
+    result = (flat, detection.corners.reshape(-1, 2).astype(np.float64), all_obj[ids])
+    _flat_cache[spec] = result
+    return result
 
 
 def render_board_view(
