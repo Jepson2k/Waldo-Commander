@@ -100,9 +100,12 @@ def nicegui_chrome_options():
 
     Differs from NiceGUI's built-in:
     - HEADED=1 env var skips headless (NiceGUI always adds it)
+    - CHROME_BINARY env var points Selenium at a non-PATH Chrome/Chromium
     - GL via ANGLE for WebGL/three.js tests (NiceGUI disables GPU in CI)
     """
     options = _webdriver.ChromeOptions()
+    if chrome_binary := os.environ.get("CHROME_BINARY"):
+        options.binary_location = chrome_binary
     options.add_argument("disable-dev-shm-usage")
     options.add_argument("disable-search-engine-choice-screen")
     options.add_argument("no-sandbox")
@@ -221,6 +224,8 @@ def class_driver(
     import shutil
 
     options = _webdriver.ChromeOptions()
+    if chrome_binary := os.environ.get("CHROME_BINARY"):
+        options.binary_location = chrome_binary
     if not os.environ.get("HEADED"):
         options.add_argument("headless=new")
     options.add_argument("disable-search-engine-choice-screen")
