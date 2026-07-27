@@ -641,16 +641,19 @@ html, body {
   stroke: currentColor;
 }
 
+/* Anchored per slot via inline left/top/font-size: the label's left edge
+   sits at the glyph's original in-SVG text anchor, vertically centered on
+   that line. The text stroke reproduces the chunky stroked look the labels
+   had as SVG <text stroke="#000">. */
 .cart-jog-label {
   position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
+  transform: translateY(-50%);
+  line-height: 1;
+  white-space: nowrap;
   font-weight: 800;
-  letter-spacing: 1px;
+  letter-spacing: 0.15em;
   color: #000;
+  -webkit-text-stroke: 0.09em #000;
   pointer-events: none;
   user-select: none;
 }
