@@ -710,8 +710,9 @@ def _fire_editor_event(textarea, event_type: str, args: dict) -> None:
 
 
 def _set_cursor_line(textarea, line: int) -> None:
-    """Place the cursor like a user click: focus, then a selection change."""
-    _fire_editor_event(textarea, "focus-change", {"focused": True})
+    """Place the cursor like a user click: a selection change on the editor.
+    Only selection-change is fired — the editor registers no focus-change
+    listener (cursor tracking runs entirely off on_selection_change)."""
     _fire_editor_event(textarea, "selection-change", {"line": line, "column": 1})
 
 
