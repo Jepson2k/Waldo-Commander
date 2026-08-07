@@ -186,13 +186,20 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
 
     # Earlier suite tests leave the arm at arbitrary poses where a WRF X/Y
     # step can be refused; start each direction check from the home pose.
+    # Gate on the full joint vector: joint 0 is usually already at 90 from
+    # prior tests, so checking it alone can pass before the teleport lands
+    # and the jog then runs from a pose where the step is IK-refused.
     panel = ui_state.control_panel
     assert panel is not None
-    await panel.client.teleport([90.0, -90.0, 180.0, 0.0, 0.0, 180.0])
+    home = [90.0, -90.0, 180.0, 0.0, 0.0, 180.0]
+    await panel.client.teleport(home)
     for _ in range(50):
-        if abs(float(waldoctl.commander.status.joints.angles.deg[0]) - 90.0) < 1.0:
+        angles = [float(a) for a in waldoctl.commander.status.joints.angles.deg]
+        if all(abs(a - h) < 1.0 for a, h in zip(angles, home)):
             break
         await asyncio.sleep(0.1)
+    else:
+        pytest.fail(f"teleport to home did not settle: {angles}")
 
     def key_event(name: str, *, keydown: bool) -> KeyEventArguments:
         return KeyEventArguments(
