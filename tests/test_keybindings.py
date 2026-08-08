@@ -235,6 +235,19 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
 
     invert_x = next(iter(user.find(marker="switch-invert-x").elements))
     invert_y = next(iter(user.find(marker="switch-invert-y").elements))
+    # Inversion hydrates from app.storage.general, and a prior test's
+    # debounced storage flush can race its teardown — a leaked True would
+    # make the baseline tap command X- and fail with reversed motion.
+    # Force a known baseline through the same funnel the switches use.
+    invert_x.set_value(False)
+    invert_y.set_value(False)
+    await asyncio.sleep(0)
+    assert keybindings_manager._bindings["d"].description == "Jog X+", (
+        "invert-X must be off before the baseline tap"
+    )
+    assert keybindings_manager._bindings["w"].description == "Jog Y+", (
+        "invert-Y must be off before the baseline tap"
+    )
     try:
         delta = await tap_key("d", "x")
         assert 4.9 <= delta <= 5.1, f"d should command X+5mm, moved {delta:.2f}mm"
