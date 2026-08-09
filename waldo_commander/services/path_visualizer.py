@@ -442,6 +442,13 @@ def _run_simulation_isolated(
     }
 
 
+def _run_simulation_packed(args: tuple) -> dict[str, Any]:
+    """Single-argument adapter for run.cpu_bound, whose ParamSpec cannot type
+    a heterogeneous *args unpack; packing also lets the pool call and the
+    in-process fallback share one argument list."""
+    return _run_simulation_isolated(*args)
+
+
 class PathVisualizer:
     """Visualizes robot path from program simulation."""
 
@@ -609,7 +616,7 @@ class PathVisualizer:
             if use_pool:
                 try:
                     result = await asyncio.wait_for(
-                        run.cpu_bound(_run_simulation_isolated, *sim_args),
+                        run.cpu_bound(_run_simulation_packed, sim_args),
                         timeout=SIMULATION_TIMEOUT_S
                         + 2.0,  # Extra buffer for process overhead
                     )
