@@ -28,6 +28,7 @@ from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
+    wait_for_motion_stable,
     wait_for_motion_start,
 )
 
@@ -229,7 +230,14 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
             keybindings_manager.handle_key(key_event(name, keydown=False))
         await wait_for_motion_start()
         await wait_idle()
-        return float(getattr(waldoctl.commander.status.pose, axis_attr)) - initial
+        # IDLE can flicker between the creep phase and the main ramp on slow
+        # CI runners, sampling a partial move — settle on pose stability too.
+        final = await wait_for_motion_stable(
+            lambda: float(getattr(waldoctl.commander.status.pose, axis_attr)),
+            tolerance=0.05,
+            stable_ticks=20,
+        )
+        return final - initial
 
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
 
