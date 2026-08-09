@@ -219,23 +219,34 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
 
     async def tap_key(name: str, axis_attr: str) -> float:
         """Tap a jog key (keydown+keyup = click step) and return the axis delta."""
-        # The 5mm move_l has a sub-tolerance creep phase before its main ramp,
-        # so value-stability would trigger early — gate on action state.
+
+        def axis_value() -> float:
+            return float(getattr(waldoctl.commander.status.pose, axis_attr))
+
         await wait_idle()
-        initial = float(getattr(waldoctl.commander.status.pose, axis_attr))
+        # The baseline must come from a fully settled pose: on slow runners
+        # the status view can still be converging from the previous motion
+        # when the action state already reads IDLE.
+        initial = await wait_for_motion_stable(
+            axis_value, timeout_s=10.0, tolerance=0.05, stable_ticks=20
+        )
         with ng_client:
             # No await between the events, so the hold timer can never fire:
             # this is deterministically a click (single step).
             keybindings_manager.handle_key(key_event(name, keydown=True))
             keybindings_manager.handle_key(key_event(name, keydown=False))
         await wait_for_motion_start()
-        await wait_idle()
-        # IDLE can flicker between the creep phase and the main ramp on slow
-        # CI runners, sampling a partial move — settle on pose stability too.
+        # Completion cannot be gated on action state or pose stability alone:
+        # IDLE flickers between the 5mm move_l's creep phase and its main
+        # ramp, and the creep's sub-tolerance ticks read as "stable". The
+        # click step commands a fixed 5mm step, so require most of that
+        # displacement to land before settling.
+        for _ in range(300):
+            if abs(axis_value() - initial) >= 4.5:
+                break
+            await asyncio.sleep(0.1)
         final = await wait_for_motion_stable(
-            lambda: float(getattr(waldoctl.commander.status.pose, axis_attr)),
-            tolerance=0.05,
-            stable_ticks=20,
+            axis_value, timeout_s=10.0, tolerance=0.05, stable_ticks=20
         )
         return final - initial
 
