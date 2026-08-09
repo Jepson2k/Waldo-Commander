@@ -5,12 +5,14 @@ import os
 import subprocess
 import sys
 import asyncio
+import time
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 from nicegui import run as nicegui_run
+from nicegui import storage as nicegui_storage
 from nicegui.testing import general as nicegui_testing_general
 from nicegui.testing.general_fixtures import (
     nicegui_reset_globals,  # noqa: F401 - required by screen fixture
@@ -55,6 +57,28 @@ if TYPE_CHECKING:
 # (its preparation data reads sys.modules["__main__"] unguarded), taking the
 # process pool down for the rest of the session on macOS/Windows/Py3.14.
 _MAIN_MODULE = sys.modules["__main__"]
+
+# Windows CI: teardown's Storage.clear() retries a transiently held
+# storage-general.json for only 1s per file (unlink_with_retry) before
+# re-raising PermissionError, and a storage backup on a starved runner can
+# hold the handle longer than that. Retry the whole clear with a patient
+# budget; on POSIX the PermissionError never fires and the wrapper is inert.
+# Removable once the pinned nicegui raises the retry budget upstream.
+_orig_storage_clear = nicegui_storage.Storage.clear
+
+
+def _patient_storage_clear(self: nicegui_storage.Storage) -> None:
+    deadline = time.monotonic() + 15.0
+    while True:
+        try:
+            return _orig_storage_clear(self)
+        except PermissionError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.1)
+
+
+nicegui_storage.Storage.clear = _patient_storage_clear
 
 
 # ============================================================================
