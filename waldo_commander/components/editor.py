@@ -17,6 +17,7 @@ from waldo_commander.services.programs import (
 )
 from waldo_commander.services import edit_decisions
 from waldo_commander.services.control_lease import control_mode
+from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.state import (
     simulation_state,
     ui_state,
@@ -59,8 +60,8 @@ class EditorPanel(FileOperationsMixin):
         # buttons (which would mutate the source under the diff).
         self._edit_review_row: ui.row | None = None
         self._toolbar_btns: list[ui.button] = []
-        self._reteach_btn: ui.button | None = None
-        self._reteach_tooltip: ui.tooltip | None = None
+        # (from_line, to_line) of a ranged editor selection, None for a bare cursor.
+        self._cursor_selection: tuple[int, int] | None = None
         # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
         self._tab_widgets: dict[str, dict] = {}
         # tab_id -> pending edit-id .values already seen, so a *newly* proposed
@@ -226,8 +227,12 @@ class EditorPanel(FileOperationsMixin):
     # kwarg — absolute current-position values under rel=/frame=/pose=
     # semantics would corrupt the move (e.g. a 250mm relative lunge).
     _RETEACH_KWARG_RE = re.compile(r"\b(?:rel|frame|pose)\s*=")
-    _RETEACH_TIP = "Re-teach: overwrite this step with the current robot position"
-    _RETEACH_TIP_BLOCKED = "Re-teach unavailable: this move uses rel=, frame=, or pose="
+    _CAPTURE_TIP_INSERT = "Capture pose: insert a move at the current robot position"
+    _CAPTURE_TIP_RETEACH = "Capture pose: re-teach this step in place"
+    _CAPTURE_TIP_BLOCKED = (
+        "Capture pose: this step uses rel=, frame=, or pose= — inserts instead"
+    )
+    _CAPTURE_TIP_REPLACE = "Capture pose: replace the selected lines with one move"
 
     def _reteach_state(self) -> tuple[ProgramTarget | None, bool]:
         """(target, blocked) for the cursor line; blocked means a target sits
@@ -263,15 +268,46 @@ class EditorPanel(FileOperationsMixin):
         """Re-teachable dry-run target whose line the editor cursor is on."""
         return self._reteach_state()[0]
 
-    def _update_reteach_button(self) -> None:
-        btn = self._reteach_btn
-        if btn is None or btn.is_deleted:
+    def capture_pose_at_cursor(self) -> None:
+        """Stamp the robot's current position into the program at the cursor.
+
+        A ranged selection is replaced wholesale by one move line; a bare
+        cursor on a re-teachable move rewrites that step in place (kwargs
+        kept); anywhere else the move is inserted as a new line.
+        """
+        span = self._cursor_selection
+        if span is not None:
+            self._replace_lines_with_pose(*span)
+            return
+        if self._target_at_cursor() is not None:
+            self._reteach_at_cursor()
+            return
+        motion_recorder.capture_current_pose()
+
+    def _replace_lines_with_pose(self, from_line: int, to_line: int) -> None:
+        textarea = ui_state.active_textarea
+        if textarea is None:
+            return
+        lines = str(textarea.value or "").split("\n")
+        if not 1 <= from_line <= to_line <= len(lines):
+            return
+        lines[from_line - 1 : to_line] = [motion_recorder.current_pose_snippet()]
+        textarea.set_value("\n".join(lines))
+
+    def _update_capture_button(self) -> None:
+        tip = ui_state.capture_pose_tooltip
+        if tip is None or tip.is_deleted:
+            return
+        if self._cursor_selection is not None:
+            tip.set_text(self._CAPTURE_TIP_REPLACE)
             return
         target, blocked = self._reteach_state()
-        btn.set_enabled(target is not None)
-        tip = self._reteach_tooltip
-        if tip is not None and not tip.is_deleted:
-            tip.set_text(self._RETEACH_TIP_BLOCKED if blocked else self._RETEACH_TIP)
+        if target is not None:
+            tip.set_text(self._CAPTURE_TIP_RETEACH)
+        elif blocked:
+            tip.set_text(self._CAPTURE_TIP_BLOCKED)
+        else:
+            tip.set_text(self._CAPTURE_TIP_INSERT)
 
     def _reteach_at_cursor(self) -> None:
         """Overwrite the move at the cursor with the robot's current position.
@@ -434,9 +470,9 @@ class EditorPanel(FileOperationsMixin):
         during ``build()``. Idempotent: safe to call from both
         ``_on_disconnect`` and ``_on_shutdown``."""
         waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
-        simulation_state.remove_change_listener(self._update_reteach_button)
-        self._reteach_btn = None
-        self._reteach_tooltip = None
+        simulation_state.remove_change_listener(self._update_capture_button)
+        ui_state.capture_pose_tooltip = None
+        self._cursor_selection = None
         # Edit listeners live on the process-global tab.edits notifier; drop
         # them so closures don't accumulate across page (re)builds.
         for tab_id in list(self._tab_widgets):
@@ -609,7 +645,7 @@ class EditorPanel(FileOperationsMixin):
         # needed on tab switch beyond resetting playback's per-tab scratch.
         waldoctl.commander.programs.switch(tab_id)
         tab.dry_run.playback.active_cursor_line = 0
-        self._update_reteach_button()
+        self._update_capture_button()
 
         if self.tab_panels_container:
             self.tab_panels_container.set_value(tab_id)
@@ -765,7 +801,7 @@ class EditorPanel(FileOperationsMixin):
 
             # Re-teach enablement needs the live anchor mirror, which the
             # browser echoes only after the sim-completion notify has fired.
-            textarea.on_anchor_change(lambda _e: self._update_reteach_button())
+            textarea.on_anchor_change(lambda _e: self._update_capture_button())
 
             # Subscribe to LLM-edit lifecycle so the banner + diff overlay
             # rebuild whenever propose / approve / reject fires.
@@ -975,14 +1011,15 @@ class EditorPanel(FileOperationsMixin):
                 ui_state.active_textarea = widgets.get("textarea")
                 ui_state.active_filename_input = widgets.get("filename_input")
                 self._refresh_edits_banner(active_id)
-            self._update_reteach_button()
+            self._update_capture_button()
 
     def _on_cursor_line(self, tab: Program, e) -> None:
         """Handle cursor line change from CodeMirror."""
         if tab.id != waldoctl.commander.programs.active_id:
             return
         tab.dry_run.playback.active_cursor_line = e.line
-        self._update_reteach_button()
+        self._cursor_selection = None if e.empty else (e.from_line, e.to_line)
+        self._update_capture_button()
         if ui_state.urdf_scene and waldoctl.commander.settings.view.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
 
@@ -1066,17 +1103,6 @@ class EditorPanel(FileOperationsMixin):
                 )
                 self._edit_review_row.set_visibility(False)
 
-                reteach_btn = (
-                    ui.button(icon="my_location", on_click=self._reteach_at_cursor)
-                    .props("flat dense color=white")
-                    .classes("editor-toolbar-btn")
-                )
-                with reteach_btn:
-                    self._reteach_tooltip = ui.tooltip(self._RETEACH_TIP)
-                reteach_btn.mark("editor-reteach")
-                reteach_btn.disable()
-                self._reteach_btn = reteach_btn
-
                 open_btn = (
                     ui.button(icon="folder", on_click=self._show_open_dialog)
                     .props("flat dense color=white")
@@ -1102,7 +1128,7 @@ class EditorPanel(FileOperationsMixin):
                 commands_btn.mark("editor-commands-btn")
                 with commands_btn:
                     self._build_command_menu()
-                self._toolbar_btns = [reteach_btn, open_btn, save_btn, commands_btn]
+                self._toolbar_btns = [open_btn, save_btn, commands_btn]
 
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(
@@ -1148,7 +1174,7 @@ class EditorPanel(FileOperationsMixin):
         waldoctl.commander.programs.add_change_listener(self._reconcile_tabs)
         # Re-teach enablement tracks dry-run results, which refresh through
         # this channel (sim completion, tab switch).
-        simulation_state.add_change_listener(self._update_reteach_button)
+        simulation_state.add_change_listener(self._update_capture_button)
 
         # Restore tabs from existing state (page refresh) or create initial tab
         if waldoctl.commander.programs.items:

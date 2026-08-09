@@ -205,6 +205,9 @@ class UiState:
     active_textarea: Any = None  # ui.codemirror | None at runtime
     active_filename_input: Any = None  # ui.input | None at runtime
     textareas_by_tab: dict[str, Any] = field(default_factory=dict)
+    # Tooltip of the playback bar's pose-capture button; EditorPanel retargets
+    # its text as the cursor/selection context changes.
+    capture_pose_tooltip: Any = None  # ui.tooltip | None at runtime
 
     # Plugin panels discovered via the `waldoctl.panels` entry-point group.
     # Populated on first page build, cached for the process; ordered by (slot, order, id).

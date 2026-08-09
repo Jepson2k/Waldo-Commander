@@ -713,15 +713,35 @@ def _set_cursor_line(textarea, line: int) -> None:
     """Place the cursor like a user click: a selection change on the editor.
     Only selection-change is fired — the editor registers no focus-change
     listener (cursor tracking runs entirely off on_selection_change)."""
-    _fire_editor_event(textarea, "selection-change", {"line": line, "column": 1})
+    _fire_editor_event(
+        textarea,
+        "selection-change",
+        {"line": line, "column": 1, "from_line": line, "to_line": line, "empty": True},
+    )
+
+
+def _set_selection(textarea, from_line: int, to_line: int) -> None:
+    """Select a line range like a user drag (head at the selection end)."""
+    _fire_editor_event(
+        textarea,
+        "selection-change",
+        {
+            "line": to_line,
+            "column": 1,
+            "from_line": from_line,
+            "to_line": to_line,
+            "empty": False,
+        },
+    )
 
 
 @pytest.mark.integration
-async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
-    """Re-teach overwrites the move line under the cursor with the robot's
-    current position: joint angles for move_j, WRF pose for move_l. On a
-    non-target line, or a multi-pose target (move_c), the button is disabled
-    and a click is a no-op.
+async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
+    """The capture-pose button stamps the current robot position into the
+    program at the cursor: a bare cursor on a single-pose move re-teaches it
+    in place (kwargs kept), a ranged selection is replaced wholesale by one
+    fresh move, and anywhere else the pose is inserted as a new line — with
+    the tooltip naming the action throughout.
     """
     import re
 
@@ -788,27 +808,22 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
         assert m is not None, f"No bracketed list in {line!r}"
         return [float(v) for v in m.group(1).split(",")]
 
-    # Cursor on the comment line: button disabled (not hidden), click no-ops.
+    tooltip = ui_state.capture_pose_tooltip
+    assert tooltip is not None
+
+    # Cursor on the comment line: nothing to overwrite, capture inserts.
     _set_cursor_line(textarea, 3)
     await asyncio.sleep(0)
-    reteach_btn = editor._reteach_btn
-    assert reteach_btn is not None
-    assert reteach_btn.visible is True
-    assert reteach_btn.enabled is False
-    user.find(marker="editor-reteach").click()
+    assert tooltip.text == editor._CAPTURE_TIP_INSERT
+    n_lines_before = len(textarea.value.splitlines())
+    user.find(marker="editor-capture-pose").click()
     await asyncio.sleep(0)
-    assert textarea.value == script, (
-        "Re-teach on a non-target line must not modify source"
+    lines = textarea.value.splitlines()
+    assert len(lines) == n_lines_before + 1, "capture on a plain line must insert"
+    assert lines[-1].startswith("rbt.move_l("), lines[-1]
+    assert lines[:n_lines_before] == script.splitlines(), (
+        "insert must leave existing lines untouched"
     )
-
-    # Cursor on the move_c line: a smooth_arc target exists there, but a
-    # single pose can't re-teach a via+end arc, so the button stays disabled.
-    _set_cursor_line(textarea, 6)
-    await asyncio.sleep(0)
-    assert reteach_btn.enabled is False
-    user.find(marker="editor-reteach").click()
-    await asyncio.sleep(0)
-    assert textarea.value == script, "Re-teach must not modify a move_c line"
 
     # Move the robot so the current pose differs from the taught values.
     waldoctl.commander.settings.jog.joint_step_deg = 10.0
@@ -829,11 +844,11 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
     )
     await asyncio.sleep(0)
 
-    # Cursor on the move_j line: click rewrites its joint angles in place.
+    # Bare cursor on the move_j line: capture re-teaches it in place.
     _set_cursor_line(textarea, 4)
     await asyncio.sleep(0)
-    assert reteach_btn.enabled is True
-    user.find(marker="editor-reteach").click()
+    assert tooltip.text == editor._CAPTURE_TIP_RETEACH
+    user.find(marker="editor-capture-pose").click()
     await asyncio.sleep(0)
 
     n = ui_state.active_robot.joints.count
@@ -845,15 +860,16 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
     assert np.allclose(bracket_floats(lines[3]), current_angles, atol=0.1), (
         f"move_j line should hold current angles {current_angles}, got {lines[3]}"
     )
+    assert "speed=0.5" in lines[3], "re-teach must keep the line's kwargs"
     assert lines[4] == move_l_line, (
         "Re-teaching the move_j line must not touch the move_l line"
     )
 
-    # Cursor on the move_l line: click rewrites the current WRF pose.
+    # Bare cursor on the move_l line: capture writes the current WRF pose.
     _set_cursor_line(textarea, 5)
     await asyncio.sleep(0)
-    assert reteach_btn.enabled is True
-    user.find(marker="editor-reteach").click()
+    assert tooltip.text == editor._CAPTURE_TIP_RETEACH
+    user.find(marker="editor-capture-pose").click()
     await asyncio.sleep(0)
 
     pose = waldoctl.commander.status.pose
@@ -869,20 +885,31 @@ async def test_reteach_button_overwrites_move_at_cursor(user: User) -> None:
         "Re-teaching neighbors must not touch the move_c line"
     )
 
-    # rel=True line: a target sits there, but rewriting the bracket with an
-    # absolute position would corrupt the relative move — blocked, with the
-    # tooltip explaining why.
-    src_before = textarea.value
+    # A multi-pose arc can't be re-taught from one pose, and a rel= move
+    # would be corrupted by an absolute overwrite: both fall back to insert,
+    # and the tooltip says which flavor of fallback applies.
+    _set_cursor_line(textarea, 6)
+    await asyncio.sleep(0)
+    assert tooltip.text == editor._CAPTURE_TIP_INSERT
     _set_cursor_line(textarea, 7)
     await asyncio.sleep(0)
-    assert reteach_btn.enabled is False, "rel= moves must not be re-teachable"
-    assert editor._reteach_tooltip is not None
-    assert editor._reteach_tooltip.text == editor._RETEACH_TIP_BLOCKED
-    user.find(marker="editor-reteach").click()
-    await asyncio.sleep(0)
-    assert textarea.value == src_before, "Re-teach must not modify a rel= move"
+    assert tooltip.text == editor._CAPTURE_TIP_BLOCKED
 
-    # Back on a plain line the tooltip returns to the default.
-    _set_cursor_line(textarea, 5)
+    # Selecting the move_l + move_c lines replaces both with one fresh move.
+    src_before = textarea.value.splitlines()
+    _set_selection(textarea, 5, 6)
     await asyncio.sleep(0)
-    assert editor._reteach_tooltip.text == editor._RETEACH_TIP
+    assert tooltip.text == editor._CAPTURE_TIP_REPLACE
+    user.find(marker="editor-capture-pose").click()
+    await asyncio.sleep(0)
+    lines = textarea.value.splitlines()
+    assert len(lines) == len(src_before) - 1, (
+        "the selected lines must collapse into one move"
+    )
+    assert lines[4].startswith("rbt.move_l("), lines[4]
+    assert np.allclose(bracket_floats(lines[4])[:3], current_pose[:3], atol=0.5), (
+        f"replacement should target the current pose, got {lines[4]}"
+    )
+    assert lines[5] == move_rel_line, (
+        "replacement must not touch the line after the selection"
+    )

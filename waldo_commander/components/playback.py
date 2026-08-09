@@ -192,9 +192,14 @@ class PlaybackController:
                 self._record_btn_tooltip = ui.tooltip("Start Recording")
             self.record_btn.mark("editor-record-btn")
 
-            ui.button(
-                icon="camera_alt", on_click=motion_recorder.capture_current_pose
-            ).props("round dense unelevated").tooltip("Capture Current Pose")
+            capture_btn = ui.button(
+                icon="camera_alt",
+                on_click=lambda: ui_state.editor_panel.capture_pose_at_cursor(),
+            ).props("round dense unelevated")
+            with capture_btn:
+                capture_tooltip = ui.tooltip("Capture Current Pose")
+            capture_btn.mark("editor-capture-pose")
+            ui_state.capture_pose_tooltip = capture_tooltip
 
             log_panel.build_toggle_button()
 
