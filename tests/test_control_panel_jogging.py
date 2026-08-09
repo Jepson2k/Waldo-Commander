@@ -18,6 +18,7 @@ from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     simulate_click,
+    teleport_to_jog_pose,
     wait_for_motion_stable,
     wait_for_motion_start,
     wait_for_app_ready,
@@ -585,12 +586,9 @@ async def test_jog_arrow_inversion_flips_button_direction_and_label(user: User) 
     user.find(marker="tab-cartesian").click()
     await asyncio.sleep(0)
 
-    # Let the ready-for-motion teleport settle before clicking, or the
-    # incremental move_l lands on a busy controller and is dropped.
-    for _ in range(50):
-        if waldoctl.commander.status.action.state == ActionState.IDLE:
-            break
-        await asyncio.sleep(0.1)
+    # The homed standby pose is a wrist singularity (J5 = 0) where the X-step
+    # move_l can fail IK partway; jog from the singularity-free pose instead.
+    await teleport_to_jog_pose(cp.client)
 
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
 
@@ -679,6 +677,10 @@ async def test_inversion_mid_hold_releases_captured_axis(
     cp = ui_state.control_panel
     user.find(marker="tab-cartesian").click()
     await asyncio.sleep(0)
+
+    # Stream from the singularity-free pose: jog_l steps from the homed
+    # standby pose (J5 = 0) can fail IK and wedge the shared controller.
+    await teleport_to_jog_pose(cp.client)
 
     jogs: list = []
     orig_jog_l = cp.client.jog_l

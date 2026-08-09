@@ -27,6 +27,7 @@ from nicegui.testing import User
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
+    teleport_to_jog_pose,
     wait_for_app_ready,
     wait_for_motion_stable,
     wait_for_motion_start,
@@ -186,21 +187,11 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
     ng_client = Client.instances[ui_state.active_client_id]
 
     # Earlier suite tests leave the arm at arbitrary poses where a WRF X/Y
-    # step can be refused; start each direction check from the home pose.
-    # Gate on the full joint vector: joint 0 is usually already at 90 from
-    # prior tests, so checking it alone can pass before the teleport lands
-    # and the jog then runs from a pose where the step is IK-refused.
+    # step can be refused — and the homed standby pose itself is a wrist
+    # singularity; start each direction check from the jog-safe pose.
     panel = ui_state.control_panel
     assert panel is not None
-    home = [90.0, -90.0, 180.0, 0.0, 0.0, 180.0]
-    await panel.client.teleport(home)
-    for _ in range(50):
-        angles = [float(a) for a in waldoctl.commander.status.joints.angles.deg]
-        if all(abs(a - h) < 1.0 for a, h in zip(angles, home)):
-            break
-        await asyncio.sleep(0.1)
-    else:
-        pytest.fail(f"teleport to home did not settle: {angles}")
+    await teleport_to_jog_pose(panel.client)
 
     def key_event(name: str, *, keydown: bool) -> KeyEventArguments:
         return KeyEventArguments(
