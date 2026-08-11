@@ -329,6 +329,31 @@ async def wait_for_value_change(
     )
 
 
+JOG_SAFE_POSE_DEG = [85.0, -85.0, 135.0, 10.0, 45.0, 170.0]
+
+
+async def teleport_to_jog_pose(client, timeout_s: float = 10.0) -> None:
+    """Teleport to a singularity-free pose and wait for the full vector to land.
+
+    The controller's standby/home pose has J5 = 0 — a wrist singularity where
+    a straight-line cartesian step can fail IK for most of its path (partial
+    creep-length moves, refusals, controller ERROR). Cartesian jog tests must
+    start away from it. Gate on the full joint vector: single joints often
+    already match from prior tests, so a partial check can pass before the
+    teleport lands.
+    """
+    await client.teleport(JOG_SAFE_POSE_DEG)
+    angles: list[float] = []
+    for _ in range(int(timeout_s / 0.1)):
+        angles = [float(a) for a in waldoctl.commander.status.joints.angles.deg]
+        if len(angles) >= 6 and all(
+            abs(a - t) < 1.0 for a, t in zip(angles, JOG_SAFE_POSE_DEG)
+        ):
+            return
+        await asyncio.sleep(0.1)
+    raise TimeoutError(f"teleport to jog pose did not settle: {angles}")
+
+
 async def ensure_robot_ready_for_motion(timeout_s: float = 5.0) -> None:
     """Validate robot state is ready for motion testing.
 
