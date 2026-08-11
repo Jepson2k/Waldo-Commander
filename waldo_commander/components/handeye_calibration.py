@@ -73,6 +73,7 @@ class HandEyeCalibrationPanel(Panel):
         self._detector = handeye.make_detector(self._spec)
         self._samples: list[handeye.HandEyeSample] = []
         self._sample_tool_key: str | None = None
+        self._method = "PARK"
         self._result: handeye.HandEyeResult | None = None
         self._last_detection: handeye.Detection | None = None
         self._detect_busy = False
@@ -88,19 +89,23 @@ class HandEyeCalibrationPanel(Panel):
         self._capture_btn: ui.button | None = None
         self._solve_btn: ui.button | None = None
         self._save_btn: ui.button | None = None
-        self._method_select: ui.select | None = None
         self._sample_count: ui.label | None = None
         self._samples_container: ui.column | None = None
+        self._samples_detail: ui.expansion | None = None
         self._diversity_label: ui.label | None = None
         self._result_container: ui.column | None = None
         self._stored_container: ui.column | None = None
         self._scene_switch: ui.switch | None = None
+        self._samples_section: ui.column | None = None
+        self._solve_section: ui.column | None = None
+        self._stored_section: ui.column | None = None
         self._commander: Commander | None = None
         self._camera_hint_label: ui.label | None = None
         self._last_status_text: str | None = None
         self._last_overlay_content: str | None = None
         self._last_capture_enabled: bool | None = None
         self._last_hint_text: str | None = None
+        self._last_stored_tool: str | None = None
 
     # ------------------------------------------------------------------ build
 
@@ -120,13 +125,23 @@ class HandEyeCalibrationPanel(Panel):
 
             self._build_board_section()
             self._build_camera_section()
-            self._build_samples_section()
-            self._build_solve_section()
-            self._build_stored_section()
+            # Progressive disclosure: each later workflow stage stays hidden
+            # until it is reachable (camera live -> capture, enough samples ->
+            # solve, something saved or solved -> stored/scene).
+            self._samples_section = ui.column().classes("w-full gap-2")
+            with self._samples_section:
+                self._build_samples_section()
+            self._solve_section = ui.column().classes("w-full gap-2")
+            with self._solve_section:
+                self._build_solve_section()
+            self._stored_section = ui.column().classes("w-full gap-2")
+            with self._stored_section:
+                self._build_stored_section()
 
         ui.timer(DETECT_INTERVAL_S, self._detect_tick)
         self._refresh_samples()
         self._refresh_stored()
+        self._refresh_stage()
 
     def _build_board_section(self) -> None:
         with ui.expansion("Target board", icon="grid_on").classes("w-full"):
@@ -243,14 +258,14 @@ class HandEyeCalibrationPanel(Panel):
             self._sample_count.mark("handeye-sample-count")
         self._diversity_label = ui.label("").classes("text-caption")
         self._diversity_label.mark("handeye-diversity")
-        self._samples_container = ui.column().classes("w-full gap-0")
+        self._samples_detail = (
+            ui.expansion("Sample details").props("dense").classes("w-full text-caption")
+        )
+        with self._samples_detail:
+            self._samples_container = ui.column().classes("w-full gap-0")
 
     def _build_solve_section(self) -> None:
         with ui.row().classes("items-center"):
-            self._method_select = ui.select(
-                list(handeye.HAND_EYE_METHODS), value="PARK", label="Method"
-            ).classes("w-32")
-            self._method_select.mark("handeye-method")
             self._solve_btn = ui.button("Solve", icon="calculate", on_click=self._solve)
             self._solve_btn.mark("handeye-solve")
             self._save_btn = ui.button("Save", icon="save", on_click=self._save).props(
@@ -273,6 +288,24 @@ class HandEyeCalibrationPanel(Panel):
             )
             self._scene_switch.mark("handeye-scene-toggle")
             ui.timer(1.0, self._refresh_scene_overlay)
+
+    def _refresh_stage(self) -> None:
+        """Show each workflow stage only once it is reachable. Repeated
+        set_visibility calls with an unchanged value are no-ops, so this is
+        safe to drive from the detection timer."""
+        if self._samples_section is not None:
+            self._samples_section.set_visibility(
+                camera_service.active or bool(self._samples)
+            )
+        if self._solve_section is not None:
+            self._solve_section.set_visibility(
+                len(self._samples) >= SOLVE_MIN_SAMPLES or self._result is not None
+            )
+        if self._stored_section is not None:
+            has_stored = bool(
+                ng_app.storage.general.get(f"handeye/{_selected_tool_key()}")
+            )
+            self._stored_section.set_visibility(has_stored or self._result is not None)
 
     # ------------------------------------------------------------- detection
 
@@ -298,6 +331,8 @@ class HandEyeCalibrationPanel(Panel):
             self._camera_card.set_visibility(active)
         if self._camera_hint is not None:
             self._camera_hint.set_visibility(not active)
+        if self._status_label is not None:
+            self._status_label.set_visibility(active)
         if not active and self._camera_hint_label is not None:
             hint = self._camera_hint_text()
             if hint != self._last_hint_text:
@@ -310,6 +345,9 @@ class HandEyeCalibrationPanel(Panel):
 
     async def _detect_tick(self) -> None:
         self._set_camera_visibility(camera_service.active)
+        self._refresh_stage()
+        if _selected_tool_key() != self._last_stored_tool:
+            self._refresh_stored()
         if self._detect_busy:
             return
         if not camera_service.active:
@@ -444,6 +482,9 @@ class HandEyeCalibrationPanel(Panel):
             self._sample_count.set_text(f"{n} sample{'s' if n != 1 else ''}")
         if self._solve_btn is not None:
             self._solve_btn.set_enabled(n >= SOLVE_MIN_SAMPLES)
+        if self._samples_detail is not None:
+            self._samples_detail.set_visibility(n > 0)
+        self._refresh_stage()
 
         if self._diversity_label is not None:
             if n < 2:
@@ -506,7 +547,7 @@ class HandEyeCalibrationPanel(Panel):
     async def _solve(self) -> None:
         if len(self._samples) < SOLVE_MIN_SAMPLES:
             return
-        method = str(self._method_select.value) if self._method_select else "PARK"
+        method = self._method
         assert self._solve_btn is not None
         self._solve_btn.props("loading")
         try:
@@ -522,6 +563,7 @@ class HandEyeCalibrationPanel(Panel):
             return
         self._result = result
         self._show_result(result)
+        self._refresh_stage()
         if self._save_btn is not None:
             self._save_btn.set_enabled(True)
         if float(np.linalg.norm(result.T_cam2gripper[:3, 3])) > 500.0:
@@ -542,10 +584,6 @@ class HandEyeCalibrationPanel(Panel):
             ui.label("Camera → TCP transform").classes("text-caption text-grey")
             ui.label(f"X {x:+.1f}  Y {y:+.1f}  Z {z:+.1f} mm").classes("font-mono")
             ui.label(f"R {rx:+.1f}  P {ry:+.1f}  Y {rz:+.1f} °").classes("font-mono")
-            ui.label(
-                f"fx {K[0, 0]:.1f}  fy {K[1, 1]:.1f}  "
-                f"cx {K[0, 2]:.1f}  cy {K[1, 2]:.1f} px"
-            ).classes("font-mono text-caption")
             with ui.row().classes("text-caption"):
                 ui.label(f"Reproj RMS {rms:.2f} px").classes(
                     _quality_color(rms, _QUALITY_RMS_PX)
@@ -557,9 +595,27 @@ class HandEyeCalibrationPanel(Panel):
                 ui.label(f"Target spread {result.target_spread_mm:.1f} mm").classes(
                     _quality_color(result.target_spread_mm, _QUALITY_SPREAD_MM)
                 )
-            ui.label(f"{result.n_views} views · {result.method}").classes(
-                "text-caption text-grey"
-            )
+            # Diagnostics and the solver choice are expert territory — folded
+            # away so the headline stays transform + quality.
+            with ui.expansion("Details").props("dense").classes("w-full text-caption"):
+                ui.label(
+                    f"fx {K[0, 0]:.1f}  fy {K[1, 1]:.1f}  "
+                    f"cx {K[0, 2]:.1f}  cy {K[1, 2]:.1f} px"
+                ).classes("font-mono text-caption")
+                with ui.row().classes("items-center text-caption"):
+                    ui.label(f"{result.n_views} views · method")
+                    method_select = (
+                        ui.select(list(handeye.HAND_EYE_METHODS), value=result.method)
+                        .props("dense options-dense borderless")
+                        .classes("w-28")
+                    )
+                    method_select.mark("handeye-method")
+                    method_select.on_value_change(
+                        lambda e: setattr(self, "_method", str(e.value))
+                    )
+                    ui.label("— re-solve to apply a different method").classes(
+                        "text-grey"
+                    )
 
     def _save(self) -> None:
         result = self._result
@@ -584,12 +640,11 @@ class HandEyeCalibrationPanel(Panel):
             return
         self._stored_container.clear()
         tool_key = _selected_tool_key()
+        self._last_stored_tool = tool_key
         stored = ng_app.storage.general.get(f"handeye/{tool_key}")
+        self._refresh_stage()
         with self._stored_container:
             if not stored:
-                ui.label(f"No stored calibration for tool {tool_key}").classes(
-                    "text-caption text-grey"
-                )
                 return
             try:
                 info = handeye.from_storage_dict(stored)

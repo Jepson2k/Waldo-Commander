@@ -156,7 +156,18 @@ async def test_handeye_panel_workflow(
         await user.should_see(marker="tab-handeye")
         user.find(marker="tab-handeye").click()
         await asyncio.sleep(0)
-        await user.should_see(marker="handeye-capture")
+        await user.should_see(marker="handeye-board-download")
+
+        panel = next(p for p in ui_state.plugin_panels if p.id == "handeye")
+        assert isinstance(panel, HandEyeCalibrationPanel)
+        spec = panel._spec
+
+        # Progressive disclosure: with no camera active, only the board
+        # section and the hint are shown — capture and solve stay hidden.
+        assert panel._samples_section is not None
+        assert panel._solve_section is not None
+        assert not panel._samples_section.visible
+        assert not panel._solve_section.visible
 
         # When the installed parol6 declares MSG's built-in camera mount, the
         # panel points at the device assignment instead of the generic hint.
@@ -174,10 +185,14 @@ async def test_handeye_panel_workflow(
             lambda: camera_service.active,
             message="MSG tool camera did not start",
         )
-
-        panel = next(p for p in ui_state.plugin_panels if p.id == "handeye")
-        assert isinstance(panel, HandEyeCalibrationPanel)
-        spec = panel._spec
+        # The detection timer reveals the capture stage once the camera runs.
+        await _wait_for(
+            lambda: (
+                panel._samples_section is not None and panel._samples_section.visible
+            ),
+            message="capture stage did not appear after camera start",
+        )
+        assert not panel._solve_section.visible
 
         client = waldoctl.commander.client
         angles = await client.angles()
@@ -221,6 +236,13 @@ async def test_handeye_panel_workflow(
                 ),
                 message="robot never reported stationary",
             )
+            # The first hi-res detection after a cold start can outlast
+            # should_see's short retry window — wait on the tick's state.
+            await _wait_for(
+                lambda: (panel._last_status_text or "").startswith("Board detected"),
+                timeout=15.0,
+                message=f"view {i}: detect tick did not report the board",
+            )
             await user.should_see("Board detected")
 
             user.find(marker="handeye-capture").click()
@@ -230,6 +252,8 @@ async def test_handeye_panel_workflow(
             )
         n_views = len(VIEW_DELTAS_DEG)
         await user.should_see(f"{n_views} samples")
+        # Enough samples to solve — the solve stage is revealed.
+        assert panel._solve_section.visible
 
         user.find(marker="handeye-solve").click()
         await _wait_for(lambda: panel._result is not None, timeout=30.0)
@@ -258,6 +282,7 @@ async def test_handeye_panel_workflow(
         stored = ng_app.storage.general.get("handeye/MSG")
         assert stored is not None
         assert stored["tool_key"] == "MSG"
+        assert panel._stored_section is not None and panel._stored_section.visible
         np.testing.assert_allclose(
             np.asarray(stored["T_cam2gripper_mm"]).reshape(4, 4),
             result.T_cam2gripper,
