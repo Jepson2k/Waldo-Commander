@@ -113,7 +113,9 @@ class HandEyeCalibrationPanel(Panel):
         self._reset_element_refs()
         self._commander = commander
 
-        with ui.column().classes("w-full gap-2"):
+        # Capped width: the live view scales down inside the cap, so a
+        # high-resolution tool camera can't balloon the whole pane.
+        with ui.column().classes("w-full max-w-xl gap-2"):
             with ui.row().classes("w-full items-center"):
                 ui.label("Hand-Eye Calibration").classes("text-subtitle1")
                 ui.space()
@@ -145,24 +147,24 @@ class HandEyeCalibrationPanel(Panel):
 
     def _build_board_section(self) -> None:
         with ui.expansion("Target board", icon="grid_on").classes("w-full"):
-            with ui.row().classes("items-end"):
+            with ui.row().classes("items-end gap-2"):
                 sx = ui.number(
                     "Squares X", value=self._spec.squares_x, min=3, max=20, precision=0
-                )
+                ).classes("w-20")
                 sy = ui.number(
                     "Squares Y", value=self._spec.squares_y, min=3, max=20, precision=0
-                )
+                ).classes("w-20")
                 sq = ui.number(
                     "Square mm", value=self._spec.square_mm, min=5.0, step=0.5
-                )
+                ).classes("w-24")
                 mk = ui.number(
                     "Marker mm", value=self._spec.marker_mm, min=3.0, step=0.5
-                )
+                ).classes("w-24")
                 dic = ui.select(
                     list(handeye.ARUCO_DICTIONARIES),
                     value=self._spec.dictionary,
                     label="Dictionary",
-                )
+                ).classes("w-32")
 
             def current_inputs() -> handeye.BoardSpec:
                 return handeye.BoardSpec(
