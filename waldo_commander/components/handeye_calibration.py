@@ -61,6 +61,13 @@ class HandEyeCalibrationPanel(Panel):
     tab_icon = "center_focus_strong"
     tab_tooltip = "Hand-eye calibration"
     order = 50
+    # Registered with the host's panel-resize system: opens at the default
+    # size, drag-resizable, chosen size persists. The live view scales to
+    # the pane, so a high-resolution tool camera can't balloon the layout.
+    min_width = 440
+    min_height = 320
+    default_width = 600
+    default_height = 640
 
     def __init__(self) -> None:
         stored = ng_app.storage.general.get("handeye/board")
@@ -113,9 +120,7 @@ class HandEyeCalibrationPanel(Panel):
         self._reset_element_refs()
         self._commander = commander
 
-        # Capped width: the live view scales down inside the cap, so a
-        # high-resolution tool camera can't balloon the whole pane.
-        with ui.column().classes("w-full max-w-xl gap-2"):
+        with ui.column().classes("w-full gap-2"):
             with ui.row().classes("w-full items-center"):
                 ui.label("Hand-Eye Calibration").classes("text-subtitle1")
                 ui.space()

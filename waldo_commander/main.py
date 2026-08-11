@@ -557,6 +557,32 @@ def _add_plugin_tabs(slot: PanelSlot) -> None:
             tab.mark(f"tab-{p.id}")
 
 
+def _plugin_panel_size(p) -> dict:
+    """PanelResize entry for a plugin panel that declares sizing metadata
+    (waldoctl ``Panel.min_width`` etc.), or {} for content-sized panels.
+    getattr keeps this working against waldoctl versions predating the
+    sizing attributes."""
+    entry = {
+        js_key: value
+        for attr, js_key in (
+            ("min_width", "minWidth"),
+            ("min_height", "minHeight"),
+            ("default_width", "defaultWidth"),
+            ("default_height", "defaultHeight"),
+        )
+        if (value := getattr(p, attr, None)) is not None
+    }
+    if not entry:
+        return {}
+    group = "top" if p.slot is PanelSlot.LEFT_TOP_TAB else "bottom"
+    container = (
+        ".top-panels-container" if group == "top" else ".bottom-panels-container"
+    )
+    entry["selector"] = f"{container} .{p.id}-panel"
+    entry["group"] = group
+    return entry
+
+
 def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
     """Add a built ``ui.tab_panel`` for each discovered plugin panel in *slot*.
 
@@ -564,7 +590,10 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
     """
     for p in ui_state.plugin_panels:
         if p.slot is slot:
-            with ui.tab_panel(p.id).classes("gap-2 overlay-card overflow-hidden"):
+            classes = "gap-2 overlay-card overflow-hidden"
+            if _plugin_panel_size(p):
+                classes += f" {p.id}-panel resizable-panel"
+            with ui.tab_panel(p.id).classes(classes):
                 # A third-party plugin's build() must not blank the whole page;
                 # leave an empty-but-valid tab panel on failure (mirrors the
                 # init guard in _discover_plugin_panels).
@@ -809,7 +838,18 @@ def _setup_panel_persistence(refs: dict) -> None:
     update_top_layout = refs["update_top_layout"]
     update_bottom_layout = refs["update_bottom_layout"]
 
-    ui.run_javascript(f"PanelResize.configure({json.dumps(PANEL_RESIZE_CONFIG)})")
+    resize_config = {
+        **PANEL_RESIZE_CONFIG,
+        "panels": {
+            **PANEL_RESIZE_CONFIG["panels"],
+            **{
+                p.id: entry
+                for p in ui_state.plugin_panels
+                if (entry := _plugin_panel_size(p))
+            },
+        },
+    }
+    ui.run_javascript(f"PanelResize.configure({json.dumps(resize_config)})")
     _gripper_preset = "camera" if camera_service.active else "default"
     ui.run_javascript(f'PanelResize.resizePanel("gripper", "{_gripper_preset}")')
 

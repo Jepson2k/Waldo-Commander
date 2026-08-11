@@ -603,11 +603,15 @@
                 }
                 console.log('[PanelResize] Pre-set container size:', savedSize.width, 'x', savedSize.height);
             } else if (container) {
-                // No saved size - use panel's minHeight or default
+                // No saved size - use panel's declared defaults or minima
                 const viewportHeight = window.innerHeight;
-                const defaultHeight = panelConfig.minHeight || Math.min(Math.floor(viewportHeight * 0.5), 500);
+                const defaultHeight = panelConfig.defaultHeight || panelConfig.minHeight || Math.min(Math.floor(viewportHeight * 0.5), 500);
                 container.style.height = defaultHeight + 'px';
-                console.log('[PanelResize] Pre-set default container height:', defaultHeight);
+                const defaultWidth = panelConfig.defaultWidth || panelConfig.minWidth;
+                if (defaultWidth) {
+                    container.style.width = Math.min(defaultWidth, getMaxWidth()) + 'px';
+                }
+                console.log('[PanelResize] Pre-set default container size:', defaultWidth, 'x', defaultHeight);
             }
         }
 
