@@ -49,6 +49,7 @@ dependencies = [
 
 [project.optional-dependencies]
 parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0"]
+par6 = ["par6 @ git+https://github.com/Jepson2k/par6.git@main#subdirectory=python"]
 v4l2 = ["linuxpy>=0.24"]
 dev = [
   "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0",

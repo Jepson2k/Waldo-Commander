@@ -45,6 +45,9 @@ jobs:
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
             fi
+            if git ls-remote --heads https://github.com/Jepson2k/par6.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "par6 @ git+https://github.com/Jepson2k/par6.git@${BRANCH}#subdirectory=python"
+            fi
           fi
           mkdir -p PAROL6-python-API
       - name: Run pre-commit
@@ -92,6 +95,9 @@ jobs:
             fi
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
+            fi
+            if git ls-remote --heads https://github.com/Jepson2k/par6.git "$BRANCH" 2>/dev/null | grep -q .; then
+              pip install --force-reinstall --no-deps "par6 @ git+https://github.com/Jepson2k/par6.git@${BRANCH}#subdirectory=python"
             fi
           fi
 
