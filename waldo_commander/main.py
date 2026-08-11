@@ -592,7 +592,12 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
         if p.slot is slot:
             classes = "gap-2 overlay-card overflow-hidden"
             if _plugin_panel_size(p):
-                classes += f" {p.id}-panel resizable-panel"
+                # Fixed-height container: content taller than it must scroll,
+                # not clip.
+                classes = (
+                    "gap-2 overlay-card overflow-x-hidden overflow-y-auto"
+                    f" {p.id}-panel resizable-panel"
+                )
             with ui.tab_panel(p.id).classes(classes):
                 # A third-party plugin's build() must not blank the whole page;
                 # leave an empty-but-valid tab panel on failure (mirrors the
