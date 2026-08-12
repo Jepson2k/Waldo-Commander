@@ -444,22 +444,17 @@ async def test_handeye_auto_calibration(
         assert trans_err < 30.0, f"translation off by {trans_err:.1f} mm"
         assert rot_err < 3.0, f"rotation off by {rot_err:.2f} deg"
 
-        # The run ends by driving back to the start pose. That path is not
-        # always available — with the MSG gripper the planner refuses some
-        # sweeps back toward the standby pose (L4 against the gripper body) —
-        # so the contract is that the robot ends at a pose the routine chose:
-        # the start pose if the drive back was accepted, otherwise parked at
-        # the view it stopped on. Never anywhere else.
+        # The run ends where it started. With the MSG gripper mounted the arm
+        # sits permanently inside the controller's clearance margin (its body
+        # clears L4 by ~2 mm against a 5 mm margin), so a single move back —
+        # and the controller's own home command — is refused as driving
+        # deeper into collision; the routine has to walk the last leg back in
+        # sub-steps. Anything short of the start pose means that fallback
+        # regressed and the robot is left parked mid-sweep.
         end_angles = await waldoctl.commander.client.angles()
         assert end_angles is not None
-        assert any(
-            max(
-                abs(e - (h + d))
-                for e, h, d in zip(end_angles, home_angles, deltas, strict=True)
-            )
-            < 1.0
-            for deltas in ((0.0,) * 6, *AUTO_VIEW_DELTAS_DEG)
-        ), "run left the robot away from both the start pose and every view pose"
+        drift = max(abs(e - h) for e, h in zip(end_angles, home_angles, strict=True))
+        assert drift < 1.0, f"did not return to the start pose (drift {drift:.2f}°)"
 
         # Solve is automatic, saving is not — a bad autonomous run must not
         # clobber a stored calibration.
