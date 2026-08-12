@@ -14,6 +14,7 @@ and the solved transform is camera→MSG-TCP, stored under ``handeye/MSG``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import ClassVar
 
 import cv2
@@ -29,6 +30,7 @@ from scipy.spatial.transform import Rotation
 from tests.helpers.charuco_render import board_center, render_board_view
 from tests.helpers.wait import wait_for_app_ready
 from waldo_commander.components.handeye_calibration import (
+    AUTO_VIEW_DELTAS_DEG,
     STATIONARY_SPEED_DEG_S,
     HandEyeCalibrationPanel,
 )
@@ -43,41 +45,13 @@ X_TRUE = np.eye(4)
 X_TRUE[:3, :3] = Rotation.from_rotvec(np.radians([5.0, -4.0, 88.0])).as_matrix()
 X_TRUE[:3, 3] = (35.0, -20.0, 55.0)
 
-# Wrist+arm deltas from home. The board is fixed in the workspace, so large
-# rotations are only possible about the camera's optical axis (J4/J6 rolls);
-# J5 tilts swing the board toward the FOV edge and must stay small, and J1-J3
-# moves translate the camera to vary the viewing distance. With the MSG
-# gripper attached, negative J5 folds its body toward the forearm and the
-# controller rejects the move as a predicted self-collision — J5 deltas must
-# stay non-negative from the standby pose, and the same collision boxes J2/J3
-# depth excursions to roughly -10..+6 deg. Within that envelope focal length
-# (and thus depth) stays only marginally observable, so the intrinsics solve
-# amplifies corner noise into hand-eye translation error; fifteen views
-# (rather than a minimal set) average that noise down.
-#
-# Consecutive views also constrain each other: joint-space paths that swing
-# J4 while J2/J3 are extended skirt the L4/MSG collision margin so closely
-# that sub-degree start differences flip the controller's verdict. The order
-# below keeps large J4 swings at home J2/J3, changes rolls (J6) freely, and
-# walks J2/J3 depth excursions in small steps, so every segment clears the
-# margin structurally rather than marginally.
-VIEW_DELTAS_DEG = [
-    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-    (0.0, 0.0, 0.0, 0.0, 0.0, 35.0),
-    (0.0, 5.0, -7.0, 0.0, 0.0, -30.0),
-    (0.0, 6.0, -8.0, 0.0, 2.0, 20.0),
-    (0.0, -5.0, 7.0, 0.0, 7.0, 15.0),
-    (0.0, 0.0, 0.0, 12.0, 7.0, -20.0),
-    (0.0, 0.0, 0.0, 18.0, 7.0, 20.0),
-    (0.0, 0.0, 0.0, -12.0, 5.0, -30.0),
-    (0.0, 4.0, -5.0, -12.0, 5.0, 0.0),
-    (4.0, -3.0, 4.0, 0.0, 6.0, 25.0),
-    (0.0, -8.0, 11.0, 0.0, 5.0, 0.0),
-    (0.0, -6.0, 8.0, 6.0, 6.0, 30.0),
-    (-6.0, -6.0, 8.0, 0.0, 6.0, -25.0),
-    (-5.0, -10.0, 14.0, 0.0, 8.0, 25.0),
-    (0.0, -5.0, 7.0, 0.0, 6.0, -15.0),
-]
+# The panel's auto-calibration pose set doubles as the manual-capture drive
+# plan here — the deltas and their ordering rationale (FOV limits, MSG
+# collision envelope, why fifteen views) live with AUTO_VIEW_DELTAS_DEG in
+# the panel module. Within that envelope focal length (and thus depth) stays
+# only marginally observable, so the intrinsics solve amplifies corner noise
+# into hand-eye translation error; fifteen views average that noise down.
+VIEW_DELTAS_DEG = AUTO_VIEW_DELTAS_DEG
 
 
 class _FrameBackend:
@@ -90,6 +64,40 @@ class _FrameBackend:
 
     def read_frame(self) -> bytes | None:
         return self.holder["jpeg"] or None
+
+    def close(self) -> None:
+        pass
+
+
+class _LiveBoardBackend:
+    """Capture backend rendering the board view for the robot's *current*
+    pose. The auto-calibration routine moves the robot itself, so frames
+    must track the live pose instead of being injected per-view by the test.
+    Renders only when the robot is stationary at a new pose; during motion it
+    serves the previous render (detection mid-move is irrelevant — the panel
+    only captures once stationary)."""
+
+    spec: ClassVar[handeye.BoardSpec | None] = None
+    T_base_target: ClassVar[np.ndarray | None] = None
+    _cache: ClassVar[tuple[bytes, bytes] | None] = None
+
+    def open(self, device: int | str, width: int, height: int) -> bool:
+        return True
+
+    def read_frame(self) -> bytes | None:
+        spec, T_bt = self.spec, self.T_base_target
+        pose = np.asarray(robot_state.pose, dtype=np.float64)
+        if spec is None or T_bt is None or pose.size != 16 or not np.any(pose):
+            return None
+        moving = float(np.max(np.abs(robot_state.speeds))) >= STATIONARY_SPEED_DEG_S
+        key = pose.tobytes()
+        cache = type(self)._cache
+        if cache is not None and (moving or cache[0] == key):
+            return cache[1]
+        T_cam_target = np.linalg.inv(pose.reshape(4, 4) @ X_TRUE) @ T_bt
+        jpeg = _jpeg(render_board_view(spec, K_TRUE, T_cam_target, IMAGE_SIZE))
+        type(self)._cache = (key, jpeg)
+        return jpeg
 
     def close(self) -> None:
         pass
@@ -296,6 +304,13 @@ async def test_handeye_panel_workflow(
             lambda: camera_service.get_latest_frame() == blank,
             message="camera loop did not pick up the blank frame",
         )
+        # Detection on a hi-res frame can outlast should_see's retry window
+        # on a loaded runner — wait on the tick's own state first.
+        await _wait_for(
+            lambda: panel._last_status_text == "No board detected",
+            timeout=15.0,
+            message="detect tick did not clear the board",
+        )
         await user.should_see("No board detected")
         user.find(marker="handeye-capture").click()
         await asyncio.sleep(0.2)
@@ -307,5 +322,202 @@ async def test_handeye_panel_workflow(
         raise
     finally:
         camera_service.stop()
+        for key in ("handeye/MSG", "handeye/board", "tool_camera/MSG", "selected_tool"):
+            ng_app.storage.general.pop(key, None)
+
+
+@pytest.mark.integration
+# The routine drives the full pose set and walks back along it, so this test
+# runs ~30 simulated moves plus a solve — well past the 90 s global budget.
+# Trimming the pose set would cost exactly what the test is for: proving the
+# built-in poses are collision-safe end to end and calibrate unattended.
+@pytest.mark.timeout(420)
+async def test_handeye_auto_calibration(
+    user: User, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Auto-calibrate drives the robot through the built-in pose set on its
+    own: confirm the dialog, then the routine moves, captures and solves
+    unattended, tries to drive back to the start pose, and leaves saving to
+    the user. A second run checks that Stop cancels cleanly, keeping the
+    extra samples without re-solving.
+    """
+    from waldo_commander.components import handeye_calibration as hp
+    from waldo_commander.services import camera_service as cam_module
+
+    monkeypatch.setattr(cam_module, "LinuxpyBackend", _LiveBoardBackend)
+    monkeypatch.setattr(cam_module, "OpenCVBackend", _LiveBoardBackend)
+    # The real pacing constants are hardware-safe (slow); the simulator does
+    # not need the caution.
+    monkeypatch.setattr(hp, "AUTO_MIN_MOVE_S", 0.8)
+    monkeypatch.setattr(hp, "AUTO_DEG_PER_S", 60.0)
+    monkeypatch.setattr(hp, "AUTO_SETTLE_S", 0.25)
+    _LiveBoardBackend.spec = None
+    _LiveBoardBackend.T_base_target = None
+    _LiveBoardBackend._cache = None
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    panel: HandEyeCalibrationPanel | None = None
+
+    try:
+        await user.open("/")
+        await wait_for_app_ready()
+
+        user.find(kind=ui.tab, content="Settings").click()
+        await asyncio.sleep(0)
+        tool_select = next(iter(user.find(marker="select-tool").elements))
+        assert isinstance(tool_select, ui.select)
+
+        async def select_tool(key: str) -> None:
+            tool_select.set_value(key)
+            await _wait_for(
+                lambda: ng_app.storage.general.get("selected_tool") == key,
+                message=f"{key} tool selection did not apply",
+            )
+
+        await select_tool("MSG")
+        await user.should_see(marker="tab-handeye")
+        found = next(p for p in ui_state.plugin_panels if p.id == "handeye")
+        assert isinstance(found, HandEyeCalibrationPanel)
+        panel = found
+
+        # Same fixed-board geometry as the manual test, but handed to the
+        # backend up front — the routine picks its own poses.
+        T0 = await _current_pose()
+        Tc = np.eye(4)
+        Tc[:3, 3] = -board_center(panel._spec)
+        Rx = np.eye(4)
+        Rx[:3, :3] = Rotation.from_euler("X", np.radians(40.0)).as_matrix()
+        Tz = np.eye(4)
+        Tz[:3, 3] = (0.0, 0.0, 650.0)
+        _LiveBoardBackend.T_base_target = T0 @ X_TRUE @ Tz @ Rx @ Tc
+        _LiveBoardBackend.spec = panel._spec
+
+        ng_app.storage.general["tool_camera/MSG"] = 0
+        await select_tool("NONE")
+        await select_tool("MSG")
+        await _wait_for(
+            lambda: camera_service.active, message="MSG tool camera did not start"
+        )
+
+        user.find(marker="tab-handeye").click()
+        await asyncio.sleep(0)
+        angles = await waldoctl.commander.client.angles()
+        assert angles is not None
+        home_angles = list(angles)
+
+        async def wait_board_detected() -> None:
+            await _wait_for(
+                lambda: (panel._last_status_text or "").startswith("Board detected"),
+                timeout=15.0,
+                message="detect tick did not report the board",
+            )
+
+        await wait_board_detected()
+        user.find(marker="handeye-auto").click()
+        await user.should_see(marker="handeye-auto-confirm")
+        user.find(marker="handeye-auto-confirm").click()
+        await _wait_for(lambda: panel._auto_running, message="auto run did not start")
+
+        n_views = len(AUTO_VIEW_DELTAS_DEG)
+        await _wait_for(
+            lambda: panel._auto_task is not None and panel._auto_task.done(),
+            timeout=240.0,
+            message="auto run did not finish",
+        )
+
+        # All poses are accepted from home (the manual test proves that) and
+        # every view renders a detectable board; a small allowance covers a
+        # rare timing skip.
+        assert len(panel._samples) >= n_views - 3, (
+            f"only {len(panel._samples)}/{n_views} views captured"
+        )
+        result = panel._result
+        assert result is not None, "auto run did not solve"
+        trans_err = float(np.linalg.norm(result.T_cam2gripper[:3, 3] - X_TRUE[:3, 3]))
+        rot_err = np.degrees(
+            np.linalg.norm(
+                Rotation.from_matrix(
+                    result.T_cam2gripper[:3, :3].T @ X_TRUE[:3, :3]
+                ).as_rotvec()
+            )
+        )
+        assert trans_err < 30.0, f"translation off by {trans_err:.1f} mm"
+        assert rot_err < 3.0, f"rotation off by {rot_err:.2f} deg"
+
+        # The run ends by driving back to the start pose. That path is not
+        # always available — with the MSG gripper the planner refuses some
+        # sweeps back toward the standby pose (L4 against the gripper body) —
+        # so the contract is that the robot ends at a pose the routine chose:
+        # the start pose if the drive back was accepted, otherwise parked at
+        # the view it stopped on. Never anywhere else.
+        end_angles = await waldoctl.commander.client.angles()
+        assert end_angles is not None
+        assert any(
+            max(
+                abs(e - (h + d))
+                for e, h, d in zip(end_angles, home_angles, deltas, strict=True)
+            )
+            < 1.0
+            for deltas in ((0.0,) * 6, *AUTO_VIEW_DELTAS_DEG)
+        ), "run left the robot away from both the start pose and every view pose"
+
+        # Solve is automatic, saving is not — a bad autonomous run must not
+        # clobber a stored calibration.
+        assert ng_app.storage.general.get("handeye/MSG") is None
+
+        # Stop ends a run in flight: the samples already taken survive, the
+        # previous solve is left alone, and the progress line clears.
+        n_before = len(panel._samples)
+        await wait_board_detected()
+        user.find(marker="handeye-auto").click()
+        await user.should_see(marker="handeye-auto-confirm")
+        user.find(marker="handeye-auto-confirm").click()
+        await _wait_for(
+            lambda: panel._auto_running,
+            timeout=30.0,
+            message="second run did not start",
+        )
+        user.find(marker="handeye-auto").click()
+        await _wait_for(
+            lambda: panel._auto_task is not None and panel._auto_task.done(),
+            timeout=60.0,
+            message="Stop did not end the run",
+        )
+        assert len(panel._samples) >= n_before
+        assert panel._result is result
+        assert panel._auto_progress_text is None
+
+        # A refused move is a planner verdict the routine is built to absorb,
+        # not a defect — but the controller logs each one at ERROR. Drop just
+        # those records so the fixture's blanket ERROR check still guards
+        # everything else.
+        caplog.get_records("call")[:] = [
+            r
+            for r in caplog.get_records("call")
+            if "Self-collision predicted" not in r.getMessage()
+        ]
+    except BaseException:
+        import traceback
+
+        traceback.print_exc()
+        raise
+    finally:
+        camera_service.stop()
+        _LiveBoardBackend.spec = None
+        _LiveBoardBackend.T_base_target = None
+        _LiveBoardBackend._cache = None
+        # Let the panel settle on the stopped camera before the fixture tears
+        # the app down. A live board keeps the detection tick rewriting the
+        # corner overlay, and an element update still in flight when the
+        # fixture restores NiceGUI's globals fails to emit — which NiceGUI
+        # logs, which the log panel renders, which queues another update.
+        if panel is not None:
+            with contextlib.suppress(AssertionError):
+                await _wait_for(
+                    lambda: panel is not None
+                    and panel._last_status_text == "No camera active",
+                    timeout=3.0,
+                )
+        await asyncio.sleep(0.5)
         for key in ("handeye/MSG", "handeye/board", "tool_camera/MSG", "selected_tool"):
             ng_app.storage.general.pop(key, None)

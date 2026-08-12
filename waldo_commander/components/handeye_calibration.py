@@ -1,9 +1,11 @@
 """Eye-in-hand hand-eye calibration panel.
 
-Workflow: print a generated ChArUco board, fix it in the workspace, jog the
-robot so the tool camera sees the board from 10-15 rotation-diverse poses,
-capture a synchronized (TCP pose, frame) sample at each, then solve camera
-intrinsics + the camera→TCP transform and save it per tool.
+Workflow: print a generated ChArUco board, fix it in the workspace, and aim
+the tool camera at it. Then either jog the robot to 10-15 rotation-diverse
+poses by hand, capturing a synchronized (TCP pose, frame) sample at each, or
+let Auto-calibrate drive the robot through a built-in pose set around the
+start pose, capturing at each stop. Solving recovers camera intrinsics + the
+camera→TCP transform, saved per tool.
 
 Registered through the ``waldoctl.panels`` entry-point group, so the host
 mounts it like any third-party panel; being in-tree it may also use
@@ -12,14 +14,15 @@ Waldo-Commander internals (camera service, robot_state) directly.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
 from datetime import UTC, datetime
 
 import numpy as np
-from nicegui import app as ng_app
-from nicegui import run, ui
+from nicegui import Client, app as ng_app
+from nicegui import background_tasks, context, run, ui
 from scipy.spatial.transform import Rotation
 from waldoctl import Commander, Panel, PanelSlot
 
@@ -40,6 +43,60 @@ FRUSTUM_DEPTH_MM = 120.0
 
 _QUALITY_RMS_PX = (1.0, 2.0)
 _QUALITY_SPREAD_MM = (2.0, 5.0)
+
+# Auto-calibration pose set: joint deltas (deg) from the start pose. The
+# board is fixed in the workspace, so large rotations are only possible about
+# the camera's optical axis (J4/J6 rolls); J5 tilts swing the board toward
+# the FOV edge and must stay small, and J1-J3 moves translate the camera to
+# vary the viewing distance. With the MSG gripper attached, negative J5 folds
+# its body toward the forearm and the controller rejects the move as a
+# predicted self-collision, so J5 deltas stay non-negative and J2/J3 depth
+# excursions within roughly -10..+6 deg of the standby pose. The order keeps
+# large J4 swings at start-pose J2/J3 and walks depth in small steps so
+# consecutive segments clear the collision margin structurally. A pose the
+# controller still rejects (other tools, different start pose) is skipped,
+# not fatal.
+AUTO_VIEW_DELTAS_DEG: tuple[tuple[float, float, float, float, float, float], ...] = (
+    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    (0.0, 0.0, 0.0, 0.0, 0.0, 35.0),
+    (0.0, 5.0, -7.0, 0.0, 0.0, -30.0),
+    (0.0, 6.0, -8.0, 0.0, 2.0, 20.0),
+    (0.0, -5.0, 7.0, 0.0, 7.0, 15.0),
+    (0.0, 0.0, 0.0, 12.0, 7.0, -20.0),
+    (0.0, 0.0, 0.0, 18.0, 7.0, 20.0),
+    (0.0, 0.0, 0.0, -12.0, 5.0, -30.0),
+    (0.0, 4.0, -5.0, -12.0, 5.0, 0.0),
+    (4.0, -3.0, 4.0, 0.0, 6.0, 25.0),
+    (0.0, -8.0, 11.0, 0.0, 5.0, 0.0),
+    (0.0, -6.0, 8.0, 6.0, 6.0, 30.0),
+    (-6.0, -6.0, 8.0, 0.0, 6.0, -25.0),
+    (-5.0, -10.0, 14.0, 0.0, 8.0, 25.0),
+    (0.0, -5.0, 7.0, 0.0, 6.0, -15.0),
+)
+
+# Autonomous moves are deliberately slow: duration is sized so the fastest
+# joint stays under AUTO_DEG_PER_S. Tests lower these for the simulator.
+AUTO_DEG_PER_S = 15.0
+AUTO_MIN_MOVE_S = 1.5
+AUTO_MOVE_TIMEOUT_MARGIN_S = 10.0
+AUTO_WAIT_SLICE_S = 0.25
+AUTO_STATIONARY_TIMEOUT_S = 4.0
+# Post-motion settle before capturing, so the cached camera frame postdates
+# the end of the move (one frame period + one capture-loop period, padded).
+AUTO_SETTLE_S = 0.5
+AUTO_CAPTURE_ATTEMPTS = 3
+AUTO_CAPTURE_RETRY_S = 0.6
+AUTO_MAX_CONSECUTIVE_REJECTS = 3
+
+
+class _CaptureRefused(Exception):
+    """A sample could not be taken. ``fatal`` marks conditions that
+    invalidate the whole capture set (tool/resolution changed, robot
+    unreachable) rather than just this attempt."""
+
+    def __init__(self, message: str, *, fatal: bool = False) -> None:
+        super().__init__(message)
+        self.fatal = fatal
 
 
 def _selected_tool_key() -> str:
@@ -86,6 +143,9 @@ class HandEyeCalibrationPanel(Panel):
         self._detect_busy = False
         self._decode_failures = 0
         self._camera_was_active = camera_service.active
+        self._auto_task: asyncio.Task | None = None
+        self._auto_cancel = False
+        self._auto_progress_text: str | None = None
         self._reset_element_refs()
 
     def _reset_element_refs(self) -> None:
@@ -113,6 +173,14 @@ class HandEyeCalibrationPanel(Panel):
         self._last_capture_enabled: bool | None = None
         self._last_hint_text: str | None = None
         self._last_stored_tool: str | None = None
+        self._auto_btn: ui.button | None = None
+        self._clear_btn: ui.button | None = None
+        self._auto_progress_label: ui.label | None = None
+        self._last_auto_running: bool | None = None
+
+    @property
+    def _auto_running(self) -> bool:
+        return self._auto_task is not None and not self._auto_task.done()
 
     # ------------------------------------------------------------------ build
 
@@ -254,15 +322,23 @@ class HandEyeCalibrationPanel(Panel):
 
     def _build_samples_section(self) -> None:
         with ui.row().classes("items-center"):
+            self._auto_btn = ui.button(
+                "Auto-calibrate", icon="play_circle", on_click=self._on_auto_click
+            )
+            self._auto_btn.mark("handeye-auto")
             self._capture_btn = ui.button(
                 "Capture", icon="add_a_photo", on_click=self._capture
-            )
+            ).props("outline")
             self._capture_btn.mark("handeye-capture")
-            ui.button("Clear", icon="delete_sweep", on_click=self._on_clear).props(
-                "outline"
-            ).mark("handeye-clear")
+            self._clear_btn = ui.button(
+                "Clear", icon="delete_sweep", on_click=self._on_clear
+            ).props("outline")
+            self._clear_btn.mark("handeye-clear")
             self._sample_count = ui.label("0 samples")
             self._sample_count.mark("handeye-sample-count")
+        self._auto_progress_label = ui.label().classes("text-caption text-primary")
+        self._auto_progress_label.mark("handeye-auto-progress")
+        self._apply_auto_progress()
         self._diversity_label = ui.label("").classes("text-caption")
         self._diversity_label.mark("handeye-diversity")
         self._samples_detail = (
@@ -353,6 +429,7 @@ class HandEyeCalibrationPanel(Panel):
     async def _detect_tick(self) -> None:
         self._set_camera_visibility(camera_service.active)
         self._refresh_stage()
+        self._refresh_auto_ui()
         if _selected_tool_key() != self._last_stored_tool:
             self._refresh_stored()
         if self._detect_busy:
@@ -404,7 +481,7 @@ class HandEyeCalibrationPanel(Panel):
             if content != self._last_overlay_content:
                 self._last_overlay_content = content
                 self._image.set_content(content)
-        enabled = detection is not None
+        enabled = detection is not None and not self._auto_running
         if self._capture_btn is not None and enabled != self._last_capture_enabled:
             self._last_capture_enabled = enabled
             self._capture_btn.set_enabled(enabled)
@@ -412,44 +489,50 @@ class HandEyeCalibrationPanel(Panel):
     # --------------------------------------------------------------- capture
 
     async def _capture(self) -> None:
+        if self._auto_running:
+            ui.notify("Auto-calibration is running", color="warning")
+            return
+        try:
+            await self._capture_sample()
+        except _CaptureRefused as e:
+            ui.notify(str(e), color="negative" if e.fatal else "warning")
+
+    async def _capture_sample(self) -> None:
+        """Take one synchronized (TCP pose, frame) sample, or raise
+        :class:`_CaptureRefused`. Shared by the Capture button and the
+        auto-calibration run."""
         commander = self._commander
         if commander is None:
-            return
+            raise _CaptureRefused("Panel is not connected to a robot", fatal=True)
         if float(np.max(np.abs(robot_state.speeds))) > STATIONARY_SPEED_DEG_S:
-            ui.notify("Robot is moving — hold still to capture", color="warning")
-            return
+            raise _CaptureRefused("Robot is moving — hold still to capture")
         raw = camera_service.get_latest_frame()
         frame = handeye.decode_jpeg(raw)
         if frame is None:
-            ui.notify("No camera frame available", color="warning")
-            return
+            raise _CaptureRefused("No camera frame available")
         detection = await run.io_bound(handeye.detect_board, frame, self._detector)
         if detection is None:
-            ui.notify("Board not detected in the captured frame", color="warning")
-            return
+            raise _CaptureRefused("Board not detected in the captured frame")
         if (
             self._samples
             and detection.image_size != self._samples[0].detection.image_size
         ):
-            ui.notify(
-                "Camera resolution changed — clear samples to restart", color="negative"
+            raise _CaptureRefused(
+                "Camera resolution changed — clear samples to restart", fatal=True
             )
-            return
         tool_key = _selected_tool_key()
         if self._sample_tool_key is None:
             self._sample_tool_key = tool_key
         elif tool_key != self._sample_tool_key:
-            ui.notify(
+            raise _CaptureRefused(
                 f"Tool changed ({self._sample_tool_key} → {tool_key}) — "
                 "clear samples first",
-                color="negative",
+                fatal=True,
             )
-            return
 
         pose = await self._current_pose_matrix(commander)
         if pose is None:
-            ui.notify("Could not read robot pose", color="negative")
-            return
+            raise _CaptureRefused("Could not read robot pose", fatal=True)
         self._samples.append(handeye.HandEyeSample(pose, detection, time.time()))
         self._refresh_samples()
 
@@ -469,6 +552,9 @@ class HandEyeCalibrationPanel(Panel):
         return pose.reshape(4, 4).copy()
 
     def _on_clear(self) -> None:
+        if self._auto_running:
+            ui.notify("Auto-calibration is running — stop it first", color="warning")
+            return
         self._clear_samples()
         self._refresh_samples()
 
@@ -488,7 +574,9 @@ class HandEyeCalibrationPanel(Panel):
         if self._sample_count is not None:
             self._sample_count.set_text(f"{n} sample{'s' if n != 1 else ''}")
         if self._solve_btn is not None:
-            self._solve_btn.set_enabled(n >= SOLVE_MIN_SAMPLES)
+            self._solve_btn.set_enabled(
+                n >= SOLVE_MIN_SAMPLES and not self._auto_running
+            )
         if self._samples_detail is not None:
             self._samples_detail.set_visibility(n > 0)
         self._refresh_stage()
@@ -549,9 +637,271 @@ class HandEyeCalibrationPanel(Panel):
                             f"handeye-sample-del-{i}"
                         )
 
+    # ------------------------------------------------------- auto-calibration
+
+    async def _on_auto_click(self) -> None:
+        commander = self._commander
+        if commander is None:
+            return
+        if self._auto_running:
+            self._auto_cancel = True
+            await commander.client.stop()
+            ui.notify("Stopping after the current move", color="warning")
+            return
+        if not camera_service.active:
+            ui.notify("No camera active — assign a tool camera first", color="warning")
+            return
+        if self._last_detection is None:
+            ui.notify(
+                "Board not detected — aim the camera at the board first",
+                color="warning",
+            )
+            return
+        n = len(AUTO_VIEW_DELTAS_DEG)
+        with ui.dialog() as dialog, ui.card():
+            ui.label("Automatic calibration").classes("text-subtitle2")
+            ui.label(
+                f"The robot moves by itself through up to {n} poses around "
+                "its current position — wrist tilts up to ~18°, rolls up to "
+                "~35° and small arm shifts — capturing a view at each and "
+                "solving at the end. Poses the controller rejects (joint "
+                "limits, collision) are skipped."
+            )
+            ui.label(
+                "Clear the space around the tool and stay near the E-stop. "
+                "Stop cancels after the current move finishes."
+            ).classes("text-warning")
+            with ui.row():
+                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
+                ui.button(
+                    "Start", icon="play_arrow", on_click=lambda: dialog.submit(True)
+                ).mark("handeye-auto-confirm")
+        try:
+            confirmed = await dialog
+        finally:
+            dialog.delete()
+        if not confirmed:
+            return
+        self._auto_cancel = False
+        self._auto_task = background_tasks.create(
+            self._auto_run(commander, context.client), name="handeye-auto-calibration"
+        )
+
+    async def _auto_run(self, commander: Commander, page_client: Client) -> None:
+        """Drive the robot through :data:`AUTO_VIEW_DELTAS_DEG`, capture at
+        each pose, return to the start pose, and solve. Runs as a background
+        task; Stop sets ``_auto_cancel`` and halts the in-flight move, and the
+        run aborts if the page that started it disconnects."""
+        n = len(AUTO_VIEW_DELTAS_DEG)
+        captured = 0
+        skipped = 0
+        error: str | None = None
+        visited: list[list[float]] = []
+        try:
+            angles = await commander.client.angles()
+            start_angles = list(angles) if angles is not None else None
+            if start_angles is None:
+                error = "Could not read joint angles"
+            else:
+                rejects = 0
+                for i, deltas in enumerate(AUTO_VIEW_DELTAS_DEG):
+                    if self._auto_cancel or not page_client.has_socket_connection:
+                        break
+                    progress = f"Pose {i + 1}/{n} — {captured} captured"
+                    if skipped:
+                        progress += f", {skipped} skipped"
+                    self._set_auto_progress(progress)
+                    target = [a + d for a, d in zip(start_angles, deltas, strict=True)]
+                    if await self._auto_move(commander, target) < 0:
+                        if self._auto_cancel:
+                            break
+                        skipped += 1
+                        rejects += 1
+                        if rejects >= AUTO_MAX_CONSECUTIVE_REJECTS:
+                            error = (
+                                f"{rejects} consecutive moves rejected — check "
+                                "that the robot is homed and the tool has "
+                                "clearance"
+                            )
+                            break
+                        continue
+                    rejects = 0
+                    if self._auto_cancel:
+                        break
+                    visited.append(target)
+                    await self._wait_stationary()
+                    await asyncio.sleep(AUTO_SETTLE_S)
+                    try:
+                        if await self._auto_capture():
+                            captured += 1
+                        else:
+                            skipped += 1
+                    except _CaptureRefused as e:
+                        error = str(e)
+                        break
+            parked = True
+            if visited and start_angles is not None and not self._auto_cancel:
+                parked = await self._auto_return(commander, visited, start_angles)
+            if page_client.has_socket_connection:
+                with page_client:
+                    if not parked:
+                        ui.notify(
+                            "Robot left at the last view pose — the planner "
+                            "refused the path back to the start pose. Jog it "
+                            "clear before the next move.",
+                            color="warning",
+                        )
+                    if error is not None:
+                        ui.notify(
+                            f"Auto-calibration aborted: {error}", color="negative"
+                        )
+                    elif self._auto_cancel:
+                        ui.notify(
+                            f"Auto-calibration stopped — {captured} views captured",
+                            color="warning",
+                        )
+                    elif captured == 0:
+                        ui.notify(
+                            "Auto-calibration captured no views — is the board "
+                            "visible from the start pose?",
+                            color="negative",
+                        )
+                    else:
+                        ui.notify(
+                            f"Auto-calibration captured {captured}/{n} views",
+                            color="positive"
+                            if captured >= RECOMMENDED_SAMPLES
+                            else "warning",
+                        )
+                    if (
+                        error is None
+                        and not self._auto_cancel
+                        and captured > 0
+                        and len(self._samples) >= SOLVE_MIN_SAMPLES
+                    ):
+                        self._set_auto_progress("Solving…")
+                        await self._run_solve()
+        except Exception:
+            logger.exception("Auto-calibration run failed")
+            if page_client.has_socket_connection:
+                with page_client:
+                    ui.notify(
+                        "Auto-calibration failed — see log for details",
+                        color="negative",
+                    )
+        finally:
+            self._auto_cancel = False
+            self._set_auto_progress(None)
+
+    async def _auto_return(
+        self,
+        commander: Commander,
+        visited: list[list[float]],
+        start_angles: list[float],
+    ) -> bool:
+        """Drive back to the start pose, returning whether the robot got
+        there. Best effort by design: the planner vets each path against the
+        mounted tool, and a region the view chain entered one segment at a
+        time is not guaranteed to have a clear path straight back — walking
+        the visited poses in reverse is no safer, since a reverse segment
+        starts from where the robot actually stopped rather than the exact
+        commanded pose. A refusal leaves the robot parked at the last view
+        and is reported, not retried."""
+        if visited[-1] == start_angles:
+            return True
+        self._set_auto_progress("Returning to start pose")
+        if await self._auto_move(commander, start_angles) >= 0:
+            return True
+        logger.warning("Auto-calibration could not drive back to the start pose")
+        return False
+
+    async def _auto_move(self, commander: Commander, target: list[float]) -> int:
+        """Joint move with duration sized so the fastest joint stays under
+        :data:`AUTO_DEG_PER_S`; returns the command index, or -1 when the
+        controller rejects the move or the motion errors out. Completion is
+        awaited in slices so Stop takes effect within a slice instead of at
+        the end of the move."""
+        current = await commander.client.angles()
+        reference = current if current is not None else target
+        span = max(abs(t - c) for t, c in zip(target, reference, strict=True))
+        duration = max(AUTO_MIN_MOVE_S, span / AUTO_DEG_PER_S)
+        deadline = time.monotonic() + duration + AUTO_MOVE_TIMEOUT_MARGIN_S
+        try:
+            index = await commander.client.move_j(target, duration=duration)
+            if index < 0:
+                return -1
+            while not await commander.client.wait_command(
+                index, timeout=AUTO_WAIT_SLICE_S
+            ):
+                if self._auto_cancel or time.monotonic() > deadline:
+                    break
+            return index
+        except Exception as e:
+            logger.warning("Auto-calibration move failed: %s", e)
+            return -1
+
+    async def _wait_stationary(self) -> None:
+        deadline = time.monotonic() + AUTO_STATIONARY_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if float(np.max(np.abs(robot_state.speeds))) < STATIONARY_SPEED_DEG_S:
+                return
+            await asyncio.sleep(0.05)
+
+    async def _auto_capture(self) -> bool:
+        """Capture with retries; True on success, False when this view never
+        yields a usable board. Fatal refusals propagate and abort the run."""
+        for attempt in range(AUTO_CAPTURE_ATTEMPTS):
+            try:
+                await self._capture_sample()
+                return True
+            except _CaptureRefused as e:
+                if e.fatal:
+                    raise
+                if attempt + 1 < AUTO_CAPTURE_ATTEMPTS:
+                    await asyncio.sleep(AUTO_CAPTURE_RETRY_S)
+        return False
+
+    def _set_auto_progress(self, text: str | None) -> None:
+        self._auto_progress_text = text
+        self._apply_auto_progress()
+
+    def _apply_auto_progress(self) -> None:
+        if self._auto_progress_label is None:
+            return
+        self._auto_progress_label.set_visibility(self._auto_progress_text is not None)
+        if self._auto_progress_text is not None:
+            self._auto_progress_label.set_text(self._auto_progress_text)
+
+    def _refresh_auto_ui(self) -> None:
+        """Swap the Auto-calibrate button into a Stop button while the run is
+        active. Driven from the detection timer, so it also restores the idle
+        state after a page reload mid-run."""
+        running = self._auto_running
+        if self._auto_btn is None or running == self._last_auto_running:
+            return
+        self._last_auto_running = running
+        if running:
+            self._auto_btn.set_text("Stop")
+            self._auto_btn.props("icon=stop color=negative")
+        else:
+            self._auto_btn.set_text("Auto-calibrate")
+            self._auto_btn.props("icon=play_circle color=primary")
+        if self._clear_btn is not None:
+            self._clear_btn.set_enabled(not running)
+        if self._solve_btn is not None:
+            self._solve_btn.set_enabled(
+                not running and len(self._samples) >= SOLVE_MIN_SAMPLES
+            )
+
     # ----------------------------------------------------------------- solve
 
     async def _solve(self) -> None:
+        if self._auto_running:
+            ui.notify("Auto-calibration is running", color="warning")
+            return
+        await self._run_solve()
+
+    async def _run_solve(self) -> None:
         if len(self._samples) < SOLVE_MIN_SAMPLES:
             return
         method = self._method

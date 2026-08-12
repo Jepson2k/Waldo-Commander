@@ -636,6 +636,11 @@ def session_controller(
         normalize_logs=True,
     )
     robot.start(
+        # Controller startup (numba warmup + command discovery) lands near
+        # the 10 s default on a loaded CI runner, so the whole session dies
+        # at "Controller failed to become ready". Waiting is free when the
+        # controller comes up quickly.
+        timeout=60.0,
         extra_env={"PAROL6_STATUS_MULTICAST_PORT": str(multicast_port)},
     )
 

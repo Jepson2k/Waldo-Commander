@@ -1,5 +1,5 @@
 import logging
-from typing import Literal, cast, get_args
+from typing import Any, Literal, cast, get_args
 
 from nicegui import app, ui
 
@@ -464,7 +464,7 @@ def toggle_theme() -> ThemeMode:
 
 
 # Panel resize configuration (passed to JS module)
-PANEL_RESIZE_CONFIG = {
+PANEL_RESIZE_CONFIG: dict[str, Any] = {
     "storageKey": "parol_panel_sizes",
     "selectors": {
         "wrap": ".panels-wrap",
