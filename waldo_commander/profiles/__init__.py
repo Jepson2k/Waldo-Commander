@@ -7,6 +7,7 @@ via its ``pyproject.toml``.  This module provides the waldo-commander-specific
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 from typing import Any
@@ -58,7 +59,10 @@ def get_robot(
     *preferred* is the persisted GUI backend selection: used when no explicit
     *name* / ``WALDO_ROBOT`` override is given and the value is installed; a
     stale selection is ignored rather than raising. Waldo-commander defaults
-    (like ``normalize_logs=True``) are applied unless overridden by the caller.
+    (like ``normalize_logs=True``) are applied to backends that accept them
+    and dropped for those that do not; explicit *kwargs* are always passed
+    through, so a caller asking for something unsupported still gets the
+    backend's own TypeError.
     """
     backends = available_backends()
     if not backends:
@@ -68,7 +72,6 @@ def get_robot(
         )
 
     resolved = _resolve_robot_name(name, preferred)
-    merged = {**_COMMANDER_DEFAULTS, **kwargs}
 
     try:
         cls = load_robot_class(resolved)
@@ -80,4 +83,25 @@ def get_robot(
             f"Install with: pip install waldo-commander[{resolved}]"
         ) from None
 
-    return cls(**merged)
+    return cls(**{**_supported_defaults(cls, resolved), **kwargs})
+
+
+def _supported_defaults(cls: type[Robot], name: str) -> dict[str, Any]:
+    """The commander defaults this backend's constructor can actually take.
+
+    The defaults are conveniences, not part of the waldoctl ``Robot``
+    contract, so a backend that has never heard of one must not fail to
+    construct because of it.
+    """
+    try:
+        params = inspect.signature(cls).parameters
+    except (TypeError, ValueError):
+        return dict(_COMMANDER_DEFAULTS)
+
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(_COMMANDER_DEFAULTS)
+
+    supported = {k: v for k, v in _COMMANDER_DEFAULTS.items() if k in params}
+    for dropped in _COMMANDER_DEFAULTS.keys() - supported.keys():
+        logger.debug("Backend %r does not accept %r; using its own default", name, dropped)
+    return supported
