@@ -103,5 +103,7 @@ def _supported_defaults(cls: type[Robot], name: str) -> dict[str, Any]:
 
     supported = {k: v for k, v in _COMMANDER_DEFAULTS.items() if k in params}
     for dropped in _COMMANDER_DEFAULTS.keys() - supported.keys():
-        logger.debug("Backend %r does not accept %r; using its own default", name, dropped)
+        logger.debug(
+            "Backend %r does not accept %r; using its own default", name, dropped
+        )
     return supported
