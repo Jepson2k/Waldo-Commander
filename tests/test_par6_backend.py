@@ -16,9 +16,10 @@ parol6 controller the session fixtures start. Sharing a process with that
 setup leaves par6d running but its STATUS frames never reaching the app's
 consumer, so this asserts nothing useful there.
 
-Also skipped unless the par6 backend is installed AND a ``par6d`` binary is
-resolvable (``PAR6D_BIN``, else PATH), so a checkout without the Rust
-runtime built still runs green.
+The opt-in is also the honesty boundary: without ``WALDO_PAR6_E2E`` the file
+skips, so an ordinary checkout runs green — but once it is set, a missing
+par6 backend or ``par6d`` binary is a failure, not a skip. CI sets the flag
+precisely to run this test; letting it skip there would be a silent green.
 """
 
 import contextlib
@@ -42,12 +43,8 @@ def _par6d_binary() -> str | None:
 
 
 requires_par6 = pytest.mark.skipif(
-    not os.environ.get("WALDO_PAR6_E2E")
-    or "par6" not in available_backends()
-    or _par6d_binary() is None,
-    reason="needs WALDO_PAR6_E2E=1 (own pytest process), the par6 backend "
-    "installed, and a par6d binary (set PAR6D_BIN or put it on PATH; "
-    "build with `cargo build -p par6d --release`)",
+    not os.environ.get("WALDO_PAR6_E2E"),
+    reason="needs WALDO_PAR6_E2E=1 — the par6 e2e must run in its own pytest process",
 )
 
 
@@ -65,6 +62,16 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
     fixture's setup — env set inside the test body would be too late. Listing
     this fixture ahead of `user` in the signature is what orders it first.
     """
+    if "par6" not in available_backends():
+        pytest.fail(
+            "WALDO_PAR6_E2E=1 but the par6 backend is not installed "
+            "(pip install '.[par6]')"
+        )
+    if _par6d_binary() is None:
+        pytest.fail(
+            "WALDO_PAR6_E2E=1 but no par6d binary — set PAR6D_BIN or put "
+            "par6d on PATH (cargo build -p par6d --release --features ffi)"
+        )
     port = _free_udp_port()
     monkeypatch.setenv("WALDO_ROBOT", "par6")
     monkeypatch.setenv("WALDO_CONTROLLER_PORT", str(port))
@@ -99,9 +106,7 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
 
         # The status consumer only flips this after a STATUS frame decodes,
         # so it is evidence of live traffic rather than of app startup.
-        assert readiness_state._backend_done, (
-            "no STATUS update ever arrived from par6d"
-        )
+        assert readiness_state._backend_done, "no STATUS update ever arrived from par6d"
 
         import waldoctl
 
