@@ -87,17 +87,6 @@ AUTO_SETTLE_S = 0.5
 AUTO_CAPTURE_ATTEMPTS = 3
 AUTO_CAPTURE_RETRY_S = 0.6
 AUTO_MAX_CONSECUTIVE_REJECTS = 3
-# Returning to the start pose means moving back *into* the mounted tool's
-# clearance margin. A tool like the MSG gripper sits permanently inside that
-# margin (its body clears L4 by ~2 mm against a 5 mm margin), so the
-# controller treats every pose as already-colliding and only accepts moves
-# that give up no clearance against the start of the planned path — one long
-# move back to the start pose gets refused even though the arm just came from
-# there, and so does the controller's own home command. Walking the same
-# straight joint-space line in sub-steps re-bases that comparison each step
-# and is accepted. The step count is capped so the clearance the return can
-# give up in total stays far short of real contact.
-AUTO_RETURN_STEPS = 8
 
 
 class _CaptureRefused(Exception):
@@ -807,31 +796,15 @@ class HandEyeCalibrationPanel(Panel):
     async def _auto_return(
         self, commander: Commander, start_angles: list[float]
     ) -> bool:
-        """Drive back to the start pose, returning whether the robot got
-        there. One direct move covers the ordinary case; when the planner
-        refuses it — see :data:`AUTO_RETURN_STEPS` — the same line is walked
-        in sub-steps from wherever the arm actually stands."""
+        """Drive straight back to the start pose, returning whether the
+        robot got there. The arm just traversed this region, so a refusal
+        means the planner genuinely vetoed the path; the robot is left
+        parked at the last view and it is reported, not retried."""
         self._set_auto_progress("Returning to start pose")
         if await self._auto_move(commander, start_angles) >= 0:
             return True
-        angles = await commander.client.angles()
-        if angles is None:
-            return False
-        here = list(angles)
-        for k in range(1, AUTO_RETURN_STEPS + 1):
-            fraction = k / AUTO_RETURN_STEPS
-            target = [
-                h + (s - h) * fraction for h, s in zip(here, start_angles, strict=True)
-            ]
-            if await self._auto_move(commander, target) < 0:
-                logger.warning(
-                    "Auto-calibration could not drive back to the start pose "
-                    "(step %d of %d refused)",
-                    k,
-                    AUTO_RETURN_STEPS,
-                )
-                return False
-        return True
+        logger.warning("Auto-calibration could not drive back to the start pose")
+        return False
 
     async def _auto_move(self, commander: Commander, target: list[float]) -> int:
         """Joint move with duration sized so the fastest joint stays under

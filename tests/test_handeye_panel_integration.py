@@ -444,13 +444,10 @@ async def test_handeye_auto_calibration(
         assert trans_err < 30.0, f"translation off by {trans_err:.1f} mm"
         assert rot_err < 3.0, f"rotation off by {rot_err:.2f} deg"
 
-        # The run ends where it started. With the MSG gripper mounted the arm
-        # sits permanently inside the controller's clearance margin (its body
-        # clears L4 by ~2 mm against a 5 mm margin), so a single move back —
-        # and the controller's own home command — is refused as driving
-        # deeper into collision; the routine has to walk the last leg back in
-        # sub-steps. Anything short of the start pose means that fallback
-        # regressed and the robot is left parked mid-sweep.
+        # The run ends where it started. With the MSG mounted this exercises
+        # the collision guard on the way back — the whole sweep stays clear
+        # of the arm, so anything short of the start pose means the planner
+        # wrongly refused the return and left the robot parked mid-sweep.
         end_angles = await waldoctl.commander.client.angles()
         assert end_angles is not None
         drift = max(abs(e - h) for e, h in zip(end_angles, home_angles, strict=True))
