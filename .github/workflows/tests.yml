@@ -3,10 +3,12 @@ name: tests
 on:
   # Run once per change: pull_request covers PR branches; push covers main
   # (and any direct, PR-less pushes to it). Avoids the duplicate push +
-  # pull_request runs on every PR commit.
+  # pull_request runs on every PR commit. workflow_dispatch lets a branch
+  # be exercised before any PR exists.
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   # Constrains PEP 517 build environments too (see the file for why).
