@@ -60,7 +60,10 @@ dev = [
   #   pip install interpolatepy msgspec numba ormsgpack psutil toppra
   # (the [parol6] extra keeps working once parol6 re-pins waldoctl v0.8.0).
   "ruff",
-  "ty",
+  # ty 0.0.74 regressed ParamSpec-typed calls (numba's Dispatcher.__call__
+  # stubs): every 2-arg call of a jitted pinokin function reports
+  # invalid-argument-type. Pin the last good release until a fix lands.
+  "ty==0.0.73",
   "pytest",
   "pytest-asyncio",
   "pytest-timeout",
