@@ -1530,7 +1530,11 @@ async def _check_config_skew() -> None:
     try:
         import hashlib
 
-        from par6 import config as par6_config
+        # par6 is an optional backend; resolved dynamically so type checking
+        # passes in environments that ship a different backend.
+        import importlib
+
+        par6_config = importlib.import_module("par6.config")
 
         src = par6_config.data_root() / "config"
         digest = hashlib.sha256()
