@@ -52,7 +52,13 @@ parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0"]
 par6 = ["par6 @ git+https://github.com/Jepson2k/par6.git@main#subdirectory=python"]
 v4l2 = ["linuxpy>=0.24"]
 dev = [
-  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0",
+  # parol6 (the default test backend) is deliberately NOT here: its 0.4.0
+  # release pins waldoctl by a direct v0.7.0 URL, and pip cannot reconcile
+  # two different direct URLs for one package in a single resolve now that
+  # this package pins v0.8.0. Install it beside the dev extra instead:
+  #   pip install --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0"
+  #   pip install interpolatepy msgspec numba ormsgpack psutil toppra
+  # (the [parol6] extra keeps working once parol6 re-pins waldoctl v0.8.0).
   "ruff",
   "ty",
   "pytest",
