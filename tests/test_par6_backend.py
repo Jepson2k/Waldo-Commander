@@ -70,7 +70,7 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
     if _par6d_binary() is None:
         pytest.fail(
             "WALDO_PAR6_E2E=1 but no par6d binary — set PAR6D_BIN or put "
-            "par6d on PATH (cargo build -p par6d --release --features ffi)"
+            "par6d on PATH (cargo build -p par6d --release)"
         )
     port = _free_udp_port()
     monkeypatch.setenv("WALDO_ROBOT", "par6")

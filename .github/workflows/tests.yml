@@ -223,13 +223,13 @@ jobs:
         run: scripts/ffi/setup.sh
 
       # Release, not debug: the sim runs in wall-clock time and an
-      # unoptimized RT loop misses its deadlines. `--features ffi` because
-      # that is what deploys — a par6d without kinematics refuses to boot.
+      # unoptimized RT loop misses its deadlines. Kinematics is not a
+      # feature any more — par6d links the FFI shim unconditionally.
       - name: build par6d
         working-directory: par6
         run: |
           source .ffi/env.sh
-          cargo build -p par6d --release --features ffi
+          cargo build -p par6d --release
 
       - name: Install dependencies
         run: |
