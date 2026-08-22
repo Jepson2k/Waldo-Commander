@@ -122,6 +122,28 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         # UI actually rendered against this backend.
         await user.should_see(marker="btn-estop")
         await user.should_see(marker="readout-x")
+
+        # v0.8.0 surface, live off the wire: the controller chip carries
+        # the runtime's own mode name.
+        import asyncio
+
+        for _ in range(50):
+            if status.controller.mode:
+                break
+            await asyncio.sleep(0.1)
+        assert status.controller.mode, "no controller mode ever arrived"
+        await user.should_see(marker="controller-chip")
+
+        # Safety stop goes over the wire and comes back as SAFETY_STOP in
+        # the broadcast — the go-limp path, not a UI-side flag.
+        user.find(marker="btn-safety-stop").click()
+        for _ in range(50):
+            if status.controller.mode == "SAFETY_STOP":
+                break
+            await asyncio.sleep(0.1)
+        assert status.controller.mode == "SAFETY_STOP", (
+            f"expected SAFETY_STOP, controller reports {status.controller.mode!r}"
+        )
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)

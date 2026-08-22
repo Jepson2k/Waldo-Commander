@@ -131,6 +131,9 @@ class ReadoutPanel:
         self._tool_separator: ui.label | None = None
         self._io_chips: list[ui.chip] = []
 
+        # Controller / warnings / homing elements
+        self._controller_chip: ui.chip | None = None
+
         # Action log elements
         self._action_scroll_area: ui.scroll_area | None = None
         self._action_log_html: ui.html | None = None
@@ -301,6 +304,20 @@ class ReadoutPanel:
                     self._tool_label: ui.label | None = None
                     with self._tool_chip:
                         self._tool_label = ui.label("").classes("text-lg font-medium")
+                    controller = waldoctl.commander.status.controller
+                    self._controller_chip = (
+                        ui.chip()
+                        .props("dense outline square")
+                        .classes("text-xs font-medium")
+                        .style("box-shadow: none; margin: 0;")
+                        .tooltip("Controller mode")
+                        .mark("controller-chip")
+                    )
+                    with self._controller_chip:
+                        ui.label("").bind_text_from(controller, "mode")
+                    self._controller_chip.bind_visibility_from(
+                        controller, "mode", backward=bool
+                    )
                     ui.space()
                     with ui.row().classes("gap-0 no-wrap"):
                         self._io_chips = []
@@ -323,6 +340,45 @@ class ReadoutPanel:
                                 .tooltip(f"Digital Output {i + 1}")
                             )
                             self._io_chips.append(chip)
+
+                warnings = waldoctl.commander.status.warnings
+                with (
+                    ui.row()
+                    .classes("items-center gap-1 no-wrap w-full")
+                    .bind_visibility_from(warnings, "entries", backward=bool)
+                    .mark("warnings-banner")
+                ):
+                    ui.icon("warning").classes("text-amber-500 text-sm")
+                    ui.label("").bind_text_from(
+                        warnings,
+                        "entries",
+                        backward=lambda entries: "; ".join(
+                            str(entry[2]) for entry in entries
+                        ),
+                    ).classes("text-xs text-amber-500")
+
+                homing = waldoctl.commander.status.homing
+                with (
+                    ui.row()
+                    .classes("items-center gap-1 no-wrap w-full")
+                    .bind_visibility_from(homing, "active")
+                    .mark("homing-progress")
+                ):
+                    ui.icon("home").classes("text-sky-500 text-sm")
+                    ui.label("").bind_text_from(
+                        homing,
+                        "joints",
+                        backward=lambda pairs: (
+                            "Homing step "
+                            + str(waldoctl.commander.status.homing.sequence_step)
+                            + " — "
+                            + " ".join(
+                                f"J{i + 1}:{state}"
+                                + (f"({phase})" if state == "RUNNING" else "")
+                                for i, (state, phase) in enumerate(pairs)
+                            )
+                        ),
+                    ).classes("text-xs text-sky-500")
 
                 with ui.row().classes("items-center justify-between w-full no-wrap"):
                     with ui.row().classes("items-center gap-1 no-wrap"):

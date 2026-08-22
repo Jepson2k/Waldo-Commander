@@ -15,7 +15,7 @@ dependencies = [
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.7.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.8.0",
   "opencv-python-headless>=4.8",
   "fastmcp>=3.0,<4",
 

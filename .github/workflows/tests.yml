@@ -47,9 +47,10 @@ jobs:
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
             fi
-            if git ls-remote --heads https://github.com/Jepson2k/par6.git "$BRANCH" 2>/dev/null | grep -q .; then
-              pip install --force-reinstall --no-deps "par6 @ git+https://github.com/Jepson2k/par6.git@${BRANCH}#subdirectory=python"
-            fi
+            # par6 is NOT branch-matched here: its python package embeds the
+            # compiled Rust engine (maturin + the pinocchio FFI shim), which
+            # this matrix cannot build. The dedicated par6-e2e job builds the
+            # shim and installs the branch-matched tree properly.
           fi
           mkdir -p PAROL6-python-API
       - name: Run pre-commit
@@ -98,9 +99,10 @@ jobs:
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
             fi
-            if git ls-remote --heads https://github.com/Jepson2k/par6.git "$BRANCH" 2>/dev/null | grep -q .; then
-              pip install --force-reinstall --no-deps "par6 @ git+https://github.com/Jepson2k/par6.git@${BRANCH}#subdirectory=python"
-            fi
+            # par6 is NOT branch-matched here: its python package embeds the
+            # compiled Rust engine (maturin + the pinocchio FFI shim), which
+            # this matrix cannot build. The dedicated par6-e2e job builds the
+            # shim and installs the branch-matched tree properly.
           fi
 
       - name: Show environment
@@ -199,7 +201,7 @@ jobs:
           # ruckig 0.17.3 sdist doesn't build under scikit-build-core 1.0;
           # pre-install the fixed commit until a release lands (pantor/ruckig#262).
           pip install "ruckig @ git+https://github.com/pantor/ruckig@2249d57ffaa19ecdadeaab62daf97857813629ff"
-          pip install ".[dev,par6]"
+          pip install ".[dev]"
           # waldoctl/parol6 branch-matching, same as the jobs above.
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           if [ "$BRANCH" != "main" ]; then
@@ -212,7 +214,12 @@ jobs:
           fi
           # The par6 client must be the same tree the binary was built from,
           # and that tree is already checked out at the branch-matched ref.
-          pip install --force-reinstall --no-deps ./par6/python
+          # It is a maturin package embedding the Rust engine, so the shim
+          # env must be live for the build (and no build isolation, so the
+          # toolchain above is the one that compiles it).
+          pip install "maturin>=1.7,<2" patchelf
+          source par6/.ffi/env.sh
+          pip install --force-reinstall --no-deps --no-build-isolation ./par6/python
 
       # WALDO_PAR6_E2E=1 makes a missing backend or binary a FAILURE inside
       # the test, not a skip — this job must never go green without the e2e

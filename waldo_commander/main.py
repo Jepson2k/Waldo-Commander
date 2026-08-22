@@ -315,6 +315,7 @@ async def start_controller(com_port: str | None) -> None:
         ps.ping_timer.active = True
     if status_consumer_task is None or status_consumer_task.done():
         status_consumer_task = asyncio.create_task(_status_consumer())
+    asyncio.create_task(_check_config_skew())
     controller_state.running = True
     logger.debug("Controller started")
 
@@ -653,9 +654,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                             .bind_text_from(
                                 waldoctl.commander.status.tool,
                                 "key",
-                                backward=lambda k: f"Gripper: {k}"
-                                if k != "NONE"
-                                else "Gripper",
+                                backward=lambda k: (
+                                    f"Gripper: {k}" if k != "NONE" else "Gripper"
+                                ),
                             )
                             .classes("text-lg font-medium")
                         )
@@ -1499,6 +1500,65 @@ def _maybe_clear_sim_pose_override() -> None:
         playback_coordination.last_teleport_ts = 0.0
 
 
+#: One-shot config-skew message, surfaced as a notification by the status
+#: consumer once a page context exists.
+_config_skew_msg: str | None = None
+
+
+async def _check_config_skew() -> None:
+    """Compare the controller's config fingerprint against the packaged
+    mirror this UI plans previews with.
+
+    A tuned deployment (edited limits, motion feel, gripper keys) is
+    legitimate — but the UI's offline previews then run different numbers
+    than the arm, so the mismatch is worth one loud warning. Backends
+    without a CONFIG_INFO query are skipped silently.
+    """
+    global _config_skew_msg
+    info_fn = getattr(client, "config_info", None)
+    if info_fn is None:
+        return
+    try:
+        info = await info_fn()
+    except NotImplementedError:
+        return
+    except Exception as e:
+        logger.debug("config skew check failed: %s", e)
+        return
+    if not info or not info.get("fingerprint"):
+        return
+    try:
+        import hashlib
+
+        from par6 import config as par6_config
+
+        src = par6_config.data_root() / "config"
+        digest = hashlib.sha256()
+        for f in [src / "PAR6.toml"] + sorted((src / "grippers").glob("*.toml")):
+            digest.update(f.name.encode())
+            digest.update(b"\n")
+            digest.update(f.read_bytes())
+        expected = digest.hexdigest()
+    except Exception as e:
+        logger.debug("config skew check skipped: %s", e)
+        return
+    if info["fingerprint"] != expected:
+        msg = (
+            "Controller config differs from the packaged mirror "
+            f"({info.get('path', '?')}) — offline previews may not match "
+            "the arm's limits and feel."
+        )
+        logger.warning("config skew: %s", msg)
+        # A simulator daemon runs a re-ticked config by design (dev, CI);
+        # the sticky notification is for a live deployment.
+        try:
+            sim = await client.is_simulator()
+        except Exception:
+            sim = True
+        if not sim:
+            _config_skew_msg = msg
+
+
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
     # Shadows of the last-applied jog-enable wire arrays, kept local so each
@@ -1508,6 +1568,9 @@ async def _status_consumer() -> None:
     joint_en_shadow: np.ndarray | None = None
     cart_en_shadow: dict[str, np.ndarray] = {}
     scene_epoch_shadow: int | None = None
+    torques_shadow: np.ndarray | None = None
+    torques_ext_shadow: np.ndarray | None = None
+    homing_shadow: tuple | None = None
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1606,6 +1669,84 @@ async def _status_consumer() -> None:
                         coll.active = status.collision_active
                         coll.pairs = list(status.collision_pairs)
 
+                    # v0.8.0 status surface (torques, controller state,
+                    # warnings, link health, homing, clearance). Guarded
+                    # per-field: a pre-v0.8.0 backend's buffer simply lacks
+                    # them and the sub-objects keep their defaults.
+                    tau = getattr(status, "tau", None)
+                    if tau is not None and (
+                        torques_shadow is None
+                        or not arrays_equal_n(tau, torques_shadow)
+                    ):
+                        joints.torques = [float(v) for v in tau]
+                        torques_shadow = tau.copy()
+                    tau_ext = getattr(status, "tau_ext", None)
+                    if tau_ext is not None and (
+                        torques_ext_shadow is None
+                        or not arrays_equal_n(tau_ext, torques_ext_shadow)
+                    ):
+                        joints.torques_ext = [float(v) for v in tau_ext]
+                        torques_ext_shadow = tau_ext.copy()
+
+                    # Controller state chip: mode name is the backend enum's
+                    # name (vendor-neutral for display). Skipped, never
+                    # reset, when the backend's buffer lacks the field.
+                    ctrl = st.controller
+                    mode = getattr(status, "mode", None)
+                    if mode is not None:
+                        if ctrl.mode != mode.name:
+                            ctrl.mode = mode.name
+                        enabled = bool(getattr(status, "enabled", False))
+                        if ctrl.enabled != enabled:
+                            ctrl.enabled = enabled
+                        gravity_comp = bool(getattr(status, "gravity_comp", False))
+                        if ctrl.gravity_comp != gravity_comp:
+                            ctrl.gravity_comp = gravity_comp
+
+                    # Warning-class conditions (self-clearing): content
+                    # compare, copy on change — the decoder refills the
+                    # buffer list in place.
+                    entries = getattr(status, "warnings", None)
+                    if entries is not None and st.warnings.entries != entries:
+                        st.warnings.entries = list(entries)
+
+                    link = getattr(status, "link_health", None)
+                    if link:
+                        lh = st.link_health
+                        link_state = link["state"].name
+                        if lh.state != link_state:
+                            lh.state = link_state
+                        if lh.restarts != link.get("restarts", 0):
+                            lh.restarts = int(link.get("restarts", 0))
+                        if lh.tx_errors != link.get("tx_errors", 0):
+                            lh.tx_errors = int(link.get("tx_errors", 0))
+                        if lh.rx_frames != link.get("rx_frames", 0):
+                            lh.rx_frames = int(link.get("rx_frames", 0))
+
+                    # Per-joint homing progress: (state, phase) enum-name
+                    # pairs, rebuilt only when the raw tuple moves.
+                    homing = getattr(status, "homing", None)
+                    if homing is not None:
+                        homing_key = (
+                            bool(homing.get("active", False)),
+                            int(homing.get("sequence_step", 0)),
+                            tuple(homing.get("joints", ())),
+                        )
+                        if homing_key != homing_shadow:
+                            homing_shadow = homing_key
+                            hm = st.homing
+                            hm.active = homing_key[0]
+                            hm.sequence_step = homing_key[1]
+                            hm.joints = [
+                                (state.name, phase.name)
+                                for state, phase in homing_key[2]
+                            ]
+
+                    if hasattr(status, "min_clearance_m"):
+                        clearance = status.min_clearance_m
+                        if st.min_clearance_m != clearance:
+                            st.min_clearance_m = clearance
+
                     # Collision-world epoch moved (first frame after connect,
                     # a program's set_shapes, another client, a restart) —
                     # adopt the controller's world via readback.
@@ -1635,6 +1776,10 @@ async def _status_consumer() -> None:
                     pc = ps.page_client if ps is not None else None
                     if pc is not None and not pc._deleted and pc.id in Client.instances:
                         with pc:
+                            global _config_skew_msg
+                            if _config_skew_msg is not None:
+                                ui.notify(_config_skew_msg, color="warning", timeout=0)
+                                _config_skew_msg = None
                             update_ui_from_status()
 
                             readout_panel.update_conn_io()
