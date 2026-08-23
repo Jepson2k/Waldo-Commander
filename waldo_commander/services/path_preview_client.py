@@ -665,6 +665,13 @@ class PathPreviewClient:
 
             return set_shapes_wrapper
 
+        # Status waits have no live status in dry-run: report the awaited
+        # condition as met so the preview continues past I/O handshakes.
+        # Blend flushes first — a real wait_status is a synchronization point.
+        if name == "wait_status":
+            self._flush_blend()
+            return lambda *args, **kwargs: True
+
         # All other methods: flush blend first, then delegate to backend.
         # It raises AttributeError for unknown names, catching typos.
         self._flush_blend()
