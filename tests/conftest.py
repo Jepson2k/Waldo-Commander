@@ -432,7 +432,6 @@ def test_env_config() -> Generator[None, None, None]:
         "WALDO_LOG_LEVEL": "DEBUG",
         # Connect webapp to the session-randomized controller port
         "WALDO_CONTROLLER_PORT": str(controller_port),
-        "PAROL6_CONTROLLER_PORT": str(controller_port),
         "PAROL6_STATUS_MULTICAST_PORT": str(multicast_port),
         # Skip slow envelope generation by default (tests that need it enable explicitly)
         "WALDO_SKIP_ENVELOPE": "1",

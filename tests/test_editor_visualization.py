@@ -74,12 +74,16 @@ def set_editor_content(screen: "Screen", content: str) -> None:
 
 
 def move_cursor_to_line(screen: "Screen", line_number: int) -> None:
-    """Move CodeMirror cursor to a specific 1-indexed line."""
+    """Move CodeMirror cursor to a specific 1-indexed line.
+
+    Focuses the editor first, like a user click would — unfocused selection
+    events are ignored by the server's cursor tracking."""
     screen.selenium.execute_script(
         """
         const cm = document.querySelector('.cm-content');
         if (!cm || !cm.cmView || !cm.cmView.view) return;
         const view = cm.cmView.view;
+        view.focus();
         const line = view.state.doc.line(arguments[0]);
         view.dispatch({
             selection: {anchor: line.from},

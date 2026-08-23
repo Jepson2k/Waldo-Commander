@@ -17,7 +17,7 @@ from waldo_commander.services.camera_service import (
     enumerate_video_devices,
 )
 from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
-from waldo_commander.state import simulation_state, ui_state
+from waldo_commander.state import automation_state, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -653,6 +653,60 @@ class SettingsContent:
                 "dense"
             ).on("change", _on_port_change).mark("settings-mcp-port")
 
+    def _build_automation(self) -> None:
+        """Hardware I/O automation: cycle-start input and at-home output."""
+
+        def _on_cycle_start_change(e):
+            val = bool(e.value)
+            automation_state.cycle_start_enabled = val
+            ng_app.storage.general["automation/cycle_start"] = val
+
+        with _setting_row(
+            "Start program on Input 1",
+            "Rising edge runs the active program (robot homed, e-stop clear, "
+            "nothing already running)",
+        ):
+            ui.switch(
+                value=automation_state.cycle_start_enabled,
+                on_change=_on_cycle_start_change,
+            ).props("dense").mark("switch-cycle-start")
+
+        def _on_home_output_change(e):
+            val = bool(e.value)
+            automation_state.home_output_enabled = val
+            ng_app.storage.general["automation/home_output"] = val
+
+        with _setting_row(
+            "Home position output",
+            "Output 2 turns on while all joints are within tolerance of the "
+            "home/standby pose",
+        ):
+            ui.switch(
+                value=automation_state.home_output_enabled,
+                on_change=_on_home_output_change,
+            ).props("dense").mark("switch-home-output")
+
+        def _on_tolerance_change(e):
+            try:
+                tol = float(e.value)
+            except (TypeError, ValueError):
+                return
+            if not (0.1 <= tol <= 45.0):
+                return
+            automation_state.home_tolerance_deg = tol
+            ng_app.storage.general["automation/home_tolerance_deg"] = tol
+
+        with _setting_row(
+            "Home tolerance (deg)", "Joint distance from home treated as at-home"
+        ):
+            ui.number(
+                value=automation_state.home_tolerance_deg,
+                min=0.1,
+                max=45,
+                step=0.1,
+                on_change=_on_tolerance_change,
+            ).classes("w-24").props("dense").mark("input-home-tolerance")
+
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):
             with ui.element("span").tooltip(
@@ -720,6 +774,7 @@ class SettingsContent:
             self._build_plugin_panels,
             *([ai_control_section] if ai_control_section else []),
             self._build_mcp_server,
+            self._build_automation,
         ]
 
         for i, section in enumerate(sections):
