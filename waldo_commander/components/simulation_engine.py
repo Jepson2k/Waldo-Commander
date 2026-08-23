@@ -18,7 +18,6 @@ import waldoctl
 from nicegui import ui
 from waldoctl import LogEntry
 
-from waldo_commander.constants import config
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.playback import playback
@@ -39,12 +38,13 @@ def get_home_joints_rad() -> list[float]:
 
 
 def default_python_snippet() -> str:
-    """Initial pre-filled Python code with inlined controller host/port."""
+    """Initial pre-filled Python code. Bare RobotClient() follows the GUI's
+    controller when run from the editor and the backend defaults standalone."""
     backend = ui_state.active_robot.backend_package
     return f"""import time
 from {backend} import RobotClient
 
-rbt = RobotClient(host={config.controller_host!r}, port={config.controller_port})
+rbt = RobotClient()
 
 print("Moving to home position...")
 rbt.home()
