@@ -7,7 +7,7 @@ sweep direction to minimise repositioning.
 
 from parol6 import RobotClient
 
-rbt = RobotClient(host="127.0.0.1", port=5001)
+rbt = RobotClient()
 
 ZZ_ORI = [-180, -90, -180]
 ROWS = 6

@@ -137,3 +137,59 @@ def active_dry_run() -> DryRun | None:
     """The active program's dry-run state, or ``None`` when no program is open."""
     active = waldoctl.commander.programs.active
     return active.dry_run if active is not None else None
+
+
+def active_cursor_line() -> int:
+    """1-indexed cursor line of the active program; 0 when unset."""
+    dry_run = active_dry_run()
+    return dry_run.playback.active_cursor_line if dry_run is not None else 0
+
+
+def advance_active_cursor(line: int) -> None:
+    """Move the tracked cursor to *line* so consecutive at-cursor inserts land
+    in order; the next real selection event overwrites it. No-op when the
+    cursor is unset (append mode stays append)."""
+    dry_run = active_dry_run()
+    if dry_run is not None and dry_run.playback.active_cursor_line:
+        dry_run.playback.active_cursor_line = line
+
+
+def _indent_unit(lines: list[str]) -> str:
+    """Indent step used by the file: the first indented line's leading
+    whitespace (tabs win), defaulting to 4 spaces."""
+    for line in lines:
+        stripped = line.lstrip(" \t")
+        if stripped and stripped != line:
+            ws = line[: len(line) - len(stripped)]
+            return "\t" if ws.startswith("\t") else " " * len(ws)
+    return "    "
+
+
+def insert_below_line(text: str, snippet: str, after_line: int) -> tuple[str, int, int]:
+    """Insert *snippet* below 1-indexed *after_line* of *text*; an
+    ``after_line`` of 0 (cursor unset) or at/past the last content line
+    appends at EOF. Splits on "\\n" only — matching CodeMirror's line model —
+    so existing bytes (including any exotic separators) are never rewritten.
+
+    The snippet matches the anchor line's indentation (one level deeper below
+    a block opener) so an at-cursor insert can't split an indented suite.
+
+    Returns ``(new_text, first_inserted_line, inserted_line_count)``.
+    """
+    count = snippet.count("\n") + 1
+    lines = text.split("\n") if text else []
+    content_lines = len(lines) - 1 if lines and lines[-1] == "" else len(lines)
+    anchor = lines[after_line - 1] if 0 < after_line <= content_lines else ""
+    prefix = anchor[: len(anchor) - len(anchor.lstrip(" \t"))]
+    if anchor.strip().endswith(":"):
+        prefix += _indent_unit(lines)
+    if prefix:
+        snippet = "\n".join(prefix + ln if ln else ln for ln in snippet.split("\n"))
+    if 0 < after_line < content_lines:
+        new_text = "\n".join(
+            lines[:after_line] + snippet.split("\n") + lines[after_line:]
+        )
+        return new_text, after_line + 1, count
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + snippet + "\n", content_lines + 1, count
