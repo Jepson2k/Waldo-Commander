@@ -85,9 +85,14 @@ async def run_script(
     if session_id:
         env["WALDO_STEP_SESSION"] = session_id
     # Pass backend package to subprocess so stepping_bootstrap can patch the right module
+    from waldo_commander.constants import config
     from waldo_commander.state import ui_state
 
     env["WALDO_BACKEND_PACKAGE"] = ui_state.active_robot.backend_package
+    # Materialize the GUI's controller endpoint (CLI overrides included) so
+    # the stepping bootstrap can point bare RobotClient() constructions at it.
+    env["WALDO_CONTROLLER_IP"] = config.controller_host
+    env["WALDO_CONTROLLER_PORT"] = str(config.controller_port)
 
     if session_id:
         # Bootstrap script injects the stepping wrapper around the user script.

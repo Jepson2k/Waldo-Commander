@@ -12,6 +12,9 @@ from waldoctl import EditId, Program, ProgramTarget
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import default_program_dir
 from waldo_commander.services.programs import (
+    active_cursor_line,
+    advance_active_cursor,
+    insert_below_line,
     is_any_program_recording,
     is_any_program_running,
 )
@@ -68,6 +71,11 @@ class EditorPanel(FileOperationsMixin):
         # edit flashes once (like a motion-recorder insert) without re-flashing
         # on the approve/reject that only shrinks the pending list.
         self._seen_edit_ids: dict[str, set[str]] = {}
+        # Tabs whose CodeMirror currently has keyboard focus. CodeMirror echoes
+        # selection-change on every document change — including programmatic
+        # inserts — reporting a caret the user never placed; cursor tracking
+        # only follows events sent while the editor is focused.
+        self._focused_tab_ids: set[str] = set()
 
         # The page client whose tab widgets this panel renders into. Captured at
         # build() and used by _reconcile_tabs to enter the right context when a
@@ -88,8 +96,8 @@ class EditorPanel(FileOperationsMixin):
 
     def _insert_command(self, method_name: str) -> None:
         """Build a snippet for ``method_name`` (pre-filled with the robot's
-        current position for move_j / move_l) and append it to the active
-        textarea."""
+        current position for move_j / move_l) and insert it below the cursor
+        line of the active textarea (at EOF when the cursor is unset)."""
         textarea = ui_state.active_textarea
         if not textarea:
             return
@@ -128,11 +136,12 @@ class EditorPanel(FileOperationsMixin):
                 "snippet", f"rbt.{method_name}(...)"
             )
 
-        val = textarea.value
-        if val and not val.endswith("\n"):
-            val += "\n"
-        textarea.value = val + snippet + "\n"
-        logger.info("Added Python snippet: %s", snippet)
+        new_value, first_line, count = insert_below_line(
+            textarea.value or "", snippet, active_cursor_line()
+        )
+        textarea.value = new_value
+        advance_active_cursor(first_line + count - 1)
+        logger.info("Added Python snippet at line %d: %s", first_line, snippet)
 
     def sync_code_from_target(
         self,
@@ -398,17 +407,13 @@ class EditorPanel(FileOperationsMixin):
         else:
             code_line = f"rbt.move_l({pose_str}, speed={speed}, accel={accel})"
 
-        content = textarea.value or ""
-        lines_before = len(content.splitlines()) if content else 0
-
-        if content and not content.endswith("\n"):
-            content += "\n"
-
-        # Appending triggers a debounced simulation run.
-        new_content = content + code_line + "\n"
+        new_content, new_line_number, count = insert_below_line(
+            textarea.value or "", code_line, active_cursor_line()
+        )
+        # Assigning triggers a debounced simulation run.
         textarea.value = new_content
 
-        new_line_number = lines_before + 1
+        advance_active_cursor(new_line_number + count - 1)
         decorations.flash_editor_lines([new_line_number])
 
         logger.info("Added target code at line %d: %s", new_line_number, code_line)
@@ -600,6 +605,7 @@ class EditorPanel(FileOperationsMixin):
                 widgets["panel"].delete()
         ui_state.textareas_by_tab.pop(tab_id, None)
         self._seen_edit_ids.pop(tab_id, None)
+        self._focused_tab_ids.discard(tab_id)
 
     def _switch_blocked(self) -> bool:
         """True (and notifies) when recording or active script playback should
@@ -781,6 +787,7 @@ class EditorPanel(FileOperationsMixin):
                     line_wrapping=True,
                     on_change=lambda e, t=tab: self._on_tab_content_change(t, e.value),
                     on_selection_change=lambda e, t=tab: self._on_cursor_line(t, e),
+                    on_focus_change=lambda e, t=tab: self._on_editor_focus(t, e),
                     completions=completions,
                     keymap={
                         "Mod-s": lambda _e, t=tab: self._save_tab(t),
@@ -1013,9 +1020,21 @@ class EditorPanel(FileOperationsMixin):
                 self._refresh_edits_banner(active_id)
             self._update_capture_button()
 
+    def _on_editor_focus(self, tab: Program, e) -> None:
+        if e.focused:
+            self._focused_tab_ids.add(tab.id)
+        else:
+            self._focused_tab_ids.discard(tab.id)
+
     def _on_cursor_line(self, tab: Program, e) -> None:
-        """Handle cursor line change from CodeMirror."""
+        """Handle cursor line change from CodeMirror.
+
+        Only trusted while the editor is focused: every real cursor placement
+        happens focused, whereas unfocused selection-change events are echoes
+        of programmatic value updates and must not move the tracked cursor."""
         if tab.id != waldoctl.commander.programs.active_id:
+            return
+        if tab.id not in self._focused_tab_ids:
             return
         tab.dry_run.playback.active_cursor_line = e.line
         self._cursor_selection = None if e.empty else (e.from_line, e.to_line)
@@ -1046,6 +1065,7 @@ class EditorPanel(FileOperationsMixin):
         except RuntimeError:
             ui_client = None
         self._client = ui_client
+        self._focused_tab_ids.clear()
         decorations.set_ui_client(ui_client)
         playback.set_ui_client(ui_client)
         script_exec.set_ui_client(ui_client)

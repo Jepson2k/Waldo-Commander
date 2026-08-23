@@ -38,6 +38,8 @@ class PlaybackController:
         self.play_btn: ui.button | None = None
         self.play_btn_tooltip: ui.tooltip | None = None
         self.stop_btn: ui.button | None = None
+        self.step_program_btn: ui.button | None = None
+        self.prev_btn: ui.button | None = None
         self.next_btn: ui.button | None = None
         self._scrub_container: ui.element | None = None
         self._segment_elements: list[ui.element] = []
@@ -92,7 +94,8 @@ class PlaybackController:
     def build_bar(self) -> None:
         """Build the bottom playback bar with controls.
 
-        Order: Play | Stop | Next | Slider | Speed FAB | Record | Capture | Log toggle
+        Order: Play | Stop | Step program | Prev | Next | Slider | Speed FAB |
+        Record | Capture | Log toggle
         """
         with (
             ui.row()
@@ -113,6 +116,21 @@ class PlaybackController:
             )
             self.stop_btn.mark("editor-stop-btn")
             self.stop_btn.set_visibility(False)
+
+            self.step_program_btn = (
+                ui.button(icon="sym_o_step_over", on_click=self.step_program)
+                .props("round dense flat color=white")
+                .tooltip("Step program")
+            )
+            self.step_program_btn.mark("editor-step-program")
+
+            self.prev_btn = (
+                ui.button(icon="skip_previous", on_click=self.step_backward)
+                .props("round dense flat color=white")
+                .tooltip("Previous step")
+            )
+            self.prev_btn.mark("editor-step-prev")
+            self.prev_btn.set_visibility(False)
 
             self.next_btn = (
                 ui.button(icon="skip_next", on_click=self.step_forward)
@@ -242,6 +260,9 @@ class PlaybackController:
                 except RuntimeError:
                     pass
                 self._recording_notification = None
+        # Recording toggles don't fire the state channel; reconcile the
+        # step buttons' recording lockout here.
+        self.update_play_button()
 
     def setup_timers(self) -> None:
         """Create timers and register listeners. Must be called within client context."""
@@ -335,21 +356,48 @@ class PlaybackController:
         elif control_verified or require_browser_control(ui_state.active_client_id):
             await script_exec.start()
 
+    async def step_program(self) -> None:
+        """Run exactly one program command.
+
+        From idle, start the subprocess with the stepping IPC left paused —
+        the stepping wrapper blocks after the first executed command. While a
+        run is paused, signal a single step. Never both in one press: a step
+        signal right after a paused start would double-step.
+        """
+        if is_any_program_running():
+            prog = self._play_program()
+            if prog is not None and not prog.dry_run.playback.is_playing:
+                script_exec.signal_step()
+        elif waldoctl.commander.programs.active is not None and require_browser_control(
+            ui_state.active_client_id
+        ):
+            await script_exec.start(paused=True)
+
     def step_forward(self) -> None:
         """Step forward one segment."""
         if is_any_program_running():
             script_exec.signal_step()
             logger.debug("Step forward signal sent to script")
-        elif self._timeline:
-            active = waldoctl.commander.programs.active
-            if active is None or active.dry_run.total_steps <= 0:
-                return
-            next_idx = min(
-                active.dry_run.playback.current_step + 1,
-                active.dry_run.total_steps - 1,
-            )
-            t = self._timeline.cumulative_times[next_idx]
-            self._apply_time(t)
+        else:
+            self._step_sim_preview(1)
+
+    def step_backward(self) -> None:
+        """Step the sim preview back one segment (live stepping is forward-only)."""
+        if not is_any_program_running():
+            self._step_sim_preview(-1)
+
+    def _step_sim_preview(self, delta: int) -> None:
+        """Scrub the sim preview to the neighboring segment, clamped to range."""
+        if not self._timeline:
+            return
+        active = waldoctl.commander.programs.active
+        if active is None or active.dry_run.total_steps <= 0:
+            return
+        idx = min(
+            max(active.dry_run.playback.current_step + delta, 0),
+            active.dry_run.total_steps - 1,
+        )
+        self._apply_time(self._timeline.cumulative_times[idx])
 
     def sync_mode(self) -> None:
         """Sync slider/speed controls to current robot mode (simulator vs robot)."""
@@ -398,14 +446,12 @@ class PlaybackController:
             active.dry_run.playback.playback_time = 0.0
 
     def set_enabled(self, enabled: bool) -> None:
-        """Enable or disable playback controls (except record button)."""
-        buttons = [self.play_btn, self.next_btn, self.speed_fab]
-        for btn in buttons:
+        """Enable or disable the recording lockout for play/speed controls.
+        The step buttons' enabled state is owned by ``update_play_button``,
+        which honors the same recording lockout."""
+        for btn in (self.play_btn, self.speed_fab):
             if btn:
-                if enabled:
-                    btn.enable()
-                else:
-                    btn.disable()
+                btn.set_enabled(enabled)
 
     # ---- Script execution: state-driven listener ----
 
@@ -574,6 +620,9 @@ class PlaybackController:
         ):
             _apply_active.dry_run.playback.current_step = sample.segment_index
             self._highlight_current_segment()
+            # Prev/next enabled state derives from current_step, so refresh at
+            # its mutation point (fires only on segment changes, not per tick).
+            self.update_play_button()
             # Sim playback animates the active tab's simulation. If a
             # script is also running, prefer the launching tab so the
             # highlight stays on it even when the user scrubs while the
@@ -812,18 +861,24 @@ class PlaybackController:
         if self.stop_btn:
             self.stop_btn.set_visibility(script_running)
 
+        total_steps = active.dry_run.total_steps if active is not None else 0
+        has_steps = total_steps > 0
+        current_step = active.dry_run.playback.current_step if active is not None else 0
+        recording = is_any_program_recording()
+
         if self.next_btn:
-            total_steps = active.dry_run.total_steps if active is not None else 0
-            has_steps = total_steps > 0
             self.next_btn.set_visibility(has_steps)
-            current_step = (
-                active.dry_run.playback.current_step if active is not None else 0
-            )
             at_last = (current_step >= total_steps - 1) if has_steps else True
-            if at_last and not script_running:
-                self.next_btn.disable()
-            else:
-                self.next_btn.enable()
+            self.next_btn.set_enabled(not recording and (script_running or not at_last))
+
+        # Hidden during a live run: IPC stepping is forward-only, no rewind.
+        if self.prev_btn:
+            self.prev_btn.set_visibility(has_steps and not script_running)
+            self.prev_btn.set_enabled(not recording and current_step > 0)
+
+        if self.step_program_btn:
+            can_step = not play_is_playing if script_running else active is not None
+            self.step_program_btn.set_enabled(not recording and can_step)
 
     # ---- Scrub bar segments ----
 

@@ -7,7 +7,7 @@ tip stays at a fixed point while the wrist rotates around it.
 
 from parol6 import RobotClient
 
-rbt = RobotClient(host="127.0.0.1", port=5001)
+rbt = RobotClient()
 
 HOME_ANGLES = [90.0, -90.0, 180.0, 0.0, 0.0, 180.0]
 HOME_TOLERANCE_DEG = 2.0

@@ -123,6 +123,39 @@ class ControllerState:
 
 
 @dataclass
+class AutomationState:
+    """I/O automation preferences plus the status-loop watcher trackers.
+
+    Settings hydrate from ``app.storage.general`` at startup and dual-write
+    from the settings rows; the underscore fields are edge-detection state
+    owned by the watchers in ``main._automation_tick``.
+    """
+
+    cycle_start_enabled: bool = False
+    home_output_enabled: bool = False
+    home_tolerance_deg: float = 2.0
+
+    # -1 = no trusted input sample yet, so a held-high input never fires on
+    # start. Trust requires a page-published value: io is only refreshed while
+    # a page is connected, and the watcher reads one tick behind the publish.
+    _cycle_prev_input: int = -1
+    _cycle_io_fresh: bool = False
+    _cycle_last_fire: float = float("-inf")
+    _home_out_on: bool = False
+    _home_write_inflight: bool = False
+
+    def reset(self) -> None:
+        self.cycle_start_enabled = False
+        self.home_output_enabled = False
+        self.home_tolerance_deg = 2.0
+        self._cycle_prev_input = -1
+        self._cycle_io_fresh = False
+        self._cycle_last_fire = float("-inf")
+        self._home_out_on = False
+        self._home_write_inflight = False
+
+
+@dataclass
 class PlaybackCoordination:
     """WC-private coordination between dry-run playback and the status loop.
 
@@ -324,6 +357,7 @@ ui_state: UiState = UiState()
 simulation_state: SimulationState = SimulationState()
 readiness_state: ReadinessState = ReadinessState()
 playback_coordination: PlaybackCoordination = PlaybackCoordination()
+automation_state: AutomationState = AutomationState()
 
 
 def reset_all_state() -> None:
@@ -333,6 +367,7 @@ def reset_all_state() -> None:
     ui_state.reset()
     playback_coordination.reset()
     readiness_state.reset()
+    automation_state.reset()
     # Editor tabs / action log live on the commander locator now; reset via
     # their services so each service's own bookkeeping (dedup cursors) is
     # cleared alongside the public surface it writes to.

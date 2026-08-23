@@ -82,6 +82,68 @@ class TestStepIO:
 
         assert step_io.check_should_pause() is False
 
+    def test_wait_for_step_blocks_paused_and_releases(self, tmp_path, monkeypatch):
+        """A paused session blocks until a step is granted; a missing control
+        file means the session is no longer GUI-controlled and must not block."""
+        import threading
+        import time
+
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_wait")
+        controller.initialize()
+        step_io = StepIO("test_wait")
+
+        waiter = threading.Thread(
+            target=lambda: step_io.wait_for_step_or_play(poll_interval=0.01)
+        )
+        waiter.start()
+        time.sleep(0.3)
+        assert waiter.is_alive(), "paused session must keep blocking"
+
+        controller.signal_step()
+        waiter.join(timeout=1.0)
+        assert not waiter.is_alive(), "a granted step must release the wait"
+
+        # Control file deleted mid-session: not GUI-controlled anymore, so the
+        # wait returns immediately instead of polling the paused default.
+        controller.cleanup()
+        start = time.monotonic()
+        step_io.wait_for_step_or_play(poll_interval=0.01)
+        assert time.monotonic() - start < 1.0
+
+    async def test_wait_for_step_async_blocks_and_releases(self, tmp_path, monkeypatch):
+        """The async wait mirrors the sync semantics: blocks while paused,
+        releases on a granted step, returns immediately with no control file."""
+        import asyncio
+
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_async_wait")
+        controller.initialize()
+        step_io = StepIO("test_async_wait")
+
+        task = asyncio.ensure_future(
+            step_io.wait_for_step_or_play_async(poll_interval=0.01)
+        )
+        await asyncio.sleep(0.3)
+        assert not task.done(), "paused session must keep blocking"
+        controller.signal_step()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        controller.cleanup()
+        await asyncio.wait_for(
+            step_io.wait_for_step_or_play_async(poll_interval=0.01), timeout=1.0
+        )
+
 
 # ============================================================================
 # Unit Tests - GUIStepController (GUI-side IPC)
@@ -251,6 +313,57 @@ class TestSteppingClientWrapper:
         # No events should be emitted for non-motion methods
         event_file = tmp_path / ".parol_events_test_passthrough"
         assert not event_file.exists()
+
+    def test_paused_wrapper_strips_blend_radius(self, tmp_path, monkeypatch):
+        """While stepping (paused), each r>0 group member is dispatched as an
+        exact-stop move — one per step grant — while events keep the blend
+        group's granularity (start once, complete at group close)."""
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_strip")
+        controller.initialize()
+
+        mock_client = MagicMock()
+        mock_client.move_j = MagicMock(return_value=7)
+        mock_client.wait_command = MagicMock()
+
+        step_io = StepIO("test_strip")
+        wrapper = SteppingClientWrapper(mock_client, step_io)
+
+        controller.signal_step()  # pre-grant so the post-member pause releases
+        result = wrapper.move_j([0, 0, 0, 0, 0, 0], r=15, wait=False)
+        assert result == 7
+        assert mock_client.move_j.call_args.kwargs["r"] == 0.0
+        mock_client.wait_command.assert_called_with(7)
+
+        controller.signal_step()
+        wrapper.move_j([1, 1, 1, 1, 1, 1], r=15, wait=False)
+        assert mock_client.move_j.call_args.kwargs["r"] == 0.0
+
+        events_file = tmp_path / ".parol_events_test_strip"
+        events = json.loads(events_file.read_text())["events"]
+        assert [e["event"] for e in events] == ["start"], (
+            "group members must not emit per-member events"
+        )
+        assert events[0]["blend"] is True
+
+        # A non-blended call closes the group: one blend_group complete, then
+        # the normal per-command events.
+        controller.signal_play()
+        wrapper.move_j([2, 2, 2, 2, 2, 2])
+        events = json.loads(events_file.read_text())["events"]
+        assert [(e["event"], e["method"]) for e in events] == [
+            ("start", "move_j"),
+            ("complete", "blend_group"),
+            ("start", "move_j"),
+            ("complete", "move_j"),
+        ]
+        assert wrapper._in_blend is False
 
     def test_motion_methods_list_is_correct(self):
         """STEPPABLE_METHODS contains expected robot motion commands."""
