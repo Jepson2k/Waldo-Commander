@@ -2340,6 +2340,14 @@ class ControlPanel:
                     self.tool_actions.build()
 
                 self._build_action_row()
+
+                # Anchored to the card corner, not the action row's end, so
+                # the row can grow without pushing the E-Stop off the panel.
+                ui.button(
+                    icon="dangerous", color="negative", on_click=self.on_estop_click
+                ).props("round unelevated").classes("glass-btn text-2xl").style(
+                    "position: absolute; top: -18px; right: 8px;"
+                ).tooltip("E-Stop (Esc)").mark("btn-estop")
                 self._build_control_indicator()
 
             # Jog controls (tabs + grids)
@@ -2426,8 +2434,9 @@ class ControlPanel:
         )
 
     def _build_action_row(self) -> None:
-        """Build the action row: Home, Robot/Sim toggle, gizmo controls, camera reset, step input."""
-        with ui.row().classes("gap-2 items-center"):
+        """Build the action row: Home, Robot/Sim toggle, freedrive, gizmo
+        controls, camera reset, step input."""
+        with ui.row().classes("gap-1 items-center"):
             ui.button(icon="home", on_click=self.send_home).props(
                 "dense round unelevated color=teal-6"
             ).tooltip("Home (H)").mark("btn-home")
@@ -2523,15 +2532,6 @@ class ControlPanel:
                 )
                 with self._step_input:
                     self._step_input_tooltip = ui.tooltip("Step size in degrees")
-
-            with ui.element("div").style(
-                "width: 0; height: 0; overflow: visible; position: relative;"
-            ):
-                ui.button(
-                    icon="dangerous", color="negative", on_click=self.on_estop_click
-                ).props("round unelevated").classes("glass-btn text-2xl").style(
-                    "position: absolute; top: -18px; left: 10px;"
-                ).tooltip("E-Stop (Esc)").mark("btn-estop")
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""
