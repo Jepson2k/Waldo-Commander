@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 import numpy as np
-from nicegui import Client, app as ng_app, ui
+from nicegui import Client, app as ng_app, background_tasks, ui
 from pinokin import arrays_equal_n
 import waldoctl
 from waldoctl import (
@@ -79,6 +79,7 @@ from waldo_commander.services.control_lease import (
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
+    automation_state,
     robot_state,
     controller_state,
     ui_state,
@@ -118,6 +119,13 @@ class _PageState:
 
 
 _page_state: _PageState | None = None
+
+
+def _client_alive(pc: Client) -> bool:
+    """Both checks needed: ``_deleted`` covers the brief window between
+    NiceGUI marking the client dead and removing it from Client.instances."""
+    return not pc._deleted and pc.id in Client.instances
+
 
 # Pre-allocated buffers for numba pipelines (scratch space)
 _rotation_matrix_buffer: np.ndarray = np.zeros((3, 3), dtype=np.float64)
@@ -1499,6 +1507,148 @@ def _maybe_clear_sim_pose_override() -> None:
         playback_coordination.last_teleport_ts = 0.0
 
 
+# Re-arm window for the cycle-start input: a rising edge within this many
+# seconds of the last fire is ignored (switch-bounce / double-tap protection).
+CYCLE_START_DEBOUNCE_S = 1.0
+# Once at home, the home output only drops after drifting this far beyond the
+# tolerance, so a joint hovering at the threshold can't chatter the output.
+HOME_OUTPUT_HYSTERESIS_DEG = 0.5
+
+
+async def _run_cycle_start(page_client: Client) -> None:
+    """Start the active program off a hardware cycle-start pulse.
+
+    Enters the page's client context — ``script_exec.start()`` reads the
+    editor widgets and notifies on that page. The toast tells an operator
+    who forgot the setting is on why the robot just started.
+    """
+    if not _client_alive(page_client):
+        return
+    try:
+        with page_client:
+            ui.notify(
+                "Cycle start: Input 1 triggered the program",
+                type="info",
+                position="top",
+            )
+            await script_exec.start()
+    except Exception as e:
+        logger.warning("Cycle-start program launch failed: %s", e)
+
+
+async def _write_home_output(value: int) -> None:
+    """Write Output 2 and flip the tracker only on success — a failed write
+    leaves the transition pending so the next tick retries."""
+    a = automation_state
+    try:
+        await waldoctl.commander.client.write_io(1, value)
+        a._home_out_on = bool(value)
+    except Exception as e:
+        logger.warning("Home-output write_io(1, %s) failed: %s", value, e)
+    finally:
+        a._home_write_inflight = False
+
+
+def _automation_tick(page_client: Client | None) -> None:
+    """Opt-in I/O automation watchers, one call per status tick.
+
+    They read the published ``commander.status`` surface (one tick behind
+    the wire — irrelevant at status rate) so the watchers see exactly what
+    every other public consumer sees. Both watchers are edge-detecting:
+    they act only on transitions, never per tick.
+    """
+    _cycle_start_tick(page_client)
+    _home_output_tick()
+
+
+def _cycle_start_tick(page_client: Client | None) -> None:
+    """Cycle start: rising edge on Input 1 runs the active program.
+
+    The edge tracker runs even while disabled so enabling with the input
+    held high never fires until a fresh low→high transition. ``io`` is only
+    published while a page is connected and this watcher reads one tick
+    behind the publish, so the tracker only trusts values seen after a full
+    live tick — a press latched while headless (or held high at launch)
+    never fires.
+    """
+    a = automation_state
+    st = waldoctl.commander.status
+    io = st.io
+
+    cur = io.inputs[0] if io.inputs else 0
+    if page_client is None:
+        a._cycle_prev_input = -1
+        a._cycle_io_fresh = False
+        return
+    fresh = a._cycle_io_fresh
+    a._cycle_io_fresh = True
+    if not fresh or a._cycle_prev_input < 0:
+        # First live tick still reads pre-connect values; the next tick
+        # seeds the tracker from the freshly published input, no firing.
+        a._cycle_prev_input = cur if fresh else -1
+        return
+    prev = a._cycle_prev_input
+    a._cycle_prev_input = cur
+    if (
+        a.cycle_start_enabled
+        and prev == 0
+        and cur == 1
+        and time.monotonic() - a._cycle_last_fire >= CYCLE_START_DEBOUNCE_S
+        and not is_any_program_running()
+        and robot_state.homed
+        and (st.connected or st.simulator_active)
+        and io.estop == 1
+        and not st.editing_mode
+        and waldoctl.commander.programs.active is not None
+    ):
+        a._cycle_last_fire = time.monotonic()
+        background_tasks.create(_run_cycle_start(page_client), name="cycle-start")
+
+
+def _home_output_tick() -> None:
+    """Home output: Output 2 mirrors "all joints within tolerance of the
+    home pose".
+
+    ``status.homed`` is only the referencing flag, so the distance is
+    computed here. Editing/scrub windows hold the last state — the published
+    angles then show a preview pose, not the robot. Disabling with the
+    output still on issues one final clearing write.
+    """
+    a = automation_state
+    st = waldoctl.commander.status
+
+    if not (a.home_output_enabled or a._home_out_on):
+        return
+    desired = False
+    if a.home_output_enabled:
+        if st.editing_mode or playback_coordination.sim_pose_override:
+            return
+        robot = ui_state.active_robot
+        if robot.digital_outputs < 2:
+            return
+        angles = st.joints.angles.deg
+        home = robot.joints.home.deg
+        n = len(home)
+        if len(angles) != n:
+            return
+        dist = 0.0
+        for i in range(n):
+            d = angles[i] - home[i]
+            if d < 0.0:
+                d = -d
+            if d > dist:
+                dist = d
+        band = a.home_tolerance_deg
+        if a._home_out_on:
+            band += HOME_OUTPUT_HYSTERESIS_DEG
+        desired = dist <= band
+    if desired != a._home_out_on and not a._home_write_inflight:
+        a._home_write_inflight = True
+        background_tasks.create(
+            _write_home_output(1 if desired else 0), name="home-output-write"
+        )
+
+
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
     # Shadows of the last-applied jog-enable wire arrays, kept local so each
@@ -1628,12 +1778,16 @@ async def _status_consumer() -> None:
                     # Auto-clear scrub override after teleport has had time to propagate
                     _maybe_clear_sim_pose_override()
 
-                    # Both checks needed: _deleted guards the brief window
-                    # between NiceGUI marking the client dead and removing it
-                    # from Client.instances.
                     ps = _page_state
                     pc = ps.page_client if ps is not None else None
-                    if pc is not None and not pc._deleted and pc.id in Client.instances:
+                    if pc is not None and not _client_alive(pc):
+                        pc = None
+
+                    # Runs before update_ui_from_status pushes this tick's IO,
+                    # so the watchers read the values published last tick.
+                    _automation_tick(pc)
+
+                    if pc is not None:
                         with pc:
                             update_ui_from_status()
 
@@ -1818,6 +1972,19 @@ def main():
     )
     commander.settings.mcp.port = int(
         ng_app.storage.general.get("mcp/port", commander.settings.mcp.port)
+    )
+
+    # Restore I/O automation settings from prior session (both default off).
+    automation_state.cycle_start_enabled = bool(
+        ng_app.storage.general.get("automation/cycle_start", False)
+    )
+    automation_state.home_output_enabled = bool(
+        ng_app.storage.general.get("automation/home_output", False)
+    )
+    automation_state.home_tolerance_deg = float(
+        ng_app.storage.general.get(
+            "automation/home_tolerance_deg", automation_state.home_tolerance_deg
+        )
     )
 
     configure_logging(config.log_level)
