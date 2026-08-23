@@ -146,8 +146,14 @@ class ScriptExecutionController:
         else:
             await self.start()
 
-    async def start(self) -> None:
-        """Start the current editor content as a Python subprocess."""
+    async def start(self, paused: bool = False) -> None:
+        """Start the current editor content as a Python subprocess.
+
+        With ``paused``, the stepping control file is left in its initial
+        paused state: the subprocess executes exactly the first steppable
+        command, then blocks awaiting step/play signals — a single-step
+        launch from idle.
+        """
         if is_any_program_running():
             ui.notify("Script already running", color="warning")
             return
@@ -205,9 +211,10 @@ class ScriptExecutionController:
                 launching_tab.execution.is_running = True
                 launching_tab.dry_run.playback.executing_step_index = -1
                 launching_tab.dry_run.playback.executing_step_at_end = False
-                launching_tab.dry_run.playback.is_playing = True
+                launching_tab.dry_run.playback.is_playing = not paused
                 launching_tab.dry_run.playback.notify_step_changed()
-            self._step_controller.signal_play()
+            if not paused:
+                self._step_controller.signal_play()
             simulation_state.notify_changed()
 
             log_panel.expand()

@@ -12,6 +12,7 @@ import linecache
 import logging
 import os
 import sys
+import threading
 import traceback
 from dataclasses import asdict
 from types import ModuleType
@@ -278,7 +279,13 @@ def _run_simulation_isolated(
                 [shape_from_wire(*t) for t in shapes_wire or []]
             )
 
-        # Inserted into sys.modules so `import time` returns this mock.
+        # Inserted into sys.modules so `import time` returns this mock. The
+        # mock behavior is scoped to the simulating thread: in the thread
+        # fallback the app's event loop keeps running concurrently and must
+        # keep seeing real clocks (in a pool worker there is only one thread,
+        # so the scoping is a no-op).
+        sim_thread_id = threading.get_ident()
+
         class MockTimeModule(ModuleType):
             """Mock time module with no-op sleep for simulation."""
 
@@ -292,30 +299,37 @@ def _run_simulation_isolated(
                 return getattr(self._real_time, name)
 
             def sleep(self, seconds):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.sleep(seconds)
                 # Only accumulate sleep after non-blocking moves —
                 # after a blocking move the arm is already stationary.
                 for client in created_clients:
                     if client._last_move_non_blocking:
                         client._pending_sleep += seconds
 
-            @staticmethod
-            def time():
+            def time(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.time()
                 return 0.0
 
-            @staticmethod
-            def monotonic():
+            def monotonic(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.monotonic()
                 return 0.0
 
-            @staticmethod
-            def perf_counter():
+            def perf_counter(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.perf_counter()
                 return 0.0
 
-            @staticmethod
-            def perf_counter_ns():
+            def perf_counter_ns(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.perf_counter_ns()
                 return 0
 
-            @staticmethod
-            def time_ns():
+            def time_ns(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.time_ns()
                 return 0
 
         original_time_module = sys.modules.get("time")
@@ -610,15 +624,19 @@ class PathVisualizer:
                 logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
                 return "Simulation timed out"
             except Exception as e:
-                # Fall back to in-process execution; the subprocess pool is often
-                # unavailable in test environments.
+                # Fall back to in-process execution; the subprocess pool is
+                # often unavailable in test environments. A worker thread (not
+                # inline) so the event loop keeps running and the script's own
+                # asyncio.run() has no running loop in its thread — async
+                # programs can't be simulated inline at all.
                 logger.warning(
-                    "Subprocess simulation failed (sim_id=%d): %s, using sync",
+                    "Subprocess simulation failed (sim_id=%d): %s, using thread",
                     sim_id,
                     e,
                 )
                 try:
-                    result = _run_simulation_isolated(
+                    result = await asyncio.to_thread(
+                        _run_simulation_isolated,
                         program_text,
                         initial_joints_rad,
                         MAX_PATH_SEGMENTS,
@@ -630,7 +648,7 @@ class PathVisualizer:
                         initial_homed,
                     )
                 except Exception as e2:
-                    logger.error("Sync simulation also failed: %s", e2)
+                    logger.error("Thread simulation also failed: %s", e2)
                     return f"Simulation failed: {e2}"
 
             # A None result can happen during shutdown/test teardown.
