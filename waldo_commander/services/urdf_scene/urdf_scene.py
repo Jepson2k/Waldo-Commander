@@ -36,6 +36,7 @@ from waldo_commander.common.theme import (
     get_color_for_move_type,
 )
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
+from waldo_commander.services.programs import active_cursor_line
 from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import simulation_state, robot_state, ui_state
 
@@ -1272,10 +1273,7 @@ class UrdfScene(
 
     def update_cursor_line_highlight(self) -> None:
         """Highlight path objects for the segment matching the editor cursor line."""
-        active = waldoctl.commander.programs.active
-        cursor_line = (
-            active.dry_run.playback.active_cursor_line if active is not None else 0
-        )
+        cursor_line = active_cursor_line()
         if cursor_line == self._highlighted_line:
             return
         prev_line = self._highlighted_line
