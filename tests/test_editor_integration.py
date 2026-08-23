@@ -1128,7 +1128,8 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     tooltip = ui_state.capture_pose_tooltip
     assert tooltip is not None
 
-    # Cursor on the comment line: nothing to overwrite, capture inserts.
+    # Cursor on the comment line: nothing to overwrite, capture inserts the
+    # pose directly below the cursor line.
     _set_cursor_line(textarea, 3)
     await asyncio.sleep(0)
     assert tooltip.text == editor._CAPTURE_TIP_INSERT
@@ -1137,10 +1138,15 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     await asyncio.sleep(0)
     lines = textarea.value.splitlines()
     assert len(lines) == n_lines_before + 1, "capture on a plain line must insert"
-    assert lines[-1].startswith("rbt.move_l("), lines[-1]
-    assert lines[:n_lines_before] == script.splitlines(), (
+    assert lines[3].startswith("rbt.move_l("), lines[3]
+    assert lines[:3] + lines[4:] == script.splitlines(), (
         "insert must leave existing lines untouched"
     )
+
+    # Restore the original program so the sections below keep their line
+    # numbers; the jog that follows re-simulates and re-anchors it.
+    textarea.value = script
+    tab.source = script
 
     # Move the robot so the current pose differs from the taught values.
     waldoctl.commander.settings.jog.joint_step_deg = 10.0
