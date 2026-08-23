@@ -123,8 +123,8 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         await user.should_see(marker="btn-estop")
         await user.should_see(marker="readout-x")
 
-        # v0.8.0 surface, live off the wire: the controller chip carries
-        # the runtime's own mode name.
+        # v0.8.0 surface, live off the wire: the runtime's own mode name
+        # lands on commander.status for API consumers.
         import asyncio
 
         for _ in range(50):
@@ -132,6 +132,22 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
                 break
             await asyncio.sleep(0.1)
         assert status.controller.mode, "no controller mode ever arrived"
+
+        # Freedrive round-trips: the button applies the gravity-comp
+        # feedforward and the wire's own state comes back to the GUI.
+        assert not status.controller.gravity_comp
+        user.find(marker="btn-freedrive").click()
+        for _ in range(50):
+            if status.controller.gravity_comp:
+                break
+            await asyncio.sleep(0.1)
+        assert status.controller.gravity_comp, "freedrive never reached the wire"
+        user.find(marker="btn-freedrive").click()
+        for _ in range(50):
+            if not status.controller.gravity_comp:
+                break
+            await asyncio.sleep(0.1)
+        assert not status.controller.gravity_comp, "freedrive never switched off"
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)

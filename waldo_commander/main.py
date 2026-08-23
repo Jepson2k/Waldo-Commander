@@ -588,6 +588,8 @@ def update_ui_from_status() -> None:
     _update_warning_notification()
     if readout_panel is not None:
         readout_panel.update_event_log()
+    if control_panel is not None:
+        control_panel.sync_freedrive_visual()
     if tool_key_changed:
         robot_state.notify_changed()
 

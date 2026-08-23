@@ -82,6 +82,19 @@ async def test_digital_estop_dialog_behavior(user: User) -> None:
     await asyncio.sleep(0.1)
 
 
+@pytest.mark.integration
+async def test_freedrive_button_speaks_when_the_backend_has_no_gravity_comp(
+    user: User,
+) -> None:
+    """The freedrive toggle answers with a spoken refusal on a backend
+    without the gravity-comp feedforward, not a silent no-op."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    user.find(marker="btn-freedrive").click()
+    await user.should_see("This backend has no freedrive")
+
+
 @pytest.mark.unit
 async def test_mode_switch_stops_running_script(tmp_path) -> None:
     """Switching between simulator and robot modes should stop any running user script.

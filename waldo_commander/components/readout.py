@@ -280,6 +280,19 @@ class ReadoutPanel:
                 self._event_scroll_area.classes(add="action-log-expanded")
             else:
                 self._event_scroll_area.classes(remove="action-log-expanded")
+            self._apply_event_log_height()
+
+    def _apply_event_log_height(self) -> None:
+        """Size the log to its content — the scroll area's stock height
+        would otherwise pin the expanded log at the 200px cap and leave a
+        block of dead space under a short history."""
+        if self._event_scroll_area is None:
+            return
+        if self._event_log_expanded:
+            height = min(8 + 19 * max(len(robot_events.entries), 1), 200)
+        else:
+            height = 20
+        self._event_scroll_area.style(f"height: {height}px")
 
     def update_event_log(self) -> None:
         """Render the warnings/errors log; the row appears with its first entry."""
@@ -290,6 +303,7 @@ class ReadoutPanel:
         self._event_log_version = robot_events.version
         self._event_log_row.set_visibility(bool(robot_events.entries))
         self._event_log_html.set_content(_build_event_log_html())
+        self._apply_event_log_height()
 
     def build(self, anchor: str = "tl") -> None:
         """Render the top-left readout panel as an overlay card."""

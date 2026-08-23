@@ -663,6 +663,7 @@ class ControlPanel:
         self._cart_cadence = _CadenceTracker()
 
         self._robot_btn: ui.button | None = None
+        self._freedrive_btn: ui.button | None = None
 
         # E-STOP manager (initialized with ui_client in build())
         self.estop: _EStopManager | None = None
@@ -1783,6 +1784,35 @@ class ControlPanel:
             return False
         return True
 
+    async def on_freedrive_click(self) -> None:
+        """Toggle freedrive: apply the gravity-comp feedforward so the arm
+        floats and can be guided by hand (par6 has no separate freedrive
+        mode — IDLE with gravity comp applied is freedrive)."""
+        on = not waldoctl.commander.status.controller.gravity_comp
+        try:
+            await self.client.set_gravity_comp(on)
+            ui.notify(
+                "Freedrive on — the arm floats and can be moved by hand"
+                if on
+                else "Freedrive off",
+                color="info",
+            )
+        except NotImplementedError:
+            ui.notify("This backend has no freedrive", color="warning")
+        except Exception as e:
+            ui.notify(f"Freedrive failed: {e}", color="negative")
+            logger.error("Freedrive toggle failed: %s", e)
+
+    def sync_freedrive_visual(self) -> None:
+        """Reflect the wire's gravity-comp state on the freedrive button."""
+        btn = self._freedrive_btn
+        if btn is None:
+            return
+        if waldoctl.commander.status.controller.gravity_comp:
+            btn.props("color=amber-7")
+        else:
+            btn.props("color=grey-7")
+
     def update_robot_btn_visual(self) -> None:
         """Update Robot/Simulator toggle button appearance."""
         if self._robot_btn is None:
@@ -2412,6 +2442,13 @@ class ControlPanel:
             )
             robot_btn.mark("btn-robot-toggle")
             self._robot_btn = robot_btn
+
+            self._freedrive_btn = (
+                ui.button(icon="back_hand", on_click=self.on_freedrive_click)
+                .props("dense round unelevated color=grey-7")
+                .tooltip("Freedrive — float the arm under gravity comp")
+                .mark("btn-freedrive")
+            )
 
             selected = {"value": "Move"}
             buttons: dict[str, ui.button] = {}
