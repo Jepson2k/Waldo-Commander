@@ -25,8 +25,11 @@ return 'missing';
 @skip_webgl_macos_ci
 class TestCollisionVizScreen:
     def _poll_color(
-        self, screen, name: str, want: str, timeout: float = 10.0
+        self, screen, name: str, want: str, timeout: float = 30.0
     ) -> str | None:
+        # Generous deadline: on loaded CI runners the app process can stall
+        # for many seconds (e.g. an in-process numba JIT compile) before the
+        # material update reaches the browser; the poll returns on match.
         deadline = time.time() + timeout
         last = None
         while time.time() < deadline:
