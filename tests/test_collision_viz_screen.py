@@ -39,6 +39,33 @@ class TestCollisionVizScreen:
             time.sleep(0.1)
         return last
 
+    def _enter_editing_and_poll_red(self, screen, want: str) -> str | None:
+        """Enter EDITING on the *current* scene and poll for the red tint.
+
+        A long event-loop stall (observed on loaded CI runners) can drop the
+        socket.io connection mid-test; the reconnect rebuilds the page with a
+        fresh ``ui_state.urdf_scene`` in its restored (non-EDITING) mode,
+        silently discarding an EDITING switch made on the old scene object.
+        Re-entering EDITING on whatever scene is live makes the check converge
+        instead of latching on that lost switch.
+        """
+        from tests.helpers.browser_helpers import run_in_app
+        from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
+        from waldo_commander.state import ui_state
+
+        def _enter() -> None:
+            us = ui_state.urdf_scene
+            if us is not None:
+                us.set_appearance_mode(RobotAppearanceMode.EDITING)
+
+        last = None
+        for _ in range(3):
+            run_in_app(_enter)
+            last = self._poll_color(screen, "shape:block", want, timeout=10.0)
+            if last == want:
+                return last
+        return last
+
     def test_shape_renders_and_turns_red_on_collision(self, class_screen) -> None:
         import waldoctl
         from waldoctl import Box
@@ -70,14 +97,19 @@ class TestCollisionVizScreen:
                 f"shape did not render with its base color (got {normal})"
             )
 
-            run_in_app(lambda: scene.set_appearance_mode(RobotAppearanceMode.EDITING))
-            red = self._poll_color(
-                class_screen, "shape:block", SceneColors.COLLISION_HEX.lstrip("#")
+            red = self._enter_editing_and_poll_red(
+                class_screen, SceneColors.COLLISION_HEX.lstrip("#")
             )
             assert red == SceneColors.COLLISION_HEX.lstrip("#"), (
                 f"shape did not turn red on collision (got {red})"
             )
-            run_in_app(lambda: scene.set_appearance_mode(RobotAppearanceMode.LIVE))
+
+            def _back_to_live() -> None:
+                current = ui_state.urdf_scene
+                if current is not None:
+                    current.set_appearance_mode(RobotAppearanceMode.LIVE)
+
+            run_in_app(_back_to_live)
 
             # Shapes persist on commander.scene across page loads; the rebuilt
             # scene must re-render them or the barrier turns invisible while
