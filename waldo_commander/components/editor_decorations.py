@@ -21,6 +21,7 @@ from nicegui.elements.codemirror.codemirror import (
 
 import waldoctl
 
+from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import simulation_state, ui_state
 
@@ -417,9 +418,12 @@ class EditorDecorations:
             return
         tab = waldoctl.commander.programs.get(tab_id)
         targets = tab.dry_run.targets if tab is not None else []
-        textarea.line_anchors = {
-            t.id: t.line_number for t in targets if t.line_number > 0
-        }
+        anchors = {t.id: t.line_number for t in targets if t.line_number > 0}
+        if textarea is ui_state.active_textarea:
+            # A full re-declare would drop the recording insertion cursor;
+            # merging keeps it tracking at its browser-remapped position.
+            anchors.update(motion_recorder.insertion_anchor())
+        textarea.line_anchors = anchors
 
 
 decorations: EditorDecorations = EditorDecorations()

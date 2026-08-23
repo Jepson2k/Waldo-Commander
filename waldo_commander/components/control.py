@@ -42,6 +42,7 @@ from waldo_commander.services.control_lease import (
 )
 from waldo_commander.services.keybindings import refresh_jog_key_descriptions
 from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.services.startup_mode import set_startup_mode
 from waldo_commander.services.programs import is_any_program_running
 
 logger = logging.getLogger(__name__)
@@ -1859,6 +1860,8 @@ class ControlPanel:
             enabled = not waldoctl.commander.status.simulator_active
             await self.client.simulator(enabled)
             waldoctl.commander.status.simulator_active = enabled
+            # Persist the human's choice so the next boot starts in this mode.
+            set_startup_mode(enabled)
             # Clear any latched stop after the switch (no delay needed — the
             # controller waits for the first frame before responding OK).
             try:

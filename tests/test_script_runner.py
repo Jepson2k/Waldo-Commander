@@ -6,6 +6,21 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _seed_robot_descriptor():
+    """run_script reads ui_state.active_robot for the backend package; these
+    unit tests run without the app, so seed the descriptor the way main() does."""
+    from waldo_commander.profiles import get_robot
+    from waldo_commander.state import ui_state
+
+    if ui_state.robot is not None:
+        yield
+        return
+    ui_state.robot = get_robot()
+    yield
+    ui_state.robot = None
+
+
 @pytest.mark.unit
 async def test_run_script_happy_path(tmp_path: Path) -> None:
     """Test that run_script successfully executes a simple script.
@@ -183,3 +198,60 @@ print("All parol6 imports successful")
     assert any("All parol6 imports successful" in line for line in stdout_lines), (
         f"Expected success message in stdout: {stdout_lines}"
     )
+
+
+@pytest.mark.unit
+async def test_bootstrap_endpoint_injection(tmp_path: Path) -> None:
+    """Bare ``RobotClient()`` constructions follow the GUI's exported
+    controller endpoint; an explicit host or port is always respected, and a
+    malformed exported port is skipped with a warning instead of crashing."""
+    import asyncio
+    import os
+
+    from waldo_commander.services import stepping_bootstrap
+
+    bootstrap = Path(stepping_bootstrap.__file__)
+
+    async def run_case(script: str, env_overrides: dict[str, str]) -> tuple:
+        script_path = tmp_path / "endpoint_case.py"
+        script_path.write_text(script)
+        env = {
+            **os.environ,
+            "WALDO_STEP_SESSION": "endpoint-test",
+            "WALDO_CONTROLLER_IP": "127.0.0.1",
+            "WALDO_CONTROLLER_PORT": "6001",
+            **env_overrides,
+        }
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-u",
+            str(bootstrap),
+            str(script_path),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+        return proc.returncode, stdout.decode(), stderr.decode()
+
+    bare = 'from parol6 import RobotClient\nrbt = RobotClient()\nprint("EP", rbt.host, rbt.port)\n'
+    code, out, err = await run_case(bare, {})
+    assert code == 0, err
+    assert "EP 127.0.0.1 6001" in out, out
+
+    explicit_port = 'from parol6 import RobotClient\nrbt = RobotClient(port=7001)\nprint("EP", rbt.host, rbt.port)\n'
+    code, out, err = await run_case(explicit_port, {})
+    assert code == 0, err
+    assert "EP 127.0.0.1 7001" in out, out
+
+    explicit_host = 'from parol6 import RobotClient\nrbt = RobotClient(host="10.0.0.5")\nprint("EP", rbt.host, rbt.port)\n'
+    code, out, err = await run_case(explicit_host, {})
+    assert code == 0, err
+    assert "EP 10.0.0.5 5001" in out, (
+        f"an explicit host must keep the backend's default port: {out}"
+    )
+
+    code, out, err = await run_case(bare, {"WALDO_CONTROLLER_PORT": "nonsense"})
+    assert code == 0, f"invalid port must not crash the program: {err}"
+    assert "EP 127.0.0.1 5001" in out, out
+    assert "Ignoring invalid WALDO_CONTROLLER_PORT" in err

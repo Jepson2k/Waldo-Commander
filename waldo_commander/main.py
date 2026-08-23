@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 import numpy as np
-from nicegui import Client, app as ng_app, ui
+from nicegui import Client, app as ng_app, background_tasks, ui
 from pinokin import arrays_equal_n
 import waldoctl
 from waldoctl import (
@@ -77,8 +77,10 @@ from waldo_commander.services.control_lease import (
     restore_control_mode,
 )
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
+from waldo_commander.services import startup_mode
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
 from waldo_commander.state import (
+    automation_state,
     robot_state,
     controller_state,
     ui_state,
@@ -119,6 +121,13 @@ class _PageState:
 
 _page_state: _PageState | None = None
 
+
+def _client_alive(pc: Client) -> bool:
+    """Both checks needed: ``_deleted`` covers the brief window between
+    NiceGUI marking the client dead and removing it from Client.instances."""
+    return not pc._deleted and pc.id in Client.instances
+
+
 # Pre-allocated buffers for numba pipelines (scratch space)
 _rotation_matrix_buffer: np.ndarray = np.zeros((3, 3), dtype=np.float64)
 _rpy_rad_buffer: np.ndarray = np.zeros(3, dtype=np.float64)
@@ -138,8 +147,10 @@ def _update_connection_notification() -> None:
     if ps is None:
         return
 
-    # Skip if app not ready - avoid modifying elements during page serialization
-    if not readiness_state.app_ready.is_set():
+    # Gate on scene-ready (not app_ready) so the banner still works when the
+    # backend never streams a STATUS frame; the scene signal also guarantees
+    # the page is past serialization, so elements are safe to modify.
+    if not readiness_state.urdf_scene_ready.is_set():
         return
 
     needs_warning = (
@@ -342,6 +353,27 @@ async def stop_controller() -> None:
         logger.error("Stop controller failed: %s", e)
 
 
+# One auto-switch per app run: set when the switch begins (blocks re-entry
+# while in flight) and cleared only if it fails, so check_ping keeps retrying
+# until the first success and never flips the user back afterwards.
+_hw_auto_switched: bool = False
+
+
+async def _switch_to_hardware() -> None:
+    """One-time simulator→robot switch once hardware appears."""
+    global _hw_auto_switched
+    _hw_auto_switched = True
+    try:
+        await client.simulator(False)
+        await client.reset()
+    except Exception as e:
+        _hw_auto_switched = False
+        logger.warning("auto robot-mode switch failed: %s", e)
+        return
+    logger.info("Hardware detected — switching to robot mode")
+    waldoctl.commander.status.simulator_active = False
+
+
 async def check_ping() -> None:
     """Check connectivity via PING (1Hz) and arbitrate multi-tab ownership.
 
@@ -401,11 +433,23 @@ async def check_ping() -> None:
     if _shutting_down:
         return
 
+    # Hardware auto-detect: a slow-booting controller misses the page-load
+    # window, so the switch retries here until its first success.
+    if (
+        ps.last_ping_ok
+        and waldoctl.commander.status.simulator_active
+        and not _hw_auto_switched
+        and startup_mode.stored_startup_mode() != startup_mode.SIM
+    ):
+        await _switch_to_hardware()
+
     # Update robot connectivity status. The multicast status consumer drives
-    # the joint/cartesian button sync at status rate; the two calls below
-    # cover the "stream went silent" path that the consumer cannot, since
-    # they read waldoctl.commander.status.connected directly.
+    # the joint/cartesian button sync at status rate; the calls below cover
+    # the "no STATUS frames" paths (stream went silent, or none ever arrived)
+    # that the consumer cannot, since they read
+    # waldoctl.commander.status.connected directly.
     waldoctl.commander.status.connected = ps.last_ping_ok
+    _update_connection_notification()
     if readout_panel is not None:
         readout_panel.update_conn_io()
     if control_panel is not None:
@@ -498,9 +542,11 @@ def update_ui_from_status() -> None:
     if control_panel.estop:
         control_panel.estop.check_state_change()
 
-    # Skip notifying listeners until app ready to avoid a race with NiceGUI
-    # page serialization (envelope proximity updates depend on this).
-    if not readiness_state.app_ready.is_set():
+    # Skip notifying listeners until the scene is built to avoid a race with
+    # NiceGUI page serialization (envelope proximity updates depend on this).
+    # Scene-ready rather than app_ready so a boot without a STATUS frame
+    # (robot unplugged) still drives the status-dependent UI.
+    if not readiness_state.urdf_scene_ready.is_set():
         return
 
     _update_connection_notification()
@@ -882,37 +928,28 @@ def build_page_content() -> None:
             async def _init():
                 try:
                     await asyncio.wait_for(
-                        readiness_state.app_ready.wait(), timeout=20.0
+                        readiness_state.app_ready.wait(), timeout=3.0
                     )
                 except asyncio.TimeoutError:
+                    # No STATUS frame (com_port configured but no robot wired).
+                    # The scene only needs local URDF assets and guarded client
+                    # calls, so render it anyway instead of blocking the page.
                     loading_spinner.set_visibility(False)
                     loading_status.text = (
-                        "Could not connect to controller. "
-                        "Check that the controller is running and refresh the page."
+                        "Robot disconnected — proceeding without live data"
                     )
-                    loading_status.style(
-                        "color: #ef4444; font-size: 1rem; text-align: center; "
-                        "max-width: 400px;"
-                    )
-                    return
 
                 await initialize_urdf_scene()
 
-                # By now the serial transport has had time to receive
-                # frames.  If hardware is detected, switch to robot mode.
+                # Seed connectivity for the first render; the hardware
+                # auto-detect lives in check_ping, which keeps retrying, so
+                # a controller that boots slower than the page still flips
+                # out of simulator when its first frames arrive.
                 try:
                     result = await client.ping()
                     hw_now = bool(result.hardware_connected) if result else False
                 except Exception:
                     hw_now = False
-                if hw_now and waldoctl.commander.status.simulator_active:
-                    logger.info("Hardware detected — switching to robot mode")
-                    waldoctl.commander.status.simulator_active = False
-                    try:
-                        await client.simulator(False)
-                        await client.reset()
-                    except Exception as e:
-                        logger.warning("auto robot-mode switch failed: %s", e)
                 waldoctl.commander.status.connected = hw_now
 
                 control_panel.update_robot_btn_visual()
@@ -927,6 +964,10 @@ def build_page_content() -> None:
                         ui_state._build_gripper_content()
                     if ui_state._gripper_tab is not None:
                         ui_state._gripper_tab.props(remove="disable")
+
+                if not readiness_state.app_ready.is_set():
+                    # No STATUS frame will trigger the banner update — show it now.
+                    _update_connection_notification()
 
                 scene_loading_overlay.classes("opacity-0 pointer-events-none")
                 await asyncio.sleep(0.4)
@@ -1050,6 +1091,28 @@ async def _stop_plugin_panels() -> None:
     await asyncio.gather(*(_stop_one(p) for p in ui_state.plugin_panels))
 
 
+async def _set_initial_mode(port: str) -> None:
+    """Pick the boot mode: without a serial port the simulator always runs
+    (a stored HARDWARE preference would otherwise boot with no transport at
+    all — a dead app); with a port, the persisted ``startup_mode``
+    preference wins, else keep the real transport and let the hardware
+    auto-detect in ``check_ping`` flip out of simulator when frames arrive
+    (unless simulator mode is pinned).
+    """
+    stored = startup_mode.stored_startup_mode()
+    use_sim = not port or stored == startup_mode.SIM
+    if use_sim:
+        try:
+            await client.simulator(True)
+        except Exception as e:
+            logger.error("startup: simulator(True) failed: %s", e)
+        waldoctl.commander.status.simulator_active = True
+    try:
+        await client.reset()
+    except Exception as e:
+        logger.warning("startup: reset failed (may retry): %s", e)
+
+
 def _register_handlers() -> None:
     """Register startup/shutdown handlers only once.
 
@@ -1068,25 +1131,6 @@ def _register_handlers() -> None:
             await client.wait_ready(timeout=15.0)
         except (TimeoutError, ConnectionError, OSError) as e:
             logger.debug("startup: wait_ready failed: %s", e)
-
-    async def _set_initial_mode(port: str) -> None:
-        """Start streaming; defer mode decision to page load.
-
-        When a port is configured the controller already has a real serial
-        transport — don't replace it with simulator.  The page-load ping
-        in ``_init`` will set ``waldoctl.commander.status.simulator_active`` based on
-        whether hardware is actually connected.
-        """
-        if not port:
-            try:
-                await client.simulator(True)
-            except Exception as e:
-                logger.error("startup: simulator(True) failed: %s", e)
-            waldoctl.commander.status.simulator_active = True
-        try:
-            await client.reset()
-        except Exception as e:
-            logger.warning("startup: reset failed (may retry): %s", e)
 
     async def _restore_settings() -> None:
         """Restore persisted motion profile and tool selection."""
@@ -1499,6 +1543,148 @@ def _maybe_clear_sim_pose_override() -> None:
         playback_coordination.last_teleport_ts = 0.0
 
 
+# Re-arm window for the cycle-start input: a rising edge within this many
+# seconds of the last fire is ignored (switch-bounce / double-tap protection).
+CYCLE_START_DEBOUNCE_S = 1.0
+# Once at home, the home output only drops after drifting this far beyond the
+# tolerance, so a joint hovering at the threshold can't chatter the output.
+HOME_OUTPUT_HYSTERESIS_DEG = 0.5
+
+
+async def _run_cycle_start(page_client: Client) -> None:
+    """Start the active program off a hardware cycle-start pulse.
+
+    Enters the page's client context — ``script_exec.start()`` reads the
+    editor widgets and notifies on that page. The toast tells an operator
+    who forgot the setting is on why the robot just started.
+    """
+    if not _client_alive(page_client):
+        return
+    try:
+        with page_client:
+            ui.notify(
+                "Cycle start: Input 1 triggered the program",
+                type="info",
+                position="top",
+            )
+            await script_exec.start()
+    except Exception as e:
+        logger.warning("Cycle-start program launch failed: %s", e)
+
+
+async def _write_home_output(value: int) -> None:
+    """Write Output 2 and flip the tracker only on success — a failed write
+    leaves the transition pending so the next tick retries."""
+    a = automation_state
+    try:
+        await waldoctl.commander.client.write_io(1, value)
+        a._home_out_on = bool(value)
+    except Exception as e:
+        logger.warning("Home-output write_io(1, %s) failed: %s", value, e)
+    finally:
+        a._home_write_inflight = False
+
+
+def _automation_tick(page_client: Client | None) -> None:
+    """Opt-in I/O automation watchers, one call per status tick.
+
+    They read the published ``commander.status`` surface (one tick behind
+    the wire — irrelevant at status rate) so the watchers see exactly what
+    every other public consumer sees. Both watchers are edge-detecting:
+    they act only on transitions, never per tick.
+    """
+    _cycle_start_tick(page_client)
+    _home_output_tick()
+
+
+def _cycle_start_tick(page_client: Client | None) -> None:
+    """Cycle start: rising edge on Input 1 runs the active program.
+
+    The edge tracker runs even while disabled so enabling with the input
+    held high never fires until a fresh low→high transition. ``io`` is only
+    published while a page is connected and this watcher reads one tick
+    behind the publish, so the tracker only trusts values seen after a full
+    live tick — a press latched while headless (or held high at launch)
+    never fires.
+    """
+    a = automation_state
+    st = waldoctl.commander.status
+    io = st.io
+
+    cur = io.inputs[0] if io.inputs else 0
+    if page_client is None:
+        a._cycle_prev_input = -1
+        a._cycle_io_fresh = False
+        return
+    fresh = a._cycle_io_fresh
+    a._cycle_io_fresh = True
+    if not fresh or a._cycle_prev_input < 0:
+        # First live tick still reads pre-connect values; the next tick
+        # seeds the tracker from the freshly published input, no firing.
+        a._cycle_prev_input = cur if fresh else -1
+        return
+    prev = a._cycle_prev_input
+    a._cycle_prev_input = cur
+    if (
+        a.cycle_start_enabled
+        and prev == 0
+        and cur == 1
+        and time.monotonic() - a._cycle_last_fire >= CYCLE_START_DEBOUNCE_S
+        and not is_any_program_running()
+        and robot_state.homed
+        and (st.connected or st.simulator_active)
+        and io.estop == 1
+        and not st.editing_mode
+        and waldoctl.commander.programs.active is not None
+    ):
+        a._cycle_last_fire = time.monotonic()
+        background_tasks.create(_run_cycle_start(page_client), name="cycle-start")
+
+
+def _home_output_tick() -> None:
+    """Home output: Output 2 mirrors "all joints within tolerance of the
+    home pose".
+
+    ``status.homed`` is only the referencing flag, so the distance is
+    computed here. Editing/scrub windows hold the last state — the published
+    angles then show a preview pose, not the robot. Disabling with the
+    output still on issues one final clearing write.
+    """
+    a = automation_state
+    st = waldoctl.commander.status
+
+    if not (a.home_output_enabled or a._home_out_on):
+        return
+    desired = False
+    if a.home_output_enabled:
+        if st.editing_mode or playback_coordination.sim_pose_override:
+            return
+        robot = ui_state.active_robot
+        if robot.digital_outputs < 2:
+            return
+        angles = st.joints.angles.deg
+        home = robot.joints.home.deg
+        n = len(home)
+        if len(angles) != n:
+            return
+        dist = 0.0
+        for i in range(n):
+            d = angles[i] - home[i]
+            if d < 0.0:
+                d = -d
+            if d > dist:
+                dist = d
+        band = a.home_tolerance_deg
+        if a._home_out_on:
+            band += HOME_OUTPUT_HYSTERESIS_DEG
+        desired = dist <= band
+    if desired != a._home_out_on and not a._home_write_inflight:
+        a._home_write_inflight = True
+        background_tasks.create(
+            _write_home_output(1 if desired else 0), name="home-output-write"
+        )
+
+
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
     # Shadows of the last-applied jog-enable wire arrays, kept local so each
@@ -1628,12 +1814,16 @@ async def _status_consumer() -> None:
                     # Auto-clear scrub override after teleport has had time to propagate
                     _maybe_clear_sim_pose_override()
 
-                    # Both checks needed: _deleted guards the brief window
-                    # between NiceGUI marking the client dead and removing it
-                    # from Client.instances.
                     ps = _page_state
                     pc = ps.page_client if ps is not None else None
-                    if pc is not None and not pc._deleted and pc.id in Client.instances:
+                    if pc is not None and not _client_alive(pc):
+                        pc = None
+
+                    # Runs before update_ui_from_status pushes this tick's IO,
+                    # so the watchers read the values published last tick.
+                    _automation_tick(pc)
+
+                    if pc is not None:
                         with pc:
                             update_ui_from_status()
 
@@ -1829,6 +2019,19 @@ def main():
     control_panel.set_jog_inversion(
         invert_x=bool(ng_app.storage.general.get("jog_invert_x", False)),
         invert_y=bool(ng_app.storage.general.get("jog_invert_y", False)),
+    )
+
+    # Restore I/O automation settings from prior session (both default off).
+    automation_state.cycle_start_enabled = bool(
+        ng_app.storage.general.get("automation/cycle_start", False)
+    )
+    automation_state.home_output_enabled = bool(
+        ng_app.storage.general.get("automation/home_output", False)
+    )
+    automation_state.home_tolerance_deg = float(
+        ng_app.storage.general.get(
+            "automation/home_tolerance_deg", automation_state.home_tolerance_deg
+        )
     )
 
     configure_logging(config.log_level)

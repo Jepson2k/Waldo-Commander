@@ -7,7 +7,7 @@ profiles, timing each run to show the effect of these parameters.
 import time
 from parol6 import RobotClient
 
-rbt = RobotClient(host="127.0.0.1", port=5001)
+rbt = RobotClient()
 
 ORIENTATION = [90, 0, 90]
 

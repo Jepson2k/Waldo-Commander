@@ -9,6 +9,7 @@ programs/*
 !programs/precision.py
 !programs/speed_comparison.py
 !programs/zigzag_scan.py
+!programs/cycle_start.py
 build/*
 *.egg-info
 screenshots*

@@ -1509,9 +1509,10 @@ class TestScriptExecutionLifecycle:
         Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``
         which deleted ``/tmp/.parol_control_X`` and ``/tmp/.parol_events_X``.
         With the subprocess still alive, ``check_should_pause()`` then read
-        the missing control file → defaulted to ``paused=True`` →
-        ``wait_for_step_or_play`` blocked 300s per command. The script
-        effectively hung until shutdown.
+        the missing control file → defaulted to ``paused=True``. (Nowadays a
+        missing control file makes ``wait_for_step_or_play`` return
+        immediately — free-run, not a hang — but the files must still be
+        preserved for stepping to keep working across reloads.)
 
         After fix: ``cleanup()`` cancels only the event watcher; the step
         controller, session id, and IPC files are preserved so the
