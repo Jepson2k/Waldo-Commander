@@ -78,6 +78,14 @@ waldo_commander = ["static/**/*"]
 [tool.ty.environment]
 extra-paths = ["PAROL6-python-API"]
 
+# ty 0.0.74 mis-binds ParamSpec *args on numba's Dispatcher.__call__ stub:
+# every argument at a jitted call site is compared against the full parameter
+# tuple (astral-sh/ty#157 — ParamSpec support is still partial), flooding the
+# repo with false invalid-argument-type errors. Ignored until ty handles
+# ParamSpec calls; restore to error then.
+[tool.ty.rules]
+invalid-argument-type = "ignore"
+
 [tool.setuptools_scm]
 # Version comes from the latest git tag reachable from HEAD.
 
