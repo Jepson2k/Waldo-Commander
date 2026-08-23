@@ -132,7 +132,6 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
                 break
             await asyncio.sleep(0.1)
         assert status.controller.mode, "no controller mode ever arrived"
-        await user.should_see(marker="controller-chip")
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)

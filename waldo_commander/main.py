@@ -87,6 +87,7 @@ from waldo_commander.state import (
     readiness_state,
     playback_coordination,
     global_phase_timer,
+    robot_events,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,8 @@ class _PageState:
 
     page_client: Client
     connection_notification: ui.notification | None = None
+    warning_notification: ui.notification | None = None
+    warning_banner_text: str = ""
     ping_timer: ui.timer | None = None
     last_ping_ok: bool = False
 
@@ -168,6 +171,37 @@ def _update_connection_notification() -> None:
     elif not needs_warning and ps.connection_notification is not None:
         ps.connection_notification.dismiss()
         ps.connection_notification = None
+
+
+def _update_warning_notification() -> None:
+    """Persistent banner while warning-class conditions stand.
+
+    Same mechanism as the hard-error connection banner, colored as a
+    warning; it leaves when the conditions self-clear. History lives in
+    the warnings/errors log under the movement log."""
+    ps = _page_state
+    if ps is None or not readiness_state.urdf_scene_ready.is_set():
+        return
+    entries = waldoctl.commander.status.warnings.entries
+    msg = "; ".join(str(e[2]) for e in entries)
+    if msg == ps.warning_banner_text:
+        return
+    if ps.warning_notification is not None:
+        ps.warning_notification.dismiss()
+        # dismiss() only tells the client; the server element normally
+        # deletes itself on the client's dismiss event, which never comes
+        # without a real browser.
+        if not ps.warning_notification.is_deleted:
+            ps.warning_notification.delete()
+        ps.warning_notification = None
+    if msg:
+        ps.warning_notification = ui.notification(
+            message=msg,
+            type="warning",
+            close_button=True,
+            timeout=0,
+        )
+    ps.warning_banner_text = msg
 
 
 async def initialize_urdf_scene() -> None:
@@ -551,6 +585,9 @@ def update_ui_from_status() -> None:
         return
 
     _update_connection_notification()
+    _update_warning_notification()
+    if readout_panel is not None:
+        readout_panel.update_event_log()
     if tool_key_changed:
         robot_state.notify_changed()
 
@@ -1898,6 +1935,16 @@ async def _status_consumer() -> None:
                     # buffer list in place.
                     entries = getattr(status, "warnings", None)
                     if entries is not None and st.warnings.entries != entries:
+                        # New conditions go to the durable log; the banner
+                        # tracks only the standing (self-clearing) set.
+                        prev = {tuple(e) for e in st.warnings.entries}
+                        for e in entries:
+                            if tuple(e) not in prev:
+                                robot_events.add(
+                                    str(e[4]) if len(e) > 4 else "warning",
+                                    str(e[2]) if len(e) > 2 else str(e),
+                                    str(e[3]) if len(e) > 3 else "",
+                                )
                         st.warnings.entries = list(entries)
 
                     link = getattr(status, "link_health", None)

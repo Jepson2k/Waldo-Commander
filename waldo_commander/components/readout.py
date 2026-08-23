@@ -12,7 +12,7 @@ import waldoctl
 from waldoctl import ActionStatus
 
 from waldo_commander.common.theme import IO_COLOR_OFF, IO_COLOR_ON
-from waldo_commander.state import ui_state
+from waldo_commander.state import robot_events, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,33 @@ _TIPS = [
 _TIP_TEXT = random.choice(_TIPS)
 
 
+_EVENT_ICONS = {
+    "error": '<span style="color:var(--color-red-500);font-size:13px">\u2717</span>',
+    "warning": (
+        '<span style="color:var(--color-amber-400);font-size:13px"'
+        ' class="material-icons">warning</span>'
+    ),
+}
+
+
+def _build_event_log_html() -> str:
+    """Build HTML for the warnings/errors log entries."""
+    parts: list[str] = []
+    for ts, severity, message, detail in reversed(robot_events.entries):
+        icon = _EVENT_ICONS.get(severity, _EVENT_ICONS["warning"])
+        tail = (
+            f' <span style="color:var(--ctk-muted)">{html_mod.escape(detail)}</span>'
+            if detail
+            else ""
+        )
+        parts.append(
+            f'<div class="action-log-entry" style="font-size:12px;line-height:1.5">'
+            f'{icon} <span style="color:var(--ctk-muted)">{ts}</span> '
+            f"<b>{html_mod.escape(message)}</b>{tail}</div>"
+        )
+    return "".join(parts)
+
+
 def _build_log_entries_html() -> str:
     """Build HTML for all action log entries."""
     parts: list[str] = []
@@ -131,8 +158,12 @@ class ReadoutPanel:
         self._tool_separator: ui.label | None = None
         self._io_chips: list[ui.chip] = []
 
-        # Controller / warnings / homing elements
-        self._controller_chip: ui.chip | None = None
+        # Warnings/errors log elements
+        self._event_log_row: ui.row | None = None
+        self._event_scroll_area: ui.scroll_area | None = None
+        self._event_log_html: ui.html | None = None
+        self._event_log_expanded: bool = False
+        self._event_log_version: int = -1
 
         # Action log elements
         self._action_scroll_area: ui.scroll_area | None = None
@@ -241,6 +272,25 @@ class ReadoutPanel:
             else:
                 self._action_scroll_area.classes(remove="action-log-expanded")
 
+    def _toggle_event_log(self) -> None:
+        """Toggle warnings/errors log between collapsed and expanded."""
+        self._event_log_expanded = not self._event_log_expanded
+        if self._event_scroll_area:
+            if self._event_log_expanded:
+                self._event_scroll_area.classes(add="action-log-expanded")
+            else:
+                self._event_scroll_area.classes(remove="action-log-expanded")
+
+    def update_event_log(self) -> None:
+        """Render the warnings/errors log; the row appears with its first entry."""
+        if self._event_log_row is None or self._event_log_html is None:
+            return
+        if robot_events.version == self._event_log_version:
+            return
+        self._event_log_version = robot_events.version
+        self._event_log_row.set_visibility(bool(robot_events.entries))
+        self._event_log_html.set_content(_build_event_log_html())
+
     def build(self, anchor: str = "tl") -> None:
         """Render the top-left readout panel as an overlay card."""
         with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor}"):
@@ -304,20 +354,6 @@ class ReadoutPanel:
                     self._tool_label: ui.label | None = None
                     with self._tool_chip:
                         self._tool_label = ui.label("").classes("text-lg font-medium")
-                    controller = waldoctl.commander.status.controller
-                    self._controller_chip = (
-                        ui.chip()
-                        .props("dense outline square")
-                        .classes("text-xs font-medium")
-                        .style("box-shadow: none; margin: 0;")
-                        .tooltip("Controller mode")
-                        .mark("controller-chip")
-                    )
-                    with self._controller_chip:
-                        ui.label("").bind_text_from(controller, "mode")
-                    self._controller_chip.bind_visibility_from(
-                        controller, "mode", backward=bool
-                    )
                     ui.space()
                     with ui.row().classes("gap-0 no-wrap"):
                         self._io_chips = []
@@ -340,45 +376,6 @@ class ReadoutPanel:
                                 .tooltip(f"Digital Output {i + 1}")
                             )
                             self._io_chips.append(chip)
-
-                warnings = waldoctl.commander.status.warnings
-                with (
-                    ui.row()
-                    .classes("items-center gap-1 no-wrap w-full")
-                    .bind_visibility_from(warnings, "entries", backward=bool)
-                    .mark("warnings-banner")
-                ):
-                    ui.icon("warning").classes("text-amber-500 text-sm")
-                    ui.label("").bind_text_from(
-                        warnings,
-                        "entries",
-                        backward=lambda entries: "; ".join(
-                            str(entry[2]) for entry in entries
-                        ),
-                    ).classes("text-xs text-amber-500")
-
-                homing = waldoctl.commander.status.homing
-                with (
-                    ui.row()
-                    .classes("items-center gap-1 no-wrap w-full")
-                    .bind_visibility_from(homing, "active")
-                    .mark("homing-progress")
-                ):
-                    ui.icon("home").classes("text-sky-500 text-sm")
-                    ui.label("").bind_text_from(
-                        homing,
-                        "joints",
-                        backward=lambda pairs: (
-                            "Homing step "
-                            + str(waldoctl.commander.status.homing.sequence_step)
-                            + " — "
-                            + " ".join(
-                                f"J{i + 1}:{state}"
-                                + (f"({phase})" if state == "RUNNING" else "")
-                                for i, (state, phase) in enumerate(pairs)
-                            )
-                        ),
-                    ).classes("text-xs text-sky-500")
 
                 with ui.row().classes("items-center justify-between w-full no-wrap"):
                     with ui.row().classes("items-center gap-1 no-wrap"):
@@ -493,7 +490,27 @@ class ReadoutPanel:
                             "w-full"
                         )
 
+                # Collapsible warnings/errors log, hidden until something
+                # actually lands in it.
+                with (
+                    ui.row()
+                    .classes("items-center w-full no-wrap gap-0")
+                    .mark("readout-event-log")
+                ) as event_row:
+                    self._event_log_row = event_row
+                    self._event_scroll_area = (
+                        ui.scroll_area()
+                        .classes("action-log flex-1")
+                        .on("click", self._toggle_event_log)
+                    )
+                    with self._event_scroll_area:
+                        self._event_log_html = ui.html("", sanitize=False).classes(
+                            "w-full"
+                        )
+                event_row.set_visibility(False)
+
                 # Subscribe to action-log updates and seed the initial state
                 # (conn_io is synced after URDF init in _init()).
                 self._bind_action_log_listener()
                 self.update_action_log()
+                self.update_event_log()
