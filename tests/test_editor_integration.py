@@ -8,6 +8,7 @@ from nicegui.testing import User
 from tests.helpers.wait import (
     wait_for_app_ready,
     enable_sim,
+    ensure_robot_ready_for_motion,
 )
 from waldo_commander.services.programs import (
     is_any_program_recording,
@@ -630,6 +631,321 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     assert _active_for_steps.dry_run.playback.is_active is False
 
 
+_THREE_MOVE_SCRIPT = """from parol6 import RobotClient
+rbt = RobotClient()
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
+rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+"""
+
+
+async def _open_simulated_three_move_program(
+    user: User, script: str = _THREE_MOVE_SCRIPT
+):
+    """Open the editor, load a three-move program, and dry-run simulate it.
+    Returns ``(editor, tab)`` once the playback timeline is built."""
+    from waldo_commander.components.simulation_engine import simulation as _sim
+    from waldo_commander.state import ui_state
+    import waldoctl
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    assert editor is not None
+    tab = waldoctl.commander.programs.active
+    assert tab is not None
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = script
+    tab.source = script
+
+    await _sim.run_simulation()
+    for _ in range(30):
+        if tab.dry_run.path_segments:
+            break
+        await asyncio.sleep(0.1)
+    assert tab.dry_run.path_segments, "simulation produced no path segments"
+    # The timeline is lazy — built on the first playback interaction. Build it
+    # up front exactly as pressing any step control would.
+    assert editor.playback._ensure_timeline() is not None, "timeline build failed"
+    return editor, tab
+
+
+async def _wait_j1_near(target: float, timeout_s: float = 3.0) -> None:
+    """Wait until joint 1 settles within 1 degree of ``target``."""
+    import waldoctl
+
+    interval = 0.05
+    j1 = float(waldoctl.commander.status.joints.angles.deg[0])
+    for _ in range(int(timeout_s / interval)):
+        if abs(j1 - target) < 1.0:
+            return
+        await asyncio.sleep(interval)
+        j1 = float(waldoctl.commander.status.joints.angles.deg[0])
+    raise AssertionError(f"J1 never reached {target}: J1={j1}")
+
+
+@pytest.mark.integration
+async def test_step_program_runs_one_command_per_press(user: User) -> None:
+    """The Step-program button executes exactly one program command per press.
+
+    From idle, a press launches the subprocess with the stepping IPC left
+    paused: the first motion command runs, then the script blocks — running
+    but not playing, not finished. A second press advances exactly one more
+    command. While the program runs, the sim Previous-step button is hidden
+    (live stepping is forward-only); it reappears after the run stops.
+    """
+    editor, tab = await _open_simulated_three_move_program(user)
+
+    prev_btn = editor.playback.prev_btn
+    assert prev_btn is not None
+    assert prev_btn.visible is True, "prev button should be visible when idle"
+
+    pb = tab.dry_run.playback
+
+    async def wait_step_complete(step: int, timeout_s: float) -> None:
+        interval = 0.05
+        for _ in range(int(timeout_s / interval)):
+            if pb.executing_step_index == step and pb.executing_step_at_end:
+                return
+            await asyncio.sleep(interval)
+        tail = [entry.text for entry in tab.log.entries[-5:]]
+        raise TimeoutError(
+            f"step {step} never completed: index={pb.executing_step_index}, "
+            f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
+            f"log tail={tail}"
+        )
+
+    try:
+        # First press from idle: subprocess starts paused, runs command #1 only.
+        user.find(marker="editor-step-program").click()
+        await wait_step_complete(0, timeout_s=30.0)
+
+        assert pb.is_playing is False, "paused start must not enter play mode"
+        assert prev_btn.visible is False, "prev button must hide during a live run"
+        await _wait_j1_near(85.0)
+
+        # Exactly one command: even given time to continue, the script must
+        # still be blocked on command #1.
+        await asyncio.sleep(0.5)
+        assert pb.executing_step_index == 0, "paused start ran more than one command"
+        assert is_any_program_running() is True, "program must be paused, not finished"
+
+        # Second press while running-paused: exactly one more command.
+        user.find(marker="editor-step-program").click()
+        await wait_step_complete(1, timeout_s=15.0)
+        assert pb.is_playing is False
+        await _wait_j1_near(95.0)
+        assert is_any_program_running() is True, "still paused after the second step"
+    finally:
+        if is_any_program_running():
+            user.find(marker="editor-stop-btn").click()
+            for _ in range(50):
+                if not is_any_program_running():
+                    break
+                await asyncio.sleep(0.1)
+
+    assert is_any_program_running() is False
+    assert prev_btn.visible is True, "prev button should reappear after the run"
+
+
+_BLENDED_SCRIPT = """from parol6 import RobotClient
+rbt = RobotClient()
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0, r=15, wait=False)
+rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0, r=15, wait=False)
+rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+rbt.wait_motion()
+"""
+
+
+@pytest.mark.integration
+async def test_step_program_blended_moves_run_one_per_press(user: User) -> None:
+    """Stepping a blended program executes exactly one exact-stop move per
+    press (industrial step-mode semantics: blends only apply in play mode).
+
+    Without the paused-mode member strip, the wrapper's blend branch executes
+    r>0 moves with no pause check and one press free-runs the whole program.
+    Assertions read the controller directly: during a live run the published
+    angles show the preview timeline's pose, not the robot's.
+    """
+    from waldo_commander.state import ui_state
+
+    editor, tab = await _open_simulated_three_move_program(user, script=_BLENDED_SCRIPT)
+    client = ui_state.control_panel.client
+
+    async def wait_controller_j1(target: float, timeout_s: float = 30.0) -> None:
+        j1 = None
+        for _ in range(int(timeout_s / 0.1)):
+            s = await client.status()
+            j1 = s.angles[0] if s else None
+            if j1 is not None and abs(j1 - target) < 1.0:
+                return
+            await asyncio.sleep(0.1)
+        tail = [entry.text for entry in tab.log.entries[-5:]]
+        raise TimeoutError(
+            f"controller J1 never reached {target}: J1={j1}, "
+            f"running={is_any_program_running()}, log tail={tail}"
+        )
+
+    try:
+        # Each press executes exactly one group member as an exact stop.
+        user.find(marker="editor-step-program").click()
+        await wait_controller_j1(85.0)
+        await asyncio.sleep(0.5)
+        s = await client.status()
+        assert abs(s.angles[0] - 85.0) < 1.0, "one press must run one member only"
+        assert is_any_program_running() is True, "program must be paused, not finished"
+
+        user.find(marker="editor-step-program").click()
+        await wait_controller_j1(95.0)
+        assert is_any_program_running() is True, "still paused after the second member"
+
+        # Third press: the non-blended move closes the group (step 1 in the
+        # timeline, which renders the blend pair as one segment).
+        user.find(marker="editor-step-program").click()
+        await wait_controller_j1(90.0)
+        assert tab.dry_run.playback.executing_step_index == 1
+        assert is_any_program_running() is True
+
+        # Play resumes normal execution through to completion.
+        await editor.playback.toggle_play()
+        for _ in range(300):
+            if not is_any_program_running():
+                break
+            await asyncio.sleep(0.1)
+        assert is_any_program_running() is False, "play should run to completion"
+    finally:
+        if is_any_program_running():
+            user.find(marker="editor-stop-btn").click()
+            for _ in range(50):
+                if not is_any_program_running():
+                    break
+                await asyncio.sleep(0.1)
+
+
+_ASYNC_THREE_MOVE_SCRIPT = """import asyncio
+from parol6 import AsyncRobotClient
+
+async def main():
+    async with AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+        await rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
+        await rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+
+asyncio.run(main())
+"""
+
+
+@pytest.mark.integration
+async def test_step_program_async_client_runs_one_per_press(user: User) -> None:
+    """Async programs step exactly like sync ones: the bootstrap wraps
+    AsyncRobotClient too, so each press runs one command and the pause holds.
+
+    Without the async wrapper the client is unpatched: the program free-runs
+    with no step events and completes on the first press.
+    """
+    editor, tab = await _open_simulated_three_move_program(
+        user, script=_ASYNC_THREE_MOVE_SCRIPT
+    )
+    pb = tab.dry_run.playback
+
+    async def wait_step_complete(step: int, timeout_s: float) -> None:
+        interval = 0.05
+        for _ in range(int(timeout_s / interval)):
+            if pb.executing_step_index == step and pb.executing_step_at_end:
+                return
+            await asyncio.sleep(interval)
+        tail = [entry.text for entry in tab.log.entries[-5:]]
+        raise TimeoutError(
+            f"step {step} never completed: index={pb.executing_step_index}, "
+            f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
+            f"log tail={tail}"
+        )
+
+    try:
+        user.find(marker="editor-step-program").click()
+        await wait_step_complete(0, timeout_s=30.0)
+        await _wait_j1_near(85.0)
+
+        await asyncio.sleep(0.5)
+        assert pb.executing_step_index == 0, "paused start ran more than one command"
+        assert is_any_program_running() is True, "program must be paused, not finished"
+
+        user.find(marker="editor-step-program").click()
+        await wait_step_complete(1, timeout_s=15.0)
+        await _wait_j1_near(95.0)
+        assert is_any_program_running() is True, "still paused after the second step"
+    finally:
+        if is_any_program_running():
+            user.find(marker="editor-stop-btn").click()
+            for _ in range(50):
+                if not is_any_program_running():
+                    break
+                await asyncio.sleep(0.1)
+
+    assert is_any_program_running() is False
+
+
+@pytest.mark.integration
+async def test_prev_step_scrubs_sim_preview_back(user: User) -> None:
+    """The Previous-step button scrubs the sim preview back one segment and
+    clamps at step 0.
+
+    Disabled at step 0; after Next it becomes enabled and a press moves
+    ``current_step``/``playback_time`` back. Its enabled state tracks slider
+    scrubs, and a racing press at step 0 clamps instead of going negative.
+    """
+    editor, tab = await _open_simulated_three_move_program(user)
+    pbc = editor.playback
+
+    prev_btn = pbc.prev_btn
+    assert prev_btn is not None
+    assert prev_btn.visible is True, "prev button should be visible after simulation"
+    assert prev_btn._props.get("disable") is True, "prev must be disabled at step 0"
+    assert tab.dry_run.playback.current_step == 0
+
+    # Next → step 1; prev becomes enabled.
+    user.find(marker="editor-step-next").click()
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 1
+    assert prev_btn._props.get("disable") is not True
+
+    # Prev → back one segment, to the very start.
+    user.find(marker="editor-step-prev").click()
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 0
+    assert tab.dry_run.playback.playback_time == 0.0
+    assert prev_btn._props.get("disable") is True, "prev must re-disable at step 0"
+
+    # Slider scrubs move current_step without a button press; the enabled
+    # state must follow.
+    user.find(marker="editor-step-next").click()
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 1
+    scrub_slider = pbc._scrub_slider
+    assert scrub_slider is not None
+    with scrub_slider.client:
+        scrub_slider.value = pbc._timeline.cumulative_times[1] * 0.5
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 0
+    assert prev_btn._props.get("disable") is True, (
+        "prev enabled state must track slider scrubs"
+    )
+
+    # A double-click race can deliver a second press at step 0 before the
+    # disable round-trips to the browser; the handler clamps at the start.
+    with prev_btn.client:
+        pbc.step_backward()
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.current_step == 0
+    assert tab.dry_run.playback.playback_time == 0.0
+
+
 @pytest.mark.integration
 async def test_simulation_creates_targets_for_literal_moves(
     user: User,
@@ -683,3 +999,238 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     assert "# TARGET:" not in updated_content, (
         "Source code should not contain TARGET markers"
     )
+
+
+def _fire_editor_event(textarea, event_type: str, args: dict) -> None:
+    """Drive a CodeMirror event through the element's real event listener —
+    the same path a browser event takes. ``Element.on`` stores listener types
+    camelCased, so kebab-case names are converted before matching."""
+    from nicegui.helpers import event_type_to_camel_case
+
+    wanted = event_type_to_camel_case(event_type)
+    listener = next(
+        (
+            listener
+            for listener in textarea._event_listeners.values()
+            if listener.type == wanted
+        ),
+        None,
+    )
+    assert listener is not None, f"no {event_type} listener registered"
+    with textarea.client:
+        textarea._handle_event({"listener_id": listener.id, "args": args})
+
+
+def _set_cursor_line(textarea, line: int) -> None:
+    """Place the cursor like a user click: focus, then a selection change."""
+    _fire_editor_event(textarea, "focus-change", {"focused": True})
+    _fire_editor_event(textarea, "selection-change", {"line": line, "column": 1})
+
+
+@pytest.mark.integration
+async def test_recorded_steps_insert_below_cursor(user: User) -> None:
+    """Recording with the cursor mid-file inserts every step directly below
+    the cursor line in chronological order, without moving the user's cursor
+    and without touching the surrounding lines."""
+    import waldoctl
+    from waldo_commander.services.motion_recorder import motion_recorder
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    tab = waldoctl.commander.programs.active
+    assert tab is not None
+    textarea = ui_state.active_textarea
+    assert textarea is not None
+
+    textarea.value = "# step one\n# step two\n# step three\n# step four\n"
+
+    _set_cursor_line(textarea, 2)
+    assert tab.dry_run.playback.active_cursor_line == 2
+
+    # No simulation end position to match -> the start anchor is inserted.
+    tab.dry_run.final_joints_rad = None
+
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0.1)
+    assert is_any_program_recording()
+
+    user.find(marker="editor-capture-pose-btn").click()
+    await asyncio.sleep(0)
+    motion_recorder.record_action("io", port=1, state=1)
+
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0.1)
+    assert not is_any_program_recording()
+
+    lines = textarea.value.splitlines()
+    assert lines[:2] == ["# step one", "# step two"], "lines above cursor intact"
+    tail = lines.index("# step three")
+    assert lines[tail:] == ["# step three", "# step four"], (
+        "original tail stays below every recorded step"
+    )
+    inserted = lines[2:tail]
+    assert inserted and inserted[0].startswith("rbt."), (
+        "recorded code lands directly below the cursor line"
+    )
+    anchor_idx = next(
+        (i for i, ln in enumerate(inserted) if "Recording start position" in ln), None
+    )
+    move_idx = next(
+        (i for i, ln in enumerate(inserted) if ln.startswith("rbt.move_l(")), None
+    )
+    io_idx = next(
+        (i for i, ln in enumerate(inserted) if ln == "rbt.write_io(1, 1)"), None
+    )
+    assert anchor_idx is not None, f"anchor not recorded: {inserted}"
+    assert move_idx is not None, f"captured pose not recorded: {inserted}"
+    assert io_idx is not None, f"io action not recorded: {inserted}"
+    assert anchor_idx < move_idx < io_idx, "steps stay in chronological order"
+    assert tab.dry_run.playback.active_cursor_line == 2, (
+        "recording must not move the user's cursor"
+    )
+
+
+@pytest.mark.integration
+async def test_recording_cursor_tracks_user_edits(user: User) -> None:
+    """User edits during a recording session shift the insertion cursor with
+    the code: the browser remaps the session's line anchor and the recorder
+    reads the echoed position back, so recorded steps keep landing at the
+    taught spot instead of a stale line number."""
+    import waldoctl
+    from waldo_commander.services.motion_recorder import (
+        _RECORD_ANCHOR_ID,
+        motion_recorder,
+    )
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    tab = waldoctl.commander.programs.active
+    textarea = ui_state.active_textarea
+    assert tab is not None and textarea is not None
+
+    textarea.value = "# head\n# taught spot\n# tail\n"
+    _set_cursor_line(textarea, 2)
+    tab.dry_run.final_joints_rad = None
+
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0.1)
+    assert is_any_program_recording()
+    tracked = textarea._props["line-anchors"].get(_RECORD_ANCHOR_ID)
+    assert tracked, "session cursor must be declared as a line anchor"
+
+    # The user types two lines at the top mid-session; the browser remaps the
+    # anchor and echoes the shifted position (replayed here — the user
+    # fixture runs no JS).
+    textarea.value = "# note 1\n# note 2\n" + str(textarea.value)
+    _fire_editor_event(
+        textarea,
+        "anchor-positions",
+        {
+            "anchors": {
+                **textarea._props["line-anchors"],
+                _RECORD_ANCHOR_ID: tracked + 2,
+            }
+        },
+    )
+
+    motion_recorder.record_action("io", port=1, state=1)
+
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0.1)
+    assert not is_any_program_recording()
+
+    lines = textarea.value.splitlines()
+    io_idx = lines.index("rbt.write_io(1, 1)")
+    assert io_idx == tracked + 2, (
+        f"recorded step must land below the shifted anchor line: {lines}"
+    )
+    assert lines.index("# tail") > io_idx, "original tail stays below the step"
+    assert _RECORD_ANCHOR_ID not in textarea._props["line-anchors"], (
+        "stopping the session must retract its anchor"
+    )
+
+
+@pytest.mark.integration
+async def test_manual_inserts_follow_cursor(user: User) -> None:
+    """Palette, gizmo, and capture-pose inserts land below the cursor line and
+    consecutive inserts stay in order; with the cursor unset or on the last
+    line they append at EOF exactly as before."""
+    import waldoctl
+    from waldo_commander.components.editor_decorations import decorations
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    ui_state.program_panel_visible = True  # flash the lines, not the tab
+
+    editor = ui_state.editor_panel
+    tab = waldoctl.commander.programs.active
+    textarea = ui_state.active_textarea
+    assert editor is not None and tab is not None and textarea is not None
+
+    textarea.value = "# alpha\n# beta\n# gamma\n"
+
+    # Cursor unset -> palette insert appends at EOF. An unfocused
+    # selection-change (CodeMirror's echo of a programmatic value update)
+    # must not count as cursor placement.
+    assert tab.dry_run.playback.active_cursor_line == 0
+    _fire_editor_event(textarea, "selection-change", {"line": 1, "column": 1})
+    assert tab.dry_run.playback.active_cursor_line == 0
+    with textarea.client:
+        editor._insert_command("delay")
+    assert textarea.value.splitlines() == [
+        "# alpha",
+        "# beta",
+        "# gamma",
+        "time.sleep(1.0)",
+    ]
+
+    # Cursor on line 1 -> gizmo target lands on line 2, which is also flashed.
+    _set_cursor_line(textarea, 1)
+    with textarea.client:
+        line_number = editor.add_target_code(
+            [100.0, 200.0, 300.0, 0.0, 0.0, 0.0], "cartesian"
+        )
+    assert line_number == 2
+    lines = textarea.value.splitlines()
+    assert lines[0] == "# alpha"
+    assert lines[1].startswith("rbt.move_l([100.000, 200.000, 300.000")
+    assert lines[2] == "# beta"
+    assert decorations._active_flashes[-1][1] == {2}
+
+    # A second insert without moving the cursor lands below the first one.
+    with textarea.client:
+        editor._insert_command("delay")
+    lines = textarea.value.splitlines()
+    assert lines[2] == "time.sleep(1.0)"
+    assert lines[3] == "# beta"
+
+    # Cursor on the last line -> capture pose appends at EOF.
+    _set_cursor_line(textarea, len(lines))
+    user.find(marker="editor-capture-pose-btn").click()
+    await asyncio.sleep(0)
+    lines = textarea.value.splitlines()
+    assert lines[-1].startswith("rbt.move_l(")
+    assert lines[-2] == "time.sleep(1.0)"
+    # Indented anchor: the insert matches the body's indentation instead of
+    # splitting the suite at column 0.
+    textarea.value = "def run():\n    rbt.home()\n"
+    _set_cursor_line(textarea, 2)
+    with textarea.client:
+        editor._insert_command("delay")
+    assert textarea.value.splitlines()[2] == "    time.sleep(1.0)"

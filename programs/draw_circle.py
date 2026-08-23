@@ -11,7 +11,7 @@ then connects their centers with a sine-wave spline:
 import math
 from parol6 import RobotClient
 
-rbt = RobotClient(host="127.0.0.1", port=5001)
+rbt = RobotClient()
 
 RADIUS = 30
 SPEED = 0.4
