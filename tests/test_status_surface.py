@@ -1,14 +1,13 @@
-"""The v0.8.0 status surface: safety stop, controller chip, warnings banner,
-homing progress.
+"""The v0.8.0 status surface: controller chip, warnings banner, homing
+progress.
 
 These run on the suite's parol6 fake-serial backend, which pre-dates the
 v0.8.0 buffer fields — which is itself half the contract under test: the
-safety-stop button must degrade to a spoken refusal (waldoctl's ABC default),
-and the status consumer must leave the new sub-objects at their defaults
-instead of resetting them each tick, so the UI wiring can be driven through
-the public ``commander.status`` surface exactly the way a capable backend's
-consumer writes it. The full wire-to-widget path runs against the real par6
-runtime in ``test_par6_backend.py``.
+status consumer must leave the new sub-objects at their defaults instead of
+resetting them each tick, so the UI wiring can be driven through the public
+``commander.status`` surface exactly the way a capable backend's consumer
+writes it. The full wire-to-widget path runs against the real par6 runtime
+in ``test_par6_backend.py``.
 """
 
 import asyncio
@@ -18,19 +17,6 @@ import waldoctl
 from nicegui.testing import User
 
 from tests.helpers.wait import wait_for_app_ready
-
-
-@pytest.mark.integration
-async def test_safety_stop_button_speaks_when_the_backend_has_no_limp_state(
-    user: User,
-) -> None:
-    """The safety-stop button exists beside the E-Stop and a backend without
-    a limp state answers with a notification, not a silent no-op."""
-    await user.open("/")
-    await wait_for_app_ready()
-
-    user.find(marker="btn-safety-stop").click()
-    await user.should_see("This backend has no limp state")
 
 
 @pytest.mark.integration

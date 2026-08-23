@@ -1849,26 +1849,6 @@ class ControlPanel:
             self.estop._digital_active = True
             self.estop.show(is_physical=False)
 
-    async def on_safety_stop_click(self) -> None:
-        """Drop the arm limp — remove drive authority entirely.
-
-        Unlike the E-Stop's powered protective hold, a limp arm can be
-        moved by hand: the go-limp choice when someone or something is
-        caught. Recover with Reset.
-        """
-        try:
-            await self.client.safety_stop()
-            ui.notify(
-                "Safety stop: arm is limp — press Reset to recover",
-                color="warning",
-            )
-            logger.warning("SAFETY STOP sent (arm limp)")
-        except NotImplementedError:
-            ui.notify("This backend has no limp state", color="warning")
-        except Exception as e:
-            ui.notify(f"Safety stop failed: {e}", color="negative")
-            logger.error("Safety stop failed: %s", e)
-
     def render_jog_content(self) -> None:
         """Render jog controls (tabs + grids) and settings."""
         with ui.tabs().props("dense").classes("cp-jog-tabs") as jog_mode_tabs:
@@ -2512,13 +2492,6 @@ class ControlPanel:
                 ).props("round unelevated").classes("glass-btn text-2xl").style(
                     "position: absolute; top: -18px; left: 10px;"
                 ).tooltip("E-Stop (Esc)").mark("btn-estop")
-                ui.button(
-                    icon="pan_tool",
-                    color="amber-8",
-                    on_click=self.on_safety_stop_click,
-                ).props("round unelevated").classes("glass-btn text-lg").style(
-                    "position: absolute; top: -18px; left: 70px;"
-                ).tooltip("Safety stop — drop the arm limp").mark("btn-safety-stop")
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""

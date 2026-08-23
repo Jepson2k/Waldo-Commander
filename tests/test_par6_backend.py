@@ -135,8 +135,10 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         await user.should_see(marker="controller-chip")
 
         # Safety stop goes over the wire and comes back as SAFETY_STOP in
-        # the broadcast — the go-limp path, not a UI-side flag.
-        user.find(marker="btn-safety-stop").click()
+        # the broadcast — the go-limp path, not a UI-side flag. Driven
+        # through the public client: the GUI deliberately has no software
+        # safety-stop control (that is the physical stop's job).
+        await waldoctl.commander.client.safety_stop()
         for _ in range(50):
             if status.controller.mode == "SAFETY_STOP":
                 break
