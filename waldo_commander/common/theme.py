@@ -619,6 +619,45 @@ html, body {
 
 /* ========== Controls ========== */
 
+/* Cartesian jog buttons: a fixed-size hit box hosting a currentColor SVG
+   glyph with the axis label overlaid as HTML (assets carry no text). */
+.cart-jog-slot {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  cursor: pointer;
+}
+
+.cart-jog-slot .cart-jog-glyph {
+  position: absolute;
+  inset: 0;
+}
+
+.cart-jog-slot svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+/* Anchored per slot via inline left/top/font-size: the label's left edge
+   sits at the glyph's original in-SVG text anchor, vertically centered on
+   that line. The text stroke reproduces the chunky stroked look the labels
+   had as SVG <text stroke="#000">. */
+.cart-jog-label {
+  position: absolute;
+  transform: translateY(-50%);
+  line-height: 1;
+  white-space: nowrap;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  color: #000;
+  -webkit-text-stroke: 0.09em #000;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Pressed visual feedback for jog controls */
 .is-pressed {
   transform: scale(0.96);

@@ -169,14 +169,15 @@ async def wait_for_tool_key(
     )
 
 
-async def wait_for_app_ready(timeout_s: float = 20.0) -> None:
+async def wait_for_app_ready(timeout_s: float = 40.0) -> None:
     """Wait for app to be fully ready (startup + backend + page).
 
     This is the primary wait function for tests. It ensures all components
     are initialized and the app is in a stable state for testing.
 
     Args:
-        timeout_s: Maximum time to wait (default 20s for CI environments)
+        timeout_s: Maximum time to wait (default sized for loaded CI runners,
+            where startup has been observed to exceed 20s)
 
     Raises:
         TimeoutError: If app doesn't become ready within timeout
@@ -327,6 +328,31 @@ async def wait_for_value_change(
         f"Value did not change by {min_delta} within {timeout_s}s. "
         f"baseline={baseline}, current={get_value_fn()}"
     )
+
+
+JOG_SAFE_POSE_DEG = [85.0, -85.0, 135.0, 10.0, 45.0, 170.0]
+
+
+async def teleport_to_jog_pose(client, timeout_s: float = 10.0) -> None:
+    """Teleport to a singularity-free pose and wait for the full vector to land.
+
+    The controller's standby/home pose has J5 = 0 — a wrist singularity where
+    a straight-line cartesian step can fail IK for most of its path (partial
+    creep-length moves, refusals, controller ERROR). Cartesian jog tests must
+    start away from it. Gate on the full joint vector: single joints often
+    already match from prior tests, so a partial check can pass before the
+    teleport lands.
+    """
+    await client.teleport(JOG_SAFE_POSE_DEG)
+    angles: list[float] = []
+    for _ in range(int(timeout_s / 0.1)):
+        angles = [float(a) for a in waldoctl.commander.status.joints.angles.deg]
+        if len(angles) >= 6 and all(
+            abs(a - t) < 1.0 for a, t in zip(angles, JOG_SAFE_POSE_DEG)
+        ):
+            return
+        await asyncio.sleep(0.1)
+    raise TimeoutError(f"teleport to jog pose did not settle: {angles}")
 
 
 async def ensure_robot_ready_for_motion(timeout_s: float = 5.0) -> None:
