@@ -139,6 +139,10 @@ Background services in `waldo_commander/services/`:
 1. Add to appropriate component in `waldo_commander/components/`
 2. Add marker with `.mark("descriptive-marker-name")` for testing
 3. Add test in `tests/test_*_integration.py`
+4. **Show a screenshot.** Any user-visible GUI change must be presented to
+   the user as a screenshot of the running app (with the relevant state
+   populated) before it is considered done — layout problems and dead
+   space are invisible in code review.
 
 ### Modifying Robot Communication
 
