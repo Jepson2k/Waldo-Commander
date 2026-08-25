@@ -15,7 +15,11 @@ import pytest
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 
-from tests.helpers.browser_helpers import click_tab, wait_for_codemirror_ready
+from tests.helpers.browser_helpers import (
+    click_tab,
+    ensure_robot_homed,
+    wait_for_codemirror_ready,
+)
 from tests.helpers.programs import clear_all_programs
 from tests.helpers.wait import screen_wait_for_scene_ready
 
@@ -206,6 +210,9 @@ class TestEditorVisualization:
         screen_wait_for_scene_ready(class_screen)
         click_tab(class_screen, "program")
         wait_for_codemirror_ready(class_screen)
+        # The preview refuses planned motion while unhomed — home first
+        # instead of depending on an earlier test having done it.
+        ensure_robot_homed()
 
         # Snapshot current path colors before changing content — the new
         # simulation must produce a DIFFERENT set before we consider it stable.
