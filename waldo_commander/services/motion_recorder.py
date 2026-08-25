@@ -253,12 +253,12 @@ class MotionRecorder:
     def _declare_insert_anchor(self, textarea) -> None:
         if self._insert_line:
             textarea.line_anchors = {
-                **textarea._props["line-anchors"],
+                **textarea._props.get("line-anchors", {}),
                 _RECORD_ANCHOR_ID: self._insert_line,
             }
 
     def _retract_insert_anchor(self, textarea) -> None:
-        declared = dict(textarea._props["line-anchors"])
+        declared = dict(textarea._props.get("line-anchors", {}))
         if declared.pop(_RECORD_ANCHOR_ID, None) is not None:
             textarea.line_anchors = declared
 
@@ -593,18 +593,28 @@ class MotionRecorder:
         self._last_action_wall_time = self._pending_actions[-1][2]
         self._pending_actions.clear()
 
+    def current_pose_snippet(self, move_type: str = "cartesian") -> str:
+        """Code line moving to the robot's current position.
+
+        Args:
+            move_type: "cartesian" or "joints"
+        """
+        if move_type == "joints":
+            return self._generate_code(
+                "move_j", {"angles": self._get_current_angles(), "duration": 1.0}
+            )
+        return self._generate_code(
+            "move_l", {"pose": self._get_wrf_pose(), "duration": 1.0}
+        )
+
     def capture_current_pose(self, move_type: str = "cartesian") -> None:
         """Capture current robot pose and insert as move command.
 
         Args:
             move_type: "cartesian" or "joints"
         """
-        if move_type == "joints":
-            self._record_action_impl(
-                "move_j", angles=self._get_current_angles(), duration=1.0
-            )
-        else:
-            self._record_action_impl("move_l", pose=self._get_wrf_pose(), duration=1.0)
+        self._insert_snippet(self.current_pose_snippet(move_type))
+        self._last_action_wall_time = time.time()
 
     def _insert_snippet(self, snippet: str) -> None:
         """Insert code below the recording session's insertion cursor (or the

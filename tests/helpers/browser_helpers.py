@@ -45,6 +45,29 @@ def run_in_app(func: Callable[[], Any], timeout: float = 5.0) -> Any:
     return future.result(timeout)
 
 
+def ensure_robot_homed(timeout: float = 15.0) -> None:
+    """Home the simulated robot and wait for the homed status flag.
+
+    Planned-motion previews mirror the controller's unhomed gate, so a test
+    that expects path segments must start from a homed robot instead of
+    relying on an earlier test having homed it (the mock homes in ~0.2s).
+    """
+    import asyncio
+
+    from waldo_commander.state import robot_state, ui_state
+
+    if robot_state.homed:
+        return
+    assert core.loop is not None, "app event loop not running"
+    client = ui_state.control_panel.client
+    asyncio.run_coroutine_threadsafe(client.home(), core.loop).result(timeout)
+    deadline = _time.monotonic() + timeout
+    while not robot_state.homed:
+        if _time.monotonic() > deadline:
+            raise TimeoutError("robot never reported homed after home()")
+        _time.sleep(0.1)
+
+
 def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
     """Click a tab by finding it via CSS selector, wait for it to become active.
 
