@@ -1792,9 +1792,9 @@ class ControlPanel:
         try:
             await self.client.set_gravity_comp(on)
             ui.notify(
-                "Freedrive on — the arm floats and can be moved by hand"
+                "Freedrive on — arm unlocked, move it by hand"
                 if on
-                else "Freedrive off",
+                else "Freedrive off — arm locked",
                 color="info",
             )
         except NotImplementedError:
@@ -1809,9 +1809,9 @@ class ControlPanel:
         if btn is None:
             return
         if waldoctl.commander.status.controller.gravity_comp:
-            btn.props("color=amber-7")
+            btn.props("color=amber-7 icon=lock_open")
         else:
-            btn.props("color=grey-7")
+            btn.props("color=grey-7 icon=lock")
 
     def update_robot_btn_visual(self) -> None:
         """Update Robot/Simulator toggle button appearance."""
@@ -2340,14 +2340,6 @@ class ControlPanel:
                     self.tool_actions.build()
 
                 self._build_action_row()
-
-                # Anchored to the card corner, not the action row's end, so
-                # the row can grow without pushing the E-Stop off the panel.
-                ui.button(
-                    icon="dangerous", color="negative", on_click=self.on_estop_click
-                ).props("round unelevated").classes("glass-btn text-2xl").style(
-                    "position: absolute; top: -18px; right: 8px;"
-                ).tooltip("E-Stop (Esc)").mark("btn-estop")
                 self._build_control_indicator()
 
             # Jog controls (tabs + grids)
@@ -2435,8 +2427,10 @@ class ControlPanel:
 
     def _build_action_row(self) -> None:
         """Build the action row: Home, Robot/Sim toggle, freedrive, gizmo
-        controls, camera reset, step input."""
-        with ui.row().classes("gap-1 items-center"):
+        controls, camera reset, step input, E-Stop."""
+        # The E-Stop rides the row's right edge out of flow; the padding
+        # reserves its 72px footprint so no control grows underneath it.
+        with ui.row().classes("gap-1 items-center relative w-full pr-20"):
             ui.button(icon="home", on_click=self.send_home).props(
                 "dense round unelevated color=teal-6"
             ).tooltip("Home (H)").mark("btn-home")
@@ -2453,9 +2447,9 @@ class ControlPanel:
             self._robot_btn = robot_btn
 
             self._freedrive_btn = (
-                ui.button(icon="back_hand", on_click=self.on_freedrive_click)
+                ui.button(icon="lock", on_click=self.on_freedrive_click)
                 .props("dense round unelevated color=grey-7")
-                .tooltip("Freedrive — float the arm under gravity comp")
+                .tooltip("Freedrive — unlock the arm to move it by hand")
                 .mark("btn-freedrive")
             )
 
@@ -2514,7 +2508,6 @@ class ControlPanel:
                 "round unelevated dense color=light-blue-6"
             ).tooltip("Reset camera")
             with ui.row(align_items="center").classes("gap-1"):
-                ui.label("Step:").classes("text-white")
                 self._step_input = (
                     ui.number(
                         value=waldoctl.commander.settings.jog.joint_step_deg,
@@ -2532,6 +2525,12 @@ class ControlPanel:
                 )
                 with self._step_input:
                     self._step_input_tooltip = ui.tooltip("Step size in degrees")
+
+            ui.button(
+                icon="dangerous", color="negative", on_click=self.on_estop_click
+            ).props("round unelevated").classes("glass-btn text-2xl").style(
+                "position: absolute; right: 8px; top: 50%; transform: translateY(-50%);"
+            ).tooltip("E-Stop (Esc)").mark("btn-estop")
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""
