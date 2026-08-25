@@ -2446,12 +2446,18 @@ class ControlPanel:
             robot_btn.mark("btn-robot-toggle")
             self._robot_btn = robot_btn
 
+            supported = ui_state.active_robot.has_freedrive
             self._freedrive_btn = (
                 ui.button(icon="lock", on_click=self.on_freedrive_click)
                 .props("dense round unelevated color=grey-7")
-                .tooltip("Freedrive — unlock the arm to move it by hand")
+                .tooltip(
+                    "Freedrive — unlock the arm to move it by hand"
+                    if supported
+                    else "Freedrive — not available on this robot"
+                )
                 .mark("btn-freedrive")
             )
+            self._freedrive_btn.set_enabled(supported)
 
             selected = {"value": "Move"}
             buttons: dict[str, ui.button] = {}

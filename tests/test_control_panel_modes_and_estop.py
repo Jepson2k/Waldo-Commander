@@ -83,16 +83,25 @@ async def test_digital_estop_dialog_behavior(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_freedrive_button_speaks_when_the_backend_has_no_gravity_comp(
+async def test_freedrive_is_disabled_on_a_robot_without_the_capability(
     user: User,
 ) -> None:
-    """The freedrive toggle answers with a spoken refusal on a backend
-    without the gravity-comp feedforward, not a silent no-op."""
+    """parol6 reports ``has_freedrive`` False, so the control renders
+    unavailable rather than inviting a click that can only be refused.
+
+    The enabled path is covered against a capable backend in
+    ``test_par6_backend.py``, where the button round-trips on the wire.
+    """
+    from waldo_commander.state import ui_state
+
     await user.open("/")
     await wait_for_app_ready()
 
-    user.find(marker="btn-freedrive").click()
-    await user.should_see("This backend has no freedrive")
+    assert not ui_state.active_robot.has_freedrive, (
+        "this test needs a backend that reports no freedrive"
+    )
+    button = next(iter(user.find(marker="btn-freedrive").elements))
+    assert not button.enabled, "freedrive must be disabled without the capability"
 
 
 @pytest.mark.unit
