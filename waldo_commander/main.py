@@ -123,9 +123,11 @@ _page_state: _PageState | None = None
 
 
 def _client_alive(pc: Client) -> bool:
-    """Both checks needed: ``_deleted`` covers the brief window between
-    NiceGUI marking the client dead and removing it from Client.instances."""
-    return not pc._deleted and pc.id in Client.instances
+    """Registry membership is the authoritative liveness check (delete()
+    removes from Client.instances before setting the deleted flag);
+    ``is_deleted`` additionally catches a client stranded un-flagged by a
+    failed delete()."""
+    return not pc.is_deleted and pc.id in Client.instances
 
 
 # Pre-allocated buffers for numba pipelines (scratch space)
