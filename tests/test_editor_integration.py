@@ -9,6 +9,9 @@ from tests.helpers.wait import (
     wait_for_app_ready,
     enable_sim,
     ensure_robot_ready_for_motion,
+    simulate_click,
+    wait_for_motion_stable,
+    wait_for_motion_start,
 )
 from waldo_commander.services.programs import (
     is_any_program_recording,
@@ -1022,9 +1025,217 @@ def _fire_editor_event(textarea, event_type: str, args: dict) -> None:
 
 
 def _set_cursor_line(textarea, line: int) -> None:
-    """Place the cursor like a user click: focus, then a selection change."""
+    """Place the cursor like a user click: focus, then a selection change.
+    Focus first — the editor only trusts selection-changes on a focused tab
+    (unfocused ones are echoes of programmatic value updates)."""
     _fire_editor_event(textarea, "focus-change", {"focused": True})
-    _fire_editor_event(textarea, "selection-change", {"line": line, "column": 1})
+    _fire_editor_event(
+        textarea,
+        "selection-change",
+        {"line": line, "column": 1, "from_line": line, "to_line": line, "empty": True},
+    )
+
+
+def _set_selection(textarea, from_line: int, to_line: int) -> None:
+    """Select a line range like a user drag (head at the selection end)."""
+    _fire_editor_event(textarea, "focus-change", {"focused": True})
+    _fire_editor_event(
+        textarea,
+        "selection-change",
+        {
+            "line": to_line,
+            "column": 1,
+            "from_line": from_line,
+            "to_line": to_line,
+            "empty": False,
+        },
+    )
+
+
+@pytest.mark.integration
+async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
+    """The capture-pose button stamps the current robot position into the
+    program at the cursor: a bare cursor on a single-pose move re-teaches it
+    in place (kwargs kept), a ranged selection is replaced wholesale by one
+    fresh move, and anywhere else the pose is inserted as a new line — with
+    the tooltip naming the action throughout.
+    """
+    import re
+
+    import numpy as np
+    import waldoctl
+
+    from waldo_commander.components.simulation_engine import simulation as _sim
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    assert editor is not None
+    tab = waldoctl.commander.programs.active
+    assert tab is not None
+
+    move_l_line = (
+        "rbt.move_l([150.000, 100.000, 250.000, 0.000, 0.000, 0.000], speed=0.5)"
+    )
+    move_c_line = (
+        "rbt.move_c([165.000, 105.000, 255.000, 0.000, 0.000, 0.000], "
+        "[150.000, 130.000, 250.000, 0.000, 0.000, 0.000], speed=0.5)"
+    )
+    move_rel_line = (
+        "rbt.move_l([0.000, 0.000, -20.000, 0.000, 0.000, 0.000], rel=True, speed=0.5)"
+    )
+    script = (
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "# approach\n"
+        "rbt.move_j([85.000, -85.000, 175.000, 5.000, 5.000, 175.000], speed=0.5)\n"
+        f"{move_l_line}\n"
+        f"{move_c_line}\n"
+        f"{move_rel_line}\n"
+    )
+    textarea = ui_state.active_textarea
+    assert textarea is not None
+    textarea.value = script
+    tab.source = script
+
+    await _sim.run_simulation()
+    await asyncio.sleep(0.1)
+    targets_by_line = {t.line_number: t for t in tab.dry_run.targets}
+    assert {4, 5, 6, 7} <= targets_by_line.keys(), (
+        f"Expected targets at lines 4-7, got {sorted(targets_by_line)}"
+    )
+    assert targets_by_line[6].move_type == "smooth_arc"
+
+    # The browser echoes declared anchors back via "anchor-positions"; the
+    # user fixture has no JS, so replay that echo through the real event.
+    _fire_editor_event(
+        textarea, "anchor-positions", {"anchors": dict(textarea._props["line-anchors"])}
+    )
+    await asyncio.sleep(0)
+
+    def bracket_floats(line: str) -> list[float]:
+        m = re.search(r"\[([^\]]+)\]", line)
+        assert m is not None, f"No bracketed list in {line!r}"
+        return [float(v) for v in m.group(1).split(",")]
+
+    tooltip = ui_state.capture_pose_tooltip
+    assert tooltip is not None
+
+    # Cursor on the comment line: nothing to overwrite, capture inserts the
+    # pose directly below the cursor line.
+    _set_cursor_line(textarea, 3)
+    await asyncio.sleep(0)
+    assert tooltip.text == editor._CAPTURE_TIP_INSERT
+    n_lines_before = len(textarea.value.splitlines())
+    user.find(marker="editor-capture-pose").click()
+    await asyncio.sleep(0)
+    lines = textarea.value.splitlines()
+    assert len(lines) == n_lines_before + 1, "capture on a plain line must insert"
+    assert lines[3].startswith("rbt.move_l("), lines[3]
+    assert lines[:3] + lines[4:] == script.splitlines(), (
+        "insert must leave existing lines untouched"
+    )
+
+    # Restore the original program so the sections below keep their line
+    # numbers; the jog that follows re-simulates and re-anchors it.
+    textarea.value = script
+    tab.source = script
+
+    # Move the robot so the current pose differs from the taught values.
+    waldoctl.commander.settings.jog.joint_step_deg = 10.0
+    await simulate_click(user, "btn-j1-plus")
+    await wait_for_motion_start()
+    await wait_for_motion_stable(lambda: waldoctl.commander.status.joints.angles[0])
+
+    # The jog can re-simulate (position-change checker), re-declaring anchors
+    # and dropping the echoed positions; replay the browser echo again.
+    for _ in range(50):
+        if {t.id for t in tab.dry_run.targets} <= set(
+            dict(textarea._props["line-anchors"])
+        ):
+            break
+        await asyncio.sleep(0.1)
+    _fire_editor_event(
+        textarea, "anchor-positions", {"anchors": dict(textarea._props["line-anchors"])}
+    )
+    await asyncio.sleep(0)
+
+    # Bare cursor on the move_j line: capture re-teaches it in place.
+    _set_cursor_line(textarea, 4)
+    await asyncio.sleep(0)
+    assert tooltip.text == editor._CAPTURE_TIP_RETEACH
+    user.find(marker="editor-capture-pose").click()
+    await asyncio.sleep(0)
+
+    n = ui_state.active_robot.joints.count
+    current_angles = list(waldoctl.commander.status.joints.angles.deg[:n])
+    lines = textarea.value.splitlines()
+    assert lines[3].startswith("rbt.move_j("), (
+        "Re-teach must keep move_j lines as move_j"
+    )
+    assert np.allclose(bracket_floats(lines[3]), current_angles, atol=0.1), (
+        f"move_j line should hold current angles {current_angles}, got {lines[3]}"
+    )
+    assert "speed=0.5" in lines[3], "re-teach must keep the line's kwargs"
+    assert lines[4] == move_l_line, (
+        "Re-teaching the move_j line must not touch the move_l line"
+    )
+
+    # Bare cursor on the move_l line: capture writes the current WRF pose.
+    _set_cursor_line(textarea, 5)
+    await asyncio.sleep(0)
+    assert tooltip.text == editor._CAPTURE_TIP_RETEACH
+    user.find(marker="editor-capture-pose").click()
+    await asyncio.sleep(0)
+
+    pose = waldoctl.commander.status.pose
+    current_pose = [pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz]
+    lines = textarea.value.splitlines()
+    assert lines[4].startswith("rbt.move_l("), (
+        "Re-teach must keep move_l lines as move_l"
+    )
+    assert np.allclose(bracket_floats(lines[4]), current_pose, atol=0.5), (
+        f"move_l line should hold current WRF pose {current_pose}, got {lines[4]}"
+    )
+    assert lines[5] == move_c_line, (
+        "Re-teaching neighbors must not touch the move_c line"
+    )
+
+    # A multi-pose arc can't be re-taught from one pose, and a rel= move
+    # would be corrupted by an absolute overwrite: both fall back to insert,
+    # and the tooltip says which flavor of fallback applies.
+    _set_cursor_line(textarea, 6)
+    await asyncio.sleep(0)
+    assert tooltip.text == editor._CAPTURE_TIP_INSERT
+    _set_cursor_line(textarea, 7)
+    await asyncio.sleep(0)
+    assert tooltip.text == editor._CAPTURE_TIP_BLOCKED
+
+    # Selecting the move_l + move_c lines replaces both with one fresh move.
+    src_before = textarea.value.splitlines()
+    _set_selection(textarea, 5, 6)
+    await asyncio.sleep(0)
+    assert tooltip.text == editor._CAPTURE_TIP_REPLACE
+    user.find(marker="editor-capture-pose").click()
+    await asyncio.sleep(0)
+    lines = textarea.value.splitlines()
+    assert len(lines) == len(src_before) - 1, (
+        "the selected lines must collapse into one move"
+    )
+    assert lines[4].startswith("rbt.move_l("), lines[4]
+    assert np.allclose(bracket_floats(lines[4])[:3], current_pose[:3], atol=0.5), (
+        f"replacement should target the current pose, got {lines[4]}"
+    )
+    assert lines[5] == move_rel_line, (
+        "replacement must not touch the line after the selection"
+    )
 
 
 @pytest.mark.integration
@@ -1060,7 +1271,7 @@ async def test_recorded_steps_insert_below_cursor(user: User) -> None:
     await asyncio.sleep(0.1)
     assert is_any_program_recording()
 
-    user.find(marker="editor-capture-pose-btn").click()
+    user.find(marker="editor-capture-pose").click()
     await asyncio.sleep(0)
     motion_recorder.record_action("io", port=1, state=1)
 
@@ -1189,7 +1400,11 @@ async def test_manual_inserts_follow_cursor(user: User) -> None:
     # selection-change (CodeMirror's echo of a programmatic value update)
     # must not count as cursor placement.
     assert tab.dry_run.playback.active_cursor_line == 0
-    _fire_editor_event(textarea, "selection-change", {"line": 1, "column": 1})
+    _fire_editor_event(
+        textarea,
+        "selection-change",
+        {"line": 1, "column": 1, "from_line": 1, "to_line": 1, "empty": True},
+    )
     assert tab.dry_run.playback.active_cursor_line == 0
     with textarea.client:
         editor._insert_command("delay")
@@ -1222,7 +1437,7 @@ async def test_manual_inserts_follow_cursor(user: User) -> None:
 
     # Cursor on the last line -> capture pose appends at EOF.
     _set_cursor_line(textarea, len(lines))
-    user.find(marker="editor-capture-pose-btn").click()
+    user.find(marker="editor-capture-pose").click()
     await asyncio.sleep(0)
     lines = textarea.value.splitlines()
     assert lines[-1].startswith("rbt.move_l(")
