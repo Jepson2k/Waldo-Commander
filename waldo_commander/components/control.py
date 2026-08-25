@@ -2529,7 +2529,7 @@ class ControlPanel:
             ui.button(
                 icon="dangerous", color="negative", on_click=self.on_estop_click
             ).props("round unelevated").classes("glass-btn text-2xl").style(
-                "position: absolute; right: 8px; top: 50%; transform: translateY(-50%);"
+                "position: absolute; right: 0; top: 50%; transform: translateY(-50%);"
             ).tooltip("E-Stop (Esc)").mark("btn-estop")
 
     def cleanup(self) -> None:
