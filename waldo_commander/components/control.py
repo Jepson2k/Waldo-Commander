@@ -4,10 +4,9 @@ import asyncio
 import dataclasses
 import logging
 import time
-import re
 import math
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 import importlib.resources as pkg_resources
 
 import numpy as np
@@ -41,6 +40,7 @@ from waldo_commander.services.control_lease import (
     require_browser_control,
     set_control_mode,
 )
+from waldo_commander.services.keybindings import refresh_jog_key_descriptions
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.startup_mode import set_startup_mode
 from waldo_commander.services.programs import is_any_program_running
@@ -63,20 +63,6 @@ _AXIS_ORDER = (
     "RZ-",
 )
 _AXIS_MAP = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
-
-# SVG icon transform lookup: (vb_width, vb_height) -> default transform
-_ICON_TRANSFORMS: dict[tuple[int, int], str] = {
-    (32, 32): "translate(-2,-2) scale(0.85)",
-    (24, 24): "translate(-5,-5) scale(1.4)",
-}
-# Per-slot transform overrides (takes precedence over dimension-based lookup)
-_SLOT_TRANSFORM_OVERRIDES: dict[str, str] = {
-    "lr_neg": "translate(-2,-5) scale(1.4)",
-}
-_RE_VIEWBOX = re.compile(r'viewBox="\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*"')
-_RE_SVG_INNER = re.compile(r"<svg[^>]*>([\s\S]*?)</svg>")
-_RE_TEXT_LABEL = re.compile(r"(<text\b[^>]*>)(.*?)(</text>)", re.DOTALL)
-_RE_WHITESPACE = re.compile(r"\s+")
 
 
 @dataclasses.dataclass
@@ -626,8 +612,15 @@ class ControlPanel:
         # Cartesian button slots/elements and assignment (layout fixed; labels/colors/actions dynamic)
         self._cart_slot_elems: dict[str, ui.element] = {}
         self._cart_slot_meta: dict[str, dict] = {}
+        # Axis string captured per slot at press; releases reuse it (see
+        # _on_slot_press).
+        self._slot_pressed_axis: dict[str, str] = {}
         # Axes assigned to fixed slots: 'ud1' (first up/down column), 'lr' (left/right row), 'ud2' (second up/down column)
         self._cart_assignment: dict[str, str] = {"ud1": "Y", "lr": "X", "ud2": "Z"}
+        # Cartesian jog preferences, hydrated from storage in main().
+        self.translation_frame: str = "WRF"
+        self.invert_x: bool = False
+        self.invert_y: bool = False
         self._axis_classes = {
             "x": "tcp-x",
             "y": "tcp-y",
@@ -693,6 +686,9 @@ class ControlPanel:
         self._last_cart_wrf_neg: list[bool] | None = None
         self._last_cart_trf_pos: list[bool] | None = None
         self._last_cart_trf_neg: list[bool] | None = None
+        # Selected-frame part of the cart dirty check; set to None to force a
+        # resync (frame toggle, invert toggles remapping axis -> element).
+        self._last_cart_trans_frame: str | None = None
         self._last_editing_mode: bool | None = None
         self._gizmo_auto_hidden: bool = (
             False  # True when gizmo hidden due to jog unavailable
@@ -705,20 +701,21 @@ class ControlPanel:
     def _get_cart_axis_lookup(self) -> dict[str, tuple[Axis, float, str]]:
         """Build cartesian axis lookup from the active robot's frame names.
 
-        Translation axes (X, Y, Z) use the first frame (world),
-        rotation axes (RX, RY, RZ) use the second frame (tool).
+        Translation axes (X, Y, Z) use the selected translation frame,
+        rotation axes (RX, RY, RZ) always use the tool frame. Memoized;
+        ``set_translation_frame`` invalidates it.
         """
         if self._cart_axis_lookup is not None:
             return self._cart_axis_lookup
-        frames = ui_state.active_robot.cartesian_frames
-        wrf, trf = frames[0], frames[1]
+        trans = self._translation_frame_name()
+        trf = ui_state.active_robot.cartesian_frames[1]
         self._cart_axis_lookup = {
-            "X+": ("X", 1.0, wrf),
-            "X-": ("X", -1.0, wrf),
-            "Y+": ("Y", 1.0, wrf),
-            "Y-": ("Y", -1.0, wrf),
-            "Z+": ("Z", 1.0, wrf),
-            "Z-": ("Z", -1.0, wrf),
+            "X+": ("X", 1.0, trans),
+            "X-": ("X", -1.0, trans),
+            "Y+": ("Y", 1.0, trans),
+            "Y-": ("Y", -1.0, trans),
+            "Z+": ("Z", 1.0, trans),
+            "Z-": ("Z", -1.0, trans),
             "RX+": ("RX", 1.0, trf),
             "RX-": ("RX", -1.0, trf),
             "RY+": ("RY", 1.0, trf),
@@ -727,6 +724,49 @@ class ControlPanel:
             "RZ-": ("RZ", -1.0, trf),
         }
         return self._cart_axis_lookup
+
+    def _translation_frame_name(self) -> str:
+        """Resolve the selected translation frame to the robot's frame name."""
+        frames = ui_state.active_robot.cartesian_frames
+        if self.translation_frame == "TRF" and len(frames) > 1:
+            return frames[1]
+        return frames[0]
+
+    def set_translation_frame(self, frame: str) -> None:
+        """Select WRF or TRF for cartesian translation jogs (rotation stays TRF)."""
+        if frame == self.translation_frame:
+            return
+        self.translation_frame = frame
+        self._cart_axis_lookup = None
+        self._last_cart_trans_frame = None
+        self.sync_cartesian_button_states()
+
+    def apply_jog_inversion(self, axis: str) -> str:
+        """Flip an X/Y translation axis string when its invert switch is on.
+
+        Single flip point shared by the arrow slots (via ``_axis_string_for``)
+        and the WASD jog keys, so labels, enablement keys, and motion stay
+        coherent. Rotation axes pass through unchanged.
+        """
+        letter = axis[:-1]
+        if (letter == "X" and self.invert_x) or (letter == "Y" and self.invert_y):
+            return f"{letter}{'-' if axis.endswith('+') else '+'}"
+        return axis
+
+    def set_jog_inversion(
+        self, *, invert_x: bool | None = None, invert_y: bool | None = None
+    ) -> None:
+        """Update X/Y arrow inversion and re-derive labels, markers, and visuals."""
+        new_x = self.invert_x if invert_x is None else invert_x
+        new_y = self.invert_y if invert_y is None else invert_y
+        if new_x == self.invert_x and new_y == self.invert_y:
+            return
+        self.invert_x = new_x
+        self.invert_y = new_y
+        self._refresh_cartesian_icons()
+        self._last_cart_trans_frame = None
+        self.sync_cartesian_button_states()
+        refresh_jog_key_descriptions(self)
 
     def _apply_pressed_style(self, widget: ui.element | None, pressed: bool) -> None:
         if not widget:
@@ -774,65 +814,66 @@ class ControlPanel:
     ) -> str:
         """Compose axis string like 'X+' or 'RX-' for a given slot assignment."""
         letter = self._cart_assignment.get(assign_key, "X").upper()
-        return f"R{letter}{sign}" if rotation else f"{letter}{sign}"
+        if rotation:
+            return f"R{letter}{sign}"
+        return self.apply_jog_inversion(f"{letter}{sign}")
 
     @staticmethod
-    def _read_icon_svg(svg_filename: str) -> tuple[str, list[int]]:
-        """Load SVG text via package resources and extract viewBox size."""
-        raw = (
+    def _axis_marker(axis_str: str) -> str:
+        """Test marker for the element commanding *axis_str* (e.g. 'axis-xplus')."""
+        return f"axis-{axis_str.replace('+', 'plus').replace('-', 'minus').lower()}"
+
+    @staticmethod
+    def _read_icon_svg(svg_filename: str) -> str:
+        """Load SVG markup via package resources.
+
+        The assets are self-contained: each carries a viewBox that frames its
+        glyph and inherits ``currentColor``, so no runtime rewriting is needed.
+        """
+        return (
             pkg_resources.files("waldo_commander.static.icons") / svg_filename
         ).read_text(encoding="utf-8")
-        m = _RE_VIEWBOX.search(raw)
-        vb = [int(m.group(i)) if m else 24 for i in range(1, 5)]
-        return raw, vb
 
-    @staticmethod
-    def _prepare_icon_markup(
-        raw_svg: str, viewbox_wh: list[int], label: str, slot_id: str = ""
-    ) -> str:
-        """Return wrapped SVG markup with enlarged glyph and updated label."""
-        inner_match = _RE_SVG_INNER.search(raw_svg)
-        inner = inner_match.group(1) if inner_match else raw_svg
-
-        inner = _RE_TEXT_LABEL.sub(r"\1" + label + r"\3", inner)
-        raw_svg_processed = _RE_TEXT_LABEL.sub(r"\1" + label + r"\3", raw_svg)
-
-        vb_min_x, vb_min_y, vb_width, vb_height = viewbox_wh
-
-        # Determine transform: slot override > dimension lookup > fallback
-        if slot_id in _SLOT_TRANSFORM_OVERRIDES:
-            transform = _SLOT_TRANSFORM_OVERRIDES[slot_id]
-        elif (vb_width, vb_height) in _ICON_TRANSFORMS:
-            transform = _ICON_TRANSFORMS[(vb_width, vb_height)]
-        elif vb_min_y == 17:
-            transform = "translate(-5,12)"
-        else:
-            transform = "translate(-5,-12)"
-
-        # Cropped icons (height == 7) use the full SVG with overflow:visible
-        if vb_height == 7:
-            content = raw_svg_processed
-            style = ' style="overflow:visible"'
-        else:
-            content = inner
-            style = ""
-
-        svg = (
-            f'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"'
-            f' preserveAspectRatio="xMidYMid meet"{style}>'
-            f'<g transform="{transform}" fill="currentColor" stroke="currentColor">'
-            f"{content}</g></svg>"
-        )
-        return _RE_WHITESPACE.sub(" ", svg).strip()
+    # Axis-label placement per glyph, as (left%, top%, font px) of the slot:
+    # the label's left edge, vertical midline, and size. Anchors sit in the
+    # glyph's widest region — the arrowhead — and the sizes keep the original
+    # hierarchy (straight > chevron > curved); both were measured from the
+    # <text> the assets carried before labels moved to an HTML overlay.
+    _LABEL_ANCHORS: ClassVar[dict[str, tuple[float, float, int]]] = {
+        "arrow-small-up.svg": (32.6, 36.2, 20),
+        "arrow-small-down.svg": (32.6, 65.2, 20),
+        "arrow-small-left.svg": (32.6, 47.8, 20),
+        "arrow-small-right.svg": (32.6, 47.8, 20),
+        "arrow-small-up-cropped.svg": (33.3, 53.6, 14),
+        "arrow-small-down-cropped.svg": (33.3, 42.5, 14),
+        "curved-arrow-up.svg": (38.3, 36.3, 12),
+        "curved-arrow-down.svg": (30.5, 61.1, 12),
+        "curved-arrow-left.svg": (30.5, 43.4, 12),
+        "curved-arrow-right.svg": (41.8, 54.0, 12),
+    }
 
     async def _on_slot_press(self, slot_id: str, is_pressed: bool) -> None:
-        """Event bridge: map fixed slot to current axis string and call set_axis_pressed."""
-        meta = self._cart_slot_meta.get(slot_id) or {}
-        assign_key = meta.get("assign_key", "ud1")
-        sign = meta.get("sign", "+")
-        rotation = bool(meta.get("rotation", False))
-        axis_str = self._axis_string_for(assign_key, sign, rotation)
-        await self.set_axis_pressed(axis_str, bool(is_pressed))
+        """Event bridge: map fixed slot to its axis string.
+
+        The resolution is captured at press so a mid-hold inversion or frame
+        change still releases the axis that is actually streaming — a
+        re-resolve at release would target a different axis string and leave
+        the held one pressed forever.
+        """
+        if is_pressed:
+            meta = self._cart_slot_meta.get(slot_id) or {}
+            axis_str = self._axis_string_for(
+                meta.get("assign_key", "ud1"),
+                meta.get("sign", "+"),
+                bool(meta.get("rotation", False)),
+            )
+            self._slot_pressed_axis[slot_id] = axis_str
+        else:
+            captured = self._slot_pressed_axis.pop(slot_id, None)
+            if captured is None:
+                return
+            axis_str = captured
+        await self.set_axis_pressed(axis_str, is_pressed)
 
     def set_axis_orientation(self, ud1: str, lr: str, ud2: str) -> None:
         """Update axis assignment for fixed slots and refresh labels/colors/actions."""
@@ -842,32 +883,26 @@ class ControlPanel:
         self._refresh_cartesian_icons()
 
     def _refresh_cartesian_icons(self) -> None:
-        """Rebuild icon SVGs and color classes for all slots; update axis->element mapping."""
+        """Re-derive label text, color class, and marker for every slot; update axis->element mapping."""
         self._cart_axis_imgs.clear()
         remove_classes = "tcp-x tcp-y tcp-z tcp-rx tcp-ry tcp-rz"
-        for slot_id, elem in self._cart_slot_elems.items():
-            meta = self._cart_slot_meta.get(slot_id) or {}
-            assign_key = meta.get("assign_key", "ud1")
-            sign = meta.get("sign", "+")
-            rotation = bool(meta.get("rotation", False))
-            raw = meta.get("raw", "")
-            vb = meta.get("viewbox", (24, 24))
-            axis_str = self._axis_string_for(assign_key, sign, rotation)
-            label = axis_str
-            markup = self._prepare_icon_markup(raw, vb, label, slot_id)
-            new_html = f"""
-            <svg viewBox="0 0 24 24" width="100" height="72" style="cursor:pointer;">
-            <g style="pointer-events:visiblePainted;" fill="currentColor" stroke="currentColor">
-                {markup}
-            </g>
-            </svg>
-            """
-            elem._props["content"] = new_html
-            elem.update()
-            elem.classes(remove=remove_classes)
+        for slot_id, cont in self._cart_slot_elems.items():
+            meta = self._cart_slot_meta[slot_id]
+            assign_key = meta["assign_key"]
+            rotation = meta["rotation"]
+            axis_str = self._axis_string_for(assign_key, meta["sign"], rotation)
+            meta["label"].set_text(axis_str)
+            cont.classes(remove=remove_classes)
             letter = self._cart_assignment.get(assign_key, "X").upper()
-            elem.classes(add=self._axis_color_class_for(letter, rotation=rotation))
-            self._cart_axis_imgs[axis_str] = elem
+            cont.classes(add=self._axis_color_class_for(letter, rotation=rotation))
+            cont.mark(self._axis_marker(axis_str))
+            self._cart_axis_imgs[axis_str] = cont
+
+        # Re-derive pressed highlights for the remapped axis -> element
+        # mapping, so a remap mid-hold can't strand "is-pressed" on a slot
+        # that no longer commands the streaming axis.
+        for ax, img in self._cart_axis_imgs.items():
+            self._apply_pressed_style(img, bool(self._cart_pressed_axes.get(ax)))
 
     # ---- Enablement and visuals ----
 
@@ -918,12 +953,13 @@ class ControlPanel:
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
 
-        Translation axes use WRF enablement, rotation axes use TRF enablement
-        (matching the actual jog frame convention).
+        Translation axes use the selected translation frame's enablement,
+        rotation axes always use TRF enablement.
         """
         editing_mode = waldoctl.commander.status.editing_mode
         frames = ui_state.active_robot.cartesian_frames
         wrf, trf = frames[0], frames[1]
+        trans_frame = self._translation_frame_name()
         by_frame = waldoctl.commander.status.pose.cart_jog.by_frame
         av_wrf = by_frame.get(wrf)
         av_trf = by_frame.get(trf)
@@ -937,6 +973,7 @@ class ControlPanel:
         # flatten / tuple allocation.
         if (
             editing_mode == self._last_editing_mode
+            and trans_frame == self._last_cart_trans_frame
             and wrf_pos is self._last_cart_wrf_pos
             and wrf_neg is self._last_cart_wrf_neg
             and trf_pos is self._last_cart_trf_pos
@@ -944,6 +981,7 @@ class ControlPanel:
         ):
             return
         self._last_editing_mode = editing_mode
+        self._last_cart_trans_frame = trans_frame
         self._last_cart_wrf_pos = wrf_pos
         self._last_cart_wrf_neg = wrf_neg
         self._last_cart_trf_pos = trf_pos
@@ -957,11 +995,12 @@ class ControlPanel:
                 self._set_strong_disabled(elem, True)
             return
 
-        # 2D icons: translation axes (i<6) use WRF, rotation axes use TRF.
-        # _AXIS_ORDER is (X+, X-, Y+, Y-, ...), so axis = i // 2 and the
-        # per-direction list is chosen by i % 2 (0 = pos, 1 = neg).
+        # 2D icons: translation axes (i<6) use the selected frame, rotation
+        # axes use TRF. _AXIS_ORDER is (X+, X-, Y+, Y-, ...), so axis = i // 2
+        # and the per-direction list is chosen by i % 2 (0 = pos, 1 = neg).
+        av_trans = av_wrf if trans_frame == wrf else av_trf
         for i, ax in enumerate(_AXIS_ORDER):
-            av = av_wrf if i < 6 else av_trf
+            av = av_trans if i < 6 else av_trf
             axis = i // 2
             lst = (
                 None
@@ -1429,12 +1468,12 @@ class ControlPanel:
         else:
             self._schedule_jog_end_wait()
 
-        # Check enablement: translation uses WRF, rotation uses TRF
+        # Check enablement: translation uses the selected frame, rotation uses TRF
         frames = ui_state.active_robot.cartesian_frames
         allowed = True
         if axis in _AXIS_ORDER:
             idx = _AXIS_ORDER.index(axis)
-            frame = frames[1] if idx >= 6 else frames[0]
+            frame = frames[1] if idx >= 6 else self._translation_frame_name()
             frame_av = waldoctl.commander.status.pose.cart_jog.by_frame.get(frame)
             if frame_av is not None:
                 axis_idx = idx // 2
@@ -1464,12 +1503,12 @@ class ControlPanel:
                 axis_letter = axis.rstrip("+-")
                 direction = 1.0 if axis.endswith("+") else -1.0
                 is_rotation = axis_letter.startswith("R")
-                # Use relative move: translation in WRF, rotation in TRF
-                # (matches jog_l hold behavior)
+                # Use relative move: translation in the selected frame,
+                # rotation in TRF (matches jog_l hold behavior)
                 rel_pose = [0.0] * 6
                 if axis_letter in _AXIS_MAP:
                     rel_pose[_AXIS_MAP[axis_letter]] = direction * step
-                    frame = "TRF" if is_rotation else "WRF"
+                    frame = frames[1] if is_rotation else self._translation_frame_name()
                     await self.client.move_l(
                         rel_pose,
                         frame=frame,
@@ -1707,8 +1746,8 @@ class ControlPanel:
                 waldoctl.commander.settings.view.gizmo_visible
             )
             ui_state.urdf_scene.set_gizmo_display_mode("TRANSLATE")
-            # Fixed WRF orientation for cartesian UI layout:
-            # X (red) vertical (ud1), Y (green) horizontal (lr), Z (blue) vertical (ud2).
+            # Fixed axis-to-slot layout for the cartesian jog grid:
+            # Y (green) vertical (ud1), X (red) horizontal (lr), Z (blue) vertical (ud2).
             self.set_axis_orientation("Y", "X", "Z")
             self.sync_cartesian_button_states()
 
@@ -2101,25 +2140,23 @@ class ControlPanel:
                     sign: str,
                     rotation: bool,
                 ) -> None:
-                    raw, vb = self._read_icon_svg(svg_filename)
                     axis_str = self._axis_string_for(assign_key, sign, rotation)
-                    label = axis_str
-                    markup = self._prepare_icon_markup(raw, vb, label, slot_id)
-                    cont = ui.html(
-                        f"""
-                        <svg viewBox="0 0 24 24" width="100" height="72"
-                            style="cursor:pointer;">
-                        <g style="pointer-events:visiblePainted;" fill="currentColor" stroke="currentColor">
-                            {markup}
-                        </g>
-                        </svg>
-                        """,
-                        sanitize=False,
-                    )
+                    anchor_left, anchor_top, font_px = self._LABEL_ANCHORS[svg_filename]
+                    with ui.element("div").classes("cart-jog-slot") as cont:
+                        ui.html(
+                            self._read_icon_svg(svg_filename), sanitize=False
+                        ).classes("cart-jog-glyph")
+                        label = (
+                            ui.label(axis_str)
+                            .classes("cart-jog-label")
+                            .style(
+                                f"left: {anchor_left}%; top: {anchor_top}%; "
+                                f"font-size: {font_px}px"
+                            )
+                        )
                     letter = self._cart_assignment.get(assign_key, "X").upper()
                     cont.classes(self._axis_color_class_for(letter, rotation=rotation))
-                    marker = f"axis-{axis_str.replace('+', 'plus').replace('-', 'minus').lower()}"
-                    cont.mark(marker)
+                    cont.mark(self._axis_marker(axis_str))
                     # mouseleave releases too, so a drag off the icon stops streaming.
                     cont.on("mousedown", partial(self._on_slot_press, slot_id, True))
                     cont.on("mouseup", partial(self._on_slot_press, slot_id, False))
@@ -2129,9 +2166,7 @@ class ControlPanel:
                         "assign_key": assign_key,
                         "sign": sign,
                         "rotation": rotation,
-                        "svg_filename": svg_filename,
-                        "raw": raw,
-                        "viewbox": vb,
+                        "label": label,
                     }
 
                 # Translation grid: XY cross with Z column on the right.
@@ -2145,6 +2180,9 @@ class ControlPanel:
                 ):
                     # Row 1:    [UD2+, UD1-, empty, RUD2+, empty, RUD1+, empty]
                     _add_slot("ud2_up", "arrow-small-up-cropped.svg", "ud2", "+", False)
+                    # Z chevrons hug the column's outer edge, keeping a clear
+                    # gap to the XY arrow pad beside them.
+                    self._cart_slot_elems["ud2_up"].classes("justify-self-start")
                     _add_slot("ud1_up", "arrow-small-up.svg", "ud1", "-", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_plus", "curved-arrow-down.svg", "ud2", "+", True)
@@ -2165,6 +2203,7 @@ class ControlPanel:
                     _add_slot(
                         "ud2_down", "arrow-small-down-cropped.svg", "ud2", "-", False
                     )
+                    self._cart_slot_elems["ud2_down"].classes("justify-self-start")
                     _add_slot("ud1_down", "arrow-small-down.svg", "ud1", "+", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_minus", "curved-arrow-up.svg", "ud2", "-", True)

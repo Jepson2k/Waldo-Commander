@@ -76,6 +76,9 @@ class SettingsContent:
             "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
             "motion_profile": stored_profile,
             "jog_blend_r": jog_blend_r(),
+            "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
+            "jog_invert_x": bool(ng_app.storage.general.get("jog_invert_x", False)),
+            "jog_invert_y": bool(ng_app.storage.general.get("jog_invert_y", False)),
         }
 
     def _refresh_serial_ports(self) -> None:
@@ -707,22 +710,42 @@ class SettingsContent:
                 on_change=_on_tolerance_change,
             ).classes("w-24").props("dense").mark("input-home-tolerance")
 
-    def _build_reference_frames(self) -> None:
+    def _build_reference_frames(self, prefs: dict) -> None:
+        cp = ui_state.control_panel
+        frames = ui_state.active_robot.cartesian_frames
+        trf_available = (
+            len(frames) > 1
+            and waldoctl.commander.status.pose.cart_jog.by_frame.get(frames[1])
+            is not None
+        )
+        value = prefs["translation_frame"]
+        if value == "TRF" and not trf_available:
+            value = "WRF"
+
+        def _on_translation_frame_change(e):
+            cp.set_translation_frame(e.value)
+            ng_app.storage.general["translation_frame"] = e.value
+
         with _setting_row("Translation RF", "Reference frame for translation moves"):
-            with ui.element("span").tooltip(
-                "Mode is currently locked but will be configurable in a future update"
-            ):
+            sel = (
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
-                    value="WRF",
-                ).classes("w-24").props("dense disable")
+                    value=value,
+                    on_change=_on_translation_frame_change,
+                )
+                .classes("w-24")
+                .props("dense")
+                .mark("select-translation-frame")
+            )
+            if not trf_available:
+                sel.props("disable").tooltip(
+                    "Tool-frame jogging is unavailable for this robot"
+                )
 
         ui.separator().classes("my-1")
 
         with _setting_row("Rotation RF", "Reference frame for rotation moves"):
-            with ui.element("span").tooltip(
-                "Mode is currently locked but will be configurable in a future update"
-            ):
+            with ui.element("span").tooltip("Rotation always jogs in the tool frame"):
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
                     value="TRF",
@@ -748,6 +771,31 @@ class SettingsContent:
                 on_change=_on_blend_r_change,
             ).classes("w-24").props("dense").mark("settings-blend-radius")
 
+    def _build_jog_inversion(self, prefs: dict) -> None:
+        cp = ui_state.control_panel
+
+        def _on_invert_x(e):
+            val = bool(e.value)
+            cp.set_jog_inversion(invert_x=val)
+            ng_app.storage.general["jog_invert_x"] = val
+
+        def _on_invert_y(e):
+            val = bool(e.value)
+            cp.set_jog_inversion(invert_y=val)
+            ng_app.storage.general["jog_invert_y"] = val
+
+        with _setting_row("Invert X Jog", "Flip the X jog direction (arrows and A/D)"):
+            ui.switch(value=prefs["jog_invert_x"], on_change=_on_invert_x).props(
+                "dense"
+            ).mark("switch-invert-x")
+
+        ui.separator().classes("my-1")
+
+        with _setting_row("Invert Y Jog", "Flip the Y jog direction (arrows and W/S)"):
+            ui.switch(value=prefs["jog_invert_y"], on_change=_on_invert_y).props(
+                "dense"
+            ).mark("switch-invert-y")
+
     # ── Main entry point ─────────────────────────────────────────────
 
     def build_embedded(
@@ -768,7 +816,8 @@ class SettingsContent:
             self._build_camera,
             lambda: self._build_motion_profile(prefs),
             lambda: self._build_theme(prefs),
-            self._build_reference_frames,
+            lambda: self._build_reference_frames(prefs),
+            lambda: self._build_jog_inversion(prefs),
             lambda: self._build_blend_radius(prefs),
             self._build_backend_selector,
             self._build_plugin_panels,
