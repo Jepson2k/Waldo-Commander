@@ -203,12 +203,12 @@ class MotionRecorder:
     def _declare_insert_anchor(self, textarea) -> None:
         if self._insert_line:
             textarea.line_anchors = {
-                **textarea._props.get("line-anchors", {}),
+                **textarea.line_anchors,
                 _RECORD_ANCHOR_ID: self._insert_line,
             }
 
     def _retract_insert_anchor(self, textarea) -> None:
-        declared = dict(textarea._props.get("line-anchors", {}))
+        declared = textarea.line_anchors
         if declared.pop(_RECORD_ANCHOR_ID, None) is not None:
             textarea.line_anchors = declared
 
