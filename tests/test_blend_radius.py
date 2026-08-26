@@ -70,7 +70,7 @@ async def test_blend_radius_setting_controls_r_in_generated_code(user: User) -> 
     assert textarea.value.count(", r=5, wait=False)") == 2, textarea.value
 
     # Capture Current Pose: recorded move_l carries r=5
-    user.find(marker="editor-capture-pose-btn").click()
+    user.find(marker="editor-capture-pose").click()
     await asyncio.sleep(0)
     assert textarea.value.count(", r=5, wait=False)") == 3, textarea.value
 
