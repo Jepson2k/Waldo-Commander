@@ -23,7 +23,6 @@ from nicegui.testing.screen import Screen
 from nicegui.testing.screen_plugin import (
     nicegui_driver,  # noqa: F401 - default driver (per-test browser)
     nicegui_remove_all_screenshots,  # noqa: F401 - clears screenshots before session
-    pytest_runtest_makereport,  # noqa: F401
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
 import waldoctl
@@ -244,6 +243,40 @@ def suppress_proactor_write_error(silence_noisy_logging):
     asyncio_logger.addFilter(filt)
     yield
     asyncio_logger.removeFilter(filt)
+
+
+@pytest.hookimpl(tryfirst=True, wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """nicegui's outcome stash, plus naming the records behind
+    'There were unexpected ERROR logs.'
+
+    The screen plugin's hook (re-exported here before) stores the report
+    on the item for its screenshot-on-failure fixture — folded in since
+    one module can only define the hook once. The second half: the user
+    fixture fails the TEST at fixture teardown over ERROR records captured
+    during the call phase — but the call phase passed, so pytest never
+    prints its captured logs and the CI output has no trace of what fired.
+    Raw fd-2 bypasses capture so the culprit lands in the job log.
+    """
+    rep = yield
+    setattr(item, f"rep_{rep.when}", rep)
+    if call.when == "call":
+        try:
+            from _pytest.logging import caplog_records_key
+
+            records = item.stash[caplog_records_key].get("call", [])
+        except (KeyError, ImportError):
+            return rep
+        for r in records:
+            if r.levelname == "ERROR":
+                os.write(
+                    2,
+                    (
+                        f"[error-gate] {item.nodeid}: {r.name}:"
+                        f"{r.pathname}:{r.lineno} {r.getMessage()}\n"
+                    ).encode(errors="replace"),
+                )
+    return rep
 
 
 class _AppConfigTeardownFilter(logging.Filter):
