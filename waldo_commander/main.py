@@ -362,7 +362,6 @@ async def start_controller(com_port: str | None) -> None:
         ps.ping_timer.active = True
     if status_consumer_task is None or status_consumer_task.done():
         status_consumer_task = asyncio.create_task(_status_consumer())
-    asyncio.create_task(_check_config_skew())
     controller_state.running = True
     logger.debug("Controller started")
 
@@ -1585,69 +1584,6 @@ def _maybe_clear_sim_pose_override() -> None:
         playback_coordination.last_teleport_ts = 0.0
 
 
-#: One-shot config-skew message, surfaced as a notification by the status
-#: consumer once a page context exists.
-_config_skew_msg: str | None = None
-
-
-async def _check_config_skew() -> None:
-    """Compare the controller's config fingerprint against the packaged
-    mirror this UI plans previews with.
-
-    A tuned deployment (edited limits, motion feel, gripper keys) is
-    legitimate — but the UI's offline previews then run different numbers
-    than the arm, so the mismatch is worth one loud warning. Backends
-    without a CONFIG_INFO query are skipped silently.
-    """
-    global _config_skew_msg
-    info_fn = getattr(client, "config_info", None)
-    if info_fn is None:
-        return
-    try:
-        info = await info_fn()
-    except NotImplementedError:
-        return
-    except Exception as e:
-        logger.debug("config skew check failed: %s", e)
-        return
-    if not info or not info.get("fingerprint"):
-        return
-    try:
-        import hashlib
-
-        # par6 is an optional backend; resolved dynamically so type checking
-        # passes in environments that ship a different backend.
-        import importlib
-
-        par6_config = importlib.import_module("par6.config")
-
-        src = par6_config.data_root() / "config"
-        digest = hashlib.sha256()
-        for f in [src / "PAR6.toml"] + sorted((src / "grippers").glob("*.toml")):
-            digest.update(f.name.encode())
-            digest.update(b"\n")
-            digest.update(f.read_bytes())
-        expected = digest.hexdigest()
-    except Exception as e:
-        logger.debug("config skew check skipped: %s", e)
-        return
-    if info["fingerprint"] != expected:
-        msg = (
-            "Controller config differs from the packaged mirror "
-            f"({info.get('path', '?')}) — offline previews may not match "
-            "the arm's limits and feel."
-        )
-        logger.warning("config skew: %s", msg)
-        # A simulator daemon runs a re-ticked config by design (dev, CI);
-        # the sticky notification is for a live deployment.
-        try:
-            sim = await client.is_simulator()
-        except Exception:
-            sim = True
-        if not sim:
-            _config_skew_msg = msg
-
-
 # Re-arm window for the cycle-start input: a rising edge within this many
 # seconds of the last fire is ignored (switch-bounce / double-tap protection).
 CYCLE_START_DEBOUNCE_S = 1.0
@@ -2016,10 +1952,6 @@ async def _status_consumer() -> None:
 
                     if pc is not None:
                         with pc:
-                            global _config_skew_msg
-                            if _config_skew_msg is not None:
-                                ui.notify(_config_skew_msg, color="warning", timeout=0)
-                                _config_skew_msg = None
                             update_ui_from_status()
 
                             readout_panel.update_conn_io()
