@@ -12,7 +12,7 @@ import waldoctl
 from waldoctl import ActionStatus
 
 from waldo_commander.common.theme import IO_COLOR_OFF, IO_COLOR_ON
-from waldo_commander.state import ui_state
+from waldo_commander.state import robot_events, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,33 @@ _TIPS = [
 _TIP_TEXT = random.choice(_TIPS)
 
 
+_EVENT_ICONS = {
+    "error": '<span style="color:var(--color-red-500);font-size:13px">\u2717</span>',
+    "warning": (
+        '<span style="color:var(--color-amber-400);font-size:13px"'
+        ' class="material-icons">warning</span>'
+    ),
+}
+
+
+def _build_event_log_html() -> str:
+    """Build HTML for the warnings/errors log entries."""
+    parts: list[str] = []
+    for ts, severity, message, detail in reversed(robot_events.entries):
+        icon = _EVENT_ICONS.get(severity, _EVENT_ICONS["warning"])
+        tail = (
+            f' <span style="color:var(--ctk-muted)">{html_mod.escape(detail)}</span>'
+            if detail
+            else ""
+        )
+        parts.append(
+            f'<div class="action-log-entry" style="font-size:12px;line-height:1.5">'
+            f'{icon} <span style="color:var(--ctk-muted)">{ts}</span> '
+            f"<b>{html_mod.escape(message)}</b>{tail}</div>"
+        )
+    return "".join(parts)
+
+
 def _build_log_entries_html() -> str:
     """Build HTML for all action log entries."""
     parts: list[str] = []
@@ -130,6 +157,13 @@ class ReadoutPanel:
         self._tool_label: ui.label | None = None
         self._tool_separator: ui.label | None = None
         self._io_chips: list[ui.chip] = []
+
+        # Warnings/errors log elements
+        self._event_log_row: ui.row | None = None
+        self._event_scroll_area: ui.scroll_area | None = None
+        self._event_log_html: ui.html | None = None
+        self._event_log_expanded: bool = False
+        self._event_log_version: int = -1
 
         # Action log elements
         self._action_scroll_area: ui.scroll_area | None = None
@@ -237,6 +271,39 @@ class ReadoutPanel:
                 self._action_scroll_area.classes(add="action-log-expanded")
             else:
                 self._action_scroll_area.classes(remove="action-log-expanded")
+
+    def _toggle_event_log(self) -> None:
+        """Toggle warnings/errors log between collapsed and expanded."""
+        self._event_log_expanded = not self._event_log_expanded
+        if self._event_scroll_area:
+            if self._event_log_expanded:
+                self._event_scroll_area.classes(add="action-log-expanded")
+            else:
+                self._event_scroll_area.classes(remove="action-log-expanded")
+            self._apply_event_log_height()
+
+    def _apply_event_log_height(self) -> None:
+        """Size the log to its content — the scroll area's stock height
+        would otherwise pin the expanded log at the 200px cap and leave a
+        block of dead space under a short history."""
+        if self._event_scroll_area is None:
+            return
+        if self._event_log_expanded:
+            height = min(8 + 19 * max(len(robot_events.entries), 1), 200)
+        else:
+            height = 20
+        self._event_scroll_area.style(f"height: {height}px")
+
+    def update_event_log(self) -> None:
+        """Render the warnings/errors log; the row appears with its first entry."""
+        if self._event_log_row is None or self._event_log_html is None:
+            return
+        if robot_events.version == self._event_log_version:
+            return
+        self._event_log_version = robot_events.version
+        self._event_log_row.set_visibility(bool(robot_events.entries))
+        self._event_log_html.set_content(_build_event_log_html())
+        self._apply_event_log_height()
 
     def build(self, anchor: str = "tl") -> None:
         """Render the top-left readout panel as an overlay card."""
@@ -437,7 +504,27 @@ class ReadoutPanel:
                             "w-full"
                         )
 
+                # Collapsible warnings/errors log, hidden until something
+                # actually lands in it.
+                with (
+                    ui.row()
+                    .classes("items-center w-full no-wrap gap-0")
+                    .mark("readout-event-log")
+                ) as event_row:
+                    self._event_log_row = event_row
+                    self._event_scroll_area = (
+                        ui.scroll_area()
+                        .classes("action-log flex-1")
+                        .on("click", self._toggle_event_log)
+                    )
+                    with self._event_scroll_area:
+                        self._event_log_html = ui.html("", sanitize=False).classes(
+                            "w-full"
+                        )
+                event_row.set_visibility(False)
+
                 # Subscribe to action-log updates and seed the initial state
                 # (conn_io is synced after URDF init in _init()).
                 self._bind_action_log_listener()
                 self.update_action_log()
+                self.update_event_log()

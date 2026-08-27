@@ -1,0 +1,25 @@
+# systemd unit for the Waldo Commander web UI, running beside par6d on
+# the control box. Install:
+#   sudo cp deploy/waldo-commander.service /etc/systemd/system/
+#   sudo systemctl enable --now waldo-commander
+# Assumes the app's venv lives at /opt/waldo-commander/venv (adjust
+# ExecStart/User for the box's layout) and par6d publishes on localhost.
+[Unit]
+Description=Waldo Commander web UI
+Documentation=https://github.com/Jepson2k/Waldo-Commander
+After=network-online.target par6d.service
+Wants=network-online.target
+# Crash-loop guard: five failed starts inside a minute stops the retries.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=waldo
+WorkingDirectory=/opt/waldo-commander
+ExecStart=/opt/waldo-commander/venv/bin/waldo-commander --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

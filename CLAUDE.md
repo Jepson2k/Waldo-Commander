@@ -139,6 +139,11 @@ Background services in `waldo_commander/services/`:
 1. Add to appropriate component in `waldo_commander/components/`
 2. Add marker with `.mark("descriptive-marker-name")` for testing
 3. Add test in `tests/test_*_integration.py`
+4. **Verification requires a screenshot.** When a GUI change is being
+   presented for the user's verification or approval, include a screenshot
+   of the running app with the relevant state populated — layout problems
+   and dead space are invisible in code review. Routine intermediate work
+   doesn't need screenshots; anything awaiting sign-off does.
 
 ### Modifying Robot Communication
 

@@ -1,5 +1,6 @@
 """Pytest configuration and shared fixtures for Waldo Commander tests."""
 
+import errno
 import logging
 import os
 import subprocess
@@ -22,7 +23,6 @@ from nicegui.testing.screen import Screen
 from nicegui.testing.screen_plugin import (
     nicegui_driver,  # noqa: F401 - default driver (per-test browser)
     nicegui_remove_all_screenshots,  # noqa: F401 - clears screenshots before session
-    pytest_runtest_makereport,  # noqa: F401
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
 import waldoctl
@@ -61,9 +61,12 @@ _MAIN_MODULE = sys.modules["__main__"]
 # Windows CI: teardown's Storage.clear() retries a transiently held
 # storage-general.json for only 1s per file (unlink_with_retry) before
 # re-raising PermissionError, and a storage backup on a starved runner can
-# hold the handle longer than that. Retry the whole clear with a patient
-# budget; on POSIX the PermissionError never fires and the wrapper is inert.
-# Removable once the pinned nicegui raises the retry budget upstream.
+# hold the handle longer than that. clear() also suppresses an unlink of an
+# in-flight .json.tmp backup and then rmdir()s the directory, which raises
+# WinError 145 (directory not empty) — an OSError that is not a
+# PermissionError. Retry the whole clear on any OSError with a patient
+# budget; on POSIX neither fires and the wrapper is inert. Removable once
+# the pinned nicegui handles both upstream.
 _orig_storage_clear = nicegui_storage.Storage.clear
 
 
@@ -72,10 +75,22 @@ def _patient_storage_clear(self: nicegui_storage.Storage) -> None:
     while True:
         try:
             return _orig_storage_clear(self)
-        except PermissionError:
-            if time.monotonic() > deadline:
-                raise
-            time.sleep(0.1)
+        except OSError as e:
+            if time.monotonic() <= deadline:
+                time.sleep(0.1)
+                continue
+            # A restart-style test can leave a live storage writer that
+            # repopulates the directory faster than clear() can rmdir it —
+            # no budget wins that race. The per-test isolation is the FILE
+            # deletions (which succeeded); the directory itself is removed
+            # at session end with ignore_errors. Only the empty-dir rmdir
+            # is forgiven — real permission failures still raise.
+            if e.errno == errno.ENOTEMPTY or getattr(e, "winerror", None) == 145:
+                logging.getLogger(__name__).warning(
+                    "storage dir not removable (live writer?): %s", e
+                )
+                return
+            raise
 
 
 nicegui_storage.Storage.clear = _patient_storage_clear
@@ -228,6 +243,100 @@ def suppress_proactor_write_error(silence_noisy_logging):
     asyncio_logger.addFilter(filt)
     yield
     asyncio_logger.removeFilter(filt)
+
+
+@pytest.hookimpl(tryfirst=True, wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """nicegui's outcome stash, plus naming the records behind
+    'There were unexpected ERROR logs.'
+
+    The screen plugin's hook (re-exported here before) stores the report
+    on the item for its screenshot-on-failure fixture — folded in since
+    one module can only define the hook once. The second half: the user
+    fixture fails the TEST at fixture teardown over ERROR records captured
+    during the call phase — but the call phase passed, so pytest never
+    prints its captured logs and the CI output has no trace of what fired.
+    Raw fd-2 bypasses capture so the culprit lands in the job log.
+    """
+    rep = yield
+    setattr(item, f"rep_{rep.when}", rep)
+    if call.when == "call":
+        try:
+            from _pytest.logging import caplog_records_key
+
+            records = item.stash[caplog_records_key].get("call", [])
+        except (KeyError, ImportError):
+            return rep
+        for r in records:
+            if r.levelname == "ERROR":
+                os.write(
+                    2,
+                    (
+                        f"[error-gate] {item.nodeid}: {r.name}:"
+                        f"{r.pathname}:{r.lineno} {r.getMessage()}\n"
+                    ).encode(errors="replace"),
+                )
+    return rep
+
+
+class _AppConfigTeardownFilter(logging.Filter):
+    """Suppress NiceGUI's AppConfig-attribute errors during app teardown.
+
+    CLAUDE.md documents these as secondary symptoms: once teardown has
+    reset ``app.config``, NiceGUI's own outbox/binding loops error on the
+    next tick with ``'AppConfig' object has no attribute ...`` before they
+    stop. The condition carries no information about the test; on slower
+    runners the stray records land inside a test's capture window and the
+    unexpected-ERROR gate fails it.
+    """
+
+    _ATTRS = ("reconnect_timeout", "binding_refresh_interval")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not (
+            "object has no attribute" in msg
+            and any(attr in msg for attr in self._ATTRS)
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def suppress_appconfig_teardown_error(silence_noisy_logging):
+    """Keep the documented teardown red herring out of the ERROR gate."""
+    nicegui_logger = logging.getLogger("nicegui")
+    filt = _AppConfigTeardownFilter()
+    nicegui_logger.addFilter(filt)
+    yield
+    nicegui_logger.removeFilter(filt)
+
+
+class _UdpConnResetFilter(logging.Filter):
+    """Suppress parol6's poll_receive ERROR for Windows connection resets.
+
+    When the app's UDP client socket closes, Windows delivers the ICMP
+    port-unreachable back to the fake-serial controller's socket as
+    WinError 10054 on the next recv. The controller logs it at ERROR and
+    keeps polling; the condition is a normal client disconnect, not a
+    fault. Windows-only, this code only.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not ("poll_receive" in msg and "10054" in msg)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def suppress_udp_conn_reset_error(silence_noisy_logging):
+    """Keep the benign Windows UDP reset out of the unexpected-ERROR gate."""
+    if sys.platform != "win32":
+        yield
+        return
+
+    transport_logger = logging.getLogger("parol6.server.transports.udp_transport")
+    filt = _UdpConnResetFilter()
+    transport_logger.addFilter(filt)
+    yield
+    transport_logger.removeFilter(filt)
 
 
 # ============================================================================

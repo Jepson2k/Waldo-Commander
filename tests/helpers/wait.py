@@ -169,15 +169,16 @@ async def wait_for_tool_key(
     )
 
 
-async def wait_for_app_ready(timeout_s: float = 40.0) -> None:
+async def wait_for_app_ready(timeout_s: float = 45.0) -> None:
     """Wait for app to be fully ready (startup + backend + page).
 
     This is the primary wait function for tests. It ensures all components
     are initialized and the app is in a stable state for testing.
 
     Args:
-        timeout_s: Maximum time to wait (default sized for loaded CI runners,
-            where startup has been observed to exceed 20s)
+        timeout_s: Maximum time to wait. Sized for loaded CI runners, where
+            a controller boot behind a cold numba JIT has been observed to
+            pass 20s; the wait is event-driven, so healthy boots pay nothing.
 
     Raises:
         TimeoutError: If app doesn't become ready within timeout

@@ -550,9 +550,11 @@ def _safe_task(coro: Any) -> asyncio.Task:
     """Create an asyncio task that logs exceptions instead of silently swallowing them."""
     task = asyncio.create_task(coro)
     task.add_done_callback(
-        lambda t: logger.error("Unhandled error in task", exc_info=t.exception())
-        if not t.cancelled() and t.exception()
-        else None
+        lambda t: (
+            logger.error("Unhandled error in task", exc_info=t.exception())
+            if not t.cancelled() and t.exception()
+            else None
+        )
     )
     return task
 
@@ -654,6 +656,7 @@ class ControlPanel:
         self._cart_cadence = _CadenceTracker()
 
         self._robot_btn: ui.button | None = None
+        self._freedrive_btn: ui.button | None = None
 
         # E-STOP manager (initialized with ui_client in build())
         self.estop: _EStopManager | None = None
@@ -1886,6 +1889,37 @@ class ControlPanel:
             return False
         return True
 
+    async def on_freedrive_click(self) -> None:
+        """Ask the backend to release the arm for hand guiding, or take it
+        back. Whether that is a gravity feedforward, a brake release or an
+        impedance mode is the backend's business, and so is refusing when
+        the arm is in no state for it — we relay its reason."""
+        on = not waldoctl.commander.status.controller.freedrive
+        try:
+            await self.client.freedrive(on)
+            ui.notify(
+                "Freedrive on — arm unlocked, move it by hand"
+                if on
+                else "Freedrive off — arm locked",
+                color="info",
+            )
+        except NotImplementedError:
+            ui.notify("This backend has no freedrive", color="warning")
+        except Exception as e:
+            ui.notify(f"Freedrive: {e}", color="warning")
+            logger.info("Freedrive refused: %s", e)
+
+    def sync_freedrive_visual(self) -> None:
+        """Reflect whether the arm is actually back-driveable — the
+        backend's own answer, not whether a request was accepted."""
+        btn = self._freedrive_btn
+        if btn is None:
+            return
+        if waldoctl.commander.status.controller.freedrive:
+            btn.props("color=amber-7 icon=lock_open")
+        else:
+            btn.props("color=grey-7 icon=lock")
+
     def update_robot_btn_visual(self) -> None:
         """Update Robot/Simulator toggle button appearance."""
         if self._robot_btn is None:
@@ -2499,8 +2533,11 @@ class ControlPanel:
         )
 
     def _build_action_row(self) -> None:
-        """Build the action row: Home, Robot/Sim toggle, gizmo controls, camera reset, step input."""
-        with ui.row().classes("gap-2 items-center"):
+        """Build the action row: Home, Robot/Sim toggle, freedrive, gizmo
+        controls, camera reset, step input, E-Stop."""
+        # The E-Stop rides the row's right edge out of flow; the padding
+        # reserves its 72px footprint so no control grows underneath it.
+        with ui.row().classes("gap-1 items-center relative w-full pr-20"):
             ui.button(icon="home", on_click=self.send_home).props(
                 "dense round unelevated color=teal-6"
             ).tooltip("Home (H)").mark("btn-home")
@@ -2515,6 +2552,19 @@ class ControlPanel:
             )
             robot_btn.mark("btn-robot-toggle")
             self._robot_btn = robot_btn
+
+            supported = ui_state.active_robot.has_freedrive
+            self._freedrive_btn = (
+                ui.button(icon="lock", on_click=self.on_freedrive_click)
+                .props("dense round unelevated color=grey-7")
+                .tooltip(
+                    "Freedrive — unlock the arm to move it by hand"
+                    if supported
+                    else "Freedrive — not available on this robot"
+                )
+                .mark("btn-freedrive")
+            )
+            self._freedrive_btn.set_enabled(supported)
 
             selected = {"value": "Move"}
             buttons: dict[str, ui.button] = {}
@@ -2571,7 +2621,6 @@ class ControlPanel:
                 "round unelevated dense color=light-blue-6"
             ).tooltip("Reset camera")
             with ui.row(align_items="center").classes("gap-1"):
-                ui.label("Step:").classes("text-white")
                 self._step_input = (
                     ui.number(
                         value=waldoctl.commander.settings.jog.joint_step_deg,
@@ -2590,14 +2639,11 @@ class ControlPanel:
                 with self._step_input:
                     self._step_input_tooltip = ui.tooltip("Step size in degrees")
 
-            with ui.element("div").style(
-                "width: 0; height: 0; overflow: visible; position: relative;"
-            ):
-                ui.button(
-                    icon="dangerous", color="negative", on_click=self.on_estop_click
-                ).props("round unelevated").classes("glass-btn text-2xl").style(
-                    "position: absolute; top: -18px; left: 10px;"
-                ).tooltip("E-Stop (Esc)").mark("btn-estop")
+            ui.button(
+                icon="dangerous", color="negative", on_click=self.on_estop_click
+            ).props("round unelevated").classes("glass-btn text-2xl").style(
+                "position: absolute; right: 0; top: 50%; transform: translateY(-50%);"
+            ).tooltip("E-Stop (Esc)").mark("btn-estop")
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""

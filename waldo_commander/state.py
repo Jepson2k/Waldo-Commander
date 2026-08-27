@@ -156,6 +156,29 @@ class AutomationState:
 
 
 @dataclass
+class RobotEventLog:
+    """Chronological log of robot warnings and errors.
+
+    The banner shows only the *standing* conditions (they self-clear);
+    this keeps what happened, so a warning that flickered while nobody
+    was watching is still discoverable.
+    """
+
+    entries: list[tuple[str, str, str, str]] = field(default_factory=list)
+    """(wall-clock time, severity, message, detail), oldest first."""
+    version: int = 0
+    _MAX = 200
+
+    def add(self, severity: str, message: str, detail: str = "") -> None:
+        if self.entries and self.entries[-1][1:] == (severity, message, detail):
+            return
+        self.entries.append((time.strftime("%H:%M:%S"), severity, message, detail))
+        if len(self.entries) > self._MAX:
+            del self.entries[: -self._MAX]
+        self.version += 1
+
+
+@dataclass
 class PlaybackCoordination:
     """WC-private coordination between dry-run playback and the status loop.
 
@@ -358,6 +381,7 @@ simulation_state: SimulationState = SimulationState()
 readiness_state: ReadinessState = ReadinessState()
 playback_coordination: PlaybackCoordination = PlaybackCoordination()
 automation_state: AutomationState = AutomationState()
+robot_events: RobotEventLog = RobotEventLog()
 
 
 def reset_all_state() -> None:

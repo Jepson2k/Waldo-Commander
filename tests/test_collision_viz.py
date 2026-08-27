@@ -763,3 +763,83 @@ async def test_refresh_during_unacked_clear_does_not_resurrect(user: User) -> No
         await _until(
             lambda: handle.confirmed and not handle.shapes, "cleanup never confirmed"
         )
+
+
+@pytest.mark.integration
+async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None:
+    """The viewer's keep-out editor, end to end: place a box at a clicked
+    point through the dialog, drag it via the scene's transform dispatch,
+    resize it through the edit dialog (bad input refused), delete it with
+    confirmation — asserting the request path (``commander.scene.shapes``)
+    and the rendered scene object at every step."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import waldoctl
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    handle = waldoctl.commander.scene
+    assert scene is not None and handle is not None
+
+    # Place — exactly what the context menu's "Box Here..." item runs.
+    with scene.scene.client:
+        scene._show_shape_dialog(kind="box", at=(0.4, 0.1, 0.0))
+    await user.should_see(marker="shape-dialog-save")
+    name_el = list(user.find(marker="shape-dialog-name").elements)[-1]
+    name_el.set_value("bench")
+    user.find(marker="shape-dialog-save").click()
+    await asyncio.sleep(0)
+
+    bench = next(s for s in handle.shapes if s.name == "bench")
+    assert bench.kind == "box"
+    # Birth pose sits the box ON the clicked floor point, not half inside it.
+    assert bench.pose[:3] == pytest.approx((0.4, 0.1, 0.05))
+    assert "shape:bench" in scene._shape_objects
+
+    # Drag — through the scene's transform_end dispatch, the entry the JS
+    # controls hit (same event fields the target handler consumes).
+    scene._start_shape_move("bench")
+    scene._handle_transform_event(
+        SimpleNamespace(
+            type="transform_end",
+            object_name="shape:bench",
+            x=0.25,
+            y=-0.1,
+            z=0.05,
+            rx=None,
+            ry=None,
+            rz=None,
+        )
+    )
+    bench = next(s for s in handle.shapes if s.name == "bench")
+    assert bench.pose[:3] == pytest.approx((0.25, -0.1, 0.05))
+    # The setter re-rendered the layer and the move re-armed on the new object.
+    assert "shape:bench" in scene._shape_objects
+    scene._end_shape_move()
+
+    # Edit — grow x to 300 mm through the dialog. A negative dimension must
+    # be refused by the shape's own validation, leaving the world untouched.
+    with scene.scene.client:
+        scene._show_shape_dialog(shape=bench)
+    await asyncio.sleep(0)
+    dim_x = list(user.find(marker="shape-dialog-dim-x").elements)[-1]
+    dim_x.set_value(-50)
+    user.find(marker="shape-dialog-save").click()
+    await asyncio.sleep(0)
+    assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.1)
+    dim_x.set_value(300)
+    user.find(marker="shape-dialog-save").click()
+    await asyncio.sleep(0)
+    assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.3)
+
+    # Delete — with confirmation.
+    with scene.scene.client:
+        scene._delete_shape("bench")
+    await user.should_see(marker="shape-delete-confirm")
+    user.find(marker="shape-delete-confirm").click()
+    await asyncio.sleep(0)
+    assert all(s.name != "bench" for s in handle.shapes)
+    assert "shape:bench" not in scene._shape_objects
