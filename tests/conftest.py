@@ -246,6 +246,37 @@ def suppress_proactor_write_error(silence_noisy_logging):
     asyncio_logger.removeFilter(filt)
 
 
+class _AppConfigTeardownFilter(logging.Filter):
+    """Suppress NiceGUI's AppConfig-attribute errors during app teardown.
+
+    CLAUDE.md documents these as secondary symptoms: once teardown has
+    reset ``app.config``, NiceGUI's own outbox/binding loops error on the
+    next tick with ``'AppConfig' object has no attribute ...`` before they
+    stop. The condition carries no information about the test; on slower
+    runners the stray records land inside a test's capture window and the
+    unexpected-ERROR gate fails it.
+    """
+
+    _ATTRS = ("reconnect_timeout", "binding_refresh_interval")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not (
+            "object has no attribute" in msg
+            and any(attr in msg for attr in self._ATTRS)
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def suppress_appconfig_teardown_error(silence_noisy_logging):
+    """Keep the documented teardown red herring out of the ERROR gate."""
+    nicegui_logger = logging.getLogger("nicegui")
+    filt = _AppConfigTeardownFilter()
+    nicegui_logger.addFilter(filt)
+    yield
+    nicegui_logger.removeFilter(filt)
+
+
 class _UdpConnResetFilter(logging.Filter):
     """Suppress parol6's poll_receive ERROR for Windows connection resets.
 
