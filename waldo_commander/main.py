@@ -1928,9 +1928,9 @@ async def _status_consumer() -> None:
                         enabled = bool(getattr(status, "enabled", False))
                         if ctrl.enabled != enabled:
                             ctrl.enabled = enabled
-                        gravity_comp = bool(getattr(status, "gravity_comp", False))
-                        if ctrl.gravity_comp != gravity_comp:
-                            ctrl.gravity_comp = gravity_comp
+                        freedrive = bool(getattr(status, "freedrive", False))
+                        if ctrl.freedrive != freedrive:
+                            ctrl.freedrive = freedrive
 
                     # Warning-class conditions (self-clearing): content
                     # compare, copy on change — the decoder refills the

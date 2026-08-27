@@ -1785,12 +1785,13 @@ class ControlPanel:
         return True
 
     async def on_freedrive_click(self) -> None:
-        """Toggle freedrive: apply the gravity-comp feedforward so the arm
-        floats and can be guided by hand (par6 has no separate freedrive
-        mode — IDLE with gravity comp applied is freedrive)."""
-        on = not waldoctl.commander.status.controller.gravity_comp
+        """Ask the backend to release the arm for hand guiding, or take it
+        back. Whether that is a gravity feedforward, a brake release or an
+        impedance mode is the backend's business, and so is refusing when
+        the arm is in no state for it — we relay its reason."""
+        on = not waldoctl.commander.status.controller.freedrive
         try:
-            await self.client.set_gravity_comp(on)
+            await self.client.freedrive(on)
             ui.notify(
                 "Freedrive on — arm unlocked, move it by hand"
                 if on
@@ -1800,15 +1801,16 @@ class ControlPanel:
         except NotImplementedError:
             ui.notify("This backend has no freedrive", color="warning")
         except Exception as e:
-            ui.notify(f"Freedrive failed: {e}", color="negative")
-            logger.error("Freedrive toggle failed: %s", e)
+            ui.notify(f"Freedrive: {e}", color="warning")
+            logger.info("Freedrive refused: %s", e)
 
     def sync_freedrive_visual(self) -> None:
-        """Reflect the wire's gravity-comp state on the freedrive button."""
+        """Reflect whether the arm is actually back-driveable — the
+        backend's own answer, not whether a request was accepted."""
         btn = self._freedrive_btn
         if btn is None:
             return
-        if waldoctl.commander.status.controller.gravity_comp:
+        if waldoctl.commander.status.controller.freedrive:
             btn.props("color=amber-7 icon=lock_open")
         else:
             btn.props("color=grey-7 icon=lock")

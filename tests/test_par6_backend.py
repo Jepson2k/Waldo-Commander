@@ -133,21 +133,19 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
             await asyncio.sleep(0.1)
         assert status.controller.mode, "no controller mode ever arrived"
 
-        # Freedrive round-trips: the button applies the gravity-comp
-        # feedforward and the wire's own state comes back to the GUI.
-        assert not status.controller.gravity_comp
+        # Freedrive reports the arm, not the request. A fresh `par6d --sim`
+        # is unreferenced, so the runtime cannot actually release the arm
+        # however willingly it takes the command — and the surface has to
+        # keep saying so, or the UI tells an operator an arm is safe to
+        # grab while a hold term is still on the joints.
+        assert not robot_state.homed, "a fresh sim should not claim a home reference"
+        assert not status.controller.freedrive
+
         user.find(marker="btn-freedrive").click()
-        for _ in range(50):
-            if status.controller.gravity_comp:
-                break
-            await asyncio.sleep(0.1)
-        assert status.controller.gravity_comp, "freedrive never reached the wire"
-        user.find(marker="btn-freedrive").click()
-        for _ in range(50):
-            if not status.controller.gravity_comp:
-                break
-            await asyncio.sleep(0.1)
-        assert not status.controller.gravity_comp, "freedrive never switched off"
+        await asyncio.sleep(1.5)
+        assert not status.controller.freedrive, (
+            "an unreferenced arm reported itself back-driveable"
+        )
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)
