@@ -246,6 +246,35 @@ def suppress_proactor_write_error(silence_noisy_logging):
     asyncio_logger.removeFilter(filt)
 
 
+class _UdpConnResetFilter(logging.Filter):
+    """Suppress parol6's poll_receive ERROR for Windows connection resets.
+
+    When the app's UDP client socket closes, Windows delivers the ICMP
+    port-unreachable back to the fake-serial controller's socket as
+    WinError 10054 on the next recv. The controller logs it at ERROR and
+    keeps polling; the condition is a normal client disconnect, not a
+    fault. Windows-only, this code only.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not ("poll_receive" in msg and "10054" in msg)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def suppress_udp_conn_reset_error(silence_noisy_logging):
+    """Keep the benign Windows UDP reset out of the unexpected-ERROR gate."""
+    if sys.platform != "win32":
+        yield
+        return
+
+    transport_logger = logging.getLogger("parol6.server.transports.udp_transport")
+    filt = _UdpConnResetFilter()
+    transport_logger.addFilter(filt)
+    yield
+    transport_logger.removeFilter(filt)
+
+
 # ============================================================================
 # Class-scoped Browser Fixture for Expensive Browser Tests
 # ============================================================================
