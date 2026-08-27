@@ -558,10 +558,12 @@ def _add_plugin_tabs(slot: PanelSlot) -> None:
 
 
 def _plugin_panel_size(p) -> dict:
-    """PanelResize entry for a plugin panel that declares sizing metadata
-    (waldoctl ``Panel.min_width`` etc.), or {} for content-sized panels.
-    getattr keeps this working against waldoctl versions predating the
-    sizing attributes."""
+    """PanelResize entry for a plugin panel that opts into drag-resizing
+    (waldoctl ``Panel.resizable``), or {} otherwise. The JS module supplies
+    floor minima, so the size attributes are optional refinements. getattr
+    keeps this working against waldoctl versions predating the attributes."""
+    if not getattr(p, "resizable", False):
+        return {}
     entry = {
         js_key: value
         for attr, js_key in (
@@ -572,8 +574,6 @@ def _plugin_panel_size(p) -> dict:
         )
         if (value := getattr(p, attr, None)) is not None
     }
-    if not entry:
-        return {}
     group = "top" if p.slot is PanelSlot.LEFT_TOP_TAB else "bottom"
     container = (
         ".top-panels-container" if group == "top" else ".bottom-panels-container"
@@ -581,6 +581,21 @@ def _plugin_panel_size(p) -> dict:
     entry["selector"] = f"{container} .{p.id}-panel"
     entry["group"] = group
     return entry
+
+
+def _plugin_panel_static_size(p) -> str:
+    """CSS for a plugin panel that declares a size without opting into
+    drag-resizing, or "" for content-sized panels."""
+    return "; ".join(
+        f"{css}: {value}px"
+        for attr, css in (
+            ("min_width", "min-width"),
+            ("min_height", "min-height"),
+            ("default_width", "width"),
+            ("default_height", "height"),
+        )
+        if (value := getattr(p, attr, None)) is not None
+    )
 
 
 def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
@@ -591,14 +606,16 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
     for p in ui_state.plugin_panels:
         if p.slot is slot:
             classes = "gap-2 overlay-card overflow-hidden"
+            style = ""
+            # Sized containers: content taller than the pane must scroll,
+            # not clip.
+            sized = "gap-2 overlay-card overflow-x-hidden overflow-y-auto"
             if _plugin_panel_size(p):
-                # Fixed-height container: content taller than it must scroll,
-                # not clip.
-                classes = (
-                    "gap-2 overlay-card overflow-x-hidden overflow-y-auto"
-                    f" {p.id}-panel resizable-panel"
-                )
-            with ui.tab_panel(p.id).classes(classes):
+                classes = f"{sized} {p.id}-panel resizable-panel"
+            elif css := _plugin_panel_static_size(p):
+                classes = sized
+                style = css
+            with ui.tab_panel(p.id).classes(classes).style(style):
                 # A third-party plugin's build() must not blank the whole page;
                 # leave an empty-but-valid tab panel on failure (mirrors the
                 # init guard in _discover_plugin_panels).
