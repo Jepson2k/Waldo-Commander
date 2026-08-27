@@ -14,7 +14,6 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
-from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -163,7 +162,10 @@ def jog_joint_briefly(
 ) -> None:
     """Press and release a jog button briefly to trigger recorded movement.
 
-    Finds joint jog buttons by CSS class, then uses ActionChains to hold.
+    Dispatches mousedown/mouseup via JS instead of ActionChains: the buttons
+    release on ``mouseleave`` (safety against stuck jogs), and a real pointer
+    hold can be cut short when the pressed-style transform or a readout
+    re-render shifts the pill under the cursor.
 
     Args:
         screen: Selenium screen fixture
@@ -179,9 +181,12 @@ def jog_joint_briefly(
     )
     btn = joint_buttons[plus_btn_index]
 
-    # Use ActionChains to click and hold, then release
-    actions = ActionChains(screen.selenium)
-    actions.click_and_hold(btn).pause(duration_s).release().perform()
+    dispatch = (
+        "arguments[0].dispatchEvent(new MouseEvent(arguments[1], {bubbles: true}))"
+    )
+    screen.selenium.execute_script(dispatch, btn, "mousedown")
+    time.sleep(duration_s)
+    screen.selenium.execute_script(dispatch, btn, "mouseup")
 
 
 # ============================================================================
