@@ -25,6 +25,8 @@ from nicegui.testing.screen_plugin import (
     pytest_runtest_makereport,  # noqa: F401
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
+from nicegui.page import page as _nicegui_page
+
 import waldoctl
 from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
@@ -46,6 +48,25 @@ if not os.environ.get("HEADED") and os.environ.get("DISPLAY", "").startswith(
     "localhost:"
 ):
     os.environ.pop("DISPLAY", None)
+
+# NiceGUI's outbox reads core.app.config.reconnect_timeout on every emit.
+# AppConfig declares that slot but only ui.run()'s run-config fills it, and
+# the test fixtures swap in a bare AppConfig between tests — in that window
+# the slot is empty, every emit raises AttributeError, the UI stops
+# delivering, and the running test hangs until pytest-timeout kills the
+# whole session (seen as an AttributeError log flood on Windows CI). Fall
+# back to ui.run()'s default until the next run config lands.
+_resolve_reconnect_timeout = _nicegui_page.resolve_reconnect_timeout
+
+
+def _resolve_reconnect_timeout_defaulted(self: _nicegui_page) -> float:
+    try:
+        return _resolve_reconnect_timeout(self)
+    except AttributeError:
+        return 3.0
+
+
+_nicegui_page.resolve_reconnect_timeout = _resolve_reconnect_timeout_defaulted
 
 if TYPE_CHECKING:
     from parol6 import AsyncRobotClient
