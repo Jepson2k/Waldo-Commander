@@ -15,7 +15,7 @@ dependencies = [
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.8.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.9.0",
   "opencv-python-headless>=4.8",
   "fastmcp>=3.0,<4",
 
@@ -55,10 +55,10 @@ dev = [
   # parol6 (the default test backend) is deliberately NOT here: its 0.4.0
   # release pins waldoctl by a direct v0.7.0 URL, and pip cannot reconcile
   # two different direct URLs for one package in a single resolve now that
-  # this package pins v0.8.0. Install it beside the dev extra instead:
+  # this package pins v0.9.0. Install it beside the dev extra instead:
   #   pip install --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0"
   #   pip install interpolatepy msgspec numba ormsgpack psutil toppra
-  # (the [parol6] extra keeps working once parol6 re-pins waldoctl v0.8.0).
+  # (the [parol6] extra keeps working once parol6 re-pins waldoctl v0.9.0).
   "ruff",
   # ty 0.0.74 regressed ParamSpec-typed calls (numba's Dispatcher.__call__
   # stubs): every 2-arg call of a jitted pinokin function reports

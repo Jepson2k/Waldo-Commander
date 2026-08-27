@@ -55,7 +55,7 @@ jobs:
           fi
           # parol6 (the default test backend) installs WITHOUT dep resolution:
           # its 0.4.0 release pins waldoctl by a direct v0.7.0 URL, which pip
-          # cannot reconcile with this package's v0.8.0 pin in one resolve.
+          # cannot reconcile with this package's v0.9.0 pin in one resolve.
           # Its remaining deps are named explicitly (waldoctl/numpy/pinokin/
           # pyserial/scipy/ruckig are already installed above).
           PAROL6_REF="0.4.0"
@@ -125,7 +125,7 @@ jobs:
           fi
           # parol6 (the default test backend) installs WITHOUT dep resolution:
           # its 0.4.0 release pins waldoctl by a direct v0.7.0 URL, which pip
-          # cannot reconcile with this package's v0.8.0 pin in one resolve.
+          # cannot reconcile with this package's v0.9.0 pin in one resolve.
           # Its remaining deps are named explicitly (waldoctl/numpy/pinokin/
           # pyserial/scipy/ruckig are already installed above).
           PAROL6_REF="0.4.0"
