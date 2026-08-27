@@ -258,16 +258,23 @@ class ShapeEditingMixin:
                 except ValueError as err:
                     ui.notify(f"Keep-out rejected: {err}", color="warning")
                     return
+                dismiss()
+
+            def dismiss() -> None:
+                # Synchronous removal: the hide event needs a client round
+                # trip, and a lingering dialog's identically-marked save
+                # button would shadow the next dialog's until it lands.
                 dialog.close()
+                if not dialog.is_deleted:
+                    dialog.delete()
 
             with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Cancel", on_click=dismiss).props("flat")
                 ui.button("Save", on_click=save).props("unelevated").mark(
                     "shape-dialog-save"
                 )
-        # A closed dialog otherwise lingers in the DOM, and stale save
-        # handlers with the same markers shadow the next dialog's.
-        dialog.on("hide", dialog.delete)
+        # ESC / backdrop dismissal comes back as a hide event.
+        dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
         dialog.open()
 
     def _delete_shape(self, name: str) -> None:
@@ -279,17 +286,23 @@ class ShapeEditingMixin:
 
         with ui.dialog() as dialog, ui.card():
             ui.label(f"Delete keep-out '{name}'?")
+
+            def dismiss() -> None:
+                dialog.close()
+                if not dialog.is_deleted:
+                    dialog.delete()
+
             with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
+                ui.button("Cancel", on_click=dismiss).props("flat")
 
                 def confirm() -> None:
                     handle.shapes = [s for s in handle.shapes if s.name != name]
-                    dialog.close()
+                    dismiss()
 
                 ui.button("Delete", color="negative", on_click=confirm).props(
                     "unelevated"
                 ).mark("shape-delete-confirm")
-        dialog.on("hide", dialog.delete)
+        dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
         dialog.open()
 
     # ------------------------------------------------------------------
