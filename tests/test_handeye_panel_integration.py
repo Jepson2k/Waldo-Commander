@@ -203,6 +203,10 @@ async def test_handeye_panel_workflow(
         assert not panel._solve_section.visible
 
         client = waldoctl.commander.client
+        # Earlier suite tests share this controller and may leave the arm
+        # anywhere; the view deltas assume the standby pose, so pin it. With
+        # the MSG mounted this is the planned, collision-checked home move.
+        assert await client.home(wait=True, timeout=30.0) >= 0
         angles = await client.angles()
         assert angles is not None
         home_angles = list(angles)
@@ -401,6 +405,9 @@ async def test_handeye_auto_calibration(
 
         user.find(marker="tab-handeye").click()
         await asyncio.sleep(0)
+        # Pin the start pose for the same reason as the manual workflow test:
+        # the shared controller carries over whatever pose the suite left.
+        assert await waldoctl.commander.client.home(wait=True, timeout=30.0) >= 0
         angles = await waldoctl.commander.client.angles()
         assert angles is not None
         home_angles = list(angles)
