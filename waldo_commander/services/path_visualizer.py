@@ -470,6 +470,17 @@ class PathVisualizer:
         self._simulation_lock = asyncio.Lock()
         self._simulation_count = 0
 
+    def reset_for_test(self) -> None:
+        """Rebuild loop-bound state so the next test's event loop starts clean.
+
+        ``asyncio.Lock`` binds to a loop the first time it is acquired while
+        already held, and stays bound. A simulation still in flight when its
+        test ends leaves this lock acquired against a loop that is about to
+        close, so the next test's simulation takes the contended path and
+        raises ``bound to a different event loop``.
+        """
+        type(self).__init__(self)
+
     @staticmethod
     def _segments_match(old: list[PathSegment], new: list[PathSegment]) -> bool:
         """Fast check whether two segment lists are visually identical."""

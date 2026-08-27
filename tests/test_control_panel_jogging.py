@@ -754,3 +754,96 @@ async def test_jog_buttons_disabled_in_editing_mode(user: User) -> None:
 
     # Clean up
     waldoctl.commander.status.editing_mode = False
+
+
+@pytest.mark.integration
+async def test_held_jog_self_releases_when_button_disables_at_limit(
+    user: User,
+) -> None:
+    """A held jog whose button disables at the joint limit must self-release.
+
+    NiceGUI drops events from disabled elements, so the mouseup for a button
+    that disables mid-hold never reaches the server, and touch input has no
+    mouseleave fallback. Without a server-side release the jog stream renews
+    against the limit indefinitely.
+    """
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+
+    cp = ui_state.control_panel
+
+    # Park J1 just above the point where one more step no longer fits, so a
+    # short hold crosses the enabled-binding boundary.
+    hi = float(ui_state.active_robot.joints.limits.position.deg[0, 1])
+    step = abs(float(waldoctl.commander.settings.jog.joint_step_deg))
+    pose = [float(a) for a in waldoctl.commander.status.joints.angles.deg]
+    pose[0] = hi - step - 1.0
+    await cp.client.teleport(pose)
+    for _ in range(50):
+        if abs(float(waldoctl.commander.status.joints.angles.deg[0]) - pose[0]) < 0.5:
+            break
+        await asyncio.sleep(0.1)
+
+    # Hold without ever releasing: once the button disables, a browser mouseup
+    # would be dropped anyway, so the test never sends one.
+    user.find(marker="btn-j1-plus").trigger("mousedown")
+    for _ in range(30):
+        await asyncio.sleep(0.1)
+        if ui_state.joint_jog_timer.active:
+            break
+    assert ui_state.joint_jog_timer.active, "hold never started streaming"
+
+    for _ in range(100):
+        await asyncio.sleep(0.1)
+        if not ui_state.joint_jog_timer.active:
+            break
+    assert not ui_state.joint_jog_timer.active, (
+        "jog stream must stop when the button disables at the limit"
+    )
+    assert float(waldoctl.commander.status.joints.angles.deg[0]) <= hi + 0.5
+
+
+@pytest.mark.integration
+async def test_held_cart_jog_self_releases_when_pad_disables(user: User) -> None:
+    """A held cart jog whose pad strong-disables mid-hold must self-release.
+
+    The strong-disable class sets pointer-events:none, so the browser drops
+    the mouseup for a pad that disables mid-hold (touch has no mouseleave
+    fallback); cart_jog_tick must release the jog itself.
+    """
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+
+    cp = ui_state.control_panel
+    user.find(marker="tab-cartesian").click()
+    await asyncio.sleep(0)
+    await teleport_to_jog_pose(cp.client)
+
+    user.find(marker="axis-xplus").trigger("mousedown")
+    for _ in range(30):
+        await asyncio.sleep(0.1)
+        if ui_state.cart_jog_timer.active:
+            break
+    assert ui_state.cart_jog_timer.active, "hold never started streaming"
+
+    # Availability flips the way the status consumer applies it: a wholesale
+    # list swap on the held direction's frame.
+    frame = cp._translation_frame_name()
+    frame_av = waldoctl.commander.status.pose.cart_jog.by_frame[frame]
+    frame_av.can_jog_pos = [False, True, True, True, True, True]
+
+    for _ in range(50):
+        await asyncio.sleep(0.1)
+        if not ui_state.cart_jog_timer.active:
+            break
+    assert not ui_state.cart_jog_timer.active, (
+        "cart jog stream must stop when the pad disables mid-hold"
+    )
