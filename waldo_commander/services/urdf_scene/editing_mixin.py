@@ -397,7 +397,9 @@ class EditingMixin:
                             use_click_position=True
                         ),
                     )
-                self._populate_shape_add_menu(self._last_click_coords or (0.3, 0.0, 0.0))
+                self._populate_shape_add_menu(
+                    self._last_click_coords or (0.3, 0.0, 0.0)
+                )
 
     def _is_envelope_hit(self, object_name: str) -> bool:
         """Check if object is the workspace envelope."""

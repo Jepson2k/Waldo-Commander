@@ -1983,7 +1983,6 @@ async def _status_consumer() -> None:
                                 for state, phase in homing_key[2]
                             ]
 
-
                     # Collision-world epoch moved (first frame after connect,
                     # a program's set_shapes, another client, a restart) —
                     # adopt the controller's world via readback.
