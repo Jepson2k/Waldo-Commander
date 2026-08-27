@@ -1,11 +1,15 @@
 """Motion recorder for capturing robot actions as code during teaching."""
 
 import logging
+import math
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, fields as _dc_fields
 
 import numpy as np
+
+from nicegui import app as ng_app
 
 import waldoctl
 
@@ -60,6 +64,49 @@ def shapes_to_code(shapes) -> str:
     return f"rbt.set_shapes([\n{body}\n])"
 
 
+JOG_BLEND_R_MAX = 100.0
+
+
+def jog_blend_r() -> float:
+    """Default blend radius for generated moves (mm); 0 = exact stop."""
+    # Storage is user-editable JSON — a bad value must not break code generation.
+    try:
+        r = float(ng_app.storage.general.get("jog_blend_r", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(r):
+        return 0.0
+    return min(max(r, 0.0), JOG_BLEND_R_MAX)
+
+
+def blend_r_arg() -> str:
+    """``, r=<v>`` code fragment when the blend-radius setting is positive."""
+    r = jog_blend_r()
+    return f", r={r:g}" if r > 0 else ""
+
+
+def move_snippet(
+    method: str,
+    values: Sequence[float],
+    *,
+    speed: float,
+    accel: float,
+    precision: int = 3,
+    wait: bool = True,
+    comment: str = "",
+) -> str:
+    """One ``rbt.move_*`` code line honoring the blend-radius setting.
+
+    Blended moves always queue (``wait=False``) — the controller can only
+    blend commands it sees together, and a per-move wait stale-flushes the
+    lookahead buffer into unblended singles."""
+    vals = ", ".join(f"{v:.{precision}f}" for v in values)
+    r = blend_r_arg()
+    wait_str = ", wait=False" if (r or not wait) else ""
+    tail = f"  # {comment}" if comment else ""
+    return f"rbt.{method}([{vals}], speed={speed}, accel={accel}{r}{wait_str}){tail}"
+
+
 def _imported_waldoctl_names(text: str) -> set[str]:
     """Names bound by plain ``from waldoctl import X`` statements in *text*.
 
@@ -105,6 +152,9 @@ class MotionRecorder:
         self._pending_actions: list[tuple[str, dict, float]] = []
         # Wall-clock time of the last recorded action (for inserting gaps)
         self._last_action_wall_time: float = 0.0
+        # True once a session move was generated under a positive blend
+        # radius: the session must then end in a wait_motion() barrier.
+        self._blend_terminator_pending: bool = False
         # Insertion cursor for the active recording session: 1-indexed line new
         # snippets go below (advances past each insert); 0 = append at EOF,
         # None = no session (inserts follow the user's live cursor line).
@@ -250,6 +300,7 @@ class MotionRecorder:
         active.recording.is_recording = True
         self._active_jog = None
         self._last_action_wall_time = 0.0
+        self._blend_terminator_pending = False
         self._insert_line = active_cursor_line()
 
         if (
@@ -296,11 +347,19 @@ class MotionRecorder:
         ):
             angles = self._get_current_angles()
             if not self._matches_sim_end(angles):
-                args = ", ".join(f"{a:.2f}" for a in angles)
                 spd = waldoctl.commander.settings.jog.speed / 100.0
                 acc = waldoctl.commander.settings.jog.accel / 100.0
-                anchor_snippet = f"rbt.move_j([{args}], speed={spd}, accel={acc})  # Recording start position"
+                anchor_snippet = move_snippet(
+                    "move_j",
+                    angles,
+                    speed=spd,
+                    accel=acc,
+                    precision=2,
+                    comment="Recording start position",
+                )
                 self._insert_snippet(anchor_snippet)
+                if jog_blend_r() > 0:
+                    self._blend_terminator_pending = True
                 logger.info(
                     "Inserted recording start anchor at joints: %s",
                     [f"{a:.1f}" for a in angles],
@@ -319,6 +378,12 @@ class MotionRecorder:
         # If there's an active jog, end it first
         if self._active_jog:
             self.on_jog_end()
+
+        if self._blend_terminator_pending:
+            # Blended moves queue (wait=False): without a final barrier the
+            # program exits while the arm is still executing them.
+            self._insert_snippet("rbt.wait_motion()")
+            self._blend_terminator_pending = False
 
         textarea = ui_state.active_textarea
         if textarea is not None:
@@ -362,6 +427,8 @@ class MotionRecorder:
         snippet = self._generate_code(action_type, params)
         self._insert_snippet(snippet)
         self._last_action_wall_time = time.time()
+        if action_type in ("move_j", "move_l") and jog_blend_r() > 0:
+            self._blend_terminator_pending = True
 
         if TRACE_ENABLED:
             logger.log(
@@ -380,20 +447,27 @@ class MotionRecorder:
             Python code snippet string
         """
         if action_type == "move_j":
-            angles = params["angles"]
             spd = waldoctl.commander.settings.jog.speed / 100.0
             acc = waldoctl.commander.settings.jog.accel / 100.0
-            args = ", ".join(f"{a:.2f}" for a in angles)
-            wait_str = ", wait=False" if not params.get("wait", True) else ""
-            return f"rbt.move_j([{args}], speed={spd}, accel={acc}{wait_str})"
+            return move_snippet(
+                "move_j",
+                params["angles"],
+                speed=spd,
+                accel=acc,
+                precision=2,
+                wait=params.get("wait", True),
+            )
 
         elif action_type == "move_l":
-            pose = params["pose"]
             spd = waldoctl.commander.settings.jog.speed / 100.0
             acc = waldoctl.commander.settings.jog.accel / 100.0
-            args = ", ".join(f"{p:.3f}" for p in pose)
-            wait_str = ", wait=False" if not params.get("wait", True) else ""
-            return f"rbt.move_l([{args}], speed={spd}, accel={acc}{wait_str})"
+            return move_snippet(
+                "move_l",
+                params["pose"],
+                speed=spd,
+                accel=acc,
+                wait=params.get("wait", True),
+            )
 
         elif action_type == "home":
             return "rbt.home()"
