@@ -282,8 +282,10 @@ class TestEditorInteractivity:
         click_button_by_icon(class_screen, "fiber_manual_record")
 
         # Jog a joint briefly (0.5s hold to ensure the hold threshold is exceeded
-        # and the motion recorder captures the jog on slow platforms)
-        jog_joint_briefly(class_screen, joint_index=0, duration_s=0.5)
+        # and the motion recorder captures the jog on slow platforms). J3 has
+        # ample travel — J1 can start near its limit, and a jog that disables
+        # its button mid-hold exercises the limit-release path, not recording.
+        jog_joint_briefly(class_screen, joint_index=2, duration_s=0.5)
 
         # Verify code was added. The insert lands only after the recorder's
         # wait_motion(timeout=30.0) resolves — on timeout it records anyway —
