@@ -179,7 +179,14 @@ class ShapeEditingMixin:
             collision0 = True
             margin0 = None
 
-        with ui.dialog() as dialog, ui.card().classes("w-80"):
+        # Parent to the page, not the caller's slot: opened from a context
+        # menu item, the enclosing slot is the menu itself, and the menu's
+        # hide handler clears its children — taking the dialog with it.
+        with (
+            ui.context.client.content,
+            ui.dialog() as dialog,
+            ui.card().classes("w-80"),
+        ):
             ui.label(f"{'Edit' if editing else 'Add'} {kind} keep-out").classes(
                 "text-lg font-bold"
             )
@@ -284,7 +291,7 @@ class ShapeEditingMixin:
         if self._shape_move_active == name:
             self._end_shape_move()
 
-        with ui.dialog() as dialog, ui.card():
+        with ui.context.client.content, ui.dialog() as dialog, ui.card():
             ui.label(f"Delete keep-out '{name}'?")
 
             def dismiss() -> None:
