@@ -172,21 +172,27 @@ def jog_joint_briefly(
         joint_index: Joint number (0-5)
         duration_s: How long to hold the button in seconds
     """
-    # Find all joint jog buttons (class "joint-cap")
-    # There are 2 per joint (minus and plus), so plus buttons are at odd indices
-    joint_buttons = screen.selenium.find_elements(By.CSS_SELECTOR, ".joint-cap")
-    plus_btn_index = joint_index * 2 + 1  # Each joint has minus (even) and plus (odd)
-    assert len(joint_buttons) > plus_btn_index, (
-        f"Joint {joint_index} + button not found"
-    )
-    btn = joint_buttons[plus_btn_index]
+    # There are 2 buttons per joint (minus and plus); plus are at odd indices.
+    # The element is re-queried for each dispatch: the button re-renders while
+    # the robot moves (pressed style, enabled binding on joint angles), and a
+    # mouseup dispatched on a stale detached node is silently lost, leaving
+    # the jog streaming until something else stops it.
+    plus_btn_index = joint_index * 2 + 1
 
-    dispatch = (
-        "arguments[0].dispatchEvent(new MouseEvent(arguments[1], {bubbles: true}))"
-    )
-    screen.selenium.execute_script(dispatch, btn, "mousedown")
+    def dispatch(event: str) -> None:
+        joint_buttons = screen.selenium.find_elements(By.CSS_SELECTOR, ".joint-cap")
+        assert len(joint_buttons) > plus_btn_index, (
+            f"Joint {joint_index} + button not found"
+        )
+        screen.selenium.execute_script(
+            "arguments[0].dispatchEvent(new MouseEvent(arguments[1], {bubbles: true}))",
+            joint_buttons[plus_btn_index],
+            event,
+        )
+
+    dispatch("mousedown")
     time.sleep(duration_s)
-    screen.selenium.execute_script(dispatch, btn, "mouseup")
+    dispatch("mouseup")
 
 
 # ============================================================================
@@ -279,10 +285,13 @@ class TestEditorInteractivity:
         # and the motion recorder captures the jog on slow platforms)
         jog_joint_briefly(class_screen, joint_index=0, duration_s=0.5)
 
-        # Verify code was added. The insert lands only after wait_motion
-        # settles (settle_window 0.5s, worst case >10s on loaded CI runners).
+        # Verify code was added. The insert lands only after the recorder's
+        # wait_motion(timeout=30.0) resolves — on timeout it records anyway —
+        # so the true ceiling is ~30s (observed 25.7s on a loaded CI runner
+        # during the class's first jog, while SwiftShader still renders the
+        # freshly built scene). Wait past that ceiling, not a guess below it.
         try:
-            new_lines = WebDriverWait(class_screen.selenium, 20).until(
+            new_lines = WebDriverWait(class_screen.selenium, 40).until(
                 LineCountChangedCondition(class_screen, initial_lines)
             )
         except Exception:
