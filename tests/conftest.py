@@ -1,5 +1,6 @@
 """Pytest configuration and shared fixtures for Waldo Commander tests."""
 
+import errno
 import logging
 import os
 import subprocess
@@ -75,10 +76,22 @@ def _patient_storage_clear(self: nicegui_storage.Storage) -> None:
     while True:
         try:
             return _orig_storage_clear(self)
-        except OSError:
-            if time.monotonic() > deadline:
-                raise
-            time.sleep(0.1)
+        except OSError as e:
+            if time.monotonic() <= deadline:
+                time.sleep(0.1)
+                continue
+            # A restart-style test can leave a live storage writer that
+            # repopulates the directory faster than clear() can rmdir it —
+            # no budget wins that race. The per-test isolation is the FILE
+            # deletions (which succeeded); the directory itself is removed
+            # at session end with ignore_errors. Only the empty-dir rmdir
+            # is forgiven — real permission failures still raise.
+            if e.errno == errno.ENOTEMPTY or getattr(e, "winerror", None) == 145:
+                logging.getLogger(__name__).warning(
+                    "storage dir not removable (live writer?): %s", e
+                )
+                return
+            raise
 
 
 nicegui_storage.Storage.clear = _patient_storage_clear
