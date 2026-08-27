@@ -5,12 +5,14 @@ import os
 import subprocess
 import sys
 import asyncio
+import time
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 from nicegui import run as nicegui_run
+from nicegui import storage as nicegui_storage
 from nicegui.testing import general as nicegui_testing_general
 from nicegui.testing.general_fixtures import (
     nicegui_reset_globals,  # noqa: F401 - required by screen fixture
@@ -47,6 +49,36 @@ if not os.environ.get("HEADED") and os.environ.get("DISPLAY", "").startswith(
 
 if TYPE_CHECKING:
     from parol6 import AsyncRobotClient
+
+# NiceGUI's nicegui_reset_globals teardown pops every module that owns a page
+# route from sys.modules — including "__main__", because the user/screen
+# fixtures execute waldo_commander/main.py via runpy under that name. A
+# missing "__main__" breaks multiprocessing's spawn/forkserver worker launch
+# (its preparation data reads sys.modules["__main__"] unguarded), taking the
+# process pool down for the rest of the session on macOS/Windows/Py3.14.
+_MAIN_MODULE = sys.modules["__main__"]
+
+# Windows CI: teardown's Storage.clear() retries a transiently held
+# storage-general.json for only 1s per file (unlink_with_retry) before
+# re-raising PermissionError, and a storage backup on a starved runner can
+# hold the handle longer than that. Retry the whole clear with a patient
+# budget; on POSIX the PermissionError never fires and the wrapper is inert.
+# Removable once the pinned nicegui raises the retry budget upstream.
+_orig_storage_clear = nicegui_storage.Storage.clear
+
+
+def _patient_storage_clear(self: nicegui_storage.Storage) -> None:
+    deadline = time.monotonic() + 15.0
+    while True:
+        try:
+            return _orig_storage_clear(self)
+        except PermissionError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.1)
+
+
+nicegui_storage.Storage.clear = _patient_storage_clear
 
 
 # ============================================================================
@@ -92,9 +124,12 @@ def nicegui_chrome_options():
 
     Differs from NiceGUI's built-in:
     - HEADED=1 env var skips headless (NiceGUI always adds it)
+    - CHROME_BINARY env var points Selenium at a non-PATH Chrome/Chromium
     - GL via ANGLE for WebGL/three.js tests (NiceGUI disables GPU in CI)
     """
     options = _webdriver.ChromeOptions()
+    if chrome_binary := os.environ.get("CHROME_BINARY"):
+        options.binary_location = chrome_binary
     options.add_argument("disable-dev-shm-usage")
     options.add_argument("disable-search-engine-choice-screen")
     options.add_argument("no-sandbox")
@@ -213,6 +248,8 @@ def class_driver(
     import shutil
 
     options = _webdriver.ChromeOptions()
+    if chrome_binary := os.environ.get("CHROME_BINARY"):
+        options.binary_location = chrome_binary
     if not os.environ.get("HEADED"):
         options.add_argument("headless=new")
     options.add_argument("disable-search-engine-choice-screen")
@@ -359,12 +396,14 @@ def reset_editor_singletons(
 def restore_process_pool_after_nicegui_fixtures(
     request: pytest.FixtureRequest,
 ) -> Generator[None, None, None]:
-    """Re-setup process pool after tests using NiceGUI's user or screen fixtures.
+    """Repair interpreter state after tests using NiceGUI's user or screen fixtures.
 
-    These fixtures use nicegui_reset_globals which calls run.reset(),
-    clearing the process pool. This fixture re-sets it up after such tests.
+    Their nicegui_reset_globals teardown calls run.reset() (clearing the
+    process pool) and pops "__main__" from sys.modules (breaking any later
+    multiprocessing spawn/forkserver launch). Restore both.
     """
     yield
+    sys.modules.setdefault("__main__", _MAIN_MODULE)
     # Re-setup if this test used user or screen fixture (not class_screen, which handles it)
     uses_nicegui_fixture = "user" in request.fixturenames or (
         "screen" in request.fixturenames and "class_screen" not in request.fixturenames

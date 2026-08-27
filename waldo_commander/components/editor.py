@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import waldoctl
 from nicegui import Client, context, ui
-from waldoctl import EditId, Program
+from waldoctl import EditId, Program, ProgramTarget
 
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import default_program_dir
@@ -20,6 +20,7 @@ from waldo_commander.services.programs import (
 )
 from waldo_commander.services import edit_decisions
 from waldo_commander.services.control_lease import control_mode
+from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.state import (
     simulation_state,
     ui_state,
@@ -62,6 +63,8 @@ class EditorPanel(FileOperationsMixin):
         # buttons (which would mutate the source under the diff).
         self._edit_review_row: ui.row | None = None
         self._toolbar_btns: list[ui.button] = []
+        # (from_line, to_line) of a ranged editor selection, None for a bare cursor.
+        self._cursor_selection: tuple[int, int] | None = None
         # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
         self._tab_widgets: dict[str, dict] = {}
         # tab_id -> pending edit-id .values already seen, so a *newly* proposed
@@ -226,6 +229,130 @@ class EditorPanel(FileOperationsMixin):
                 "Sync failed: Could not find coordinate list in line: %s", line
             )
 
+    # Single-pose targets only: multi-pose lines (move_c via+end) can't be
+    # re-taught from one pose — sync would overwrite just the first bracket.
+    _RETEACHABLE_MOVE_TYPES = ("joints", "cartesian", "pose")
+    # sync_code_from_target rewrites only the bracketed list and keeps every
+    # kwarg — absolute current-position values under rel=/frame=/pose=
+    # semantics would corrupt the move (e.g. a 250mm relative lunge).
+    _RETEACH_KWARG_RE = re.compile(r"\b(?:rel|frame|pose)\s*=")
+    _CAPTURE_TIP_INSERT = "Capture pose: insert a move at the current robot position"
+    _CAPTURE_TIP_RETEACH = "Capture pose: re-teach this step in place"
+    _CAPTURE_TIP_BLOCKED = (
+        "Capture pose: this step uses rel=, frame=, or pose= — inserts instead"
+    )
+    _CAPTURE_TIP_REPLACE = "Capture pose: replace the selected lines with one move"
+
+    def _reteach_state(self) -> tuple[ProgramTarget | None, bool]:
+        """(target, blocked) for the cursor line; blocked means a target sits
+        there but its kwargs make a bracket rewrite unsafe.
+
+        The target's live line anchor must still sit on the cursor line:
+        after an edit, targets keep sim-time line numbers until the debounced
+        re-sim, while sync_code_from_target writes at the tracked anchor —
+        without this check a click could rewrite a line the cursor isn't on.
+        """
+        tab = waldoctl.commander.programs.active
+        textarea = ui_state.active_textarea
+        if tab is None or textarea is None:
+            return None, False
+        line = tab.dry_run.playback.active_cursor_line
+        if line <= 0:
+            return None, False
+        anchors = textarea.line_anchors
+        for t in tab.dry_run.targets:
+            if (
+                t.line_number == line
+                and t.move_type in self._RETEACHABLE_MOVE_TYPES
+                and anchors.get(t.id) == line
+            ):
+                lines = str(textarea.value or "").split("\n")
+                text = lines[line - 1] if line <= len(lines) else ""
+                if self._RETEACH_KWARG_RE.search(text):
+                    return None, True
+                return t, False
+        return None, False
+
+    def _target_at_cursor(self) -> ProgramTarget | None:
+        """Re-teachable dry-run target whose line the editor cursor is on."""
+        return self._reteach_state()[0]
+
+    def capture_pose_at_cursor(self) -> None:
+        """Stamp the robot's current position into the program at the cursor.
+
+        A ranged selection is replaced wholesale by one move line; a bare
+        cursor on a re-teachable move rewrites that step in place (kwargs
+        kept); anywhere else the move is inserted as a new line.
+        """
+        span = self._cursor_selection
+        if span is not None:
+            self._replace_lines_with_pose(*span)
+            return
+        if self._target_at_cursor() is not None:
+            self._reteach_at_cursor()
+            return
+        motion_recorder.capture_current_pose()
+
+    def _replace_lines_with_pose(self, from_line: int, to_line: int) -> None:
+        textarea = ui_state.active_textarea
+        if textarea is None:
+            return
+        lines = str(textarea.value or "").split("\n")
+        if not 1 <= from_line <= to_line <= len(lines):
+            return
+        lines[from_line - 1 : to_line] = [motion_recorder.current_pose_snippet()]
+        textarea.set_value("\n".join(lines))
+
+    def _update_capture_button(self) -> None:
+        tip = ui_state.capture_pose_tooltip
+        if tip is None or tip.is_deleted:
+            return
+        if self._cursor_selection is not None:
+            tip.set_text(self._CAPTURE_TIP_REPLACE)
+            return
+        target, blocked = self._reteach_state()
+        if target is not None:
+            tip.set_text(self._CAPTURE_TIP_RETEACH)
+        elif blocked:
+            tip.set_text(self._CAPTURE_TIP_BLOCKED)
+        else:
+            tip.set_text(self._CAPTURE_TIP_INSERT)
+
+    def _reteach_at_cursor(self) -> None:
+        """Overwrite the move at the cursor with the robot's current position.
+
+        move_j lines get the current joint angles; move_l lines get the
+        current WRF pose — passing a pose against a joint-angle list (or vice
+        versa) would corrupt the line.
+        """
+        target = self._target_at_cursor()
+        if target is None:
+            return
+        n = ui_state.active_robot.joints.count
+        angles = list(waldoctl.commander.status.joints.angles.deg[:n])
+        if len(angles) < n:
+            # No status frames yet — overwriting would replace the taught
+            # values with zeros (pose) or a truncated list (joints).
+            return
+        if target.move_type == "joints":
+            self.sync_code_from_target(
+                target.id, target.pose, move_type="joints", joint_angles_deg=angles
+            )
+        else:
+            pose = waldoctl.commander.status.pose
+            # sync_code_from_target expects scene units (m); status pose is mm.
+            self.sync_code_from_target(
+                target.id,
+                [
+                    pose.x / 1000.0,
+                    pose.y / 1000.0,
+                    pose.z / 1000.0,
+                    pose.rx,
+                    pose.ry,
+                    pose.rz,
+                ],
+            )
+
     def delete_target_code(self, target_id: str) -> None:
         """Delete the code line corresponding to the target and re-simulate.
 
@@ -348,6 +475,9 @@ class EditorPanel(FileOperationsMixin):
         during ``build()``. Idempotent: safe to call from both
         ``_on_disconnect`` and ``_on_shutdown``."""
         waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
+        simulation_state.remove_change_listener(self._update_capture_button)
+        ui_state.capture_pose_tooltip = None
+        self._cursor_selection = None
         # Edit listeners live on the process-global tab.edits notifier; drop
         # them so closures don't accumulate across page (re)builds.
         for tab_id in list(self._tab_widgets):
@@ -521,6 +651,7 @@ class EditorPanel(FileOperationsMixin):
         # needed on tab switch beyond resetting playback's per-tab scratch.
         waldoctl.commander.programs.switch(tab_id)
         tab.dry_run.playback.active_cursor_line = 0
+        self._update_capture_button()
 
         if self.tab_panels_container:
             self.tab_panels_container.set_value(tab_id)
@@ -675,6 +806,10 @@ class EditorPanel(FileOperationsMixin):
             self._tab_widgets[tab.id]["textarea"] = textarea
             ui_state.textareas_by_tab[tab.id] = textarea
 
+            # Re-teach enablement needs the live anchor mirror, which the
+            # browser echoes only after the sim-completion notify has fired.
+            textarea.on_anchor_change(lambda _e: self._update_capture_button())
+
             # Subscribe to LLM-edit lifecycle so the banner + diff overlay
             # rebuild whenever propose / approve / reject fires.
             self._subscribe_to_edits(tab)
@@ -715,7 +850,7 @@ class EditorPanel(FileOperationsMixin):
         if not new_ids:
             return
         client = self._client
-        if client is None or client._deleted:
+        if client is None or client.is_deleted:
             return
         with client:
             # Flash always (every mode) so an incoming edit is noticed, including
@@ -734,7 +869,7 @@ class EditorPanel(FileOperationsMixin):
         mode switches to an auto-applying one, so edits proposed under Inspect
         don't keep waiting for a click. Flashes like a fresh proposal."""
         client = self._client
-        if client is None or client._deleted:
+        if client is None or client.is_deleted:
             return
         with client:
             for tab in list(waldoctl.commander.programs.items):
@@ -853,7 +988,7 @@ class EditorPanel(FileOperationsMixin):
         nested same-client entry during a GUI call is harmless.
         """
         client = self._client
-        if client is None or client._deleted:
+        if client is None or client.is_deleted:
             if client is not None:
                 # The page is gone — stop listening so we don't touch dead UI.
                 waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
@@ -883,6 +1018,7 @@ class EditorPanel(FileOperationsMixin):
                 ui_state.active_textarea = widgets.get("textarea")
                 ui_state.active_filename_input = widgets.get("filename_input")
                 self._refresh_edits_banner(active_id)
+            self._update_capture_button()
 
     def _on_editor_focus(self, tab: Program, e) -> None:
         if e.focused:
@@ -901,6 +1037,8 @@ class EditorPanel(FileOperationsMixin):
         if tab.id not in self._focused_tab_ids:
             return
         tab.dry_run.playback.active_cursor_line = e.line
+        self._cursor_selection = None if e.empty else (e.from_line, e.to_line)
+        self._update_capture_button()
         if ui_state.urdf_scene and waldoctl.commander.settings.view.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
 
@@ -1054,6 +1192,9 @@ class EditorPanel(FileOperationsMixin):
         # lifetime — whoever makes them (a GUI button or an MCP programs.* tool).
         # add_change_listener dedups, and cleanup() drops it on disconnect.
         waldoctl.commander.programs.add_change_listener(self._reconcile_tabs)
+        # Re-teach enablement tracks dry-run results, which refresh through
+        # this channel (sim completion, tab switch).
+        simulation_state.add_change_listener(self._update_capture_button)
 
         # Restore tabs from existing state (page refresh) or create initial tab
         if waldoctl.commander.programs.items:

@@ -31,7 +31,7 @@ def _page_client():
     sense with the GUI open)."""
     cid = ui_state.active_client_id
     client = Client.instances.get(cid) if cid else None
-    if client is None or client._deleted:
+    if client is None or client.is_deleted:
         raise RuntimeError(
             "no active Waldo-Commander page is connected; open the GUI first"
         )
