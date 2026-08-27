@@ -1901,23 +1901,23 @@ async def _status_consumer() -> None:
                         coll.pairs = list(status.collision_pairs)
 
                     # v0.8.0 status surface (torques, controller state,
-                    # warnings, link health, homing, clearance). Guarded
-                    # per-field: a pre-v0.8.0 backend's buffer simply lacks
-                    # them and the sub-objects keep their defaults.
-                    tau = getattr(status, "tau", None)
-                    if tau is not None and (
+                    # warnings, link health, homing). Guarded per-field: a
+                    # pre-v0.8.0 backend's buffer simply lacks them and the
+                    # sub-objects keep their defaults.
+                    torques = getattr(status, "torques", None)
+                    if torques is not None and (
                         torques_shadow is None
-                        or not arrays_equal_n(tau, torques_shadow)
+                        or not arrays_equal_n(torques, torques_shadow)
                     ):
-                        joints.torques = [float(v) for v in tau]
-                        torques_shadow = tau.copy()
-                    tau_ext = getattr(status, "tau_ext", None)
-                    if tau_ext is not None and (
+                        joints.torques = [float(v) for v in torques]
+                        torques_shadow = torques.copy()
+                    torques_ext = getattr(status, "torques_ext", None)
+                    if torques_ext is not None and (
                         torques_ext_shadow is None
-                        or not arrays_equal_n(tau_ext, torques_ext_shadow)
+                        or not arrays_equal_n(torques_ext, torques_ext_shadow)
                     ):
-                        joints.torques_ext = [float(v) for v in tau_ext]
-                        torques_ext_shadow = tau_ext.copy()
+                        joints.torques_ext = [float(v) for v in torques_ext]
+                        torques_ext_shadow = torques_ext.copy()
 
                     # Controller state chip: mode name is the backend enum's
                     # name (vendor-neutral for display). Skipped, never
@@ -1983,10 +1983,6 @@ async def _status_consumer() -> None:
                                 for state, phase in homing_key[2]
                             ]
 
-                    if hasattr(status, "min_clearance_m"):
-                        clearance = status.min_clearance_m
-                        if st.min_clearance_m != clearance:
-                            st.min_clearance_m = clearance
 
                     # Collision-world epoch moved (first frame after connect,
                     # a program's set_shapes, another client, a restart) —

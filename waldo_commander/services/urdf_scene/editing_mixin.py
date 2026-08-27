@@ -352,8 +352,12 @@ class EditingMixin:
                 float(ground_point.z),
             )
 
+        shape_name = self._shape_hit_name(hits)
+
         with self.context_menu:
-            if target_id:
+            if shape_name and not target_id:
+                self._populate_shape_menu(shape_name)
+            elif target_id:
                 target = self._find_target_by_id(target_id)
                 if target:
                     ui.item(f"Target (Line {target.line_number})").classes(
@@ -393,6 +397,7 @@ class EditingMixin:
                             use_click_position=True
                         ),
                     )
+                self._populate_shape_add_menu(self._last_click_coords or (0.3, 0.0, 0.0))
 
     def _is_envelope_hit(self, object_name: str) -> bool:
         """Check if object is the workspace envelope."""
@@ -538,6 +543,8 @@ class EditingMixin:
         if e.key == "Escape" and e.action.keydown:
             if self._editing_unified_target:
                 self._end_editing_session()
+            if getattr(self, "_shape_move_active", None):
+                self._end_shape_move()
 
     # -------------------------------------------------------------------------
     # Edit bar UI

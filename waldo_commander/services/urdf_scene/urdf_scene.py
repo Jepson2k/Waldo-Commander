@@ -50,6 +50,7 @@ from .loader import (
     normalize_axis,
 )
 from .editing_mixin import EditingMixin
+from .shape_editing_mixin import ShapeEditingMixin
 from .tcp_controls_mixin import TCPControlsMixin
 from .envelope_renderer import EnvelopeRenderer
 from .path_renderer import PathRenderer
@@ -200,6 +201,7 @@ def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
 
 class UrdfScene(
     EditingMixin,
+    ShapeEditingMixin,
     TCPControlsMixin,
     EnvelopeRenderer,
 ):
@@ -336,6 +338,7 @@ class UrdfScene(
         self._scene_wrapper: Any | None = None  # hosts positioned overlays
 
         self._init_editing_state()
+        self._init_shape_editing()
         self._init_tcp_controls_state()
         self._init_envelope_state()
         self.path_renderer = PathRenderer()
@@ -537,6 +540,10 @@ class UrdfScene(
 
         # Joint rings are handled by the continuous handler.
         if object_name.startswith("ghost_ring_group:"):
+            return
+
+        if object_name.startswith("shape:"):
+            self._on_shape_transform(e)
             return
 
         if object_name.startswith("targetgroup:"):
