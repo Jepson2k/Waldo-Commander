@@ -61,9 +61,12 @@ _MAIN_MODULE = sys.modules["__main__"]
 # Windows CI: teardown's Storage.clear() retries a transiently held
 # storage-general.json for only 1s per file (unlink_with_retry) before
 # re-raising PermissionError, and a storage backup on a starved runner can
-# hold the handle longer than that. Retry the whole clear with a patient
-# budget; on POSIX the PermissionError never fires and the wrapper is inert.
-# Removable once the pinned nicegui raises the retry budget upstream.
+# hold the handle longer than that. clear() also suppresses an unlink of an
+# in-flight .json.tmp backup and then rmdir()s the directory, which raises
+# WinError 145 (directory not empty) — an OSError that is not a
+# PermissionError. Retry the whole clear on any OSError with a patient
+# budget; on POSIX neither fires and the wrapper is inert. Removable once
+# the pinned nicegui handles both upstream.
 _orig_storage_clear = nicegui_storage.Storage.clear
 
 
@@ -72,7 +75,7 @@ def _patient_storage_clear(self: nicegui_storage.Storage) -> None:
     while True:
         try:
             return _orig_storage_clear(self)
-        except PermissionError:
+        except OSError:
             if time.monotonic() > deadline:
                 raise
             time.sleep(0.1)
