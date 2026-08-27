@@ -1428,6 +1428,46 @@ class ControlPanel:
             on_release=on_release,
         )
 
+    def _joint_jog_allowed(self, j: int, direction: str) -> bool:
+        """Mirror of both joint-button disable mechanisms: the enabled binding
+        (one more step must fit) and the can_jog strong-disable. A held jog
+        must not outlive either."""
+        angles = waldoctl.commander.status.joints.angles.deg
+        if len(angles) <= j:
+            return False
+        step = abs(float(waldoctl.commander.settings.jog.joint_step_deg))
+        lo, hi = self._get_joint_limits(j)
+        if direction == "pos":
+            if angles[j] + step > hi:
+                return False
+            can = waldoctl.commander.status.joints.can_jog_pos
+        else:
+            if angles[j] - step < lo:
+                return False
+            can = waldoctl.commander.status.joints.can_jog_neg
+        return not (j < len(can) and not can[j])
+
+    def _release_joint_jog(self, j: int, direction: str) -> None:
+        """Server-side release for a held jog whose button disabled mid-hold.
+
+        A disabled button cannot deliver its release: NiceGUI drops events
+        from elements disabled via the enabled binding, and the strong-disable
+        class sets pointer-events:none so the browser never even sends the
+        mouseup. A mouse is saved by that firing mouseleave; touch input has
+        no such event, so without this the stream would renew forever.
+        """
+        assert self._joint_click_hold is not None
+        self._joint_click_hold.cancel_key((j, direction))
+        self._schedule_jog_end_wait()
+        if direction == "pos":
+            self._jog_pressed_pos[j] = False
+            self._apply_pressed_style(self._joint_right_btns.get(j), False)
+        else:
+            self._jog_pressed_neg[j] = False
+            self._apply_pressed_style(self._joint_left_btns.get(j), False)
+        any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
+        ui_state.joint_jog_timer.active = bool(any_pressed)
+
     async def jog_tick(self) -> None:
         """Timer callback: send/update joint streaming jog if any button is pressed."""
         with global_phase_timer.phase("jog"):
@@ -1438,6 +1478,9 @@ class ControlPanel:
             intent = self._get_first_pressed_joint()
             if intent is not None:
                 j, d = intent
+                if not self._joint_jog_allowed(j, d):
+                    self._release_joint_jog(j, d)
+                    return
                 signed_speed = speed if d == "pos" else -speed
                 await self.client.jog_j(
                     j,
@@ -1468,18 +1511,7 @@ class ControlPanel:
         else:
             self._schedule_jog_end_wait()
 
-        # Check enablement: translation uses the selected frame, rotation uses TRF
-        frames = ui_state.active_robot.cartesian_frames
-        allowed = True
-        if axis in _AXIS_ORDER:
-            idx = _AXIS_ORDER.index(axis)
-            frame = frames[1] if idx >= 6 else self._translation_frame_name()
-            frame_av = waldoctl.commander.status.pose.cart_jog.by_frame.get(frame)
-            if frame_av is not None:
-                axis_idx = idx // 2
-                lst = frame_av.can_jog_pos if idx % 2 == 0 else frame_av.can_jog_neg
-                if axis_idx < len(lst):
-                    allowed = bool(lst[axis_idx])
+        allowed = self._cart_axis_allowed(axis)
         self._set_strong_disabled(self._cart_axis_imgs.get(axis), not allowed)
         if is_pressed and not allowed:
             return
@@ -1508,6 +1540,7 @@ class ControlPanel:
                 rel_pose = [0.0] * 6
                 if axis_letter in _AXIS_MAP:
                     rel_pose[_AXIS_MAP[axis_letter]] = direction * step
+                    frames = ui_state.active_robot.cartesian_frames
                     frame = frames[1] if is_rotation else self._translation_frame_name()
                     await self.client.move_l(
                         rel_pose,
@@ -1538,6 +1571,36 @@ class ControlPanel:
             on_hold_start=on_hold_start,
             on_release=on_release,
         )
+
+    def _cart_axis_allowed(self, axis: str) -> bool:
+        """Enablement for one cart axis: translation uses the selected frame,
+        rotation uses TRF. Missing availability data counts as allowed."""
+        if axis not in _AXIS_ORDER:
+            return True
+        frames = ui_state.active_robot.cartesian_frames
+        idx = _AXIS_ORDER.index(axis)
+        frame = frames[1] if idx >= 6 else self._translation_frame_name()
+        frame_av = waldoctl.commander.status.pose.cart_jog.by_frame.get(frame)
+        if frame_av is None:
+            return True
+        axis_idx = idx // 2
+        lst = frame_av.can_jog_pos if idx % 2 == 0 else frame_av.can_jog_neg
+        if axis_idx < len(lst):
+            return bool(lst[axis_idx])
+        return True
+
+    def _release_cart_jog(self, axis: str) -> None:
+        """Server-side release for a held cart jog whose pad disabled mid-hold
+        (see _release_joint_jog: the strong-disable's pointer-events:none eats
+        the mouseup for touch input)."""
+        assert self._cart_click_hold is not None
+        self._cart_click_hold.cancel_key(axis)
+        self._schedule_jog_end_wait()
+        self._cart_pressed_axes[axis] = False
+        self._apply_pressed_style(self._cart_axis_imgs.get(axis), False)
+        t = ui_state.cart_jog_timer
+        if t:
+            t.active = any(bool(v) for v in self._cart_pressed_axes.values())
 
     async def cart_jog_tick(self) -> None:
         """Timer callback: unified movement timer for TransformControls drag or cartesian jog."""
@@ -1595,6 +1658,9 @@ class ControlPanel:
 
             # Priority 2: cart jog buttons (streamed)
             axis = self._get_first_pressed_axis()
+            if axis is not None and not self._cart_axis_allowed(axis):
+                self._release_cart_jog(axis)
+                axis = None
             if axis is not None:
                 axis_name, direction, frame = self._get_cart_axis_lookup()[axis]
                 await self.client.jog_l(

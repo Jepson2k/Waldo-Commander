@@ -164,10 +164,12 @@ def configure_logging(
         ui_handler = NiceGuiLogHandler(level=level)
         logger.addHandler(ui_handler)
 
-    # Silence verbose third-party loggers. At INFO and above, push noisy
-    # libraries up to WARNING so a clean startup stays quiet; honor DEBUG
-    # by leaving them at the requested level.
-    quiet_level = max(level, logging.WARNING) if level >= logging.INFO else level
+    # Silence verbose third-party loggers unconditionally. Log lines are
+    # forwarded to the webpage (NiceGuiLogHandler), so third-party DEBUG
+    # floods (e.g. toppra's per-sample forward-pass lines) drastically slow
+    # the UI and tests. Debugging one of these libraries requires a manual
+    # setLevel override.
+    quiet_level = max(level, logging.WARNING)
     for name in (
         "numba",
         "numba.core",
