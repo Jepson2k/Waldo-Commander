@@ -279,9 +279,10 @@ class TestEditorInteractivity:
         # and the motion recorder captures the jog on slow platforms)
         jog_joint_briefly(class_screen, joint_index=0, duration_s=0.5)
 
-        # Verify code was added using WebDriverWait
+        # Verify code was added. The insert lands only after wait_motion
+        # settles (settle_window 0.5s, worst case >10s on loaded CI runners).
         try:
-            new_lines = WebDriverWait(class_screen.selenium, 3).until(
+            new_lines = WebDriverWait(class_screen.selenium, 20).until(
                 LineCountChangedCondition(class_screen, initial_lines)
             )
         except Exception:
