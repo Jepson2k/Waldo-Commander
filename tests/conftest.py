@@ -25,8 +25,6 @@ from nicegui.testing.screen_plugin import (
     pytest_runtest_makereport,  # noqa: F401
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
-from nicegui.app.app_config import AppConfig as _NiceguiAppConfig
-
 import waldoctl
 from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
@@ -48,42 +46,6 @@ if not os.environ.get("HEADED") and os.environ.get("DISPLAY", "").startswith(
     "localhost:"
 ):
     os.environ.pop("DISPLAY", None)
-
-# NiceGUI reads core.app.config run-config slots (reconnect_timeout,
-# message_history_length, binding_refresh_interval, …) from always-on loops
-# like the outbox and binding refresher. AppConfig declares those slots but
-# only ui.run()'s add_run_config fills them, and the test fixtures swap in a
-# bare AppConfig between tests — in that window every read raises
-# AttributeError, the outbox stops delivering, and the running test hangs
-# until pytest-timeout kills the whole session (seen as an AttributeError
-# log flood on Windows CI). Pre-fill every run-config slot with ui.run()'s
-# defaults at construction; _has_run_config stays False, so the real
-# add_run_config still applies the actual run parameters unchanged.
-_appconfig_init = _NiceguiAppConfig.__init__
-
-
-def _appconfig_init_with_run_defaults(self: _NiceguiAppConfig, *args, **kwargs) -> None:
-    _appconfig_init(self, *args, **kwargs)
-    self.reload = False
-    self.title = "NiceGUI"
-    self.viewport = "width=device-width, initial-scale=1"
-    self.favicon = None
-    self.dark = False
-    self.language = None
-    self.binding_refresh_interval = 0.1
-    self.reconnect_timeout = 3.0
-    self.message_history_length = 1000
-    self.cache_control_directives = (
-        "public, max-age=31536000, immutable, stale-while-revalidate=31536000"
-    )
-    self.tailwind = True
-    self.unocss = None
-    self.prod_js = True
-    self.show_welcome_message = False
-    self.markdown = False
-
-
-_NiceguiAppConfig.__init__ = _appconfig_init_with_run_defaults
 
 if TYPE_CHECKING:
     from parol6 import AsyncRobotClient
