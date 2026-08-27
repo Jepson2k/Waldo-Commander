@@ -525,6 +525,50 @@ def restore_process_pool_after_nicegui_fixtures(
         nicegui_run.setup()
 
 
+def _pinned_nicegui_sha() -> str | None:
+    """Full commit SHA the vendored nicegui fork is pinned to, if pinned by SHA."""
+    import re
+    import tomllib
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    for dep in data.get("project", {}).get("dependencies", []):
+        if isinstance(dep, str) and dep.startswith("nicegui @"):
+            match = re.search(r"@([0-9a-f]{40})\s*$", dep)
+            return match.group(1) if match else None
+    return None
+
+
+def _check_nicegui_pin() -> None:
+    """Fail the session when the installed nicegui is not the pinned combo.
+
+    A drifted venv fails as if the app were broken — a combo without a given
+    CodeMirror event field, say, surfaces as a stale widget rather than an
+    import error — so the mismatch is reported up front instead.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    sha = _pinned_nicegui_sha()
+    if sha is None:
+        return
+    try:
+        installed = version("nicegui")
+    except PackageNotFoundError:
+        return
+    # setuptools-scm encodes the source commit as a local-version suffix.
+    if sha[:8] in installed:
+        return
+    raise pytest.UsageError(
+        f"installed nicegui {installed} does not match the SHA pinned in "
+        f"pyproject.toml ({sha[:8]}). Reinstall it with:\n"
+        f"  pip install 'nicegui @ git+https://github.com/Jepson2k/nicegui.git@{sha}'"
+    )
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers and run the screen plugin's configure hook
     (the screen fixtures are imported, not plugin-registered, so Screen.PORT /
@@ -534,6 +578,7 @@ def pytest_configure(config: pytest.Config) -> None:
     # keeps signal so a hung test fails with a stack, not a killed session.
     if sys.platform == "win32":
         config.option.timeout_method = "thread"
+    _check_nicegui_pin()
     nicegui_screen_plugin.pytest_configure(config)
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"
