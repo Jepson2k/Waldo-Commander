@@ -15,7 +15,11 @@ import pytest
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 
-from tests.helpers.browser_helpers import click_tab, wait_for_codemirror_ready
+from tests.helpers.browser_helpers import (
+    click_tab,
+    ensure_robot_homed,
+    wait_for_codemirror_ready,
+)
 from tests.helpers.programs import clear_all_programs
 from tests.helpers.wait import screen_wait_for_scene_ready
 
@@ -74,12 +78,16 @@ def set_editor_content(screen: "Screen", content: str) -> None:
 
 
 def move_cursor_to_line(screen: "Screen", line_number: int) -> None:
-    """Move CodeMirror cursor to a specific 1-indexed line."""
+    """Move CodeMirror cursor to a specific 1-indexed line.
+
+    Focuses the editor first, like a user click would — unfocused selection
+    events are ignored by the server's cursor tracking."""
     screen.selenium.execute_script(
         """
         const cm = document.querySelector('.cm-content');
         if (!cm || !cm.cmView || !cm.cmView.view) return;
         const view = cm.cmView.view;
+        view.focus();
         const line = view.state.doc.line(arguments[0]);
         view.dispatch({
             selection: {anchor: line.from},
@@ -202,6 +210,9 @@ class TestEditorVisualization:
         screen_wait_for_scene_ready(class_screen)
         click_tab(class_screen, "program")
         wait_for_codemirror_ready(class_screen)
+        # The preview refuses planned motion while unhomed — home first
+        # instead of depending on an earlier test having done it.
+        ensure_robot_homed()
 
         # Snapshot current path colors before changing content — the new
         # simulation must produce a DIFFERENT set before we consider it stable.

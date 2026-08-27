@@ -15,7 +15,10 @@ if (!el) return null;
 const c = getElement(el);
 if (!c || !c.objects) return null;
 for (const o of c.objects.values()) {
-  if (o.name === arguments[0]) return o.material ? o.material.color.getHexString() : 'nomaterial';
+  const mesh = o.mesh;
+  if (mesh && mesh.name === arguments[0]) {
+    return mesh.material ? mesh.material.color.getHexString() : 'nomaterial';
+  }
 }
 return 'missing';
 """

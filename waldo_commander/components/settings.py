@@ -16,7 +16,7 @@ from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
-from waldo_commander.state import simulation_state, ui_state
+from waldo_commander.state import automation_state, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,9 @@ class SettingsContent:
             ),
             "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
             "motion_profile": stored_profile,
+            "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
+            "jog_invert_x": bool(ng_app.storage.general.get("jog_invert_x", False)),
+            "jog_invert_y": bool(ng_app.storage.general.get("jog_invert_y", False)),
         }
 
     def _refresh_serial_ports(self) -> None:
@@ -651,26 +654,125 @@ class SettingsContent:
                 "dense"
             ).on("change", _on_port_change).mark("settings-mcp-port")
 
-    def _build_reference_frames(self) -> None:
+    def _build_automation(self) -> None:
+        """Hardware I/O automation: cycle-start input and at-home output."""
+
+        def _on_cycle_start_change(e):
+            val = bool(e.value)
+            automation_state.cycle_start_enabled = val
+            ng_app.storage.general["automation/cycle_start"] = val
+
+        with _setting_row(
+            "Start program on Input 1",
+            "Rising edge runs the active program (robot homed, e-stop clear, "
+            "nothing already running)",
+        ):
+            ui.switch(
+                value=automation_state.cycle_start_enabled,
+                on_change=_on_cycle_start_change,
+            ).props("dense").mark("switch-cycle-start")
+
+        def _on_home_output_change(e):
+            val = bool(e.value)
+            automation_state.home_output_enabled = val
+            ng_app.storage.general["automation/home_output"] = val
+
+        with _setting_row(
+            "Home position output",
+            "Output 2 turns on while all joints are within tolerance of the "
+            "home/standby pose",
+        ):
+            ui.switch(
+                value=automation_state.home_output_enabled,
+                on_change=_on_home_output_change,
+            ).props("dense").mark("switch-home-output")
+
+        def _on_tolerance_change(e):
+            try:
+                tol = float(e.value)
+            except (TypeError, ValueError):
+                return
+            if not (0.1 <= tol <= 45.0):
+                return
+            automation_state.home_tolerance_deg = tol
+            ng_app.storage.general["automation/home_tolerance_deg"] = tol
+
+        with _setting_row(
+            "Home tolerance (deg)", "Joint distance from home treated as at-home"
+        ):
+            ui.number(
+                value=automation_state.home_tolerance_deg,
+                min=0.1,
+                max=45,
+                step=0.1,
+                on_change=_on_tolerance_change,
+            ).classes("w-24").props("dense").mark("input-home-tolerance")
+
+    def _build_reference_frames(self, prefs: dict) -> None:
+        cp = ui_state.control_panel
+        frames = ui_state.active_robot.cartesian_frames
+        trf_available = (
+            len(frames) > 1
+            and waldoctl.commander.status.pose.cart_jog.by_frame.get(frames[1])
+            is not None
+        )
+        value = prefs["translation_frame"]
+        if value == "TRF" and not trf_available:
+            value = "WRF"
+
+        def _on_translation_frame_change(e):
+            cp.set_translation_frame(e.value)
+            ng_app.storage.general["translation_frame"] = e.value
+
         with _setting_row("Translation RF", "Reference frame for translation moves"):
-            with ui.element("span").tooltip(
-                "Mode is currently locked but will be configurable in a future update"
-            ):
+            sel = (
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
-                    value="WRF",
-                ).classes("w-24").props("dense disable")
+                    value=value,
+                    on_change=_on_translation_frame_change,
+                )
+                .classes("w-24")
+                .props("dense")
+                .mark("select-translation-frame")
+            )
+            if not trf_available:
+                sel.props("disable").tooltip(
+                    "Tool-frame jogging is unavailable for this robot"
+                )
 
         ui.separator().classes("my-1")
 
         with _setting_row("Rotation RF", "Reference frame for rotation moves"):
-            with ui.element("span").tooltip(
-                "Mode is currently locked but will be configurable in a future update"
-            ):
+            with ui.element("span").tooltip("Rotation always jogs in the tool frame"):
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
                     value="TRF",
                 ).classes("w-24").props("dense disable")
+
+    def _build_jog_inversion(self, prefs: dict) -> None:
+        cp = ui_state.control_panel
+
+        def _on_invert_x(e):
+            val = bool(e.value)
+            cp.set_jog_inversion(invert_x=val)
+            ng_app.storage.general["jog_invert_x"] = val
+
+        def _on_invert_y(e):
+            val = bool(e.value)
+            cp.set_jog_inversion(invert_y=val)
+            ng_app.storage.general["jog_invert_y"] = val
+
+        with _setting_row("Invert X Jog", "Flip the X jog direction (arrows and A/D)"):
+            ui.switch(value=prefs["jog_invert_x"], on_change=_on_invert_x).props(
+                "dense"
+            ).mark("switch-invert-x")
+
+        ui.separator().classes("my-1")
+
+        with _setting_row("Invert Y Jog", "Flip the Y jog direction (arrows and W/S)"):
+            ui.switch(value=prefs["jog_invert_y"], on_change=_on_invert_y).props(
+                "dense"
+            ).mark("switch-invert-y")
 
     # ── Main entry point ─────────────────────────────────────────────
 
@@ -692,11 +794,13 @@ class SettingsContent:
             self._build_camera,
             lambda: self._build_motion_profile(prefs),
             lambda: self._build_theme(prefs),
-            self._build_reference_frames,
+            lambda: self._build_reference_frames(prefs),
+            lambda: self._build_jog_inversion(prefs),
             self._build_backend_selector,
             self._build_plugin_panels,
             *([ai_control_section] if ai_control_section else []),
             self._build_mcp_server,
+            self._build_automation,
         ]
 
         for i, section in enumerate(sections):

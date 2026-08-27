@@ -9,6 +9,7 @@ from tests.helpers.wait import (
     wait_for_app_ready,
     enable_sim,
     ensure_robot_ready_for_motion,
+    teleport_to_jog_pose,
     wait_for_motion_stable,
     wait_for_motion_start,
 )
@@ -29,6 +30,10 @@ async def test_joint_at_limit_disables_direction(user: User) -> None:
     await wait_for_app_ready()
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
+    # A prior test can leave J1 parked at its max limit; the limit-move is
+    # then a no-op and wait_for_motion_start times out. Start from a known
+    # pose so the move is real.
+    await teleport_to_jog_pose(ui_state.control_panel.client)
 
     # Get J1 limits
     j1_min, j1_max = JOINT_LIMITS_DEG[0]
@@ -67,10 +72,13 @@ async def test_cartesian_at_workspace_limit_disables_axis(
     When the robot TCP approaches the edge of the reachable workspace,
     certain cartesian directions should become disabled.
     """
+    from waldo_commander.state import ui_state
+
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
+    await teleport_to_jog_pose(ui_state.control_panel.client)
 
     # Extend the arm by moving J2 to its limit (stretches arm outward)
     # This quickly reaches the cartesian workspace boundary

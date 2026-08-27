@@ -72,3 +72,53 @@ def test_preview_mirrors_unhomed_motion_gate():
     assert homed_first["error"] is None, (
         f"the first move after home() must preview cleanly: {homed_first['error']!r}"
     )
+
+
+def test_insert_below_line_matches_indentation():
+    """At-cursor inserts inherit the anchor line's indentation — one level
+    deeper below a block opener — so they can't split an indented suite."""
+    from waldo_commander.services.programs import insert_below_line
+
+    # Plain anchor: same indent as the anchor line.
+    text = "def run():\n    rbt.home()\n    rbt.move_j([0])\n"
+    new, first, count = insert_below_line(text, "time.sleep(1.0)", 2)
+    assert new.split("\n")[2] == "    time.sleep(1.0)"
+    assert (first, count) == (3, 1)
+
+    # Block opener: one indent level deeper.
+    new, first, _ = insert_below_line(text, "time.sleep(1.0)", 1)
+    assert new.split("\n")[1] == "    time.sleep(1.0)"
+
+    # Nested opener inherits the opener's indent plus one unit.
+    text = "def run():\n    for _ in range(3):\n        rbt.home()\n"
+    new, _, _ = insert_below_line(text, "x()", 2)
+    assert new.split("\n")[2] == "        x()"
+
+    # Tab-indented file: tabs are reused for both copy and deepen.
+    text = "def run():\n\trbt.home()\n"
+    new, _, _ = insert_below_line(text, "x()", 2)
+    assert new.split("\n")[2] == "\tx()"
+    new, _, _ = insert_below_line(text, "x()", 1)
+    assert new.split("\n")[1] == "\tx()"
+
+    # Cursor on the last content line: append still gets the anchor's indent.
+    text = "def run():\n    rbt.home()"
+    new, first, _ = insert_below_line(text, "x()", 2)
+    assert new.split("\n")[2] == "    x()"
+    assert first == 3
+
+    # Multi-line snippet: prefix applied per line, blank lines untouched.
+    text = "def run():\n    rbt.home()\n    rbt.stop()\n"
+    new, _, count = insert_below_line(text, "a()\n\nb()", 2)
+    got = new.split("\n")[2:5]
+    assert got == ["    a()", "", "    b()"]
+    assert count == 3
+
+    # Unset cursor (0): EOF append at column 0, unchanged behavior.
+    new, first, _ = insert_below_line("    indented()\n", "x()", 0)
+    assert new.endswith("x()\n") and not new.endswith(" x()\n")
+
+    # Blank anchor line: column 0.
+    text = "a()\n\nb()\n"
+    new, _, _ = insert_below_line(text, "x()", 2)
+    assert new.split("\n")[2] == "x()"

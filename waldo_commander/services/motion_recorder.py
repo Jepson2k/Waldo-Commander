@@ -9,7 +9,12 @@ import numpy as np
 
 import waldoctl
 
-from waldo_commander.services.programs import is_any_program_recording
+from waldo_commander.services.programs import (
+    active_cursor_line,
+    advance_active_cursor,
+    insert_below_line,
+    is_any_program_recording,
+)
 from waldo_commander.state import (
     ui_state,
 )
@@ -22,6 +27,12 @@ logger = logging.getLogger(__name__)
 # constructor kwarg.
 _SHAPE_COMMON_FIELDS = ("name", "pose", "collision", "margin")
 _SHAPE_DEFAULT_POSE = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+_SELECT_TOOL_RE = re.compile(r"^\s*rbt\.\s*select_tool\s*\(")
+
+# Line-anchor id for the recording insertion cursor: the browser remaps it
+# across user edits so recorded snippets follow the code, not a line number.
+_RECORD_ANCHOR_ID = "__recording_insert__"
 
 
 def _shape_to_code(s) -> str:
@@ -94,6 +105,10 @@ class MotionRecorder:
         self._pending_actions: list[tuple[str, dict, float]] = []
         # Wall-clock time of the last recorded action (for inserting gaps)
         self._last_action_wall_time: float = 0.0
+        # Insertion cursor for the active recording session: 1-indexed line new
+        # snippets go below (advances past each insert); 0 = append at EOF,
+        # None = no session (inserts follow the user's live cursor line).
+        self._insert_line: int | None = None
 
     def _get_wrf_pose(self) -> list[float]:
         """Get current TCP pose in World Reference Frame (always WRF).
@@ -137,15 +152,19 @@ class MotionRecorder:
             if info["category"] in ("Motion", "Jog", "Streaming")
         )
 
-    def _ensure_select_tool(self, tool_key: str, variant_key: str = "") -> None:
+    def _ensure_select_tool(self, tool_key: str, variant_key: str = "") -> int | None:
         """Ensure rbt.select_tool() is in the script before the first move command.
 
         If an existing select_tool line is found, update it. Otherwise insert one
         before the first motion command (home, move_j, move_l, etc.).
+
+        Returns the 1-indexed line a new line was inserted at, or ``None``
+        when a line was updated in place or appended via ``_insert_snippet``
+        (which advances the session cursor itself).
         """
         textarea = ui_state.active_textarea
         if not textarea:
-            return
+            return None
         val: str = str(textarea.value or "")
         lines: list[str] = val.split("\n")
 
@@ -155,14 +174,13 @@ class MotionRecorder:
             )
         else:
             set_tool_line = f'rbt.select_tool("{tool_key}")'
-        set_tool_re = re.compile(r"^\s*rbt\.\s*select_tool\s*\(")
 
         for i, line in enumerate(lines):
-            if set_tool_re.match(line):
+            if _SELECT_TOOL_RE.match(line):
                 lines[i] = set_tool_line
                 textarea.value = "\n".join(lines)
                 logger.info("Updated existing select_tool to %s", tool_key)
-                return
+                return None
 
         # No existing select_tool — insert before first motion command
         motion_names = self._get_motion_cmd_names()
@@ -176,10 +194,45 @@ class MotionRecorder:
                 logger.info(
                     "Inserted select_tool before first motion at line %d", i + 1
                 )
-                return
+                return i + 1
 
         # No motion commands found — just append
         self._insert_snippet(set_tool_line)
+        return None
+
+    def _declare_insert_anchor(self, textarea) -> None:
+        if self._insert_line:
+            textarea.line_anchors = {
+                **textarea._props.get("line-anchors", {}),
+                _RECORD_ANCHOR_ID: self._insert_line,
+            }
+
+    def _retract_insert_anchor(self, textarea) -> None:
+        declared = dict(textarea._props.get("line-anchors", {}))
+        if declared.pop(_RECORD_ANCHOR_ID, None) is not None:
+            textarea.line_anchors = declared
+
+    def insertion_anchor(self) -> dict[str, int]:
+        """Declared position for the recording insertion cursor: the live
+        mirror when the browser has echoed one, else the tracked line.
+        Empty outside a session or in append mode."""
+        if not self._insert_line or not is_any_program_recording():
+            return {}
+        textarea = ui_state.active_textarea
+        line = self._insert_line
+        if textarea is not None:
+            line = textarea.line_anchors.get(_RECORD_ANCHOR_ID, line)
+        return {_RECORD_ANCHOR_ID: line}
+
+    def _clamp_below_select_tool(self, text: str) -> None:
+        """Recorded motions must play back after the tool selection, so the
+        session cursor never stays above an existing select_tool line."""
+        if not self._insert_line:
+            return
+        for i, line in enumerate(text.split("\n")):
+            if _SELECT_TOOL_RE.match(line):
+                self._insert_line = max(self._insert_line, i + 1)
+                return
 
     def toggle_recording(self) -> None:
         """Toggle recording state on/off."""
@@ -197,6 +250,7 @@ class MotionRecorder:
         active.recording.is_recording = True
         self._active_jog = None
         self._last_action_wall_time = 0.0
+        self._insert_line = active_cursor_line()
 
         if (
             len(waldoctl.commander.status.joints.angles)
@@ -219,9 +273,18 @@ class MotionRecorder:
         # Ensure select_tool is before the first move command in the script
         tool_key = waldoctl.commander.status.tool.key
         if tool_key and tool_key != "NONE":
-            self._ensure_select_tool(
+            inserted = self._ensure_select_tool(
                 tool_key, variant_key=waldoctl.commander.status.tool.variant_key
             )
+            if (
+                inserted is not None
+                and self._insert_line
+                and inserted <= self._insert_line
+            ):
+                self._insert_line += 1
+            textarea = ui_state.active_textarea
+            if textarea:
+                self._clamp_below_select_tool(str(textarea.value or ""))
 
         # Insert anchor move_j to establish recording start position — but only
         # if the robot has moved away from where the script's simulation ends.
@@ -245,16 +308,27 @@ class MotionRecorder:
             else:
                 logger.info("Skipped anchor — robot matches script end position")
 
+        # One declaration at the settled cursor: _start_recording is
+        # synchronous, so no user edit can interleave before this point.
+        textarea = ui_state.active_textarea
+        if textarea is not None:
+            self._declare_insert_anchor(textarea)
+
     def _stop_recording(self) -> None:
         """Stop recording session."""
         # If there's an active jog, end it first
         if self._active_jog:
             self.on_jog_end()
 
+        textarea = ui_state.active_textarea
+        if textarea is not None:
+            self._retract_insert_anchor(textarea)
+
         # Clear is_recording on every program — the invariant says only one
         # could have been True, but the sweep makes the stop idempotent.
         for p in waldoctl.commander.programs.items:
             p.recording.is_recording = False
+        self._insert_line = None
         logger.info("Recording stopped")
 
     def record_action(self, action_type: str, **params) -> None:
@@ -445,45 +519,70 @@ class MotionRecorder:
         self._last_action_wall_time = self._pending_actions[-1][2]
         self._pending_actions.clear()
 
+    def current_pose_snippet(self, move_type: str = "cartesian") -> str:
+        """Code line moving to the robot's current position.
+
+        Args:
+            move_type: "cartesian" or "joints"
+        """
+        if move_type == "joints":
+            return self._generate_code(
+                "move_j", {"angles": self._get_current_angles(), "duration": 1.0}
+            )
+        return self._generate_code(
+            "move_l", {"pose": self._get_wrf_pose(), "duration": 1.0}
+        )
+
     def capture_current_pose(self, move_type: str = "cartesian") -> None:
         """Capture current robot pose and insert as move command.
 
         Args:
             move_type: "cartesian" or "joints"
         """
-        if move_type == "joints":
-            self._record_action_impl(
-                "move_j", angles=self._get_current_angles(), duration=1.0
-            )
-        else:
-            self._record_action_impl("move_l", pose=self._get_wrf_pose(), duration=1.0)
+        self._insert_snippet(self.current_pose_snippet(move_type))
+        self._last_action_wall_time = time.time()
 
     def _insert_snippet(self, snippet: str) -> None:
-        """Insert code snippet into the editor and flash the new line."""
-
-        if ui_state.active_textarea:
-            textarea = ui_state.active_textarea
-            val = textarea.value or ""
-
-            # Count lines before insertion for flash highlighting
-            lines_before = len(val.splitlines())
-
-            if val and not val.endswith("\n"):
-                val += "\n"
-            new_value = val + snippet + "\n"
-            # Assigning value triggers the editor's on_change -> debounced simulation.
-            textarea.value = new_value
-
-            # Flash the newly added line.
-            new_line_number = lines_before + 1
-            # Local import: motion_recorder is in services/ and decorations
-            # is in components/, so a top-level import would invert the
-            # layered dependency direction. Keep it lazy.
-            from waldo_commander.components.editor_decorations import decorations
-
-            decorations.flash_editor_lines([new_line_number])
-        else:
+        """Insert code below the recording session's insertion cursor (or the
+        user's cursor line outside a session) and flash the inserted lines."""
+        textarea = ui_state.active_textarea
+        if not textarea:
             logger.error("Editor textarea not ready - open Program tab first")
+            return
+
+        # A session can end without _stop_recording (e.g. the recording
+        # program was closed); drop the stale session cursor then.
+        if self._insert_line is not None and not is_any_program_recording():
+            self._insert_line = None
+
+        val = str(textarea.value or "")
+        after = (
+            self._insert_line if self._insert_line is not None else active_cursor_line()
+        )
+        if self._insert_line:
+            # The browser remaps the anchor across user edits; the tracked
+            # int is the fallback until an echo arrives (or when a deletion
+            # swallowed the anchor line).
+            after = textarea.line_anchors.get(_RECORD_ANCHOR_ID, self._insert_line)
+        new_value, first_line, count = insert_below_line(val, snippet, after)
+        # Assigning value triggers the editor's on_change -> debounced simulation.
+        textarea.value = new_value
+
+        last_line = first_line + count - 1
+        if self._insert_line is None:
+            advance_active_cursor(last_line)
+        elif self._insert_line:
+            # The session cursor advances past each insert so recorded steps
+            # stay chronological while the user's cursor stays put.
+            self._insert_line = last_line
+            self._declare_insert_anchor(textarea)
+
+        # Local import: motion_recorder is in services/ and decorations
+        # is in components/, so a top-level import would invert the
+        # layered dependency direction. Keep it lazy.
+        from waldo_commander.components.editor_decorations import decorations
+
+        decorations.flash_editor_lines(list(range(first_line, last_line + 1)))
 
 
 # Singleton

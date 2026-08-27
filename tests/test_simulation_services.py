@@ -6,7 +6,7 @@ These tests verify actual behavior rather than just checking if buttons exist.
 import asyncio
 import contextlib
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -792,13 +792,11 @@ class TestSimulationCaching:
         waldoctl.commander.programs.items = [tab1, tab2]
         waldoctl.commander.programs.active_id = "tab2"  # Active is tab2
 
-        # Mock run.cpu_bound to return test data and notify_changed to avoid slot stack error
+        # Under pytest the visualizer always takes the in-process path, so mock
+        # the sim entry point; notify_changed avoids a slot stack error.
         with (
-            patch("waldo_commander.services.path_visualizer.run") as mock_run,
-            patch.object(simulation_state, "notify_changed"),
-        ):
-            mock_run.setup = MagicMock()
-            mock_run.cpu_bound = AsyncMock(
+            patch(
+                "waldo_commander.services.path_visualizer._run_simulation_isolated",
                 return_value={
                     "segments": [],
                     "targets": [],
@@ -806,9 +804,10 @@ class TestSimulationCaching:
                     "error": None,
                     "total_steps": 0,
                     "final_joints_rad": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-                }
-            )
-
+                },
+            ),
+            patch.object(simulation_state, "notify_changed"),
+        ):
             visualizer = PathVisualizer()
             # Run simulation for tab1 (not active)
             await visualizer.update_path_visualization("print('hi')", tab_id="tab1")
@@ -1509,9 +1508,10 @@ class TestScriptExecutionLifecycle:
         Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``
         which deleted ``/tmp/.parol_control_X`` and ``/tmp/.parol_events_X``.
         With the subprocess still alive, ``check_should_pause()`` then read
-        the missing control file → defaulted to ``paused=True`` →
-        ``wait_for_step_or_play`` blocked 300s per command. The script
-        effectively hung until shutdown.
+        the missing control file → defaulted to ``paused=True``. (Nowadays a
+        missing control file makes ``wait_for_step_or_play`` return
+        immediately — free-run, not a hang — but the files must still be
+        preserved for stepping to keep working across reloads.)
 
         After fix: ``cleanup()`` cancels only the event watcher; the step
         controller, session id, and IPC files are preserved so the

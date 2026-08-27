@@ -107,7 +107,7 @@ def require_session_consent() -> None:
         )
     cid = ui_state.active_client_id
     client = Client.instances.get(cid) if cid else None
-    if client is None or client._deleted:
+    if client is None or client.is_deleted:
         _refuse(
             "open the Waldo-Commander GUI and approve the hardware-motion prompt first"
         )
@@ -134,7 +134,7 @@ def require_action_approval(description: str) -> None:
         )
     cid = ui_state.active_client_id
     client = Client.instances.get(cid) if cid else None
-    if client is None or client._deleted:
+    if client is None or client.is_deleted:
         _refuse("open the Waldo-Commander GUI and approve the action prompt first")
     arm_action_prompt(sid, description)
     _refuse(

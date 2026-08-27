@@ -12,6 +12,7 @@ import linecache
 import logging
 import os
 import sys
+import threading
 import traceback
 from dataclasses import asdict
 from types import ModuleType
@@ -278,7 +279,13 @@ def _run_simulation_isolated(
                 [shape_from_wire(*t) for t in shapes_wire or []]
             )
 
-        # Inserted into sys.modules so `import time` returns this mock.
+        # Inserted into sys.modules so `import time` returns this mock. The
+        # mock behavior is scoped to the simulating thread: in the thread
+        # fallback the app's event loop keeps running concurrently and must
+        # keep seeing real clocks (in a pool worker there is only one thread,
+        # so the scoping is a no-op).
+        sim_thread_id = threading.get_ident()
+
         class MockTimeModule(ModuleType):
             """Mock time module with no-op sleep for simulation."""
 
@@ -292,30 +299,37 @@ def _run_simulation_isolated(
                 return getattr(self._real_time, name)
 
             def sleep(self, seconds):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.sleep(seconds)
                 # Only accumulate sleep after non-blocking moves —
                 # after a blocking move the arm is already stationary.
                 for client in created_clients:
                     if client._last_move_non_blocking:
                         client._pending_sleep += seconds
 
-            @staticmethod
-            def time():
+            def time(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.time()
                 return 0.0
 
-            @staticmethod
-            def monotonic():
+            def monotonic(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.monotonic()
                 return 0.0
 
-            @staticmethod
-            def perf_counter():
+            def perf_counter(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.perf_counter()
                 return 0.0
 
-            @staticmethod
-            def perf_counter_ns():
+            def perf_counter_ns(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.perf_counter_ns()
                 return 0
 
-            @staticmethod
-            def time_ns():
+            def time_ns(self):
+                if threading.get_ident() != sim_thread_id:
+                    return self._real_time.time_ns()
                 return 0
 
         original_time_module = sys.modules.get("time")
@@ -440,6 +454,13 @@ def _run_simulation_isolated(
         "total_steps": len(local_segments),
         "final_joints_rad": final_state.get("joints_rad"),
     }
+
+
+def _run_simulation_packed(args: tuple) -> dict[str, Any]:
+    """Single-argument adapter for run.cpu_bound, whose ParamSpec cannot type
+    a heterogeneous *args unpack; packing also lets the pool call and the
+    in-process fallback share one argument list."""
+    return _run_simulation_isolated(*args)
 
 
 class PathVisualizer:
@@ -589,48 +610,48 @@ class PathVisualizer:
             # moves until the script homes.
             initial_homed = robot_state.homed
 
-            try:
-                result = await asyncio.wait_for(
-                    run.cpu_bound(
-                        _run_simulation_isolated,
-                        program_text,
-                        initial_joints_rad,
-                        MAX_PATH_SEGMENTS,
-                        backend_pkg,
-                        dr_cls,
-                        tool_meta_registry or None,
-                        shapes_wire,
-                        initial_tool,
-                        initial_homed,
-                    ),
-                    timeout=SIMULATION_TIMEOUT_S
-                    + 2.0,  # Extra buffer for process overhead
-                )
-            except asyncio.TimeoutError:
-                logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
-                return "Simulation timed out"
-            except Exception as e:
-                # Fall back to in-process execution; the subprocess pool is often
-                # unavailable in test environments.
-                logger.warning(
-                    "Subprocess simulation failed (sim_id=%d): %s, using sync",
-                    sim_id,
-                    e,
-                )
+            sim_args = (
+                program_text,
+                initial_joints_rad,
+                MAX_PATH_SEGMENTS,
+                backend_pkg,
+                dr_cls,
+                tool_meta_registry or None,
+                shapes_wire,
+                initial_tool,
+                initial_homed,
+            )
+            # Tests always simulate in-process: the pool is rebuilt per test
+            # with warm-up disabled, so a cold spawn worker could not meet the
+            # timeout even when submission succeeds. The pool remains a
+            # best-effort optimization elsewhere, with the same in-process
+            # path as fallback.
+            use_pool = run.process_pool is not None and not _is_test_environment()
+            if use_pool:
                 try:
-                    result = _run_simulation_isolated(
-                        program_text,
-                        initial_joints_rad,
-                        MAX_PATH_SEGMENTS,
-                        backend_pkg,
-                        dr_cls,
-                        tool_meta_registry or None,
-                        shapes_wire,
-                        initial_tool,
-                        initial_homed,
+                    result = await asyncio.wait_for(
+                        run.cpu_bound(_run_simulation_packed, sim_args),
+                        timeout=SIMULATION_TIMEOUT_S
+                        + 2.0,  # Extra buffer for process overhead
                     )
+                except asyncio.TimeoutError:
+                    logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
+                    return "Simulation timed out"
+                except Exception as e:
+                    logger.warning(
+                        "Subprocess simulation failed (sim_id=%d): %s, using thread",
+                        sim_id,
+                        e,
+                    )
+                    use_pool = False
+            if not use_pool:
+                # A worker thread (not inline) so the event loop keeps running
+                # and the script's own asyncio.run() has no running loop in its
+                # thread — async programs can't be simulated inline at all.
+                try:
+                    result = await asyncio.to_thread(_run_simulation_packed, sim_args)
                 except Exception as e2:
-                    logger.error("Sync simulation also failed: %s", e2)
+                    logger.error("Thread simulation failed: %s", e2)
                     return f"Simulation failed: {e2}"
 
             # A None result can happen during shutdown/test teardown.
