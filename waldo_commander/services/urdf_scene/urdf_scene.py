@@ -50,7 +50,6 @@ from .loader import (
     normalize_axis,
 )
 from .editing_mixin import EditingMixin
-from .shape_editing_mixin import ShapeEditingMixin
 from .tcp_controls_mixin import TCPControlsMixin
 from .envelope_renderer import EnvelopeRenderer
 from .path_renderer import PathRenderer
@@ -201,7 +200,6 @@ def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
 
 class UrdfScene(
     EditingMixin,
-    ShapeEditingMixin,
     TCPControlsMixin,
     EnvelopeRenderer,
 ):

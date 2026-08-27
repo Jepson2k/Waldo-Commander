@@ -29,12 +29,16 @@ from waldo_commander.state import (
 from .config import RobotAppearanceMode
 from .ik_solver import EditingIKSolver
 from .loader import normalize_axis
+from .shape_editing_mixin import ShapeEditingMixin
 
 logger = logging.getLogger(__name__)
 
 
-class EditingMixin:
-    """Mixin providing target editing functionality for UrdfScene."""
+class EditingMixin(ShapeEditingMixin):
+    """Mixin providing target editing functionality for UrdfScene.
+
+    Extends the keep-out shape editing mixin: the scene context menu is
+    built here, and its shape branches call straight into that surface."""
 
     # Attributes from UrdfScene
     scene: Any
@@ -545,7 +549,7 @@ class EditingMixin:
         if e.key == "Escape" and e.action.keydown:
             if self._editing_unified_target:
                 self._end_editing_session()
-            if getattr(self, "_shape_move_active", None):
+            if self._shape_move_active:
                 self._end_shape_move()
 
     # -------------------------------------------------------------------------

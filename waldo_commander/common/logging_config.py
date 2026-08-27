@@ -95,6 +95,13 @@ class NiceGuiLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if not _ui_log_targets:
             return
+        # NiceGUI's own records must never reach a NiceGUI widget: pushing
+        # to the log element enqueues an outbox message, and when the
+        # outbox itself is what errored (e.g. its AppConfig lookup during
+        # test teardown), each push triggers the next error — a hot
+        # feedback loop that spins until something kills the process.
+        if record.name == "nicegui" or record.name.startswith("nicegui."):
+            return
         msg = self.format(record)
         level = record.levelname.upper()
         classes = _LEVEL_CLASSES.get(level, "log-info")
