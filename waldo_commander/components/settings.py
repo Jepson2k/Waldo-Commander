@@ -16,6 +16,7 @@ from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
+from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
 from waldo_commander.state import automation_state, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class SettingsContent:
             ),
             "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
             "motion_profile": stored_profile,
+            "jog_blend_r": jog_blend_r(),
             "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
             "jog_invert_x": bool(ng_app.storage.general.get("jog_invert_x", False)),
             "jog_invert_y": bool(ng_app.storage.general.get("jog_invert_y", False)),
@@ -749,6 +751,26 @@ class SettingsContent:
                     value="TRF",
                 ).classes("w-24").props("dense disable")
 
+    def _build_blend_radius(self, prefs: dict) -> None:
+        def _on_blend_r_change(e):
+            if e.value is None:
+                return
+            ng_app.storage.general["jog_blend_r"] = max(
+                0.0, min(JOG_BLEND_R_MAX, float(e.value))
+            )
+
+        with _setting_row(
+            "Blend Radius", "Corner smoothing for generated moves (0 = exact stop)"
+        ):
+            ui.number(
+                value=prefs["jog_blend_r"],
+                min=0,
+                max=JOG_BLEND_R_MAX,
+                step=1,
+                suffix="mm",
+                on_change=_on_blend_r_change,
+            ).classes("w-24").props("dense").mark("settings-blend-radius")
+
     def _build_jog_inversion(self, prefs: dict) -> None:
         cp = ui_state.control_panel
 
@@ -796,6 +818,7 @@ class SettingsContent:
             lambda: self._build_theme(prefs),
             lambda: self._build_reference_frames(prefs),
             lambda: self._build_jog_inversion(prefs),
+            lambda: self._build_blend_radius(prefs),
             self._build_backend_selector,
             self._build_plugin_panels,
             *([ai_control_section] if ai_control_section else []),

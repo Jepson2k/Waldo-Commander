@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import sys
@@ -95,9 +96,35 @@ class NiceGuiLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if not _ui_log_targets:
             return
+        # NiceGUI's own records must never reach a NiceGUI widget: pushing
+        # to the log element enqueues an outbox message, and when the
+        # outbox itself is what errored (e.g. its AppConfig lookup during
+        # test teardown), each push triggers the next error — a hot
+        # feedback loop that spins until something kills the process.
+        if record.name == "nicegui" or record.name.startswith("nicegui."):
+            return
         msg = self.format(record)
         level = record.levelname.upper()
         classes = _LEVEL_CLASSES.get(level, "log-info")
+        # UI elements belong to the app's event loop. A push from another
+        # thread (the controller output reader, an executor) mutates
+        # client.elements while the loop may be iterating it — page
+        # refreshes crash with "dictionary changed size during iteration".
+        # Marshal off-loop records onto the loop; drop them when no loop
+        # is running (shutdown, early startup).
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            from nicegui import core
+
+            loop = getattr(core, "loop", None)
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(self._push_to_targets, msg, classes)
+            return
+        self._push_to_targets(msg, classes)
+
+    @staticmethod
+    def _push_to_targets(msg: str, classes: str) -> None:
         stale: list[weakref.ref] = []
         with _ui_lock:
             for ref in list(_ui_log_targets):

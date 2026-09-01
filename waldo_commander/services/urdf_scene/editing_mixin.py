@@ -29,12 +29,16 @@ from waldo_commander.state import (
 from .config import RobotAppearanceMode
 from .ik_solver import EditingIKSolver
 from .loader import normalize_axis
+from .shape_editing_mixin import ShapeEditingMixin
 
 logger = logging.getLogger(__name__)
 
 
-class EditingMixin:
-    """Mixin providing target editing functionality for UrdfScene."""
+class EditingMixin(ShapeEditingMixin):
+    """Mixin providing target editing functionality for UrdfScene.
+
+    Extends the keep-out shape editing mixin: the scene context menu is
+    built here, and its shape branches call straight into that surface."""
 
     # Attributes from UrdfScene
     scene: Any
@@ -352,8 +356,12 @@ class EditingMixin:
                 float(ground_point.z),
             )
 
+        shape_name = self._shape_hit_name(hits)
+
         with self.context_menu:
-            if target_id:
+            if shape_name and not target_id:
+                self._populate_shape_menu(shape_name)
+            elif target_id:
                 target = self._find_target_by_id(target_id)
                 if target:
                     ui.item(f"Target (Line {target.line_number})").classes(
@@ -393,6 +401,9 @@ class EditingMixin:
                             use_click_position=True
                         ),
                     )
+                self._populate_shape_add_menu(
+                    self._last_click_coords or (0.3, 0.0, 0.0)
+                )
 
     def _is_envelope_hit(self, object_name: str) -> bool:
         """Check if object is the workspace envelope."""
@@ -538,6 +549,8 @@ class EditingMixin:
         if e.key == "Escape" and e.action.keydown:
             if self._editing_unified_target:
                 self._end_editing_session()
+            if self._shape_move_active:
+                self._end_shape_move()
 
     # -------------------------------------------------------------------------
     # Edit bar UI

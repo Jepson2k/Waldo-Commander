@@ -87,6 +87,7 @@ from waldo_commander.state import (
     readiness_state,
     playback_coordination,
     global_phase_timer,
+    robot_events,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,8 @@ class _PageState:
 
     page_client: Client
     connection_notification: ui.notification | None = None
+    warning_notification: ui.notification | None = None
+    warning_banner_text: str = ""
     ping_timer: ui.timer | None = None
     last_ping_ok: bool = False
 
@@ -170,6 +173,37 @@ def _update_connection_notification() -> None:
     elif not needs_warning and ps.connection_notification is not None:
         ps.connection_notification.dismiss()
         ps.connection_notification = None
+
+
+def _update_warning_notification() -> None:
+    """Persistent banner while warning-class conditions stand.
+
+    Same mechanism as the hard-error connection banner, colored as a
+    warning; it leaves when the conditions self-clear. History lives in
+    the warnings/errors log under the movement log."""
+    ps = _page_state
+    if ps is None or not readiness_state.urdf_scene_ready.is_set():
+        return
+    entries = waldoctl.commander.status.warnings.entries
+    msg = "; ".join(str(e[2]) for e in entries)
+    if msg == ps.warning_banner_text:
+        return
+    if ps.warning_notification is not None:
+        ps.warning_notification.dismiss()
+        # dismiss() only tells the client; the server element normally
+        # deletes itself on the client's dismiss event, which never comes
+        # without a real browser.
+        if not ps.warning_notification.is_deleted:
+            ps.warning_notification.delete()
+        ps.warning_notification = None
+    if msg:
+        ps.warning_notification = ui.notification(
+            message=msg,
+            type="warning",
+            close_button=True,
+            timeout=0,
+        )
+    ps.warning_banner_text = msg
 
 
 async def initialize_urdf_scene() -> None:
@@ -552,6 +586,11 @@ def update_ui_from_status() -> None:
         return
 
     _update_connection_notification()
+    _update_warning_notification()
+    if readout_panel is not None:
+        readout_panel.update_event_log()
+    if control_panel is not None:
+        control_panel.sync_freedrive_visual()
     if tool_key_changed:
         robot_state.notify_changed()
 
@@ -752,9 +791,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                             .bind_text_from(
                                 waldoctl.commander.status.tool,
                                 "key",
-                                backward=lambda k: f"Gripper: {k}"
-                                if k != "NONE"
-                                else "Gripper",
+                                backward=lambda k: (
+                                    f"Gripper: {k}" if k != "NONE" else "Gripper"
+                                ),
                             )
                             .classes("text-lg font-medium")
                         )
@@ -1758,6 +1797,9 @@ async def _status_consumer() -> None:
     joint_en_shadow: np.ndarray | None = None
     cart_en_shadow: dict[str, np.ndarray] = {}
     scene_epoch_shadow: int | None = None
+    torques_shadow: np.ndarray | None = None
+    torques_ext_shadow: np.ndarray | None = None
+    homing_shadow: tuple | None = None
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1855,6 +1897,89 @@ async def _status_consumer() -> None:
                     ):
                         coll.active = status.collision_active
                         coll.pairs = list(status.collision_pairs)
+
+                    # v0.8.0 status surface (torques, controller state,
+                    # warnings, link health, homing). Guarded per-field: a
+                    # pre-v0.8.0 backend's buffer simply lacks them and the
+                    # sub-objects keep their defaults.
+                    torques = getattr(status, "torques", None)
+                    if torques is not None and (
+                        torques_shadow is None
+                        or not arrays_equal_n(torques, torques_shadow)
+                    ):
+                        joints.torques = [float(v) for v in torques]
+                        torques_shadow = torques.copy()
+                    torques_ext = getattr(status, "torques_ext", None)
+                    if torques_ext is not None and (
+                        torques_ext_shadow is None
+                        or not arrays_equal_n(torques_ext, torques_ext_shadow)
+                    ):
+                        joints.torques_ext = [float(v) for v in torques_ext]
+                        torques_ext_shadow = torques_ext.copy()
+
+                    # Controller state chip: mode name is the backend enum's
+                    # name (vendor-neutral for display). Skipped, never
+                    # reset, when the backend's buffer lacks the field.
+                    ctrl = st.controller
+                    mode = getattr(status, "mode", None)
+                    if mode is not None:
+                        if ctrl.mode != mode.name:
+                            ctrl.mode = mode.name
+                        enabled = bool(getattr(status, "enabled", False))
+                        if ctrl.enabled != enabled:
+                            ctrl.enabled = enabled
+                        freedrive = bool(getattr(status, "freedrive", False))
+                        if ctrl.freedrive != freedrive:
+                            ctrl.freedrive = freedrive
+
+                    # Warning-class conditions (self-clearing): content
+                    # compare, copy on change — the decoder refills the
+                    # buffer list in place.
+                    entries = getattr(status, "warnings", None)
+                    if entries is not None and st.warnings.entries != entries:
+                        # New conditions go to the durable log; the banner
+                        # tracks only the standing (self-clearing) set.
+                        prev = {tuple(e) for e in st.warnings.entries}
+                        for e in entries:
+                            if tuple(e) not in prev:
+                                robot_events.add(
+                                    str(e[4]) if len(e) > 4 else "warning",
+                                    str(e[2]) if len(e) > 2 else str(e),
+                                    str(e[3]) if len(e) > 3 else "",
+                                )
+                        st.warnings.entries = list(entries)
+
+                    link = getattr(status, "link_health", None)
+                    if link:
+                        lh = st.link_health
+                        link_state = link["state"].name
+                        if lh.state != link_state:
+                            lh.state = link_state
+                        if lh.restarts != link.get("restarts", 0):
+                            lh.restarts = int(link.get("restarts", 0))
+                        if lh.tx_errors != link.get("tx_errors", 0):
+                            lh.tx_errors = int(link.get("tx_errors", 0))
+                        if lh.rx_frames != link.get("rx_frames", 0):
+                            lh.rx_frames = int(link.get("rx_frames", 0))
+
+                    # Per-joint homing progress: (state, phase) enum-name
+                    # pairs, rebuilt only when the raw tuple moves.
+                    homing = getattr(status, "homing", None)
+                    if homing is not None:
+                        homing_key = (
+                            bool(homing.get("active", False)),
+                            int(homing.get("sequence_step", 0)),
+                            tuple(homing.get("joints", ())),
+                        )
+                        if homing_key != homing_shadow:
+                            homing_shadow = homing_key
+                            hm = st.homing
+                            hm.active = homing_key[0]
+                            hm.sequence_step = homing_key[1]
+                            hm.joints = [
+                                (state.name, phase.name)
+                                for state, phase in homing_key[2]
+                            ]
 
                     # Collision-world epoch moved (first frame after connect,
                     # a program's set_shapes, another client, a restart) —

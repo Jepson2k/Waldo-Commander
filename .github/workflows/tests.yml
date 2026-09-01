@@ -3,10 +3,12 @@ name: tests
 on:
   # Run once per change: pull_request covers PR branches; push covers main
   # (and any direct, PR-less pushes to it). Avoids the duplicate push +
-  # pull_request runs on every PR commit.
+  # pull_request runs on every PR commit. workflow_dispatch lets a branch
+  # be exercised before any PR exists.
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   # Constrains PEP 517 build environments too (see the file for why).
@@ -31,21 +33,43 @@ jobs:
           # ruckig 0.17.3 sdist doesn't build under scikit-build-core 1.0;
           # pre-install the fixed commit until a release lands (pantor/ruckig#262).
           pip install "ruckig @ git+https://github.com/pantor/ruckig@2249d57ffaa19ecdadeaab62daf97857813629ff"
-          pip install -e ".[dev]"
-          # Override the pinned waldoctl/parol6 with the matching feature branch
-          # if one exists, AFTER ".[dev]" so its pinned tags don't clobber it.
-          # Skipped on main: pushes to main must test the pyproject-pinned tags
-          # (every sibling repo has a `main`, so the match would always fire and
-          # main CI would never exercise the released pins).
+          # waldoctl branch-matching must happen BEFORE ".[dev]": the pinned
+          # tag may not exist yet while the release chain is in flight (this
+          # package re-pins waldoctl before waldoctl merges and tags), and a
+          # dead pin fails the whole resolve. Skipped on main: pushes to main
+          # must test the pyproject-pinned tags.
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          WALDOCTL_REF=""
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
-              pip install --force-reinstall --no-deps "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
-            fi
-            if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
-              pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
+              WALDOCTL_REF="$BRANCH"
+              pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
+              # Rewrite the pin for THIS resolve only, so ".[dev]" does not
+              # re-fetch a tag that may not exist yet.
+              sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
             fi
           fi
+          pip install -e ".[dev]"
+          if [ -n "$WALDOCTL_REF" ]; then
+            mv pyproject.toml.bak pyproject.toml
+          fi
+          # parol6 (the default test backend) installs WITHOUT dep resolution:
+          # its 0.4.0 release pins waldoctl by a direct v0.7.0 URL, which pip
+          # cannot reconcile with this package's v0.9.0 pin in one resolve.
+          # Its remaining deps are named explicitly (waldoctl/numpy/pinokin/
+          # pyserial/scipy/ruckig are already installed above).
+          PAROL6_REF="0.4.0"
+          if [ "$BRANCH" != "main" ]; then
+            if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
+              PAROL6_REF="$BRANCH"
+            fi
+          fi
+          pip install --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${PAROL6_REF}"
+          pip install interpolatepy msgspec numba ormsgpack psutil toppra
+          # par6 is NOT branch-matched here: its python package embeds the
+          # compiled Rust engine (maturin + the pinocchio FFI shim), which
+          # this matrix cannot build. The dedicated par6-e2e job builds the
+          # shim and installs the branch-matched tree properly.
           mkdir -p PAROL6-python-API
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
@@ -79,21 +103,43 @@ jobs:
           # ruckig 0.17.3 sdist doesn't build under scikit-build-core 1.0;
           # pre-install the fixed commit until a release lands (pantor/ruckig#262).
           pip install "ruckig @ git+https://github.com/pantor/ruckig@2249d57ffaa19ecdadeaab62daf97857813629ff"
-          pip install ".[dev]"
-          # Override the pinned waldoctl/parol6 with the matching feature branch
-          # if one exists, AFTER ".[dev]" so its pinned tags don't clobber it.
-          # Skipped on main: pushes to main must test the pyproject-pinned tags
-          # (every sibling repo has a `main`, so the match would always fire and
-          # main CI would never exercise the released pins).
+          # waldoctl branch-matching must happen BEFORE ".[dev]": the pinned
+          # tag may not exist yet while the release chain is in flight (this
+          # package re-pins waldoctl before waldoctl merges and tags), and a
+          # dead pin fails the whole resolve. Skipped on main: pushes to main
+          # must test the pyproject-pinned tags.
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          WALDOCTL_REF=""
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
-              pip install --force-reinstall --no-deps "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
-            fi
-            if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
-              pip install --force-reinstall --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${BRANCH}"
+              WALDOCTL_REF="$BRANCH"
+              pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
+              # Rewrite the pin for THIS resolve only, so ".[dev]" does not
+              # re-fetch a tag that may not exist yet.
+              sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
             fi
           fi
+          pip install ".[dev]"
+          if [ -n "$WALDOCTL_REF" ]; then
+            mv pyproject.toml.bak pyproject.toml
+          fi
+          # parol6 (the default test backend) installs WITHOUT dep resolution:
+          # its 0.4.0 release pins waldoctl by a direct v0.7.0 URL, which pip
+          # cannot reconcile with this package's v0.9.0 pin in one resolve.
+          # Its remaining deps are named explicitly (waldoctl/numpy/pinokin/
+          # pyserial/scipy/ruckig are already installed above).
+          PAROL6_REF="0.4.0"
+          if [ "$BRANCH" != "main" ]; then
+            if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
+              PAROL6_REF="$BRANCH"
+            fi
+          fi
+          pip install --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${PAROL6_REF}"
+          pip install interpolatepy msgspec numba ormsgpack psutil toppra
+          # par6 is NOT branch-matched here: its python package embeds the
+          # compiled Rust engine (maturin + the pinocchio FFI shim), which
+          # this matrix cannot build. The dedicated par6-e2e job builds the
+          # shim and installs the branch-matched tree properly.
 
       - name: Show environment
         run: |
@@ -106,3 +152,136 @@ jobs:
           PYTHONUTF8: '1'
         run: |
           pytest -vv --tb=long --log-cli-level=DEBUG
+
+  # End-to-end against the Rust runtime: the whole WC stack (backend
+  # discovery, Robot.start() spawn path, async client, status pipeline, UI)
+  # driving a real `par6d --sim` over real UDP. Own job because the test
+  # needs its own pytest process (backend choice is process-global) and
+  # because building par6d needs the Rust toolchain plus par6's pinocchio
+  # FFI shim. Kept off the OS/Python matrix: Linux x86_64 / 3.12 only.
+  par6-e2e:
+    name: par6 e2e (WC <-> par6d --sim)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Same branch-matching convention as the pip installs above, resolved
+      # once so the python client and the binary come from one tree. Falls
+      # back to main — also the ref the [par6] extra pins — so main pushes
+      # exercise the same thing pyproject declares.
+      - name: Resolve par6 ref (branch-matching)
+        id: par6-ref
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          REF=main
+          if [ "$BRANCH" != "main" ]; then
+            if git ls-remote --heads https://github.com/Jepson2k/par6.git "$BRANCH" 2>/dev/null | grep -q .; then
+              REF="$BRANCH"
+            fi
+          fi
+          echo "resolved par6 ref: $REF"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout par6
+        uses: actions/checkout@v4
+        with:
+          repository: Jepson2k/par6
+          ref: ${{ steps.par6-ref.outputs.ref }}
+          path: par6
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: par6
+          key: par6-e2e
+
+      # Same paths/key as par6's own ci.yml (its ffi and e2e jobs), prefixed
+      # with the checkout dir. env.sh is deliberately not cached: setup.sh
+      # rewrites it every run with this workspace's absolute paths.
+      - name: cache pinocchio toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            par6/.ffi/bin
+            par6/.ffi/env
+            par6/.ffi/shim
+          key: ffi-toolchain-${{ runner.os }}-${{ hashFiles('par6/scripts/ffi/setup.sh', 'par6/cpp/**') }}
+
+      - name: build shim (scripts/ffi/setup.sh)
+        working-directory: par6
+        run: scripts/ffi/setup.sh
+
+      # Release, not debug: the sim runs in wall-clock time and an
+      # unoptimized RT loop misses its deadlines. Kinematics is not a
+      # feature any more — par6d links the FFI shim unconditionally.
+      - name: build par6d
+        working-directory: par6
+        run: |
+          source .ffi/env.sh
+          cargo build -p par6d --release
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # ruckig 0.17.3 sdist doesn't build under scikit-build-core 1.0;
+          # pre-install the fixed commit until a release lands (pantor/ruckig#262).
+          pip install "ruckig @ git+https://github.com/pantor/ruckig@2249d57ffaa19ecdadeaab62daf97857813629ff"
+          # waldoctl branch-matching BEFORE ".[dev]" — same rationale as the
+          # jobs above (the pinned tag may not exist mid-release-chain).
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          WALDOCTL_REF=""
+          if [ "$BRANCH" != "main" ]; then
+            if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
+              WALDOCTL_REF="$BRANCH"
+              pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
+              sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
+            fi
+          fi
+          pip install ".[dev]"
+          if [ -n "$WALDOCTL_REF" ]; then
+            mv pyproject.toml.bak pyproject.toml
+          fi
+          # parol6 rides along --no-deps (direct-URL waldoctl conflict, same
+          # as the jobs above); this job's backend under test is par6.
+          PAROL6_REF="0.4.0"
+          if [ "$BRANCH" != "main" ]; then
+            if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
+              PAROL6_REF="$BRANCH"
+            fi
+          fi
+          pip install --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${PAROL6_REF}"
+          pip install interpolatepy msgspec numba ormsgpack psutil toppra
+          # The par6 client must be the same tree the binary was built from,
+          # and that tree is already checked out at the branch-matched ref.
+          # It is a maturin package embedding the Rust engine, so the shim
+          # env must be live for the build (and no build isolation, so the
+          # toolchain above is the one that compiles it).
+          pip install "maturin>=1.7,<2" patchelf
+          source par6/.ffi/env.sh
+          pip install --force-reinstall --no-deps --no-build-isolation ./par6/python
+
+      # WALDO_PAR6_E2E=1 makes a missing backend or binary a FAILURE inside
+      # the test, not a skip — this job must never go green without the e2e
+      # actually running. env.sh is sourced (not hand-copied) because par6d
+      # embeds no rpath: the spawned runtime inherits LD_LIBRARY_PATH for
+      # the shim and its conda-env dependencies.
+      - name: Run the par6 e2e test
+        env:
+          PYTHONUNBUFFERED: '1'
+          PYTHONUTF8: '1'
+          WALDO_PAR6_E2E: '1'
+          PAR6D_BIN: ${{ github.workspace }}/par6/target/release/par6d
+        run: |
+          source par6/.ffi/env.sh
+          pytest -vv --tb=long --log-cli-level=DEBUG tests/test_par6_backend.py

@@ -1128,25 +1128,19 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     tooltip = ui_state.capture_pose_tooltip
     assert tooltip is not None
 
-    # Cursor on the comment line: nothing to overwrite, capture inserts the
-    # pose directly below the cursor line.
-    _set_cursor_line(textarea, 3)
-    await asyncio.sleep(0)
-    assert tooltip.text == editor._CAPTURE_TIP_INSERT
-    n_lines_before = len(textarea.value.splitlines())
-    user.find(marker="editor-capture-pose").click()
-    await asyncio.sleep(0)
-    lines = textarea.value.splitlines()
-    assert len(lines) == n_lines_before + 1, "capture on a plain line must insert"
-    assert lines[3].startswith("rbt.move_l("), lines[3]
-    assert lines[:3] + lines[4:] == script.splitlines(), (
-        "insert must leave existing lines untouched"
-    )
+    async def _tip_at(line: int, expected: str) -> None:
+        """Place the cursor and wait for the capture tooltip to settle.
 
-    # Restore the original program so the sections below keep their line
-    # numbers; the jog that follows re-simulates and re-anchors it.
-    textarea.value = script
-    tab.source = script
+        The tooltip is refreshed only by cursor events, while a debounced
+        re-simulation can repopulate the dry-run targets afterwards — so the
+        cursor event is re-fired until the reteach state it reads is current.
+        """
+        for _ in range(100):
+            _set_cursor_line(textarea, line)
+            await asyncio.sleep(0.05)
+            if tooltip.text == expected:
+                return
+        assert tooltip.text == expected, f"line {line}: got {tooltip.text!r}"
 
     # Move the robot so the current pose differs from the taught values.
     waldoctl.commander.settings.jog.joint_step_deg = 10.0
@@ -1155,11 +1149,12 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     await wait_for_motion_stable(lambda: waldoctl.commander.status.joints.angles[0])
 
     # The jog can re-simulate (position-change checker), re-declaring anchors
-    # and dropping the echoed positions; replay the browser echo again.
+    # and dropping the echoed positions; replay the browser echo again. Require
+    # a non-empty target set: mid-re-simulation the targets are momentarily
+    # cleared, and an empty set is trivially covered by any anchor mapping.
     for _ in range(50):
-        if {t.id for t in tab.dry_run.targets} <= set(
-            dict(textarea._props["line-anchors"])
-        ):
+        target_ids = {t.id for t in tab.dry_run.targets}
+        if target_ids and target_ids <= set(dict(textarea._props["line-anchors"])):
             break
         await asyncio.sleep(0.1)
     _fire_editor_event(
@@ -1168,9 +1163,7 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     await asyncio.sleep(0)
 
     # Bare cursor on the move_j line: capture re-teaches it in place.
-    _set_cursor_line(textarea, 4)
-    await asyncio.sleep(0)
-    assert tooltip.text == editor._CAPTURE_TIP_RETEACH
+    await _tip_at(4, editor._CAPTURE_TIP_RETEACH)
     user.find(marker="editor-capture-pose").click()
     await asyncio.sleep(0)
 
@@ -1189,9 +1182,7 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     )
 
     # Bare cursor on the move_l line: capture writes the current WRF pose.
-    _set_cursor_line(textarea, 5)
-    await asyncio.sleep(0)
-    assert tooltip.text == editor._CAPTURE_TIP_RETEACH
+    await _tip_at(5, editor._CAPTURE_TIP_RETEACH)
     user.find(marker="editor-capture-pose").click()
     await asyncio.sleep(0)
 
@@ -1211,12 +1202,8 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     # A multi-pose arc can't be re-taught from one pose, and a rel= move
     # would be corrupted by an absolute overwrite: both fall back to insert,
     # and the tooltip says which flavor of fallback applies.
-    _set_cursor_line(textarea, 6)
-    await asyncio.sleep(0)
-    assert tooltip.text == editor._CAPTURE_TIP_INSERT
-    _set_cursor_line(textarea, 7)
-    await asyncio.sleep(0)
-    assert tooltip.text == editor._CAPTURE_TIP_BLOCKED
+    await _tip_at(6, editor._CAPTURE_TIP_INSERT)
+    await _tip_at(7, editor._CAPTURE_TIP_BLOCKED)
 
     # Selecting the move_l + move_c lines replaces both with one fresh move.
     src_before = textarea.value.splitlines()
@@ -1235,6 +1222,19 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     )
     assert lines[5] == move_rel_line, (
         "replacement must not touch the line after the selection"
+    )
+
+    # Cursor on a plain line: nothing to re-teach, so capture inserts the pose
+    # directly below the cursor and leaves every existing line untouched.
+    before_insert = textarea.value.splitlines()
+    await _tip_at(3, editor._CAPTURE_TIP_INSERT)
+    user.find(marker="editor-capture-pose").click()
+    await asyncio.sleep(0)
+    lines = textarea.value.splitlines()
+    assert len(lines) == len(before_insert) + 1, "capture on a plain line must insert"
+    assert lines[3].startswith("rbt.move_l("), lines[3]
+    assert lines[:3] + lines[4:] == before_insert, (
+        "insert must leave existing lines untouched"
     )
 
 
