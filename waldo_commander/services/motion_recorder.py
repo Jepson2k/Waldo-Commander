@@ -470,7 +470,9 @@ class MotionRecorder:
             )
 
         elif action_type == "home":
-            return "rbt.home()"
+            return (
+                "rbt.home(calibrate=True)" if params.get("calibrate") else "rbt.home()"
+            )
 
         elif action_type == "gripper":
             if params.get("calibrate"):

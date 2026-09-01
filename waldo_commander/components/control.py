@@ -16,7 +16,12 @@ import waldoctl
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
-from waldo_commander.constants import config, DEFAULT_CAMERA, CLICK_HOLD_THRESHOLD_S
+from waldo_commander.constants import (
+    config,
+    DEFAULT_CAMERA,
+    CLICK_HOLD_THRESHOLD_S,
+    HOME_LONG_PRESS_S,
+)
 from waldo_commander.state import (
     robot_state,
     ui_state,
@@ -634,6 +639,10 @@ class ControlPanel:
 
         # Click/hold handlers (initialized with ui_client in build())
         self.CLICK_HOLD_THRESHOLD_S: float = CLICK_HOLD_THRESHOLD_S
+        self._home_btn: ui.button | None = None
+        self._home_arm_timer: ui.timer | None = None
+        self._home_armed = False
+        self._home_click_suppressed = False
         self._joint_click_hold: _ClickHoldHandler | None = None
         self._cart_click_hold: _ClickHoldHandler | None = None
 
@@ -1855,7 +1864,7 @@ class ControlPanel:
 
     # ---- Robot action methods ----
 
-    async def send_home(self) -> None:
+    async def send_home(self, calibrate: bool = False) -> None:
         # In editing mode, home the editing robot instead of the live one.
         if waldoctl.commander.status.editing_mode:
             if ui_state.urdf_scene:
@@ -1867,12 +1876,48 @@ class ControlPanel:
             return
 
         try:
-            _ = await self.client.home()
-            logger.info("HOME sent")
+            _ = await self.client.home(calibrate=calibrate)
+            logger.info("HOME sent%s", " (calibrate)" if calibrate else "")
 
-            motion_recorder.record_action("home")
+            motion_recorder.record_action("home", calibrate=calibrate)
         except Exception as e:
             logger.error("HOME failed: %s", e)
+
+    # A long press arms calibration (the button darkens); releasing while
+    # armed runs home(calibrate=True) and swallows the click the browser
+    # emits after mouseup, so a plain click still homes normally.
+    def _on_home_press(self) -> None:
+        self._on_home_cancel()
+        self._home_arm_timer = ui.timer(
+            HOME_LONG_PRESS_S, self._arm_home_calibrate, once=True
+        )
+
+    def _arm_home_calibrate(self) -> None:
+        assert self._home_btn is not None
+        self._home_armed = True
+        self._home_btn.props("icon=home_repair_service color=teal-9")
+
+    def _on_home_cancel(self) -> None:
+        if self._home_arm_timer is not None:
+            self._home_arm_timer.cancel()
+            self._home_arm_timer = None
+        if self._home_armed:
+            assert self._home_btn is not None
+            self._home_armed = False
+            self._home_btn.props("icon=home color=teal-6")
+
+    async def _on_home_release(self) -> None:
+        armed = self._home_armed
+        self._on_home_cancel()
+        if armed:
+            self._home_click_suppressed = True
+            await self.send_home(calibrate=True)
+
+    async def _on_home_click(self) -> None:
+        if self._home_click_suppressed:
+            self._home_click_suppressed = False
+            return
+        await self.send_home()
 
     def _is_urdf_scene_valid(self) -> bool:
         """Check if urdf_scene exists and its client is still valid."""
@@ -2538,9 +2583,15 @@ class ControlPanel:
         # The E-Stop rides the row's right edge out of flow; the padding
         # reserves its 72px footprint so no control grows underneath it.
         with ui.row().classes("gap-1 items-center relative w-full pr-20"):
-            ui.button(icon="home", on_click=self.send_home).props(
-                "dense round unelevated color=teal-6"
-            ).tooltip("Home (H)").mark("btn-home")
+            self._home_btn = (
+                ui.button(icon="home", on_click=self._on_home_click)
+                .props("dense round unelevated color=teal-6")
+                .tooltip("Home (H) · hold to calibrate")
+                .mark("btn-home")
+            )
+            self._home_btn.on("mousedown", self._on_home_press)
+            self._home_btn.on("mouseup", self._on_home_release)
+            self._home_btn.on("mouseleave", self._on_home_cancel)
 
             robot_btn = (
                 ui.button(

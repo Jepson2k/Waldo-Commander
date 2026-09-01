@@ -151,3 +151,37 @@ while True:
     assert handle["proc"].returncode is not None, (
         "Expected script to be stopped after mode switch"
     )
+
+
+@pytest.mark.integration
+async def test_home_long_press_calibrates(user: User) -> None:
+    """Holding HOME past the long-press threshold runs home(calibrate=True):
+    the firmware drops the homed flag while it seeks the end stops, which the
+    planned return move behind a plain click never does."""
+    from waldo_commander.constants import HOME_LONG_PRESS_S
+    from waldo_commander.state import robot_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    for _ in range(100):
+        if robot_state.homed:
+            break
+        await asyncio.sleep(0.1)
+    assert robot_state.homed
+
+    btn = user.find(marker="btn-home")
+    btn.trigger("mousedown")
+    await asyncio.sleep(HOME_LONG_PRESS_S + 0.3)
+    btn.trigger("mouseup")
+    btn.trigger("click")
+
+    for _ in range(300):
+        if not robot_state.homed:
+            break
+        await asyncio.sleep(0.01)
+    assert not robot_state.homed, "calibration never dropped the homed flag"
+    for _ in range(300):
+        if robot_state.homed:
+            break
+        await asyncio.sleep(0.1)
+    assert robot_state.homed
