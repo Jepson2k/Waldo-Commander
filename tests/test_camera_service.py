@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -123,3 +124,19 @@ def test_backend_fallback_to_opencv_when_linuxpy_fails():
     assert cs.active
     assert open_calls == ["linuxpy", "opencv"]
     cs.stop()
+
+
+@pytest.mark.skipif(
+    sys.platform == "linux",
+    reason="Linux lists devices via v4l2, not cv2-enumerate-cameras",
+)
+def test_camera_listing_never_opens_devices():
+    """Windows/macOS must resolve enumeration through the OS device registry.
+
+    If cv2-enumerate-cameras (or its compiled backend) fails to install,
+    enumerate_video_devices silently regresses to the OpenCV probe that
+    opens every webcam — the behavior reported in issue #37.
+    """
+    from waldo_commander.services.camera_service import _enumerate_listing
+
+    assert _enumerate_listing() is not None
