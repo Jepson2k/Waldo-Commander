@@ -14,7 +14,11 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from tests.helpers.charuco_render import render_board_view, synthesize_views
+from tests.helpers.charuco_render import (
+    look_at_target_pose,
+    render_board_view,
+    synthesize_views,
+)
 from waldo_commander.services import handeye
 
 SPEC = handeye.BoardSpec()
@@ -75,12 +79,42 @@ def test_solve_recovers_known_transform():
     assert restored["n_samples"] == result.n_views
 
 
+def _view_samples(
+    rolls: tuple[float, ...],
+    tilts: tuple[float, ...] | None = None,
+    azimuths: tuple[float, ...] | None = None,
+) -> list[handeye.HandEyeSample]:
+    """Rendered views at the given look-at angles, as the real capture path
+    would produce them."""
+    n = len(rolls)
+    tilts = tilts or (20.0,) * n
+    azimuths = azimuths or (0.0,) * n
+    detector = handeye.make_detector(SPEC)
+    samples: list[handeye.HandEyeSample] = []
+    X_inv = np.linalg.inv(X_TRUE)
+    for i, (roll, tilt, azimuth) in enumerate(zip(rolls, tilts, azimuths, strict=True)):
+        T_cam_target = look_at_target_pose(SPEC, 450.0, tilt, azimuth, roll)
+        T_base_gripper = T_BASE_TARGET @ np.linalg.inv(T_cam_target) @ X_inv
+        image = render_board_view(SPEC, K_TRUE, T_cam_target, IMAGE_SIZE)
+        detection = handeye.detect_board(image, detector)
+        assert detection is not None, f"view {i} must contain the board"
+        samples.append(handeye.HandEyeSample(T_base_gripper, detection, float(i)))
+    return samples
+
+
+def _roll_only_samples(n_views: int = 6) -> list[handeye.HandEyeSample]:
+    """Views differing only by camera roll — all relative rotations share the
+    optical axis, the degenerate case a look-at sweep without wrist roll hits."""
+    step = 150.0 / max(n_views - 1, 1)
+    return _view_samples(tuple(-75.0 + step * i for i in range(n_views)))
+
+
 @pytest.mark.unit
 def test_solve_rejections():
     samples = _samples(6)
 
-    with pytest.raises(handeye.CalibrationError, match="at least 3"):
-        handeye.solve_hand_eye(samples[:2], SPEC)
+    with pytest.raises(handeye.CalibrationError, match="at least 4"):
+        handeye.solve_hand_eye(samples[:3], SPEC)
 
     # Pure translation: same orientation everywhere → rotation unobservable.
     translated = []
@@ -92,6 +126,38 @@ def test_solve_rejections():
     assert max_rot < handeye.DEGENERATE_ROTATION_DEG
     with pytest.raises(handeye.CalibrationError, match="[Pp]ure-translation"):
         handeye.solve_hand_eye(translated, SPEC)
+
+    # Single-axis motion: plenty of total rotation, but every relative
+    # rotation shares one axis, so the mount offset along it is unobservable.
+    single_axis = _roll_only_samples()
+    max_rot, max_axis = handeye.motion_diversity(
+        [s.T_base_gripper for s in single_axis]
+    )
+    assert max_rot > handeye.DEGENERATE_ROTATION_DEG, (
+        f"fixture must clear the rotation gate, got {max_rot:.1f} deg"
+    )
+    assert max_axis < handeye.AXIS_DIVERSITY_MIN_DEG
+    with pytest.raises(handeye.CalibrationError, match="[Ss]ingle-axis"):
+        handeye.solve_hand_eye(single_axis, SPEC)
+
+    # Near-180° flips make the solve return a reflection (det = -1) rather
+    # than a rotation, which OpenCV reports without raising.
+    flipped = _view_samples(
+        rolls=(-90.0, 0.0, 90.0, 180.0),
+        tilts=(20.0, 30.0, 20.0, 30.0),
+        azimuths=(0.0, 90.0, 180.0, 270.0),
+    )
+    with pytest.raises(handeye.CalibrationError, match="non-rigid"):
+        handeye.solve_hand_eye(flipped, SPEC, method="PARK")
+
+    # One near-duplicate capture must not fake axis diversity: its relative
+    # rotation is too small for its axis to be anything but noise.
+    dupe = single_axis[2]
+    nudged = dupe.T_base_gripper.copy()
+    nudged[:3, 3] += np.array([4.0, 3.0, 2.0])
+    padded = [*single_axis, handeye.HandEyeSample(nudged, dupe.detection, 99.0)]
+    with pytest.raises(handeye.CalibrationError, match="[Ss]ingle-axis"):
+        handeye.solve_hand_eye(padded, SPEC)
 
     # Mixed capture resolutions invalidate a shared intrinsics solve.
     mixed = list(samples)

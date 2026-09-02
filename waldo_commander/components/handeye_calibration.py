@@ -33,7 +33,7 @@ from waldo_commander.state import robot_state
 logger = logging.getLogger(__name__)
 
 STATIONARY_SPEED_DEG_S = 0.5
-SOLVE_MIN_SAMPLES = 4
+SOLVE_MIN_SAMPLES = handeye.MIN_SAMPLES
 RECOMMENDED_SAMPLES = 8
 DETECT_INTERVAL_S = 0.2
 # Consecutive undecodable frames before surfacing a camera-format hint.
@@ -590,7 +590,7 @@ class HandEyeCalibrationPanel(Panel):
                 )
                 self._diversity_label.classes(replace="text-caption text-grey")
             else:
-                max_rot, _ = handeye.motion_diversity(
+                max_rot, max_axis = handeye.motion_diversity(
                     [s.T_base_gripper for s in self._samples]
                 )
                 if max_rot < handeye.DEGENERATE_ROTATION_DEG:
@@ -599,15 +599,27 @@ class HandEyeCalibrationPanel(Panel):
                         "between captures or the solve will fail."
                     )
                     self._diversity_label.classes(replace="text-caption text-negative")
-                elif max_rot < handeye.WARN_ROTATION_DEG or n < RECOMMENDED_SAMPLES:
+                elif max_axis < handeye.AXIS_DIVERSITY_MIN_DEG:
                     self._diversity_label.set_text(
-                        f"{n} views, max relative rotation {max_rot:.1f}° — more "
-                        "views / larger rotations improve accuracy."
+                        f"Rotation about one axis only (axis spread {max_axis:.1f}°) "
+                        "— roll the wrist about a second axis or the solve will fail."
+                    )
+                    self._diversity_label.classes(replace="text-caption text-negative")
+                elif (
+                    max_rot < handeye.WARN_ROTATION_DEG
+                    or max_axis < handeye.AXIS_WARN_DEG
+                    or n < RECOMMENDED_SAMPLES
+                ):
+                    self._diversity_label.set_text(
+                        f"{n} views, max relative rotation {max_rot:.1f}°, axis "
+                        f"spread {max_axis:.1f}° — more views / larger rotations "
+                        "about varied axes improve accuracy."
                     )
                     self._diversity_label.classes(replace="text-caption text-warning")
                 else:
                     self._diversity_label.set_text(
-                        f"{n} views, max relative rotation {max_rot:.1f}°."
+                        f"{n} views, max relative rotation {max_rot:.1f}°, "
+                        f"axis spread {max_axis:.1f}°."
                     )
                     self._diversity_label.classes(replace="text-caption text-positive")
 

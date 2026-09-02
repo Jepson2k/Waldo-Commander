@@ -23,11 +23,25 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 MIN_CORNERS_PER_VIEW = 6
-MIN_SAMPLES = 3
+MIN_SAMPLES = 4
 # Below this max pairwise relative rotation the camera-mount rotation is
 # unobservable and the hand-eye solution is meaningless.
 DEGENERATE_ROTATION_DEG = 3.0
 WARN_ROTATION_DEG = 15.0
+# Rotations about a single axis leave the mount translation along that axis
+# unobservable, so a capture set also needs two sufficiently different axes.
+AXIS_DIVERSITY_MIN_DEG = 9.0
+# 0.5 rad, the axis-separation "golden rule" of Shi/Wang/Liu (IbPRIA 2005)
+# that crigroup's handeye library applies per capture.  Accuracy keeps
+# improving up to it: measured p90 translation error falls from ~120 mm at
+# 5-10 deg of spread to ~18 mm here, so warn rather than reject below it.
+AXIS_WARN_DEG = 28.6
+# A near-duplicate capture pair has a rotation too small for its axis to be
+# anything but noise; counting it would fake axis diversity.
+AXIS_MIN_ROTATION_DEG = 3.0
+# cv2.calibrateHandEye can return a non-orthonormal or left-handed rotation
+# without raising; the solve is garbage whenever it does.
+RIGID_TOL = 1e-4
 
 HAND_EYE_METHODS: dict[str, int] = {
     "PARK": cv2.CALIB_HAND_EYE_PARK,
@@ -264,8 +278,9 @@ def calibrate_intrinsics(
 def motion_diversity(poses: list[np.ndarray]) -> tuple[float, float]:
     """(max pairwise relative-rotation deg, max angle between rotation axes deg).
 
-    The first value gates degeneracy; the second is 0.0 when fewer than two
-    non-trivial relative rotations exist.
+    Both values gate degeneracy.  Only pairs rotating at least
+    ``AXIS_MIN_ROTATION_DEG`` contribute an axis, so the second value is 0.0
+    when fewer than two such rotations exist.
     """
     angles: list[float] = []
     axes: list[np.ndarray] = []
@@ -275,7 +290,7 @@ def motion_diversity(poses: list[np.ndarray]) -> tuple[float, float]:
             rotvec = Rotation.from_matrix(R_rel).as_rotvec()
             angle = float(np.linalg.norm(rotvec))
             angles.append(math.degrees(angle))
-            if angle > 1e-6:
+            if math.degrees(angle) >= AXIS_MIN_ROTATION_DEG:
                 axes.append(rotvec / angle)
     if not angles:
         return 0.0, 0.0
@@ -325,11 +340,16 @@ def solve_hand_eye(
         )
 
     gripper_poses = [s.T_base_gripper for s in samples]
-    max_rot, _ = motion_diversity(gripper_poses)
+    max_rot, max_axis = motion_diversity(gripper_poses)
     if max_rot < DEGENERATE_ROTATION_DEG:
         raise CalibrationError(
             "Pure-translation motion: rotation of the camera mount is "
             "unobservable — rotate the wrist between captures"
+        )
+    if max_axis < AXIS_DIVERSITY_MIN_DEG:
+        raise CalibrationError(
+            "Single-axis motion: the camera offset along that axis is "
+            "unobservable — rotate about a second wrist axis between captures"
         )
 
     if intrinsics is None:
@@ -346,6 +366,16 @@ def solve_hand_eye(
     X = np.eye(4)
     X[:3, :3] = R_cam2gripper
     X[:3, 3] = np.asarray(t_cam2gripper, dtype=np.float64).ravel()
+    R_x = X[:3, :3]
+    if (
+        not np.all(np.isfinite(X))
+        or not np.allclose(R_x.T @ R_x, np.eye(3), atol=RIGID_TOL)
+        or abs(float(np.linalg.det(R_x)) - 1.0) > RIGID_TOL
+    ):
+        raise CalibrationError(
+            f"{method} returned a non-rigid transform — the capture set is "
+            "too ill-conditioned; avoid near-180° flips between views"
+        )
 
     T_target2cam = [
         _target2cam_matrix(r, t)
