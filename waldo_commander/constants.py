@@ -125,7 +125,8 @@ WAYPOINT_SIZE_SMALL = 0.004  # Non-editable segment endpoints
 # Click vs hold threshold for jog buttons and keyboard shortcuts
 CLICK_HOLD_THRESHOLD_S: float = 0.15
 
-# Holding HOME this long arms calibration; releasing while armed runs it.
+# Calibration is unchecked firmware motion, so the HOME hold must be
+# unmistakably deliberate.
 HOME_LONG_PRESS_S: float = 0.8
 
 # Core panel tab ids a plugin panel may never claim. Lives here (not main.py)

@@ -54,6 +54,32 @@ async def test_home_command_behavior(
             break
     assert any("HOME sent" in r.message for r in caplog.get_records("call"))
 
+    # --- Part 3: holding HOME past the threshold calibrates ---
+    from waldo_commander.constants import HOME_LONG_PRESS_S
+    from waldo_commander.state import robot_state
+
+    for _ in range(100):
+        if robot_state.homed:
+            break
+        await asyncio.sleep(0.1)
+    assert robot_state.homed
+
+    btn = user.find(marker="btn-home")
+    btn.trigger("pointerdown")
+    # The firmware drops the homed flag while it seeks the end stops — a
+    # planned return move never does — so watch for it during the hold.
+    deadline = asyncio.get_running_loop().time() + HOME_LONG_PRESS_S + 3.0
+    while robot_state.homed and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    assert not robot_state.homed, "calibration never dropped the homed flag"
+    btn.trigger("pointerup")
+    btn.trigger("click")
+    for _ in range(300):
+        if robot_state.homed:
+            break
+        await asyncio.sleep(0.1)
+    assert robot_state.homed
+
 
 @pytest.mark.integration
 async def test_digital_estop_dialog_behavior(user: User) -> None:
@@ -151,37 +177,3 @@ while True:
     assert handle["proc"].returncode is not None, (
         "Expected script to be stopped after mode switch"
     )
-
-
-@pytest.mark.integration
-async def test_home_long_press_calibrates(user: User) -> None:
-    """Holding HOME past the long-press threshold runs home(calibrate=True):
-    the firmware drops the homed flag while it seeks the end stops, which the
-    planned return move behind a plain click never does."""
-    from waldo_commander.constants import HOME_LONG_PRESS_S
-    from waldo_commander.state import robot_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    for _ in range(100):
-        if robot_state.homed:
-            break
-        await asyncio.sleep(0.1)
-    assert robot_state.homed
-
-    btn = user.find(marker="btn-home")
-    btn.trigger("mousedown")
-    # Calibration starts once the hold passes the threshold; the firmware
-    # holds the homed flag low only briefly, so watch for it during the hold.
-    deadline = asyncio.get_running_loop().time() + HOME_LONG_PRESS_S + 3.0
-    while robot_state.homed and asyncio.get_running_loop().time() < deadline:
-        await asyncio.sleep(0.01)
-    assert not robot_state.homed, "calibration never dropped the homed flag"
-    btn.trigger("mouseup")
-    btn.trigger("click")
-
-    for _ in range(300):
-        if robot_state.homed:
-            break
-        await asyncio.sleep(0.1)
-    assert robot_state.homed

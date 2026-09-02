@@ -643,6 +643,8 @@ class ControlPanel:
         self._home_tip: ui.tooltip | None = None
         self._home_press_timer: ui.timer | None = None
         self._home_progress_timer: ui.timer | None = None
+        self._home_inflight = False
+        self._home_long_fired = False
         self._home_click_suppressed = False
         self._joint_click_hold: _ClickHoldHandler | None = None
         self._cart_click_hold: _ClickHoldHandler | None = None
@@ -1876,21 +1878,43 @@ class ControlPanel:
         if not self._movement_allowed():
             return
 
+        if self._home_inflight:
+            return
+        self._home_inflight = True
         self._home_progress_start()
         try:
-            _ = await self.client.home(calibrate=calibrate, wait=True, timeout=120.0)
+            index = await self.client.home(calibrate=calibrate)
+            if index < 0:
+                logger.error("HOME rejected by the controller")
+                return
             logger.info("HOME sent%s", " (calibrate)" if calibrate else "")
-
             motion_recorder.record_action("home", calibrate=calibrate)
+            await self._wait_home(index)
         except Exception as e:
             logger.error("HOME failed: %s", e)
         finally:
+            self._home_inflight = False
             self._home_progress_stop()
 
-    HOME_TOOLTIP = "Home (H) · hold to calibrate"
+    async def _wait_home(self, index: int) -> None:
+        # wait_command only resolves on completion or a pipeline error; a plain
+        # Stop cancels the command without either, so the action going idle
+        # after it ran also ends the wait.
+        started = False
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            if await self.client.wait_command(index, timeout=0.5):
+                return
+            await asyncio.sleep(0.1)
+            act_state = waldoctl.commander.status.action.state
+            if act_state == waldoctl.ActionState.EXECUTING:
+                started = True
+            elif started and act_state == waldoctl.ActionState.IDLE:
+                return
+        logger.error("HOME did not complete within 120s")
 
-    # The button spins while home() runs and its tooltip follows the
-    # backend's homing progress; the digital E-Stop is the way to abort.
+    HOME_TOOLTIP = "Home (H) · hold button to calibrate"
+
     def _home_progress_start(self) -> None:
         if self._home_btn is None:
             return
@@ -1920,24 +1944,33 @@ class ControlPanel:
         if self._home_tip is not None:
             self._home_tip.text = self.HOME_TOOLTIP
 
-    # Holding the button past HOME_LONG_PRESS_S runs home(calibrate=True)
-    # and swallows the click the browser emits after mouseup; a shorter
-    # press falls through to the click, which homes normally.
-    def _on_home_press(self) -> None:
+    def _on_home_press(self, e) -> None:
+        if (e.args or {}).get("button", 0) != 0:
+            return
         self._cancel_home_press_timer()
+        self._home_long_fired = False
+        self._home_click_suppressed = False
         self._home_press_timer = ui.timer(
             HOME_LONG_PRESS_S, self._on_home_long_press, once=True
         )
 
     async def _on_home_long_press(self) -> None:
         self._home_press_timer = None
-        self._home_click_suppressed = True
+        self._home_long_fired = True
         await self.send_home(calibrate=True)
 
     def _cancel_home_press_timer(self) -> None:
         if self._home_press_timer is not None:
             self._home_press_timer.cancel()
             self._home_press_timer = None
+
+    def _on_home_release(self) -> None:
+        self._cancel_home_press_timer()
+        # The browser emits a click after this pointerup; a long press already
+        # acted, so that click must not home a second time.
+        if self._home_long_fired:
+            self._home_long_fired = False
+            self._home_click_suppressed = True
 
     async def _on_home_click(self) -> None:
         if self._home_click_suppressed:
@@ -2616,8 +2649,11 @@ class ControlPanel:
             )
             with self._home_btn:
                 self._home_tip = ui.tooltip(self.HOME_TOOLTIP)
-            self._home_btn.on("mousedown", self._on_home_press)
-            self._home_btn.on("mouseup", self._cancel_home_press_timer)
+            self._home_btn.on("pointerdown", self._on_home_press, ["button"])
+            self._home_btn.on("pointerup", self._on_home_release)
+            # Moving off the button is not a cancel (the E-Stop is); a browser
+            # aborting the pointer — touch scroll, palm rejection — is.
+            self._home_btn.on("pointercancel", self._cancel_home_press_timer)
 
             robot_btn = (
                 ui.button(
