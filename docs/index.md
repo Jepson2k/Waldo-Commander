@@ -145,10 +145,11 @@ Pre-commit hooks run ruff and ty on every commit. Tests use `pytest`.
 
 ### Editing sibling repos in place
 
-If you need to edit `waldoctl/` or `PAROL6-python-API/` alongside `waldo_commander/`, clone them as sibling directories and run:
+If you need to edit `waldoctl/`, `par6/` or `PAROL6-python-API/` alongside `waldo_commander/`, clone them as sibling directories and run:
 
 ```bash
 pip install -e waldoctl/
+pip install -e par6/python --no-deps   # after par6/scripts/ffi/setup.sh
 pip install -e PAROL6-python-API/ --config-settings editable_mode=compat --no-deps
 pip install -e . --no-deps
 pip install -e ".[dev]"

@@ -87,9 +87,6 @@ include = ["waldo_commander*"]
 [tool.setuptools.package-data]
 waldo_commander = ["static/**/*"]
 
-[tool.ty.environment]
-extra-paths = ["PAROL6-python-API"]
-
 # ty 0.0.74 mis-binds ParamSpec *args on numba's Dispatcher.__call__ stub:
 # every argument at a jitted call site is compared against the full parameter
 # tuple (astral-sh/ty#157 — ParamSpec support is still partial), flooding the
