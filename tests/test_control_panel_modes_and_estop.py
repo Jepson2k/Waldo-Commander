@@ -171,15 +171,15 @@ async def test_home_long_press_calibrates(user: User) -> None:
 
     btn = user.find(marker="btn-home")
     btn.trigger("mousedown")
-    await asyncio.sleep(HOME_LONG_PRESS_S + 0.3)
+    # Calibration starts once the hold passes the threshold; the firmware
+    # holds the homed flag low only briefly, so watch for it during the hold.
+    deadline = asyncio.get_running_loop().time() + HOME_LONG_PRESS_S + 3.0
+    while robot_state.homed and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    assert not robot_state.homed, "calibration never dropped the homed flag"
     btn.trigger("mouseup")
     btn.trigger("click")
 
-    for _ in range(300):
-        if not robot_state.homed:
-            break
-        await asyncio.sleep(0.01)
-    assert not robot_state.homed, "calibration never dropped the homed flag"
     for _ in range(300):
         if robot_state.homed:
             break

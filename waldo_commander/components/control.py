@@ -640,8 +640,9 @@ class ControlPanel:
         # Click/hold handlers (initialized with ui_client in build())
         self.CLICK_HOLD_THRESHOLD_S: float = CLICK_HOLD_THRESHOLD_S
         self._home_btn: ui.button | None = None
-        self._home_arm_timer: ui.timer | None = None
-        self._home_armed = False
+        self._home_tip: ui.tooltip | None = None
+        self._home_press_timer: ui.timer | None = None
+        self._home_progress_timer: ui.timer | None = None
         self._home_click_suppressed = False
         self._joint_click_hold: _ClickHoldHandler | None = None
         self._cart_click_hold: _ClickHoldHandler | None = None
@@ -1875,43 +1876,68 @@ class ControlPanel:
         if not self._movement_allowed():
             return
 
+        self._home_progress_start()
         try:
-            _ = await self.client.home(calibrate=calibrate)
+            _ = await self.client.home(calibrate=calibrate, wait=True, timeout=120.0)
             logger.info("HOME sent%s", " (calibrate)" if calibrate else "")
 
             motion_recorder.record_action("home", calibrate=calibrate)
         except Exception as e:
             logger.error("HOME failed: %s", e)
+        finally:
+            self._home_progress_stop()
 
-    # A long press arms calibration (the button darkens); releasing while
-    # armed runs home(calibrate=True) and swallows the click the browser
-    # emits after mouseup, so a plain click still homes normally.
+    HOME_TOOLTIP = "Home (H) · hold to calibrate"
+
+    # The button spins while home() runs and its tooltip follows the
+    # backend's homing progress; the digital E-Stop is the way to abort.
+    def _home_progress_start(self) -> None:
+        if self._home_btn is None:
+            return
+        self._home_btn.props("loading")
+        self._home_progress_tick()
+        # send_home may run from a keyboard or long-press task with no slot
+        # entered; the timer must belong to the button's client.
+        with self._home_btn:
+            self._home_progress_timer = ui.timer(0.1, self._home_progress_tick)
+
+    def _home_progress_tick(self) -> None:
+        if self._home_tip is None:
+            return
+        hm = waldoctl.commander.status.homing
+        if hm.active:
+            done = sum(1 for state, _phase in hm.joints if state == "HOMED")
+            self._home_tip.text = f"Calibrating · {done}/{len(hm.joints)} joints"
+        else:
+            self._home_tip.text = "Homing…"
+
+    def _home_progress_stop(self) -> None:
+        if self._home_progress_timer is not None:
+            self._home_progress_timer.cancel()
+            self._home_progress_timer = None
+        if self._home_btn is not None:
+            self._home_btn.props(remove="loading")
+        if self._home_tip is not None:
+            self._home_tip.text = self.HOME_TOOLTIP
+
+    # Holding the button past HOME_LONG_PRESS_S runs home(calibrate=True)
+    # and swallows the click the browser emits after mouseup; a shorter
+    # press falls through to the click, which homes normally.
     def _on_home_press(self) -> None:
-        self._on_home_cancel()
-        self._home_arm_timer = ui.timer(
-            HOME_LONG_PRESS_S, self._arm_home_calibrate, once=True
+        self._cancel_home_press_timer()
+        self._home_press_timer = ui.timer(
+            HOME_LONG_PRESS_S, self._on_home_long_press, once=True
         )
 
-    def _arm_home_calibrate(self) -> None:
-        assert self._home_btn is not None
-        self._home_armed = True
-        self._home_btn.props("icon=home_repair_service color=teal-9")
+    async def _on_home_long_press(self) -> None:
+        self._home_press_timer = None
+        self._home_click_suppressed = True
+        await self.send_home(calibrate=True)
 
-    def _on_home_cancel(self) -> None:
-        if self._home_arm_timer is not None:
-            self._home_arm_timer.cancel()
-            self._home_arm_timer = None
-        if self._home_armed:
-            assert self._home_btn is not None
-            self._home_armed = False
-            self._home_btn.props("icon=home color=teal-6")
-
-    async def _on_home_release(self) -> None:
-        armed = self._home_armed
-        self._on_home_cancel()
-        if armed:
-            self._home_click_suppressed = True
-            await self.send_home(calibrate=True)
+    def _cancel_home_press_timer(self) -> None:
+        if self._home_press_timer is not None:
+            self._home_press_timer.cancel()
+            self._home_press_timer = None
 
     async def _on_home_click(self) -> None:
         if self._home_click_suppressed:
@@ -2586,12 +2612,12 @@ class ControlPanel:
             self._home_btn = (
                 ui.button(icon="home", on_click=self._on_home_click)
                 .props("dense round unelevated color=teal-6")
-                .tooltip("Home (H) · hold to calibrate")
                 .mark("btn-home")
             )
+            with self._home_btn:
+                self._home_tip = ui.tooltip(self.HOME_TOOLTIP)
             self._home_btn.on("mousedown", self._on_home_press)
-            self._home_btn.on("mouseup", self._on_home_release)
-            self._home_btn.on("mouseleave", self._on_home_cancel)
+            self._home_btn.on("mouseup", self._cancel_home_press_timer)
 
             robot_btn = (
                 ui.button(
