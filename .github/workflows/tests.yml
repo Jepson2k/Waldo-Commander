@@ -53,12 +53,12 @@ jobs:
           if [ -n "$WALDOCTL_REF" ]; then
             mv pyproject.toml.bak pyproject.toml
           fi
-          # parol6 (the default test backend) installs WITHOUT dep resolution:
-          # its 0.4.0 release pins waldoctl by a direct v0.7.0 URL, which pip
-          # cannot reconcile with this package's v0.9.0 pin in one resolve.
-          # Its remaining deps are named explicitly (waldoctl/numpy/pinokin/
-          # pyserial/scipy/ruckig are already installed above).
-          PAROL6_REF="0.4.0"
+          # parol6 installs --no-deps so branch-matching stays robust: a
+          # branch-matched parol6 may pin a different waldoctl direct URL
+          # than this package does, and pip cannot reconcile two direct
+          # URLs in one resolve. Its remaining deps are named explicitly
+          # (waldoctl/numpy/pinokin/pyserial/scipy/ruckig are above).
+          PAROL6_REF="v0.6.0"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               PAROL6_REF="$BRANCH"
@@ -123,12 +123,12 @@ jobs:
           if [ -n "$WALDOCTL_REF" ]; then
             mv pyproject.toml.bak pyproject.toml
           fi
-          # parol6 (the default test backend) installs WITHOUT dep resolution:
-          # its 0.4.0 release pins waldoctl by a direct v0.7.0 URL, which pip
-          # cannot reconcile with this package's v0.9.0 pin in one resolve.
-          # Its remaining deps are named explicitly (waldoctl/numpy/pinokin/
-          # pyserial/scipy/ruckig are already installed above).
-          PAROL6_REF="0.4.0"
+          # parol6 installs --no-deps so branch-matching stays robust: a
+          # branch-matched parol6 may pin a different waldoctl direct URL
+          # than this package does, and pip cannot reconcile two direct
+          # URLs in one resolve. Its remaining deps are named explicitly
+          # (waldoctl/numpy/pinokin/pyserial/scipy/ruckig are above).
+          PAROL6_REF="v0.6.0"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               PAROL6_REF="$BRANCH"
@@ -252,9 +252,9 @@ jobs:
           if [ -n "$WALDOCTL_REF" ]; then
             mv pyproject.toml.bak pyproject.toml
           fi
-          # parol6 rides along --no-deps (direct-URL waldoctl conflict, same
-          # as the jobs above); this job's backend under test is par6.
-          PAROL6_REF="0.4.0"
+          # parol6 rides along --no-deps (direct-URL branch-drift hazard,
+          # same as the jobs above); this job's backend under test is par6.
+          PAROL6_REF="v0.6.0"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               PAROL6_REF="$BRANCH"
