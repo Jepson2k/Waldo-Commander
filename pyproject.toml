@@ -50,11 +50,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.6.0"]
+parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.6.1"]
 par6 = ["par6 @ git+https://github.com/Jepson2k/par6.git@main#subdirectory=python"]
 v4l2 = ["linuxpy>=0.24"]
 dev = [
-  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.6.0",
+  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.6.1",
   "ruff",
   # ty 0.0.74 regressed ParamSpec-typed calls (numba's Dispatcher.__call__
   # stubs): every 2-arg call of a jitted pinokin function reports
