@@ -140,15 +140,26 @@ def test_solve_rejections():
     with pytest.raises(handeye.CalibrationError, match="[Ss]ingle-axis"):
         handeye.solve_hand_eye(single_axis, SPEC)
 
-    # Near-180° flips make the solve return a reflection (det = -1) rather
-    # than a rotation, which OpenCV reports without raising.
+    # Near-180° flips can make cv2.calibrateHandEye return a reflection
+    # (det = -1) instead of a rotation, without raising. Whether it does is
+    # platform-dependent, so assert the invariant that holds either way: a
+    # non-rigid solution never escapes as a result.
     flipped = _view_samples(
         rolls=(-90.0, 0.0, 90.0, 180.0),
         tilts=(20.0, 30.0, 20.0, 30.0),
         azimuths=(0.0, 90.0, 180.0, 270.0),
     )
-    with pytest.raises(handeye.CalibrationError, match="non-rigid"):
-        handeye.solve_hand_eye(flipped, SPEC, method="PARK")
+    try:
+        R_flipped = handeye.solve_hand_eye(flipped, SPEC, method="PARK").T_cam2gripper[
+            :3, :3
+        ]
+    except handeye.CalibrationError as e:
+        assert "non-rigid" in str(e), f"unexpected rejection: {e}"
+    else:
+        np.testing.assert_allclose(
+            R_flipped.T @ R_flipped, np.eye(3), atol=handeye.RIGID_TOL
+        )
+        assert np.linalg.det(R_flipped) > 0, "solve returned a reflection"
 
     # One near-duplicate capture must not fake axis diversity: its relative
     # rotation is too small for its axis to be anything but noise.
