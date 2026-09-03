@@ -71,6 +71,10 @@ Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, sli
 
 An MJPEG camera stream can be displayed in the gripper panel — useful for monitoring pick-and-place or running ML inference on the end-effector view. On Linux, frames pass straight from the kernel to the browser via v4l2 with zero re-encoding. Virtual camera devices work too — pipe a CV pipeline through `pyvirtualcam` and display the annotated feed.
 
+### Hand-Eye Calibration
+
+For a camera mounted on the tool, the **Hand-Eye Calibration** tab solves the camera→TCP transform (eye-in-hand) so camera observations can be mapped into robot coordinates. Download the generated ChArUco board, print it at 100% scale, and fix it in the workspace — tilted roughly 30-45° toward the camera rather than square-on, which conditions the solve much better. Then jog the robot so the camera sees the board from 10–15 poses with varied wrist orientation, capturing a sample at each; detected corners are overlaid on the live feed and a capture is only accepted while the board is detected and the robot is stationary. Solving estimates the camera intrinsics from the same captures and runs `cv2.calibrateHandEye`, reporting reprojection error, AX=XB residuals, and target spread. Saved calibrations are stored per tool and can be visualized as a camera frustum in the 3D scene.
+
 ---
 
 ## Configuration
