@@ -213,11 +213,12 @@ plus all dev tools (ruff, ty, pytest, pre-commit, selenium).
 
 #### Advanced: editing sibling repos in place
 
-If you also need to edit `waldoctl/` or `PAROL6-python-API/` directly, clone
-them as sibling directories and use this multi-step install:
+If you also need to edit `waldoctl/`, `par6/` or `PAROL6-python-API/`
+directly, clone them as sibling directories and use this multi-step install:
 
 ```bash
 pip install -e waldoctl/
+pip install -e par6/python --no-deps   # after par6/scripts/ffi/setup.sh
 pip install -e PAROL6-python-API/ --config-settings editable_mode=compat --no-deps
 pip install -e . --no-deps
 pip install -e ".[dev]"   # final pass picks up the rest of the deps
