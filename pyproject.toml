@@ -15,7 +15,7 @@ dependencies = [
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.9.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.10.0",
   "opencv-python-headless>=4.8",
   # Windows/macOS: list cameras without opening them (issue #37).
   "cv2-enumerate-cameras==1.3.3; sys_platform == 'win32' or sys_platform == 'darwin'",
@@ -50,17 +50,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0"]
+parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.6.1"]
 par6 = ["par6 @ git+https://github.com/Jepson2k/par6.git@main#subdirectory=python"]
 v4l2 = ["linuxpy>=0.24"]
 dev = [
-  # parol6 (the default test backend) is deliberately NOT here: its 0.4.0
-  # release pins waldoctl by a direct v0.7.0 URL, and pip cannot reconcile
-  # two different direct URLs for one package in a single resolve now that
-  # this package pins v0.9.0. Install it beside the dev extra instead:
-  #   pip install --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@0.4.0"
-  #   pip install interpolatepy msgspec numba ormsgpack psutil toppra
-  # (the [parol6] extra keeps working once parol6 re-pins waldoctl v0.9.0).
+  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.6.1",
   "ruff",
   # ty 0.0.74 regressed ParamSpec-typed calls (numba's Dispatcher.__call__
   # stubs): every 2-arg call of a jitted pinokin function reports
