@@ -321,32 +321,17 @@ def test_preview_marking_replays_shape_boundaries() -> None:
 
 
 def test_shape_render_pose_matches_enforced_geometry() -> None:
-    """Cylinders stand along coal's Z axis and planes sit on their halfspace
-    surface — the drawn shape must match the blocked volume."""
+    """Cylinders stand along coal's Z axis — the drawn shape must match the
+    blocked volume."""
     import numpy as np
 
-    from waldoctl import Cylinder, Plane
+    from waldoctl import Cylinder
     from waldo_commander.services.urdf_scene.urdf_scene import _shape_render_pose
 
     # Identity pose: the render rotation is the Y->Z-up correction, not identity.
     pos, rot = _shape_render_pose(Cylinder(name="post", radius=0.05, length=0.5))
     assert pos == (0.0, 0.0, 0.0)
     assert np.allclose(rot, [[1, 0, 0], [0, 0, -1], [0, 1, 0]])
-
-    # z=0.4 ceiling: the slab sits at the surface, normal along +z.
-    pos, rot = _shape_render_pose(Plane(name="ceil", nx=0, ny=0, nz=1, offset=0.4))
-    assert np.allclose(pos, (0.0, 0.0, 0.4))
-    assert np.allclose(rot, np.eye(3))
-
-    # Non-unit normal: coal normalizes Halfspace(n, d) to (n/|n|, d/|n|), so
-    # (0,0,2), offset 0.8 enforces z <= 0.4 — the slab must render there.
-    pos, rot = _shape_render_pose(Plane(name="c2", nx=0, ny=0, nz=2, offset=0.8))
-    assert np.allclose(pos, (0.0, 0.0, 0.4))
-
-    # x-normal wall at x=0.2: slab normal (its local z) maps to +x.
-    pos, rot = _shape_render_pose(Plane(name="wall", nx=1, ny=0, nz=0, offset=0.2))
-    assert np.allclose(pos, (0.2, 0.0, 0.0))
-    assert np.allclose(np.array(rot) @ [0, 0, 1], [1, 0, 0])
 
 
 @pytest.mark.integration
