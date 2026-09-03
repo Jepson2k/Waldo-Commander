@@ -384,6 +384,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#hand-eye-calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hand-Eye Calibration
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -715,6 +726,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#hand-eye-calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hand-Eye Calibration
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -875,7 +897,7 @@
 <p>Requires Python 3.12+. Runs on Linux, macOS, and Windows.</p>
 <div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Jepson2k/Waldo-Commander.git
 <span class="nb">cd</span><span class="w"> </span>Waldo-Commander
-pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[parol6]&quot;</span>
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[parol6]"</span>
 waldo-commander
 </code></pre></div>
 <p>Open the printed URL. No robot connected? The app auto-starts in simulator mode.</p>
@@ -912,6 +934,8 @@ waldo-commander
 
 <h3 id="camera-feed">Camera Feed<a class="headerlink" href="#camera-feed" title="Permanent link">&para;</a></h3>
 <p>An MJPEG camera stream can be displayed in the gripper panel — useful for monitoring pick-and-place or running ML inference on the end-effector view. On Linux, frames pass straight from the kernel to the browser via v4l2 with zero re-encoding. Virtual camera devices work too — pipe a CV pipeline through <code>pyvirtualcam</code> and display the annotated feed.</p>
+<h3 id="hand-eye-calibration">Hand-Eye Calibration<a class="headerlink" href="#hand-eye-calibration" title="Permanent link">&para;</a></h3>
+<p>For a camera mounted on the tool, the <strong>Hand-Eye Calibration</strong> tab solves the camera→TCP transform (eye-in-hand) so camera observations can be mapped into robot coordinates. Download the generated ChArUco board, print it at 100% scale, and fix it in the workspace — tilted roughly 30-45° toward the camera rather than square-on, which conditions the solve much better. Then jog the robot so the camera sees the board from 10–15 poses with varied wrist orientation, capturing a sample at each; detected corners are overlaid on the live feed and a capture is only accepted while the board is detected and the robot is stationary. Solving estimates the camera intrinsics from the same captures and runs <code>cv2.calibrateHandEye</code>, reporting reprojection error, AX=XB residuals, and target spread. Saved calibrations are stored per tool and can be visualized as a camera frustum in the 3D scene.</p>
 <hr />
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <h3 id="cli-options">CLI Options<a class="headerlink" href="#cli-options" title="Permanent link">&para;</a></h3>
@@ -1060,7 +1084,7 @@ waldo-commander
 <p>For lowest latency, run the web UI and controller on the same machine.</p>
 <hr />
 <h2 id="contributing">Contributing<a class="headerlink" href="#contributing" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[dev]&quot;</span>
+<div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[dev]"</span>
 pre-commit<span class="w"> </span>install
 </code></pre></div>
 <p>Pre-commit hooks run ruff and ty on every commit. Tests use <code>pytest</code>.</p>
@@ -1069,7 +1093,7 @@ pre-commit<span class="w"> </span>install
 <div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>waldoctl/
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>PAROL6-python-API/<span class="w"> </span>--config-settings<span class="w"> </span><span class="nv">editable_mode</span><span class="o">=</span>compat<span class="w"> </span>--no-deps
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.<span class="w"> </span>--no-deps
-pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[dev]&quot;</span>
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[dev]"</span>
 </code></pre></div>
 <p><code>--no-deps</code> sidesteps a pip resolver conflict between the local editable <code>waldoctl</code> and the <code>waldoctl @ git+...</code> direct URL pin in dependents. <code>editable_mode=compat</code> is needed only for parol6, so <code>importlib.resources.files("parol6")</code> resolves to the source tree (otherwise the URDF lookup fails at startup).</p>
 <hr />

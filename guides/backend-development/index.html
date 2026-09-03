@@ -1278,7 +1278,7 @@
 User programs are plain Python files that import your backend's client directly:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">mybackend</span><span class="w"> </span><span class="kn">import</span> <span class="n">RobotClient</span>
 
-<span class="n">rbt</span> <span class="o">=</span> <span class="n">RobotClient</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s1">&#39;127.0.0.1&#39;</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="mi">5001</span><span class="p">)</span>
+<span class="n">rbt</span> <span class="o">=</span> <span class="n">RobotClient</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s1">'127.0.0.1'</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="mi">5001</span><span class="p">)</span>
 <span class="n">rbt</span><span class="o">.</span><span class="n">home</span><span class="p">()</span>
 <span class="n">rbt</span><span class="o">.</span><span class="n">move_j</span><span class="p">(</span><span class="n">pose</span><span class="o">=</span><span class="p">[</span><span class="mi">100</span><span class="p">,</span> <span class="mi">200</span><span class="p">,</span> <span class="mi">300</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="n">speed</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
 </code></pre></div>
@@ -1387,8 +1387,8 @@ User programs are plain Python files that import your backend's client directly:
 </ul>
 <h2 id="registration">Registration<a class="headerlink" href="#registration" title="Permanent link">&para;</a></h2>
 <p>Backends register themselves via a Python entry point in the <code>waldoctl.robots</code> group -- no edits to Waldo Commander are required. Add the entry point to your backend's <code>pyproject.toml</code>:</p>
-<div class="highlight"><pre><span></span><code><span class="k">[project.entry-points.</span><span class="s2">&quot;waldoctl.robots&quot;</span><span class="k">]</span>
-<span class="n">my_robot</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;my_robot.robot:Robot&quot;</span>
+<div class="highlight"><pre><span></span><code><span class="k">[project.entry-points.</span><span class="s2">"waldoctl.robots"</span><span class="k">]</span>
+<span class="n">my_robot</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"my_robot.robot:Robot"</span>
 </code></pre></div>
 <p>The entry-point value must point to a <code>waldoctl.Robot</code> subclass. Once the package is installed in the same environment as Waldo Commander, the backend is automatically discovered by <code>waldoctl.discovery.available_backends()</code> and selectable from the UI.</p>
 <p><strong>Selecting a backend</strong> -- if multiple backends are installed, choose one by setting the <code>WALDO_ROBOT</code> environment variable to the entry-point name. With a single backend installed, it is auto-selected. Otherwise Waldo Commander falls back to its built-in default (<code>parol6</code>).</p>
@@ -1416,13 +1416,13 @@ User programs are plain Python files that import your backend's client directly:
 <h3 id="command-palette">Command palette<a class="headerlink" href="#command-palette" title="Permanent link">&para;</a></h3>
 <p><code>RobotClient</code> methods that include <code>Category:</code> and <code>Example:</code> sections in their docstrings appear in the editor's auto-complete palette. Follow this format in your client's docstrings to get easy editor integration:</p>
 <div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">move_j</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">speed</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Joint-space move.</span>
+<span class="w">    </span><span class="sd">"""Joint-space move.</span>
 
 <span class="sd">    Category: Motion</span>
 
 <span class="sd">    Example:</span>
 <span class="sd">        rbt.move_j([0, -90, 0, 0, 0, 0], speed=0.5)</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 </code></pre></div>
 <h3 id="dryrunresult-fields">DryRunResult fields<a class="headerlink" href="#dryrunresult-fields" title="Permanent link">&para;</a></h3>
 <p>The <code>DryRunResult</code> Protocol splits its fields into required and optional:</p>
@@ -1440,7 +1440,7 @@ User programs are plain Python files that import your backend's client directly:
 </ul>
 <h2 id="minimal-skeleton">Minimal skeleton<a class="headerlink" href="#minimal-skeleton" title="Permanent link">&para;</a></h2>
 <p>This is a starting structure with all required abstract methods stubbed. It compiles and gives you a scaffold to fill in:</p>
-<div class="highlight"><pre><span></span><code><span class="sd">&quot;&quot;&quot;Minimal robot backend skeleton.&quot;&quot;&quot;</span>
+<div class="highlight"><pre><span></span><code><span class="sd">"""Minimal robot backend skeleton."""</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
@@ -1478,11 +1478,11 @@ User programs are plain Python files that import your backend's client directly:
 <span class="c1"># -- Tool configuration ----------------------------------------------------</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">MyTools</span><span class="p">(</span><span class="n">ToolsSpec</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Bare-flange-only tool set.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Bare-flange-only tool set."""</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_none</span> <span class="o">=</span> <span class="n">ToolSpec</span><span class="p">(</span>  <span class="c1"># type: ignore[abstract]</span>
-            <span class="n">key</span><span class="o">=</span><span class="s2">&quot;NONE&quot;</span><span class="p">,</span> <span class="n">display_name</span><span class="o">=</span><span class="s2">&quot;None&quot;</span><span class="p">,</span> <span class="n">tool_type</span><span class="o">=</span><span class="n">ToolType</span><span class="o">.</span><span class="n">NONE</span><span class="p">,</span>
+            <span class="n">key</span><span class="o">=</span><span class="s2">"NONE"</span><span class="p">,</span> <span class="n">display_name</span><span class="o">=</span><span class="s2">"None"</span><span class="p">,</span> <span class="n">tool_type</span><span class="o">=</span><span class="n">ToolType</span><span class="o">.</span><span class="n">NONE</span><span class="p">,</span>
             <span class="n">tcp_origin</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">tcp_rpy</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span>
         <span class="p">)</span>
 
@@ -1495,14 +1495,14 @@ User programs are plain Python files that import your backend's client directly:
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_none</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ToolSpec</span><span class="p">:</span>
-        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s2">&quot;NONE&quot;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s2">"NONE"</span><span class="p">:</span>
             <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_none</span>
         <span class="k">raise</span> <span class="ne">KeyError</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__contains__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">:</span> <span class="nb">object</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">ToolType</span><span class="p">):</span>
             <span class="k">return</span> <span class="n">item</span> <span class="o">==</span> <span class="n">ToolType</span><span class="o">.</span><span class="n">NONE</span>
-        <span class="k">return</span> <span class="n">item</span> <span class="o">==</span> <span class="s2">&quot;NONE&quot;</span>
+        <span class="k">return</span> <span class="n">item</span> <span class="o">==</span> <span class="s2">"NONE"</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">by_type</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tool_type</span><span class="p">:</span> <span class="n">ToolType</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">ToolSpec</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
         <span class="k">return</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_none</span><span class="p">,)</span> <span class="k">if</span> <span class="n">tool_type</span> <span class="o">==</span> <span class="n">ToolType</span><span class="o">.</span><span class="n">NONE</span> <span class="k">else</span> <span class="p">()</span>
@@ -1511,13 +1511,13 @@ User programs are plain Python files that import your backend's client directly:
 <span class="c1"># -- Robot ------------------------------------------------------------------</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Robot</span><span class="p">(</span><span class="n">waldoctl</span><span class="o">.</span><span class="n">Robot</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Minimal Robot implementation.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Minimal Robot implementation."""</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">limits</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="o">-</span><span class="mi">170</span><span class="p">,</span> <span class="mi">170</span><span class="p">]]</span> <span class="o">*</span> <span class="n">NUM_JOINTS</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_joints</span> <span class="o">=</span> <span class="n">JointsSpec</span><span class="p">(</span>
             <span class="n">count</span><span class="o">=</span><span class="n">NUM_JOINTS</span><span class="p">,</span>
-            <span class="n">names</span><span class="o">=</span><span class="nb">tuple</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;J</span><span class="si">{</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">)),</span>
+            <span class="n">names</span><span class="o">=</span><span class="nb">tuple</span><span class="p">(</span><span class="sa">f</span><span class="s2">"J</span><span class="si">{</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="si">}</span><span class="s2">"</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">)),</span>
             <span class="n">limits</span><span class="o">=</span><span class="n">JointLimits</span><span class="p">(</span>
                 <span class="n">position</span><span class="o">=</span><span class="n">PositionLimits</span><span class="p">(</span><span class="n">deg</span><span class="o">=</span><span class="n">limits</span><span class="p">,</span> <span class="n">rad</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">limits</span><span class="p">)),</span>
                 <span class="n">hard</span><span class="o">=</span><span class="n">KinodynamicLimits</span><span class="p">(</span>
@@ -1539,11 +1539,11 @@ User programs are plain Python files that import your backend's client directly:
     <span class="c1"># -- Identity</span>
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-        <span class="k">return</span> <span class="s2">&quot;MyRobot&quot;</span>
+        <span class="k">return</span> <span class="s2">"MyRobot"</span>
 
     <span class="nd">@property</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">position_unit</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;mm&quot;</span><span class="p">,</span> <span class="s2">&quot;m&quot;</span><span class="p">]:</span>
-        <span class="k">return</span> <span class="s2">&quot;mm&quot;</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">position_unit</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"mm"</span><span class="p">,</span> <span class="s2">"m"</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="s2">"mm"</span>
 
     <span class="c1"># -- Joint / tool / limit configuration</span>
     <span class="nd">@property</span>
@@ -1572,11 +1572,11 @@ User programs are plain Python files that import your backend's client directly:
     <span class="c1"># -- Visualization</span>
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">urdf_path</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="vm">__file__</span><span class="p">)</span><span class="o">.</span><span class="n">parent</span> <span class="o">/</span> <span class="s2">&quot;urdf&quot;</span> <span class="o">/</span> <span class="s2">&quot;my_robot.urdf&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="vm">__file__</span><span class="p">)</span><span class="o">.</span><span class="n">parent</span> <span class="o">/</span> <span class="s2">"urdf"</span> <span class="o">/</span> <span class="s2">"my_robot.urdf"</span><span class="p">)</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">mesh_dir</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="vm">__file__</span><span class="p">)</span><span class="o">.</span><span class="n">parent</span> <span class="o">/</span> <span class="s2">&quot;urdf&quot;</span> <span class="o">/</span> <span class="s2">&quot;meshes&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="vm">__file__</span><span class="p">)</span><span class="o">.</span><span class="n">parent</span> <span class="o">/</span> <span class="s2">"urdf"</span> <span class="o">/</span> <span class="s2">"meshes"</span><span class="p">)</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">joint_index_mapping</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
@@ -1585,7 +1585,7 @@ User programs are plain Python files that import your backend's client directly:
     <span class="c1"># -- Backend injection</span>
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">backend_package</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-        <span class="k">return</span> <span class="s2">&quot;my_robot&quot;</span>
+        <span class="k">return</span> <span class="s2">"my_robot"</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">sync_client_class</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">type</span><span class="p">:</span>
@@ -1601,7 +1601,7 @@ User programs are plain Python files that import your backend's client directly:
         <span class="k">return</span> <span class="n">out</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">ik</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pose</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">,</span> <span class="n">q_seed_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">IKResult</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">IKResultData</span><span class="p">(</span><span class="n">q</span><span class="o">=</span><span class="n">q_seed_rad</span><span class="o">.</span><span class="n">copy</span><span class="p">(),</span> <span class="n">success</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">violations</span><span class="o">=</span><span class="s2">&quot;not implemented&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">IKResultData</span><span class="p">(</span><span class="n">q</span><span class="o">=</span><span class="n">q_seed_rad</span><span class="o">.</span><span class="n">copy</span><span class="p">(),</span> <span class="n">success</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">violations</span><span class="o">=</span><span class="s2">"not implemented"</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">fk_batch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">joint_path_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">NDArray</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="nb">len</span><span class="p">(</span><span class="n">joint_path_rad</span><span class="p">),</span> <span class="mi">6</span><span class="p">))</span>
@@ -1637,7 +1637,7 @@ User programs are plain Python files that import your backend's client directly:
 <span class="c1"># -- AsyncRobotClient -------------------------------------------------------</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">AsyncClient</span><span class="p">(</span><span class="n">waldoctl</span><span class="o">.</span><span class="n">RobotClient</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Minimal async client -- fill in with your SDK calls.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Minimal async client -- fill in with your SDK calls."""</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span> <span class="o">...</span>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">ping</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">PingResult</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span> <span class="k">return</span> <span class="n">PingResult</span><span class="p">(</span><span class="n">hardware_connected</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
@@ -1658,7 +1658,7 @@ User programs are plain Python files that import your backend's client directly:
 
     <span class="c1"># Streaming velocity</span>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">jog_j</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">joint</span><span class="p">,</span> <span class="n">speed</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">duration</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
-    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">jog_l</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">frame</span><span class="o">=</span><span class="s2">&quot;WRF&quot;</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">speed</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">duration</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">jog_l</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">frame</span><span class="o">=</span><span class="s2">"WRF"</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">speed</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">duration</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
 
     <span class="c1"># Synchronization</span>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">wait_motion</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">10.0</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span> <span class="k">return</span> <span class="kc">True</span>
@@ -1675,11 +1675,11 @@ User programs are plain Python files that import your backend's client directly:
 
     <span class="c1"># Queries</span>
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">angles</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span> <span class="k">return</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">]</span> <span class="o">*</span> <span class="n">NUM_JOINTS</span>
-    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">pose</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">frame</span><span class="o">=</span><span class="s2">&quot;WRF&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span> <span class="k">return</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">]</span> <span class="o">*</span> <span class="mi">6</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">pose</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">frame</span><span class="o">=</span><span class="s2">"WRF"</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span> <span class="k">return</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">]</span> <span class="o">*</span> <span class="mi">6</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">SyncClient</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Synchronous variant -- same method names, blocking calls.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Synchronous variant -- same method names, blocking calls."""</span>
     <span class="o">...</span>
 </code></pre></div>
 <h2 id="feature-to-method-mapping">Feature-to-method mapping<a class="headerlink" href="#feature-to-method-mapping" title="Permanent link">&para;</a></h2>
