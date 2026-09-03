@@ -15,7 +15,7 @@ dependencies = [
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.10.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.11.0",
   "opencv-python-headless>=4.8",
   # Windows/macOS: list cameras without opening them (issue #37).
   "cv2-enumerate-cameras==1.3.3; sys_platform == 'win32' or sys_platform == 'darwin'",
