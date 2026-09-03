@@ -238,16 +238,25 @@ def enumerate_video_devices(max_check: int = 10) -> list[dict[str, int | str]]:
     """Detect available video capture devices.
 
     On Linux, uses linuxpy/v4l2 to check device capabilities (avoids
-    OpenCV warnings and correctly skips metadata-only nodes).
-    Falls back to OpenCV probing on other platforms.
+    OpenCV warnings and correctly skips metadata-only nodes). On Windows
+    and macOS, uses cv2-enumerate-cameras (MSMF / AVFoundation device
+    listing) so cameras are never opened just to be listed.
 
     Returns a list of ``{"index": int, "label": str}`` dicts.
     """
     if sys.platform == "linux":
         devs = _enumerate_v4l2(max_check)
-        if devs is not None:
-            return devs
-    return _enumerate_opencv(max_check)
+        if devs is None:
+            logger.warning(
+                "linuxpy not installed — camera listing needs the [v4l2] extra"
+            )
+            return []
+        return devs
+    devs = _enumerate_listing()
+    if devs is None:
+        logger.error("cv2 / cv2-enumerate-cameras not installed — cannot list cameras")
+        return []
+    return devs
 
 
 def _enumerate_v4l2(max_check: int) -> list[dict[str, int | str]] | None:
@@ -282,22 +291,29 @@ def _enumerate_v4l2(max_check: int) -> list[dict[str, int | str]] | None:
     return devices
 
 
-def _enumerate_opencv(max_check: int) -> list[dict[str, int | str]]:
-    """Probe video devices via OpenCV (non-Linux fallback)."""
-    devices: list[dict[str, int | str]] = []
+def _enumerate_listing() -> list[dict[str, int | str]] | None:
+    """List cameras from the OS device registry without opening capture streams.
+
+    Returns None when cv2-enumerate-cameras is unavailable (it is only
+    installed on Windows/macOS).
+    """
     try:
         import cv2
+        from cv2_enumerate_cameras import enumerate_cameras  # ty: ignore[unresolved-import]
     except ImportError:
-        return devices
-    for i in range(max_check):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            # Read a test frame to filter out metadata-only nodes
-            ok, _ = cap.read()
-            if ok:
-                devices.append({"index": i, "label": f"Camera {i}"})
-            cap.release()
-    return devices
+        return None
+    # MSMF / AVFoundation are what VideoCapture(index) resolves to on these
+    # platforms, so listing indices line up with capture indices.
+    if sys.platform == "win32":
+        backend = cv2.CAP_MSMF
+    elif sys.platform == "darwin":
+        backend = cv2.CAP_AVFOUNDATION
+    else:
+        return None
+    return [
+        {"index": info.index, "label": info.name or f"Camera {info.index}"}
+        for info in enumerate_cameras(backend)
+    ]
 
 
 async def _mjpeg_generator():

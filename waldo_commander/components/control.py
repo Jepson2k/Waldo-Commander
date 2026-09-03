@@ -16,7 +16,12 @@ import waldoctl
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
-from waldo_commander.constants import config, DEFAULT_CAMERA, CLICK_HOLD_THRESHOLD_S
+from waldo_commander.constants import (
+    config,
+    DEFAULT_CAMERA,
+    CLICK_HOLD_THRESHOLD_S,
+    HOME_LONG_PRESS_S,
+)
 from waldo_commander.state import (
     robot_state,
     ui_state,
@@ -634,6 +639,13 @@ class ControlPanel:
 
         # Click/hold handlers (initialized with ui_client in build())
         self.CLICK_HOLD_THRESHOLD_S: float = CLICK_HOLD_THRESHOLD_S
+        self._home_btn: ui.button | None = None
+        self._home_tip: ui.tooltip | None = None
+        self._home_press_timer: ui.timer | None = None
+        self._home_progress_timer: ui.timer | None = None
+        self._home_inflight = False
+        self._home_long_fired = False
+        self._home_click_suppressed = False
         self._joint_click_hold: _ClickHoldHandler | None = None
         self._cart_click_hold: _ClickHoldHandler | None = None
 
@@ -1855,7 +1867,7 @@ class ControlPanel:
 
     # ---- Robot action methods ----
 
-    async def send_home(self) -> None:
+    async def send_home(self, calibrate: bool = False) -> None:
         # In editing mode, home the editing robot instead of the live one.
         if waldoctl.commander.status.editing_mode:
             if ui_state.urdf_scene:
@@ -1866,13 +1878,105 @@ class ControlPanel:
         if not self._movement_allowed():
             return
 
+        if self._home_inflight:
+            return
+        self._home_inflight = True
+        self._home_progress_start()
         try:
-            _ = await self.client.home()
-            logger.info("HOME sent")
-
-            motion_recorder.record_action("home")
+            index = await self.client.home(calibrate=calibrate)
+            if index < 0:
+                logger.error("HOME rejected by the controller")
+                return
+            logger.info("HOME sent%s", " (calibrate)" if calibrate else "")
+            motion_recorder.record_action("home", calibrate=calibrate)
+            await self._wait_home(index)
         except Exception as e:
             logger.error("HOME failed: %s", e)
+        finally:
+            self._home_inflight = False
+            self._home_progress_stop()
+
+    async def _wait_home(self, index: int) -> None:
+        # wait_command only resolves on completion or a pipeline error; a plain
+        # Stop cancels the command without either, so the action going idle
+        # after it ran also ends the wait.
+        started = False
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            if await self.client.wait_command(index, timeout=0.5):
+                return
+            await asyncio.sleep(0.1)
+            act_state = waldoctl.commander.status.action.state
+            if act_state == waldoctl.ActionState.EXECUTING:
+                started = True
+            elif started and act_state == waldoctl.ActionState.IDLE:
+                return
+        logger.error("HOME did not complete within 120s")
+
+    HOME_TOOLTIP = "Home (H) · hold button to calibrate"
+
+    def _home_progress_start(self) -> None:
+        if self._home_btn is None:
+            return
+        self._home_btn.props("loading")
+        self._home_progress_tick()
+        # send_home may run from a keyboard or long-press task with no slot
+        # entered; the timer must belong to the button's client.
+        with self._home_btn:
+            self._home_progress_timer = ui.timer(0.1, self._home_progress_tick)
+
+    def _home_progress_tick(self) -> None:
+        if self._home_tip is None:
+            return
+        hm = waldoctl.commander.status.homing
+        if hm.active:
+            done = sum(1 for state, _phase in hm.joints if state == "HOMED")
+            self._home_tip.text = f"Calibrating · {done}/{len(hm.joints)} joints"
+        else:
+            self._home_tip.text = "Homing…"
+
+    def _home_progress_stop(self) -> None:
+        if self._home_progress_timer is not None:
+            self._home_progress_timer.cancel()
+            self._home_progress_timer = None
+        if self._home_btn is not None:
+            self._home_btn.props(remove="loading")
+        if self._home_tip is not None:
+            self._home_tip.text = self.HOME_TOOLTIP
+
+    def _on_home_press(self, e) -> None:
+        if (e.args or {}).get("button", 0) != 0:
+            return
+        self._cancel_home_press_timer()
+        self._home_long_fired = False
+        self._home_click_suppressed = False
+        self._home_press_timer = ui.timer(
+            HOME_LONG_PRESS_S, self._on_home_long_press, once=True
+        )
+
+    async def _on_home_long_press(self) -> None:
+        self._home_press_timer = None
+        self._home_long_fired = True
+        await self.send_home(calibrate=True)
+
+    def _cancel_home_press_timer(self) -> None:
+        if self._home_press_timer is not None:
+            self._home_press_timer.cancel()
+            self._home_press_timer = None
+
+    def _on_home_release(self) -> None:
+        self._cancel_home_press_timer()
+        # The browser emits a click after this pointerup; a long press already
+        # acted, so that click must not home a second time.
+        if self._home_long_fired:
+            self._home_long_fired = False
+            self._home_click_suppressed = True
+
+    async def _on_home_click(self) -> None:
+        if self._home_click_suppressed:
+            self._home_click_suppressed = False
+            return
+        await self.send_home()
 
     def _is_urdf_scene_valid(self) -> bool:
         """Check if urdf_scene exists and its client is still valid."""
@@ -2538,9 +2642,18 @@ class ControlPanel:
         # The E-Stop rides the row's right edge out of flow; the padding
         # reserves its 72px footprint so no control grows underneath it.
         with ui.row().classes("gap-1 items-center relative w-full pr-20"):
-            ui.button(icon="home", on_click=self.send_home).props(
-                "dense round unelevated color=teal-6"
-            ).tooltip("Home (H)").mark("btn-home")
+            self._home_btn = (
+                ui.button(icon="home", on_click=self._on_home_click)
+                .props("dense round unelevated color=teal-6")
+                .mark("btn-home")
+            )
+            with self._home_btn:
+                self._home_tip = ui.tooltip(self.HOME_TOOLTIP)
+            self._home_btn.on("pointerdown", self._on_home_press, ["button"])
+            self._home_btn.on("pointerup", self._on_home_release)
+            # Moving off the button is not a cancel (the E-Stop is); a browser
+            # aborting the pointer — touch scroll, palm rejection — is.
+            self._home_btn.on("pointercancel", self._cancel_home_press_timer)
 
             robot_btn = (
                 ui.button(

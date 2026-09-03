@@ -590,9 +590,30 @@ class TestTCPTransformControls:
 
     def test_tcp_ball_screen_position_available(self, class_screen: "Screen") -> None:
         """Test that we can get TCP ball screen coordinates for drag operations."""
+        import waldoctl
+
+        from tests.helpers.browser_helpers import find_button_by_icon
+        from waldo_commander.state import ui_state
+
         screen_wait_for_scene_ready(class_screen, timeout_s=30.0)
         tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
         assert tcp_ball is not None, "TCP ball should exist"
+
+        # The simulator is shared across browser modules, so an earlier jog
+        # may have left the arm extended with the TCP above the viewport;
+        # the projection below assumes the framed home pose.
+        home_btn = find_button_by_icon(class_screen, "home")
+        assert home_btn is not None, "Home button should exist"
+        home_btn.click()
+        home_deg = ui_state.active_robot.joints.home.deg
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            live = waldoctl.commander.status.joints.angles.deg
+            if max(abs(float(a) - float(b)) for a, b in zip(live, home_deg)) < 1.0:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("Robot did not return to the home pose")
 
         # Wait for TransformControls (needed for camera reference in get_tcp_screen_position)
         found = wait_for_transform_controls(class_screen, timeout_s=10.0)
