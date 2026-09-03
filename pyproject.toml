@@ -15,7 +15,7 @@ dependencies = [
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.11.1",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.11.2",
   # <5: OpenCV 5.0 main-modules builds dropped cv2.calibrateHandEye, which
   # the hand-eye calibration panel requires.
   "opencv-python-headless>=4.8,<5",
