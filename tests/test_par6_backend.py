@@ -146,6 +146,38 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         assert not status.controller.freedrive, (
             "an unreferenced arm reported itself back-driveable"
         )
+
+        # Diagnostics off the wire: the runtime's loop target, per-drive
+        # telemetry (the app's first telemetry consumer — the recipe is
+        # selected and the stream read here, not in a test helper) and the
+        # torque series the chart draws from.
+        user.find(marker="tab-diagnostics").click()
+        await asyncio.sleep(0)
+        await user.should_see(marker="diagnostics-panel")
+
+        def _text(marker: str) -> str:
+            return next(iter(user.find(marker=marker).elements)).text
+
+        stats = await ui_state.control_panel.client.loop_stats()
+        assert stats is not None and stats.target_hz > 0
+        for _ in range(60):
+            if "Hz" in _text("diag-loop-rate"):
+                break
+            await asyncio.sleep(0.1)
+        assert f"of {stats.target_hz:.0f} Hz" in _text("diag-loop-rate")
+
+        temps: list[str] = []
+        for _ in range(100):
+            temps = [_text(f"diag-drive-temp-{j}") for j in range(1, 7)]
+            if all(t != "—" for t in temps):
+                break
+            await asyncio.sleep(0.1)
+        assert all(float(t) > 0 for t in temps), (
+            f"drive temperatures never arrived over telemetry: {temps}; "
+            f"note: {_text('diag-drives-note')!r}"
+        )
+        assert len(robot_state.torque_time_series.get_series_if_dirty()[0]) > 0
+
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)

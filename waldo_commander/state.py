@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, TYPE_CHECKING
 
@@ -69,6 +70,43 @@ class SimulationState(ChangeNotifierMixin):
 # session-wide check is ``services.programs.is_any_program_recording()``.
 
 
+class TorqueTimeSeries:
+    """Rolling per-joint torque history behind the diagnostics chart.
+
+    One timestamp column and one row of joint torques per status tick,
+    measured and external side by side. Readers take the whole series once
+    new rows have arrived; between reads the chart is left alone.
+    """
+
+    __slots__ = ("_ts", "_measured", "_external", "_dirty")
+
+    def __init__(self, max_points: int = 300) -> None:
+        self._ts: deque[float] = deque(maxlen=max_points)
+        self._measured: deque[list[float]] = deque(maxlen=max_points)
+        self._external: deque[list[float]] = deque(maxlen=max_points)
+        self._dirty = False
+
+    def push(self, measured: list[float], external: list[float]) -> None:
+        self._ts.append(time.time())
+        self._measured.append(measured)
+        self._external.append(external)
+        self._dirty = True
+
+    def get_series_if_dirty(
+        self,
+    ) -> tuple[list[float], list[list[float]], list[list[float]]] | None:
+        if not self._dirty:
+            return None
+        self._dirty = False
+        return list(self._ts), list(self._measured), list(self._external)
+
+    def clear(self) -> None:
+        self._ts.clear()
+        self._measured.clear()
+        self._external.clear()
+        self._dirty = False
+
+
 # Shared state singleton for cross-module access. No fields are bindable
 # (bindable_fields=[]) — the members are numpy arrays / objects read
 # imperatively, and the migrated scalar fields now live on commander.status.*.
@@ -89,6 +127,7 @@ class RobotState(ChangeNotifierMixin):
     # tool_time_series stays here as a WC-internal rolling buffer backing the
     # gripper chart; the rest of the tool/pose/io scalars live on commander.status.*.
     tool_time_series: ToolTimeSeries = field(default_factory=ToolTimeSeries)
+    torque_time_series: TorqueTimeSeries = field(default_factory=TorqueTimeSeries)
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
     )  # deg/s
@@ -108,6 +147,7 @@ class RobotState(ChangeNotifierMixin):
         self.io[:] = 0
         self.tool_status = ToolStatus()
         self.tool_time_series.clear()
+        self.torque_time_series.clear()
         self.speeds[:] = 0.0
         self.homed = True
         self.executing_index = -1
@@ -164,15 +204,19 @@ class RobotEventLog:
     was watching is still discoverable.
     """
 
-    entries: list[tuple[str, str, str, str]] = field(default_factory=list)
-    """(wall-clock time, severity, message, detail), oldest first."""
+    entries: list[tuple[str, str, str, str, str]] = field(default_factory=list)
+    """(wall-clock time, severity, message, cause, remedy), oldest first."""
     version: int = 0
     _MAX = 200
 
-    def add(self, severity: str, message: str, detail: str = "") -> None:
-        if self.entries and self.entries[-1][1:] == (severity, message, detail):
+    def add(
+        self, severity: str, message: str, detail: str = "", remedy: str = ""
+    ) -> None:
+        if self.entries and self.entries[-1][1:] == (severity, message, detail, remedy):
             return
-        self.entries.append((time.strftime("%H:%M:%S"), severity, message, detail))
+        self.entries.append(
+            (time.strftime("%H:%M:%S"), severity, message, detail, remedy)
+        )
         if len(self.entries) > self._MAX:
             del self.entries[: -self._MAX]
         self.version += 1
@@ -242,6 +286,7 @@ class UiState:
     response_log: Any = None
     io_page: Any = None
     gripper_page: Any = None
+    diagnostics_page: Any = None
     _gripper_tab: Any = None
     _build_gripper_content: Any = None
 

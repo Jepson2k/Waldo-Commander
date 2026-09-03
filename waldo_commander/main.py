@@ -53,6 +53,7 @@ from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
 from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
+from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
     warmup_pipelines,
@@ -737,6 +738,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         gripper_tab.props("disable")
         gripper_tab.mark("tab-gripper")
         ui_state._gripper_tab = gripper_tab
+        diagnostics_tab = ui.tab(name="diagnostics", label="", icon="monitor_heart")
+        diagnostics_tab.tooltip("Diagnostics")
+        diagnostics_tab.mark("tab-diagnostics")
 
         _add_plugin_tabs(PanelSlot.LEFT_TOP_TAB)
 
@@ -834,6 +838,18 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                     ui_state.gripper_page.build()
 
             ui_state._build_gripper_content = _build_gripper_content
+
+        with ui.tab_panel("diagnostics").classes("gap-2 overlay-card overflow-hidden"):
+            with ui.row().classes("w-full items-center"):
+                ui.label("Diagnostics").classes("text-lg font-medium")
+                ui.space()
+                ui.button(icon="close", on_click=close_top_panels).props(
+                    "flat round dense color=white"
+                )
+            ui_state.diagnostics_page = DiagnosticsPage(
+                client, is_open=lambda: side_tabs.value == "diagnostics"
+            )
+            ui_state.diagnostics_page.build()
 
         _add_plugin_tab_panels(PanelSlot.LEFT_TOP_TAB, commander)
 
@@ -1916,6 +1932,13 @@ async def _status_consumer() -> None:
                     ):
                         joints.torques_ext = [float(v) for v in torques_ext]
                         torques_ext_shadow = torques_ext.copy()
+                    if torques is not None:
+                        robot_state.torque_time_series.push(
+                            [float(v) for v in torques],
+                            [float(v) for v in torques_ext]
+                            if torques_ext is not None
+                            else [],
+                        )
 
                     # Controller state chip: mode name is the backend enum's
                     # name (vendor-neutral for display). Skipped, never
@@ -1943,9 +1966,10 @@ async def _status_consumer() -> None:
                         for e in entries:
                             if tuple(e) not in prev:
                                 robot_events.add(
-                                    str(e[4]) if len(e) > 4 else "warning",
+                                    "warning",
                                     str(e[2]) if len(e) > 2 else str(e),
                                     str(e[3]) if len(e) > 3 else "",
+                                    str(e[5]) if len(e) > 5 else "",
                                 )
                         st.warnings.entries = list(entries)
 
