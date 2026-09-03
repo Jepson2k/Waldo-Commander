@@ -16,7 +16,9 @@ dependencies = [
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
   "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.11.0",
-  "opencv-python-headless>=4.8",
+  # <5: OpenCV 5.0 main-modules builds dropped cv2.calibrateHandEye, which
+  # the hand-eye calibration panel requires.
+  "opencv-python-headless>=4.8,<5",
   # Windows/macOS: list cameras without opening them (issue #37).
   "cv2-enumerate-cameras==1.3.3; sys_platform == 'win32' or sys_platform == 'darwin'",
   "fastmcp>=3.0,<4",
@@ -73,6 +75,9 @@ dev = [
 
 [project.scripts]
 waldo-commander = "waldo_commander.main:main"
+
+[project.entry-points."waldoctl.panels"]
+handeye = "waldo_commander.components.handeye_calibration:HandEyeCalibrationPanel"
 
 [tool.setuptools.packages.find]
 where = ["."]
