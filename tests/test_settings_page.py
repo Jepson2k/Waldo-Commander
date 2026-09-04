@@ -217,16 +217,15 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     select_el.set_value("PNEUMATIC")
     await asyncio.sleep(0.1)
     await user.should_see("TCP Offset")
-    x_inputs = user.find(kind=ui.number, content="X")
-    assert len(x_inputs.elements) >= 1, "X offset input should exist"
+    fitted = next(iter(user.find(marker="tcp-offset-x").elements))
+    assert "disable" not in fitted.props, "a fitted tool's offset is editable"
 
-    # NONE — offset inputs should still be visible (but disabled)
+    # NONE — offset inputs should still be visible, and refuse edits: there
+    # is no tool to offset from.
     select_el.set_value("NONE")
     await asyncio.sleep(0.1)
-    x_inputs = user.find(kind=ui.number, content="X")
-    assert len(x_inputs.elements) >= 1, (
-        "X offset input should still exist for NONE (but disabled)"
-    )
+    bare = next(iter(user.find(marker="tcp-offset-x").elements))
+    assert "disable" in bare.props, "with no tool fitted the offset must not be editable"
 
 
 @pytest.mark.integration
@@ -269,7 +268,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
     await user.should_see("TCP Offset")
     # The client-side edit event, as NiceGUI names it: the element's own
     # listener adopts the value, the page's listener pushes it.
-    user.find(kind=ui.number, content="X").trigger("update:modelValue", 12.5)
+    user.find(marker="tcp-offset-x").trigger("update:modelValue", 12.5)
     assert await controller_offset([12.5, 0.0, 0.0]) == [12.5, 0.0, 0.0]
 
     # NONE and back: select_tool zeroes the controller's offset, the page
@@ -292,7 +291,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
     await user.should_see("TCP Offset")
     shown = None
     for _ in range(50):
-        shown = next(iter(user.find(kind=ui.number, content="X").elements)).value
+        shown = next(iter(user.find(marker="tcp-offset-x").elements)).value
         if shown == 1.0:
             break
         await asyncio.sleep(0.1)

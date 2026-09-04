@@ -216,18 +216,21 @@ class SettingsContent:
                         .style("width: 48px;")
                         .props("dense borderless" + (" disable" if is_none else ""))
                         .on("update:model-value", _on_offset_change)
+                        .mark("tcp-offset-x")
                     )
                     y_input = (
                         ui.number(label="Y", value=offset.get("y", 0), step=0.5)
                         .style("width: 48px;")
                         .props("dense borderless" + (" disable" if is_none else ""))
                         .on("update:model-value", _on_offset_change)
+                        .mark("tcp-offset-y")
                     )
                     z_input = (
                         ui.number(label="Z", value=offset.get("z", 0), step=0.5)
                         .style("width: 48px;")
                         .props("dense borderless" + (" disable" if is_none else ""))
                         .on("update:model-value", _on_offset_change)
+                        .mark("tcp-offset-z")
                     )
         if not is_none:
             background_tasks.create(
