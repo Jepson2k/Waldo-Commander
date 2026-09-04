@@ -1804,6 +1804,17 @@ def _home_output_tick() -> None:
         )
 
 
+def _same_readings(a: list[float], b: list[float]) -> bool:
+    """List equality that counts NaN as equal to NaN.
+
+    A drive that has not answered a register reads as NaN every tick, and
+    plain ``!=`` would call that a change and re-fire every binding at the
+    status rate."""
+    if len(a) != len(b):
+        return False
+    return all(x == y or (x != x and y != y) for x, y in zip(a, b))
+
+
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
     # Shadows of the last-applied jog-enable wire arrays, kept local so each
@@ -1973,6 +1984,32 @@ async def _status_consumer() -> None:
                                 )
                         st.warnings.entries = list(entries)
 
+                    drives = getattr(status, "drive_health", None)
+                    if drives:
+                        dh = st.drive_health
+                        temps = [float(v) for v in drives.get("temperatures_c", ())]
+                        currents = [float(v) for v in drives.get("currents_ma", ())]
+                        if not _same_readings(dh.temperatures_c, temps):
+                            dh.temperatures_c = temps
+                        if not _same_readings(dh.currents_ma, currents):
+                            dh.currents_ma = currents
+                        volts = drives.get("bus_voltage_v")
+                        volts = None if volts is None else float(volts)
+                        if dh.bus_voltage_v != volts:
+                            dh.bus_voltage_v = volts
+
+                    loop = getattr(status, "loop_health", None)
+                    if loop:
+                        lh_loop = st.loop_health
+                        p99 = float(loop.get("p99_period_s", 0.0))
+                        overruns = int(loop.get("overruns", 0))
+                        if lh_loop.p99_period_s != p99:
+                            lh_loop.p99_period_s = p99
+                        if lh_loop.overruns != overruns:
+                            lh_loop.overruns = overruns
+                        if not lh_loop.measured:
+                            lh_loop.measured = True
+
                     link = getattr(status, "link_health", None)
                     if link:
                         lh = st.link_health
@@ -2054,6 +2091,8 @@ async def _status_consumer() -> None:
                             if ui_state.gripper_page is not None:
                                 ui_state.gripper_page.update_chart()
                                 ui_state.gripper_page.update_status()
+                            if ui_state.diagnostics_page is not None:
+                                ui_state.diagnostics_page.update()
 
             except Exception as e:
                 logger.debug("Status consumer parse error: %s", e)

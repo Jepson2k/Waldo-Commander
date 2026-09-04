@@ -92,6 +92,12 @@ class TorqueTimeSeries:
         self._external.append(external)
         self._dirty = True
 
+    def __len__(self) -> int:
+        """Samples held. Readers consume :meth:`get_series_if_dirty`, which
+        clears the flag, so this is how anything else asks whether samples
+        are arriving at all."""
+        return len(self._ts)
+
     def get_series_if_dirty(
         self,
     ) -> tuple[list[float], list[list[float]], list[list[float]]] | None:

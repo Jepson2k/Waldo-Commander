@@ -1,10 +1,11 @@
-"""The diagnostics tab: loop health off the backend's ``loop_stats`` query,
-motor-bus link health off ``commander.status``, and the drives section
-saying plainly when a backend streams no telemetry.
+"""The diagnostics tab reads the status broadcast, and nothing else.
 
-Runs on the suite's parol6 fake-serial backend; the telemetry-fed drives
-table and the live torque series are exercised against the real par6
-runtime in ``test_par6_backend.py``.
+The loop's tail, the drives' readings and the bus link all arrive on
+``commander.status``; the only query is a single ``loop_stats()`` for the
+boot constants. Both tests run against the suite's live fake-serial
+backend, so what they assert is what a real status consumer produced. The
+drives table is exercised where drives actually report readings, against
+the par6 runtime, in ``test_par6_backend.py``.
 """
 
 import asyncio
@@ -21,20 +22,21 @@ def _text(user: User, marker: str) -> str:
     return next(iter(user.find(marker=marker).elements)).text
 
 
-async def _wait_text(user: User, marker: str, predicate, timeout_s: float = 5.0):
+async def _settle(user: User, marker: str, predicate, timeout_s: float = 8.0) -> str:
     text = ""
     for _ in range(int(timeout_s / 0.1)):
         text = _text(user, marker)
         if predicate(text):
             return text
         await asyncio.sleep(0.1)
-    raise AssertionError(f"{marker} never satisfied predicate; last text {text!r}")
+    raise AssertionError(f"{marker} never satisfied the check; last text {text!r}")
 
 
 @pytest.mark.integration
-async def test_diagnostics_tab_reports_loop_link_and_drive_availability(
-    user: User,
-) -> None:
+async def test_loop_health_comes_off_the_broadcast(user: User) -> None:
+    """The tail the tab shows is the loop's own, checked against what the
+    query says about the same loop, and it is quoted against the budget the
+    target rate implies — a bare millisecond figure means nothing alone."""
     await user.open("/")
     await wait_for_app_ready()
 
@@ -42,25 +44,43 @@ async def test_diagnostics_tab_reports_loop_link_and_drive_availability(
     await asyncio.sleep(0)
     await user.should_see(marker="diagnostics-panel")
 
-    # Loop health is the backend's own answer, not a placeholder: the rate
-    # line must quote the target the controller reports over the wire.
     stats = await ui_state.control_panel.client.loop_stats()
     assert stats is not None
-    rate = await _wait_text(user, "diag-loop-rate", lambda t: "Hz" in t)
-    assert f"of {stats.target_hz:.0f} Hz" in rate
-    overruns = _text(user, "diag-loop-overruns")
-    assert overruns.endswith("ticks") and int(overruns.split()[0]) >= 0
+    await _settle(user, "diag-loop-rate", lambda t: "Hz target" in t)
+    assert _text(user, "diag-loop-rate") == f"{stats.target_hz:.0f} Hz target"
 
-    # Link health follows the public status surface the consumer writes.
-    lh = waldoctl.commander.status.link_health
-    lh.state = "BusOff"
-    lh.restarts = 3
-    lh.tx_errors = 12
-    await _wait_text(user, "diag-link-state", lambda t: t == "BusOff")
+    await _settle(user, "diag-loop-p99", lambda t: "budget" in t)
+    health = waldoctl.commander.status.loop_health
+    assert health.measured, "the backend reports a loop tail; the surface must say so"
+    assert f"{1.0 / stats.target_hz * 1000.0:.2f} ms budget" in _text(
+        user, "diag-loop-p99"
+    )
+    assert _text(user, "diag-loop-overruns") == str(health.overruns)
+
+    # Link health, already on the status surface.
+    st = waldoctl.commander.status
+    st.link_health.state = "BusOff"
+    st.link_health.restarts = 3
+    st.link_health.tx_errors = 12
+    await _settle(user, "diag-link-state", lambda t: t == "BusOff")
     assert _text(user, "diag-link-restarts") == "3"
     assert _text(user, "diag-link-tx-errors") == "12"
 
-    # parol6 streams no telemetry; the drives section says so rather than
-    # sitting on dashes forever.
-    await user.should_see("Drive telemetry is not available on this backend")
     await user.should_see(marker="diag-torque-chart")
+
+
+@pytest.mark.integration
+async def test_a_backend_that_reports_no_drive_readings_says_so(user: User) -> None:
+    """This backend's drivers report fault flags, not analog registers.
+    Silence about the drives has to read as "not reported", never as a
+    healthy-looking row of dashes or a plausible zero."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    user.find(marker="tab-diagnostics").click()
+    await asyncio.sleep(0)
+    await user.should_see(marker="diagnostics-panel")
+
+    assert not waldoctl.commander.status.drive_health.temperatures_c
+    await user.should_see("This backend's drives report no readings")
+    assert _text(user, "diag-drive-supply") == "—"
