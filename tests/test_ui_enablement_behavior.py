@@ -88,15 +88,25 @@ async def test_cartesian_at_workspace_limit_disables_axis(
         lambda: waldoctl.commander.status.joints.angles[1], timeout_s=15.0
     )
 
-    # Wait for enablement arrays to update
-    await asyncio.sleep(0.2)
+    # Enablement is computed by the IK worker subprocess and arrives on a
+    # later status frame, so poll for it: a fixed wait passes on an idle
+    # machine and fails whenever the worker is competing for CPU.
+    def _disabled_count() -> int:
+        frame = waldoctl.commander.status.pose.cart_jog.by_frame.get("WRF")
+        if frame is None:
+            return 0
+        return sum(1 for v in frame.can_jog_pos if not v) + sum(
+            1 for v in frame.can_jog_neg if not v
+        )
 
-    # At extended position, some cartesian directions should be disabled.
+    for _ in range(100):
+        if _disabled_count() > 0:
+            break
+        await asyncio.sleep(0.1)
+
     wrf = waldoctl.commander.status.pose.cart_jog.by_frame.get("WRF")
     assert wrf is not None, "cart_jog should have WRF frame"
-    disabled_count = sum(1 for v in wrf.can_jog_pos if not v) + sum(
-        1 for v in wrf.can_jog_neg if not v
-    )
+    disabled_count = _disabled_count()
     assert disabled_count > 0, (
         f"At extended arm position, some cartesian directions should be disabled. "
         f"WRF can_jog_pos={list(wrf.can_jog_pos)}, can_jog_neg={list(wrf.can_jog_neg)}"

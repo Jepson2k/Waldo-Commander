@@ -63,24 +63,11 @@ SHAPE_OPACITY = 0.35
 _Y_TO_Z_UP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
 
 
-def _z_align_rotation(n: np.ndarray) -> np.ndarray:
-    """Rotation taking +Z to the unit vector ``n`` (Rodrigues; 180° safe)."""
-    z = np.array([0.0, 0.0, 1.0])
-    v = np.cross(z, n)
-    c = float(np.dot(z, n))
-    s2 = float(np.dot(v, v))
-    if s2 < 1e-24:
-        return np.eye(3) if c > 0.0 else np.diag([1.0, -1.0, -1.0])
-    k = np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
-    return np.eye(3) + k + k @ k * ((1.0 - c) / s2)
-
-
 def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]]:
     """World position + rotation matrix for a shape's scene object.
 
-    Corrects the Y-up axis for cylinder/capsule/cone and places a plane's slab
-    on its halfspace surface (``n·x = offset`` in the shape's local frame,
-    composed with the pose) — so what is drawn is what the checker enforces.
+    Corrects the Y-up axis for cylinder/capsule/cone, so what is drawn is
+    what the checker enforces.
     """
     R_pose = np.array(
         Object3D.rotation_matrix_from_euler(s.pose[3], s.pose[4], s.pose[5])
@@ -88,20 +75,6 @@ def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]
     pos = np.asarray(s.pose[:3], dtype=np.float64)
     if s.kind in ("cylinder", "capsule", "cone"):
         R = R_pose @ _Y_TO_Z_UP
-    elif s.kind == "plane":
-        # The slab is a thin box whose local z is its normal — align it to n.
-        # coal normalizes Halfspace(n, d) to (n/|n|, d/|n|), so the enforced
-        # surface sits at offset/|n| along n̂ — scale the offset to match.
-        n = np.array([s.nx, s.ny, s.nz], dtype=np.float64)
-        norm = float(np.linalg.norm(n))
-        if norm > 1e-12:
-            n = n / norm
-            surface_offset = s.offset / norm
-        else:
-            n = np.array([0.0, 0.0, 1.0])
-            surface_offset = s.offset
-        R = R_pose @ _z_align_rotation(n)
-        pos = pos + R_pose @ (n * surface_offset)
     else:
         R = R_pose
     return (float(pos[0]), float(pos[1]), float(pos[2])), [

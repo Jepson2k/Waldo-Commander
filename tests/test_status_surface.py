@@ -13,7 +13,6 @@ writes it. The full wire path runs against the real par6 runtime in
 import asyncio
 
 import pytest
-import waldoctl
 from nicegui.testing import User
 
 from tests.helpers.wait import wait_for_app_ready
@@ -21,38 +20,59 @@ from waldo_commander.state import robot_events
 
 
 @pytest.mark.integration
-async def test_warning_banner_stands_and_the_log_keeps_history(user: User) -> None:
-    """A standing warning raises the persistent banner and lands in the
-    warnings/errors log; when the condition self-clears the banner leaves
-    but the log entry stays."""
+async def test_the_event_log_keeps_the_whole_structured_error(user: User) -> None:
+    """A warning-class condition self-clears; the log is what is left.
+
+    The banner tracks only the standing set, so the log is the only place a
+    condition that flickered while nobody was watching can still be read —
+    and it has to keep the cause, effect and remedy, not just the title,
+    because those are the parts that say what to do about it.
+
+    Driven through ``robot_events`` rather than the wire: this backend's
+    buffer carries no warnings at all, so the status consumer would
+    overwrite anything staged on ``commander.status``. The wire path runs
+    against the real par6 runtime in ``test_par6_backend.py``.
+    """
     await user.open("/")
     await wait_for_app_ready()
 
-    st = waldoctl.commander.status
-    st.warnings.entries = [
-        (-1, 59, "Control loop degraded", "p99 over band", "warning", "reduce load")
-    ]
-    robot_events.add("warning", "Control loop degraded", "p99 over band", "reduce load")
+    robot_events.add(
+        code=59,
+        title="Control loop degraded",
+        cause="p99 over band",
+        effect="motion may stutter",
+        remedy="reduce background load",
+    )
+
+    user.find(marker="tab-diagnostics").click()
     await asyncio.sleep(0)
-    await user.should_see("Control loop degraded")
-    await user.should_see(marker="readout-event-log")
-    # The log carries the remedy, not just the symptom.
-    await user.should_see("Fix: reduce load")
+    await user.should_see(marker="diag-events-log")
+    for part in (
+        "Control loop degraded",
+        "p99 over band",
+        "motion may stutter",
+        "reduce background load",
+    ):
+        await user.should_see(part)
 
-    # Self-clearing: the banner leaves with the condition, the log does not
-    # (the log's copy of the message is why the poll looks for the
-    # notification element, not the text).
-    from nicegui.elements.notification import Notification
+    assert robot_events.entries[-1][1] == 59, "the code identifies the condition"
+    assert robot_events.entries[-1][5] == "reduce background load"
 
-    st.warnings.entries = []
-    banner_gone = False
+
+@pytest.mark.integration
+async def test_opening_diagnostics_clears_the_unread_badge(user: User) -> None:
+    """The badge is how a condition announces itself while the tab is shut,
+    so it has to survive until someone actually looks."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    robot_events.add(code=60, title="CAN stale", cause="no frames")
+    assert robot_events.unread == 1
+    await user.should_see(marker="diag-unread-badge")
+
+    user.find(marker="tab-diagnostics").click()
     for _ in range(50):
-        try:
-            user.find(kind=Notification)
-        except AssertionError:
-            banner_gone = True
+        if robot_events.unread == 0:
             break
         await asyncio.sleep(0.1)
-    assert banner_gone, "the banner must dismiss when the conditions clear"
-    assert robot_events.entries, "the log must keep cleared conditions"
-    assert robot_events.entries[-1][2] == "Control loop degraded"
+    assert robot_events.unread == 0, "opening the tab is what marks it read"

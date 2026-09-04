@@ -225,7 +225,9 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     select_el.set_value("NONE")
     await asyncio.sleep(0.1)
     bare = next(iter(user.find(marker="tcp-offset-x").elements))
-    assert "disable" in bare.props, "with no tool fitted the offset must not be editable"
+    assert "disable" in bare.props, (
+        "with no tool fitted the offset must not be editable"
+    )
 
 
 @pytest.mark.integration

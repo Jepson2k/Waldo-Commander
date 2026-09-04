@@ -1461,6 +1461,26 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Diagnostics event log. Unlike the one-line action log these entries wrap:
+   the cause, effect and remedy are the parts worth reading, and truncating
+   them to a strip is what the readout version was doing wrong. */
+.diag-event {
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+}
+.diag-event:last-child { border-bottom: none; }
+.diag-event .material-symbols-outlined {
+  font-size: 14px;
+  vertical-align: -2px;
+  margin-right: 3px;
+}
+.diag-event-time { color: var(--ctk-muted); margin-right: 5px; }
+.diag-event-code { color: var(--ctk-muted); margin-left: 5px; }
+.diag-event-detail { color: var(--ctk-muted); padding-left: 22px; }
+.diag-event-remedy { padding-left: 22px; font-style: italic; }
 """
     )
 

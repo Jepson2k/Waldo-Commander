@@ -21,6 +21,7 @@ from nicegui.elements.codemirror.codemirror import (
 
 import waldoctl
 
+from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import simulation_state, ui_state
@@ -269,32 +270,8 @@ class EditorDecorations:
             self._apply_active_tab_decorations()
 
     def flash_editor_tab(self) -> None:
-        """Flash the editor tab to indicate new content when panel is collapsed."""
-        js_code = """
-        (function() {
-            const tabs = document.querySelectorAll('.q-tab');
-            for (const tab of tabs) {
-                const icon = tab.querySelector('i');
-                if (icon && icon.innerText === 'code') {
-                    tab.classList.add('tab-flash');
-                    setTimeout(() => tab.classList.remove('tab-flash'), 2000);
-                    break;
-                }
-            }
-        })();
-        """
-        try:
-            ui.run_javascript(js_code)
-        except (RuntimeError, AssertionError):
-            # No active client context — fall back to the stored page client;
-            # if none, we're likely in a unit test where the JS hook is moot.
-            if self._ui_client:
-                try:
-                    self._ui_client.run_javascript(js_code)
-                except (RuntimeError, AssertionError):
-                    pass
-            else:
-                logger.debug("Cannot flash editor tab: no client available")
+        """Flash the editor tab when content lands in a collapsed panel."""
+        flash_tab(ui_state._program_tab)
 
     def highlight_executing_line(self, step_index: int, tab_id: str) -> None:
         """Highlight the source line on the launching tab for the current step.

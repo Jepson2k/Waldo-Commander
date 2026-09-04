@@ -1,17 +1,25 @@
-"""Diagnostics tab: control-loop health, motor bus, drives, joint torques.
+"""Diagnostics tab: what this backend can actually tell you, and nothing else.
 
-Everything live here comes off the status broadcast the app already
-subscribes to — no polling and no second stream. The only query is a
-single ``loop_stats()`` when the tab first opens, for the boot constants
-that never change afterwards: the loop's target rate and whether the
+Backends differ enormously in what they report. One publishes per-drive
+temperatures, currents, a fieldbus link and measured joint torques; another
+has none of that and says so by leaving those fields empty. A fixed layout
+serves the first and leaves the second showing a screenful of dashes, which
+reads as "everything is zero" rather than "nobody asked this robot".
+
+So each section declares when it applies, and a section that has never had
+anything to report is never built. Once a section has appeared it stays:
+a drive that stops answering a register shows an unknown reading, which is
+information, rather than making its whole section vanish.
+
+Everything live comes off the status broadcast the app already subscribes
+to. The only query is one ``loop_stats()`` when the tab first opens, for the
+boot constants that never change: the loop's target rate and whether the
 control thread actually got real-time scheduling.
-
-A backend that reports none of this leaves its section saying so rather
-than showing dashes forever.
 """
 
 from __future__ import annotations
 
+import html as html_mod
 import logging
 import math
 from typing import Any, Callable
@@ -19,15 +27,38 @@ from typing import Any, Callable
 import waldoctl
 from nicegui import background_tasks, ui
 
-from waldo_commander.state import robot_state, ui_state
+from waldo_commander.state import robot_events, robot_state, ui_state
 
 logger = logging.getLogger(__name__)
 
 _JOINT_COLORS = ["#4fc3f7", "#81c784", "#ffb74d", "#e57373", "#ba68c8", "#fff176"]
 
+#: Error-code bands (waldoctl.errors). The band says what kind of thing went
+#: wrong, which is more use in a log than a severity word: a bus-off entry
+#: and a degraded loop are both "warning" and want telling apart at a glance.
+_BAND_STYLE: tuple[tuple[int, int, str, str], ...] = (
+    (10, 29, "sym_o_route", "text-purple-400"),  # IK / trajectory
+    (30, 39, "sym_o_open_with", "text-sky-400"),  # motion
+    (40, 49, "sym_o_lan", "text-amber-400"),  # comms
+    (50, 64, "sym_o_memory", "text-orange-400"),  # system / safety
+)
+_DEFAULT_STYLE = ("warning", "text-amber-400")
+
+
+def _band(code: int) -> tuple[str, str]:
+    for lo, hi, icon, colour in _BAND_STYLE:
+        if lo <= code <= hi:
+            return icon, colour
+    return _DEFAULT_STYLE
+
 
 def _ms(seconds: float) -> str:
     return f"{seconds * 1000.0:.2f} ms"
+
+
+def _num(value: float, digits: int = 0) -> str:
+    """A reading, or an em dash when the drive has not answered it."""
+    return "—" if value != value else f"{value:.{digits}f}"
 
 
 class DiagnosticsPage:
@@ -38,28 +69,72 @@ class DiagnosticsPage:
         self._is_open = is_open
         self._joint_count = ui_state.active_robot.joints.count
         self._values: dict[str, ui.label] = {}
+        self._sections: dict[str, ui.element] = {}
+        self._shown: set[str] = set()
         self._rt_fifo: ui.chip | None = None
         self._rt_pinned: ui.chip | None = None
         self._drive_rows: list[tuple[ui.element, list[ui.label]]] = []
-        self._drives_note: ui.label | None = None
         self._chart: ui.echart | None = None
+        self._events_html: ui.html | None = None
+        self._events_version = -1
         self._target_hz = 0.0
         self._constants_asked = False
+
+    # ---- availability ----
+    #
+    # Each predicate answers "has this backend ever reported this?". They read
+    # the emptiness conventions waldoctl documents per field: an empty list is
+    # a backend without the sensor, not a backend whose sensor reads zero.
+
+    def _has_loop(self) -> bool:
+        return waldoctl.commander.status.loop_health.measured or self._target_hz > 0.0
+
+    def _has_link(self) -> bool:
+        return bool(waldoctl.commander.status.link_health.state)
+
+    def _has_drives(self) -> bool:
+        dh = waldoctl.commander.status.drive_health
+        return (
+            bool(dh.temperatures_c or dh.currents_ma or dh.faults)
+            or dh.bus_voltage_v is not None
+        )
+
+    def _has_torques(self) -> bool:
+        return bool(getattr(ui_state.active_robot, "has_force_torque", False))
+
+    def _has_homing(self) -> bool:
+        return bool(waldoctl.commander.status.homing.joints)
 
     # ---- build ----
 
     def build(self) -> None:
+        self._values.clear()
+        self._sections.clear()
+        self._shown.clear()
+        self._drive_rows.clear()
+        self._chart = None
+        self._events_html = None
+        self._events_version = -1
         with ui.column().classes("w-full gap-2").mark("diagnostics-panel"):
             self._build_loop_section()
             self._build_link_section()
             self._build_drives_section()
             self._build_torque_section()
+            self._build_homing_section()
+            self._build_events_section()
+            self._nothing = (
+                ui.label("This backend reports no diagnostics.")
+                .classes("text-xs text-[var(--ctk-muted)]")
+                .mark("diag-nothing")
+            )
+        self._apply_visibility()
 
-    @staticmethod
-    def _section(title: str) -> ui.column:
-        col = ui.column().classes("w-full gap-0")
+    def _section(self, key: str, title: str) -> ui.column:
+        col = ui.column().classes("w-full gap-0").mark(f"diag-section-{key}")
         with col:
             ui.label(title).classes("text-sm font-medium")
+        self._sections[key] = col
+        col.set_visibility(False)
         return col
 
     def _row(self, name: str, marker: str) -> ui.label:
@@ -70,7 +145,7 @@ class DiagnosticsPage:
         return value
 
     def _build_loop_section(self) -> None:
-        with self._section("Control loop"):
+        with self._section("loop", "Control loop"):
             self._row("Rate", "diag-loop-rate")
             self._row("p99 period", "diag-loop-p99")
             self._row("Overruns", "diag-loop-overruns")
@@ -89,10 +164,8 @@ class DiagnosticsPage:
 
     def _build_link_section(self) -> None:
         lh = waldoctl.commander.status.link_health
-        with self._section("Motor bus"):
-            self._row("State", "diag-link-state").bind_text_from(
-                lh, "state", backward=lambda s: s or "not reported"
-            )
+        with self._section("link", "Motor bus"):
+            self._row("State", "diag-link-state").bind_text_from(lh, "state")
             self._row("Restarts", "diag-link-restarts").bind_text_from(
                 lh, "restarts", backward=str
             )
@@ -104,24 +177,25 @@ class DiagnosticsPage:
             )
 
     def _build_drives_section(self) -> None:
-        """A row per arm joint, plus the tool's own drive.
+        """A row per actuator, plus the tool drive some backends report.
 
-        A backend may report one more reading than the arm has joints, so
-        the tool row is built and left hidden until a reading for it
-        arrives; the joint rows are always there, reading "—" until a
-        drive answers.
+        Columns exist only where the backend has that sensor: a bus that
+        reports faults and no analog registers gets a fault column and no
+        others, rather than two columns of dashes implying broken sensors.
         """
-        with self._section("Drives"):
-            self._drives_note = (
-                ui.label("waiting for readings")
-                .classes("text-xs text-[var(--ctk-muted)]")
-                .mark("diag-drives-note")
-            )
+        with self._section("drives", "Drives"):
             with (
-                ui.grid(columns=3).classes("w-full gap-x-3 gap-y-0").mark("diag-drives")
+                ui.grid(columns=4).classes("w-full gap-x-3 gap-y-0").mark("diag-drives")
             ):
-                for head in ("Drive", "°C", "mA"):
-                    ui.label(head).classes("text-xs text-[var(--ctk-muted)]")
+                for head, marker in (
+                    ("Drive", "drive"),
+                    ("°C", "temp"),
+                    ("mA", "current"),
+                    ("Faults", "fault"),
+                ):
+                    ui.label(head).classes("text-xs text-[var(--ctk-muted)]").mark(
+                        f"diag-drives-head-{marker}"
+                    )
                 names = [f"J{j + 1}" for j in range(self._joint_count)] + ["Tool"]
                 for j, name in enumerate(names):
                     label = ui.label(name).classes("text-xs font-mono")
@@ -129,8 +203,9 @@ class DiagnosticsPage:
                         ui.label("—")
                         .classes("text-xs font-mono")
                         .mark(f"diag-drive-{kind}-{j + 1}")
-                        for kind in ("temp", "current")
+                        for kind in ("temp", "current", "fault")
                     ]
+                    cells[2].classes("text-amber-400")
                     self._drive_rows.append((label, cells))
             self._row("Supply", "diag-drive-supply")
         self._show_row(self._joint_count, False)
@@ -159,7 +234,7 @@ class DiagnosticsPage:
                         "data": [],
                     }
                 )
-        with self._section("Torques [Nm] (solid measured, dashed external)"):
+        with self._section("torques", "Torques [Nm] (solid measured, dashed external)"):
             self._chart = (
                 ui.echart(
                     {
@@ -202,27 +277,80 @@ class DiagnosticsPage:
                 .mark("diag-torque-chart")
             )
 
+    def _build_homing_section(self) -> None:
+        with self._section("homing", "Homing"):
+            self._row("Sequence step", "diag-homing-step")
+            self._row("Joints", "diag-homing-joints")
+
+    def _build_events_section(self) -> None:
+        """Warnings and errors, with room for what the readout could not show.
+
+        The wire carries a six-part structured error; a one-line strip could
+        only ever show the title, which is the half that does not tell you
+        what to do about it.
+        """
+        with self._section("events", "Events"):
+            with ui.row().classes("w-full items-center no-wrap"):
+                ui.space()
+                ui.button(icon="clear_all", on_click=self._clear_events).props(
+                    "flat dense round size=sm"
+                ).tooltip("Clear the log").mark("diag-clear-events")
+            self._events_html = (
+                ui.html("", sanitize=False).classes("w-full").mark("diag-events-log")
+            )
+        self._sections["events"].set_visibility(True)
+        self._shown.add("events")
+
+    # ---- visibility ----
+
+    def _apply_visibility(self) -> None:
+        """Reveal a section the first time its backend has something to say.
+
+        Latched: once shown a section stays, so a drive that stops answering
+        reads as an unknown value rather than a section that disappears.
+        """
+        for key, available in (
+            ("loop", self._has_loop),
+            ("link", self._has_link),
+            ("drives", self._has_drives),
+            ("torques", self._has_torques),
+            ("homing", self._has_homing),
+        ):
+            if key not in self._shown and available():
+                self._shown.add(key)
+                self._sections[key].set_visibility(True)
+        self._nothing.set_visibility(
+            self._shown == {"events"} and not robot_events.entries
+        )
+
     # ---- live update, driven by the status loop ----
 
     def update(self) -> None:
-        """Refresh from ``commander.status``. Called per status tick while
-        the tab is open.
+        """Refresh from ``commander.status``, once per status tick while the
+        tab is open.
 
         Synchronous on purpose: this runs inside the status loop's client
         context, and the one query it needs is dispatched as its own task
-        rather than awaited under that context."""
+        rather than awaited under that context.
+        """
         if not self._is_open():
             return
+        # Rendering the log is what counts as having seen it; the tab-change
+        # handler only fires for a real browser event.
+        robot_events.mark_read()
         if not self._constants_asked:
             self._constants_asked = True
             background_tasks.create(self._ask_constants(), name="diagnostics-constants")
+        self._apply_visibility()
         self._update_loop()
         self._update_drives()
+        self._update_homing()
+        self._update_events()
         self.update_chart()
 
     async def _ask_constants(self) -> None:
-        """The loop's target rate and its scheduling, which are fixed at
-        boot and so are worth exactly one query."""
+        """The loop's target rate and its scheduling, fixed at boot and so
+        worth exactly one query."""
         try:
             stats = await self.client.loop_stats()
         except NotImplementedError:
@@ -269,30 +397,61 @@ class DiagnosticsPage:
         self._set("diag-loop-overruns", str(health.overruns))
 
     def _update_drives(self) -> None:
-        if self._drives_note is None:
-            return
         health = waldoctl.commander.status.drive_health
         temps = health.temperatures_c
         currents = health.currents_ma
-        reported = max(len(temps), len(currents))
+        faults = health.faults
+        reported = max(len(temps), len(currents), len(faults))
         if not reported:
-            self._drives_note.text = "This backend's drives report no readings"
-            self._drives_note.set_visibility(True)
-            self._set("diag-drive-supply", "—")
             return
-        self._drives_note.set_visibility(False)
         self._show_row(self._joint_count, reported > self._joint_count)
         for j, (_, cells) in enumerate(self._drive_rows):
             temp = temps[j] if j < len(temps) else math.nan
             current = currents[j] if j < len(currents) else math.nan
-            # NaN is a drive that has not answered that register yet.
-            cells[0].text = "—" if math.isnan(temp) else f"{temp:.0f}"
-            cells[1].text = "—" if math.isnan(current) else f"{current:.0f}"
+            labels = faults[j] if j < len(faults) else ()
+            cells[0].text = _num(temp)
+            cells[1].text = _num(current)
+            cells[2].text = ", ".join(labels) if labels else "—"
         volts = health.bus_voltage_v
         self._set("diag-drive-supply", "—" if volts is None else f"{volts:.1f} V")
 
+    def _update_homing(self) -> None:
+        homing = waldoctl.commander.status.homing
+        if not homing.joints:
+            return
+        self._set("diag-homing-step", str(homing.sequence_step))
+        self._set(
+            "diag-homing-joints",
+            ", ".join(f"{state}/{phase}" for state, phase in homing.joints),
+        )
+
+    def _update_events(self) -> None:
+        if self._events_html is None or robot_events.version == self._events_version:
+            return
+        self._events_version = robot_events.version
+        parts: list[str] = []
+        for ts, code, title, cause, effect, remedy in reversed(robot_events.entries):
+            icon, colour = _band(code)
+            esc = html_mod.escape
+            detail = " → ".join(x for x in (esc(cause), esc(effect)) if x)
+            parts.append(
+                f'<div class="diag-event">'
+                f'<span class="material-symbols-outlined {colour}">{icon}</span>'
+                f'<span class="diag-event-time">{ts}</span>'
+                f"<b>{esc(title)}</b>"
+                f'<span class="diag-event-code">[{code}]</span>'
+                + (f'<div class="diag-event-detail">{detail}</div>' if detail else "")
+                + (
+                    f'<div class="diag-event-remedy">{esc(remedy)}</div>'
+                    if remedy
+                    else ""
+                )
+                + "</div>"
+            )
+        self._events_html.set_content("".join(parts))
+
     def update_chart(self) -> None:
-        if self._chart is None:
+        if self._chart is None or "torques" not in self._shown:
             return
         result = robot_state.torque_time_series.get_series_if_dirty()
         if result is None:
@@ -312,3 +471,10 @@ class DiagnosticsPage:
                     }
                 )
         self._chart.run_chart_method("setOption", {"series": series})
+
+    # ---- actions ----
+
+    def _clear_events(self) -> None:
+        robot_events.clear()
+        self._events_version = -1
+        self._update_events()

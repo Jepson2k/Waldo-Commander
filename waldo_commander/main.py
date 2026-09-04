@@ -53,6 +53,7 @@ from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
 from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
+from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
@@ -121,6 +122,9 @@ class _PageState:
     warning_banner_text: str = ""
     ping_timer: ui.timer | None = None
     last_ping_ok: bool = False
+    seen_event_version: int = -1
+    """Event-log version this page has already reacted to, so one entry
+    flashes the tab once rather than on every status tick."""
 
 
 _page_state: _PageState | None = None
@@ -176,12 +180,31 @@ def _update_connection_notification() -> None:
         ps.connection_notification = None
 
 
+def _flash_unread_diagnostics() -> None:
+    """Pulse the Diagnostics tab when something lands while it is not open.
+
+    The badge says how many; the flash is what makes anyone look at it. No
+    flash while the tab is already showing — the entry is right there.
+    """
+    ps = _page_state
+    if ps is None or not robot_events.unread:
+        return
+    if ps.seen_event_version == robot_events.version:
+        return
+    ps.seen_event_version = robot_events.version
+    tabs = ui_state._side_tabs
+    if tabs is not None and tabs.value == "diagnostics":
+        robot_events.mark_read()
+        return
+    flash_tab(ui_state._diagnostics_tab)
+
+
 def _update_warning_notification() -> None:
     """Persistent banner while warning-class conditions stand.
 
     Same mechanism as the hard-error connection banner, colored as a
     warning; it leaves when the conditions self-clear. History lives in
-    the warnings/errors log under the movement log."""
+    the Diagnostics tab's event log, which keeps what the banner drops."""
     ps = _page_state
     if ps is None or not readiness_state.urdf_scene_ready.is_set():
         return
@@ -588,8 +611,7 @@ def update_ui_from_status() -> None:
 
     _update_connection_notification()
     _update_warning_notification()
-    if readout_panel is not None:
-        readout_panel.update_event_log()
+    _flash_unread_diagnostics()
     if control_panel is not None:
         control_panel.sync_freedrive_visual()
     if tool_key_changed:
@@ -726,8 +748,10 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         .props("vertical")
         .classes("side-tab-bar absolute left-0 top-0 z-40") as side_tabs
     ):
+        ui_state._side_tabs = side_tabs
         program_tab = ui.tab(name="program", label="", icon="code")
         program_tab.mark("tab-program")
+        ui_state._program_tab = program_tab
         io_tab = ui.tab(name="io", label="", icon="settings_input_component")
         io_tab.mark("tab-io")
         gripper_tab = ui.tab(name="gripper", label="")
@@ -741,6 +765,15 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         diagnostics_tab = ui.tab(name="diagnostics", label="", icon="monitor_heart")
         diagnostics_tab.tooltip("Diagnostics")
         diagnostics_tab.mark("tab-diagnostics")
+        ui_state._diagnostics_tab = diagnostics_tab
+        with diagnostics_tab:
+            # Quasar floats the badge over the tab's corner, so an unread
+            # count needs no layout of its own.
+            ui.badge(color="amber-7").props("floating").bind_text_from(
+                robot_events, "unread", backward=str
+            ).bind_visibility_from(robot_events, "unread", backward=bool).mark(
+                "diag-unread-badge"
+            )
 
         _add_plugin_tabs(PanelSlot.LEFT_TOP_TAB)
 
@@ -856,6 +889,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
             ui_state.program_panel_visible = new_tab == "program"
+            if new_tab == "diagnostics":
+                robot_events.mark_read()
 
         side_tabs.on("update:model-value", update_top_layout)
 
@@ -1943,7 +1978,9 @@ async def _status_consumer() -> None:
                     ):
                         joints.torques_ext = [float(v) for v in torques_ext]
                         torques_ext_shadow = torques_ext.copy()
-                    if torques is not None:
+                    # Only where the backend measures torque: pushing zeros
+                    # would draw a flat line that reads as a healthy reading.
+                    if torques is not None and ui_state.active_robot.has_force_torque:
                         robot_state.torque_time_series.push(
                             [float(v) for v in torques],
                             [float(v) for v in torques_ext]
@@ -1976,11 +2013,17 @@ async def _status_consumer() -> None:
                         prev = {tuple(e) for e in st.warnings.entries}
                         for e in entries:
                             if tuple(e) not in prev:
+                                # The wire tuple is
+                                # (command_index, code, title, cause,
+                                #  effect, remedy) — the log keeps all of
+                                # it, since the remedy is the half that
+                                # says what to do about the condition.
                                 robot_events.add(
-                                    "warning",
-                                    str(e[2]) if len(e) > 2 else str(e),
-                                    str(e[3]) if len(e) > 3 else "",
-                                    str(e[5]) if len(e) > 5 else "",
+                                    code=int(e[1]) if len(e) > 1 else 0,
+                                    title=str(e[2]) if len(e) > 2 else str(e),
+                                    cause=str(e[3]) if len(e) > 3 else "",
+                                    effect=str(e[4]) if len(e) > 4 else "",
+                                    remedy=str(e[5]) if len(e) > 5 else "",
                                 )
                         st.warnings.entries = list(entries)
 
@@ -1997,6 +2040,9 @@ async def _status_consumer() -> None:
                         volts = None if volts is None else float(volts)
                         if dh.bus_voltage_v != volts:
                             dh.bus_voltage_v = volts
+                        faults = [tuple(f) for f in drives.get("faults", ())]
+                        if dh.faults != faults:
+                            dh.faults = faults
 
                     loop = getattr(status, "loop_health", None)
                     if loop:
