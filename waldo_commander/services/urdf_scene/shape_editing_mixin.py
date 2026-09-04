@@ -24,7 +24,6 @@ from waldoctl.shapes import (
     Cone,
     Cylinder,
     Ellipsoid,
-    Plane,
     Shape,
     Sphere,
 )
@@ -33,8 +32,7 @@ from waldoctl.shapes import (
 # everything else on a subclass is a coal dimension param (shapes.params()).
 _COMMON = ("name", "pose", "collision", "margin")
 _KINDS: dict[str, type] = {
-    c.__name__.lower(): c
-    for c in (Box, Sphere, Cylinder, Capsule, Cone, Ellipsoid, Plane)
+    c.__name__.lower(): c for c in (Box, Sphere, Cylinder, Capsule, Cone, Ellipsoid)
 }
 
 logger = logging.getLogger(__name__)
@@ -115,9 +113,7 @@ class ShapeEditingMixin:
         )
         if self._shape_move_active == shape_name:
             ui.menu_item("Stop Moving", on_click=self._end_shape_move)
-        elif shape.kind != "plane":
-            # A plane renders at its surface, not at its pose — dragging
-            # the slab would not move what the checker enforces.
+        else:
             ui.menu_item(
                 "Move (drag arrows)",
                 on_click=lambda n=shape_name: self._start_shape_move(n),
@@ -212,15 +208,11 @@ class ShapeEditingMixin:
             dim_in: dict[str, Any] = {}
             with ui.row().classes("gap-1 w-full"):
                 for p in param_names:
-                    if kind == "plane" and p != "offset":
-                        # Plane normals are directions, not lengths.
-                        dim_in[p] = ui.number(p, value=dims[p]).classes("flex-1")
-                    else:
-                        dim_in[p] = (
-                            ui.number(p, value=round(dims[p] * 1000, 1), suffix="mm")
-                            .classes("flex-1")
-                            .mark(f"shape-dialog-dim-{p}")
-                        )
+                    dim_in[p] = (
+                        ui.number(p, value=round(dims[p] * 1000, 1), suffix="mm")
+                        .classes("flex-1")
+                        .mark(f"shape-dialog-dim-{p}")
+                    )
             collision_in = ui.switch(
                 "Collision (off = visual marker)", value=collision0
             )
@@ -236,12 +228,7 @@ class ShapeEditingMixin:
                     dialog.close()
                     return
                 try:
-                    params = {}
-                    for p in param_names:
-                        v = float(dim_in[p].value)
-                        params[p] = (
-                            v if (kind == "plane" and p != "offset") else v / 1000
-                        )
+                    params = {p: float(dim_in[p].value) / 1000 for p in param_names}
                     margin_v = margin_in.value
                     new = cls(
                         name=str(name_in.value).strip() or name0,
