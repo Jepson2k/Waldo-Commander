@@ -1089,9 +1089,16 @@ pre-commit<span class="w"> </span>install
 </code></pre></div>
 <p>Pre-commit hooks run ruff and ty on every commit. Tests use <code>pytest</code>.</p>
 <h3 id="editing-sibling-repos-in-place">Editing sibling repos in place<a class="headerlink" href="#editing-sibling-repos-in-place" title="Permanent link">&para;</a></h3>
-<p>If you need to edit <code>waldoctl/</code> or <code>PAROL6-python-API/</code> alongside <code>waldo_commander/</code>, clone them as sibling directories and run:</p>
+<p>If you need to edit <code>waldoctl/</code> or your arm backend alongside <code>waldo_commander/</code>, clone them as sibling directories and run:</p>
 <div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>waldoctl/
+
+<span class="c1"># then an editable checkout of the backend you are editing, not both —</span>
+<span class="c1"># parol6 and par6 drive different arms. ([dev] below installs parol6 from</span>
+<span class="c1"># its pin either way, as the default test backend.)</span>
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>PAROL6-python-API/<span class="w"> </span>--config-settings<span class="w"> </span><span class="nv">editable_mode</span><span class="o">=</span>compat<span class="w"> </span>--no-deps
+<span class="c1">#   or</span>
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>par6/python<span class="w"> </span>--no-deps<span class="w">   </span><span class="c1"># after par6/scripts/ffi/setup.sh</span>
+
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.<span class="w"> </span>--no-deps
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[dev]"</span>
 </code></pre></div>

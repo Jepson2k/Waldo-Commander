@@ -1376,6 +1376,39 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.set_payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        set_payload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.estimate_payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        estimate_payload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        payload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.RobotClient.write_io" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2239,6 +2272,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.drive_health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        drive_health
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.loop_health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        loop_health
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.StatusBuffer.homing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2901,6 +2956,28 @@
     <span class="md-ellipsis">
       
         current_range
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ElectricGripperTool.stop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ElectricGripperTool.release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        release
       
     </span>
   </a>
@@ -4641,6 +4718,39 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.set_payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        set_payload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.estimate_payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        estimate_payload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        payload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.RobotClient.write_io" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5504,6 +5614,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.drive_health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        drive_health
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.StatusBuffer.loop_health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        loop_health
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.StatusBuffer.homing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6166,6 +6298,28 @@
     <span class="md-ellipsis">
       
         current_range
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ElectricGripperTool.stop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.ElectricGripperTool.release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        release
       
     </span>
   </a>
@@ -9192,6 +9346,128 @@ Call with (0, 0, 0) to reset. Changing tools resets the offset.</p>
 <div class="doc doc-object doc-function">
 
 
+<h3 id="waldoctl.RobotClient.set_payload" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">set_payload</span><span class="p">(</span><span class="n">mass</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">com</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="n">inertia</span><span class="p">:</span> <span class="n">Inertia6</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.RobotClient.set_payload" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Declare what the arm is carrying at the TCP.</p>
+<p>An inertial declaration only: the gravity feedforward and torque
+planning carry it, the collision geometry does not change (use
+<code>set_shapes</code> for that).</p>
+<p>This is what a backend's own model cannot know. A shipped model
+describes the nominal arm; the mass in the gripper, the fixture
+bolted to the flange and the spool on the end of it are the
+operator's, and they move the first moments the gravity model
+depends on.</p>
+<p><em>mass</em> in kg, 0 clears the payload. <em>com</em> is the centre of mass in
+end-effector-frame metres. <em>inertia</em> is an :data:<code>Inertia6</code>;
+omitted means a point mass.</p>
+<p>Invalid input — a negative mass, an inertia that is not positive
+semidefinite — raises <code>RuntimeError</code> (a backend's own error type
+derives from it) rather than returning -1.</p>
+<p>Category: Configuration</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>rbt.set_payload(1.2, com=(0.0, 0.0, 0.05))</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.RobotClient.estimate_payload" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">estimate_payload</span><span class="p">(</span><span class="n">spread</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">,</span> <span class="n">ridge</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.01</span><span class="p">,</span> <span class="n">declare</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">PayloadEstimate</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.RobotClient.estimate_payload" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Estimate what the arm is carrying, and declare it.</p>
+<p>Mass and centre of mass, from the torque the arm holds. NOT the
+inertia tensor: static poses cannot excite it, so the result is
+carried as a point mass — which is what most payloads are well
+enough described by. A payload whose inertia matters is declared
+with <code>set_payload</code> from its drawing.</p>
+<p>Call it after closing on a part whose mass is not known. <strong>The
+arm moves</strong>: the backend swings the wrist — where the load's
+lever arm is, so nothing below moves and the pick is not
+disturbed — through a few poses, taking seconds.</p>
+<p>The backend clears the declared payload before measuring (the
+load is found in the torque an <em>unloaded</em> model cannot explain)
+and restores it on every exit that does not declare, failure
+included. With <em>declare</em> (the default) the estimate replaces it,
+so the gravity model carries the part from the next tick.</p>
+<p><em>spread</em> is how far each wrist joint swings either way, in
+radians. <em>ridge</em> holds back parameters the motion did not
+measure.</p>
+<p>Raises <code>RuntimeError</code> (a backend's own error type derives from
+it) when there is no room to measure, or when <em>declare</em> is set
+and no mass was actually measured — a backend must refuse rather
+than declare noise.</p>
+<p>Category: Motion</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>found = rbt.estimate_payload()
+print(f"holding {found.mass:.3f} kg")</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.RobotClient.payload" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">payload</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">PayloadResult</span> <span class="o">|</span> <span class="kc">None</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.RobotClient.payload" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The payload the runtime is currently carrying.</p>
+<p>Returns <code>None</code> if the backend is unreachable. A backend that
+carries no payload reports zeros rather than <code>None</code>.</p>
+<p>Category: Query</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>print(rbt.payload())</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h3 id="waldoctl.RobotClient.write_io" class="doc doc-heading">
             <code class="highlight language-python"><span class="n">write_io</span><span class="p">(</span><span class="n">index</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">value</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
 
@@ -11117,6 +11393,61 @@ through the error query/standing error.</p>
 
 
 
+<h3 id="waldoctl.StatusBuffer.drive_health" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">drive_health</span><span class="p">:</span> <span class="nb">dict</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#waldoctl.StatusBuffer.drive_health" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Per-drive analog readings, for watching a joint approach a limit
+before it faults: <code>temperatures_c</code> and <code>currents_ma</code> (one entry per
+actuator, arm joints first) and <code>bus_voltage_v</code> (the lowest supply a
+drive reports, where sag under load shows first). A list is empty when
+the backend has no such sensor at all; <code>NaN</code> inside one means that
+drive has not answered yet. Faults themselves are NOT here — they
+surface through <code>warnings</code> and the standing error.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.StatusBuffer.loop_health" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">loop_health</span><span class="p">:</span> <span class="nb">dict</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#waldoctl.StatusBuffer.loop_health" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Control-loop health as the loop runs: <code>p99_period_s</code> (the tail is
+what breaks a control loop, not the mean) and <code>overruns</code> (ticks that
+missed their deadline, cumulative). The rest of the loop metrics —
+mean/min/max, scheduling policy, bus frame age — are boot constants or
+detail, and stay in the <code>loop_stats()</code> query. Empty when the backend
+does not measure its loop.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
 <h3 id="waldoctl.StatusBuffer.homing" class="doc doc-heading">
             <code class="highlight language-python"><span class="n">homing</span><span class="p">:</span> <span class="nb">dict</span></code>
 
@@ -12622,6 +12953,64 @@ implementations.</p>
 
 
 
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.ElectricGripperTool.stop" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">stop</span><span class="p">(</span><span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="nb">object</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.ElectricGripperTool.stop" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Halt the jaws where they are, ahead of anything still queued.
+Not all grippers support this.</p>
+<p>Category: Tool</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>rbt.tool.stop()</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.ElectricGripperTool.release" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">release</span><span class="p">(</span><span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="nb">object</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.ElectricGripperTool.release" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Drop the grip once the action in flight settles, freeing the jaws
+for manual handling. Not all grippers support this.</p>
+<p>Category: Tool</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>rbt.tool.release()</p>
+</details>
+
+    </div>
+
+</div>
 
 
 
