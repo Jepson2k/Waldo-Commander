@@ -1997,3 +1997,67 @@ class TestSimulatedRunPlumbing:
 
         overlay.render(None, show_divergence=True)
         assert not overlay.is_built, "no record, no overlay"
+
+    def test_playback_over_a_record_replays_measured_poses(self):
+        """A timeline built from ticks plays what was measured.
+
+        The planned timeline interpolates between waypoints; this one has
+        the rows, so a pose at time t is the row at time t. The planned
+        segments still supply the line number, which is what keeps the
+        executing-line highlight pointing at the right place.
+        """
+        from waldo_commander.services.timeline import Timeline
+        from waldo_commander.state import PathSegment
+
+        ticks = self._ticks(rows=6)
+        planned = [
+            PathSegment(
+                points=[[0.3, 0.0, 0.2], [0.4, 0.0, 0.2]],
+                color="#00ff00",
+                is_valid=True,
+                line_number=3,
+                joint_trajectory=[[0.0] * 6, [1.0] * 6],
+                estimated_duration=99.0,
+            )
+        ]
+        tl = Timeline.from_ticks(ticks, planned)
+
+        # The run's duration, not the plan's guess at it.
+        assert tl.total_duration == pytest.approx(ticks.duration_s)
+        assert tl.cumulative_times[0] == 0.0
+        assert tl.cumulative_times[-1] == pytest.approx(ticks.duration_s)
+        assert tl._segments[0].line_number == 3
+
+        mid = tl.sample(ticks.duration_s / 2)
+        assert mid.segment_index == 0
+        assert mid.joints is not None
+        row = ticks.row_at(ticks.duration_s / 2)
+        assert mid.joints == pytest.approx(
+            [float(v) for v in ticks.joints_rad[row]], abs=1e-6
+        )
+        # Measured, so it carries the servo lag the plan cannot show.
+        assert mid.joints != pytest.approx(
+            [float(v) for v in ticks.commanded_rad[row]], abs=1e-6
+        )
+
+        end = tl.sample(999.0)
+        assert end.joints == pytest.approx(
+            [float(v) for v in ticks.joints_rad[-1]], abs=1e-6
+        )
+
+    def test_a_block_with_no_planned_segment_still_takes_a_slot(self):
+        """Index density: prev/next steps through commands, so a command
+        the planner drew nothing for cannot vanish from the sequence."""
+        from waldo_commander.services.timeline import Timeline
+
+        ticks = self._ticks(rows=6)
+        ticks.blocks = (
+            waldoctl.TickBlock(command=0, start_row=0, rows=3, line_number=3),
+            waldoctl.TickBlock(command=1, start_row=3, rows=3, line_number=9),
+        )
+        tl = Timeline.from_ticks(ticks, [])
+
+        assert len(tl._segments) == 2
+        assert [s.line_number for s in tl._segments] == [3, 9]
+        assert tl.sample(0.0).segment_index == 0
+        assert tl.sample(ticks.duration_s).segment_index == 1

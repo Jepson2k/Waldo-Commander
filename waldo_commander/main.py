@@ -49,6 +49,7 @@ from waldo_commander.components.editor import EditorPanel
 from waldo_commander.components.gripper import GripperPage
 from waldo_commander.components.help_menu import help_menu
 from waldo_commander.components.io import IoPage
+from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
@@ -1101,6 +1102,7 @@ def build_page_content() -> None:
         with (
             ui.column().classes("absolute inset-0 z-20").style("pointer-events: none;")
         ):
+            physics_legend.build()
             with (
                 ui.element("div")
                 .classes("panels-wrap absolute inset-0 z-30")

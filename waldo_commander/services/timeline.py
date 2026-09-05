@@ -6,6 +6,8 @@ import bisect
 import math
 from dataclasses import dataclass, field
 
+from waldoctl import TickIndex
+
 from waldo_commander.state import PathSegment, ToolAction, ToolSelection
 
 DEFAULT_SEGMENT_DURATION = 0.5  # seconds, for segments without timing data
@@ -142,6 +144,10 @@ class Timeline:
     checkpoints: list[Checkpoint] = field(default_factory=list)
     object_keyframes: dict[str, list[ObjectKeyframe]] = field(default_factory=dict)
     _object_times: dict[str, list[float]] = field(default_factory=dict)
+    #: The simulated record this timeline plays, when there is one. With
+    #: it set, poses are read off measured rows instead of interpolated
+    #: between planned waypoints.
+    _ticks: TickIndex | None = None
 
     @classmethod
     def from_segments(
@@ -277,6 +283,107 @@ class Timeline:
             _object_times={name: [k.time for k in kf] for name, kf in obj_kf.items()},
         )
 
+    @classmethod
+    def from_ticks(
+        cls,
+        ticks: TickIndex,
+        segments: list[PathSegment],
+        tool_selections: list[ToolSelection] | None = None,
+    ) -> Timeline:
+        """Build a timeline over a simulated run.
+
+        Rows are evenly spaced in simulated time, so most of the timing
+        machinery that approximated a plan collapses to multiplication:
+        a command's window is its block, and a pose is the row at that
+        instant rather than a guess between two waypoints.
+
+        Segments survive as the chunking unit — one scrub-bar division
+        and one polyline per command, and the same index space the live
+        run's step counter uses — so everything downstream of a segment
+        index keeps working. Each block borrows the planned segment that
+        came from its line, which is what keeps the executing-line
+        highlight pointing at the right place.
+        """
+        dt = ticks.row_dt_s
+        blocks = [b for b in ticks.blocks if b.rows > 0]
+        by_line: dict[int, PathSegment] = {}
+        for seg in segments:
+            by_line.setdefault(seg.line_number, seg)
+
+        cum = [b.start_row * dt for b in blocks] or [0.0]
+        cum.append(ticks.rows * dt)
+        durs = [b.rows * dt for b in blocks]
+        # A block with no planned segment still needs a slot: the index
+        # space has to stay dense or prev/next skips commands.
+        ordered = [
+            by_line.get(b.line_number or -1)
+            or PathSegment(
+                points=[],
+                color="#888888",
+                is_valid=True,
+                line_number=b.line_number or 0,
+            )
+            for b in blocks
+        ]
+
+        obj_kf: dict[str, list[ObjectKeyframe]] = {}
+        for obj in ticks.objects:
+            rows = obj.poses.shape[0]
+            obj_kf[obj.name] = [
+                ObjectKeyframe(
+                    time=i * dt if rows > 1 else 0.0,
+                    pose=tuple(float(v) for v in obj.poses[i]),
+                    physics=True,
+                )
+                for i in range(rows)
+            ]
+
+        # One tool keyframe per row the jaws actually moved on. A tool
+        # that never moves contributes none, and one that does gets the
+        # measured travel rather than a straight ramp between endpoints.
+        tool_kf: list[ToolKeyframe] = []
+        closed = ticks.tool_closed
+        for i in range(ticks.rows):
+            v = float(closed[i]) if i < len(closed) else float("nan")
+            if v != v:  # NaN: no tool reply yet
+                continue
+            if tool_kf and abs(tool_kf[-1].positions[0] - v) < 1e-3:
+                continue
+            tool_kf.append(ToolKeyframe(time=i * dt, positions=(v,)))
+
+        sel_kf: list[ToolSelectionKeyframe] = []
+        for sel in tool_selections or []:
+            idx = sel.segment_index
+            t_sel = 0.0 if idx < 0 else cum[min(idx + 1, len(cum) - 1)]
+            sel_kf.append(
+                ToolSelectionKeyframe(
+                    time=t_sel,
+                    tool_key=sel.tool_key,
+                    variant_key=sel.variant_key,
+                )
+            )
+
+        cps = [
+            Checkpoint(time=cum[i] + durs[i], segment_index=i, kind=seg.checkpoint)
+            for i, seg in enumerate(ordered)
+            if seg.checkpoint
+        ]
+
+        return cls(
+            cumulative_times=cum,
+            total_duration=ticks.duration_s,
+            _segments=ordered,
+            segment_durations=durs,
+            tool_keyframes=tool_kf,
+            _tool_times=[k.time for k in tool_kf],
+            tool_selection_keyframes=sel_kf,
+            _tool_sel_times=[k.time for k in sel_kf],
+            checkpoints=cps,
+            object_keyframes=obj_kf,
+            _object_times={name: [k.time for k in kf] for name, kf in obj_kf.items()},
+            _ticks=ticks,
+        )
+
     def sample(self, t: float) -> TimelineSample:
         """Sample the timeline at time t (seconds).
 
@@ -305,7 +412,12 @@ class Timeline:
         fraction = (t - seg_start) / motion_dur if motion_dur > 0 else 1.0
         fraction = max(0.0, min(1.0, fraction))
 
-        joints = self._interpolate_joints(seg, fraction)
+        if self._ticks is not None:
+            # Measured, not interpolated: the row IS where the arm was.
+            row = self._ticks.row_at(t)
+            joints = [float(v) for v in self._ticks.joints_rad[row]]
+        else:
+            joints = self._interpolate_joints(seg, fraction)
 
         return TimelineSample(
             segment_index=idx,

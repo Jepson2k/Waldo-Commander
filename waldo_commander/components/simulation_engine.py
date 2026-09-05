@@ -129,6 +129,10 @@ class SimulationEngine:
                 await path_visualizer.update_physics_simulation(
                     tab.source, tab_id=tab_id
                 )
+                # Playback now has measured poses to replay instead of
+                # interpolated ones, so the cached timeline is stale.
+                playback.invalidate_timeline()
+                playback.update_scrub_segments()
             except asyncio.CancelledError:
                 logger.debug("PHYSICS: cancelled by a newer edit")
             except Exception as e:

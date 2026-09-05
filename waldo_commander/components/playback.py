@@ -745,11 +745,22 @@ class PlaybackController:
                 self.invalidate_timeline()
             return None
         if self._timeline is None:
-            self._timeline = Timeline.from_segments(
-                active.dry_run.path_segments,
-                active.dry_run.tool_actions or None,
-                tool_selections=active.dry_run.tool_selections or None,
-            )
+            ticks = active.dry_run.ticks
+            if ticks is not None and ticks.rows > 1:
+                # Play back what the arm did. The planned segments still
+                # supply the line numbers and the checkpoints; the poses,
+                # the timing and the objects come from the record.
+                self._timeline = Timeline.from_ticks(
+                    ticks,
+                    active.dry_run.path_segments,
+                    tool_selections=active.dry_run.tool_selections or None,
+                )
+            else:
+                self._timeline = Timeline.from_segments(
+                    active.dry_run.path_segments,
+                    active.dry_run.tool_actions or None,
+                    tool_selections=active.dry_run.tool_selections or None,
+                )
             active.dry_run.total_duration = self._timeline.total_duration
             if self._scrub_slider is not None:
                 self._scrub_slider.props(f"max={self._timeline.total_duration}")
