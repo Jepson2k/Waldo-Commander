@@ -128,12 +128,8 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
                 "world.library_save",
                 {"name": "post", "shapes": [list(post_entry.to_wire())]},
             )
-            await client.call_tool(
-                "world.library_save", {"name": "layout"}
-            )  # current layer
             assert _payload(await client.call_tool("world.library_list")) == [
                 "block",
-                "layout",
                 "post",
             ]
             with pytest.raises(ToolError, match="letters, digits"):
@@ -152,6 +148,7 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
             by_name = {s.name: s for s in scene.shapes}
             assert by_name["post_2"].pose[:3] == (0.35, 0.1, 0.05)
             assert placed["program"][-1][5] == "post_2"
+            await client.call_tool("world.library_save", {"name": "layout"})  # both
             # The backend decides what it can enforce: parol6 has no contact
             # simulation and refuses a body, and the refusal reaches the LLM.
             with pytest.raises(ToolError, match="physics"):
@@ -162,17 +159,21 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
             with pytest.raises(ToolError, match="unavailable"):
                 await client.call_tool("world.place_object", {"entry": "nothing"})
 
+            await client.call_tool("world.remove_shape", {"name": "post_2"})
             await client.call_tool("world.library_load", {"name": "layout"})
-            assert [s.name for s in scene.shapes] == ["wall"]
+            assert [s.name for s in scene.shapes] == ["wall", "post_2"]
             assert _payload(
                 await client.call_tool("world.library_delete", {"name": "layout"})
-            ) == ["block"]
+            ) == ["block", "post"]
 
             toml_text = _payload(
                 await client.call_tool("world.export_installation_toml")
             )
             parsed = tomllib.loads(toml_text)
-            assert [e["name"] for e in parsed["installation_shapes"]] == ["wall"]
+            assert [e["name"] for e in parsed["installation_shapes"]] == [
+                "wall",
+                "post_2",
+            ]
             assert parsed["installation_shapes"][0]["kind"] == "box"
             assert parsed["installation_shapes"][0]["pose"][0] == 0.5
     finally:
