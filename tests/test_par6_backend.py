@@ -153,6 +153,11 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         user.find(marker="tab-diagnostics").click()
         await asyncio.sleep(0)
         await user.should_see(marker="diagnostics-panel")
+        # A section reveals on the first status tick that finds it reportable,
+        # and only while the tab is open — so wait for the reveal, not the
+        # panel.
+        await user.should_see(marker="diag-section-drives", retries=50)
+        await user.should_see(marker="diag-section-loop", retries=50)
 
         def _text(marker: str) -> str:
             return next(iter(user.find(marker=marker).elements)).text
