@@ -75,6 +75,11 @@ class SimulationEngine:
     def __init__(self) -> None:
         self._simulation_debounce_timer: ui.timer | None = None
         self._debounce_delay: float = 1.0  # seconds of idle before running
+        self._physics_timer: ui.timer | None = None
+        # Longer, deliberately. Planning is milliseconds and belongs
+        # behind a keystroke; a physics pass is seconds of solid CPU and
+        # belongs behind a pause. Typing must never wait on it.
+        self._physics_delay: float = 4.0
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel any pending debounced simulation so it
@@ -82,6 +87,53 @@ class SimulationEngine:
         if self._simulation_debounce_timer is not None:
             self._simulation_debounce_timer.cancel(with_current_invocation=True)
             self._simulation_debounce_timer = None
+        self._cancel_physics()
+
+    def _cancel_physics(self) -> None:
+        """Abandon the physics pass, pending or running.
+
+        Its worker is ours alone, so killing it costs a respawn and
+        disturbs nothing else — which is what lets a superseding edit
+        stop seconds of CPU immediately instead of waiting it out.
+        """
+        if self._physics_timer is not None:
+            self._physics_timer.cancel(with_current_invocation=True)
+            self._physics_timer = None
+        path_visualizer.cancel_physics()
+
+    def schedule_physics_simulation(self, tab_id: str | None = None) -> None:
+        """Schedule the physics pass behind its own, longer idle.
+
+        No-op on a backend with no plant. The planned preview has already
+        landed by the time this fires; this refines it with what the arm
+        would actually do, and the scrub bar stays locked meanwhile.
+        """
+        self._cancel_physics()
+        if not ui_state.active_robot.has_physics_simulation:
+            return
+        if tab_id is None:
+            tab_id = waldoctl.commander.programs.active_id
+        if not tab_id:
+            return
+
+        async def run_physics_quietly():
+            try:
+                tab = waldoctl.commander.programs.get(tab_id)
+                if tab is None or not tab.dry_run.path_segments:
+                    return
+                await path_visualizer.update_physics_simulation(
+                    tab.source, tab_id=tab_id
+                )
+            except asyncio.CancelledError:
+                logger.debug("PHYSICS: cancelled by a newer edit")
+            except Exception as e:
+                logger.error("Physics simulation failed: %s", e, exc_info=True)
+            finally:
+                if self._physics_timer is my_timer:
+                    self._physics_timer = None
+
+        my_timer = ui.timer(self._physics_delay, run_physics_quietly, once=True)
+        self._physics_timer = my_timer
 
     def reset_for_test(self) -> None:
         """Restore field defaults by replaying ``__init__`` on this instance."""
@@ -191,6 +243,9 @@ class SimulationEngine:
             logger.debug("DEBOUNCE: Cancelling pending/running simulation")
             self._simulation_debounce_timer.cancel(with_current_invocation=True)
             self._simulation_debounce_timer = None
+        # The edit retires whatever physics was running or queued: it
+        # describes a program that no longer exists.
+        self._cancel_physics()
 
         async def run_simulation_quietly():
             try:
@@ -212,6 +267,7 @@ class SimulationEngine:
                 logger.debug("DEBOUNCE: Starting simulation...")
                 await self.run_simulation(tab_id=tab_id)
                 logger.debug("DEBOUNCE: Simulation completed successfully")
+                self.schedule_physics_simulation(tab_id)
             except asyncio.CancelledError:
                 logger.debug("DEBOUNCE: Simulation cancelled by newer edit")
             except Exception as e:

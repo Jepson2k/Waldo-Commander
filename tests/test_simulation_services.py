@@ -1870,6 +1870,10 @@ class TestObjectTrackPlumbing:
         inner = MagicMock()
         inner.move_j.return_value = result
         inner.tool.close.return_value = result
+        # A real client counts the commands it has recorded, and the
+        # preview reads that to map each one back to a source line; a
+        # mock that answers with a mock is not a client.
+        inner.program_length = 0
         segments: list[dict] = []
         actions: list[ToolAction] = []
         client = PathPreviewClient(
