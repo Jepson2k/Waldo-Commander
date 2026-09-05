@@ -181,7 +181,7 @@ def _update_warning_notification() -> None:
 
     Same mechanism as the hard-error connection banner, colored as a
     warning; it leaves when the conditions self-clear. History lives in
-    the warnings/errors log under the movement log."""
+    the Diagnostics tab's event log, which keeps what the banner drops."""
     ps = _page_state
     if ps is None or not readiness_state.urdf_scene_ready.is_set():
         return
@@ -189,22 +189,34 @@ def _update_warning_notification() -> None:
     msg = "; ".join(str(e[2]) for e in entries)
     if msg == ps.warning_banner_text:
         return
-    if ps.warning_notification is not None:
-        ps.warning_notification.dismiss()
-        # dismiss() only tells the client; the server element normally
-        # deletes itself on the client's dismiss event, which never comes
-        # without a real browser.
-        if not ps.warning_notification.is_deleted:
-            ps.warning_notification.delete()
-        ps.warning_notification = None
-    if msg:
+    ps.warning_banner_text = msg
+    banner = ps.warning_notification
+    if banner is not None and banner.is_deleted:
+        banner = ps.warning_notification = None
+    if not msg:
+        if banner is not None:
+            stale = banner
+            stale.dismiss()
+            ps.warning_notification = None
+            # The client's dismiss event is what deletes the element; a
+            # client that never sends one (the user fixture) needs the
+            # fallback, and it has to wait for the dismiss to flush because
+            # the outbox sends deletions ahead of method calls.
+            ui.timer(
+                0.1,
+                lambda: None if stale.is_deleted else stale.delete(),
+                once=True,
+            )
+        return
+    if banner is None:
         ps.warning_notification = ui.notification(
             message=msg,
             type="warning",
             close_button=True,
             timeout=0,
         )
-    ps.warning_banner_text = msg
+    else:
+        banner.message = msg
 
 
 async def initialize_urdf_scene() -> None:
@@ -588,8 +600,6 @@ def update_ui_from_status() -> None:
 
     _update_connection_notification()
     _update_warning_notification()
-    if readout_panel is not None:
-        readout_panel.update_event_log()
     if control_panel is not None:
         control_panel.sync_freedrive_visual()
     if tool_key_changed:
@@ -728,6 +738,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
     ):
         program_tab = ui.tab(name="program", label="", icon="code")
         program_tab.mark("tab-program")
+        ui_state._program_tab = program_tab
         io_tab = ui.tab(name="io", label="", icon="settings_input_component")
         io_tab.mark("tab-io")
         gripper_tab = ui.tab(name="gripper", label="")
@@ -741,6 +752,14 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         diagnostics_tab = ui.tab(name="diagnostics", label="", icon="monitor_heart")
         diagnostics_tab.tooltip("Diagnostics")
         diagnostics_tab.mark("tab-diagnostics")
+        with diagnostics_tab:
+            # Quasar floats the badge over the tab's corner, so an unread
+            # count needs no layout of its own.
+            ui.badge(color="amber-7").props("floating").bind_text_from(
+                robot_events, "unread", backward=str
+            ).bind_visibility_from(robot_events, "unread", backward=bool).mark(
+                "diag-unread-badge"
+            )
 
         _add_plugin_tabs(PanelSlot.LEFT_TOP_TAB)
 
@@ -847,7 +866,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                     "flat round dense color=white"
                 )
             ui_state.diagnostics_page = DiagnosticsPage(
-                client, is_open=lambda: side_tabs.value == "diagnostics"
+                client,
+                is_open=lambda: side_tabs.value == "diagnostics",
+                tab=diagnostics_tab,
             )
             ui_state.diagnostics_page.build()
 
@@ -1958,11 +1979,17 @@ async def _status_consumer() -> None:
                         prev = {tuple(e) for e in st.warnings.entries}
                         for e in entries:
                             if tuple(e) not in prev:
+                                # The wire tuple is
+                                # (command_index, code, title, cause,
+                                #  effect, remedy) — the log keeps all of
+                                # it, since the remedy is the half that
+                                # says what to do about the condition.
                                 robot_events.add(
-                                    "warning",
-                                    str(e[2]) if len(e) > 2 else str(e),
-                                    str(e[3]) if len(e) > 3 else "",
-                                    str(e[5]) if len(e) > 5 else "",
+                                    code=int(e[1]) if len(e) > 1 else 0,
+                                    title=str(e[2]) if len(e) > 2 else str(e),
+                                    cause=str(e[3]) if len(e) > 3 else "",
+                                    effect=str(e[4]) if len(e) > 4 else "",
+                                    remedy=str(e[5]) if len(e) > 5 else "",
                                 )
                         st.warnings.entries = list(entries)
 
@@ -1982,6 +2009,13 @@ async def _status_consumer() -> None:
                         volts = None if volts is None else float(volts)
                         if dh.bus_voltage_v != volts:
                             dh.bus_voltage_v = volts
+                        # ``faults`` is newer than the pinned waldoctl; on a
+                        # release without it the tab degrades to no fault
+                        # reporting rather than failing the whole tick.
+                        if hasattr(dh, "faults"):
+                            faults = [tuple(f) for f in drives.get("faults", ())]
+                            if dh.faults != faults:
+                                dh.faults = faults
 
                     loop = getattr(status, "loop_health", None)
                     if loop:
@@ -2062,7 +2096,13 @@ async def _status_consumer() -> None:
                         # The chart this series feeds only exists on a
                         # connected page. The lists are the ones already
                         # published above, so a sample costs no allocation.
-                        if torques is not None:
+                        # Only where the backend measures torque: pushing
+                        # zeros would draw a flat line that reads as a
+                        # healthy reading.
+                        if (
+                            torques is not None
+                            and ui_state.active_robot.has_force_torque
+                        ):
                             robot_state.torque_time_series.push(
                                 joints.torques,
                                 joints.torques_ext if torques_ext is not None else [],

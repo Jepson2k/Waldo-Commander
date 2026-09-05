@@ -1,58 +1,58 @@
-"""The v0.8.0 warnings surface: the standing-condition banner and the
-warnings/errors log.
+"""The standing-warning banner, end to end over the status path.
 
-Runs on the suite's parol6 fake-serial backend, whose buffer pre-dates the
-v0.8.0 fields — which is half the contract under test: the status consumer
-must leave the new sub-objects at their defaults instead of resetting them
-each tick, so the wiring can be driven through the public
-``commander.status`` surface exactly the way a capable backend's consumer
-writes it. The full wire path runs against the real par6 runtime in
-``test_par6_backend.py``.
+Warning-class conditions self-clear, so the banner tracks the standing set
+and nothing else: it has to appear while a condition stands and leave when
+the condition does. The durable half — the Diagnostics event log — is
+covered in ``test_diagnostics.py``.
+
+Runs on the suite's parol6 fake-serial backend, which has no warning source
+of its own, so the condition is staged on the buffer its client fills from
+the wire. Everything downstream of that buffer is the app's own path: the
+status consumer, ``commander.status.warnings``, and the banner.
 """
-
-import asyncio
 
 import pytest
 import waldoctl
+from nicegui.elements.notification import Notification
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_app_ready
-from waldo_commander.state import robot_events
+from tests.helpers.wait import wait_for_app_ready, wait_for_urdf_ready
+
+DEGRADED = (
+    -1,
+    59,
+    "Control loop degraded",
+    "p99 over band",
+    "motion may stutter",
+    "reduce background load",
+)
 
 
 @pytest.mark.integration
-async def test_warning_banner_stands_and_the_log_keeps_history(user: User) -> None:
-    """A standing warning raises the persistent banner and lands in the
-    warnings/errors log; when the condition self-clears the banner leaves
-    but the log entry stays."""
+async def test_the_warning_banner_leaves_with_its_condition(user: User) -> None:
+    """The banner is the only thing saying a condition stands right now.
+
+    One that outlives its condition is worse than none: it reports a robot
+    state that is no longer true, and nothing else on the page contradicts
+    it. The client's dismiss event is what deletes the element, so a page
+    that never sends one must still see the banner go.
+    """
     await user.open("/")
     await wait_for_app_ready()
+    await wait_for_urdf_ready()
 
-    st = waldoctl.commander.status
-    st.warnings.entries = [
-        (-1, 59, "Control loop degraded", "p99 over band", "warning", "reduce load")
-    ]
-    robot_events.add("warning", "Control loop degraded", "p99 over band", "reduce load")
-    await asyncio.sleep(0)
-    await user.should_see("Control loop degraded")
-    await user.should_see(marker="readout-event-log")
-    # The log carries the remedy, not just the symptom.
-    await user.should_see("Fix: reduce load")
+    # ``warnings`` is the one StatusBuffer field parol6 never fills, so the
+    # decoder leaves whatever is staged here in place tick after tick.
+    shared = waldoctl.commander.client._shared_status
+    shared.warnings = [DEGRADED]
+    await user.should_see(
+        kind=Notification, content="Control loop degraded", retries=50
+    )
+    assert waldoctl.commander.status.warnings.entries, (
+        "the condition reached the public status surface"
+    )
 
-    # Self-clearing: the banner leaves with the condition, the log does not
-    # (the log's copy of the message is why the poll looks for the
-    # notification element, not the text).
-    from nicegui.elements.notification import Notification
-
-    st.warnings.entries = []
-    banner_gone = False
-    for _ in range(50):
-        try:
-            user.find(kind=Notification)
-        except AssertionError:
-            banner_gone = True
-            break
-        await asyncio.sleep(0.1)
-    assert banner_gone, "the banner must dismiss when the conditions clear"
-    assert robot_events.entries, "the log must keep cleared conditions"
-    assert robot_events.entries[-1][2] == "Control loop degraded"
+    shared.warnings = []
+    await user.should_not_see(
+        kind=Notification, content="Control loop degraded", retries=50
+    )

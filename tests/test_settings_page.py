@@ -8,7 +8,12 @@ from nicegui import ui, app as ng_app
 from typing import Any
 
 from waldo_commander.state import ui_state
-from tests.helpers.wait import poll_until, wait_for_app_ready, wait_for_tool_key
+from tests.helpers.wait import (
+    poll_until,
+    wait_for_app_ready,
+    wait_for_tool_key,
+    wait_until,
+)
 
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
 app_storage: Any = getattr(ng_app, "storage")
@@ -211,19 +216,24 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     tool_select = user.find(marker="select-tool")
     select_el = next(iter(tool_select.elements))
 
+    def offset_x_disabled() -> bool:
+        """The tool select rebuilds the offset inputs only after the
+        controller confirms the change, so read them once it has."""
+        return "disable" in next(iter(user.find(marker="tcp-offset-x").elements)).props
+
     # PNEUMATIC — offset inputs should appear with X/Y/Z fields
     select_el.set_value("PNEUMATIC")
-    await asyncio.sleep(0.1)
+    await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
     await user.should_see("TCP Offset")
-    fitted = next(iter(user.find(marker="tcp-offset-x").elements))
-    assert "disable" not in fitted.props, "a fitted tool's offset is editable"
+    assert await wait_until(lambda: not offset_x_disabled()), (
+        "a fitted tool's offset is editable"
+    )
 
     # NONE — offset inputs should still be visible, and refuse edits: there
     # is no tool to offset from.
     select_el.set_value("NONE")
-    await asyncio.sleep(0.1)
-    bare = next(iter(user.find(marker="tcp-offset-x").elements))
-    assert "disable" in bare.props, (
+    await wait_for_tool_key("NONE", timeout_s=5.0)
+    assert await wait_until(offset_x_disabled), (
         "with no tool fitted the offset must not be editable"
     )
 

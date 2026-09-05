@@ -10,10 +10,9 @@ edge, via the state listener registered in __init__.
 from __future__ import annotations
 
 import html
-import logging
 import re
 
-from nicegui import Client, ui
+from nicegui import ui
 from nicegui.elements.codemirror.codemirror import (
     DecorationSpec,
     Diagnostic,
@@ -21,11 +20,10 @@ from nicegui.elements.codemirror.codemirror import (
 
 import waldoctl
 
+from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import simulation_state, ui_state
-
-logger = logging.getLogger(__name__)
 
 
 _ERROR_LINE_RE = re.compile(
@@ -48,7 +46,6 @@ class EditorDecorations:
         # Tracked per launching tab so the highlight persists when the user
         # switches away mid-run.
         self._executing_line_by_tab: dict[str, int] = {}
-        self._ui_client: Client | None = None
         self._last_script_running: bool = False
         simulation_state.add_change_listener(self._on_state_change)
 
@@ -67,10 +64,6 @@ class EditorDecorations:
         ``not in`` check (relies on the bound-method equality fix in state.py)."""
         self.cleanup()
         type(self).__init__(self)
-
-    def set_ui_client(self, client: Client | None) -> None:
-        """Store the page client for JS execution from background tasks."""
-        self._ui_client = client
 
     def _on_state_change(self) -> None:
         running = is_any_program_running()
@@ -244,14 +237,14 @@ class EditorDecorations:
         Flashes always target the active tab — both callers
         (``EditorPanel.add_target_code`` and the motion recorder) write to
         the user's current edit surface. When the editor panel is
-        collapsed, flashes the editor tab via JS instead of applying
-        decorations to an off-screen textarea.
+        collapsed, flashes the editor tab instead of applying decorations
+        to an off-screen textarea.
         """
         textarea = ui_state.active_textarea
         if not textarea or not line_numbers:
             return
         if not ui_state.program_panel_visible:
-            self.flash_editor_tab()
+            flash_tab(ui_state._program_tab)
             return
         self._flash_token += 1
         token = self._flash_token
@@ -267,34 +260,6 @@ class EditorDecorations:
         ]
         if len(self._active_flashes) != before:
             self._apply_active_tab_decorations()
-
-    def flash_editor_tab(self) -> None:
-        """Flash the editor tab to indicate new content when panel is collapsed."""
-        js_code = """
-        (function() {
-            const tabs = document.querySelectorAll('.q-tab');
-            for (const tab of tabs) {
-                const icon = tab.querySelector('i');
-                if (icon && icon.innerText === 'code') {
-                    tab.classList.add('tab-flash');
-                    setTimeout(() => tab.classList.remove('tab-flash'), 2000);
-                    break;
-                }
-            }
-        })();
-        """
-        try:
-            ui.run_javascript(js_code)
-        except (RuntimeError, AssertionError):
-            # No active client context — fall back to the stored page client;
-            # if none, we're likely in a unit test where the JS hook is moot.
-            if self._ui_client:
-                try:
-                    self._ui_client.run_javascript(js_code)
-                except (RuntimeError, AssertionError):
-                    pass
-            else:
-                logger.debug("Cannot flash editor tab: no client available")
 
     def highlight_executing_line(self, step_index: int, tab_id: str) -> None:
         """Highlight the source line on the launching tab for the current step.

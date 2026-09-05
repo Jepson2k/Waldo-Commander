@@ -886,7 +886,7 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   padding: 8px 12px !important;
 }
 
-/* Editor tab flash animation for new content */
+/* Tab flash: content landed in a panel that is not on screen. */
 @keyframes tab-flash {
   0%, 50% { background-color: color-mix(in srgb, var(--flash-color) 40%, transparent); }
   25%, 75% { background-color: transparent; }
@@ -1461,6 +1461,26 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Diagnostics event log. Unlike the one-line action log these entries wrap:
+   the cause, effect and remedy are the parts worth reading, so they get the
+   room a one-line strip cannot give them. */
+.diag-event {
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+}
+.diag-event:last-child { border-bottom: none; }
+.diag-event .material-symbols-outlined {
+  font-size: 14px;
+  vertical-align: -2px;
+  margin-right: 3px;
+}
+.diag-event-time { color: var(--ctk-muted); margin-right: 5px; }
+.diag-event-code { color: var(--ctk-muted); margin-left: 5px; }
+.diag-event-detail { color: var(--ctk-muted); padding-left: 22px; }
+.diag-event-remedy { padding-left: 22px; font-style: italic; }
 """
     )
 

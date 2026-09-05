@@ -31,7 +31,7 @@ import pytest
 from nicegui.testing import User
 from waldoctl.discovery import available_backends
 
-from tests.helpers.wait import poll_until, wait_for_app_ready
+from tests.helpers.wait import poll_until, wait_for_app_ready, wait_until
 
 
 def _par6d_binary() -> str | None:
@@ -127,10 +127,7 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         # lands on commander.status for API consumers.
         import asyncio
 
-        for _ in range(50):
-            if status.controller.mode:
-                break
-            await asyncio.sleep(0.1)
+        await wait_until(lambda: bool(status.controller.mode))
         assert status.controller.mode, "no controller mode ever arrived"
 
         # Freedrive reports the arm, not the request. A fresh `par6d --sim`
@@ -153,6 +150,11 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         user.find(marker="tab-diagnostics").click()
         await asyncio.sleep(0)
         await user.should_see(marker="diagnostics-panel")
+        # A section reveals on the first status tick that finds it reportable,
+        # and only while the tab is open — so wait for the reveal, not the
+        # panel.
+        await user.should_see(marker="diag-section-drives", retries=50)
+        await user.should_see(marker="diag-section-loop", retries=50)
 
         def _text(marker: str) -> str:
             return next(iter(user.find(marker=marker).elements)).text
@@ -190,6 +192,40 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
             interval=0.05,
             what="joint torques reaching the chart",
         )
+
+        # par6's own Drives tab, mounted through the generic plugin path and
+        # admitted by its applies_to(). Its readings are the same STATUS the
+        # Diagnostics tab reads, keyed by the config's node ids; its tuning
+        # form is seeded from the runtime's stored config, and a write the
+        # runtime refuses is shown on the form rather than swallowed — that
+        # refusal is the ceiling a bench tool cannot enforce.
+        await user.should_see(marker="tab-par6-drives")
+        user.find(marker="tab-par6-drives").click()
+        await asyncio.sleep(0)
+        await user.should_see(marker="drives-readings")
+        await wait_until(lambda: _text("drives-temp-0").endswith("°C"), timeout_s=10.0)
+        assert _text("drives-temp-0").endswith("°C"), (
+            f"drive 0 never reported a temperature: {_text('drives-temp-0')!r}"
+        )
+
+        ilim = next(iter(user.find(marker="drives-gain-ilim_ma").elements))
+        await wait_until(lambda: bool(ilim.value))
+        configured = float(ilim.value)
+        assert configured > 0, "the current limit is seeded from the runtime's config"
+        ilim.value = configured * 100
+        user.find(marker="drives-apply-gains").click()
+        await wait_until(lambda: "ceiling" in _text("drives-gain-note"))
+        assert "ceiling" in _text("drives-gain-note"), (
+            f"the runtime's refusal never reached the form: {_text('drives-gain-note')!r}"
+        )
+
+        # The bus table is the runtime's scan, not a static list: every
+        # configured joint answers on a sim bus.
+        user.find(marker="drives-rescan").click()
+        table = next(iter(user.find(marker="drives-bus-table").elements))
+        await wait_until(lambda: bool(table.rows))
+        present = {row["node"] for row in table.rows if row["present"] == "yes"}
+        assert {0, 1, 2, 3, 4, 5} <= present, f"scan rows: {table.rows}"
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)
