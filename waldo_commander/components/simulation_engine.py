@@ -126,9 +126,7 @@ class SimulationEngine:
                 if tab is None or not tab.dry_run.path_segments:
                     return
                 playback.update_play_button()
-                await path_visualizer.update_physics_simulation(
-                    tab.source, tab_id=tab_id
-                )
+                await path_visualizer.update_physics_simulation(tab_id=tab_id)
                 # Playback now has measured poses to replay instead of
                 # interpolated ones, so the cached timeline is stale.
                 playback.invalidate_timeline()
@@ -274,6 +272,12 @@ class SimulationEngine:
                     tab.dry_run.tool_actions = []
                     tab.dry_run.tool_selections = []
                     tab.dry_run.total_steps = 0
+                    # No plan, so no physics pass will run to clear this:
+                    # leaving it set locks playback for good.
+                    tab.dry_run.ticks = None
+                    tab.dry_run.ticks_pending = False
+                    path_visualizer.forget_plan(tab_id)
+                    playback.update_play_button()
                     if tab_id == waldoctl.commander.programs.active_id:
                         simulation_state.notify_changed()
                         playback.update_scrub_segments()

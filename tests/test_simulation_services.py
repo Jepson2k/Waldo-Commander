@@ -1968,9 +1968,7 @@ class TestSimulatedRunPlumbing:
         ui_state.robot = robot
         try:
             visualizer = PathVisualizer()
-            result = asyncio.run(
-                visualizer.update_physics_simulation("print('hi')", tab_id="nope")
-            )
+            result = asyncio.run(visualizer.update_physics_simulation(tab_id="nope"))
         finally:
             ui_state.robot = old_robot
         assert result is None
@@ -2061,3 +2059,53 @@ class TestSimulatedRunPlumbing:
         assert [s.line_number for s in tl._segments] == [3, 9]
         assert tl.sample(0.0).segment_index == 0
         assert tl.sample(ticks.duration_s).segment_index == 1
+
+    def test_the_achieved_path_toggle_works_on_a_record_already_drawn(self):
+        """The toggle is a visibility flip, not a rebuild.
+
+        `render` short-circuits on the digest so an unchanged record is
+        not redrawn — but the toggle has to be read on that path too, or
+        it does nothing at all for as long as the record stays put, while
+        the legend (reading the same flag) hides its row and contradicts
+        the scene.
+        """
+        from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
+
+        overlay = PhysicsOverlay(MagicMock(scene=None))
+        drawn = MagicMock()
+        overlay._group = object()
+        overlay._achieved = drawn
+        overlay._digest = b"same-run"
+
+        overlay.render(self._ticks(), show_divergence=False)
+        drawn.visible.assert_called_with(False)
+        overlay.render(self._ticks(), show_divergence=True)
+        drawn.visible.assert_called_with(True)
+        assert overlay.is_built, "a toggle must not tear the geometry down"
+
+    def test_a_long_run_is_decimated_without_losing_a_divergence_spike(self):
+        """A ten-minute record is 30,000 rows; every one would cross as a
+        point triple and a colour triple in one scene command built on the
+        event loop. Positions are sampled, but the error is taken as the
+        max over each collapsed span — a spike lasting three rows is the
+        whole reason the overlay exists.
+        """
+        from waldo_commander.services.urdf_scene.physics_overlay import (
+            MAX_ACHIEVED_POINTS,
+            decimate,
+        )
+
+        rows = 30_000
+        tcp = np.zeros((rows, 6), dtype=np.float32)
+        tcp[:, 0] = np.linspace(0.0, 1.0, rows)
+        error = np.full(rows, 1e-4, dtype=np.float32)
+        error[17_000:17_003] = 0.05  # a three-row spike
+
+        points, worst = decimate(tcp, error)
+        assert len(points) == len(worst) <= MAX_ACHIEVED_POINTS
+        assert points[0][0] == pytest.approx(tcp[0][0])
+        assert worst.max() == pytest.approx(0.05), (
+            "sampling the error would drop a spike shorter than the stride"
+        )
+        # Short runs are left alone.
+        assert decimate(tcp[:10], error[:10])[0].shape[0] == 10

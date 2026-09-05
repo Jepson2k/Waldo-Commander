@@ -33,6 +33,13 @@ from waldo_commander.state import (
 logger = logging.getLogger(__name__)
 
 
+def _line_of(segments, index: int) -> int:
+    """The editor line a timeline segment came from, or 0 for none."""
+    if 0 <= index < len(segments):
+        return segments[index].line_number
+    return 0
+
+
 class PlaybackController:
     """Owns the bottom playback bar UI and all simulation/script playback logic."""
 
@@ -99,6 +106,12 @@ class PlaybackController:
         Order: Play | Stop | Step program | Prev | Next | Slider | Speed FAB |
         Record | Capture | Log toggle
         """
+        # A fresh page has no physics pass in flight — teardown killed the
+        # worker — but `ticks_pending` outlives the client on the program,
+        # and a page loaded mid-pass would otherwise show controls that
+        # nothing is ever going to re-enable.
+        for program in waldoctl.commander.programs.items:
+            program.dry_run.ticks_pending = False
         with (
             ui.row()
             .classes("w-full items-center gap-2 bottom-playback-bar")
@@ -390,14 +403,14 @@ class PlaybackController:
 
     def _step_sim_preview(self, delta: int) -> None:
         """Scrub the sim preview to the neighboring segment, clamped to range."""
-        if not self._timeline:
+        if not self._timeline or not self._timeline.segments:
             return
         active = waldoctl.commander.programs.active
-        if active is None or active.dry_run.total_steps <= 0:
+        if active is None:
             return
         idx = min(
             max(active.dry_run.playback.current_step + delta, 0),
-            active.dry_run.total_steps - 1,
+            len(self._timeline.segments) - 1,
         )
         self._apply_time(self._timeline.cumulative_times[idx])
 
@@ -539,14 +552,22 @@ class PlaybackController:
         self._highlight_current_segment()
         tab_id = script_exec.launching_tab_id
         if tab_id is not None:
-            decorations.highlight_executing_line(step, tab_id)
+            # A live run counts PLANNED segments; the script's step index
+            # is into that list, not into whatever the timeline holds.
+            tab = waldoctl.commander.programs.get(tab_id)
+            planned = tab.dry_run.path_segments if tab is not None else []
+            decorations.highlight_executing_line(_line_of(planned, step), tab_id)
 
     def _handle_step_complete(self, step: int) -> None:
         """Script reported segment end: snap slider to segment end."""
         self._highlight_current_segment()
         tab_id = script_exec.launching_tab_id
         if tab_id is not None:
-            decorations.highlight_executing_line(step, tab_id)
+            # A live run counts PLANNED segments; the script's step index
+            # is into that list, not into whatever the timeline holds.
+            tab = waldoctl.commander.programs.get(tab_id)
+            planned = tab.dry_run.path_segments if tab is not None else []
+            decorations.highlight_executing_line(_line_of(planned, step), tab_id)
         if self._timeline and self._scrub_slider:
             end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
             t = self._timeline.cumulative_times[end_idx]
@@ -661,7 +682,7 @@ class PlaybackController:
                 )
                 if target_tab is not None:
                     decorations.highlight_executing_line(
-                        sample.segment_index, target_tab
+                        _line_of(tl.segments, sample.segment_index), target_tab
                     )
                 if ui_state.urdf_scene:
                     ui_state.urdf_scene.update_playback_opacity()
@@ -961,8 +982,7 @@ class PlaybackController:
         self._last_highlighted_index = -1
 
         active = waldoctl.commander.programs.active
-        segments = active.dry_run.path_segments if active is not None else []
-        if not segments:
+        if active is None or not active.dry_run.path_segments:
             return
 
         self._timeline = None
@@ -976,13 +996,16 @@ class PlaybackController:
         if not tl or total_dur <= 0:
             return
 
-        step = active.dry_run.playback.current_step if active is not None else 0
+        step = active.dry_run.playback.current_step
         cum = tl.cumulative_times
         seg_durs = tl.segment_durations
 
         with self._scrub_container:
-            # Segment divs, absolute-positioned by timeline position.
-            for idx, segment in enumerate(segments):
+            # One division per segment the TIMELINE is indexed by — which
+            # is the recorded commands when a run is being replayed, and
+            # the planned segments otherwise. Indexing the plan against a
+            # record's times paints the wrong windows and walks off the end.
+            for idx, segment in enumerate(tl.segments):
                 color = segment.color or PathColors.CARTESIAN
                 is_current = idx == step
                 left_pct = cum[idx] / total_dur * 100
@@ -1016,19 +1039,12 @@ class PlaybackController:
                 self._checkpoint_markers.append(marker)
 
             # Tool action markers — full-height (blocking) or mini (overlapping).
-            kf = tl.tool_keyframes
-            ta = active.dry_run.tool_actions if active is not None else []
-            for i in range(0, len(kf) - 1, 2):
-                if (
-                    kf[i].positions == kf[i + 1].positions
-                    or kf[i + 1].time <= kf[i].time
-                ):
+            for span in tl.tool_spans:
+                if span.end <= span.start:
                     continue
-                left_pct = kf[i].time / total_dur * 100
-                width_pct = (kf[i + 1].time - kf[i].time) / total_dur * 100
-                action_idx = i // 2
-                is_blocking = action_idx < len(ta) and ta[action_idx].sleep_offset == 0
-                if is_blocking:
+                left_pct = span.start / total_dur * 100
+                width_pct = (span.end - span.start) / total_dur * 100
+                if span.blocking:
                     top, height, radius = "0", "100%", "0"
                 else:
                     top, height, radius = "25%", "50%", "3px"
@@ -1079,17 +1095,9 @@ class PlaybackController:
         tl = self._timeline
         if tl and self._tool_markers:
             t = active.dry_run.playback.playback_time if active is not None else 0.0
-            kf = tl.tool_keyframes
-            marker_idx = 0
-            for i in range(0, len(kf) - 1, 2):
-                if (
-                    kf[i].positions != kf[i + 1].positions
-                    and kf[i + 1].time > kf[i].time
-                ):
-                    if marker_idx < len(self._tool_markers):
-                        opacity = "0.3" if kf[i + 1].time <= t else "0.7"
-                        self._tool_markers[marker_idx].style(f"opacity: {opacity};")
-                    marker_idx += 1
+            drawn = [s for s in tl.tool_spans if s.end > s.start]
+            for marker, span in zip(self._tool_markers, drawn):
+                marker.style(f"opacity: {'0.3' if span.end <= t else '0.7'};")
 
     # ---- Utility ----
 

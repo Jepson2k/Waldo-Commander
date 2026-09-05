@@ -45,8 +45,17 @@ FORCE_SCALE_M_PER_N = 0.004
 #: pathological scene must not create hundreds of scene objects.
 MAX_CONTACT_ARROWS = 12
 
+#: The most vertices the achieved path is drawn with. A ten-minute run
+#: records 30,000 rows, and every one would cross as a point triple AND a
+#: colour triple in a single scene command built on the event loop. The
+#: line is a few hundred pixels long; more vertices than this buy nothing.
+MAX_ACHIEVED_POINTS = 2000
+
 #: Base size of a contact arrow \[m\] before the force scales it.
 _ARROW_BASE_M = 0.01
+
+#: Radius of the centre-of-mass drop line \[m\].
+_DROP_RADIUS_M = 0.001
 
 _ON_TRACK = np.array([0.35, 0.85, 0.45])
 _DIVERGED = np.array([0.95, 0.35, 0.25])
@@ -58,6 +67,27 @@ def divergence_colors(error_rad: np.ndarray) -> list[list[float]]:
     red where it is not."""
     t = np.clip(error_rad / FULL_DIVERGENCE_RAD, 0.0, 1.0)[:, None]
     return (_ON_TRACK * (1 - t) + _DIVERGED * t).tolist()
+
+
+def decimate(
+    tcp: np.ndarray, error_rad: np.ndarray, budget: int = MAX_ACHIEVED_POINTS
+) -> tuple[np.ndarray, np.ndarray]:
+    """Thin a run to `budget` vertices, keeping both endpoints.
+
+    Positions are sampled but the error is taken as the **maximum** over
+    each collapsed span: a divergence spike lasting three rows is exactly
+    what the overlay exists to show, and sampling the error would drop it.
+    Both columns must be thinned together — the scene requires one colour
+    per point.
+    """
+    rows = len(tcp)
+    if rows <= budget:
+        return tcp, error_rad
+    edges = np.linspace(0, rows, budget, dtype=int)
+    edges[-1] = rows
+    starts = edges[:-1]
+    worst = np.array([error_rad[a:b].max() for a, b in zip(starts, edges[1:]) if b > a])
+    return tcp[starts[: len(worst)]], worst
 
 
 def _cone_rpy(direction: np.ndarray) -> tuple[float, float, float]:
@@ -83,7 +113,9 @@ class PhysicsOverlay:
     def __init__(self, scene_owner: Any) -> None:
         self._owner = scene_owner
         self._group: Any = None
+        self._achieved: Any = None
         self._com: Any = None
+        self._com_drop: Any = None
         self._contacts: list[Any] = []
         self._digest: bytes | None = None
 
@@ -104,6 +136,12 @@ class PhysicsOverlay:
             self.clear()
             return
         if self._digest is not None and ticks.digest and self._digest == ticks.digest:
+            # Same record, so the geometry stands; only the toggle can
+            # have moved, and it is a visibility flip rather than a
+            # rebuild. Reading it here is what makes the setting work at
+            # all — it used to be consulted only when a record changed.
+            if self._achieved is not None:
+                self._achieved.visible(show_divergence)
             return
         self._build(ticks, show_divergence)
 
@@ -124,19 +162,32 @@ class PhysicsOverlay:
             with scene:
                 with ui.scene.group().with_name("simulation:physics") as grp:
                     self._group = grp
-                    if show_divergence:
-                        # One polyline over the whole run: where the TCP
-                        # actually went, coloured by how far that is from
-                        # the command that produced it.
-                        line = ui.scene.polyline(
-                            [[float(v) for v in row[:3]] for row in ticks.tcp],
-                            colors=divergence_colors(ticks.tracking_error_rad()),
-                        )
-                        # color=None tells three.js to use the per-vertex
-                        # colours.
-                        line.material(None, 0.95)
+                    # One polyline over the whole run: where the TCP
+                    # actually went, coloured by how far that is from the
+                    # command that produced it. Built once and shown or
+                    # hidden — a toggle must not need a rebuild.
+                    points, error = decimate(ticks.tcp, ticks.tracking_error_rad())
+                    self._achieved = ui.scene.polyline(
+                        [[float(v) for v in row[:3]] for row in points],
+                        colors=divergence_colors(error),
+                    )
+                    # color=None tells three.js to use the per-vertex colours.
+                    self._achieved.material(None, 0.95)
+                    self._achieved.visible(show_divergence)
                     self._com = ui.scene.sphere(0.012).material("#ffd166", 0.9)
                     self._com.visible(False)
+                    # A drop line to the ground: a lone sphere in a
+                    # perspective view gives no depth to read its height
+                    # against. A thin cylinder rather than a line because
+                    # a line's endpoints are fixed at creation, and this
+                    # has to follow the marker every frame.
+                    self._com_drop = ui.scene.cylinder(
+                        top_radius=_DROP_RADIUS_M,
+                        bottom_radius=_DROP_RADIUS_M,
+                        height=1.0,
+                        radial_segments=6,
+                    ).material("#ffd166", 0.35)
+                    self._com_drop.visible(False)
                     self._contacts = [
                         ui.scene.cylinder(
                             top_radius=0.0,
@@ -156,7 +207,9 @@ class PhysicsOverlay:
 
     def clear(self) -> None:
         group, self._group = self._group, None
+        self._achieved = None
         self._com = None
+        self._com_drop = None
         self._contacts = []
         self._digest = None
         if group is not None:
@@ -185,8 +238,9 @@ class PhysicsOverlay:
         if not (show_contacts or show_com):
             # Nothing asked for: hide the pool rather than leave the last
             # frame's arrows floating in the scene.
-            if self._com is not None:
-                self._com.visible(False)
+            for obj in (self._com, self._com_drop):
+                if obj is not None:
+                    obj.visible(False)
             for arrow in self._contacts:
                 arrow.visible(False)
             return
@@ -200,9 +254,18 @@ class PhysicsOverlay:
             return
         have = com is not None and len(com) > row
         self._com.visible(show and have)
+        if self._com_drop is not None:
+            self._com_drop.visible(show and have)
         if show and have:
             x, y, z = (float(v) for v in com[row])
             self._com.move(x, y, z)
+            if self._com_drop is not None:
+                # A unit cylinder stands along +Y; a quarter turn about X
+                # stands it up along world +Z, then it is stretched to
+                # reach the ground and centred on the half-way point.
+                self._com_drop.scale(1.0, max(abs(z), 1e-4), 1.0)
+                self._com_drop.rotate(math.pi / 2, 0.0, 0.0)
+                self._com_drop.move(x, y, z / 2)
 
     def _update_contacts(self, ticks: TickIndex, row: int, show: bool) -> None:
         starts = ticks.channels.get("contact_starts")

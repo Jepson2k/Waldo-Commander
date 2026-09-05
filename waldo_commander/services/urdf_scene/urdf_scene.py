@@ -1777,7 +1777,15 @@ class UrdfScene(
         declared in either layer — a table carrying ``physics`` is an
         installation shape — and a track names only the shape.
         """
-        for key in (f"{SHAPE_PREFIX}{name}", f"{INSTALL_PREFIX}{name}"):
+        # All three layers are drawn, and all three are enforced and
+        # simulated locally (`SceneHandle.enforced_locally`), so a
+        # physics object proposed for the installation layer has a track
+        # to follow like any other.
+        for key in (
+            f"{SHAPE_PREFIX}{name}",
+            f"{INSTALL_PREFIX}{name}",
+            f"{DRAFT_PREFIX}{name}",
+        ):
             drawn = self._drawn.get(key)
             if drawn is not None:
                 return key, drawn

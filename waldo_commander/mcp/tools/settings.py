@@ -11,6 +11,7 @@ import waldoctl
 from waldoctl import EnvelopeMode
 
 from waldo_commander.mcp.server import get_mcp
+from waldo_commander.state import simulation_state
 
 mcp = get_mcp()
 
@@ -120,3 +121,6 @@ async def set_view(
         v.contacts_visible = contacts_visible
     if com_visible is not None:
         v.com_visible = com_visible
+    # The scene redraws off this channel; without it the toggles move but
+    # nothing repaints until something else happens to notify.
+    simulation_state.notify_changed()

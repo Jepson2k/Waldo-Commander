@@ -32,6 +32,23 @@ class ToolKeyframe:
 
 
 @dataclass(slots=True)
+class ToolSpan:
+    """One stretch of tool travel, as the scrub bar draws it.
+
+    The timeline reports these rather than leaving consumers to pair
+    keyframes two at a time: a planned timeline emits exactly two per
+    action so the pairing happens to work, but a recorded one derives its
+    keyframes from measured jaw motion and has no such structure.
+    """
+
+    start: float
+    end: float
+    blocking: bool
+    """Whether the arm holds for the whole span (a full-height marker) or
+    the tool moves under a motion already in flight (a mini one)."""
+
+
+@dataclass(slots=True)
 class ToolSelectionKeyframe:
     """Records which tool is active at a given point in the timeline."""
 
@@ -144,10 +161,25 @@ class Timeline:
     checkpoints: list[Checkpoint] = field(default_factory=list)
     object_keyframes: dict[str, list[ObjectKeyframe]] = field(default_factory=dict)
     _object_times: dict[str, list[float]] = field(default_factory=dict)
+    tool_spans: list[ToolSpan] = field(default_factory=list)
     #: The simulated record this timeline plays, when there is one. With
     #: it set, poses are read off measured rows instead of interpolated
     #: between planned waypoints.
     _ticks: TickIndex | None = None
+
+    @property
+    def segments(self) -> list[PathSegment]:
+        """The segments this timeline is indexed by.
+
+        Not necessarily the program's planned segments: a timeline built
+        from a record is indexed by recorded *commands*, and a `sleep`
+        between two moves is a command with no planned segment of its own.
+        Anything that pairs a segment with a time — the scrub bar, the
+        steppers, the executing-line highlight — has to read them from
+        here, because this is the only object that knows which index space
+        it is in.
+        """
+        return self._segments
 
     @classmethod
     def from_segments(
@@ -198,6 +230,7 @@ class Timeline:
 
         # Build tool keyframes from actions
         tool_kf: list[ToolKeyframe] = []
+        tool_spans: list[ToolSpan] = []
         if tool_actions:
             n_dof = len(tool_actions[0].target_positions)
             current: tuple[float, ...] = tuple(0.0 for _ in range(n_dof))
@@ -225,6 +258,10 @@ class Timeline:
                 tool_kf.append(ToolKeyframe(time=t, positions=current))
                 current = act.target_positions
                 tool_kf.append(ToolKeyframe(time=t + dur, positions=current))
+                if current != tool_kf[-2].positions:
+                    tool_spans.append(
+                        ToolSpan(start=t, end=t + dur, blocking=act.sleep_offset == 0)
+                    )
                 if act.object_tracks:
                     obj_spans.append((t, dur, act.object_tracks))
 
@@ -281,6 +318,7 @@ class Timeline:
             checkpoints=cps,
             object_keyframes=obj_kf,
             _object_times={name: [k.time for k in kf] for name, kf in obj_kf.items()},
+            tool_spans=tool_spans,
         )
 
     @classmethod
@@ -341,15 +379,31 @@ class Timeline:
         # One tool keyframe per row the jaws actually moved on. A tool
         # that never moves contributes none, and one that does gets the
         # measured travel rather than a straight ramp between endpoints.
+        # One keyframe pair per stretch of travel, not one per changed
+        # row. At the record's rate a one-second grasp changes on fifty
+        # rows, and the scrub bar reads these two at a time.
         tool_kf: list[ToolKeyframe] = []
+        tool_spans: list[ToolSpan] = []
         closed = ticks.tool_closed
-        for i in range(ticks.rows):
+        moving_from: tuple[int, float] | None = None
+        previous = float("nan")
+        for i in range(ticks.rows + 1):
             v = float(closed[i]) if i < len(closed) else float("nan")
-            if v != v:  # NaN: no tool reply yet
-                continue
-            if tool_kf and abs(tool_kf[-1].positions[0] - v) < 1e-3:
-                continue
-            tool_kf.append(ToolKeyframe(time=i * dt, positions=(v,)))
+            moved = v == v and previous == previous and abs(v - previous) >= 1e-4
+            if moved and moving_from is None:
+                moving_from = (i - 1, previous)
+            elif not moved and moving_from is not None:
+                row, start_pos = moving_from
+                tool_kf.append(ToolKeyframe(time=row * dt, positions=(start_pos,)))
+                tool_kf.append(ToolKeyframe(time=(i - 1) * dt, positions=(previous,)))
+                # The arm holds while the jaws travel — that is what the
+                # record shows — so every recorded span blocks.
+                tool_spans.append(
+                    ToolSpan(start=row * dt, end=(i - 1) * dt, blocking=True)
+                )
+                moving_from = None
+            if v == v:
+                previous = v
 
         sel_kf: list[ToolSelectionKeyframe] = []
         for sel in tool_selections or []:
@@ -381,6 +435,7 @@ class Timeline:
             checkpoints=cps,
             object_keyframes=obj_kf,
             _object_times={name: [k.time for k in kf] for name, kf in obj_kf.items()},
+            tool_spans=tool_spans,
             _ticks=ticks,
         )
 

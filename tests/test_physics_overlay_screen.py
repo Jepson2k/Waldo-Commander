@@ -111,6 +111,7 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
 
     def _populate() -> waldoctl.TickIndex:
         view = waldoctl.commander.settings.view
+        _saved_view.update({f: getattr(view, f) for f in _VIEW_FLAGS})
         view.paths_visible = True
         view.divergence_visible = True
         view.contacts_visible = True
@@ -145,14 +146,30 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
         run_in_app(_restore)
 
 
+_VIEW_FLAGS = (
+    "paths_visible",
+    "divergence_visible",
+    "contacts_visible",
+    "com_visible",
+)
+_saved_view: dict[str, bool] = {}
+
+
 def _restore() -> None:
-    """Put the app back: no record, no segments, no timeline.
+    """Put the app back: no record, no segments, no timeline, and the
+    view settings as they were.
 
     A record left behind would be replayed by the next test that touches
-    playback, against a program that is not this one.
+    playback, against a program that is not this one; the view flags are
+    process-wide and would follow every later test in the session.
     """
     from waldo_commander.components.playback import playback
     from waldo_commander.state import simulation_state
+
+    view = waldoctl.commander.settings.view
+    for flag, value in _saved_view.items():
+        setattr(view, flag, value)
+    _saved_view.clear()
 
     program = waldoctl.commander.programs.active
     if program is not None:

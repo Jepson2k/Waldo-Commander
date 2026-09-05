@@ -48,6 +48,11 @@ SIMULATION_TIMEOUT_S = 5.0
 #: come back.
 MAX_SIMULATED_SECONDS = 600.0
 
+#: Wall-clock ceiling on a physics pass. `MAX_SIMULATED_SECONDS` bounds
+#: only the simulation, which runs after the script returns — a program
+#: that never terminates reaches neither cap without this.
+PHYSICS_TIMEOUT_S = SIMULATION_TIMEOUT_S + 60.0
+
 # Sentinel returned by update_path_visualization when results are unchanged
 UNCHANGED = "__unchanged__"
 
@@ -557,12 +562,14 @@ class _PhysicsPool:
     async def run(self, fn: Callable, args: tuple) -> Any:
         """Run *fn*, abandoning whatever was running before it."""
         self.cancel()
+        loop = asyncio.get_running_loop()
         if _is_test_environment():
             # A spawn worker cannot beat a test's timeout from cold, and
-            # a test's pool is rebuilt per test anyway.
-            return await asyncio.to_thread(fn, args)
-        loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(self._ensure(), fn, args)
+            # a test's pool is rebuilt per test anyway. Still tracked, so
+            # `cancel` is not a silent no-op here.
+            future = asyncio.ensure_future(asyncio.to_thread(fn, args))
+        else:
+            future = loop.run_in_executor(self._ensure(), fn, args)
         self._current = future
         try:
             return await future
@@ -601,7 +608,10 @@ class PathVisualizer:
         self._simulation_lock = asyncio.Lock()
         self._simulation_count = 0
         self._physics = _PhysicsPool()
-        self._physics_task: asyncio.Task | None = None
+        # The exact arguments each tab was last PLANNED with. The physics
+        # pass runs seconds later and must refine that plan, not whatever
+        # the world happens to look like by the time it starts.
+        self._planned_args: dict[str, tuple] = {}
 
     def reset_for_test(self) -> None:
         """Rebuild loop-bound state so the next test's event loop starts clean.
@@ -896,10 +906,8 @@ class PathVisualizer:
 
             return result.get("error")
 
-    async def update_physics_simulation(
-        self, program_text: str, tab_id: str | None = None
-    ) -> str | None:
-        """Run the program through the backend's physics and store the ticks.
+    async def update_physics_simulation(self, tab_id: str | None = None) -> str | None:
+        """Run the planned program through the backend's physics.
 
         The planning pass has already returned by the time this starts,
         so the user is looking at the ideal trajectory while this fills
@@ -907,11 +915,16 @@ class PathVisualizer:
         locked until it lands, because a scrub bar over a half-built
         record seeks into rows that do not exist.
 
+        It replays the plan's OWN arguments — same program text, same
+        world, same tool, same starting pose — rather than rebuilding
+        them from live state seconds later. A keep-out added during the
+        wait would otherwise make the record describe a different world
+        than the plan on screen, with nothing to notice it.
+
         No-ops on a backend with no plant, which is how the app behaved
         before any backend had one.
         """
-        robot = ui_state.active_robot
-        if not robot.has_physics_simulation:
+        if not ui_state.active_robot.has_physics_simulation:
             return None
         tab = (
             waldoctl.commander.programs.get(tab_id)
@@ -920,17 +933,27 @@ class PathVisualizer:
         )
         if tab is None:
             return None
+        planned = self._planned_args.get(tab.id)
+        if planned is None:
+            return None  # nothing planned to refine
+        args = (*planned[:-1], MAX_SIMULATED_SECONDS)
 
-        args = self._simulation_args(
-            program_text, robot, simulate_seconds=MAX_SIMULATED_SECONDS
-        )
-        if args is None:
-            return None
         tab.dry_run.ticks_pending = True
         try:
-            result = await self._physics.run(_run_simulation_packed, args)
+            result = await asyncio.wait_for(
+                self._physics.run(_run_simulation_packed, args),
+                timeout=PHYSICS_TIMEOUT_S,
+            )
         except asyncio.CancelledError:
-            return None
+            # Not an outcome. Superseded work must unwind, not return and
+            # let the caller carry on mutating state that has moved on.
+            tab.dry_run.ticks_pending = False
+            raise
+        except asyncio.TimeoutError:
+            tab.dry_run.ticks_pending = False
+            self._physics.cancel()
+            logger.warning("Physics simulation timed out; the worker was killed")
+            return "Physics simulation timed out"
         except Exception as e:
             tab.dry_run.ticks_pending = False
             logger.warning("Physics simulation failed: %s", e)
@@ -965,6 +988,10 @@ class PathVisualizer:
         by whoever set it.
         """
         self._physics.cancel()
+
+    def forget_plan(self, tab_id: str) -> None:
+        """Drop a tab's stored plan arguments — there is no plan to refine."""
+        self._planned_args.pop(tab_id, None)
 
 
 path_visualizer = PathVisualizer()
