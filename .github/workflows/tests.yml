@@ -46,7 +46,11 @@ jobs:
               pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
               # Rewrite the pin for THIS resolve only, so ".[dev]" does not
               # re-fetch a tag that may not exist yet.
-              sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
+              # parol6 leaves this resolve too: its own metadata pins the
+              # waldoctl tag, and pip cannot hold that next to the branch
+              # URL. It is installed --no-deps right after ".[dev]".
+              sed -i.bak -e "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" \
+                -e "/parol6 @ git+/d" pyproject.toml
             fi
           fi
           pip install -e ".[dev]"
@@ -116,7 +120,11 @@ jobs:
               pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
               # Rewrite the pin for THIS resolve only, so ".[dev]" does not
               # re-fetch a tag that may not exist yet.
-              sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
+              # parol6 leaves this resolve too: its own metadata pins the
+              # waldoctl tag, and pip cannot hold that next to the branch
+              # URL. It is installed --no-deps right after ".[dev]".
+              sed -i.bak -e "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" \
+                -e "/parol6 @ git+/d" pyproject.toml
             fi
           fi
           pip install ".[dev]"
@@ -245,7 +253,11 @@ jobs:
             if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
               WALDOCTL_REF="$BRANCH"
               pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
-              sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
+              # parol6 leaves this resolve too: its own metadata pins the
+              # waldoctl tag, and pip cannot hold that next to the branch
+              # URL. It is installed --no-deps right after ".[dev]".
+              sed -i.bak -e "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" \
+                -e "/parol6 @ git+/d" pyproject.toml
             fi
           fi
           pip install ".[dev]"
