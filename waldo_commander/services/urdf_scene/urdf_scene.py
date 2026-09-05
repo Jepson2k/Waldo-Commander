@@ -88,7 +88,8 @@ def _z_align_rotation(n: np.ndarray) -> np.ndarray:
 
 def _base_opacity(key: str) -> float:
     """A drawn shape's resting opacity: the floor is ground, everything
-    else a keep-out or marker."""
+    else a keep-out, marker or proposal (a proposal is told apart by its
+    colour, not by fading)."""
     return FLOOR_OPACITY if key == "install:floor" else SHAPE_OPACITY
 
 
@@ -1592,7 +1593,12 @@ class UrdfScene(
         return None
 
     def render_shapes(
-        self, shapes, installation=(), draft=False, floor_z_m: float | None = None
+        self,
+        shapes,
+        installation=(),
+        draft=False,
+        floor_z_m: float | None = None,
+        installation_draft=(),
     ) -> None:
         """Draw the keep-out shapes by layer and map them for highlighting.
 
@@ -1609,7 +1615,9 @@ class UrdfScene(
         muted color; they are never draft. ``floor_z_m`` is the backend's
         installation floor: drawn as the ground at that height under the
         name its collision reports use (``install:floor``), replacing the
-        placeholder disc; None keeps the disc.
+        placeholder disc; None keeps the disc. ``installation_draft`` shapes
+        are proposals for the robot config, drawn in their own colour since
+        nothing enforces them yet.
         """
         if not self.scene:
             return
@@ -1627,6 +1635,7 @@ class UrdfScene(
             desired["install:floor"] = (floor, self.config.ground_color)
         for prefix, layer, color in (
             ("install", installation, SceneColors.SHAPE_INSTALL_HEX),
+            ("draft", installation_draft, SceneColors.SHAPE_PROPOSED_HEX),
             ("shape", shapes, program_hex),
         ):
             for s in layer:

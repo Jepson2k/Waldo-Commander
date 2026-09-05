@@ -60,6 +60,7 @@ class WcSceneHandle:
         self._groups: dict[str, Any] = {}
         self._shapes: list[Shape] = []
         self._installation: tuple[Shape, ...] = ()
+        self._installation_draft: tuple[Shape, ...] = ()
         self._floor_z_m: float | None = None
         self._confirmed = False
         self._refresh_seq = 0
@@ -72,6 +73,44 @@ class WcSceneHandle:
     @property
     def floor_z_m(self) -> float | None:
         return self._floor_z_m
+
+    @property
+    def installation_draft(self) -> tuple[Shape, ...]:
+        return self._installation_draft
+
+    def propose_installation(self, names: list[str]) -> None:
+        """Move program shapes into the installation draft: they leave the
+        enforced program layer (the backend is told), and are drawn as a
+        proposal the local checker still enforces as installation."""
+        wanted = set(names)
+        moving = [s for s in self._shapes if s.name in wanted]
+        missing = sorted(wanted - {s.name for s in moving})
+        if missing:
+            raise ValueError(f"no program-layer shape(s) named {missing}")
+        self._installation_draft = (*self._installation_draft, *moving)
+        self._apply_installation_locally()
+        self.shapes = [s for s in self._shapes if s.name not in wanted]
+
+    def discard_installation_draft(self, names: list[str] | None = None) -> None:
+        if names is None:
+            self._installation_draft = ()
+        else:
+            drop = set(names)
+            self._installation_draft = tuple(
+                s for s in self._installation_draft if s.name not in drop
+            )
+        self._apply_installation_locally()
+        self.render()
+
+    def _apply_installation_locally(self) -> None:
+        """The local checker's installation layer is readback truth plus the
+        draft, so an editing pose or preview sees the proposal enforced."""
+        try:
+            ui_state.active_robot.apply_installation_shapes(
+                [*self._installation, *self._installation_draft]
+            )
+        except Exception:
+            logger.exception("Local installation checker sync failed")
 
     @property
     def installation(self) -> tuple[Shape, ...]:
@@ -89,6 +128,13 @@ class WcSceneHandle:
         # nothing mutated anywhere) and the preview / editing-pose collision
         # queries in this process must see the same world the backend is given.
         shapes = list(value)
+        drafted = {d.name for d in self._installation_draft}
+        clash = sorted(s.name for s in shapes if s.name in drafted)
+        if clash:
+            raise ValueError(
+                f"shape name(s) {clash} are proposed for the installation layer; "
+                "discard the proposal or pick another name"
+            )
         ui_state.active_robot.apply_shapes(shapes)
         self._shapes = shapes
         self._confirmed = False
@@ -110,6 +156,7 @@ class WcSceneHandle:
                 installation=self._installation,
                 draft=not self._confirmed,
                 floor_z_m=self._floor_z_m,
+                installation_draft=self._installation_draft,
             )
         except Exception:
             logger.exception("Keep-out shape render failed (still enforced)")
@@ -210,10 +257,16 @@ class WcSceneHandle:
         self._floor_z_m = world.floor_z_m
         self._shapes = list(world.program)
         self._confirmed = True
+        # A proposal the backend now enforces is no longer a proposal.
+        adopted = set(self._installation)
+        self._installation_draft = tuple(
+            s for s in self._installation_draft if s not in adopted
+        )
         try:
             ui_state.active_robot.apply_shapes(self._shapes)
         except Exception:
             logger.exception("Local checker sync from readback failed")
+        self._apply_installation_locally()
         self.render()
 
     def _live_scene(self) -> Any | None:

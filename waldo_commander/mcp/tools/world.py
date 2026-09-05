@@ -51,8 +51,13 @@ def _world(scene: Any) -> ShapeWorld:
 
 def _snapshot(scene: Any) -> dict:
     """The world as the JSON document import/export and the library use,
-    plus whether the displayed program layer matches backend readback."""
-    return {**world_to_dict(_world(scene)), "confirmed": bool(scene.confirmed)}
+    plus whether the displayed program layer matches backend readback and
+    the shapes proposed for the installation layer (drawn, not enforced)."""
+    return {
+        **world_to_dict(_world(scene)),
+        "confirmed": bool(scene.confirmed),
+        "installation_draft": [list(s.to_wire()) for s in scene.installation_draft],
+    }
 
 
 def _parse(entry: Any) -> Shape:
@@ -232,12 +237,38 @@ async def place_object(
     return _apply(scene, [*scene.shapes, placed])
 
 
+@mcp.tool(name="world.propose_installation")
+async def propose_installation(names: list[str]) -> dict:
+    """Move the named program-layer shapes into the installation proposal:
+    they leave the enforced program layer and are drawn as a proposal until
+    the robot config declares them (see ``world.export_installation_toml``)."""
+    require_control()
+    scene = _scene()
+    try:
+        scene.propose_installation(list(names))
+    except ValueError as err:
+        _refuse(f"proposal refused: {err}")
+    return _snapshot(scene)
+
+
+@mcp.tool(name="world.discard_installation_draft")
+async def discard_installation_draft(names: list[str] | None = None) -> dict:
+    """Drop the named proposed installation shapes (all when omitted)."""
+    require_control()
+    scene = _scene()
+    scene.discard_installation_draft(None if names is None else list(names))
+    return _snapshot(scene)
+
+
 @mcp.tool(name="world.export_installation_toml")
 async def export_installation_toml(shapes: list[Any] | None = None) -> str:
-    """Render *shapes* (default: the current program layer) as the robot
-    config's ``[[installation_shapes]]`` TOML — the way to promote a
-    designed layout into the installation layer the backend enforces from
-    boot. Nothing is applied; the text goes into the robot config."""
+    """Render *shapes* — default: the installation proposal, else the current
+    program layer — as the robot config's ``[[installation_shapes]]`` TOML,
+    the way a designed layout becomes the installation layer the backend
+    enforces from boot. Nothing is applied; the text goes into the config."""
     scene = _scene()
-    chosen = [_parse(s) for s in shapes] if shapes is not None else list(scene.shapes)
+    if shapes is not None:
+        chosen = [_parse(s) for s in shapes]
+    else:
+        chosen = list(scene.installation_draft) or list(scene.shapes)
     return world_files.installation_toml(chosen)

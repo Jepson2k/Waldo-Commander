@@ -36,18 +36,32 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
     try:
         async with Client(mcp) as client:
             before = _payload(await client.call_tool("world.get"))
-            assert before["program"] == [] and "installation" in before
+            assert {
+                "schema",
+                "installation",
+                "program",
+                "floor_z_m",
+                "confirmed",
+            } <= set(before)
             assert before["schema"] == "waldo-world/1"
 
             wall = Box(name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0))
+            initial = list(scene.shapes)
             with pytest.raises(ToolError, match="take_control"):
                 await client.call_tool(
                     "world.set_shapes", {"shapes": [list(wall.to_wire())]}
                 )
-            assert scene.shapes == [], (
+            assert scene.shapes == initial, (
                 "the page's lease holder is not overridden silently"
             )
             await client.call_tool("control.take_control")
+            # Start from an empty program layer whatever an earlier test left.
+            assert (
+                _payload(await client.call_tool("world.set_shapes", {"shapes": []}))[
+                    "program"
+                ]
+                == []
+            )
             after = _payload(
                 await client.call_tool(
                     "world.set_shapes", {"shapes": [list(wall.to_wire())]}
@@ -166,14 +180,34 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
                 await client.call_tool("world.library_delete", {"name": "layout"})
             ) == ["block", "post"]
 
+            # Proposing moves a shape out of the enforced layer into the draft,
+            # which the TOML export then defaults to.
+            proposed = _payload(
+                await client.call_tool(
+                    "world.propose_installation", {"names": ["post_2"]}
+                )
+            )
+            assert [row[5] for row in proposed["installation_draft"]] == ["post_2"]
+            assert [row[5] for row in proposed["program"]] == ["wall"]
+            assert [s.name for s in scene.shapes] == ["wall"]
+            draft_toml = tomllib.loads(
+                _payload(await client.call_tool("world.export_installation_toml"))
+            )
+            assert [e["name"] for e in draft_toml["installation_shapes"]] == ["post_2"]
+            with pytest.raises(ToolError, match="proposal refused"):
+                await client.call_tool(
+                    "world.propose_installation", {"names": ["ghost"]}
+                )
+            cleared = _payload(
+                await client.call_tool("world.discard_installation_draft")
+            )
+            assert cleared["installation_draft"] == []
+
             toml_text = _payload(
                 await client.call_tool("world.export_installation_toml")
             )
             parsed = tomllib.loads(toml_text)
-            assert [e["name"] for e in parsed["installation_shapes"]] == [
-                "wall",
-                "post_2",
-            ]
+            assert [e["name"] for e in parsed["installation_shapes"]] == ["wall"]
             assert parsed["installation_shapes"][0]["kind"] == "box"
             assert parsed["installation_shapes"][0]["pose"][0] == 0.5
     finally:

@@ -6,6 +6,8 @@ logic (name mapping, recolor, restore) deterministically. A browser-level render
 check lives in ``test_collision_viz_screen.py``.
 """
 
+import asyncio
+
 import pytest
 from nicegui.testing import User
 
@@ -264,6 +266,77 @@ async def test_playback_time_drives_world_objects(user: User) -> None:
 
     playback.invalidate_timeline()
     assert block.z == 0.04, "declared pose restored once the timeline is dropped"
+
+
+@pytest.mark.integration
+async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
+    user: User, tmp_path, monkeypatch
+) -> None:
+    """A keep-out proposed for the installation layer leaves the enforced
+    program layer, is drawn in its own colour, exports as the robot config's
+    TOML, and clears itself once readback shows the backend enforcing it."""
+    import waldoctl
+    from waldoctl import Box, ShapeWorld
+    from waldo_commander import constants
+    from waldo_commander.common.theme import SceneColors
+    from waldo_commander.services.urdf_scene.urdf_scene import SHAPE_OPACITY
+    from waldo_commander.state import ui_state
+
+    monkeypatch.setattr(constants, "default_program_dir", lambda: tmp_path)
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    handle = waldoctl.commander.scene
+    assert scene is not None and handle is not None
+
+    wall = Box(name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0))
+    handle.shapes = [wall]
+    handle.propose_installation(["wall"])
+    assert handle.shapes == [] and handle.installation_draft == (wall,)
+    assert "shape:wall" not in scene._shape_objects
+    proposal = scene._shape_objects["draft:wall"]
+    assert proposal.color == SceneColors.SHAPE_PROPOSED_HEX
+    assert proposal.opacity == pytest.approx(SHAPE_OPACITY)
+    with pytest.raises(ValueError, match="proposed for the installation layer"):
+        handle.shapes = [wall]
+    with pytest.raises(ValueError, match="no program-layer shape"):
+        handle.propose_installation(["nothing"])
+
+    with scene.scene.client:
+        scene._show_installation_toml_dialog()
+    await user.should_see(marker="installation-toml-dialog")
+    user.find(marker="installation-toml-save").click()
+    await user.should_see("Saved to")
+    saved = (tmp_path / "installation_shapes.toml").read_text()
+    assert "[[installation_shapes]]" in saved and 'name = "wall"' in saved
+
+    # The backend's next boot enforces it: readback adopts the proposal. A
+    # refresh is skipped while the proposal's own push awaits its ack, so
+    # wait for that readback to land first.
+    for _ in range(200):
+        if handle.confirmed:
+            break
+        await asyncio.sleep(0.05)
+    assert handle.confirmed, "the program-layer push never confirmed"
+
+    async def _enforced() -> ShapeWorld:
+        return ShapeWorld(installation=(wall,), program=())
+
+    monkeypatch.setattr(waldoctl.commander.client, "shapes", _enforced)
+    await handle.refresh_from_backend()
+    assert handle.installation_draft == ()
+    assert "draft:wall" not in scene._shape_objects
+    assert scene._shape_objects["install:wall"].color == SceneColors.SHAPE_INSTALL_HEX
+
+    # A withdrawn proposal is a program keep-out again.
+    post = Box(name="post", x=0.05, y=0.05, z=0.2, pose=(0.4, 0.0, 0.1, 0, 0, 0))
+    handle.shapes = [post]
+    handle.propose_installation(["post"])
+    scene._withdraw_proposal("post")
+    assert handle.installation_draft == () and [s.name for s in handle.shapes] == [
+        "post"
+    ]
+    handle.shapes = []
 
 
 @pytest.mark.integration

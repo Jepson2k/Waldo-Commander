@@ -99,6 +99,36 @@ class TestCollisionVizScreen:
         gone = self._poll_color(class_screen, "install:floor", "missing")
         assert gone == "missing", f"the floor object outlived its readback (got {gone})"
 
+    def test_installation_proposal_renders_as_a_ghost(self, class_screen) -> None:
+        """A proposed installation shape reaches the browser in its own
+        colour; the screenshot is the sign-off artifact."""
+        import waldoctl
+        from waldoctl import Box
+        from waldo_commander.common.theme import SceneColors
+
+        screen_wait_for_scene_ready(class_screen)
+        want = SceneColors.SHAPE_PROPOSED_HEX.lstrip("#")
+
+        def _propose() -> None:
+            handle = waldoctl.commander.scene
+            handle.shapes = [
+                Box(name="fence", x=0.6, y=0.05, z=0.4, pose=(0.0, -0.35, 0.2, 0, 0, 0))
+            ]
+            handle.propose_installation(["fence"])
+
+        run_in_app(_propose)
+        try:
+            got = self._poll_color(class_screen, "draft:fence", want)
+            assert got == want, f"the proposal did not render in its colour (got {got})"
+            time.sleep(0.5)  # let three.js draw the frame the shot captures
+            class_screen.shot("installation_proposal", failed=False)
+        finally:
+
+            def _clear() -> None:
+                waldoctl.commander.scene.discard_installation_draft()
+
+            run_in_app(_clear)
+
     def test_shape_renders_and_turns_red_on_collision(self, class_screen) -> None:
         import waldoctl
         from waldoctl import Box

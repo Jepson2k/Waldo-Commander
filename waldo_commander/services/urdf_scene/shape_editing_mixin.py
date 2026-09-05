@@ -85,6 +85,14 @@ class ShapeEditingMixin:
                 return obj.split("shape:", 1)[1]
         return None
 
+    def _draft_hit_name(self, hits) -> str | None:
+        """The clicked proposed-installation shape's name, if any."""
+        for h in hits:
+            obj = getattr(h, "object_name", "") or ""
+            if obj.startswith("draft:"):
+                return obj.split("draft:", 1)[1]
+        return None
+
     def _fresh_shape_name(self, kind: str) -> str:
         handle = self._shape_handle()
         taken = set()
@@ -124,6 +132,123 @@ class ShapeEditingMixin:
             "Delete Keep-out",
             on_click=lambda n=shape_name: self._delete_shape(n),
         )
+        ui.separator()
+        ui.menu_item(
+            "Propose as Installation",
+            on_click=lambda n=shape_name: self._propose_installation(n),
+        ).mark("shape-menu-propose")
+
+    def _populate_draft_menu(self, shape_name: str) -> None:
+        """Menu items for a right-clicked proposed-installation shape."""
+        ui.item(f"Proposed installation '{shape_name}'").classes("font-bold text-sm")
+        ui.item("Not enforced until it is in the robot config").classes(
+            "text-xs opacity-70"
+        )
+        ui.separator()
+        ui.menu_item(
+            "Export Installation TOML...",
+            on_click=self._show_installation_toml_dialog,
+        )
+        ui.menu_item(
+            "Back to Program Layer",
+            on_click=lambda n=shape_name: self._withdraw_proposal(n),
+        )
+        ui.menu_item(
+            "Discard Proposal",
+            on_click=lambda n=shape_name: self._discard_proposal(n),
+        )
+
+    def _populate_installation_menu(self) -> None:
+        """Empty-space items for a pending installation proposal."""
+        handle = self._shape_handle()
+        if handle is None or not handle.installation_draft:
+            return
+        ui.separator()
+        n = len(handle.installation_draft)
+        ui.item(f"Installation Proposal ({n})").classes("font-bold text-sm")
+        ui.menu_item(
+            "Export Installation TOML...",
+            on_click=self._show_installation_toml_dialog,
+        ).mark("installation-menu-export")
+        ui.menu_item(
+            "Discard Proposal",
+            on_click=lambda: self._discard_proposal(None),
+        )
+
+    def _propose_installation(self, name: str) -> None:
+        handle = self._shape_handle()
+        if handle is None:
+            return
+        try:
+            handle.propose_installation([name])
+        except ValueError as err:
+            logger.warning("Proposal refused: %s", err)
+
+    def _withdraw_proposal(self, name: str) -> None:
+        """A proposal returns to the program layer as the keep-out it was."""
+        handle = self._shape_handle()
+        if handle is None:
+            return
+        shape = next((s for s in handle.installation_draft if s.name == name), None)
+        if shape is None:
+            return
+        handle.discard_installation_draft([name])
+        try:
+            handle.shapes = [*handle.shapes, shape]
+        except ValueError as err:
+            logger.warning("Keep-out rejected: %s", err)
+
+    def _discard_proposal(self, name: str | None) -> None:
+        handle = self._shape_handle()
+        if handle is not None:
+            handle.discard_installation_draft(None if name is None else [name])
+
+    def _show_installation_toml_dialog(self) -> None:
+        """The proposal as the robot config's ``[[installation_shapes]]``
+        TOML, to copy or save: installation authoring is config authoring."""
+        from waldo_commander.constants import default_program_dir
+        from waldo_commander.services.world_files import installation_toml
+
+        handle = self._shape_handle()
+        if handle is None:
+            return
+        text = installation_toml(handle.installation_draft)
+        with (
+            ui.context.client.content,
+            ui.dialog() as dialog,
+            ui.card().classes("w-[36rem] max-w-full").mark("installation-toml-dialog"),
+        ):
+            ui.label("Installation TOML").classes("text-lg font-bold")
+            ui.label(
+                "Paste into the robot config's [[installation_shapes]] section; "
+                "the backend enforces it from its next start, and the proposal "
+                "clears itself once readback shows it."
+            ).classes("text-sm opacity-80")
+            ui.code(text, language="toml").classes("w-full max-h-96 overflow-auto")
+            saved = ui.label().classes("text-sm").mark("installation-toml-saved")
+
+            def save() -> None:
+                path = default_program_dir() / "installation_shapes.toml"
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text, encoding="utf-8")
+                except OSError as err:
+                    saved.set_text(f"Save failed: {err}")
+                    return
+                saved.set_text(f"Saved to {path}")
+
+            def dismiss() -> None:
+                dialog.close()
+                if not dialog.is_deleted:
+                    dialog.delete()
+
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Save to programs folder", on_click=save).props("flat").mark(
+                    "installation-toml-save"
+                )
+                ui.button("Close", on_click=dismiss).props("unelevated")
+        dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
+        dialog.open()
 
     def _populate_shape_add_menu(self, click_point: tuple[float, float, float]) -> None:
         """'Add keep-out here' items for a right-click on empty space."""
