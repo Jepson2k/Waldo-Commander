@@ -1808,7 +1808,7 @@ class UrdfScene(
                     rpy = mesh_spec.rpy
                     role = mesh_spec.role
 
-                    url = f"{self.meshes_url}/{filename}"
+                    url = self._stl_to_url(filename)
                     obj = (
                         ui.scene.stl(url)
                         .scale(self._stl_scale)
