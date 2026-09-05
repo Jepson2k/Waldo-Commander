@@ -69,6 +69,36 @@ class TestCollisionVizScreen:
                 return last
         return last
 
+    def test_installation_floor_replaces_the_placeholder_disc(
+        self, class_screen
+    ) -> None:
+        """The backend's floor height renders as the ground plane in the
+        browser; the screenshot is the sign-off artifact for that change."""
+        from waldo_commander.state import ui_state
+
+        screen_wait_for_scene_ready(class_screen)
+        assert ui_state.urdf_scene is not None
+        want = ui_state.urdf_scene.config.ground_color.lstrip("#")
+
+        def _draw_floor() -> None:
+            scene = ui_state.urdf_scene
+            if scene is not None:
+                scene.render_shapes([], floor_z_m=0.0)
+
+        run_in_app(_draw_floor)
+        got = self._poll_color(class_screen, "install:floor", want)
+        assert got == want, f"the floor did not render in the browser (got {got})"
+        class_screen.shot("installation_floor", failed=False)
+
+        def _drop_floor() -> None:
+            scene = ui_state.urdf_scene
+            if scene is not None:
+                scene.render_shapes([])
+
+        run_in_app(_drop_floor)
+        gone = self._poll_color(class_screen, "install:floor", "missing")
+        assert gone == "missing", f"the floor object outlived its readback (got {gone})"
+
     def test_shape_renders_and_turns_red_on_collision(self, class_screen) -> None:
         import waldoctl
         from waldoctl import Box

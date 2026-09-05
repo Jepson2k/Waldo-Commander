@@ -60,6 +60,7 @@ class WcSceneHandle:
         self._groups: dict[str, Any] = {}
         self._shapes: list[Shape] = []
         self._installation: tuple[Shape, ...] = ()
+        self._floor_z_m: float | None = None
         self._confirmed = False
         self._refresh_seq = 0
         self._pushes_inflight = 0
@@ -67,6 +68,10 @@ class WcSceneHandle:
     @property
     def shapes(self) -> list[Shape]:
         return self._shapes
+
+    @property
+    def floor_z_m(self) -> float | None:
+        return self._floor_z_m
 
     @property
     def installation(self) -> tuple[Shape, ...]:
@@ -104,6 +109,7 @@ class WcSceneHandle:
                 self._shapes,
                 installation=self._installation,
                 draft=not self._confirmed,
+                floor_z_m=self._floor_z_m,
             )
         except Exception:
             logger.exception("Keep-out shape render failed (still enforced)")
@@ -201,6 +207,7 @@ class WcSceneHandle:
         if seq != self._refresh_seq:
             return  # superseded by a newer edit or readback — that one adopts
         self._installation = tuple(world.installation)
+        self._floor_z_m = world.floor_z_m
         self._shapes = list(world.program)
         self._confirmed = True
         try:

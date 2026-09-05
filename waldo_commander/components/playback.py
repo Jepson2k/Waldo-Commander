@@ -412,9 +412,12 @@ class PlaybackController:
     # ---- Bridge API (called by EditorPanel) ----
 
     def invalidate_timeline(self) -> None:
-        """Clear cached timeline so it gets rebuilt from new segments."""
+        """Clear cached timeline so it gets rebuilt from new segments; the
+        world's objects go back to where the program declares them."""
         self._timeline = None
         self._last_tool_selection = None
+        if ui_state.urdf_scene:
+            ui_state.urdf_scene.set_object_poses(None)
 
     def update_scrub_segments(self) -> None:
         """Update the segmented scrub bar to match path_segments.
@@ -613,6 +616,9 @@ class PlaybackController:
                         list(tool_pos) if tool_pos else None,
                     )
                 )
+
+        if tl.object_keyframes and ui_state.urdf_scene:
+            ui_state.urdf_scene.set_object_poses(tl.sample_objects(t))
 
         if (
             _apply_active is not None

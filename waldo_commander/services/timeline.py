@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import math
 from dataclasses import dataclass, field
 
 from waldo_commander.state import PathSegment, ToolAction, ToolSelection
@@ -38,6 +39,77 @@ class ToolSelectionKeyframe:
 
 
 @dataclass(slots=True)
+class ObjectKeyframe:
+    """One world object's pose at one time: ``[x, y, z, qw, qx, qy, qz]``."""
+
+    time: float
+    pose: tuple[float, ...]
+    physics: bool
+
+
+@dataclass(slots=True)
+class ObjectSample:
+    """A world object's interpolated pose, and whether it was simulated or
+    guessed (the preview's geometric fallback)."""
+
+    pose: tuple[float, ...]
+    physics: bool
+
+
+def _slerp_pose(
+    a: tuple[float, ...], b: tuple[float, ...], frac: float
+) -> tuple[float, ...]:
+    """Interpolate two ``[x, y, z, qw, qx, qy, qz]`` poses: position linearly,
+    orientation along the shorter great-circle arc."""
+    pos = tuple(a[i] + (b[i] - a[i]) * frac for i in range(3))
+    q0 = a[3:7]
+    q1 = b[3:7]
+    dot = sum(x * y for x, y in zip(q0, q1))
+    if dot < 0.0:
+        q1 = tuple(-x for x in q1)
+        dot = -dot
+    if dot > 0.9995:
+        q = tuple(x + (y - x) * frac for x, y in zip(q0, q1))
+    else:
+        theta = math.acos(min(1.0, dot))
+        s = math.sin(theta)
+        w0 = math.sin((1.0 - frac) * theta) / s
+        w1 = math.sin(frac * theta) / s
+        q = tuple(w0 * x + w1 * y for x, y in zip(q0, q1))
+    norm = math.sqrt(sum(x * x for x in q)) or 1.0
+    return pos + tuple(x / norm for x in q)
+
+
+def _add_tracks(
+    keyframes: dict[str, list[ObjectKeyframe]],
+    tracks: list[dict] | None,
+    t0: float,
+    duration: float,
+) -> None:
+    """Spread each track's rows evenly over ``[t0, t0 + duration]``; a single
+    row is the object's pose from t0 on. Keyframes stay time-ordered because
+    segments and the actions after them are added in program order."""
+    if not tracks:
+        return
+    for track in tracks:
+        rows = track["poses"]
+        if not rows:
+            continue
+        n = len(rows)
+        physics = bool(track.get("physics", True))
+        kf = keyframes.setdefault(track["name"], [])
+        for k, row in enumerate(rows):
+            t = t0 + (duration * k / (n - 1) if n > 1 else 0.0)
+            if kf and t <= kf[-1].time:
+                t = kf[-1].time + 1e-9
+            kf.append(
+                ObjectKeyframe(
+                    time=t, pose=tuple(float(v) for v in row), physics=physics
+                )
+            )
+
+
+@dataclass(slots=True)
 class Checkpoint:
     """A point where playback pauses until a condition is met."""
 
@@ -63,6 +135,8 @@ class Timeline:
     tool_selection_keyframes: list[ToolSelectionKeyframe] = field(default_factory=list)
     _tool_sel_times: list[float] = field(default_factory=list)
     checkpoints: list[Checkpoint] = field(default_factory=list)
+    object_keyframes: dict[str, list[ObjectKeyframe]] = field(default_factory=dict)
+    _object_times: dict[str, list[float]] = field(default_factory=dict)
 
     @classmethod
     def from_segments(
@@ -101,6 +175,12 @@ class Timeline:
             cum.append(cum[-1] + seg_dur + blocking_gap.get(i, 0.0))
         total = cum[-1] if segments else 0.0
 
+        # Object tracks: a segment's rows span its motion window, a tool
+        # action's rows span the action itself.
+        obj_kf: dict[str, list[ObjectKeyframe]] = {}
+        for i, seg in enumerate(segments):
+            _add_tracks(obj_kf, seg.object_tracks, cum[i], seg_durs[i])
+
         # Build tool keyframes from actions
         tool_kf: list[ToolKeyframe] = []
         if tool_actions:
@@ -130,6 +210,7 @@ class Timeline:
                 tool_kf.append(ToolKeyframe(time=t, positions=current))
                 current = act.target_positions
                 tool_kf.append(ToolKeyframe(time=t + dur, positions=current))
+                _add_tracks(obj_kf, act.object_tracks, t, dur)
 
             # Extend total duration if tool actions go past last segment
             if tool_kf:
@@ -178,6 +259,8 @@ class Timeline:
             tool_selection_keyframes=sel_kf,
             _tool_sel_times=[k.time for k in sel_kf],
             checkpoints=cps,
+            object_keyframes=obj_kf,
+            _object_times={name: [k.time for k in kf] for name, kf in obj_kf.items()},
         )
 
     def sample(self, t: float) -> TimelineSample:
@@ -240,6 +323,27 @@ class Timeline:
         frac = (t - k0.time) / dt
         frac = max(0.0, min(1.0, frac))
         return tuple(a + (b - a) * frac for a, b in zip(k0.positions, k1.positions))
+
+    def sample_objects(self, t: float) -> dict[str, ObjectSample]:
+        """Every tracked object's pose at time t: held before its first and
+        after its last keyframe, interpolated between (orientation slerped)."""
+        out: dict[str, ObjectSample] = {}
+        for name, kf in self.object_keyframes.items():
+            if t <= kf[0].time:
+                out[name] = ObjectSample(kf[0].pose, kf[0].physics)
+                continue
+            if t >= kf[-1].time:
+                out[name] = ObjectSample(kf[-1].pose, kf[-1].physics)
+                continue
+            idx = bisect.bisect_right(self._object_times[name], t) - 1
+            idx = max(0, min(idx, len(kf) - 2))
+            k0 = kf[idx]
+            k1 = kf[idx + 1]
+            dt = k1.time - k0.time
+            frac = (t - k0.time) / dt if dt > 1e-9 else 1.0
+            frac = max(0.0, min(1.0, frac))
+            out[name] = ObjectSample(_slerp_pose(k0.pose, k1.pose, frac), k0.physics)
+        return out
 
     def sample_tool_selection(self, t: float) -> ToolSelectionKeyframe | None:
         """Return the active tool selection at time t.

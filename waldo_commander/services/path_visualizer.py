@@ -463,6 +463,22 @@ def _run_simulation_packed(args: tuple) -> dict[str, Any]:
     return _run_simulation_isolated(*args)
 
 
+def _track_signature(seg: PathSegment) -> tuple:
+    """What a segment's object tracks look like: per object, how many rows,
+    where it lands, and whether that is physics or a guess."""
+    tracks = seg.object_tracks or ()
+    return tuple(
+        (
+            t["name"],
+            len(t["poses"]),
+            tuple(t["poses"][-1]) if t["poses"] else (),
+            bool(t.get("carried")),
+            bool(t.get("physics", True)),
+        )
+        for t in tracks
+    )
+
+
 class PathVisualizer:
     """Visualizes robot path from program simulation."""
 
@@ -498,6 +514,9 @@ class PathVisualizer:
             if a.points and b.points:
                 if a.points[0] != b.points[0] or a.points[-1] != b.points[-1]:
                     return False
+            # Where the objects end up is part of the picture too.
+            if _track_signature(a) != _track_signature(b):
+                return False
         return True
 
     async def update_path_visualization(

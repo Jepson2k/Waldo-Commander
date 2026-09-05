@@ -108,6 +108,165 @@ async def test_shapes_render_and_can_be_highlighted(user: User) -> None:
 
 
 @pytest.mark.integration
+async def test_installation_floor_draws_the_ground_and_is_highlightable(
+    user: User,
+) -> None:
+    """The backend's floor height is drawn as the ground under the name its
+    collision reports use, replacing the placeholder disc; a plane keep-out
+    renders at the same extent."""
+    import waldoctl
+    from waldoctl import Plane
+    from waldo_commander.common.theme import SceneColors
+    from waldo_commander.services.urdf_scene.urdf_scene import WORLD_EXTENT_M
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    assert scene._ground_disc is not None and scene._ground_disc.visible_
+
+    scene.render_shapes(
+        [Plane(name="ground", nx=0, ny=0, nz=1, offset=0.3)], floor_z_m=0.05
+    )
+    floor = scene._shape_objects["install:floor"]
+    assert floor.args[:2] == [WORLD_EXTENT_M, WORLD_EXTENT_M]
+    assert floor.z == pytest.approx(0.05, abs=0.002), (
+        "the floor's top face sits at the height"
+    )
+    assert floor.color == scene.config.ground_color
+    assert not scene._ground_disc.visible_, (
+        "the placeholder disc yields to the real floor"
+    )
+    assert scene._shape_objects["shape:ground"].args[:2] == [
+        WORLD_EXTENT_M,
+        WORLD_EXTENT_M,
+    ]
+
+    # install:floor is what a backend reports when the arm reaches the floor.
+    link = next(name for name, meshes in scene._link_to_meshes.items() if meshes)
+    coll = waldoctl.commander.status.collision
+    coll.pairs = [(link, "install:floor")]
+    coll.active = True
+    scene.update_from_robot_state()
+    assert floor.color == SceneColors.COLLISION_HEX
+    coll.active = False
+    coll.pairs = []
+    scene.update_from_robot_state()
+    assert floor.color == scene.config.ground_color
+
+    # A backend without a floor gets the disc back and no floor object.
+    scene.render_shapes([])
+    assert "install:floor" not in scene._shape_objects
+    assert scene._ground_disc.visible_
+
+
+@pytest.mark.integration
+async def test_playback_moves_world_objects_and_restores_their_declared_pose(
+    user: User,
+) -> None:
+    """A tracked object follows the preview's pose during playback as a
+    pose-only move of the drawn shape, a guessed track is drawn as a ghost,
+    and clearing the override puts the object back where the program says."""
+    from waldoctl import Box, Cylinder
+    from waldo_commander.services.timeline import ObjectSample
+    from waldo_commander.services.urdf_scene.urdf_scene import (
+        _Y_TO_Z_UP,
+        SHAPE_OPACITY,
+    )
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    scene.render_shapes(
+        [
+            Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.3, 0.0, 0.04, 0, 0, 0)),
+            Cylinder(
+                name="can", radius=0.03, length=0.1, pose=(0.4, 0.0, 0.05, 0, 0, 0)
+            ),
+        ]
+    )
+    block = scene._shape_objects["shape:block"]
+    can = scene._shape_objects["shape:can"]
+    assert (block.x, block.z) == (0.3, 0.04)
+
+    scene.set_object_poses(
+        {
+            "block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False),
+            "can": ObjectSample((0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0), physics=True),
+        }
+    )
+    assert (block.x, block.y, block.z) == (0.5, 0.1, 0.2)
+    assert block.opacity == pytest.approx(SHAPE_OPACITY * 0.5), (
+        "a guessed track is a ghost"
+    )
+    assert can.z == 0.3 and can.opacity == pytest.approx(SHAPE_OPACITY)
+    assert can.R == _Y_TO_Z_UP.tolist(), (
+        "a cylinder keeps its Y-up correction while carried"
+    )
+
+    scene.set_object_poses(None)
+    assert (block.x, block.y, block.z) == (0.3, 0.0, 0.04)
+    assert block.opacity == pytest.approx(SHAPE_OPACITY)
+    assert can.z == 0.05
+
+
+@pytest.mark.integration
+async def test_playback_time_drives_world_objects(user: User) -> None:
+    """Scrubbing the dry run moves a tracked object along its track and
+    invalidating the timeline puts it back where the program declares it."""
+    import waldoctl
+    from waldoctl import Box
+    from waldo_commander.components.playback import playback
+    from waldo_commander.state import PathSegment, ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    scene.render_shapes(
+        [Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.3, 0.0, 0.04, 0, 0, 0))]
+    )
+    block = scene._shape_objects["shape:block"]
+
+    active = waldoctl.commander.programs.active
+    assert active is not None
+    active.dry_run.path_segments = [
+        PathSegment(
+            points=[[0.3, 0.0, 0.3], [0.3, 0.0, 0.5]],
+            color="#00ff00",
+            is_valid=True,
+            line_number=1,
+            joints=[0.0] * 6,
+            estimated_duration=2.0,
+            joint_trajectory=[[0.0] * 6, [0.0] * 6],
+            object_tracks=[
+                {
+                    "name": "block",
+                    "poses": [
+                        [0.3, 0.0, 0.04, 1, 0, 0, 0],
+                        [0.3, 0.0, 0.24, 1, 0, 0, 0],
+                    ],
+                    "carried": True,
+                    "physics": True,
+                }
+            ],
+        )
+    ]
+    playback.invalidate_timeline()
+    assert playback._ensure_timeline() is not None
+    playback._apply_time(1.0)
+    assert block.z == pytest.approx(0.14), "half way through the lift"
+    playback._apply_time(2.0)
+    assert block.z == pytest.approx(0.24)
+
+    playback.invalidate_timeline()
+    assert block.z == 0.04, "declared pose restored once the timeline is dropped"
+
+
+@pytest.mark.integration
 async def test_shape_rerender_is_a_diff_not_a_rebuild(user: User) -> None:
     """Re-rendering reconciles against what is drawn: a no-op sends nothing,
     a pose-only change moves the same object, a geometry change recreates it

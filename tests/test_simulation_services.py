@@ -1788,3 +1788,90 @@ def test_notify_step_changed_only_fires_step_listeners():
     finally:
         simulation_state.remove_change_listener(on_change)
         simulation_state.remove_step_listener(on_step)
+
+
+class TestObjectTrackPlumbing:
+    """Object motion reported by a preview reaches the segment dicts and the
+    change detection that decides whether to re-render."""
+
+    def test_segments_that_differ_only_in_an_object_landing_do_not_match(self):
+        from waldo_commander.state import PathSegment
+
+        def seg(landing_z: float) -> PathSegment:
+            return PathSegment(
+                points=[[0.3, 0.0, 0.3], [0.4, 0.0, 0.3]],
+                color="#00ff00",
+                is_valid=True,
+                line_number=3,
+                object_tracks=[
+                    {
+                        "name": "block",
+                        "poses": [
+                            [0.3, 0.0, 0.04, 1, 0, 0, 0],
+                            [0.4, 0.0, landing_z, 1, 0, 0, 0],
+                        ],
+                        "carried": False,
+                        "physics": True,
+                    }
+                ],
+            )
+
+        assert PathVisualizer._segments_match([seg(0.04)], [seg(0.04)])
+        assert not PathVisualizer._segments_match([seg(0.04)], [seg(0.30)]), (
+            "a program whose only change is where the block lands must re-render"
+        )
+
+    def test_tracks_ride_segments_and_tool_actions_sliced_like_the_trajectory(self):
+        from unittest.mock import MagicMock
+
+        import numpy as np
+        from waldoctl.results import DryRunResultData, ObjectTrack
+
+        from waldo_commander.services.path_preview_client import PathPreviewClient
+        from waldo_commander.state import ToolAction
+
+        n = 5
+        traj = np.zeros((n, 6))
+        poses = np.zeros((n, 3))
+        poses[:, 0] = np.linspace(0.3, 0.4, n)
+        block = ObjectTrack(
+            name="block",
+            poses=np.column_stack([poses, np.tile([1.0, 0, 0, 0], (n, 1))]),
+            carried=True,
+            physics=True,
+        )
+        stand = ObjectTrack(
+            name="stand",
+            poses=np.array([[0.3, 0, 0.005, 1, 0, 0, 0]]),
+            carried=False,
+            physics=True,
+        )
+        # The last two waypoints are invalid: the run split must slice the
+        # moving track exactly like the joint trajectory and leave the parked
+        # one whole.
+        result = DryRunResultData(
+            tcp_poses=np.column_stack([poses, np.zeros((n, 3))]),
+            end_joints_rad=np.zeros(6),
+            duration=1.0,
+            valid=np.array([True, True, True, False, False]),
+            joint_trajectory_rad=traj,
+            object_tracks=(block, stand),
+        )
+        inner = MagicMock()
+        inner.move_j.return_value = result
+        inner.tool.close.return_value = result
+        segments: list[dict] = []
+        actions: list[ToolAction] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=MagicMock(return_value=inner),
+            segment_collector=segments,
+            tool_action_collector=actions,
+        )
+        client.move_j([0, 0, 0, 0, 0, 0])
+
+        assert len(segments) == 2
+        for seg in segments:
+            tracks = {t["name"]: t for t in seg["object_tracks"]}
+            assert len(tracks["block"]["poses"]) == len(seg["joint_trajectory"])
+            assert len(tracks["stand"]["poses"]) == 1
+        assert segments[0]["object_tracks"][0]["carried"] is True

@@ -67,6 +67,31 @@ class _ToolCollectionProxy:
         return interceptor
 
 
+def _object_tracks(
+    result: Any, start: int | None = None, end: int | None = None
+) -> list[dict[str, Any]] | None:
+    """A result's object tracks as segment-dict rows, sliced like the joint
+    trajectory. A one-row (stationary) track is never sliced; None when the
+    backend reports no tracks."""
+    tracks = getattr(result, "object_tracks", None)
+    if tracks is None:
+        return None
+    rows = []
+    for t in tracks:
+        poses = np.asarray(t.poses, dtype=np.float64)
+        if poses.shape[0] > 1 and (start is not None or end is not None):
+            poses = poses[start:end]
+        rows.append(
+            {
+                "name": t.name,
+                "poses": poses.tolist(),
+                "carried": bool(t.carried),
+                "physics": bool(t.physics),
+            }
+        )
+    return rows
+
+
 class PathPreviewClient:
     """Wraps DryRunRobotClient with visualization metadata collection.
 
@@ -203,6 +228,7 @@ class PathPreviewClient:
             sleep_offset=sleep_offset,
             segment_index=len(self.segment_collector) - 1,
             tcp_path=tcp_path,
+            object_tracks=_object_tracks(result) if result is not None else None,
         )
         self.tool_action_collector.append(action)
 
@@ -344,6 +370,7 @@ class PathPreviewClient:
 
         joint_traj_rad = getattr(result, "joint_trajectory_rad", None)
         joint_traj = joint_traj_rad.tolist() if joint_traj_rad is not None else None
+        tracks = _object_tracks(result)
 
         if valid is not None:
             # Per-pose validity: split into runs of consecutive valid/invalid
@@ -377,6 +404,7 @@ class PathPreviewClient:
                 "joint_trajectory": joint_traj,
                 "checkpoint": checkpoint,
                 "is_travel": not self._first_motion_seen,
+                "object_tracks": tracks,
             }
             self.segment_collector.append(segment)
 
@@ -477,6 +505,9 @@ class PathPreviewClient:
             run_joint_traj = None
             if joint_traj_rad is not None:
                 run_joint_traj = joint_traj_rad[start:end].tolist()
+            # The same rows as the joint trajectory, or the object drifts
+            # from the gripper that carries it.
+            run_tracks = _object_tracks(result, start, end)
 
             if len(run_poses) >= 2:
                 segment = {
@@ -493,6 +524,7 @@ class PathPreviewClient:
                     "timing_feasible": timing_feasible,
                     "joint_trajectory": run_joint_traj,
                     "is_travel": not self._first_motion_seen,
+                    "object_tracks": run_tracks,
                 }
                 self.segment_collector.append(segment)
 
