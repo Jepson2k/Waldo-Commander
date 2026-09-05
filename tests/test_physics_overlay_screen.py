@@ -52,12 +52,19 @@ return {found: true, lines, meshes, shown, vertexColored, points};
 """
 
 
-def _record(rows: int = 40) -> waldoctl.TickIndex:
-    """A run the way a backend reports one: the arm sweeps forward, its
-    lag grows, and something is in contact for the middle third."""
+def _record(q_rad: np.ndarray, rows: int = 40) -> waldoctl.TickIndex:
+    """A run the way a backend reports one: a TCP path that sweeps
+    forward, a lag that grows along it, and contact for the middle third.
+
+    The joints hold at *q_rad* on every row on purpose. Playback teleports
+    the simulated arm to whatever the record says, so a record that moved
+    it would leave it moved for every test after this one — and a pose the
+    planner will not accept turns into a self-collision refusal three
+    tests later. What this checks is the drawing, not the arm.
+    """
     t = np.linspace(0.0, 1.0, rows, dtype=np.float32)
-    commanded = np.tile(t[:, None], (1, 6))
-    joints = commanded - t[:, None] * 0.02
+    joints = np.tile(np.asarray(q_rad, dtype=np.float32)[:6], (rows, 1))
+    commanded = joints + t[:, None] * 0.02
     tcp = np.zeros((rows, 6), dtype=np.float32)
     tcp[:, 0] = 0.25 + t * 0.12
     tcp[:, 2] = 0.30 - t * 0.06
@@ -102,9 +109,7 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
     # and seeking is what drives the per-frame annotations.
     click_tab(screen, "program")
 
-    ticks = _record()
-
-    def _populate():
+    def _populate() -> waldoctl.TickIndex:
         view = waldoctl.commander.settings.view
         view.paths_visible = True
         view.divergence_visible = True
@@ -115,6 +120,8 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
         # A physics pass always follows a planner pass, so a record on
         # screen always has planned segments beside it.
         from waldo_commander.state import PathSegment, simulation_state
+
+        ticks = _record(waldoctl.commander.status.joints.angles.rad)
 
         program.dry_run.path_segments = [
             PathSegment(
@@ -128,9 +135,36 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
         program.dry_run.total_steps = 1
         program.dry_run.ticks = ticks
         simulation_state.notify_changed()
+        return ticks
 
-    run_in_app(_populate)
+    ticks = run_in_app(_populate)
 
+    try:
+        _check_and_shoot(screen, ticks)
+    finally:
+        run_in_app(_restore)
+
+
+def _restore() -> None:
+    """Put the app back: no record, no segments, no timeline.
+
+    A record left behind would be replayed by the next test that touches
+    playback, against a program that is not this one.
+    """
+    from waldo_commander.components.playback import playback
+    from waldo_commander.state import simulation_state
+
+    program = waldoctl.commander.programs.active
+    if program is not None:
+        program.dry_run.ticks = None
+        program.dry_run.path_segments = []
+        program.dry_run.total_steps = 0
+        program.dry_run.playback.playback_time = 0.0
+    playback.invalidate_timeline()
+    simulation_state.notify_changed()
+
+
+def _check_and_shoot(screen, ticks: waldoctl.TickIndex) -> None:
     deadline = time.time() + 15.0
     info = None
     while time.time() < deadline:
@@ -139,7 +173,7 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
             break
         time.sleep(0.25)
 
-    def _seek():
+    def _seek() -> None:
         from waldo_commander.components.playback import playback
 
         # The frame annotations ride the playback batch, so put playback
