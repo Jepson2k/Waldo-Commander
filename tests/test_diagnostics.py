@@ -68,6 +68,9 @@ async def test_only_the_sections_this_backend_can_fill_are_shown(user: User) -> 
     await user.should_not_see(marker="diag-section-link")
     await user.should_not_see(marker="diag-section-torques")
     await user.should_not_see(marker="diag-torque-chart")
+    # And no CAN drives: par6's Drives tab stays out of a parol6 session
+    # even when the par6 package is installed alongside.
+    await user.should_not_see(marker="tab-par6-drives")
 
 
 @pytest.mark.integration
