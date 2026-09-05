@@ -11,6 +11,7 @@ authoring is config authoring: the GUI and MCP draft it, the config enforces it.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -44,9 +45,17 @@ def list_entries() -> list[str]:
 
 
 def save_entry(name: str, world: ShapeWorld) -> Path:
+    """Write a library entry, replacing any previous one atomically.
+
+    Through a temp file and `os.replace` so an interrupted write cannot
+    leave a truncated entry behind: the library is the user's own saved
+    work, and a half-written world reads back as a parse failure.
+    """
     path = _entry_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(world_to_dict(world), indent=2), encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(world_to_dict(world), indent=2), encoding="utf-8")
+    os.replace(tmp, path)
     return path
 
 

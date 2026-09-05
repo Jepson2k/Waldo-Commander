@@ -63,6 +63,11 @@ from .path_renderer import PathRenderer
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
 SHAPE_OPACITY = 0.35
+
+#: Highest a solid's top face may sit and still read as ground \[m\].
+#: The robot's base is at z = 0, so anything reaching above it is
+#: furniture rather than the floor.
+_GROUND_TOP_M = 1e-3
 #: Render extent of unbounded geometry — the installation floor and a
 #: ``plane`` keep-out — as a square of this side [m]. Backends enforce the
 #: floor as a keep-out of this footprint and a plane as a half-space, so the
@@ -76,6 +81,31 @@ _Y_UP_KINDS = ("cylinder", "capsule", "cone")
 # three.js cylinders/cones extend along +Y; coal's primitives are Z-aligned.
 # Rx(+90°) maps +Y -> +Z so the drawn shape matches the enforced volume.
 _Y_TO_Z_UP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+
+
+def _is_ground(shape) -> bool:
+    """Whether an installation shape is the ground the robot stands on.
+
+    A plane always is. A solid counts when its top face is at or below
+    the robot's base and it spans the origin — a floor slab does, a table
+    beside the robot does not, and the placeholder disc has to stay for
+    the table so it is not left floating in nothing.
+    """
+    if shape.kind == "plane":
+        return True
+    x, y, z = (float(v) for v in shape.pose[:3])
+    params = shape.params() if callable(shape.params) else shape.params
+    if shape.kind == "box" and len(params) >= 3:
+        half = [float(v) / 2 for v in params[:3]]
+    elif shape.kind in ("cylinder", "capsule") and len(params) >= 2:
+        r, h = float(params[0]), float(params[1])
+        half = [r, r, h / 2]
+    elif shape.kind == "sphere" and params:
+        r = float(params[0])
+        half = [r, r, r]
+    else:
+        return False
+    return z + half[2] <= _GROUND_TOP_M and abs(x) <= half[0] and abs(y) <= half[1]
 
 
 def _z_align_rotation(n: np.ndarray) -> np.ndarray:
@@ -1630,7 +1660,7 @@ class UrdfScene(
         shapes come from the backend's robot config and render in their own
         muted color; they are never draft — the floor is one of them, an
         ordinary static fixture the config declares. The placeholder ground
-        disc hides as soon as the backend describes an installation at all.
+        disc hides once the installation actually describes ground.
         ``installation_draft`` shapes are proposals for the robot config,
         drawn in their own colour since nothing enforces them yet.
         """
@@ -1647,9 +1677,11 @@ class UrdfScene(
                 desired[f"{prefix}{s.name}"] = (s, color, SHAPE_OPACITY)
         changed = False
         with batch_scene(self.scene):
-            # A declared installation is the real ground; the disc is only
-            # a placeholder for a backend that describes none.
-            show_disc = not installation
+            # The disc is a placeholder for a backend that describes no
+            # ground. A declared floor replaces it — but an installation
+            # of a table and nothing else does not, and hiding the disc
+            # for that leaves the table floating in the void.
+            show_disc = not any(_is_ground(s) for s in installation)
             if (
                 self._ground_disc is not None
                 and self._ground_disc.visible_ != show_disc

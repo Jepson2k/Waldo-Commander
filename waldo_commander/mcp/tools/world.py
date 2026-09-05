@@ -4,7 +4,8 @@ The world an LLM edits here is the one the GUI shows and the backend
 enforces: every mutation reassigns ``commander.scene.shapes`` (the request /
 readback path a program's ``set_shapes`` uses), so the backend push, draft
 styling, program recording and local collision checking all apply. The
-installation layer and floor are the robot config's and read-only here; the
+installation layer is the robot config's and read-only here — the floor
+is one of its shapes, not a separate thing; the
 export tool renders shapes as the TOML that config declares them with.
 
 Mutations need the control lease — of the enforced world and of the saved
@@ -104,9 +105,9 @@ def _apply(scene: Any, shapes: list[Shape]) -> dict:
 
 @mcp.tool(name="world.get")
 async def get_world() -> dict:
-    """The collision world as displayed: installation layer (robot config),
-    program layer, floor height, and whether the program layer is confirmed
-    by backend readback. Shapes are 7-item wire rows
+    """The collision world as displayed: installation layer (robot config,
+    the floor among its shapes), program layer, and whether the program
+    layer is confirmed by backend readback. Shapes are 7-item wire rows
     ``[kind, params, pose, collision, margin, name, physics]`` in metres and
     radians; the same document ``world.import_world`` accepts."""
     return _snapshot(_scene())

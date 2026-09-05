@@ -133,8 +133,17 @@ class ShapeEditingMixin:
             )
 
     def _draft_hit_name(self, hits) -> str | None:
-        """The clicked proposed-installation shape's name, if any."""
-        return next(self._hit_names(hits, DRAFT_PREFIX), None)
+        """The clicked proposed-installation shape's name, if any.
+
+        Planes are skipped for the same reason they are in the program
+        layer (:meth:`_shape_hit_name`): an unbounded half-space drawn as
+        a finite window is the space it fills, not a thing to click, and
+        a proposed one would otherwise swallow the empty-space menu.
+        """
+        return next(
+            (n for n in self._hit_names(hits, DRAFT_PREFIX) if not self._is_plane(n)),
+            None,
+        )
 
     def _fresh_shape_name(self, kind: str) -> str:
         handle = self._shape_handle()
@@ -238,9 +247,8 @@ class ShapeEditingMixin:
         shape = next((s for s in handle.installation_draft if s.name == name), None)
         if shape is None:
             return
-        handle.discard_installation_draft([name])
         try:
-            handle.shapes = [*handle.shapes, shape]
+            handle.withdraw_proposal(name)
         except ValueError as err:
             logger.warning("Keep-out rejected: %s", err)
 

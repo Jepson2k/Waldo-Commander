@@ -92,7 +92,7 @@ physics]` in metres and radians — or as dicts with the same fields.
 
 | Tool | Does |
 |------|------|
-| `world.get` / `world.export` | the world document: installation layer, program layer, floor height, whether the program layer is confirmed by readback, and the installation proposal |
+| `world.get` / `world.export` | the world document: installation layer (the floor is one of its shapes), program layer, whether the program layer is confirmed by readback, and the installation proposal |
 | `world.set_shapes`, `world.add_shape`, `world.update_shape`, `world.remove_shape` | edit the program layer (the installation layer is the robot config's and read-only here) |
 | `world.import_world` | apply a world document's program layer; reports whether its installation entries match the live one |
 | `world.library_list` / `library_save` / `library_load` / `library_delete` | the object library — world documents saved beside the programs |

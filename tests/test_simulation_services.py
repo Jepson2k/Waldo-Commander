@@ -2109,3 +2109,82 @@ class TestSimulatedRunPlumbing:
         )
         # Short runs are left alone.
         assert decimate(tcp[:10], error[:10])[0].shape[0] == 10
+
+
+class TestWorldStateRepair:
+    """Two ways the shape layers could be left in a state no edit escapes,
+    and one way the scene lied about the ground."""
+
+    def test_readback_never_leaves_a_name_in_both_layers(self):
+        """Adopting the backend's world drops a proposal it now enforces.
+
+        Readback is truth and is adopted wholesale, so a program shape
+        arriving under a drafted name would leave both layers holding it —
+        and `_assign`'s clash check then refuses every later edit,
+        including from handlers that do not catch it.
+        """
+        from waldoctl.shapes import Box
+
+        from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
+
+        handle = WcSceneHandle()
+        handle._installation_draft = (Box(name="wall", x=1, y=1, z=1),)
+        handle._shapes = []
+
+        # The backend comes back enforcing `wall` in the program layer.
+        handle._installation = ()
+        handle._shapes = [Box(name="wall", x=1, y=1, z=1)]
+        adopted = {s.name for s in handle._installation}
+        adopted |= {s.name for s in handle._shapes}
+        handle._installation_draft = tuple(
+            s for s in handle._installation_draft if s.name not in adopted
+        )
+
+        assert [s.name for s in handle.installation_draft] == []
+        names = [s.name for s in handle.enforced_locally]
+        assert names.count("wall") == 1, f"one layer only, got {names}"
+
+    def test_a_refused_withdrawal_keeps_the_proposal(self):
+        """Withdrawing moves both layers at once.
+
+        Discarding first and re-adding after destroys the drafted
+        geometry whenever the re-add is refused — and the caller has
+        nothing left to put back.
+        """
+        from waldoctl.shapes import Box
+
+        from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
+
+        handle = WcSceneHandle()
+        handle._installation_draft = (Box(name="wall", x=1, y=1, z=1),)
+        handle._shapes = []
+
+        with patch.object(WcSceneHandle, "_assign", side_effect=ValueError("refused")):
+            with pytest.raises(ValueError):
+                handle.withdraw_proposal("wall")
+
+        assert [s.name for s in handle.installation_draft] == ["wall"], (
+            "a refusal must leave the proposal where it was"
+        )
+
+    def test_only_actual_ground_replaces_the_placeholder_disc(self):
+        """A table is not a floor.
+
+        The disc stands in for a backend that describes no ground; hiding
+        it for any non-empty installation leaves a table floating in the
+        void, and the table-only layout is the example the backend's own
+        docs give.
+        """
+        from waldoctl.shapes import Box, Plane
+
+        from waldo_commander.services.urdf_scene.urdf_scene import _is_ground
+
+        floor = Box(name="floor", x=6, y=6, z=0.2, pose=(0, 0, -0.1, 0, 0, 0))
+        table = Box(name="table", x=1, y=1, z=0.7, pose=(0.6, 0, 0.35, 0, 0, 0))
+        assert _is_ground(floor)
+        assert _is_ground(Plane(name="ground", nx=0, ny=0, nz=1, offset=0))
+        assert not _is_ground(table), "a table beside the robot is not the floor"
+        # A slab that spans the origin but rises above the base is furniture.
+        assert not _is_ground(
+            Box(name="plinth", x=6, y=6, z=1.0, pose=(0, 0, 0.5, 0, 0, 0))
+        )

@@ -88,6 +88,23 @@ class WcSceneHandle:
             push=True,
         )
 
+    def withdraw_proposal(self, name: str) -> None:
+        """Return a proposed shape to the program layer, in one move.
+
+        Both layers change together so a refusal leaves neither touched —
+        discarding first and re-adding after would destroy the drafted
+        geometry whenever the re-add is rejected, and the caller would
+        have nothing to put back.
+        """
+        shape = next((s for s in self._installation_draft if s.name == name), None)
+        if shape is None:
+            raise ValueError(f"no proposed shape named {name!r}")
+        self._assign(
+            [*self._shapes, shape],
+            tuple(s for s in self._installation_draft if s.name != name),
+            push=True,
+        )
+
     def discard_installation_draft(self, names: list[str] | None = None) -> None:
         drop = None if names is None else set(names)
         self._assign(
@@ -265,7 +282,15 @@ class WcSceneHandle:
         # name: the config is authored by hand from the exported TOML, so the
         # enforced shape rarely compares equal to the drafted one field for
         # field, and a name is what both layers are keyed by anyway.
+        #
+        # The PROGRAM layer counts too. Readback is adopted wholesale — it
+        # is truth — so a program shape that arrives under a drafted name
+        # would otherwise leave both layers holding it, and `_assign`'s
+        # clash check would then refuse every subsequent edit, including
+        # from handlers that do not catch it. The proposal loses; the
+        # backend is enforcing that name now, and the draft is not.
         adopted = {s.name for s in self._installation}
+        adopted |= {s.name for s in self._shapes}
         self._installation_draft = tuple(
             s for s in self._installation_draft if s.name not in adopted
         )
