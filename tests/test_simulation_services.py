@@ -792,19 +792,24 @@ class TestSimulationCaching:
         waldoctl.commander.programs.items = [tab1, tab2]
         waldoctl.commander.programs.active_id = "tab2"  # Active is tab2
 
-        # Under pytest the visualizer always takes the in-process path, so mock
-        # the sim entry point; notify_changed avoids a slot stack error.
+        # The simulation itself runs in a pool worker, so stub the process
+        # boundary rather than the function inside it: this test is about
+        # which tab the result lands in, not about simulating anything.
+        # notify_changed avoids a slot stack error.
+        async def _fake_cpu_bound(_func, _args):
+            return {
+                "segments": [],
+                "targets": [],
+                "truncated": False,
+                "error": None,
+                "total_steps": 0,
+                "final_joints_rad": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            }
+
         with (
             patch(
-                "waldo_commander.services.path_visualizer._run_simulation_isolated",
-                return_value={
-                    "segments": [],
-                    "targets": [],
-                    "truncated": False,
-                    "error": None,
-                    "total_steps": 0,
-                    "final_joints_rad": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-                },
+                "waldo_commander.services.path_visualizer.run.cpu_bound",
+                _fake_cpu_bound,
             ),
             patch.object(simulation_state, "notify_changed"),
         ):

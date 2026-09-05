@@ -76,8 +76,9 @@ def _mark_colliding_segments(
     at its point in the program (the dry run itself only validates IK). Each
     hit records its first colliding waypoint in ``collision_step``.
 
-    The checker's tool and program world are restored on exit — the rare
-    in-process fallback shares the live checker.
+    The checker's tool and program world are restored on exit: a caller that
+    runs the simulation in-process rather than through the pool shares the
+    live checker.
     """
     if not robot.has_collision_checking:
         return
@@ -119,6 +120,16 @@ def _mark_colliding_segments(
         robot.apply_shapes(submit_world)
 
 
+def _simulation_timeout_s() -> float:
+    """Wall-clock budget for one preview run.
+
+    ``WALDO_SIM_TIMEOUT_S`` raises it where a worker starts cold: on spawn
+    platforms the first preview a worker runs imports the backend before the
+    script does, and that import is not free.
+    """
+    return float(os.environ.get("WALDO_SIM_TIMEOUT_S", SIMULATION_TIMEOUT_S))
+
+
 def _is_test_environment() -> bool:
     """Detect if running under pytest or similar test environment."""
     return (
@@ -135,7 +146,10 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
     the process pool). Each worker process will import the backend package
     once, and subsequent simulations will be fast since workers are reused.
 
-    Skipped in test environments where multiprocessing spawn doesn't work properly.
+    Skipped under pytest: NiceGUI's fixtures reset the pool after every UI
+    test, so warming would pay a full import per test instead of once per
+    session. A test's first preview pays its own worker's import, which
+    ``WALDO_SIM_TIMEOUT_S`` gives it room for.
 
     Args:
         backend_package: Backend package to import in workers (e.g. "parol6")
@@ -226,8 +240,9 @@ def _run_simulation_isolated(
 
     try:
         # Swap RobotClient/AsyncRobotClient for preview clients while the
-        # script runs. A pool worker is thrown away afterwards; the thread
-        # fallback is the app's own process, so the swap is undone below.
+        # script runs. A pool worker is thrown away afterwards, but this
+        # function is also called directly, in-process, so the swap is undone
+        # below rather than left to the worker's exit.
         backend = importlib.import_module(backend_package)
         assert dry_run_client_cls is not None
 
@@ -396,7 +411,7 @@ def _run_simulation_isolated(
                                 max_workers=1
                             ) as pool:
                                 future = pool.submit(run_async_in_thread)
-                                future.result(timeout=SIMULATION_TIMEOUT_S)
+                                future.result(timeout=_simulation_timeout_s())
                         else:
                             raise
 
@@ -416,12 +431,12 @@ def _run_simulation_isolated(
         error_message = f"Simulation setup failed: {type(e).__name__}: {e}"
 
     finally:
-        # A pool worker is discarded with these swaps in place; the thread
-        # fallback shares the app's process, where a client built from the
-        # backend's name after this point has to be the real one again. In a
-        # ``finally`` because a script ending in ``sys.exit()`` raises
-        # SystemExit, which passes both excepts and would otherwise leave the
-        # preview class installed for the rest of the app's life.
+        # A pool worker is discarded with these swaps in place, but a direct
+        # in-process call shares the app's interpreter, where a client built
+        # from the backend's name after this point has to be the real one
+        # again. In a ``finally`` because a script ending in ``sys.exit()``
+        # raises SystemExit, which passes both excepts and would otherwise
+        # leave the preview class installed for the rest of the app's life.
         for module, name, original in reversed(swapped_names):
             if original is None:
                 delattr(module, name)
@@ -653,38 +668,27 @@ class PathVisualizer:
                 initial_tool,
                 initial_homed,
             )
-            # Tests always simulate in-process: the pool is rebuilt per test
-            # with warm-up disabled, so a cold spawn worker could not meet the
-            # timeout even when submission succeeds. The pool remains a
-            # best-effort optimization elsewhere, with the same in-process
-            # path as fallback.
-            use_pool = run.process_pool is not None and not _is_test_environment()
-            if use_pool:
-                try:
-                    result = await asyncio.wait_for(
-                        run.cpu_bound(_run_simulation_packed, sim_args),
-                        timeout=SIMULATION_TIMEOUT_S
-                        + 2.0,  # Extra buffer for process overhead
-                    )
-                except asyncio.TimeoutError:
-                    logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
-                    return "Simulation timed out"
-                except Exception as e:
-                    logger.warning(
-                        "Subprocess simulation failed (sim_id=%d): %s, using thread",
-                        sim_id,
-                        e,
-                    )
-                    use_pool = False
-            if not use_pool:
-                # A worker thread (not inline) so the event loop keeps running
-                # and the script's own asyncio.run() has no running loop in its
-                # thread — async programs can't be simulated inline at all.
-                try:
-                    result = await asyncio.to_thread(_run_simulation_packed, sim_args)
-                except Exception as e2:
-                    logger.error("Thread simulation failed: %s", e2)
-                    return f"Simulation failed: {e2}"
+            # The simulated program always runs in a pool worker, which is
+            # discarded afterwards. It mutates process globals — the time
+            # module, the collision checker's world, the backend's client
+            # classes — so running it here would leak every one of them into
+            # the app, and a runaway script would be unkillable in a thread.
+            # Without a pool there is no preview, which is the honest answer.
+            if run.process_pool is None:
+                logger.error("No simulation process pool (sim_id=%d)", sim_id)
+                return "Preview unavailable: no simulation process pool"
+            try:
+                result = await asyncio.wait_for(
+                    run.cpu_bound(_run_simulation_packed, sim_args),
+                    # Over the script's own budget, for process overhead.
+                    timeout=_simulation_timeout_s() + 2.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
+                return "Simulation timed out"
+            except Exception as e:
+                logger.error("Subprocess simulation failed (sim_id=%d): %s", sim_id, e)
+                return f"Simulation failed: {e}"
 
             # A None result can happen during shutdown/test teardown.
             if result is None:

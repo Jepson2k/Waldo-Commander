@@ -514,6 +514,9 @@ def restore_process_pool_after_nicegui_fixtures(
     Their nicegui_reset_globals teardown calls run.reset() (clearing the
     process pool) and pops "__main__" from sys.modules (breaking any later
     multiprocessing spawn/forkserver launch). Restore both.
+
+    Load-bearing, not hygiene: path previews run in that pool and have no
+    in-process fallback, so a session that loses it stops previewing.
     """
     yield
     sys.modules.setdefault("__main__", _MAIN_MODULE)
@@ -635,6 +638,11 @@ def test_env_config() -> Generator[None, None, None]:
         # Reduce status broadcast rate for tests (50Hz is for human-perceived real-time,
         # 20Hz is sufficient for automated tests and reduces CI load)
         "PAROL6_STATUS_RATE_HZ": "20",
+        # Previews run in a pool worker here exactly as they do in the app.
+        # NiceGUI's fixtures reset the pool after every UI test, so the next
+        # preview starts a cold worker that imports the backend before the
+        # script runs; on spawn platforms that does not fit the 5s default.
+        "WALDO_SIM_TIMEOUT_S": "30",
     }
 
     originals: dict[str, str | None] = {}
