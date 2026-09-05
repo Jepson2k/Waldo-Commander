@@ -8,7 +8,7 @@ from nicegui import ui, app as ng_app
 from typing import Any
 
 from waldo_commander.state import ui_state
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import wait_for_app_ready, wait_for_tool_key
 
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
 app_storage: Any = getattr(ng_app, "storage")
@@ -217,16 +217,86 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     select_el.set_value("PNEUMATIC")
     await asyncio.sleep(0.1)
     await user.should_see("TCP Offset")
-    x_inputs = user.find(kind=ui.number, content="X")
-    assert len(x_inputs.elements) >= 1, "X offset input should exist"
+    fitted = next(iter(user.find(marker="tcp-offset-x").elements))
+    assert "disable" not in fitted.props, "a fitted tool's offset is editable"
 
-    # NONE — offset inputs should still be visible (but disabled)
+    # NONE — offset inputs should still be visible, and refuse edits: there
+    # is no tool to offset from.
     select_el.set_value("NONE")
     await asyncio.sleep(0.1)
-    x_inputs = user.find(kind=ui.number, content="X")
-    assert len(x_inputs.elements) >= 1, (
-        "X offset input should still exist for NONE (but disabled)"
-    )
+    bare = next(iter(user.find(marker="tcp-offset-x").elements))
+    assert "disable" in bare.props, "with no tool fitted the offset must not be editable"
+
+
+@pytest.mark.integration
+async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
+    user: User,
+) -> None:
+    """An offset typed into Settings is the offset the controller plans
+    with, not a browser-local number: it lands via ``set_tcp_offset`` and
+    reads back; a tool change (which resets the controller's offset) gets
+    the remembered offset pushed again; and an offset another client set
+    is adopted when the page opens instead of being clobbered."""
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+
+    user.find(kind=ui.tab, content="Settings").click()
+    await asyncio.sleep(0)
+    tool_select = user.find(marker="select-tool")
+
+    async def select_tool(key: str) -> None:
+        """Pick a tool and let the change settle: the tool select awaits the
+        controller's completion (which zeroes its offset) before rebuilding
+        the offset inputs, so an edit made mid-change would be reset."""
+        next(iter(tool_select.elements)).set_value(key)
+        await wait_for_tool_key(key, timeout_s=5.0)
+        await asyncio.sleep(0.3)
+
+    async def controller_offset(expected: list[float]) -> list[float]:
+        got: list[float] = []
+        for _ in range(50):
+            got = [float(v) for v in await client.tcp_offset()]
+            if got == expected:
+                return got
+            await asyncio.sleep(0.1)
+        return got
+
+    await select_tool("PNEUMATIC")
+    await user.should_see("TCP Offset")
+    # The client-side edit event, as NiceGUI names it: the element's own
+    # listener adopts the value, the page's listener pushes it.
+    user.find(marker="tcp-offset-x").trigger("update:modelValue", 12.5)
+    assert await controller_offset([12.5, 0.0, 0.0]) == [12.5, 0.0, 0.0]
+
+    # NONE and back: select_tool zeroes the controller's offset, the page
+    # re-applies the remembered one for the re-selected tool.
+    await select_tool("NONE")
+    assert await controller_offset([0.0, 0.0, 0.0]) == [0.0, 0.0, 0.0]
+    await select_tool("PNEUMATIC")
+    assert await controller_offset([12.5, 0.0, 0.0]) == [12.5, 0.0, 0.0]
+
+    # Set out of band (a program, another client), reopen the page: the
+    # controller's non-zero offset wins and the inputs show it.
+    await client.set_tcp_offset(1.0, 2.0, 3.0)
+    assert await controller_offset([1.0, 2.0, 3.0]) == [1.0, 2.0, 3.0]
+    # The old tab's disconnect clears the active slot before the reload.
+    ui_state.active_client_id = None
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(kind=ui.tab, content="Settings").click()
+    await asyncio.sleep(0)
+    await user.should_see("TCP Offset")
+    shown = None
+    for _ in range(50):
+        shown = next(iter(user.find(marker="tcp-offset-x").elements)).value
+        if shown == 1.0:
+            break
+        await asyncio.sleep(0.1)
+    assert shown == 1.0, f"X input shows {shown!r}, controller has 1.0"
+    assert await controller_offset([1.0, 2.0, 3.0]) == [1.0, 2.0, 3.0]
 
 
 @pytest.mark.integration

@@ -146,6 +146,52 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         assert not status.controller.freedrive, (
             "an unreferenced arm reported itself back-driveable"
         )
+
+        # Diagnostics off the wire, all of it from the status broadcast:
+        # the loop's tail, the drives' readings, and the torque series the
+        # chart draws.
+        user.find(marker="tab-diagnostics").click()
+        await asyncio.sleep(0)
+        await user.should_see(marker="diagnostics-panel")
+
+        def _text(marker: str) -> str:
+            return next(iter(user.find(marker=marker).elements)).text
+
+        temps: list[str] = []
+        for _ in range(100):
+            temps = [_text(f"diag-drive-temp-{j}") for j in range(1, 7)]
+            if all(t != "—" for t in temps):
+                break
+            await asyncio.sleep(0.1)
+        assert all(float(t) > 0 for t in temps), (
+            f"drive temperatures never arrived on STATUS: {temps}; "
+            f"note: {_text('diag-drives-note')!r}"
+        )
+        assert status.drive_health.bus_voltage_v is not None
+        assert _text("diag-drive-supply").endswith(" V")
+        # The tool drive answers a temperature but no current, and an
+        # unanswered register must read as unknown rather than as zero.
+        assert _text("diag-drive-current-7") == "—"
+
+        for _ in range(100):
+            if "budget" in _text("diag-loop-p99"):
+                break
+            await asyncio.sleep(0.1)
+        assert status.loop_health.measured
+        assert "budget" in _text("diag-loop-p99"), (
+            f"loop tail never shown: {_text('diag-loop-p99')!r}"
+        )
+        assert _text("diag-loop-rate").endswith("Hz target")
+        # The chart's own feed. The page consumes the dirty flag on every
+        # status tick, so ask the buffer how many samples it holds rather
+        # than racing it for a dirty read.
+        for _ in range(100):
+            if len(robot_state.torque_time_series):
+                break
+            await asyncio.sleep(0.05)
+        assert len(robot_state.torque_time_series), (
+            "no joint torques ever reached the chart"
+        )
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)

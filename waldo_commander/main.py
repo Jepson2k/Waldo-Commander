@@ -53,6 +53,7 @@ from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
 from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
+from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
     warmup_pipelines,
@@ -737,6 +738,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         gripper_tab.props("disable")
         gripper_tab.mark("tab-gripper")
         ui_state._gripper_tab = gripper_tab
+        diagnostics_tab = ui.tab(name="diagnostics", label="", icon="monitor_heart")
+        diagnostics_tab.tooltip("Diagnostics")
+        diagnostics_tab.mark("tab-diagnostics")
 
         _add_plugin_tabs(PanelSlot.LEFT_TOP_TAB)
 
@@ -834,6 +838,18 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                     ui_state.gripper_page.build()
 
             ui_state._build_gripper_content = _build_gripper_content
+
+        with ui.tab_panel("diagnostics").classes("gap-2 overlay-card overflow-hidden"):
+            with ui.row().classes("w-full items-center"):
+                ui.label("Diagnostics").classes("text-lg font-medium")
+                ui.space()
+                ui.button(icon="close", on_click=close_top_panels).props(
+                    "flat round dense color=white"
+                )
+            ui_state.diagnostics_page = DiagnosticsPage(
+                client, is_open=lambda: side_tabs.value == "diagnostics"
+            )
+            ui_state.diagnostics_page.build()
 
         _add_plugin_tab_panels(PanelSlot.LEFT_TOP_TAB, commander)
 
@@ -1788,6 +1804,17 @@ def _home_output_tick() -> None:
         )
 
 
+def _same_readings(a: list[float], b: list[float]) -> bool:
+    """List equality that counts NaN as equal to NaN.
+
+    A drive that has not answered a register reads as NaN every tick, and
+    plain ``!=`` would call that a change and re-fire every binding at the
+    status rate."""
+    if len(a) != len(b):
+        return False
+    return all(x == y or (x != x and y != y) for x, y in zip(a, b))
+
+
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
     # Shadows of the last-applied jog-enable wire arrays, kept local so each
@@ -1916,6 +1943,13 @@ async def _status_consumer() -> None:
                     ):
                         joints.torques_ext = [float(v) for v in torques_ext]
                         torques_ext_shadow = torques_ext.copy()
+                    if torques is not None:
+                        robot_state.torque_time_series.push(
+                            [float(v) for v in torques],
+                            [float(v) for v in torques_ext]
+                            if torques_ext is not None
+                            else [],
+                        )
 
                     # Controller state chip: mode name is the backend enum's
                     # name (vendor-neutral for display). Skipped, never
@@ -1943,11 +1977,38 @@ async def _status_consumer() -> None:
                         for e in entries:
                             if tuple(e) not in prev:
                                 robot_events.add(
-                                    str(e[4]) if len(e) > 4 else "warning",
+                                    "warning",
                                     str(e[2]) if len(e) > 2 else str(e),
                                     str(e[3]) if len(e) > 3 else "",
+                                    str(e[5]) if len(e) > 5 else "",
                                 )
                         st.warnings.entries = list(entries)
+
+                    drives = getattr(status, "drive_health", None)
+                    if drives:
+                        dh = st.drive_health
+                        temps = [float(v) for v in drives.get("temperatures_c", ())]
+                        currents = [float(v) for v in drives.get("currents_ma", ())]
+                        if not _same_readings(dh.temperatures_c, temps):
+                            dh.temperatures_c = temps
+                        if not _same_readings(dh.currents_ma, currents):
+                            dh.currents_ma = currents
+                        volts = drives.get("bus_voltage_v")
+                        volts = None if volts is None else float(volts)
+                        if dh.bus_voltage_v != volts:
+                            dh.bus_voltage_v = volts
+
+                    loop = getattr(status, "loop_health", None)
+                    if loop:
+                        lh_loop = st.loop_health
+                        p99 = float(loop.get("p99_period_s", 0.0))
+                        overruns = int(loop.get("overruns", 0))
+                        if lh_loop.p99_period_s != p99:
+                            lh_loop.p99_period_s = p99
+                        if lh_loop.overruns != overruns:
+                            lh_loop.overruns = overruns
+                        if not lh_loop.measured:
+                            lh_loop.measured = True
 
                     link = getattr(status, "link_health", None)
                     if link:
@@ -2030,6 +2091,8 @@ async def _status_consumer() -> None:
                             if ui_state.gripper_page is not None:
                                 ui_state.gripper_page.update_chart()
                                 ui_state.gripper_page.update_status()
+                            if ui_state.diagnostics_page is not None:
+                                ui_state.diagnostics_page.update()
 
             except Exception as e:
                 logger.debug("Status consumer parse error: %s", e)

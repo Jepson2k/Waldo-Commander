@@ -1,11 +1,12 @@
 """Settings component for serial port, theme, and visualization preferences."""
 
+import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import contextmanager
 
 from nicegui import app as ng_app
-from nicegui import ui
+from nicegui import background_tasks, ui
 
 import waldoctl
 from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
@@ -205,6 +206,7 @@ class SettingsContent:
             vk = self._get_variant_key(tool_key)
             self._apply_tool_scene(tool_key, variant_key=vk)
             self._notify_and_resimulate()
+            await self._push_tcp_offset(tool_key, vals, (x_input, y_input, z_input))
 
         with self._tcp_offset_container:
             with _setting_row("TCP Offset", "Offset from default TCP (mm)"):
@@ -214,19 +216,99 @@ class SettingsContent:
                         .style("width: 48px;")
                         .props("dense borderless" + (" disable" if is_none else ""))
                         .on("update:model-value", _on_offset_change)
+                        .mark("tcp-offset-x")
                     )
                     y_input = (
                         ui.number(label="Y", value=offset.get("y", 0), step=0.5)
                         .style("width: 48px;")
                         .props("dense borderless" + (" disable" if is_none else ""))
                         .on("update:model-value", _on_offset_change)
+                        .mark("tcp-offset-y")
                     )
                     z_input = (
                         ui.number(label="Z", value=offset.get("z", 0), step=0.5)
                         .style("width: 48px;")
                         .props("dense borderless" + (" disable" if is_none else ""))
                         .on("update:model-value", _on_offset_change)
+                        .mark("tcp-offset-z")
                     )
+        if not is_none:
+            background_tasks.create(
+                self._reconcile_tcp_offset(tool_key, (x_input, y_input, z_input)),
+                name="tcp-offset-reconcile",
+            )
+
+    async def _push_tcp_offset(
+        self,
+        tool_key: str,
+        vals: dict,
+        inputs: tuple[ui.number, ui.number, ui.number],
+    ) -> None:
+        """Send the offset to the controller and adopt what it reports back,
+        so the GUI's TCP is the one the controller plans with."""
+        x, y, z = (float(vals.get(k, 0) or 0) for k in ("x", "y", "z"))
+        back: list[float] = []
+        try:
+            index = await self.client.set_tcp_offset(x, y, z)
+            if index >= 0:
+                await self.client.wait_command(index, timeout=5.0)
+            # A backend may answer the query a tick behind the set; poll
+            # briefly before treating a stale readback as a disagreement.
+            for _ in range(10):
+                back = [float(b) for b in await self.client.tcp_offset()]
+                if all(abs(b - v) <= 1e-3 for b, v in zip(back, (x, y, z))):
+                    return
+                await asyncio.sleep(0.1)
+        except Exception as exc:
+            logger.warning("set_tcp_offset(%s, %s, %s) failed: %s", x, y, z, exc)
+            ui.notify(f"TCP offset not applied: {exc}", color="negative")
+            return
+        if any(abs(float(b) - v) > 1e-3 for b, v in zip(back, (x, y, z))):
+            ui.notify(
+                f"Controller reports TCP offset {[round(float(b), 2) for b in back]}",
+                color="warning",
+            )
+            self._adopt_tcp_offset(tool_key, back, inputs)
+
+    async def _reconcile_tcp_offset(
+        self, tool_key: str, inputs: tuple[ui.number, ui.number, ui.number]
+    ) -> None:
+        """Line the browser's remembered offset up with the controller's.
+
+        A controller reporting a non-zero offset is the source of truth (a
+        program or another client set it). A zero offset means nothing has
+        been set, so the browser's remembered value is pushed."""
+        try:
+            back = [float(v) for v in await self.client.tcp_offset()]
+        except Exception as exc:
+            logger.debug("tcp_offset readback failed: %s", exc)
+            return
+        stored = self._get_tcp_offset(tool_key)
+        mine = [float(stored.get(k, 0) or 0) for k in ("x", "y", "z")]
+        if all(abs(b - m) <= 1e-3 for b, m in zip(back, mine)):
+            return
+        if any(abs(b) > 1e-3 for b in back):
+            self._adopt_tcp_offset(tool_key, back, inputs)
+        elif any(abs(m) > 1e-3 for m in mine):
+            await self._push_tcp_offset(tool_key, stored, inputs)
+
+    def _adopt_tcp_offset(
+        self,
+        tool_key: str,
+        offset_mm: list | tuple,
+        inputs: tuple[ui.number, ui.number, ui.number],
+    ) -> None:
+        vals = {
+            "x": float(offset_mm[0]),
+            "y": float(offset_mm[1]),
+            "z": float(offset_mm[2]),
+        }
+        ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
+        for inp, v in zip(inputs, (vals["x"], vals["y"], vals["z"])):
+            if inp.value != v:
+                inp.set_value(v)
+        self._apply_tool_scene(tool_key, variant_key=self._get_variant_key(tool_key))
+        self._notify_and_resimulate()
 
     # ── Section builders ─────────────────────────────────────────────
 
@@ -302,7 +384,9 @@ class SettingsContent:
             tool = e.value
             vk = self._get_variant_key(tool)
             try:
-                await self.client.select_tool(tool, variant_key=vk or "")
+                index = await self.client.select_tool(tool, variant_key=vk or "")
+                if isinstance(index, int) and index >= 0:
+                    await self.client.wait_command(index, timeout=5.0)
             except Exception as exc:
                 logger.warning("select_tool(%s) failed: %s", tool, exc)
                 ui.notify(f"Tool change failed: {exc}", color="negative")

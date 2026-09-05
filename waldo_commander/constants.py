@@ -133,6 +133,8 @@ HOME_LONG_PRESS_S: float = 0.8
 # so components can import it without importing main — importing main from a
 # component re-executes it under screen tests (main runs via runpy there) and
 # re-registers "/" with a handler whose panel globals were never initialized.
-RESERVED_TAB_IDS = frozenset({"program", "io", "gripper", "response", "log", "help"})
+RESERVED_TAB_IDS = frozenset(
+    {"program", "io", "gripper", "diagnostics", "response", "log", "help"}
+)
 
 config = _Config()
