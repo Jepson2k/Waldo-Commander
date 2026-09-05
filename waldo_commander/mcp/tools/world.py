@@ -7,9 +7,10 @@ styling, program recording and local collision checking all apply. The
 installation layer and floor are the robot config's and read-only here; the
 export tool renders shapes as the TOML that config declares them with.
 
-Mutations need the control lease (changing the enforced world is not
-actuation, so no hardware consent); reads never do. Refusals are ToolErrors
-at WARNING — protocol messages steering the LLM, not server faults.
+Mutations need the control lease — of the enforced world and of the saved
+library alike, since both are the human's workspace; changing the world is
+not actuation, so no hardware consent is asked. Reads never do. Refusals are
+ToolErrors at WARNING — protocol messages steering the LLM, not server faults.
 """
 
 from __future__ import annotations
@@ -45,7 +46,6 @@ def _world(scene: Any) -> ShapeWorld:
     return ShapeWorld(
         installation=tuple(scene.installation),
         program=tuple(scene.shapes),
-        floor_z_m=scene.floor_z_m,
     )
 
 
@@ -53,10 +53,11 @@ def _snapshot(scene: Any) -> dict:
     """The world as the JSON document import/export and the library use,
     plus whether the displayed program layer matches backend readback and
     the shapes proposed for the installation layer (drawn, not enforced)."""
+    draft = ShapeWorld(program=tuple(scene.installation_draft))
     return {
         **world_to_dict(_world(scene)),
         "confirmed": bool(scene.confirmed),
-        "installation_draft": [list(s.to_wire()) for s in scene.installation_draft],
+        "installation_draft": world_to_dict(draft)["program"],
     }
 
 
@@ -69,6 +70,27 @@ def _parse(entry: Any) -> Shape:
         return shape_from_wire(*entry)
     except (TypeError, ValueError) as err:
         _refuse(f"shape rejected: {err}")
+
+
+def _require_free_name(scene: Any, name: str, *, replacing: str | None = None) -> None:
+    """Refuse a name already drawn in either layer. Every consumer — the
+    scene, the collision report, remove_shape — keys on the name, so a
+    duplicate is ambiguous everywhere. *replacing* is the program shape
+    about to be overwritten, whose own name is free to reuse."""
+    taken = {s.name for s in scene.shapes if s.name != replacing}
+    taken |= {s.name for s in scene.installation}
+    taken |= {s.name for s in scene.installation_draft}
+    if name in taken:
+        _refuse(f"a shape named {name!r} already exists")
+
+
+def _library_entry(name: str) -> ShapeWorld:
+    """A library entry, or a refusal the LLM can act on — the file is
+    user-editable, so malformed JSON is expected input, not a fault."""
+    try:
+        return world_files.load_entry(name)
+    except (ValueError, OSError, KeyError, TypeError, AttributeError) as err:
+        _refuse(f"library entry unavailable: {err}")
 
 
 def _apply(scene: Any, shapes: list[Shape]) -> dict:
@@ -105,10 +127,7 @@ async def add_shape(shape: Any) -> dict:
     require_control()
     scene = _scene()
     new = _parse(shape)
-    if any(s.name == new.name for s in scene.shapes) or any(
-        s.name == new.name for s in scene.installation
-    ):
-        _refuse(f"a shape named {new.name!r} already exists")
+    _require_free_name(scene, new.name)
     return _apply(scene, [*scene.shapes, new])
 
 
@@ -121,6 +140,7 @@ async def update_shape(name: str, shape: Any) -> dict:
     if not any(s.name == name for s in scene.shapes):
         _refuse(f"no program-layer shape named {name!r}")
     new = _parse(shape)
+    _require_free_name(scene, new.name, replacing=name)
     return _apply(scene, [new if s.name == name else s for s in scene.shapes])
 
 
@@ -168,7 +188,8 @@ async def library_list() -> list[str]:
 @mcp.tool(name="world.library_save")
 async def library_save(name: str, shapes: list[Any] | None = None) -> str:
     """Save *shapes* (default: the current program layer) as library entry
-    *name*. Returns the file path."""
+    *name*, overwriting an entry of that name. Returns the file path."""
+    require_control()
     scene = _scene()
     program = (
         tuple(_parse(s) for s in shapes) if shapes is not None else tuple(scene.shapes)
@@ -184,16 +205,13 @@ async def library_load(name: str) -> dict:
     """Replace the program layer with library entry *name*."""
     require_control()
     scene = _scene()
-    try:
-        entry = world_files.load_entry(name)
-    except (ValueError, OSError, KeyError) as err:
-        _refuse(f"library entry unavailable: {err}")
-    return _apply(scene, list(entry.program))
+    return _apply(scene, list(_library_entry(name).program))
 
 
 @mcp.tool(name="world.library_delete")
 async def library_delete(name: str) -> list[str]:
     """Delete library entry *name*; returns the remaining names."""
+    require_control()
     try:
         world_files.delete_entry(name)
     except (ValueError, OSError) as err:
@@ -211,10 +229,7 @@ async def place_object(
     stays physical, so the simulator and preview treat it as a body."""
     require_control()
     scene = _scene()
-    try:
-        saved = world_files.load_entry(entry)
-    except (ValueError, OSError, KeyError) as err:
-        _refuse(f"library entry unavailable: {err}")
+    saved = _library_entry(entry)
     if len(saved.program) != 1:
         _refuse(
             f"library entry {entry!r} holds {len(saved.program)} shapes; "
@@ -232,8 +247,7 @@ async def place_object(
         placed = dataclasses.replace(shape, **changes)
     except (TypeError, ValueError) as err:
         _refuse(f"object rejected: {err}")
-    if any(s.name == placed.name for s in scene.shapes):
-        _refuse(f"a shape named {placed.name!r} already exists")
+    _require_free_name(scene, placed.name)
     return _apply(scene, [*scene.shapes, placed])
 
 

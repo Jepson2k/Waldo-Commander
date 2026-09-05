@@ -60,7 +60,12 @@ def _slerp_pose(
     a: tuple[float, ...], b: tuple[float, ...], frac: float
 ) -> tuple[float, ...]:
     """Interpolate two ``[x, y, z, qw, qx, qy, qz]`` poses: position linearly,
-    orientation along the shorter great-circle arc."""
+    orientation along the shorter great-circle arc.
+
+    Hand-rolled rather than ``scipy.spatial.transform.Slerp``: this runs per
+    object per playback frame, and building a ``Rotation`` pair and a
+    ``Slerp`` for a single interpolant costs more than the arithmetic.
+    """
     pos = tuple(a[i] + (b[i] - a[i]) * frac for i in range(3))
     q0 = a[3:7]
     q1 = b[3:7]
@@ -176,10 +181,14 @@ class Timeline:
         total = cum[-1] if segments else 0.0
 
         # Object tracks: a segment's rows span its motion window, a tool
-        # action's rows span the action itself.
-        obj_kf: dict[str, list[ObjectKeyframe]] = {}
-        for i, seg in enumerate(segments):
-            _add_tracks(obj_kf, seg.object_tracks, cum[i], seg_durs[i])
+        # action's rows span the action itself. Collected first and added
+        # in time order below — a grasp on segment 0 must not be filed
+        # after segment 2's motion.
+        obj_spans: list[tuple[float, float, list[dict]]] = [
+            (cum[i], seg_durs[i], seg.object_tracks)
+            for i, seg in enumerate(segments)
+            if seg.object_tracks
+        ]
 
         # Build tool keyframes from actions
         tool_kf: list[ToolKeyframe] = []
@@ -210,11 +219,16 @@ class Timeline:
                 tool_kf.append(ToolKeyframe(time=t, positions=current))
                 current = act.target_positions
                 tool_kf.append(ToolKeyframe(time=t + dur, positions=current))
-                _add_tracks(obj_kf, act.object_tracks, t, dur)
+                if act.object_tracks:
+                    obj_spans.append((t, dur, act.object_tracks))
 
             # Extend total duration if tool actions go past last segment
             if tool_kf:
                 total = max(total, tool_kf[-1].time)
+
+        obj_kf: dict[str, list[ObjectKeyframe]] = {}
+        for start, dur, tracks in sorted(obj_spans, key=lambda span: span[0]):
+            _add_tracks(obj_kf, tracks, start, dur)
 
         # Extract checkpoints from segments
         cps: list[Checkpoint] = []

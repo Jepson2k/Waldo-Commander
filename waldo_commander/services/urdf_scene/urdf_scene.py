@@ -22,12 +22,16 @@ from typing import Any, Mapping, NamedTuple, Sequence
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from dataclasses import dataclass
+
 import numpy as np
+from scipy.spatial.transform import Rotation
 from nicegui import ui, app
 from nicegui.elements.scene.scene_object3d import Object3D
 
 import waldoctl
-from waldoctl import Box, LinearMotion, RotaryMotion, MeshRole, PartMotion
+from waldoctl import LinearMotion, RotaryMotion, MeshRole, PartMotion
+from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, TOOL_PREFIX, pose_matrix
 
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
 from waldo_commander.common.theme import (
@@ -41,7 +45,7 @@ from waldo_commander.services.timeline import ObjectSample
 from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import simulation_state, robot_state, ui_state
 
-from .config import RobotAppearanceMode, ToolPose, UrdfSceneConfig
+from .config import DRAFT_PREFIX, RobotAppearanceMode, ToolPose, UrdfSceneConfig
 from .loader import (
     load_urdf,
     resolve_meshes_dir,
@@ -65,9 +69,8 @@ SHAPE_OPACITY = 0.35
 WORLD_EXTENT_M = 6.0
 #: Thickness of the slab that stands in for a surface [m].
 SURFACE_THICKNESS_M = 0.002
-#: The installation floor is ground, not a keep-out: drawn as solid as the
-#: placeholder disc it replaces, not as translucent as a shape.
-FLOOR_OPACITY = 0.5
+#: Primitives three.js extends along +Y where coal's are Z-aligned.
+_Y_UP_KINDS = ("cylinder", "capsule", "cone")
 
 # three.js cylinders/cones extend along +Y; coal's primitives are Z-aligned.
 # Rx(+90°) maps +Y -> +Z so the drawn shape matches the enforced volume.
@@ -86,27 +89,14 @@ def _z_align_rotation(n: np.ndarray) -> np.ndarray:
     return np.eye(3) + k + k @ k * ((1.0 - c) / s2)
 
 
-def _base_opacity(key: str) -> float:
-    """A drawn shape's resting opacity: the floor is ground, everything
-    else a keep-out, marker or proposal (a proposal is told apart by its
-    colour, not by fading)."""
-    return FLOOR_OPACITY if key == "install:floor" else SHAPE_OPACITY
-
-
 def _object_render_pose(
     kind: str, pose7: Sequence[float]
 ) -> tuple[tuple[float, float, float], list[list[float]]]:
     """Scene position + rotation for a tracked object's ``[x, y, z, qw, qx,
     qy, qz]`` pose, with the same Y-up correction its declared pose gets."""
     w, x, y, z = pose7[3:7]
-    R = np.array(
-        [
-            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-        ]
-    )
-    if kind in ("cylinder", "capsule", "cone"):
+    R = Rotation.from_quat([x, y, z, w]).as_matrix()
+    if kind in _Y_UP_KINDS:
         R = R @ _Y_TO_Z_UP
     return (float(pose7[0]), float(pose7[1]), float(pose7[2])), R.tolist()
 
@@ -120,11 +110,13 @@ def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]
     slab is a finite window onto an unbounded half-space, and a shape's
     ``margin`` is enforced but never drawn.
     """
-    R_pose = np.array(
-        Object3D.rotation_matrix_from_euler(s.pose[3], s.pose[4], s.pose[5])
-    )
-    pos = np.asarray(s.pose[:3], dtype=np.float64)
-    if s.kind in ("cylinder", "capsule", "cone"):
+    # waldoctl's pose_matrix is the one place the shape rotation convention
+    # is written down; the drawing has to use it or it can drift from the
+    # volume the checker enforces.
+    T = pose_matrix(s.pose)
+    R_pose = T[:3, :3]
+    pos = T[:3, 3]
+    if s.kind in _Y_UP_KINDS:
         R = R_pose @ _Y_TO_Z_UP
     elif s.kind == "plane":
         # The slab is a thin box whose local z is its normal — align it to n.
@@ -163,6 +155,30 @@ class RenderedSegment(NamedTuple):
     uses_vc: bool  # polyline uses vertex colors?
     fingerprint: tuple  # visual properties only — line_number excluded
     line_number: int  # source line, for cursor highlight map
+
+
+@dataclass
+class _Drawn:
+    """What is known about one shape currently drawn in the scene, keyed by
+    its geometry name (``shape:``/``install:``/``draft:`` + the shape name).
+
+    ``geometry`` and ``pose`` decide whether a re-render recreates, moves or
+    leaves the object alone; ``declared_pose`` is where the program says it
+    sits, so a playback override can be undone without re-deriving it;
+    ``placed_pose`` is where an override last put it, so a frame that moves
+    nothing sends nothing; ``overridden`` is set while playback holds it, and
+    ``guess`` says that override came from the preview's geometric fallback
+    rather than physics.
+    """
+
+    geometry: tuple
+    pose: tuple
+    color: str
+    opacity: float
+    declared_pose: tuple[tuple[float, float, float], list[list[float]]]
+    placed_pose: tuple[tuple[float, float, float], list[list[float]]] | None = None
+    overridden: bool = False
+    guess: bool = False
 
 
 class RenderedItem(NamedTuple):
@@ -350,18 +366,7 @@ class UrdfScene(
         self._link_to_meshes: dict[str, list[Any]] = {}
         self._shape_objects: dict[str, Any] = {}
         self._ground_disc: Object3D | None = None
-        # Per drawn shape: (geometry, pose, color) it was last rendered with.
-        self._shape_fingerprints: dict[str, tuple] = {}
-        # Declared render pose per drawn shape, so a playback override can be
-        # undone without re-deriving it; and which overridden objects are
-        # drawn as a guess (the preview's geometric fallback).
-        self._shape_declared_pose: dict[
-            str, tuple[tuple[float, float, float], list[list[float]]]
-        ] = {}
-        self._object_ghosts: dict[str, bool] = {}
-        # Last render's draft flag — appearance repaints must keep an
-        # unconfirmed program layer amber, not promote it to confirmed slate.
-        self._shapes_draft: bool = False
+        self._drawn: dict[str, _Drawn] = {}
         self._shapes_group: Any | None = None
         self._colliding_meshes: set[Any] = set()  # objects currently tinted red
         self._collision_saved: dict[
@@ -1531,10 +1536,10 @@ class UrdfScene(
         collision meshes with no 1:1 visual counterpart, so a tool collision
         tints the whole attached tool.
         """
-        if name.startswith(("shape:", "install:")):
+        if name.startswith((SHAPE_PREFIX, INSTALL_PREFIX, DRAFT_PREFIX)):
             obj = self._shape_objects.get(name)
             return (obj,) if obj is not None else ()
-        if name.startswith("tool:"):
+        if name.startswith(TOOL_PREFIX):
             return tuple(self._tool_meshes)
         return self._link_to_meshes.get(name, ())
 
@@ -1597,7 +1602,6 @@ class UrdfScene(
         shapes,
         installation=(),
         draft=False,
-        floor_z_m: float | None = None,
         installation_draft=(),
     ) -> None:
         """Draw the keep-out shapes by layer and map them for highlighting.
@@ -1612,37 +1616,28 @@ class UrdfScene(
         ``shapes`` is the program layer — amber while ``draft`` (not yet
         confirmed by backend readback), slate once confirmed. ``installation``
         shapes come from the backend's robot config and render in their own
-        muted color; they are never draft. ``floor_z_m`` is the backend's
-        installation floor: drawn as the ground at that height under the
-        name its collision reports use (``install:floor``), replacing the
-        placeholder disc; None keeps the disc. ``installation_draft`` shapes
-        are proposals for the robot config, drawn in their own colour since
-        nothing enforces them yet.
+        muted color; they are never draft — the floor is one of them, an
+        ordinary static fixture the config declares. The placeholder ground
+        disc hides as soon as the backend describes an installation at all.
+        ``installation_draft`` shapes are proposals for the robot config,
+        drawn in their own colour since nothing enforces them yet.
         """
         if not self.scene:
             return
-        self._shapes_draft = draft
         program_hex = SceneColors.SHAPE_DRAFT_HEX if draft else SceneColors.SHAPE_HEX
-        desired: dict[str, tuple[Any, str]] = {}
-        if floor_z_m is not None:
-            floor = Box(
-                name="floor",
-                x=WORLD_EXTENT_M,
-                y=WORLD_EXTENT_M,
-                z=SURFACE_THICKNESS_M,
-                pose=(0.0, 0.0, floor_z_m - SURFACE_THICKNESS_M / 2, 0.0, 0.0, 0.0),
-            )
-            desired["install:floor"] = (floor, self.config.ground_color)
+        desired: dict[str, tuple[Any, str, float]] = {}
         for prefix, layer, color in (
-            ("install", installation, SceneColors.SHAPE_INSTALL_HEX),
-            ("draft", installation_draft, SceneColors.SHAPE_PROPOSED_HEX),
-            ("shape", shapes, program_hex),
+            (INSTALL_PREFIX, installation, SceneColors.SHAPE_INSTALL_HEX),
+            (DRAFT_PREFIX, installation_draft, SceneColors.SHAPE_PROPOSED_HEX),
+            (SHAPE_PREFIX, shapes, program_hex),
         ):
             for s in layer:
-                desired[f"{prefix}:{s.name}"] = (s, color)
+                desired[f"{prefix}{s.name}"] = (s, color, SHAPE_OPACITY)
         changed = False
         with batch_scene(self.scene):
-            show_disc = floor_z_m is None
+            # A declared installation is the real ground; the disc is only
+            # a placeholder for a backend that describes none.
+            show_disc = not installation
             if (
                 self._ground_disc is not None
                 and self._ground_disc.visible_ != show_disc
@@ -1655,12 +1650,12 @@ class UrdfScene(
                 if self._shapes_group is None:
                     self._shapes_group = self.scene.group().with_name("shapes")
                 with self._shapes_group:
-                    for key, (s, color) in desired.items():
+                    for key, (s, color, opacity) in desired.items():
                         geometry = (s.kind, tuple(s.params()))
                         pose = tuple(s.pose)
                         obj = self._shape_objects.get(key)
-                        last = self._shape_fingerprints.get(key)
-                        if obj is not None and last is not None and last[0] != geometry:
+                        last = self._drawn.get(key)
+                        if obj is not None and last and last.geometry != geometry:
                             self._forget_shape_object(key)
                             obj = None
                         if obj is None:
@@ -1671,23 +1666,39 @@ class UrdfScene(
                             self._shape_objects[key] = obj
                             last = None
                             changed = True
-                        if last is None or last[1] != pose:
-                            pos, rot = _shape_render_pose(s)
-                            obj.move(*pos).rotate_R(rot)
-                            self._shape_declared_pose[key] = (pos, rot)
-                            self._object_ghosts.pop(key, None)
+                        moved = last is None or last.pose != pose
+                        declared = (
+                            _shape_render_pose(s) if moved else last.declared_pose
+                        )
+                        if moved:
+                            obj.move(*declared[0]).rotate_R(declared[1])
                             changed = True
-                        if last is None or last[2] != color:
-                            opacity = _base_opacity(key)
-                            if obj in self._colliding_meshes:
-                                # Tinted right now: the new base color is what
-                                # the highlight restores to when the collision
-                                # clears, not what is painted over the tint.
-                                self._collision_saved[id(obj)] = (color, opacity)
-                            else:
-                                obj.material(color, opacity)
+                        # Moving to the declared pose ends any playback
+                        # override, and the guess styling ends with it.
+                        held = bool(last and last.overridden and not moved)
+                        drawn = _Drawn(
+                            geometry=geometry,
+                            pose=pose,
+                            color=color,
+                            opacity=opacity,
+                            declared_pose=declared,
+                            placed_pose=last.placed_pose if held else None,
+                            overridden=held,
+                            guess=bool(last and last.guess and held),
+                        )
+                        repaint = last is None or (
+                            last.color,
+                            last.opacity,
+                            last.guess,
+                        ) != (
+                            drawn.color,
+                            drawn.opacity,
+                            drawn.guess,
+                        )
+                        self._drawn[key] = drawn
+                        if repaint:
+                            self._paint_shape(obj, key)
                             changed = True
-                        self._shape_fingerprints[key] = (geometry, pose, color)
         if not changed:
             return
         # The world changed — force the highlight to recompute next tick.
@@ -1700,9 +1711,7 @@ class UrdfScene(
         """Delete one drawn shape and drop its collision bookkeeping, so a
         re-render mid-collision can't restore or tint a stale object."""
         obj = self._shape_objects.pop(key)
-        self._shape_fingerprints.pop(key, None)
-        self._shape_declared_pose.pop(key, None)
-        self._object_ghosts.pop(key, None)
+        self._drawn.pop(key, None)
         self._colliding_meshes.discard(obj)
         self._collision_saved.pop(id(obj), None)
         self._safe_delete(obj)
@@ -1718,34 +1727,63 @@ class UrdfScene(
             return
         with batch_scene(self.scene):
             if poses is None:
-                for key in list(self._object_ghosts):
+                for key, drawn in self._drawn.items():
+                    if not drawn.overridden:
+                        continue
+                    was_guess = drawn.guess
+                    drawn.overridden, drawn.guess, drawn.placed_pose = (
+                        False,
+                        False,
+                        None,
+                    )
                     obj = self._shape_objects.get(key)
-                    declared = self._shape_declared_pose.get(key)
-                    if obj is not None and declared is not None:
-                        obj.move(*declared[0]).rotate_R(declared[1])
-                        if self._object_ghosts[key]:
-                            self._repaint(obj, key, ghost=False)
-                self._object_ghosts.clear()
+                    if obj is None:
+                        continue
+                    obj.move(*drawn.declared_pose[0]).rotate_R(drawn.declared_pose[1])
+                    if was_guess:
+                        self._paint_shape(obj, key)
                 return
             for name, sample in poses.items():
-                key = f"shape:{name}"
-                obj = self._shape_objects.get(key)
-                fingerprint = self._shape_fingerprints.get(key)
-                if obj is None or fingerprint is None:
+                key, drawn = self._object_entry(name)
+                obj = self._shape_objects.get(key) if drawn is not None else None
+                if obj is None or drawn is None:
                     continue
-                pos, rot = _object_render_pose(fingerprint[0][0], sample.pose)
-                obj.move(*pos).rotate_R(rot)
-                ghost = not sample.physics
-                if self._object_ghosts.get(key) != ghost:
-                    self._repaint(obj, key, ghost=ghost)
-                self._object_ghosts[key] = ghost
+                placed = _object_render_pose(drawn.geometry[0], sample.pose)
+                # A parked object samples to the same pose every frame, and a
+                # move that changes nothing is still two websocket calls.
+                if placed != drawn.placed_pose:
+                    obj.move(*placed[0]).rotate_R(placed[1])
+                    drawn.placed_pose = placed
+                drawn.overridden = True
+                guess = not sample.physics
+                if drawn.guess != guess:
+                    drawn.guess = guess
+                    self._paint_shape(obj, key)
 
-    def _repaint(self, obj: Any, key: str, *, ghost: bool) -> None:
-        """Apply a shape's base colour at full or ghost opacity, honouring a
-        collision tint the same way render_shapes does."""
-        color = self._shape_fingerprints[key][2]
-        opacity = _base_opacity(key) * (0.5 if ghost else 1.0)
-        if obj in self._colliding_meshes:
+    def _object_entry(self, name: str) -> tuple[str, _Drawn | None]:
+        """A tracked object's render key and record. A world object may be
+        declared in either layer — a table carrying ``physics`` is an
+        installation shape — and a track names only the shape.
+        """
+        for key in (f"{SHAPE_PREFIX}{name}", f"{INSTALL_PREFIX}{name}"):
+            drawn = self._drawn.get(key)
+            if drawn is not None:
+                return key, drawn
+        return "", None
+
+    def _paint_shape(self, obj: Any, key: str, *, tinted: bool = True) -> None:
+        """Paint a drawn shape its declared colour, at half opacity while a
+        playback override draws it as a guess.
+
+        ``tinted`` respects a live collision highlight — the new base colour
+        is what the highlight restores to, not what is painted over the tint.
+        Callers that are themselves clearing the highlight pass False.
+        """
+        drawn = self._drawn[key]
+        color, opacity = drawn.color, drawn.opacity
+        if drawn.guess:
+            opacity *= 0.5
+        if tinted and obj in self._colliding_meshes:
             self._collision_saved[id(obj)] = (color, opacity)
         else:
             obj.material(color, opacity)
@@ -2125,16 +2163,8 @@ class UrdfScene(
 
         # Shapes keep their own base color, but must be repainted with the
         # arm/tool so a colliding one isn't re-snapshotted with red as its base.
-        program_hex = (
-            SceneColors.SHAPE_DRAFT_HEX if self._shapes_draft else SceneColors.SHAPE_HEX
-        )
-        for name, obj in self._shape_objects.items():
-            base = (
-                SceneColors.SHAPE_INSTALL_HEX
-                if name.startswith("install:")
-                else program_hex
-            )
-            obj.material(base, SHAPE_OPACITY)
+        for key, obj in self._shape_objects.items():
+            self._paint_shape(obj, key, tinted=False)
 
         logger.debug("Robot appearance mode set to %s", mode.value)
         # The repaint above clobbered any red collision tint; drop the

@@ -78,12 +78,28 @@ class TestCollisionVizScreen:
 
         screen_wait_for_scene_ready(class_screen)
         assert ui_state.urdf_scene is not None
-        want = ui_state.urdf_scene.config.ground_color.lstrip("#")
+        from waldo_commander.common.theme import SceneColors
+
+        want = SceneColors.SHAPE_INSTALL_HEX.lstrip("#")
 
         def _draw_floor() -> None:
+            from waldoctl import Box, Physical
+
             scene = ui_state.urdf_scene
             if scene is not None:
-                scene.render_shapes([], floor_z_m=0.0)
+                scene.render_shapes(
+                    [],
+                    installation=[
+                        Box(
+                            name="floor",
+                            x=6.0,
+                            y=6.0,
+                            z=0.2,
+                            pose=(0.0, 0.0, -0.1, 0, 0, 0),
+                            physics=Physical(),
+                        )
+                    ],
+                )
 
         run_in_app(_draw_floor)
         got = self._poll_color(class_screen, "install:floor", want)

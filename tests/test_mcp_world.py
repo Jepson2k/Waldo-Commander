@@ -40,7 +40,6 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
                 "schema",
                 "installation",
                 "program",
-                "floor_z_m",
                 "confirmed",
             } <= set(before)
             assert before["schema"] == "waldo-world/1"
@@ -54,6 +53,11 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
             assert scene.shapes == initial, (
                 "the page's lease holder is not overridden silently"
             )
+            # The saved library is the human's workspace too.
+            with pytest.raises(ToolError, match="take_control"):
+                await client.call_tool("world.library_save", {"name": "sneak"})
+            with pytest.raises(ToolError, match="take_control"):
+                await client.call_tool("world.library_delete", {"name": "sneak"})
             await client.call_tool("control.take_control")
             # Start from an empty program layer whatever an earlier test left.
             assert (
@@ -90,6 +94,13 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
                 "wall": 0.5,
                 "post": 0.4,
             }
+            # A rename onto a name already drawn would leave two shapes the
+            # collision report cannot tell apart.
+            with pytest.raises(ToolError, match="already exists"):
+                await client.call_tool(
+                    "world.update_shape",
+                    {"name": "wall", "shape": list(post.to_wire())},
+                )
             await client.call_tool("world.remove_shape", {"name": "post"})
             assert [s.name for s in scene.shapes] == ["wall"]
             with pytest.raises(ToolError, match="no program-layer shape"):
@@ -194,6 +205,13 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
                 _payload(await client.call_tool("world.export_installation_toml"))
             )
             assert [e["name"] for e in draft_toml["installation_shapes"]] == ["post_2"]
+            # A proposed name is taken: the proposal is drawn and locally
+            # enforced, so a program shape cannot reuse it.
+            with pytest.raises(ToolError, match="already exists"):
+                await client.call_tool(
+                    "world.add_shape",
+                    {"shape": list(Sphere(name="post_2", radius=0.05).to_wire())},
+                )
             with pytest.raises(ToolError, match="proposal refused"):
                 await client.call_tool(
                     "world.propose_installation", {"names": ["ghost"]}

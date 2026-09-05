@@ -353,6 +353,16 @@ class TestMotionRecorder:
         recorder.record_action("set_shapes", shapes=[box])
         assert mock_textarea.value.count("from waldoctl import Box") == 1
 
+        # A body's code says `physics=Physical(...)`, so it needs that import
+        # too — the class name alone leaves the program un-runnable.
+        from waldoctl import Physical
+
+        block = Box(name="block", x=0.04, y=0.04, z=0.06, physics=Physical(mass=0.05))
+        mock_textarea.value = ""
+        recorder.record_action("set_shapes", shapes=[block])
+        assert "from waldoctl import Box, Physical" in mock_textarea.value
+        assert "physics=Physical(" in mock_textarea.value
+
     def test_record_action_ignored_when_not_recording(self, mock_textarea):
         """record_action should be ignored when not recording."""
         recorder = MotionRecorder()

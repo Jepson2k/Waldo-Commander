@@ -458,6 +458,49 @@ class TestObjectTracks:
         )
         assert tl.sample_objects(3.0)["block"].pose[2] == pytest.approx(0.04)
 
+    def test_a_grasp_mid_program_animates_when_it_happens(self):
+        """Regression: tool-action tracks were filed after every segment's,
+        so the monotonicity nudge collapsed a grasp on segment 0 into a
+        zero-width cluster at the end of the program."""
+        approach = _seg(duration=2.0, joints=[0] * 6)
+        approach.object_tracks = [_track("block", [[0.3, 0.0, 0.04, *_Q_ID]])]
+        lift = _seg(duration=4.0, joints=[0] * 6)
+        lift.object_tracks = [
+            _track(
+                "block",
+                [[0.3, 0.0, 0.04, *_Q_ID], [0.3, 0.0, 0.44, *_Q_ID]],
+                carried=True,
+            )
+        ]
+        grasp = ToolAction(
+            tcp_pose=None,
+            motions=[],
+            target_positions=(1.0,),
+            activation_type="gripper",
+            line_number=1,
+            method="close",
+            estimated_duration=1.0,
+            segment_index=0,
+            object_tracks=[
+                _track(
+                    "block",
+                    [[0.3, 0.0, 0.04, *_Q_ID], [0.3, 0.0, 0.06, *_Q_ID]],
+                    carried=True,
+                )
+            ],
+        )
+        tl = Timeline.from_segments([approach, lift], [grasp])
+
+        # approach [0, 2], grasp [2, 3] (blocking, after the segment's
+        # motion), lift [3, 7].
+        assert tl.sample_objects(1.0)["block"].pose[2] == pytest.approx(0.04)
+        assert tl.sample_objects(2.5)["block"].pose[2] == pytest.approx(0.05), (
+            "the grasp must animate while it happens, not after the program"
+        )
+        assert tl.sample_objects(3.0)["block"].pose[2] == pytest.approx(0.06)
+        assert tl.sample_objects(5.0)["block"].pose[2] == pytest.approx(0.24)
+        assert tl.sample_objects(7.0)["block"].pose[2] == pytest.approx(0.44)
+
     def test_no_tracks_means_no_objects(self):
         tl = Timeline.from_segments([_seg(duration=1.0, joints=[0] * 6)])
         assert tl.sample_objects(0.5) == {}

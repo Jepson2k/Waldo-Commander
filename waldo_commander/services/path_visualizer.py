@@ -626,7 +626,7 @@ class PathVisualizer:
             # state — matching what execution-time guards would use.
             scene_handle = waldoctl.commander.scene
             shapes_wire = (
-                [s.to_wire() for s in scene_handle.shapes]
+                [s.to_wire() for s in scene_handle.enforced_locally]
                 if scene_handle is not None
                 else []
             )

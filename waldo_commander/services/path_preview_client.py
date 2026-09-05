@@ -77,14 +77,15 @@ def _object_tracks(
     if tracks is None:
         return None
     rows = []
+    sliced = start is not None or end is not None
     for t in tracks:
-        poses = np.asarray(t.poses, dtype=np.float64)
-        if poses.shape[0] > 1 and (start is not None or end is not None):
-            poses = poses[start:end]
+        poses = t.poses
+        if sliced and len(poses) > 1:
+            poses = np.asarray(poses, dtype=np.float64)[start:end]
         rows.append(
             {
                 "name": t.name,
-                "poses": poses.tolist(),
+                "poses": np.asarray(poses, dtype=np.float64).tolist(),
                 "carried": bool(t.carried),
                 "physics": bool(t.physics),
             }

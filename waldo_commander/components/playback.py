@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import logging
 import time
 
@@ -21,6 +22,7 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
+from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import (
     playback_coordination,
     robot_state,
@@ -588,102 +590,112 @@ class PlaybackController:
         tl = self._timeline
         if not tl:
             return
-        _apply_active = (
-            active if active is not None else waldoctl.commander.programs.active
-        )
-        if _apply_active is not None:
-            _apply_active.dry_run.playback.playback_time = t
-        sample = tl.sample(t)
-
-        # Sample tool position once (used for both teleport and URDF animation)
-        tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
-
-        if (
-            sample.joints
-            and ui_state.urdf_scene
-            and waldoctl.commander.status.simulator_active
-        ):
-            playback_coordination.sim_pose_override = True
-            ui_state.urdf_scene.set_axis_values(sample.joints)
-            waldoctl.commander.status.joints.angles.set_rad(np.asarray(sample.joints))
-            if ui_state.control_panel:
-                playback_coordination.last_teleport_ts = time.monotonic()
-                if self._teleport_task and not self._teleport_task.done():
-                    self._teleport_task.cancel()
-                self._teleport_task = asyncio.create_task(
-                    self._teleport(
-                        waldoctl.commander.status.joints.angles.deg.tolist(),
-                        list(tool_pos) if tool_pos else None,
-                    )
-                )
-
-        if tl.object_keyframes and ui_state.urdf_scene:
-            ui_state.urdf_scene.set_object_poses(tl.sample_objects(t))
-
-        if (
-            _apply_active is not None
-            and sample.segment_index != _apply_active.dry_run.playback.current_step
-        ):
-            _apply_active.dry_run.playback.current_step = sample.segment_index
-            self._highlight_current_segment()
-            # Prev/next enabled state derives from current_step, so refresh at
-            # its mutation point (fires only on segment changes, not per tick).
-            self.update_play_button()
-            # Sim playback animates the active tab's simulation. If a
-            # script is also running, prefer the launching tab so the
-            # highlight stays on it even when the user scrubs while the
-            # script is paused on a different tab.
-            target_tab = (
-                script_exec.launching_tab_id or waldoctl.commander.programs.active_id
+        # The arm's pose and the world's objects have to land in the
+        # browser together: two flushes let three.js draw a frame with a
+        # carried object still at the previous tick's pose.
+        scene = ui_state.urdf_scene
+        with batch_scene(scene.scene) if scene and scene.scene else nullcontext():
+            _apply_active = (
+                active if active is not None else waldoctl.commander.programs.active
             )
-            if target_tab is not None:
-                decorations.highlight_executing_line(sample.segment_index, target_tab)
-            if ui_state.urdf_scene:
-                ui_state.urdf_scene.update_playback_opacity()
+            if _apply_active is not None:
+                _apply_active.dry_run.playback.playback_time = t
+            sample = tl.sample(t)
 
-        # Swap tool mesh when crossing a select_tool boundary
-        if tl.tool_selection_keyframes and ui_state.urdf_scene:
-            sel = tl.sample_tool_selection(t)
-            if sel is not None:
-                sel_pair = (sel.tool_key, sel.variant_key)
-                if sel_pair != self._last_tool_selection:
-                    self._last_tool_selection = sel_pair
-                    ui_state.urdf_scene.apply_tool_everywhere(
-                        sel.tool_key, variant_key=sel.variant_key or None
-                    )
-                    # Sync to controller so readout reflects tool TCP
-                    if ui_state.control_panel and ui_state.control_panel.client:
-                        asyncio.create_task(
-                            ui_state.control_panel.client.select_tool(
-                                sel.tool_key,
-                                variant_key=sel.variant_key or "",
-                            )
+            # Sample tool position once (used for both teleport and URDF animation)
+            tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
+
+            if (
+                sample.joints
+                and ui_state.urdf_scene
+                and waldoctl.commander.status.simulator_active
+            ):
+                playback_coordination.sim_pose_override = True
+                ui_state.urdf_scene.set_axis_values(sample.joints)
+                waldoctl.commander.status.joints.angles.set_rad(
+                    np.asarray(sample.joints)
+                )
+                if ui_state.control_panel:
+                    playback_coordination.last_teleport_ts = time.monotonic()
+                    if self._teleport_task and not self._teleport_task.done():
+                        self._teleport_task.cancel()
+                    self._teleport_task = asyncio.create_task(
+                        self._teleport(
+                            waldoctl.commander.status.joints.angles.deg.tolist(),
+                            list(tool_pos) if tool_pos else None,
                         )
+                    )
 
-        # Drive tool animation from timeline keyframes
-        if (
-            tool_pos
-            and ui_state.urdf_scene
-            and tool_pos != robot_state.tool_status.positions
-        ):
-            robot_state.tool_status.positions = tool_pos
-            robot_state.tool_status.engaged = any(p > 0 for p in tool_pos)
-            ui_state.urdf_scene.update_tool_animation()
+            if tl.object_keyframes and ui_state.urdf_scene:
+                ui_state.urdf_scene.set_object_poses(tl.sample_objects(t))
 
-        if update_slider and self._scrub_slider is not None:
-            now = time.monotonic()
-            # Throttle slider updates to ~10Hz to reduce WebSocket churn
-            if (now - self._last_slider_update) >= 0.09:
-                self._last_slider_update = now
-                self._updating_slider = True
-                self._scrub_slider.value = t
-                self._updating_slider = False
+            if (
+                _apply_active is not None
+                and sample.segment_index != _apply_active.dry_run.playback.current_step
+            ):
+                _apply_active.dry_run.playback.current_step = sample.segment_index
+                self._highlight_current_segment()
+                # Prev/next enabled state derives from current_step, so refresh at
+                # its mutation point (fires only on segment changes, not per tick).
+                self.update_play_button()
+                # Sim playback animates the active tab's simulation. If a
+                # script is also running, prefer the launching tab so the
+                # highlight stays on it even when the user scrubs while the
+                # script is paused on a different tab.
+                target_tab = (
+                    script_exec.launching_tab_id
+                    or waldoctl.commander.programs.active_id
+                )
+                if target_tab is not None:
+                    decorations.highlight_executing_line(
+                        sample.segment_index, target_tab
+                    )
+                if ui_state.urdf_scene:
+                    ui_state.urdf_scene.update_playback_opacity()
+
+            # Swap tool mesh when crossing a select_tool boundary
+            if tl.tool_selection_keyframes and ui_state.urdf_scene:
+                sel = tl.sample_tool_selection(t)
+                if sel is not None:
+                    sel_pair = (sel.tool_key, sel.variant_key)
+                    if sel_pair != self._last_tool_selection:
+                        self._last_tool_selection = sel_pair
+                        ui_state.urdf_scene.apply_tool_everywhere(
+                            sel.tool_key, variant_key=sel.variant_key or None
+                        )
+                        # Sync to controller so readout reflects tool TCP
+                        if ui_state.control_panel and ui_state.control_panel.client:
+                            asyncio.create_task(
+                                ui_state.control_panel.client.select_tool(
+                                    sel.tool_key,
+                                    variant_key=sel.variant_key or "",
+                                )
+                            )
+
+            # Drive tool animation from timeline keyframes
+            if (
+                tool_pos
+                and ui_state.urdf_scene
+                and tool_pos != robot_state.tool_status.positions
+            ):
+                robot_state.tool_status.positions = tool_pos
+                robot_state.tool_status.engaged = any(p > 0 for p in tool_pos)
+                ui_state.urdf_scene.update_tool_animation()
+
+            if update_slider and self._scrub_slider is not None:
+                now = time.monotonic()
+                # Throttle slider updates to ~10Hz to reduce WebSocket churn
+                if (now - self._last_slider_update) >= 0.09:
+                    self._last_slider_update = now
+                    self._updating_slider = True
+                    self._scrub_slider.value = t
+                    self._updating_slider = False
+                    text = self._format_time(t, tl.total_duration)
+                    self._scrub_slider.props(f'label-value="{text}"')
+            elif not update_slider and self._scrub_slider is not None:
+                # Scrub: slider already has the right value, just update the label
                 text = self._format_time(t, tl.total_duration)
                 self._scrub_slider.props(f'label-value="{text}"')
-        elif not update_slider and self._scrub_slider is not None:
-            # Scrub: slider already has the right value, just update the label
-            text = self._format_time(t, tl.total_duration)
-            self._scrub_slider.props(f'label-value="{text}"')
 
     @staticmethod
     async def _teleport(joints_deg: list[float], tool_pos: list[float] | None) -> None:
@@ -716,7 +728,8 @@ class PlaybackController:
         """Build or return cached timeline from current path segments."""
         active = waldoctl.commander.programs.active
         if active is None or not active.dry_run.path_segments:
-            self._timeline = None
+            if self._timeline is not None:
+                self.invalidate_timeline()
             return None
         if self._timeline is None:
             self._timeline = Timeline.from_segments(

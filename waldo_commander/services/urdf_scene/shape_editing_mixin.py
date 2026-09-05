@@ -13,12 +13,16 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Iterator
 from dataclasses import fields
 from typing import Any
 
 import waldoctl
 from nicegui import ui
+
+from waldo_commander.services.urdf_scene.config import DRAFT_PREFIX
 from waldoctl.shapes import (
+    SHAPE_PREFIX,
     Box,
     Capsule,
     Cone,
@@ -77,21 +81,60 @@ class ShapeEditingMixin:
                 return s
         return None
 
-    def _shape_hit_name(self, hits) -> str | None:
-        """The clicked program-layer shape's name, if any."""
+    @staticmethod
+    def _hit_names(hits, prefix: str) -> Iterator[str]:
+        """Names of the clicked objects drawn under *prefix*, nearest first."""
         for h in hits:
             obj = getattr(h, "object_name", "") or ""
-            if obj.startswith("shape:"):
-                return obj.split("shape:", 1)[1]
-        return None
+            if obj.startswith(prefix):
+                yield obj[len(prefix) :]
+
+    def _shape_hit_name(self, hits) -> str | None:
+        """The clicked program-layer shape's name, if any.
+
+        A ``plane`` is skipped: it is an unbounded half-space drawn as a
+        finite window, so a click on it is a click on the space it fills,
+        not on the shape. Its own menu items are appended to the
+        empty-space menu instead (:meth:`_populate_plane_menu`).
+        """
+        return next(
+            (n for n in self._hit_names(hits, SHAPE_PREFIX) if not self._is_plane(n)),
+            None,
+        )
+
+    def _plane_hit_names(self, hits) -> list[str]:
+        """Clicked program-layer planes, nearest first, without repeats."""
+        return list(
+            dict.fromkeys(
+                n for n in self._hit_names(hits, SHAPE_PREFIX) if self._is_plane(n)
+            )
+        )
+
+    def _is_plane(self, name: str) -> bool:
+        shape = self._program_shape(name)
+        return shape is not None and shape.kind == "plane"
+
+    def _populate_plane_menu(self, hits) -> None:
+        """Edit/delete entries for the planes under the cursor, appended to
+        the empty-space menu so a ground plane does not hide it."""
+        for name in self._plane_hit_names(hits):
+            shape = self._program_shape(name)
+            if shape is None:
+                continue
+            ui.separator()
+            ui.item(f"Plane '{name}'").classes("font-bold text-sm")
+            ui.menu_item(
+                "Edit Keep-out...",
+                on_click=lambda s=shape: self._show_shape_dialog(shape=s),
+            )
+            ui.menu_item(
+                "Delete Keep-out",
+                on_click=lambda n=name: self._delete_shape(n),
+            )
 
     def _draft_hit_name(self, hits) -> str | None:
         """The clicked proposed-installation shape's name, if any."""
-        for h in hits:
-            obj = getattr(h, "object_name", "") or ""
-            if obj.startswith("draft:"):
-                return obj.split("draft:", 1)[1]
-        return None
+        return next(self._hit_names(hits, DRAFT_PREFIX), None)
 
     def _fresh_shape_name(self, kind: str) -> str:
         handle = self._shape_handle()
@@ -179,6 +222,9 @@ class ShapeEditingMixin:
         handle = self._shape_handle()
         if handle is None:
             return
+        # The proposal deletes shape:<name> and redraws it as draft:<name>;
+        # live transform controls on the old object would outlive it.
+        self._end_shape_move()
         try:
             handle.propose_installation([name])
         except ValueError as err:
@@ -442,7 +488,7 @@ class ShapeEditingMixin:
     # ------------------------------------------------------------------
 
     def _start_shape_move(self, name: str) -> None:
-        obj = self._shape_objects.get(f"shape:{name}")
+        obj = self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
         if obj is None:
             return
         if self._shape_move_active and self._shape_move_active != name:
@@ -455,7 +501,7 @@ class ShapeEditingMixin:
         self._shape_move_active = None
         if name is None:
             return
-        obj = self._shape_objects.get(f"shape:{name}")
+        obj = self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
         if obj is not None:
             try:
                 obj.disable_transform_controls()

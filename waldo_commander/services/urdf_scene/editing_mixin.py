@@ -407,6 +407,7 @@ class EditingMixin(ShapeEditingMixin):
                 self._populate_shape_add_menu(
                     self._last_click_coords or (0.3, 0.0, 0.0)
                 )
+                self._populate_plane_menu(hits)
                 self._populate_installation_menu()
 
     def _is_envelope_hit(self, object_name: str) -> bool:

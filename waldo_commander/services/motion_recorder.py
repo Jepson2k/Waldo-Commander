@@ -507,9 +507,10 @@ class MotionRecorder:
                 else ""
             )
             imported = _imported_waldoctl_names(text)
-            missing = sorted(
-                {type(s).__name__ for s in shapes if type(s).__name__ not in imported}
-            )
+            names = {type(s).__name__ for s in shapes}
+            if any(s.physics is not None for s in shapes):
+                names.add("Physical")  # _shape_to_code emits it by repr
+            missing = sorted(names - imported)
             if missing:
                 snippet = f"from waldoctl import {', '.join(missing)}\n{snippet}"
             return snippet

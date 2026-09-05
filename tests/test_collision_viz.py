@@ -110,15 +110,15 @@ async def test_shapes_render_and_can_be_highlighted(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_installation_floor_draws_the_ground_and_is_highlightable(
-    user: User,
-) -> None:
-    """The backend's floor height is drawn as the ground under the name its
-    collision reports use, replacing the placeholder disc; a plane keep-out
-    renders at the same extent."""
+async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
+    """The floor a robot stands on is a static installation fixture, not a
+    special case: it draws through the installation layer, tints like any
+    keep-out when the arm reaches it, survives an appearance repaint, and
+    displaces the placeholder disc simply by existing."""
     import waldoctl
-    from waldoctl import Plane
+    from waldoctl import Box, Physical, Plane
     from waldo_commander.common.theme import SceneColors
+    from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
     from waldo_commander.services.urdf_scene.urdf_scene import WORLD_EXTENT_M
     from waldo_commander.state import ui_state
 
@@ -128,18 +128,26 @@ async def test_installation_floor_draws_the_ground_and_is_highlightable(
     assert scene is not None
     assert scene._ground_disc is not None and scene._ground_disc.visible_
 
+    # What the shipped robot config declares: a wide static box whose top
+    # face is the plane the robot stands on.
+    floor_shape = Box(
+        name="floor",
+        x=6.0,
+        y=6.0,
+        z=0.2,
+        pose=(0.0, 0.0, -0.1, 0, 0, 0),
+        physics=Physical(),
+    )
     scene.render_shapes(
-        [Plane(name="ground", nx=0, ny=0, nz=1, offset=0.3)], floor_z_m=0.05
+        [Plane(name="ground", nx=0, ny=0, nz=1, offset=0.3)],
+        installation=[floor_shape],
     )
     floor = scene._shape_objects["install:floor"]
-    assert floor.args[:2] == [WORLD_EXTENT_M, WORLD_EXTENT_M]
-    assert floor.z == pytest.approx(0.05, abs=0.002), (
-        "the floor's top face sits at the height"
-    )
-    assert floor.color == scene.config.ground_color
+    assert floor.color == SceneColors.SHAPE_INSTALL_HEX
     assert not scene._ground_disc.visible_, (
-        "the placeholder disc yields to the real floor"
+        "a described installation displaces the placeholder disc"
     )
+    # A plane keep-out is an unbounded half-space drawn as a finite window.
     assert scene._shape_objects["shape:ground"].args[:2] == [
         WORLD_EXTENT_M,
         WORLD_EXTENT_M,
@@ -155,9 +163,13 @@ async def test_installation_floor_draws_the_ground_and_is_highlightable(
     coll.active = False
     coll.pairs = []
     scene.update_from_robot_state()
-    assert floor.color == scene.config.ground_color
+    assert floor.color == SceneColors.SHAPE_INSTALL_HEX
 
-    # A backend without a floor gets the disc back and no floor object.
+    scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+    assert floor.color == SceneColors.SHAPE_INSTALL_HEX
+    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+
+    # A backend describing no installation gets the placeholder back.
     scene.render_shapes([])
     assert "install:floor" not in scene._shape_objects
     assert scene._ground_disc.visible_
@@ -213,6 +225,24 @@ async def test_playback_moves_world_objects_and_restores_their_declared_pose(
     assert (block.x, block.y, block.z) == (0.3, 0.0, 0.04)
     assert block.opacity == pytest.approx(SHAPE_OPACITY)
     assert can.z == 0.05
+
+    # A re-render that moves an object to a new declared pose ends the
+    # override, so the ghost look must end with it rather than stranding
+    # the object at half opacity nothing will restore.
+    scene.set_object_poses(
+        {"block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False)}
+    )
+    assert block.opacity == pytest.approx(SHAPE_OPACITY * 0.5)
+    scene.render_shapes(
+        [
+            Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.2, 0.0, 0.04, 0, 0, 0)),
+            Cylinder(
+                name="can", radius=0.03, length=0.1, pose=(0.4, 0.0, 0.05, 0, 0, 0)
+            ),
+        ]
+    )
+    assert (block.x, block.z) == (0.2, 0.04)
+    assert block.opacity == pytest.approx(SHAPE_OPACITY)
 
 
 @pytest.mark.integration
@@ -294,6 +324,10 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
     handle.propose_installation(["wall"])
     assert handle.shapes == [] and handle.installation_draft == (wall,)
     assert "shape:wall" not in scene._shape_objects
+
+    def ghost_color(sc):
+        return sc._shape_objects["draft:wall"].color
+
     proposal = scene._shape_objects["draft:wall"]
     assert proposal.color == SceneColors.SHAPE_PROPOSED_HEX
     assert proposal.opacity == pytest.approx(SHAPE_OPACITY)
@@ -310,6 +344,24 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
     saved = (tmp_path / "installation_shapes.toml").read_text()
     assert "[[installation_shapes]]" in saved and 'name = "wall"' in saved
 
+    # A proposal is enforced by this process even though no backend enforces
+    # it yet — that is what makes it possible to design against.
+    encasing = Box(name="cage", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
+    handle.shapes = [*handle.shapes, encasing]
+    handle.propose_installation(["cage"])
+    q = waldoctl.commander.status.joints.angles.rad
+    assert ui_state.active_robot.in_collision(q), (
+        "the proposal must reach this process's collision world"
+    )
+    handle.discard_installation_draft(["cage"])
+    assert not ui_state.active_robot.in_collision(q)
+
+    # An appearance-mode repaint must not turn the proposal into a keep-out.
+    scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+    assert ghost_color(scene) == SceneColors.SHAPE_PROPOSED_HEX
+    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+    assert ghost_color(scene) == SceneColors.SHAPE_PROPOSED_HEX
+
     # The backend's next boot enforces it: readback adopts the proposal. A
     # refresh is skipped while the proposal's own push awaits its ack, so
     # wait for that readback to land first.
@@ -319,8 +371,14 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
         await asyncio.sleep(0.05)
     assert handle.confirmed, "the program-layer push never confirmed"
 
+    # The config is authored by hand from the exported TOML, so what comes
+    # back is the same shape by name, not field for field.
+    enforced_wall = Box(
+        name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0), margin=0.01
+    )
+
     async def _enforced() -> ShapeWorld:
-        return ShapeWorld(installation=(wall,), program=())
+        return ShapeWorld(installation=(enforced_wall,), program=())
 
     monkeypatch.setattr(waldoctl.commander.client, "shapes", _enforced)
     await handle.refresh_from_backend()
@@ -336,6 +394,50 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
     assert handle.installation_draft == () and [s.name for s in handle.shapes] == [
         "post"
     ]
+
+    # The monkeypatched readback put `wall` into this process's installation
+    # checker; the real backend's readback has to take it back out, or a
+    # phantom keep-out sits in the middle of every later test's workspace.
+    monkeypatch.undo()
+    handle.shapes = []
+    for _ in range(200):
+        if handle.confirmed:
+            break
+        await asyncio.sleep(0.05)
+    assert handle.confirmed and handle.installation == ()
+
+
+@pytest.mark.integration
+async def test_a_plane_does_not_swallow_the_empty_space_menu(user: User) -> None:
+    """A plane is an unbounded half-space drawn as a finite window, so a
+    right-click on it is a click on the space it fills: the add menu still
+    appears, and the plane's own items are appended to it."""
+    from types import SimpleNamespace
+
+    import waldoctl
+    from waldoctl import Box, Plane
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    handle = waldoctl.commander.scene
+    assert scene is not None and handle is not None
+
+    handle.shapes = [
+        Plane(name="ground", nx=0, ny=0, nz=1, offset=0.0),
+        Box(name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0)),
+    ]
+
+    def hit(name):
+        return SimpleNamespace(object_name=f"shape:{name}")
+
+    assert scene._shape_hit_name([hit("ground")]) is None, (
+        "a plane must not capture the context menu"
+    )
+    assert scene._plane_hit_names([hit("ground")]) == ["ground"]
+    # A real shape behind the plane still wins the menu.
+    assert scene._shape_hit_name([hit("ground"), hit("wall")]) == "wall"
     handle.shapes = []
 
 
