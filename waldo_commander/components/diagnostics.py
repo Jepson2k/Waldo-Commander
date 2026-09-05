@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import Any, Callable
 
 import waldoctl
 from nicegui import background_tasks, ui
 
+from waldo_commander.constants import CHART_PUSH_INTERVAL_S
 from waldo_commander.state import robot_state, ui_state
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,7 @@ class DiagnosticsPage:
         self._chart: ui.echart | None = None
         self._target_hz = 0.0
         self._constants_asked = False
+        self._chart_pushed_at = 0.0
 
     # ---- build ----
 
@@ -164,7 +167,6 @@ class DiagnosticsPage:
                 ui.echart(
                     {
                         "animation": False,
-                        "renderer": "svg",
                         "grid": {
                             "top": 24,
                             "right": 8,
@@ -195,7 +197,10 @@ class DiagnosticsPage:
                             },
                         },
                         "series": series,
-                    }
+                    },
+                    # The legend's colour is a CSS variable, which only a DOM
+                    # element resolves — a canvas fillStyle ignores it.
+                    renderer="svg",
                 )
                 .classes("w-full")
                 .style("height: 140px;")
@@ -234,9 +239,9 @@ class DiagnosticsPage:
         if stats is None:
             self._constants_asked = False
             return
-        self._target_hz = float(getattr(stats, "target_hz", 0.0))
-        fifo = bool(getattr(stats, "rt_fifo", False))
-        pinned = bool(getattr(stats, "rt_pinned", False))
+        self._target_hz = stats.target_hz
+        fifo = stats.rt_fifo
+        pinned = stats.rt_pinned
         if self._rt_fifo is not None:
             self._rt_fifo.text = "real-time" if fifo else "not real-time"
             self._rt_fifo.props(f"color={'green-7' if fifo else 'grey-7'}")
@@ -294,9 +299,13 @@ class DiagnosticsPage:
     def update_chart(self) -> None:
         if self._chart is None:
             return
+        now = time.monotonic()
+        if now - self._chart_pushed_at < CHART_PUSH_INTERVAL_S:
+            return
         result = robot_state.torque_time_series.get_series_if_dirty()
         if result is None:
             return
+        self._chart_pushed_at = now
         timestamps, measured, external = result
         ts_ms = [t * 1000.0 for t in timestamps]
         series: list[dict[str, Any]] = []

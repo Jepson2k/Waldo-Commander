@@ -11,7 +11,7 @@ from waldoctl import (
     RobotClient,
 )
 
-from waldo_commander.constants import config
+from waldo_commander.constants import CHART_PUSH_INTERVAL_S, config
 from waldo_commander.services.camera_service import camera_service
 from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.motion_recorder import motion_recorder
@@ -128,6 +128,7 @@ class GripperPage:
         self._current_max: float = 0.0
         # Defer markLine-only changes to the next update_chart tick to avoid competing update() calls.
         self._mark_lines_dirty: bool = False
+        self._chart_pushed_at: float = 0.0
 
         _tile = "bg-neutral-800 p-2 rounded"
         with ui.column().classes("w-full gap-2"):
@@ -188,7 +189,6 @@ class GripperPage:
                     "animation": True,
                     "animationDuration": 50,
                     "animationEasing": "linear",
-                    "renderer": "svg",
                     "grid": {
                         "top": 24,
                         "right": 48,
@@ -236,7 +236,10 @@ class GripperPage:
                             "data": [],
                         },
                     ],
-                }
+                },
+                # The legend's colour is a CSS variable, which only a DOM
+                # element resolves — a canvas fillStyle ignores it.
+                renderer="svg",
             )
             .classes("w-full")
             .style("height: 100px;")
@@ -261,9 +264,13 @@ class GripperPage:
     def update_chart(self) -> None:
         if not self._ensure_chart_built():
             return
+        now = time.monotonic()
+        if now - self._chart_pushed_at < CHART_PUSH_INTERVAL_S:
+            return
         result = robot_state.tool_time_series.get_series_if_dirty()
         if result is None and not self._mark_lines_dirty:
             return
+        self._chart_pushed_at = now
         self._mark_lines_dirty = False
 
         target_pos_pct = round(

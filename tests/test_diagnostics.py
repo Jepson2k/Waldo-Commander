@@ -14,7 +14,7 @@ import pytest
 import waldoctl
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import poll_until, wait_for_app_ready
 from waldo_commander.state import ui_state
 
 
@@ -22,14 +22,10 @@ def _text(user: User, marker: str) -> str:
     return next(iter(user.find(marker=marker).elements)).text
 
 
-async def _settle(user: User, marker: str, predicate, timeout_s: float = 8.0) -> str:
-    text = ""
-    for _ in range(int(timeout_s / 0.1)):
-        text = _text(user, marker)
-        if predicate(text):
-            return text
-        await asyncio.sleep(0.1)
-    raise AssertionError(f"{marker} never satisfied the check; last text {text!r}")
+async def _settle(user: User, marker: str, predicate) -> str:
+    return await poll_until(
+        lambda: _text(user, marker), predicate, timeout_s=8.0, what=marker
+    )
 
 
 @pytest.mark.integration
@@ -65,8 +61,6 @@ async def test_loop_health_comes_off_the_broadcast(user: User) -> None:
     await _settle(user, "diag-link-state", lambda t: t == "BusOff")
     assert _text(user, "diag-link-restarts") == "3"
     assert _text(user, "diag-link-tx-errors") == "12"
-
-    await user.should_see(marker="diag-torque-chart")
 
 
 @pytest.mark.integration

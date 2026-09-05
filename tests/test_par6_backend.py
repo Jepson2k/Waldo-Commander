@@ -31,7 +31,7 @@ import pytest
 from nicegui.testing import User
 from waldoctl.discovery import available_backends
 
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import poll_until, wait_for_app_ready
 
 
 def _par6d_binary() -> str | None:
@@ -157,40 +157,38 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         def _text(marker: str) -> str:
             return next(iter(user.find(marker=marker).elements)).text
 
-        temps: list[str] = []
-        for _ in range(100):
-            temps = [_text(f"diag-drive-temp-{j}") for j in range(1, 7)]
-            if all(t != "—" for t in temps):
-                break
-            await asyncio.sleep(0.1)
-        assert all(float(t) > 0 for t in temps), (
-            f"drive temperatures never arrived on STATUS: {temps}; "
-            f"note: {_text('diag-drives-note')!r}"
+        temps = await poll_until(
+            lambda: [_text(f"diag-drive-temp-{j}") for j in range(1, 7)],
+            lambda t: all(v != "—" for v in t),
+            timeout_s=10.0,
+            what=lambda: (
+                f"drive temperatures on STATUS (note: {_text('diag-drives-note')!r})"
+            ),
         )
+        assert all(float(t) > 0 for t in temps), f"drive temperatures read {temps}"
         assert status.drive_health.bus_voltage_v is not None
         assert _text("diag-drive-supply").endswith(" V")
         # The tool drive answers a temperature but no current, and an
         # unanswered register must read as unknown rather than as zero.
         assert _text("diag-drive-current-7") == "—"
 
-        for _ in range(100):
-            if "budget" in _text("diag-loop-p99"):
-                break
-            await asyncio.sleep(0.1)
-        assert status.loop_health.measured
-        assert "budget" in _text("diag-loop-p99"), (
-            f"loop tail never shown: {_text('diag-loop-p99')!r}"
+        await poll_until(
+            lambda: _text("diag-loop-p99"),
+            lambda t: "budget" in t,
+            timeout_s=10.0,
+            what="the loop tail",
         )
+        assert status.loop_health.measured
         assert _text("diag-loop-rate").endswith("Hz target")
         # The chart's own feed. The page consumes the dirty flag on every
         # status tick, so ask the buffer how many samples it holds rather
         # than racing it for a dirty read.
-        for _ in range(100):
-            if len(robot_state.torque_time_series):
-                break
-            await asyncio.sleep(0.05)
-        assert len(robot_state.torque_time_series), (
-            "no joint torques ever reached the chart"
+        await poll_until(
+            lambda: len(robot_state.torque_time_series),
+            bool,
+            timeout_s=5.0,
+            interval=0.05,
+            what="joint torques reaching the chart",
         )
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.

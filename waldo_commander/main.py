@@ -1804,17 +1804,6 @@ def _home_output_tick() -> None:
         )
 
 
-def _same_readings(a: list[float], b: list[float]) -> bool:
-    """List equality that counts NaN as equal to NaN.
-
-    A drive that has not answered a register reads as NaN every tick, and
-    plain ``!=`` would call that a change and re-fire every binding at the
-    status rate."""
-    if len(a) != len(b):
-        return False
-    return all(x == y or (x != x and y != y) for x, y in zip(a, b))
-
-
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
     # Shadows of the last-applied jog-enable wire arrays, kept local so each
@@ -1943,13 +1932,6 @@ async def _status_consumer() -> None:
                     ):
                         joints.torques_ext = [float(v) for v in torques_ext]
                         torques_ext_shadow = torques_ext.copy()
-                    if torques is not None:
-                        robot_state.torque_time_series.push(
-                            [float(v) for v in torques],
-                            [float(v) for v in torques_ext]
-                            if torques_ext is not None
-                            else [],
-                        )
 
                     # Controller state chip: mode name is the backend enum's
                     # name (vendor-neutral for display). Skipped, never
@@ -1989,9 +1971,12 @@ async def _status_consumer() -> None:
                         dh = st.drive_health
                         temps = [float(v) for v in drives.get("temperatures_c", ())]
                         currents = [float(v) for v in drives.get("currents_ma", ())]
-                        if not _same_readings(dh.temperatures_c, temps):
+                        # equal_nan: a drive that has not answered a register
+                        # reads NaN every tick, and NaN != NaN would call that
+                        # a change and re-fire every binding at the status rate.
+                        if not np.array_equal(dh.temperatures_c, temps, equal_nan=True):
                             dh.temperatures_c = temps
-                        if not _same_readings(dh.currents_ma, currents):
+                        if not np.array_equal(dh.currents_ma, currents, equal_nan=True):
                             dh.currents_ma = currents
                         volts = drives.get("bus_voltage_v")
                         volts = None if volts is None else float(volts)
@@ -2074,6 +2059,14 @@ async def _status_consumer() -> None:
                     _automation_tick(pc)
 
                     if pc is not None:
+                        # The chart this series feeds only exists on a
+                        # connected page. The lists are the ones already
+                        # published above, so a sample costs no allocation.
+                        if torques is not None:
+                            robot_state.torque_time_series.push(
+                                joints.torques,
+                                joints.torques_ext if torques_ext is not None else [],
+                            )
                         with pc:
                             update_ui_from_status()
 
