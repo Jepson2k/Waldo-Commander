@@ -94,10 +94,14 @@ async def test_drive_faults_appear_without_analog_readings(user: User) -> None:
     assert health.bus_voltage_v is None
 
     await user.should_see(marker="diag-section-drives")
-    assert _text(user, "diag-drive-temp-1") == "—", "an absent sensor is not 0 °C"
-    assert _text(user, "diag-drive-current-1") == "—"
+    # Fault bits and no analog registers: a fault column and nothing else,
+    # rather than °C and mA columns of dashes implying broken sensors.
+    await user.should_see(marker="diag-drives-head-fault")
+    await user.should_not_see(marker="diag-drives-head-temp")
+    await user.should_not_see(marker="diag-drives-head-current")
+    await user.should_not_see(marker="diag-drive-temp-1")
+    await user.should_not_see(marker="diag-drive-supply")
     assert _text(user, "diag-drive-fault-1") == "—", "a healthy drive lists no faults"
-    assert _text(user, "diag-drive-supply") == "—"
 
 
 @pytest.mark.integration

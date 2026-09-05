@@ -61,6 +61,9 @@ def _num(value: float, digits: int = 0) -> str:
     return "—" if value != value else f"{value:.{digits}f}"
 
 
+_DRIVE_KINDS = ("temp", "current", "fault")
+
+
 class DiagnosticsPage:
     """The diagnostics tab's content."""
 
@@ -74,6 +77,11 @@ class DiagnosticsPage:
         self._rt_fifo: ui.chip | None = None
         self._rt_pinned: ui.chip | None = None
         self._drive_rows: list[tuple[ui.element, list[ui.label]]] = []
+        self._drive_heads: dict[str, ui.label] = {}
+        self._drive_cols: set[str] = set()
+        self._row_shown: list[bool] = []
+        self._drives_grid: ui.grid | None = None
+        self._supply_box: ui.element | None = None
         self._chart: ui.echart | None = None
         self._events_html: ui.html | None = None
         self._events_version = -1
@@ -112,6 +120,9 @@ class DiagnosticsPage:
         self._sections.clear()
         self._shown.clear()
         self._drive_rows.clear()
+        self._drive_heads.clear()
+        self._drive_cols.clear()
+        self._row_shown = []
         self._chart = None
         self._events_html = None
         self._events_version = -1
@@ -182,20 +193,27 @@ class DiagnosticsPage:
         Columns exist only where the backend has that sensor: a bus that
         reports faults and no analog registers gets a fault column and no
         others, rather than two columns of dashes implying broken sensors.
+        Like a section, a column stays once shown.
         """
         with self._section("drives", "Drives"):
-            with (
-                ui.grid(columns=4).classes("w-full gap-x-3 gap-y-0").mark("diag-drives")
-            ):
-                for head, marker in (
-                    ("Drive", "drive"),
+            self._drives_grid = (
+                ui.grid(columns=1).classes("w-full gap-x-3 gap-y-0").mark("diag-drives")
+            )
+            with self._drives_grid:
+                ui.label("Drive").classes("text-xs text-[var(--ctk-muted)]").mark(
+                    "diag-drives-head-drive"
+                )
+                for head, kind in (
                     ("°C", "temp"),
                     ("mA", "current"),
                     ("Faults", "fault"),
                 ):
-                    ui.label(head).classes("text-xs text-[var(--ctk-muted)]").mark(
-                        f"diag-drives-head-{marker}"
+                    self._drive_heads[kind] = (
+                        ui.label(head)
+                        .classes("text-xs text-[var(--ctk-muted)]")
+                        .mark(f"diag-drives-head-{kind}")
                     )
+                    self._drive_heads[kind].set_visibility(False)
                 names = [f"J{j + 1}" for j in range(self._joint_count)] + ["Tool"]
                 for j, name in enumerate(names):
                     label = ui.label(name).classes("text-xs font-mono")
@@ -203,18 +221,37 @@ class DiagnosticsPage:
                         ui.label("—")
                         .classes("text-xs font-mono")
                         .mark(f"diag-drive-{kind}-{j + 1}")
-                        for kind in ("temp", "current", "fault")
+                        for kind in _DRIVE_KINDS
                     ]
-                    cells[2].classes("text-amber-400")
+                    for cell in cells:
+                        cell.set_visibility(False)
                     self._drive_rows.append((label, cells))
-            self._row("Supply", "diag-drive-supply")
+            self._row_shown = [True] * len(self._drive_rows)
+            with ui.column().classes("w-full gap-0") as self._supply_box:
+                self._row("Supply", "diag-drive-supply")
+            self._supply_box.set_visibility(False)
         self._show_row(self._joint_count, False)
 
     def _show_row(self, index: int, visible: bool) -> None:
         label, cells = self._drive_rows[index]
+        self._row_shown[index] = visible
         label.set_visibility(visible)
-        for cell in cells:
-            cell.set_visibility(visible)
+        for kind, cell in zip(_DRIVE_KINDS, cells, strict=True):
+            cell.set_visibility(visible and kind in self._drive_cols)
+
+    def _show_column(self, kind: str) -> None:
+        if kind in self._drive_cols:
+            return
+        self._drive_cols.add(kind)
+        self._drive_heads[kind].set_visibility(True)
+        col = _DRIVE_KINDS.index(kind)
+        for index, (_, cells) in enumerate(self._drive_rows):
+            cells[col].set_visibility(self._row_shown[index])
+        if self._drives_grid is not None:
+            n = 1 + len(self._drive_cols)
+            self._drives_grid.style(
+                f"grid-template-columns: repeat({n}, minmax(0, 1fr))"
+            )
 
     def _build_torque_section(self) -> None:
         n = self._joint_count
@@ -402,18 +439,34 @@ class DiagnosticsPage:
         currents = health.currents_ma
         faults = health.faults
         reported = max(len(temps), len(currents), len(faults))
-        if not reported:
-            return
-        self._show_row(self._joint_count, reported > self._joint_count)
-        for j, (_, cells) in enumerate(self._drive_rows):
-            temp = temps[j] if j < len(temps) else math.nan
-            current = currents[j] if j < len(currents) else math.nan
-            labels = faults[j] if j < len(faults) else ()
-            cells[0].text = _num(temp)
-            cells[1].text = _num(current)
-            cells[2].text = ", ".join(labels) if labels else "—"
+        if reported:
+            if temps:
+                self._show_column("temp")
+            if currents:
+                self._show_column("current")
+            if faults:
+                self._show_column("fault")
+            self._show_row(self._joint_count, reported > self._joint_count)
+            for j, (_, cells) in enumerate(self._drive_rows):
+                temp = temps[j] if j < len(temps) else math.nan
+                current = currents[j] if j < len(currents) else math.nan
+                labels = faults[j] if j < len(faults) else ()
+                cells[0].text = _num(temp)
+                cells[1].text = _num(current)
+                fault_text = ", ".join(labels) if labels else "—"
+                if cells[2].text != fault_text:
+                    cells[2].text = fault_text
+                    if labels:
+                        cells[2].classes(add="text-amber-400")
+                    else:
+                        cells[2].classes(remove="text-amber-400")
         volts = health.bus_voltage_v
-        self._set("diag-drive-supply", "—" if volts is None else f"{volts:.1f} V")
+        if volts is not None:
+            if self._supply_box is not None and not self._supply_box.visible:
+                self._supply_box.set_visibility(True)
+            self._set("diag-drive-supply", f"{volts:.1f} V")
+        elif self._supply_box is not None and self._supply_box.visible:
+            self._set("diag-drive-supply", "—")
 
     def _update_homing(self) -> None:
         homing = waldoctl.commander.status.homing

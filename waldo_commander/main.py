@@ -213,13 +213,18 @@ def _update_warning_notification() -> None:
     if msg == ps.warning_banner_text:
         return
     if ps.warning_notification is not None:
-        ps.warning_notification.dismiss()
-        # dismiss() only tells the client; the server element normally
-        # deletes itself on the client's dismiss event, which never comes
-        # without a real browser.
-        if not ps.warning_notification.is_deleted:
-            ps.warning_notification.delete()
+        stale = ps.warning_notification
+        stale.dismiss()
         ps.warning_notification = None
+        # The client's dismiss event is what deletes the element. The outbox
+        # sends deletions ahead of method calls, so deleting here would drop
+        # the dismiss and leave the toast standing; the fallback delete for a
+        # client that never answers (the user fixture) waits for the flush.
+        ui.timer(
+            0.1,
+            lambda: None if stale.is_deleted else stale.delete(),
+            once=True,
+        )
     if msg:
         ps.warning_notification = ui.notification(
             message=msg,
