@@ -213,19 +213,30 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     tool_select = user.find(marker="select-tool")
     select_el = next(iter(tool_select.elements))
 
+    async def offset_x_disabled() -> bool:
+        """The tool select rebuilds the offset inputs only after the
+        controller confirms the change, so read them once it has."""
+        await asyncio.sleep(0)
+        return "disable" in next(iter(user.find(marker="tcp-offset-x").elements)).props
+
+    async def wait_for_offset_x(disabled: bool) -> bool:
+        for _ in range(50):
+            if await offset_x_disabled() == disabled:
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
     # PNEUMATIC — offset inputs should appear with X/Y/Z fields
     select_el.set_value("PNEUMATIC")
-    await asyncio.sleep(0.1)
+    await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
     await user.should_see("TCP Offset")
-    fitted = next(iter(user.find(marker="tcp-offset-x").elements))
-    assert "disable" not in fitted.props, "a fitted tool's offset is editable"
+    assert await wait_for_offset_x(disabled=False), "a fitted tool's offset is editable"
 
     # NONE — offset inputs should still be visible, and refuse edits: there
     # is no tool to offset from.
     select_el.set_value("NONE")
-    await asyncio.sleep(0.1)
-    bare = next(iter(user.find(marker="tcp-offset-x").elements))
-    assert "disable" in bare.props, (
+    await wait_for_tool_key("NONE", timeout_s=5.0)
+    assert await wait_for_offset_x(disabled=True), (
         "with no tool fitted the offset must not be editable"
     )
 

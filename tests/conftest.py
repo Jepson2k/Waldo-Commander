@@ -911,7 +911,10 @@ async def controller_reset(
     Note: class_screen tests share browser state across all tests in the class,
     so we only reset/home once when the class_screen fixture is set up.
     """
-    from parol6 import AsyncRobotClient
+    # The real client, by its defining module: a program preview swaps a
+    # local preview client in over ``parol6.AsyncRobotClient`` for the
+    # simulated script, and a reset sent to that never reaches the controller.
+    from parol6.client.async_client import AsyncRobotClient
 
     # Skip reset for class_screen tests - they share state across tests in a class
     # The controller is reset once when the class_screen fixture sets up

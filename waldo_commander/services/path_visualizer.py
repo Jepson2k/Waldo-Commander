@@ -220,10 +220,14 @@ def _run_simulation_isolated(
 
     # Lets us read final state after execution.
     created_clients: list[PathPreviewClient] = []
+    # (module, attribute, original) for every backend client name swapped for
+    # a preview class below, so the thread fallback can put them back.
+    swapped_names: list[tuple[Any, str, Any]] = []
 
     try:
-        # Monkeypatch RobotClient/AsyncRobotClient with preview clients; safe
-        # because this runs in a subprocess.
+        # Swap RobotClient/AsyncRobotClient for preview clients while the
+        # script runs. A pool worker is thrown away afterwards; the thread
+        # fallback is the app's own process, so the swap is undone below.
         backend = importlib.import_module(backend_package)
         assert dry_run_client_cls is not None
 
@@ -259,11 +263,15 @@ def _run_simulation_isolated(
                 )
                 created_clients.append(self._sync_client)
 
-        setattr(backend, "RobotClient", LocalPathPreviewClient)
-        setattr(backend, "AsyncRobotClient", LocalAsyncPathPreviewClient)
-        if hasattr(backend, "client"):
-            setattr(backend.client, "RobotClient", LocalPathPreviewClient)
-            setattr(backend.client, "AsyncRobotClient", LocalAsyncPathPreviewClient)
+        for module in (backend, getattr(backend, "client", None)):
+            if module is None:
+                continue
+            for name, preview_cls in (
+                ("RobotClient", LocalPathPreviewClient),
+                ("AsyncRobotClient", LocalAsyncPathPreviewClient),
+            ):
+                swapped_names.append((module, name, getattr(module, name, None)))
+                setattr(module, name, preview_cls)
 
         # Reset this worker's program-layer world to the submit-time truth
         # BEFORE the script runs: a reused pool worker's process-global checker
@@ -406,6 +414,15 @@ def _run_simulation_isolated(
 
     except Exception as e:
         error_message = f"Simulation setup failed: {type(e).__name__}: {e}"
+
+    # A pool worker is discarded with these swaps in place; the thread fallback
+    # shares the app's process, where a client built from the backend's name
+    # after this point has to be the real one again.
+    for module, name, original in reversed(swapped_names):
+        if original is None:
+            delattr(module, name)
+        else:
+            setattr(module, name, original)
 
     # Flush pending blend buffers, covering scripts without context managers.
     for c in created_clients:
