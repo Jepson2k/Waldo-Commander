@@ -17,7 +17,7 @@ import pytest
 import waldoctl
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_app_ready, wait_until
+from tests.helpers.wait import poll_until, wait_for_app_ready, wait_until
 from waldo_commander.state import robot_events, ui_state
 
 
@@ -25,12 +25,10 @@ def _text(user: User, marker: str) -> str:
     return next(iter(user.find(marker=marker).elements)).text
 
 
-async def _settle(user: User, marker: str, predicate, timeout_s: float = 8.0) -> str:
-    if not await wait_until(lambda: predicate(_text(user, marker)), timeout_s):
-        raise AssertionError(
-            f"{marker} never satisfied the check; last text {_text(user, marker)!r}"
-        )
-    return _text(user, marker)
+async def _settle(user: User, marker: str, predicate) -> str:
+    return await poll_until(
+        lambda: _text(user, marker), predicate, timeout_s=8.0, what=marker
+    )
 
 
 async def _open_diagnostics(user: User) -> None:

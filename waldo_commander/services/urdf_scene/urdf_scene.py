@@ -2005,16 +2005,16 @@ class UrdfScene(
                     self.joint_groups[joint.name] = joint_trafo
 
                     if joint.joint_type == "prismatic":
-                        self.joint_trafos[joint.name] = (
-                            lambda q, axis=joint.axis: transl_joint(axis, q)
+                        self.joint_trafos[joint.name] = lambda q, axis=joint.axis: (
+                            transl_joint(axis, q)
                         )
                         self.joint_pos_limits[joint.name] = {
                             "min": joint.limit.lower,
                             "max": joint.limit.upper,
                         }
                     elif joint.joint_type in ("revolute", "continuous"):
-                        self.joint_trafos[joint.name] = (
-                            lambda q, axis=joint.axis: rot_joint(axis, q)
+                        self.joint_trafos[joint.name] = lambda q, axis=joint.axis: (
+                            rot_joint(axis, q)
                         )
                         if joint.joint_type == "continuous":
                             self.joint_pos_limits[joint.name] = {

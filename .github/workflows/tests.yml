@@ -62,7 +62,12 @@ jobs:
           # than this package does, and pip cannot reconcile two direct
           # URLs in one resolve. Its remaining deps are named explicitly
           # (waldoctl/numpy/pinokin/pyserial/scipy/ruckig are above).
-          PAROL6_REF="v0.6.1"
+          # Derived from pyproject, never repeated: this install is
+          # --no-deps and runs after ".[dev]", so a stale literal here
+          # would silently downgrade parol6 in every job without a
+          # branch match.
+          PAROL6_REF="$(sed -n 's#.*PAROL6-python-API\.git@\([^"]*\)".*#\1#p' pyproject.toml | head -1)"
+          : "${PAROL6_REF:?no parol6 pin found in pyproject.toml}"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               PAROL6_REF="$BRANCH"
@@ -136,7 +141,12 @@ jobs:
           # than this package does, and pip cannot reconcile two direct
           # URLs in one resolve. Its remaining deps are named explicitly
           # (waldoctl/numpy/pinokin/pyserial/scipy/ruckig are above).
-          PAROL6_REF="v0.6.1"
+          # Derived from pyproject, never repeated: this install is
+          # --no-deps and runs after ".[dev]", so a stale literal here
+          # would silently downgrade parol6 in every job without a
+          # branch match.
+          PAROL6_REF="$(sed -n 's#.*PAROL6-python-API\.git@\([^"]*\)".*#\1#p' pyproject.toml | head -1)"
+          : "${PAROL6_REF:?no parol6 pin found in pyproject.toml}"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               PAROL6_REF="$BRANCH"
@@ -266,7 +276,12 @@ jobs:
           fi
           # parol6 rides along --no-deps (direct-URL branch-drift hazard,
           # same as the jobs above); this job's backend under test is par6.
-          PAROL6_REF="v0.6.1"
+          # Derived from pyproject, never repeated: this install is
+          # --no-deps and runs after ".[dev]", so a stale literal here
+          # would silently downgrade parol6 in every job without a
+          # branch match.
+          PAROL6_REF="$(sed -n 's#.*PAROL6-python-API\.git@\([^"]*\)".*#\1#p' pyproject.toml | head -1)"
+          : "${PAROL6_REF:?no parol6 pin found in pyproject.toml}"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               PAROL6_REF="$BRANCH"
