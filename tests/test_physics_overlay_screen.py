@@ -18,20 +18,23 @@ import numpy as np
 import pytest
 import waldoctl
 
-from tests.helpers.browser_helpers import dismiss_dialogs, run_in_app
+from tests.helpers.browser_helpers import click_tab, dismiss_dialogs, run_in_app
 
 # Walks the three.js scene for the overlay group and reports what is in
 # it: the achieved polyline (vertex-coloured, so the divergence gradient
 # is real geometry and not a uniform), the contact arrows and the COM.
 _OVERLAY_JS = """
-const scene = window.scene3d || (window.sceneInstances
-  && Object.values(window.sceneInstances)[0]
-  && Object.values(window.sceneInstances)[0].scene);
+// The scene lives on its Vue component; NiceGUI addresses those by the
+// element id its canvas carries.
+const canvas = document.querySelector('canvas');
+const host = canvas && canvas.closest('[id^="c"]');
+const comp = host && getElement(host.id.slice(1));
+const scene = comp && comp.scene;
 if (!scene) return null;
 let group = null;
 scene.traverse((o) => { if (o.name === 'simulation:physics') group = o; });
 if (!group) return {found: false};
-let lines = 0, meshes = 0, vertexColored = 0, points = 0;
+let lines = 0, meshes = 0, shown = 0, vertexColored = 0, points = 0;
 group.traverse((o) => {
   if (o === group) return;
   if (o.isLine || o.isLineSegments) {
@@ -41,10 +44,11 @@ group.traverse((o) => {
       points = Math.max(points, o.geometry.getAttribute('position').count);
     }
   } else if (o.isMesh) {
-    meshes += o.visible ? 1 : 0;
+    meshes += 1;
+    if (o.visible) shown += 1;
   }
 });
-return {found: true, lines, meshes, vertexColored, points};
+return {found: true, lines, meshes, shown, vertexColored, points};
 """
 
 
@@ -94,6 +98,11 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
     screen.open("/")
     screen.selenium.set_window_size(1280, 900)
     dismiss_dialogs(screen)
+    # The scrub bar and its playback controls live on the program tab,
+    # and seeking is what drives the per-frame annotations.
+    click_tab(screen, "program")
+
+    ticks = _record()
 
     def _populate():
         view = waldoctl.commander.settings.view
@@ -103,17 +112,22 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
         view.com_visible = True
         program = waldoctl.commander.programs.active
         assert program is not None
-        program.dry_run.ticks = _record()
-        from waldo_commander.components.playback import playback
-        from waldo_commander.state import simulation_state, ui_state
+        # A physics pass always follows a planner pass, so a record on
+        # screen always has planned segments beside it.
+        from waldo_commander.state import PathSegment, simulation_state
 
+        program.dry_run.path_segments = [
+            PathSegment(
+                points=[[float(r[0]), float(r[1]), float(r[2])] for r in ticks.tcp],
+                color="#2196f3",
+                is_valid=True,
+                line_number=1,
+                estimated_duration=ticks.duration_s,
+            )
+        ]
+        program.dry_run.total_steps = 1
+        program.dry_run.ticks = ticks
         simulation_state.notify_changed()
-        scene = ui_state.urdf_scene
-        assert scene is not None
-        # The frame annotations ride the playback batch, so put playback
-        # somewhere inside the contact window.
-        playback._apply_time(program.dry_run.ticks.duration_s * 0.5)
-        return scene
 
     run_in_app(_populate)
 
@@ -125,6 +139,25 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
             break
         time.sleep(0.25)
 
+    def _seek():
+        from waldo_commander.components.playback import playback
+
+        # The frame annotations ride the playback batch, so put playback
+        # inside the contact window through the real seek path.
+        playback.invalidate_timeline()
+        playback.update_scrub_segments()
+        assert playback._ensure_timeline() is not None, "no timeline to seek in"
+        playback._apply_time(ticks.duration_s * 0.5)
+
+    run_in_app(_seek)
+
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        info = screen.selenium.execute_script(_OVERLAY_JS)
+        if info and info.get("shown", 0) >= 2:
+            break
+        time.sleep(0.25)
+
     assert info is not None, "no three.js scene on the page"
     assert info.get("found"), "the physics overlay group never reached the scene"
     assert info["vertexColored"] >= 1, (
@@ -132,7 +165,9 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
         f"shows no divergence at all: {info}"
     )
     assert info["points"] >= 40, f"the path is missing rows: {info}"
-    assert info["meshes"] >= 2, (
-        f"expected contact arrows and the centre-of-mass marker: {info}"
+    assert info["meshes"] >= 2, f"the per-frame pool was never created: {info}"
+    assert info["shown"] >= 2, (
+        f"expected contact arrows and the centre-of-mass marker to be "
+        f"shown at a frame that has contacts: {info}"
     )
-    screen.shot("physics-overlay")
+    screen.shot("physics-overlay", failed=False)

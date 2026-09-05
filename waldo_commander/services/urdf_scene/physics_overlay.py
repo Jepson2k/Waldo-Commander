@@ -108,6 +108,14 @@ class PhysicsOverlay:
         self._build(ticks, show_divergence)
 
     def _build(self, ticks: TickIndex, show_divergence: bool) -> None:
+        """Build the group, the path, and the per-frame pool.
+
+        The pool is made here rather than on first use because a scene
+        object can only be constructed inside its scene's context, and
+        per-frame code runs from the playback batch, which is not one.
+        Making them once and only ever moving them afterwards is also
+        what keeps a frame cheap.
+        """
         scene = self._live_scene()
         if scene is None:
             return
@@ -117,17 +125,29 @@ class PhysicsOverlay:
                 with ui.scene.group().with_name("simulation:physics") as grp:
                     self._group = grp
                     if show_divergence:
-                        with grp:
-                            # One polyline over the whole run: where the
-                            # TCP actually went, coloured by how far that
-                            # is from the command that produced it.
-                            line = ui.scene.polyline(
-                                [[float(v) for v in row[:3]] for row in ticks.tcp],
-                                colors=divergence_colors(ticks.tracking_error_rad()),
-                            )
-                            # color=None tells three.js to use the
-                            # per-vertex colours.
-                            line.material(None, 0.95)
+                        # One polyline over the whole run: where the TCP
+                        # actually went, coloured by how far that is from
+                        # the command that produced it.
+                        line = ui.scene.polyline(
+                            [[float(v) for v in row[:3]] for row in ticks.tcp],
+                            colors=divergence_colors(ticks.tracking_error_rad()),
+                        )
+                        # color=None tells three.js to use the per-vertex
+                        # colours.
+                        line.material(None, 0.95)
+                    self._com = ui.scene.sphere(0.012).material("#ffd166", 0.9)
+                    self._com.visible(False)
+                    self._contacts = [
+                        ui.scene.cylinder(
+                            top_radius=0.0,
+                            bottom_radius=_ARROW_BASE_M * 0.35,
+                            height=_ARROW_BASE_M,
+                            radial_segments=12,
+                        ).material("#ff5d5d", 0.9)
+                        for _ in range(MAX_CONTACT_ARROWS)
+                    ]
+                    for arrow in self._contacts:
+                        arrow.visible(False)
         except Exception:
             logger.exception("Physics overlay build failed")
             self.clear()
@@ -162,21 +182,25 @@ class PhysicsOverlay:
         """
         if ticks is None or self._group is None or ticks.rows == 0:
             return
+        if not (show_contacts or show_com):
+            # Nothing asked for: hide the pool rather than leave the last
+            # frame's arrows floating in the scene.
+            if self._com is not None:
+                self._com.visible(False)
+            for arrow in self._contacts:
+                arrow.visible(False)
+            return
         row = max(0, min(row, ticks.rows - 1))
         self._update_com(ticks, row, show_com)
         self._update_contacts(ticks, row, show_contacts)
 
     def _update_com(self, ticks: TickIndex, row: int, show: bool) -> None:
         com = ticks.channels.get("com")
-        if com is None or len(com) <= row:
-            return
         if self._com is None:
-            if not show:
-                return
-            with self._group:
-                self._com = ui.scene.sphere(0.012).material("#ffd166", 0.9)
-        self._com.visible(show)
-        if show:
+            return
+        have = com is not None and len(com) > row
+        self._com.visible(show and have)
+        if show and have:
             x, y, z = (float(v) for v in com[row])
             self._com.move(x, y, z)
 
@@ -187,17 +211,7 @@ class PhysicsOverlay:
         if starts is None or pos is None or force is None or len(starts) <= row + 1:
             return
         lo, hi = int(starts[row]), int(starts[row + 1])
-        count = min(hi - lo, MAX_CONTACT_ARROWS) if show else 0
-        while len(self._contacts) < count:
-            with self._group:
-                self._contacts.append(
-                    ui.scene.cylinder(
-                        top_radius=0.0,
-                        bottom_radius=_ARROW_BASE_M * 0.35,
-                        height=_ARROW_BASE_M,
-                        radial_segments=12,
-                    ).material("#ff5d5d", 0.9)
-                )
+        count = min(hi - lo, len(self._contacts)) if show else 0
         for i, arrow in enumerate(self._contacts):
             if i >= count:
                 arrow.visible(False)

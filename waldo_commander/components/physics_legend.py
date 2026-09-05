@@ -23,7 +23,7 @@ from waldo_commander.services.urdf_scene.physics_overlay import (
 )
 from waldo_commander.state import simulation_state
 
-_TRACKING_MDEG = round(math.degrees(FULL_DIVERGENCE_RAD) * 1000.0)
+_TRACKING_DEG = math.degrees(FULL_DIVERGENCE_RAD)
 _ARROW_CM_PER_N = FORCE_SCALE_M_PER_N * 100.0
 
 
@@ -38,7 +38,10 @@ class PhysicsLegend:
         """Draw the legend into the current container."""
         with (
             ui.column()
-            .classes("absolute bottom-4 right-4 z-30 glass rounded-lg px-3 py-2 gap-1")
+            # Bottom-left, clear of the icon rail: the right half of the
+            # scene belongs to the control panel, and a key painted
+            # underneath it is worse than no key at all.
+            .classes("absolute bottom-4 left-24 z-30 glass rounded-lg px-3 py-2 gap-1")
             .style("pointer-events: none;") as root
         ):
             self._root = root
@@ -46,7 +49,7 @@ class PhysicsLegend:
                 (
                     self._swatch_row(
                         "Achieved path",
-                        f"green on target, red at {_TRACKING_MDEG}m° error",
+                        f"green on target, red at {_TRACKING_DEG:.1f}° of error",
                         ("#59d973", "#f25940"),
                     ),
                     "divergence_visible",
