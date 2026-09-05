@@ -95,6 +95,10 @@ class SimulationEngine:
         Its worker is ours alone, so killing it costs a respawn and
         disturbs nothing else — which is what lets a superseding edit
         stop seconds of CPU immediately instead of waiting it out.
+
+        Touches no application state: this also runs at page teardown,
+        after the host has torn the commander down. The pass itself
+        clears the pending flag as it unwinds.
         """
         if self._physics_timer is not None:
             self._physics_timer.cancel(with_current_invocation=True)
@@ -121,6 +125,7 @@ class SimulationEngine:
                 tab = waldoctl.commander.programs.get(tab_id)
                 if tab is None or not tab.dry_run.path_segments:
                     return
+                playback.update_play_button()
                 await path_visualizer.update_physics_simulation(
                     tab.source, tab_id=tab_id
                 )
@@ -131,6 +136,11 @@ class SimulationEngine:
             finally:
                 if self._physics_timer is my_timer:
                     self._physics_timer = None
+                # Whatever happened, the controls stop waiting on it.
+                tab = waldoctl.commander.programs.get(tab_id)
+                if tab is not None:
+                    tab.dry_run.ticks_pending = False
+                playback.update_play_button()
 
         my_timer = ui.timer(self._physics_delay, run_physics_quietly, once=True)
         self._physics_timer = my_timer

@@ -872,7 +872,9 @@ class PathVisualizer:
                 # A new plan retires the physics that refined the old
                 # one: playback locks again until the next pass lands.
                 target_tab.dry_run.ticks = None
-                target_tab.dry_run.ticks_progress = 0.0
+                target_tab.dry_run.ticks_pending = (
+                    ui_state.active_robot.has_physics_simulation
+                )
                 target_tab.dry_run.path_segments = new_segments
                 target_tab.dry_run.targets = new_targets
                 target_tab.dry_run.tool_actions = new_tool_actions
@@ -924,15 +926,17 @@ class PathVisualizer:
         )
         if args is None:
             return None
-        tab.dry_run.ticks_progress = 0.0
+        tab.dry_run.ticks_pending = True
         try:
             result = await self._physics.run(_run_simulation_packed, args)
         except asyncio.CancelledError:
             return None
         except Exception as e:
+            tab.dry_run.ticks_pending = False
             logger.warning("Physics simulation failed: %s", e)
             return str(e)
 
+        tab.dry_run.ticks_pending = False
         ticks = (result or {}).get("ticks")
         if ticks is None:
             return (result or {}).get("error")
@@ -941,10 +945,8 @@ class PathVisualizer:
         # scene keeps what it has. This is the flash guard.
         previous = tab.dry_run.ticks
         if previous is not None and ticks.digest and previous.digest == ticks.digest:
-            tab.dry_run.ticks_progress = 1.0
             return None
         tab.dry_run.ticks = ticks
-        tab.dry_run.ticks_progress = 1.0
         logger.info(
             "Physics simulation complete: %d rows over %.2f s (%s)",
             ticks.rows,
@@ -955,7 +957,13 @@ class PathVisualizer:
         return None
 
     def cancel_physics(self) -> None:
-        """Abandon a physics pass in flight — a superseding edit landed."""
+        """Abandon a physics pass in flight — a superseding edit landed.
+
+        Kills the worker and nothing else. This also runs at page
+        teardown, after the host has torn the commander down, so it must
+        not reach for any application state; the pending flag is cleared
+        by whoever set it.
+        """
         self._physics.cancel()
 
 

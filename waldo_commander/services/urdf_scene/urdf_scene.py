@@ -42,6 +42,7 @@ from waldo_commander.common.theme import (
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
 from waldo_commander.services.programs import active_cursor_line
 from waldo_commander.services.timeline import ObjectSample
+from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
 from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import simulation_state, robot_state, ui_state
 
@@ -328,6 +329,8 @@ class UrdfScene(
         self.simulation_group: Any | None = None
         self.path_group: Any | None = None
         self.targets_group: Any | None = None
+        # What a simulated run measured, over the planned picture.
+        self.physics_overlay = PhysicsOverlay(self)
         self._rendered_segments: list[RenderedSegment | None] = []  # indexed by segment
         self._line_to_segments: dict[
             int, list[int]
@@ -752,6 +755,7 @@ class UrdfScene(
                 self.path_group.visible(False)
             if self.targets_group is not None:
                 self.targets_group.visible(False)
+            self.physics_overlay.clear()
             return
 
         if self.path_group is not None:
@@ -760,6 +764,14 @@ class UrdfScene(
             self.targets_group.visible(True)
 
         active = waldoctl.commander.programs.active
+        view = waldoctl.commander.settings.view
+        # The achieved path, where a run measured one. Its own group, so
+        # a rebuild never disturbs the planned-path diff below, and keyed
+        # on the record's digest so an identical run is left alone.
+        self.physics_overlay.render(
+            active.dry_run.ticks if active is not None else None,
+            show_divergence=view.divergence_visible,
+        )
         if active is not None:
             all_segments = active.dry_run.path_segments
             tool_actions = active.dry_run.tool_actions

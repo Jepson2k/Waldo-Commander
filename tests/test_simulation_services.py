@@ -1889,3 +1889,111 @@ class TestObjectTrackPlumbing:
             assert len(tracks["block"]["poses"]) == len(seg["joint_trajectory"])
             assert len(tracks["stand"]["poses"]) == 1
         assert segments[0]["object_tracks"][0]["carried"] is True
+
+
+class TestSimulatedRunPlumbing:
+    """The second pass: a physics record reaching the display.
+
+    parol6 has no plant, so the whole path is gated off for it — that
+    gating is half of what these check. The other half drives the record
+    through the pieces that read it, with a record shaped exactly as a
+    backend produces one.
+    """
+
+    @staticmethod
+    def _ticks(rows: int = 6, joints: int = 6) -> waldoctl.TickIndex:
+        """A record the way a backend reports one: the arm lags its
+        command, and the lag grows along the run."""
+        t = np.linspace(0.0, 1.0, rows, dtype=np.float32)
+        commanded = np.tile(t[:, None], (1, joints))
+        achieved = commanded - np.tile(t[:, None], (1, joints)) * 0.01
+        tcp = np.zeros((rows, 6), dtype=np.float32)
+        tcp[:, 0] = 0.3 + t * 0.1
+        return waldoctl.TickIndex(
+            row_dt_s=0.02,
+            joints_rad=achieved.astype(np.float32),
+            commanded_rad=commanded.astype(np.float32),
+            tcp=tcp,
+            tool_closed=np.zeros(rows, dtype=np.float32),
+            tool_gripping=np.zeros(rows, dtype=np.bool_),
+            blocks=(
+                waldoctl.TickBlock(command=0, start_row=0, rows=rows, line_number=3),
+            ),
+            digest=b"same-run",
+        )
+
+    def test_a_record_reports_its_own_geometry_and_divergence(self):
+        ticks = self._ticks(rows=6)
+
+        assert ticks.rows == 6
+        assert ticks.duration_s == pytest.approx(0.12)
+        # Time maps to a row, and rows past the end clamp rather than
+        # raising: a scrub bar dragged to the far right must land
+        # somewhere real.
+        assert ticks.row_at(0.0) == 0
+        assert ticks.row_at(0.05) == 2
+        assert ticks.row_at(99.0) == 5
+        assert ticks.block_at(3) is ticks.blocks[0]
+        assert ticks.block_at(99) is None
+
+        err = ticks.tracking_error_rad()
+        assert err.shape == (6,)
+        assert err[0] == pytest.approx(0.0)
+        assert err[-1] > err[1], "the divergence must grow along the run"
+
+    def test_divergence_colors_run_from_on_track_to_diverged(self):
+        from waldo_commander.services.urdf_scene.physics_overlay import (
+            FULL_DIVERGENCE_RAD,
+            divergence_colors,
+        )
+
+        colors = divergence_colors(
+            np.array([0.0, FULL_DIVERGENCE_RAD / 2, FULL_DIVERGENCE_RAD * 3])
+        )
+        assert len(colors) == 3
+        on_track, half, diverged = colors
+        # Green where the arm is doing what it was told, red where it is
+        # not, and saturating past the scale rather than running off it.
+        assert on_track[1] > on_track[0], "on-track reads green"
+        assert diverged[0] > diverged[1], "diverged reads red"
+        assert on_track[1] > half[1] > diverged[1]
+        assert diverged == divergence_colors(np.array([FULL_DIVERGENCE_RAD]))[0]
+
+    def test_a_backend_without_physics_never_runs_the_second_pass(self):
+        """parol6 plans and does not simulate, so nothing here engages."""
+        robot = get_robot("parol6")
+        assert not robot.has_physics_simulation
+
+        old_robot = ui_state.robot
+        ui_state.robot = robot
+        try:
+            visualizer = PathVisualizer()
+            result = asyncio.run(
+                visualizer.update_physics_simulation("print('hi')", tab_id="nope")
+            )
+        finally:
+            ui_state.robot = old_robot
+        assert result is None
+
+    def test_an_unchanged_record_is_not_redrawn(self):
+        """The flash guard: an identical run repaints nothing.
+
+        The backend guarantees a bit-identical record for the same
+        program, so an equal digest means an equal picture — and the
+        overlay must take that as permission to leave the scene alone.
+        """
+        from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
+
+        overlay = PhysicsOverlay(MagicMock(scene=None))
+        # No live scene: the build is a no-op and nothing is cached, so a
+        # later call with a real scene still builds.
+        overlay.render(self._ticks(), show_divergence=True)
+        assert not overlay.is_built
+
+        overlay._digest = b"same-run"
+        overlay._group = object()
+        overlay.render(self._ticks(), show_divergence=True)
+        assert overlay.is_built, "an identical digest must not tear the group down"
+
+        overlay.render(None, show_divergence=True)
+        assert not overlay.is_built, "no record, no overlay"

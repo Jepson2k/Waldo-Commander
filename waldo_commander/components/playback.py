@@ -629,6 +629,19 @@ class PlaybackController:
             if tl.object_keyframes and ui_state.urdf_scene:
                 ui_state.urdf_scene.set_object_poses(tl.sample_objects(t))
 
+            # Physics annotations for this instant, inside the same batch
+            # so contacts and the arm land in one frame.
+            if ui_state.urdf_scene is not None and _apply_active is not None:
+                ticks = _apply_active.dry_run.ticks
+                if ticks is not None:
+                    view = waldoctl.commander.settings.view
+                    ui_state.urdf_scene.physics_overlay.update_frame(
+                        ticks,
+                        ticks.row_at(t),
+                        show_contacts=view.contacts_visible,
+                        show_com=view.com_visible,
+                    )
+
             if (
                 _apply_active is not None
                 and sample.segment_index != _apply_active.dry_run.playback.current_step
@@ -859,6 +872,7 @@ class PlaybackController:
         """Update play/pause button icon and stop/step button visibility."""
         script_running = is_any_program_running()
         active = waldoctl.commander.programs.active
+        self.sync_physics_pending()
         play_prog = self._play_program()
         play_is_playing = (
             play_prog.dry_run.playback.is_playing if play_prog is not None else False
@@ -898,6 +912,23 @@ class PlaybackController:
         if self.step_program_btn:
             can_step = not play_is_playing if script_running else active is not None
             self.step_program_btn.set_enabled(not recording and can_step)
+
+    def sync_physics_pending(self) -> None:
+        """Lock playback while a physics pass is still building the record.
+
+        Scrubbing into a run that does not exist yet would seek to rows
+        that have not been computed, so the controls wait and the scrub
+        bar says why. On a backend that cannot simulate this is never
+        pending and nothing here does anything.
+        """
+        active = waldoctl.commander.programs.active
+        pending = active is not None and active.dry_run.ticks_pending
+        if self._sim_loading_progress is not None:
+            self._sim_loading_progress.visible = pending
+        if self._scrub_slider is not None:
+            self._scrub_slider.set_enabled(not pending)
+        if self.play_btn is not None:
+            self.play_btn.set_enabled(not pending)
 
     # ---- Scrub bar segments ----
 
