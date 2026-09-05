@@ -78,3 +78,31 @@ move of an AI session always asks for a one-time confirmation, even in Autopilot
 At any time the amber **Take control** button (top-right, shown while an AI
 holds control) seizes control back for you and halts any motion the AI started.
 `motion.halt` and status reads are never gated.
+
+## World tools
+
+The `world.*` tools edit the same collision world the 3D scene shows and the
+backend enforces. Every mutation reassigns the scene's program layer, so the
+backend push, the amber "not yet confirmed" styling, program recording and the
+local collision checker all apply exactly as they do to a human's edit.
+Mutations need the control lease (changing the enforced world is not
+actuation, so no hardware consent is asked); reads never do. Shapes travel as
+their 7-item wire rows — `[kind, params, pose, collision, margin, name,
+physics]` in metres and radians — or as dicts with the same fields.
+
+| Tool | Does |
+|------|------|
+| `world.get` / `world.export` | the world document: installation layer, program layer, floor height, whether the program layer is confirmed by readback, and the installation proposal |
+| `world.set_shapes`, `world.add_shape`, `world.update_shape`, `world.remove_shape` | edit the program layer (the installation layer is the robot config's and read-only here) |
+| `world.import_world` | apply a world document's program layer; reports whether its installation entries match the live one |
+| `world.library_list` / `library_save` / `library_load` / `library_delete` | the object library — world documents saved beside the programs |
+| `world.place_object` | drop a one-shape library entry into the layer under a new name and pose, physics intact |
+| `world.propose_installation` / `world.discard_installation_draft` | move program shapes into the installation proposal, or drop them from it |
+| `world.export_installation_toml` | the proposal (or the program layer) as the robot config's `[[installation_shapes]]` TOML |
+
+Installation authoring is config authoring: a proposed shape is drawn in
+violet and checked locally, but the backend enforces it only once its robot
+config declares it. Export the TOML, put it in the config, and the proposal
+clears itself when readback shows the backend enforcing it. A backend without
+contact simulation refuses a shape carrying `physics`, and the refusal reaches
+the LLM as the tool error.
