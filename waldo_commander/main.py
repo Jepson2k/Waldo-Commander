@@ -686,6 +686,19 @@ def _plugin_panel_static_size(p) -> str:
     )
 
 
+def _add_resize_handles(slot: PanelSlot) -> None:
+    """The drag targets a resizable panel needs, for the edges it can grow on.
+
+    A top panel is anchored under the tab bar and grows down and right; a
+    bottom one is anchored at the bottom and grows up and right. Without
+    these divs the panel still carries the `resizable-panel` class and a
+    PanelResize entry, so it advertises drag-resize and cannot be dragged.
+    """
+    vertical = "top" if slot is PanelSlot.LEFT_BOTTOM_TAB else "bottom"
+    for edge in (vertical, "right", "corner"):
+        ui.element("div").classes(f"resize-handle-{edge}")
+
+
 def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
     """Add a built ``ui.tab_panel`` for each discovered plugin panel in *slot*.
 
@@ -711,6 +724,8 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
                     p.build(commander)
                 except Exception as e:
                     logger.warning("Plugin panel %s build failed: %s", p.id, e)
+                if "resizable-panel" in classes:
+                    _add_resize_handles(slot)
 
 
 def _build_left_panels(panels_wrap: ui.element) -> dict:
@@ -761,9 +776,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             "overlay-card program-panel resizable-panel p-0"
         ):
             editor_panel.build(close_callback=close_top_panels)
-            ui.element("div").classes("resize-handle-right")
-            ui.element("div").classes("resize-handle-bottom")
-            ui.element("div").classes("resize-handle-corner")
+            _add_resize_handles(PanelSlot.LEFT_TOP_TAB)
 
         with ui.tab_panel("io").classes("gap-2 overlay-card overflow-hidden"):
             with ui.row().classes("w-full"):
@@ -896,9 +909,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                     "min-height: 200px !important; width: 100% !important; background: rgba(0, 0, 0, 0.65); border-radius: 10px;"
                 )
             )
-            ui.element("div").classes("resize-handle-top")
-            ui.element("div").classes("resize-handle-right")
-            ui.element("div").classes("resize-handle-corner")
+            _add_resize_handles(PanelSlot.LEFT_BOTTOM_TAB)
 
         _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
