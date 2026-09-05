@@ -108,6 +108,48 @@ async def test_shapes_render_and_can_be_highlighted(user: User) -> None:
 
 
 @pytest.mark.integration
+async def test_shape_rerender_is_a_diff_not_a_rebuild(user: User) -> None:
+    """Re-rendering reconciles against what is drawn: a no-op sends nothing,
+    a pose-only change moves the same object, a geometry change recreates it
+    and a dropped shape is deleted — the group persists throughout."""
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    from waldoctl import Box, Cylinder
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    assert scene is not None
+
+    wall = Box(name="wall", x=0.1, y=0.1, z=0.1, pose=(0.3, 0.0, 0.3, 0, 0, 0))
+    post = Cylinder(name="post", radius=0.05, length=0.5)
+    bench = Box(name="bench", x=0.4, y=0.4, z=0.05)
+    scene.render_shapes([wall, post], installation=[bench])
+    wall_obj = scene._shape_objects["shape:wall"]
+    group = scene._shapes_group
+
+    with patch.object(scene.scene.client, "run_javascript") as sent:
+        scene.render_shapes([wall, post], installation=[bench])
+    assert sent.call_count == 0, "an unchanged world must not be re-sent"
+    assert scene._shape_objects["shape:wall"] is wall_obj
+    assert scene._shapes_group is group
+
+    moved = replace(wall, pose=(0.5, 0.0, 0.3, 0, 0, 0))
+    scene.render_shapes([moved, post], installation=[bench])
+    assert scene._shape_objects["shape:wall"] is wall_obj, "pose-only: same object"
+    assert wall_obj.x == pytest.approx(0.5)
+
+    bigger = Box(name="wall", x=0.2, y=0.1, z=0.1, pose=moved.pose)
+    scene.render_shapes([bigger], installation=[bench])
+    assert scene._shape_objects["shape:wall"] is not wall_obj, "geometry: recreated"
+    assert wall_obj.id not in scene.scene.objects
+    assert "shape:post" not in scene._shape_objects
+    assert scene._shapes_group is group
+
+
+@pytest.mark.integration
 async def test_appearance_repaint_keeps_draft_amber(user: User) -> None:
     """An UNCONFIRMED program layer must stay draft-amber through appearance
     repaints (sim toggle / EDITING entry / page-load): pre-fix the repaint

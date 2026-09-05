@@ -311,6 +311,8 @@ class UrdfScene(
         # geometry (arm links, tool meshes, user shapes) can be tinted red.
         self._link_to_meshes: dict[str, list[Any]] = {}
         self._shape_objects: dict[str, Any] = {}
+        # Per drawn shape: (geometry, pose, color) it was last rendered with.
+        self._shape_fingerprints: dict[str, tuple] = {}
         # Last render's draft flag — appearance repaints must keep an
         # unconfirmed program layer amber, not promote it to confirmed slate.
         self._shapes_draft: bool = False
@@ -1526,8 +1528,10 @@ class UrdfScene(
             return sc.box(s.x, s.y, s.z)
         if k == "sphere":
             return sc.sphere(s.radius)
-        if k in ("cylinder", "capsule"):
+        if k == "cylinder":
             return sc.cylinder(s.radius, s.radius, s.length)
+        if k == "capsule":
+            return sc.capsule(s.radius, s.length)
         if k == "cone":
             return sc.cylinder(0.0, s.radius, s.length)
         if k == "ellipsoid":
@@ -1540,7 +1544,14 @@ class UrdfScene(
         return None
 
     def render_shapes(self, shapes, installation=(), draft=False) -> None:
-        """(Re)draw the keep-out shapes by layer and map them for highlighting.
+        """Draw the keep-out shapes by layer and map them for highlighting.
+
+        Reconciles against what is already drawn, keyed by layer-qualified
+        name: a pose-only change moves the existing object, a color-only
+        change repaints it, a geometry change recreates it, and a shape no
+        longer in either layer is deleted. Nothing is sent for a re-render
+        that changes nothing, and the group is created once, so a dragged
+        object survives the readback that confirms its new pose.
 
         ``shapes`` is the program layer — amber while ``draft`` (not yet
         confirmed by backend readback), slate once confirmed. ``installation``
@@ -1551,38 +1562,68 @@ class UrdfScene(
             return
         self._shapes_draft = draft
         program_hex = SceneColors.SHAPE_DRAFT_HEX if draft else SceneColors.SHAPE_HEX
+        desired: dict[str, tuple[Any, str]] = {}
+        for prefix, layer, color in (
+            ("install", installation, SceneColors.SHAPE_INSTALL_HEX),
+            ("shape", shapes, program_hex),
+        ):
+            for s in layer:
+                desired[f"{prefix}:{s.name}"] = (s, color)
+        changed = False
         with batch_scene(self.scene):
             with self.scene:
-                if self._shapes_group is not None:
-                    self._safe_delete(self._shapes_group)
-                # Drop collision bookkeeping for the deleted shape objects so a
-                # re-render mid-collision can't restore/tint a stale object.
-                old_shapes = set(self._shape_objects.values())
-                self._colliding_meshes -= old_shapes
-                for m in old_shapes:
-                    self._collision_saved.pop(id(m), None)
-                self._shape_objects.clear()
-                grp = self.scene.group().with_name("shapes")
-                self._shapes_group = grp
-                with grp:
-                    for prefix, layer, color in (
-                        ("install", installation, SceneColors.SHAPE_INSTALL_HEX),
-                        ("shape", shapes, program_hex),
-                    ):
-                        for s in layer:
+                for key in [k for k in self._shape_objects if k not in desired]:
+                    self._forget_shape_object(key)
+                    changed = True
+                if self._shapes_group is None:
+                    self._shapes_group = self.scene.group().with_name("shapes")
+                with self._shapes_group:
+                    for key, (s, color) in desired.items():
+                        geometry = (s.kind, tuple(s.params()))
+                        pose = tuple(s.pose)
+                        obj = self._shape_objects.get(key)
+                        last = self._shape_fingerprints.get(key)
+                        if obj is not None and last is not None and last[0] != geometry:
+                            self._forget_shape_object(key)
+                            obj = None
+                        if obj is None:
                             obj = self._make_shape_object(s)
                             if obj is None:
                                 continue
+                            obj.with_name(key)
+                            self._shape_objects[key] = obj
+                            last = None
+                            changed = True
+                        if last is None or last[1] != pose:
                             pos, rot = _shape_render_pose(s)
                             obj.move(*pos).rotate_R(rot)
-                            obj.material(color, SHAPE_OPACITY)
-                            obj.with_name(f"{prefix}:{s.name}")
-                            self._shape_objects[f"{prefix}:{s.name}"] = obj
-        # Geometry changed — force the highlight to recompute next tick.
+                            changed = True
+                        if last is None or last[2] != color:
+                            if obj in self._colliding_meshes:
+                                # Tinted right now: the new base color is what
+                                # the highlight restores to when the collision
+                                # clears, not what is painted over the tint.
+                                self._collision_saved[id(obj)] = (color, SHAPE_OPACITY)
+                            else:
+                                obj.material(color, SHAPE_OPACITY)
+                            changed = True
+                        self._shape_fingerprints[key] = (geometry, pose, color)
+        if not changed:
+            return
+        # The world changed — force the highlight to recompute next tick.
         self._last_collision_sig = None
         self._editing_collision_q = None
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             self._update_collision_highlight()
+
+    def _forget_shape_object(self, key: str) -> None:
+        """Delete one drawn shape and drop its collision bookkeeping, so a
+        re-render mid-collision can't restore or tint a stale object."""
+        obj = self._shape_objects.pop(key)
+        self._shape_fingerprints.pop(key, None)
+        self._colliding_meshes.discard(obj)
+        self._collision_saved.pop(id(obj), None)
+        self._safe_delete(obj)
 
     def set_axis_value(self, joint_name: str, val: float) -> None:
         """Set a single joint axis value.

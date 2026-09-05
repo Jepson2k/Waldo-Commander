@@ -27,11 +27,9 @@ from waldoctl.shapes import (
     Plane,
     Shape,
     Sphere,
+    param_names,
 )
 
-# The documented per-shape split: these four are ShapeBase's common fields,
-# everything else on a subclass is a coal dimension param (shapes.params()).
-_COMMON = ("name", "pose", "collision", "margin")
 _KINDS: dict[str, type] = {
     c.__name__.lower(): c
     for c in (Box, Sphere, Cylinder, Capsule, Cone, Ellipsoid, Plane)
@@ -158,11 +156,11 @@ class ShapeEditingMixin:
             kind = shape.kind
         assert kind is not None
         cls = _KINDS[kind]
-        param_names = [f.name for f in fields(cls) if f.name not in _COMMON]
+        dims_names = param_names(cls)
 
         if editing:
             pose = shape.pose
-            dims = {p: getattr(shape, p) for p in param_names}
+            dims = {p: getattr(shape, p) for p in dims_names}
             name0 = shape.name
             collision0 = shape.collision
             margin0 = shape.margin
@@ -211,7 +209,7 @@ class ShapeEditingMixin:
                 ]
             dim_in: dict[str, Any] = {}
             with ui.row().classes("gap-1 w-full"):
-                for p in param_names:
+                for p in dims_names:
                     if kind == "plane" and p != "offset":
                         # Plane normals are directions, not lengths.
                         dim_in[p] = ui.number(p, value=dims[p]).classes("flex-1")
@@ -237,7 +235,7 @@ class ShapeEditingMixin:
                     return
                 try:
                     params = {}
-                    for p in param_names:
+                    for p in dims_names:
                         v = float(dim_in[p].value)
                         params[p] = (
                             v if (kind == "plane" and p != "offset") else v / 1000
@@ -253,6 +251,8 @@ class ShapeEditingMixin:
                         margin=None
                         if margin_v in (None, "")
                         else float(margin_v) / 1000,
+                        # The dialog edits geometry; a body stays a body.
+                        physics=None if shape is None else shape.physics,
                         **params,
                     )
                 except (TypeError, ValueError) as err:
@@ -339,8 +339,8 @@ class ShapeEditingMixin:
 
     def _on_shape_transform(self, e) -> None:
         """A dragged keep-out landed: write the new position through the
-        request path, then re-arm the controls on the re-rendered object so
-        the user can keep nudging."""
+        request path. The re-render is a diff, so the dragged object — and
+        the controls on it — survive for the next nudge."""
         if getattr(e, "type", "") != "transform_end":
             return
         object_name = getattr(e, "object_name", "") or ""
@@ -360,5 +360,3 @@ class ShapeEditingMixin:
             pose=(float(e.x), float(e.y), float(e.z), *shape.pose[3:]),
         )
         handle.shapes = [moved if s.name == name else s for s in handle.shapes]
-        # The setter re-rendered the layer; the dragged object is gone.
-        self._start_shape_move(name)
