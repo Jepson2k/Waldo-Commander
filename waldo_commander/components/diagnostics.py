@@ -7,7 +7,7 @@ serves the first and leaves the second showing a screenful of dashes, which
 reads as "everything is zero" rather than "nobody asked this robot".
 
 So each section declares when it applies, and a section that has never had
-anything to report is never built. Once a section has appeared it stays:
+anything to report is never shown. Once a section has appeared it stays:
 a drive that stops answering a register shows an unknown reading, which is
 information, rather than making its whole section vanish.
 
@@ -22,11 +22,13 @@ from __future__ import annotations
 import html as html_mod
 import logging
 import math
+from collections.abc import Sequence
 from typing import Any, Callable
 
 import waldoctl
 from nicegui import background_tasks, ui
 
+from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.state import robot_events, robot_state, ui_state
 
 logger = logging.getLogger(__name__)
@@ -36,11 +38,13 @@ _JOINT_COLORS = ["#4fc3f7", "#81c784", "#ffb74d", "#e57373", "#ba68c8", "#fff176
 #: Error-code bands (waldoctl.errors). The band says what kind of thing went
 #: wrong, which is more use in a log than a severity word: a bus-off entry
 #: and a degraded loop are both "warning" and want telling apart at a glance.
+#: Icons are bare Material Symbols ligatures — the font reads the span's text,
+#: so Quasar's ``sym_o_`` spelling would render as the word itself.
 _BAND_STYLE: tuple[tuple[int, int, str, str], ...] = (
-    (10, 29, "sym_o_route", "text-purple-400"),  # IK / trajectory
-    (30, 39, "sym_o_open_with", "text-sky-400"),  # motion
-    (40, 49, "sym_o_lan", "text-amber-400"),  # comms
-    (50, 64, "sym_o_memory", "text-orange-400"),  # system / safety
+    (10, 29, "route", "text-purple-400"),  # IK / trajectory
+    (30, 39, "open_with", "text-sky-400"),  # motion
+    (40, 49, "lan", "text-amber-400"),  # comms
+    (50, 64, "memory", "text-orange-400"),  # system / safety
 )
 _DEFAULT_STYLE = ("warning", "text-amber-400")
 
@@ -64,22 +68,27 @@ def _num(value: float, digits: int = 0) -> str:
 _DRIVE_KINDS = ("temp", "current", "fault")
 
 
+def _faults(drive_health: Any) -> Sequence[Sequence[str]]:
+    """Per-drive fault labels, empty on a waldoctl that predates the field —
+    a pinned release degrades to no fault reporting rather than raising on
+    every status tick."""
+    return getattr(drive_health, "faults", ())
+
+
 class DiagnosticsPage:
     """The diagnostics tab's content."""
 
-    def __init__(self, client: Any, is_open: Callable[[], bool]) -> None:
+    def __init__(self, client: Any, is_open: Callable[[], bool], tab: ui.tab) -> None:
         self.client = client
         self._is_open = is_open
+        self._tab = tab
         self._joint_count = ui_state.active_robot.joints.count
         self._values: dict[str, ui.label] = {}
-        self._sections: dict[str, ui.element] = {}
-        self._shown: set[str] = set()
+        self._sections: dict[str, ui.column] = {}
         self._rt_fifo: ui.chip | None = None
         self._rt_pinned: ui.chip | None = None
-        self._drive_rows: list[tuple[ui.element, list[ui.label]]] = []
+        self._drive_rows: list[tuple[ui.label, list[ui.label]]] = []
         self._drive_heads: dict[str, ui.label] = {}
-        self._drive_cols: set[str] = set()
-        self._row_shown: list[bool] = []
         self._drives_grid: ui.grid | None = None
         self._supply_box: ui.element | None = None
         self._chart: ui.echart | None = None
@@ -103,7 +112,7 @@ class DiagnosticsPage:
     def _has_drives(self) -> bool:
         dh = waldoctl.commander.status.drive_health
         return (
-            bool(dh.temperatures_c or dh.currents_ma or dh.faults)
+            bool(dh.temperatures_c or dh.currents_ma or _faults(dh))
             or dh.bus_voltage_v is not None
         )
 
@@ -116,16 +125,6 @@ class DiagnosticsPage:
     # ---- build ----
 
     def build(self) -> None:
-        self._values.clear()
-        self._sections.clear()
-        self._shown.clear()
-        self._drive_rows.clear()
-        self._drive_heads.clear()
-        self._drive_cols.clear()
-        self._row_shown = []
-        self._chart = None
-        self._events_html = None
-        self._events_version = -1
         with ui.column().classes("w-full gap-2").mark("diagnostics-panel"):
             self._build_loop_section()
             self._build_link_section()
@@ -140,12 +139,12 @@ class DiagnosticsPage:
             )
         self._apply_visibility()
 
-    def _section(self, key: str, title: str) -> ui.column:
+    def _section(self, key: str, title: str, visible: bool = False) -> ui.column:
         col = ui.column().classes("w-full gap-0").mark(f"diag-section-{key}")
         with col:
             ui.label(title).classes("text-sm font-medium")
         self._sections[key] = col
-        col.set_visibility(False)
+        col.set_visibility(visible)
         return col
 
     def _row(self, name: str, marker: str) -> ui.label:
@@ -226,7 +225,6 @@ class DiagnosticsPage:
                     for cell in cells:
                         cell.set_visibility(False)
                     self._drive_rows.append((label, cells))
-            self._row_shown = [True] * len(self._drive_rows)
             with ui.column().classes("w-full gap-0") as self._supply_box:
                 self._row("Supply", "diag-drive-supply")
             self._supply_box.set_visibility(False)
@@ -234,21 +232,20 @@ class DiagnosticsPage:
 
     def _show_row(self, index: int, visible: bool) -> None:
         label, cells = self._drive_rows[index]
-        self._row_shown[index] = visible
         label.set_visibility(visible)
         for kind, cell in zip(_DRIVE_KINDS, cells, strict=True):
-            cell.set_visibility(visible and kind in self._drive_cols)
+            cell.set_visibility(visible and self._drive_heads[kind].visible)
 
     def _show_column(self, kind: str) -> None:
-        if kind in self._drive_cols:
+        head = self._drive_heads[kind]
+        if head.visible:
             return
-        self._drive_cols.add(kind)
-        self._drive_heads[kind].set_visibility(True)
+        head.set_visibility(True)
         col = _DRIVE_KINDS.index(kind)
-        for index, (_, cells) in enumerate(self._drive_rows):
-            cells[col].set_visibility(self._row_shown[index])
+        for label, cells in self._drive_rows:
+            cells[col].set_visibility(label.visible)
         if self._drives_grid is not None:
-            n = 1 + len(self._drive_cols)
+            n = 1 + sum(h.visible for h in self._drive_heads.values())
             self._drives_grid.style(
                 f"grid-template-columns: repeat({n}, minmax(0, 1fr))"
             )
@@ -326,7 +323,7 @@ class DiagnosticsPage:
         only ever show the title, which is the half that does not tell you
         what to do about it.
         """
-        with self._section("events", "Events"):
+        with self._section("events", "Events", visible=True):
             with ui.row().classes("w-full items-center no-wrap"):
                 ui.space()
                 ui.button(icon="clear_all", on_click=self._clear_events).props(
@@ -335,8 +332,6 @@ class DiagnosticsPage:
             self._events_html = (
                 ui.html("", sanitize=False).classes("w-full").mark("diag-events-log")
             )
-        self._sections["events"].set_visibility(True)
-        self._shown.add("events")
 
     # ---- visibility ----
 
@@ -353,27 +348,31 @@ class DiagnosticsPage:
             ("torques", self._has_torques),
             ("homing", self._has_homing),
         ):
-            if key not in self._shown and available():
-                self._shown.add(key)
-                self._sections[key].set_visibility(True)
-        self._nothing.set_visibility(
-            self._shown == {"events"} and not robot_events.entries
+            section = self._sections[key]
+            if not section.visible and available():
+                section.set_visibility(True)
+        reported = any(
+            col.visible for key, col in self._sections.items() if key != "events"
         )
+        self._nothing.set_visibility(not reported and not robot_events.entries)
 
     # ---- live update, driven by the status loop ----
 
     def update(self) -> None:
-        """Refresh from ``commander.status``, once per status tick while the
-        tab is open.
+        """Refresh from ``commander.status``, once per status tick.
+
+        The event log is rendered whether or not the tab is open, since a
+        warning that lands behind a shut tab still has to announce itself;
+        everything else costs nothing to leave until someone looks.
 
         Synchronous on purpose: this runs inside the status loop's client
         context, and the one query it needs is dispatched as its own task
         rather than awaited under that context.
         """
+        self._update_events()
         if not self._is_open():
             return
-        # Rendering the log is what counts as having seen it; the tab-change
-        # handler only fires for a real browser event.
+        # Rendering the log to an open tab is what counts as having seen it.
         robot_events.mark_read()
         if not self._constants_asked:
             self._constants_asked = True
@@ -382,7 +381,6 @@ class DiagnosticsPage:
         self._update_loop()
         self._update_drives()
         self._update_homing()
-        self._update_events()
         self.update_chart()
 
     async def _ask_constants(self) -> None:
@@ -437,7 +435,7 @@ class DiagnosticsPage:
         health = waldoctl.commander.status.drive_health
         temps = health.temperatures_c
         currents = health.currents_ma
-        faults = health.faults
+        faults = _faults(health)
         reported = max(len(temps), len(currents), len(faults))
         if reported:
             if temps:
@@ -479,9 +477,15 @@ class DiagnosticsPage:
         )
 
     def _update_events(self) -> None:
+        """Redraw the log, and pulse the tab when it changed out of sight.
+
+        The badge says how many landed; the flash is what makes anyone look.
+        """
         if self._events_html is None or robot_events.version == self._events_version:
             return
         self._events_version = robot_events.version
+        if not self._is_open():
+            flash_tab(self._tab)
         parts: list[str] = []
         for ts, code, title, cause, effect, remedy in reversed(robot_events.entries):
             icon, colour = _band(code)
@@ -504,7 +508,7 @@ class DiagnosticsPage:
         self._events_html.set_content("".join(parts))
 
     def update_chart(self) -> None:
-        if self._chart is None or "torques" not in self._shown:
+        if self._chart is None or not self._sections["torques"].visible:
             return
         result = robot_state.torque_time_series.get_series_if_dirty()
         if result is None:

@@ -415,14 +415,18 @@ def _run_simulation_isolated(
     except Exception as e:
         error_message = f"Simulation setup failed: {type(e).__name__}: {e}"
 
-    # A pool worker is discarded with these swaps in place; the thread fallback
-    # shares the app's process, where a client built from the backend's name
-    # after this point has to be the real one again.
-    for module, name, original in reversed(swapped_names):
-        if original is None:
-            delattr(module, name)
-        else:
-            setattr(module, name, original)
+    finally:
+        # A pool worker is discarded with these swaps in place; the thread
+        # fallback shares the app's process, where a client built from the
+        # backend's name after this point has to be the real one again. In a
+        # ``finally`` because a script ending in ``sys.exit()`` raises
+        # SystemExit, which passes both excepts and would otherwise leave the
+        # preview class installed for the rest of the app's life.
+        for module, name, original in reversed(swapped_names):
+            if original is None:
+                delattr(module, name)
+            else:
+                setattr(module, name, original)
 
     # Flush pending blend buffers, covering scripts without context managers.
     for c in created_clients:

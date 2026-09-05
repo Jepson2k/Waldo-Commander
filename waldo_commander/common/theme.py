@@ -886,7 +886,7 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   padding: 8px 12px !important;
 }
 
-/* Editor tab flash animation for new content */
+/* Tab flash: content landed in a panel that is not on screen. */
 @keyframes tab-flash {
   0%, 50% { background-color: color-mix(in srgb, var(--flash-color) 40%, transparent); }
   25%, 75% { background-color: transparent; }
@@ -1463,8 +1463,8 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 }
 
 /* Diagnostics event log. Unlike the one-line action log these entries wrap:
-   the cause, effect and remedy are the parts worth reading, and truncating
-   them to a strip is what the readout version was doing wrong. */
+   the cause, effect and remedy are the parts worth reading, so they get the
+   room a one-line strip cannot give them. */
 .diag-event {
   font-size: 12px;
   line-height: 1.45;

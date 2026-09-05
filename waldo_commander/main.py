@@ -53,7 +53,6 @@ from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
 from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
-from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
@@ -122,9 +121,6 @@ class _PageState:
     warning_banner_text: str = ""
     ping_timer: ui.timer | None = None
     last_ping_ok: bool = False
-    seen_event_version: int = -1
-    """Event-log version this page has already reacted to, so one entry
-    flashes the tab once rather than on every status tick."""
 
 
 _page_state: _PageState | None = None
@@ -180,25 +176,6 @@ def _update_connection_notification() -> None:
         ps.connection_notification = None
 
 
-def _flash_unread_diagnostics() -> None:
-    """Pulse the Diagnostics tab when something lands while it is not open.
-
-    The badge says how many; the flash is what makes anyone look at it. No
-    flash while the tab is already showing — the entry is right there.
-    """
-    ps = _page_state
-    if ps is None or not robot_events.unread:
-        return
-    if ps.seen_event_version == robot_events.version:
-        return
-    ps.seen_event_version = robot_events.version
-    tabs = ui_state._side_tabs
-    if tabs is not None and tabs.value == "diagnostics":
-        robot_events.mark_read()
-        return
-    flash_tab(ui_state._diagnostics_tab)
-
-
 def _update_warning_notification() -> None:
     """Persistent banner while warning-class conditions stand.
 
@@ -212,27 +189,34 @@ def _update_warning_notification() -> None:
     msg = "; ".join(str(e[2]) for e in entries)
     if msg == ps.warning_banner_text:
         return
-    if ps.warning_notification is not None:
-        stale = ps.warning_notification
-        stale.dismiss()
-        ps.warning_notification = None
-        # The client's dismiss event is what deletes the element. The outbox
-        # sends deletions ahead of method calls, so deleting here would drop
-        # the dismiss and leave the toast standing; the fallback delete for a
-        # client that never answers (the user fixture) waits for the flush.
-        ui.timer(
-            0.1,
-            lambda: None if stale.is_deleted else stale.delete(),
-            once=True,
-        )
-    if msg:
+    ps.warning_banner_text = msg
+    banner = ps.warning_notification
+    if banner is not None and banner.is_deleted:
+        banner = ps.warning_notification = None
+    if not msg:
+        if banner is not None:
+            stale = banner
+            stale.dismiss()
+            ps.warning_notification = None
+            # The client's dismiss event is what deletes the element; a
+            # client that never sends one (the user fixture) needs the
+            # fallback, and it has to wait for the dismiss to flush because
+            # the outbox sends deletions ahead of method calls.
+            ui.timer(
+                0.1,
+                lambda: None if stale.is_deleted else stale.delete(),
+                once=True,
+            )
+        return
+    if banner is None:
         ps.warning_notification = ui.notification(
             message=msg,
             type="warning",
             close_button=True,
             timeout=0,
         )
-    ps.warning_banner_text = msg
+    else:
+        banner.message = msg
 
 
 async def initialize_urdf_scene() -> None:
@@ -616,7 +600,6 @@ def update_ui_from_status() -> None:
 
     _update_connection_notification()
     _update_warning_notification()
-    _flash_unread_diagnostics()
     if control_panel is not None:
         control_panel.sync_freedrive_visual()
     if tool_key_changed:
@@ -753,7 +736,6 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         .props("vertical")
         .classes("side-tab-bar absolute left-0 top-0 z-40") as side_tabs
     ):
-        ui_state._side_tabs = side_tabs
         program_tab = ui.tab(name="program", label="", icon="code")
         program_tab.mark("tab-program")
         ui_state._program_tab = program_tab
@@ -770,7 +752,6 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         diagnostics_tab = ui.tab(name="diagnostics", label="", icon="monitor_heart")
         diagnostics_tab.tooltip("Diagnostics")
         diagnostics_tab.mark("tab-diagnostics")
-        ui_state._diagnostics_tab = diagnostics_tab
         with diagnostics_tab:
             # Quasar floats the badge over the tab's corner, so an unread
             # count needs no layout of its own.
@@ -885,7 +866,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                     "flat round dense color=white"
                 )
             ui_state.diagnostics_page = DiagnosticsPage(
-                client, is_open=lambda: side_tabs.value == "diagnostics"
+                client,
+                is_open=lambda: side_tabs.value == "diagnostics",
+                tab=diagnostics_tab,
             )
             ui_state.diagnostics_page.build()
 
@@ -894,8 +877,6 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
             ui_state.program_panel_visible = new_tab == "program"
-            if new_tab == "diagnostics":
-                robot_events.mark_read()
 
         side_tabs.on("update:model-value", update_top_layout)
 
@@ -2045,9 +2026,13 @@ async def _status_consumer() -> None:
                         volts = None if volts is None else float(volts)
                         if dh.bus_voltage_v != volts:
                             dh.bus_voltage_v = volts
-                        faults = [tuple(f) for f in drives.get("faults", ())]
-                        if dh.faults != faults:
-                            dh.faults = faults
+                        # ``faults`` is newer than the pinned waldoctl; on a
+                        # release without it the tab degrades to no fault
+                        # reporting rather than failing the whole tick.
+                        if hasattr(dh, "faults"):
+                            faults = [tuple(f) for f in drives.get("faults", ())]
+                            if dh.faults != faults:
+                                dh.faults = faults
 
                     loop = getattr(status, "loop_health", None)
                     if loop:

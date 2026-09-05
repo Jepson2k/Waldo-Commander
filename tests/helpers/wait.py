@@ -34,6 +34,25 @@ async def simulate_click(user: User, marker: str, hold_ms: float = 50) -> None:
     element.trigger("mouseup")
 
 
+async def wait_until(
+    predicate: Callable[[], object],
+    timeout_s: float = 5.0,
+    interval: float = 0.1,
+) -> bool:
+    """Poll ``predicate`` until it is truthy, or the timeout runs out.
+
+    Returns whether it became truthy, so the caller keeps its own assertion
+    message instead of a generic timeout.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(interval)
+
+
 async def wait_for_motion_stable(
     get_value_fn: Callable[[], float],
     timeout_s: float = 3.0,

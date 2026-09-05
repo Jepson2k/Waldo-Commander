@@ -1,78 +1,58 @@
-"""The v0.8.0 warnings surface: the standing-condition banner and the
-warnings/errors log.
+"""The standing-warning banner, end to end over the status path.
 
-Runs on the suite's parol6 fake-serial backend, whose buffer pre-dates the
-v0.8.0 fields — which is half the contract under test: the status consumer
-must leave the new sub-objects at their defaults instead of resetting them
-each tick, so the wiring can be driven through the public
-``commander.status`` surface exactly the way a capable backend's consumer
-writes it. The full wire path runs against the real par6 runtime in
-``test_par6_backend.py``.
+Warning-class conditions self-clear, so the banner tracks the standing set
+and nothing else: it has to appear while a condition stands and leave when
+the condition does. The durable half — the Diagnostics event log — is
+covered in ``test_diagnostics.py``.
+
+Runs on the suite's parol6 fake-serial backend, which has no warning source
+of its own, so the condition is staged on the buffer its client fills from
+the wire. Everything downstream of that buffer is the app's own path: the
+status consumer, ``commander.status.warnings``, and the banner.
 """
 
-import asyncio
-
 import pytest
+import waldoctl
+from nicegui.elements.notification import Notification
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_app_ready
-from waldo_commander.state import robot_events
+from tests.helpers.wait import wait_for_app_ready, wait_for_urdf_ready
+
+DEGRADED = (
+    -1,
+    59,
+    "Control loop degraded",
+    "p99 over band",
+    "motion may stutter",
+    "reduce background load",
+)
 
 
 @pytest.mark.integration
-async def test_the_event_log_keeps_the_whole_structured_error(user: User) -> None:
-    """A warning-class condition self-clears; the log is what is left.
+async def test_the_warning_banner_leaves_with_its_condition(user: User) -> None:
+    """The banner is the only thing saying a condition stands right now.
 
-    The banner tracks only the standing set, so the log is the only place a
-    condition that flickered while nobody was watching can still be read —
-    and it has to keep the cause, effect and remedy, not just the title,
-    because those are the parts that say what to do about it.
-
-    Driven through ``robot_events`` rather than the wire: this backend's
-    buffer carries no warnings at all, so the status consumer would
-    overwrite anything staged on ``commander.status``. The wire path runs
-    against the real par6 runtime in ``test_par6_backend.py``.
+    One that outlives its condition is worse than none: it reports a robot
+    state that is no longer true, and nothing else on the page contradicts
+    it. The client's dismiss event is what deletes the element, so a page
+    that never sends one must still see the banner go.
     """
     await user.open("/")
     await wait_for_app_ready()
+    await wait_for_urdf_ready()
 
-    robot_events.add(
-        code=59,
-        title="Control loop degraded",
-        cause="p99 over band",
-        effect="motion may stutter",
-        remedy="reduce background load",
+    # ``warnings`` is the one StatusBuffer field parol6 never fills, so the
+    # decoder leaves whatever is staged here in place tick after tick.
+    shared = waldoctl.commander.client._shared_status
+    shared.warnings = [DEGRADED]
+    await user.should_see(
+        kind=Notification, content="Control loop degraded", retries=50
+    )
+    assert waldoctl.commander.status.warnings.entries, (
+        "the condition reached the public status surface"
     )
 
-    user.find(marker="tab-diagnostics").click()
-    await asyncio.sleep(0)
-    await user.should_see(marker="diag-events-log")
-    for part in (
-        "Control loop degraded",
-        "p99 over band",
-        "motion may stutter",
-        "reduce background load",
-    ):
-        await user.should_see(part)
-
-    assert robot_events.entries[-1][1] == 59, "the code identifies the condition"
-    assert robot_events.entries[-1][5] == "reduce background load"
-
-
-@pytest.mark.integration
-async def test_opening_diagnostics_clears_the_unread_badge(user: User) -> None:
-    """The badge is how a condition announces itself while the tab is shut,
-    so it has to survive until someone actually looks."""
-    await user.open("/")
-    await wait_for_app_ready()
-
-    robot_events.add(code=60, title="CAN stale", cause="no frames")
-    assert robot_events.unread == 1
-    await user.should_see(marker="diag-unread-badge")
-
-    user.find(marker="tab-diagnostics").click()
-    for _ in range(50):
-        if robot_events.unread == 0:
-            break
-        await asyncio.sleep(0.1)
-    assert robot_events.unread == 0, "opening the tab is what marks it read"
+    shared.warnings = []
+    await user.should_not_see(
+        kind=Notification, content="Control loop degraded", retries=50
+    )

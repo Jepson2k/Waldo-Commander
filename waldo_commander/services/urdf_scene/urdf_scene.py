@@ -1508,8 +1508,6 @@ class UrdfScene(
             # dividing by zero (the checker accepts them; keep parity).
             rx = s.radius_x if s.radius_x > 0 else 1e-6
             return sc.sphere(rx).scale(1.0, s.radius_y / rx, s.radius_z / rx)
-        if k == "plane":
-            return sc.box(2.0, 2.0, 0.002)
         return None
 
     def render_shapes(self, shapes, installation=(), draft=False) -> None:

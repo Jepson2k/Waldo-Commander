@@ -17,7 +17,7 @@ import pytest
 import waldoctl
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import wait_for_app_ready, wait_until
 from waldo_commander.state import robot_events, ui_state
 
 
@@ -26,13 +26,11 @@ def _text(user: User, marker: str) -> str:
 
 
 async def _settle(user: User, marker: str, predicate, timeout_s: float = 8.0) -> str:
-    text = ""
-    for _ in range(int(timeout_s / 0.1)):
-        text = _text(user, marker)
-        if predicate(text):
-            return text
-        await asyncio.sleep(0.1)
-    raise AssertionError(f"{marker} never satisfied the check; last text {text!r}")
+    if not await wait_until(lambda: predicate(_text(user, marker)), timeout_s):
+        raise AssertionError(
+            f"{marker} never satisfied the check; last text {_text(user, marker)!r}"
+        )
+    return _text(user, marker)
 
 
 async def _open_diagnostics(user: User) -> None:
@@ -83,11 +81,8 @@ async def test_drive_faults_appear_without_analog_readings(user: User) -> None:
     """
     await _open_diagnostics(user)
 
-    for _ in range(80):
-        if waldoctl.commander.status.drive_health.faults:
-            break
-        await asyncio.sleep(0.1)
     health = waldoctl.commander.status.drive_health
+    await wait_until(lambda: bool(health.faults), timeout_s=8.0)
     assert health.faults, "the backend reports per-drive faults"
     assert not health.temperatures_c, "and no analog registers"
     assert not health.currents_ma
@@ -105,11 +100,22 @@ async def test_drive_faults_appear_without_analog_readings(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_the_event_log_carries_the_whole_error_and_clears(user: User) -> None:
-    """A one-line strip could only ever show the title, which is the half
-    that does not say what to do. The tab has room for the rest."""
-    await _open_diagnostics(user)
+async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
+    user: User,
+) -> None:
+    """One warning, from the badge on a shut tab to a cleared log.
 
+    A one-line strip could only ever show the title, which is the half that
+    does not say what to do about the condition; the tab has room for the
+    cause, the effect and the remedy. And nobody opens a tab they have no
+    reason to open, so an entry that lands behind a shut one has to say so.
+    """
+    await user.open("/")
+    await wait_for_app_ready()
+
+    # The log is process-global and nothing resets it between tests, so the
+    # count is read against whatever earlier warnings left behind.
+    unread_before = robot_events.unread
     robot_events.add(
         code=60,
         title="CAN stale",
@@ -117,13 +123,22 @@ async def test_the_event_log_carries_the_whole_error_and_clears(user: User) -> N
         effect="motion refused",
         remedy="check the bus wiring",
     )
+    assert robot_events.unread == unread_before + 1
+    await user.should_see(marker="diag-unread-badge", retries=30)
+
+    user.find(marker="tab-diagnostics").click()
+    await asyncio.sleep(0)
+    await user.should_see(marker="diagnostics-panel")
     for part in (
         "CAN stale",
         "no frames for 200 ms",
         "motion refused",
-        "check the bus",
+        "check the bus wiring",
     ):
         await user.should_see(part)
+    assert await wait_until(lambda: robot_events.unread == 0), (
+        "rendering the log to an open tab is what marks it read"
+    )
 
     user.find(marker="diag-clear-events").click()
     await asyncio.sleep(0)

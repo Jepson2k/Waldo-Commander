@@ -241,9 +241,9 @@ class RobotEventLog:
         self.unread += 1
 
     def mark_read(self) -> None:
-        if self.unread:
-            self.unread = 0
-            self.version += 1
+        # No version bump: the log rendering keys a full rebuild on it, and
+        # the read count is not something that rendering displays.
+        self.unread = 0
 
     def clear(self) -> None:
         if self.entries or self.unread:
@@ -317,11 +317,9 @@ class UiState:
     io_page: Any = None
     gripper_page: Any = None
     diagnostics_page: Any = None
-    # Tab elements kept so anything wanting to flash or badge one addresses
-    # it directly instead of hunting the DOM for a matching icon glyph.
+    # Kept so the editor addresses its tab directly instead of hunting the
+    # DOM for a matching icon glyph.
     _program_tab: Any = None
-    _diagnostics_tab: Any = None
-    _side_tabs: Any = None
     _gripper_tab: Any = None
     _build_gripper_content: Any = None
 

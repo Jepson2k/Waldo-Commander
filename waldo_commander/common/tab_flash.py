@@ -1,9 +1,7 @@
 """Flash a tab to say something landed in a panel nobody is looking at.
 
-Kept in Python and driven off the tab element itself. The earlier version
-lived in a JS snippet that found its tab by matching the icon's text
-content, which only ever worked for the one tab whose icon was unique and
-broke silently the moment two tabs shared a glyph.
+Driven off the tab element itself, so a tab is addressed by identity rather
+than by whatever glyph its icon happens to render.
 """
 
 from __future__ import annotations

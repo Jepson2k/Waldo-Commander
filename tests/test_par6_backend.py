@@ -31,7 +31,7 @@ import pytest
 from nicegui.testing import User
 from waldoctl.discovery import available_backends
 
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import wait_for_app_ready, wait_until
 
 
 def _par6d_binary() -> str | None:
@@ -127,10 +127,7 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         # lands on commander.status for API consumers.
         import asyncio
 
-        for _ in range(50):
-            if status.controller.mode:
-                break
-            await asyncio.sleep(0.1)
+        await wait_until(lambda: bool(status.controller.mode))
         assert status.controller.mode, "no controller mode ever arrived"
 
         # Freedrive reports the arm, not the request. A fresh `par6d --sim`
@@ -162,15 +159,13 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         def _text(marker: str) -> str:
             return next(iter(user.find(marker=marker).elements)).text
 
-        temps: list[str] = []
-        for _ in range(100):
-            temps = [_text(f"diag-drive-temp-{j}") for j in range(1, 7)]
-            if all(t != "—" for t in temps):
-                break
-            await asyncio.sleep(0.1)
+        def _temps() -> list[str]:
+            return [_text(f"diag-drive-temp-{j}") for j in range(1, 7)]
+
+        await wait_until(lambda: all(t != "—" for t in _temps()), timeout_s=10.0)
+        temps = _temps()
         assert all(float(t) > 0 for t in temps), (
-            f"drive temperatures never arrived on STATUS: {temps}; "
-            f"note: {_text('diag-drives-note')!r}"
+            f"drive temperatures never arrived on STATUS: {temps}"
         )
         assert status.drive_health.bus_voltage_v is not None
         assert _text("diag-drive-supply").endswith(" V")
@@ -178,10 +173,7 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         # unanswered register must read as unknown rather than as zero.
         assert _text("diag-drive-current-7") == "—"
 
-        for _ in range(100):
-            if "budget" in _text("diag-loop-p99"):
-                break
-            await asyncio.sleep(0.1)
+        await wait_until(lambda: "budget" in _text("diag-loop-p99"), timeout_s=10.0)
         assert status.loop_health.measured
         assert "budget" in _text("diag-loop-p99"), (
             f"loop tail never shown: {_text('diag-loop-p99')!r}"
@@ -190,10 +182,11 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         # The chart's own feed. The page consumes the dirty flag on every
         # status tick, so ask the buffer how many samples it holds rather
         # than racing it for a dirty read.
-        for _ in range(100):
-            if len(robot_state.torque_time_series):
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: bool(len(robot_state.torque_time_series)),
+            timeout_s=5.0,
+            interval=0.05,
+        )
         assert len(robot_state.torque_time_series), (
             "no joint torques ever reached the chart"
         )
@@ -208,27 +201,18 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         user.find(marker="tab-par6-drives").click()
         await asyncio.sleep(0)
         await user.should_see(marker="drives-readings")
-        for _ in range(100):
-            if _text("drives-temp-0").endswith("°C"):
-                break
-            await asyncio.sleep(0.1)
+        await wait_until(lambda: _text("drives-temp-0").endswith("°C"), timeout_s=10.0)
         assert _text("drives-temp-0").endswith("°C"), (
             f"drive 0 never reported a temperature: {_text('drives-temp-0')!r}"
         )
 
         ilim = next(iter(user.find(marker="drives-gain-ilim_ma").elements))
-        for _ in range(50):
-            if ilim.value:
-                break
-            await asyncio.sleep(0.1)
+        await wait_until(lambda: bool(ilim.value))
         configured = float(ilim.value)
         assert configured > 0, "the current limit is seeded from the runtime's config"
         ilim.value = configured * 100
         user.find(marker="drives-apply-gains").click()
-        for _ in range(50):
-            if "ceiling" in _text("drives-gain-note"):
-                break
-            await asyncio.sleep(0.1)
+        await wait_until(lambda: "ceiling" in _text("drives-gain-note"))
         assert "ceiling" in _text("drives-gain-note"), (
             f"the runtime's refusal never reached the form: {_text('drives-gain-note')!r}"
         )
@@ -237,10 +221,7 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         # configured joint answers on a sim bus.
         user.find(marker="drives-rescan").click()
         table = next(iter(user.find(marker="drives-bus-table").elements))
-        for _ in range(50):
-            if table.rows:
-                break
-            await asyncio.sleep(0.1)
+        await wait_until(lambda: bool(table.rows))
         present = {row["node"] for row in table.rows if row["present"] == "yes"}
         assert {0, 1, 2, 3, 4, 5} <= present, f"scan rows: {table.rows}"
     finally:

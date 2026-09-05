@@ -131,8 +131,6 @@ class ReadoutPanel:
         self._tool_separator: ui.label | None = None
         self._io_chips: list[ui.chip] = []
 
-        # Warnings/errors log elements
-
         # Action log elements
         self._action_scroll_area: ui.scroll_area | None = None
         self._action_log_html: ui.html | None = None

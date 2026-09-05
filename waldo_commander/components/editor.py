@@ -1057,7 +1057,6 @@ class EditorPanel(FileOperationsMixin):
             ui_client = None
         self._client = ui_client
         self._focused_tab_ids.clear()
-        decorations.set_ui_client(ui_client)
         playback.set_ui_client(ui_client)
         script_exec.set_ui_client(ui_client)
 
