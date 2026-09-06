@@ -46,15 +46,23 @@ jobs:
               pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
               # Rewrite the pin for THIS resolve only, so ".[dev]" does not
               # re-fetch a tag that may not exist yet.
-              sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
-              # ...and drop the parol6 pin from `dev` for the same resolve.
-              # A TAGGED parol6 carries its own `waldoctl @ git+...@vX.Y.Z`
-              # direct URL, and pip refuses to reconcile two direct URLs
-              # for one package — so a branch-matched waldoctl collides
-              # with whatever waldoctl the pinned parol6 wants. parol6 is
-              # installed separately below with --no-deps anyway, which is
-              # exactly why that install exists.
-              sed -i "\#parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v#d" pyproject.toml
+              # Both edits in ONE invocation, so `.bak` is the pristine
+              # original the restore below puts back — and with the suffix
+              # attached, because BSD sed (macOS) reads `-i`'s next argument
+              # as the backup suffix and would take the script for it.
+              #
+              # The second expression drops the parol6 pin from `dev` for
+              # this resolve. A TAGGED parol6 carries its own
+              # `waldoctl @ git+...@vX.Y.Z` direct URL, and pip refuses to
+              # reconcile two direct URLs for one package — so a
+              # branch-matched waldoctl collides with whatever waldoctl the
+              # pinned parol6 wants. parol6 is installed separately below
+              # with --no-deps anyway, which is exactly why that install
+              # exists.
+              sed -i.bak \
+                -e "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" \
+                -e "\#parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v#d" \
+                pyproject.toml
             fi
           fi
           pip install -e ".[dev]"
@@ -124,15 +132,23 @@ jobs:
               pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
               # Rewrite the pin for THIS resolve only, so ".[dev]" does not
               # re-fetch a tag that may not exist yet.
-              sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
-              # ...and drop the parol6 pin from `dev` for the same resolve.
-              # A TAGGED parol6 carries its own `waldoctl @ git+...@vX.Y.Z`
-              # direct URL, and pip refuses to reconcile two direct URLs
-              # for one package — so a branch-matched waldoctl collides
-              # with whatever waldoctl the pinned parol6 wants. parol6 is
-              # installed separately below with --no-deps anyway, which is
-              # exactly why that install exists.
-              sed -i "\#parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v#d" pyproject.toml
+              # Both edits in ONE invocation, so `.bak` is the pristine
+              # original the restore below puts back — and with the suffix
+              # attached, because BSD sed (macOS) reads `-i`'s next argument
+              # as the backup suffix and would take the script for it.
+              #
+              # The second expression drops the parol6 pin from `dev` for
+              # this resolve. A TAGGED parol6 carries its own
+              # `waldoctl @ git+...@vX.Y.Z` direct URL, and pip refuses to
+              # reconcile two direct URLs for one package — so a
+              # branch-matched waldoctl collides with whatever waldoctl the
+              # pinned parol6 wants. parol6 is installed separately below
+              # with --no-deps anyway, which is exactly why that install
+              # exists.
+              sed -i.bak \
+                -e "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" \
+                -e "\#parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v#d" \
+                pyproject.toml
             fi
           fi
           pip install ".[dev]"
@@ -259,23 +275,32 @@ jobs:
       # unoptimized RT loop misses its deadlines. Kinematics is not a
       # feature — par6d links the FFI shim unconditionally.
       #
-      # par6d embeds no rpath, and the test spawns it from WC's own Python
-      # environment rather than from this shell, so whichever provisioning
-      # ran exports its library path into the job env for the steps below.
+      # Whichever provisioning ran then publishes its variables to the job,
+      # because two later steps need them from outside this shell: the par6
+      # wheel is a maturin build (it links the shim and downloads libmujoco),
+      # and it is built into WC's own Python environment, not the provisioner's
+      # — so `pixi run pip` would install into the wrong interpreter. par6d
+      # embeds no rpath either, so the spawned runtime needs the library path.
+      # The names follow par6's `[activation.env]` and its `.ffi/env.sh`;
+      # whichever of them is set gets forwarded.
       - name: build the shim and par6d
         working-directory: par6
+        env:
+          PAR6_FORWARD: >-
+            PAR6_SHIM_LIB_DIR PAR6_SHIM_INCLUDE_DIR PAR6_MUJOCO_LIB_DIR
+            MUJOCO_DOWNLOAD_DIR LD_LIBRARY_PATH
         run: |
+          FWD='for v in $PAR6_FORWARD; do [ -n "${!v:-}" ] && printf "%s=%s\n" "$v" "${!v}"; done; true'
           if [ "${{ steps.par6-build.outputs.pixi }}" = "true" ]; then
             pixi run setup
             pixi run cargo build -p par6d --release
-            LIBS="$(pixi run --frozen bash -c 'printf %s "$LD_LIBRARY_PATH"' | tail -n 1)"
+            pixi run bash -c "$FWD" >> "$GITHUB_ENV"
           else
             scripts/ffi/setup.sh
             source .ffi/env.sh
             cargo build -p par6d --release
-            LIBS="$LD_LIBRARY_PATH"
+            bash -c "$FWD" >> "$GITHUB_ENV"
           fi
-          echo "LD_LIBRARY_PATH=$LIBS" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: |
@@ -291,15 +316,23 @@ jobs:
             if git ls-remote --heads https://github.com/Jepson2k/waldoctl.git "$BRANCH" 2>/dev/null | grep -q .; then
               WALDOCTL_REF="$BRANCH"
               pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
-              sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
-              # ...and drop the parol6 pin from `dev` for the same resolve.
-              # A TAGGED parol6 carries its own `waldoctl @ git+...@vX.Y.Z`
-              # direct URL, and pip refuses to reconcile two direct URLs
-              # for one package — so a branch-matched waldoctl collides
-              # with whatever waldoctl the pinned parol6 wants. parol6 is
-              # installed separately below with --no-deps anyway, which is
-              # exactly why that install exists.
-              sed -i "\#parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v#d" pyproject.toml
+              # Both edits in ONE invocation, so `.bak` is the pristine
+              # original the restore below puts back — and with the suffix
+              # attached, because BSD sed (macOS) reads `-i`'s next argument
+              # as the backup suffix and would take the script for it.
+              #
+              # The second expression drops the parol6 pin from `dev` for
+              # this resolve. A TAGGED parol6 carries its own
+              # `waldoctl @ git+...@vX.Y.Z` direct URL, and pip refuses to
+              # reconcile two direct URLs for one package — so a
+              # branch-matched waldoctl collides with whatever waldoctl the
+              # pinned parol6 wants. parol6 is installed separately below
+              # with --no-deps anyway, which is exactly why that install
+              # exists.
+              sed -i.bak \
+                -e "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" \
+                -e "\#parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v#d" \
+                pyproject.toml
             fi
           fi
           pip install ".[dev]"

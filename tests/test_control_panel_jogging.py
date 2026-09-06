@@ -24,6 +24,15 @@ from tests.helpers.wait import (
     wait_for_app_ready,
 )
 
+#: How long to wait for a held axis to open its jog stream [s].
+#:
+#: A polling wait, so a healthy run leaves as soon as the first datagram
+#: goes out and pays nothing for the ceiling. It is generous because the
+#: ceiling is only ever reached on the slowest CI runner, where the first
+#: jog_l has to wait on the controller — five seconds was enough on Linux
+#: and not on Windows, which reads as "the stream never opened".
+_JOG_STREAM_BUDGET_S = 20.0
+
 
 @pytest.mark.integration
 async def test_joint_jog_button_sends_jog_j(user: User) -> None:
@@ -519,7 +528,7 @@ async def test_translation_frame_toggle_changes_jog_frame(
         n_before = len(jogs)
         user.find(marker=marker).trigger("mousedown")
         try:
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + _JOG_STREAM_BUDGET_S
             while time.monotonic() < deadline and len(jogs) == n_before:
                 await asyncio.sleep(0.05)
         finally:
@@ -694,7 +703,7 @@ async def test_inversion_mid_hold_releases_captured_axis(
     user.find(marker="axis-xplus").trigger("mousedown")
     try:
         n = len(jogs)
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + _JOG_STREAM_BUDGET_S
         while time.monotonic() < deadline and len(jogs) == n:
             await asyncio.sleep(0.05)
         assert len(jogs) > n, "expected a streamed jog_l while holding"
