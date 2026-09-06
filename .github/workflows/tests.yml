@@ -125,6 +125,14 @@ jobs:
               # Rewrite the pin for THIS resolve only, so ".[dev]" does not
               # re-fetch a tag that may not exist yet.
               sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
+              # ...and drop the parol6 pin from `dev` for the same resolve.
+              # A TAGGED parol6 carries its own `waldoctl @ git+...@vX.Y.Z`
+              # direct URL, and pip refuses to reconcile two direct URLs
+              # for one package — so a branch-matched waldoctl collides
+              # with whatever waldoctl the pinned parol6 wants. parol6 is
+              # installed separately below with --no-deps anyway, which is
+              # exactly why that install exists.
+              sed -i "\#parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v#d" pyproject.toml
             fi
           fi
           pip install ".[dev]"
@@ -214,30 +222,60 @@ jobs:
           workspaces: par6
           key: par6-e2e
 
-      # Same paths/key as par6's own ci.yml (its ffi and e2e jobs), prefixed
-      # with the checkout dir. env.sh is deliberately not cached: setup.sh
-      # rewrites it every run with this workspace's absolute paths.
+      # par6 provisions its native dependencies one of two ways depending on
+      # the ref this resolved to, and the branch being tested may be either:
+      # `scripts/ffi/setup.sh` writing `.ffi/env.sh`, or pixi, which supplies
+      # the same closure through environment activation and additionally sets
+      # `MUJOCO_DOWNLOAD_DIR` for `mujoco-rs`. Building a pixi tree the old
+      # way fails in `mujoco-rs`'s build script with nowhere to download to.
+      - name: Detect par6 provisioning
+        id: par6-build
+        run: |
+          PIXI=false
+          [ -f par6/pixi.toml ] && PIXI=true
+          echo "resolved par6 provisioning: pixi=$PIXI"
+          echo "pixi=$PIXI" >> "$GITHUB_OUTPUT"
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        if: steps.par6-build.outputs.pixi == 'true'
+        with:
+          pixi-version: v0.79.0
+          manifest-path: par6/pixi.toml
+          cache: true
+          environments: default
+
+      # Same path and key shape as par6's own ci.yml, prefixed with the
+      # checkout dir. Keyed on the provisioning too, since the two fill
+      # `.ffi` with different trees.
       - name: cache pinocchio toolchain
         uses: actions/cache@v4
         with:
-          path: |
-            par6/.ffi/bin
-            par6/.ffi/env
-            par6/.ffi/shim
-          key: ffi-toolchain-${{ runner.os }}-${{ hashFiles('par6/scripts/ffi/setup.sh', 'par6/cpp/**') }}
-
-      - name: build shim (scripts/ffi/setup.sh)
-        working-directory: par6
-        run: scripts/ffi/setup.sh
+          path: par6/.ffi
+          key: >-
+            ffi-${{ runner.os }}-${{ steps.par6-build.outputs.pixi }}-${{
+            hashFiles('par6/pixi.lock', 'par6/scripts/ffi/**', 'par6/cpp/**') }}
 
       # Release, not debug: the sim runs in wall-clock time and an
       # unoptimized RT loop misses its deadlines. Kinematics is not a
-      # feature any more — par6d links the FFI shim unconditionally.
-      - name: build par6d
+      # feature — par6d links the FFI shim unconditionally.
+      #
+      # par6d embeds no rpath, and the test spawns it from WC's own Python
+      # environment rather than from this shell, so whichever provisioning
+      # ran exports its library path into the job env for the steps below.
+      - name: build the shim and par6d
         working-directory: par6
         run: |
-          source .ffi/env.sh
-          cargo build -p par6d --release
+          if [ "${{ steps.par6-build.outputs.pixi }}" = "true" ]; then
+            pixi run setup
+            pixi run cargo build -p par6d --release
+            LIBS="$(pixi run --frozen bash -c 'printf %s "$LD_LIBRARY_PATH"' | tail -n 1)"
+          else
+            scripts/ffi/setup.sh
+            source .ffi/env.sh
+            cargo build -p par6d --release
+            LIBS="$LD_LIBRARY_PATH"
+          fi
+          echo "LD_LIBRARY_PATH=$LIBS" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: |
@@ -254,6 +292,14 @@ jobs:
               WALDOCTL_REF="$BRANCH"
               pip install "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@${BRANCH}"
               sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
+              # ...and drop the parol6 pin from `dev` for the same resolve.
+              # A TAGGED parol6 carries its own `waldoctl @ git+...@vX.Y.Z`
+              # direct URL, and pip refuses to reconcile two direct URLs
+              # for one package — so a branch-matched waldoctl collides
+              # with whatever waldoctl the pinned parol6 wants. parol6 is
+              # installed separately below with --no-deps anyway, which is
+              # exactly why that install exists.
+              sed -i "\#parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v#d" pyproject.toml
             fi
           fi
           pip install ".[dev]"
@@ -276,20 +322,15 @@ jobs:
           # env must be live for the build (and no build isolation, so the
           # toolchain above is the one that compiles it).
           pip install "maturin>=1.7,<2" patchelf
-          source par6/.ffi/env.sh
           pip install --force-reinstall --no-deps --no-build-isolation ./par6/python
 
       # WALDO_PAR6_E2E=1 makes a missing backend or binary a FAILURE inside
       # the test, not a skip — this job must never go green without the e2e
-      # actually running. env.sh is sourced (not hand-copied) because par6d
-      # embeds no rpath: the spawned runtime inherits LD_LIBRARY_PATH for
-      # the shim and its conda-env dependencies.
+      # actually running.
       - name: Run the par6 e2e test
         env:
           PYTHONUNBUFFERED: '1'
           PYTHONUTF8: '1'
           WALDO_PAR6_E2E: '1'
           PAR6D_BIN: ${{ github.workspace }}/par6/target/release/par6d
-        run: |
-          source par6/.ffi/env.sh
-          pytest -vv --tb=long --log-cli-level=DEBUG tests/test_par6_backend.py
+        run: pytest -vv --tb=long --log-cli-level=DEBUG tests/test_par6_backend.py
