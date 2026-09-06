@@ -2175,14 +2175,17 @@ class TestWorldStateRepair:
         void, and the table-only layout is the example the backend's own
         docs give.
         """
-        from waldoctl.shapes import Box, Plane
+        from waldoctl.shapes import Box, Cylinder
 
         from waldo_commander.services.urdf_scene.urdf_scene import _is_ground
 
         floor = Box(name="floor", x=6, y=6, z=0.2, pose=(0, 0, -0.1, 0, 0, 0))
         table = Box(name="table", x=1, y=1, z=0.7, pose=(0.6, 0, 0.35, 0, 0, 0))
+        # A cylinder spanning the origin at floor level counts too — the
+        # rule is about where a solid sits, not what kind it is.
+        disc = Cylinder(name="pad", radius=3.0, length=0.1, pose=(0, 0, -0.05, 0, 0, 0))
         assert _is_ground(floor)
-        assert _is_ground(Plane(name="ground", nx=0, ny=0, nz=1, offset=0))
+        assert _is_ground(disc)
         assert not _is_ground(table), "a table beside the robot is not the floor"
         # A slab that spans the origin but rises above the base is furniture.
         assert not _is_ground(

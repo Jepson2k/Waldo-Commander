@@ -28,15 +28,13 @@ from waldoctl.shapes import (
     Cone,
     Cylinder,
     Ellipsoid,
-    Plane,
     Shape,
     Sphere,
     param_names,
 )
 
 _KINDS: dict[str, type] = {
-    c.__name__.lower(): c
-    for c in (Box, Sphere, Cylinder, Capsule, Cone, Ellipsoid, Plane)
+    c.__name__.lower(): c for c in (Box, Sphere, Cylinder, Capsule, Cone, Ellipsoid)
 }
 
 logger = logging.getLogger(__name__)
@@ -90,60 +88,12 @@ class ShapeEditingMixin:
                 yield obj[len(prefix) :]
 
     def _shape_hit_name(self, hits) -> str | None:
-        """The clicked program-layer shape's name, if any.
-
-        A ``plane`` is skipped: it is an unbounded half-space drawn as a
-        finite window, so a click on it is a click on the space it fills,
-        not on the shape. Its own menu items are appended to the
-        empty-space menu instead (:meth:`_populate_plane_menu`).
-        """
-        return next(
-            (n for n in self._hit_names(hits, SHAPE_PREFIX) if not self._is_plane(n)),
-            None,
-        )
-
-    def _plane_hit_names(self, hits) -> list[str]:
-        """Clicked program-layer planes, nearest first, without repeats."""
-        return list(
-            dict.fromkeys(
-                n for n in self._hit_names(hits, SHAPE_PREFIX) if self._is_plane(n)
-            )
-        )
-
-    def _is_plane(self, name: str) -> bool:
-        shape = self._program_shape(name)
-        return shape is not None and shape.kind == "plane"
-
-    def _populate_plane_menu(self, hits) -> None:
-        """Edit/delete entries for the planes under the cursor, appended to
-        the empty-space menu so a ground plane does not hide it."""
-        for name in self._plane_hit_names(hits):
-            shape = self._program_shape(name)
-            if shape is None:
-                continue
-            ui.separator()
-            ui.item(f"Plane '{name}'").classes("font-bold text-sm")
-            ui.menu_item(
-                "Edit Keep-out...",
-                on_click=lambda s=shape: self._show_shape_dialog(shape=s),
-            )
-            ui.menu_item(
-                "Delete Keep-out",
-                on_click=lambda n=name: self._delete_shape(n),
-            )
+        """The clicked program-layer shape's name, if any."""
+        return next(self._hit_names(hits, SHAPE_PREFIX), None)
 
     def _draft_hit_name(self, hits) -> str | None:
-        """The clicked proposed-installation shape's name, if any.
-
-        Planes are skipped for the same reason they are in the program
-        layer (:meth:`_shape_hit_name`): an unbounded half-space drawn as
-        a finite window is the space it fills, not a thing to click, and
-        a proposed one would otherwise swallow the empty-space menu.
-        """
-        return next(
-            (n for n in self._hit_names(hits, DRAFT_PREFIX) if not self._is_plane(n)),
-            None,
-        )
+        """The clicked proposed-installation shape's name, if any."""
+        return next(self._hit_names(hits, DRAFT_PREFIX), None)
 
     def _fresh_shape_name(self, kind: str) -> str:
         handle = self._shape_handle()
@@ -173,9 +123,7 @@ class ShapeEditingMixin:
         )
         if self._shape_move_active == shape_name:
             ui.menu_item("Stop Moving", on_click=self._end_shape_move)
-        elif shape.kind != "plane":
-            # A plane renders at its surface, not at its pose — dragging
-            # the slab would not move what the checker enforces.
+        else:
             ui.menu_item(
                 "Move (drag arrows)",
                 on_click=lambda n=shape_name: self._start_shape_move(n),
@@ -335,11 +283,11 @@ class ShapeEditingMixin:
             kind = shape.kind
         assert kind is not None
         cls = _KINDS[kind]
-        dims_names = param_names(cls)
+        shape_params = param_names(cls)
 
         if editing:
             pose = shape.pose
-            dims = {p: getattr(shape, p) for p in dims_names}
+            dims = {p: getattr(shape, p) for p in shape_params}
             name0 = shape.name
             collision0 = shape.collision
             margin0 = shape.margin
@@ -388,16 +336,12 @@ class ShapeEditingMixin:
                 ]
             dim_in: dict[str, Any] = {}
             with ui.row().classes("gap-1 w-full"):
-                for p in dims_names:
-                    if kind == "plane" and p != "offset":
-                        # Plane normals are directions, not lengths.
-                        dim_in[p] = ui.number(p, value=dims[p]).classes("flex-1")
-                    else:
-                        dim_in[p] = (
-                            ui.number(p, value=round(dims[p] * 1000, 1), suffix="mm")
-                            .classes("flex-1")
-                            .mark(f"shape-dialog-dim-{p}")
-                        )
+                for p in shape_params:
+                    dim_in[p] = (
+                        ui.number(p, value=round(dims[p] * 1000, 1), suffix="mm")
+                        .classes("flex-1")
+                        .mark(f"shape-dialog-dim-{p}")
+                    )
             collision_in = ui.switch(
                 "Collision (off = visual marker)", value=collision0
             )
@@ -413,12 +357,7 @@ class ShapeEditingMixin:
                     dialog.close()
                     return
                 try:
-                    params = {}
-                    for p in dims_names:
-                        v = float(dim_in[p].value)
-                        params[p] = (
-                            v if (kind == "plane" and p != "offset") else v / 1000
-                        )
+                    params = {p: float(dim_in[p].value) / 1000 for p in shape_params}
                     margin_v = margin_in.value
                     new = cls(
                         name=str(name_in.value).strip() or name0,

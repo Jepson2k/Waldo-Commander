@@ -30,6 +30,9 @@ _DURATION_RE = re.compile(r"duration\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)")
 
 # Methods that produce trajectory segments for visualization.
 MOTION_METHODS: dict[str, str] = {
+    # Swings the wrist through a few poses to weigh the payload: joint
+    # motion the step gate and the preview both have to know about.
+    "estimate_payload": "joints",
     "move_j": "joints",
     "move_l": "cartesian",
     "move_c": "smooth_arc",

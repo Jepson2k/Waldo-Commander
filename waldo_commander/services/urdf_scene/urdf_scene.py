@@ -68,13 +68,6 @@ SHAPE_OPACITY = 0.35
 #: The robot's base is at z = 0, so anything reaching above it is
 #: furniture rather than the floor.
 _GROUND_TOP_M = 1e-3
-#: Render extent of unbounded geometry — the installation floor and a
-#: ``plane`` keep-out — as a square of this side [m]. Backends enforce the
-#: floor as a keep-out of this footprint and a plane as a half-space, so the
-#: drawing is the enforced floor and a window onto a plane.
-WORLD_EXTENT_M = 6.0
-#: Thickness of the slab that stands in for a surface [m].
-SURFACE_THICKNESS_M = 0.002
 #: Primitives three.js extends along +Y where coal's are Z-aligned.
 _Y_UP_KINDS = ("cylinder", "capsule", "cone")
 
@@ -86,13 +79,11 @@ _Y_TO_Z_UP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
 def _is_ground(shape) -> bool:
     """Whether an installation shape is the ground the robot stands on.
 
-    A plane always is. A solid counts when its top face is at or below
-    the robot's base and it spans the origin — a floor slab does, a table
-    beside the robot does not, and the placeholder disc has to stay for
-    the table so it is not left floating in nothing.
+    A solid counts when its top face is at or below the robot's base and
+    it spans the origin — a floor slab does, a table beside the robot does
+    not, and the placeholder disc has to stay for the table so it is not
+    left floating in nothing.
     """
-    if shape.kind == "plane":
-        return True
     x, y, z = (float(v) for v in shape.pose[:3])
     params = shape.params() if callable(shape.params) else shape.params
     if shape.kind == "box" and len(params) >= 3:
@@ -106,18 +97,6 @@ def _is_ground(shape) -> bool:
     else:
         return False
     return z + half[2] <= _GROUND_TOP_M and abs(x) <= half[0] and abs(y) <= half[1]
-
-
-def _z_align_rotation(n: np.ndarray) -> np.ndarray:
-    """Rotation taking +Z to the unit vector ``n`` (Rodrigues; 180° safe)."""
-    z = np.array([0.0, 0.0, 1.0])
-    v = np.cross(z, n)
-    c = float(np.dot(z, n))
-    s2 = float(np.dot(v, v))
-    if s2 < 1e-24:
-        return np.eye(3) if c > 0.0 else np.diag([1.0, -1.0, -1.0])
-    k = np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
-    return np.eye(3) + k + k @ k * ((1.0 - c) / s2)
 
 
 def _object_render_pose(
@@ -135,11 +114,8 @@ def _object_render_pose(
 def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]]:
     """World position + rotation matrix for a shape's scene object.
 
-    Corrects the Y-up axis for cylinder/capsule/cone and places a plane's slab
-    on its halfspace surface (``n·x = offset`` in the shape's local frame,
-    composed with the pose), so the drawn surface is the enforced one. The
-    slab is a finite window onto an unbounded half-space, and a shape's
-    ``margin`` is enforced but never drawn.
+    Corrects the Y-up axis for cylinder/capsule/cone so what is drawn is
+    what the checker enforces.
     """
     # waldoctl's pose_matrix is the one place the shape rotation convention
     # is written down; the drawing has to use it or it can drift from the
@@ -149,20 +125,6 @@ def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]
     pos = T[:3, 3]
     if s.kind in _Y_UP_KINDS:
         R = R_pose @ _Y_TO_Z_UP
-    elif s.kind == "plane":
-        # The slab is a thin box whose local z is its normal — align it to n.
-        # coal normalizes Halfspace(n, d) to (n/|n|, d/|n|), so the enforced
-        # surface sits at offset/|n| along n̂ — scale the offset to match.
-        n = np.array([s.nx, s.ny, s.nz], dtype=np.float64)
-        norm = float(np.linalg.norm(n))
-        if norm > 1e-12:
-            n = n / norm
-            surface_offset = s.offset / norm
-        else:
-            n = np.array([0.0, 0.0, 1.0])
-            surface_offset = s.offset
-        R = R_pose @ _z_align_rotation(n)
-        pos = pos + R_pose @ (n * surface_offset)
     else:
         R = R_pose
     return (float(pos[0]), float(pos[1]), float(pos[2])), [
@@ -1635,8 +1597,6 @@ class UrdfScene(
             # dividing by zero (the checker accepts them; keep parity).
             rx = s.radius_x if s.radius_x > 0 else 1e-6
             return sc.sphere(rx).scale(1.0, s.radius_y / rx, s.radius_z / rx)
-        if k == "plane":
-            return sc.box(WORLD_EXTENT_M, WORLD_EXTENT_M, SURFACE_THICKNESS_M)
         return None
 
     def render_shapes(
@@ -2282,16 +2242,16 @@ class UrdfScene(
                     self.joint_groups[joint.name] = joint_trafo
 
                     if joint.joint_type == "prismatic":
-                        self.joint_trafos[joint.name] = (
-                            lambda q, axis=joint.axis: transl_joint(axis, q)
+                        self.joint_trafos[joint.name] = lambda q, axis=joint.axis: (
+                            transl_joint(axis, q)
                         )
                         self.joint_pos_limits[joint.name] = {
                             "min": joint.limit.lower,
                             "max": joint.limit.upper,
                         }
                     elif joint.joint_type in ("revolute", "continuous"):
-                        self.joint_trafos[joint.name] = (
-                            lambda q, axis=joint.axis: rot_joint(axis, q)
+                        self.joint_trafos[joint.name] = lambda q, axis=joint.axis: (
+                            rot_joint(axis, q)
                         )
                         if joint.joint_type == "continuous":
                             self.joint_pos_limits[joint.name] = {

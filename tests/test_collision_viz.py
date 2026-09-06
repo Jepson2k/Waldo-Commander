@@ -116,10 +116,9 @@ async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
     keep-out when the arm reaches it, survives an appearance repaint, and
     displaces the placeholder disc simply by existing."""
     import waldoctl
-    from waldoctl import Box, Physical, Plane
+    from waldoctl import Box, Physical
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
-    from waldo_commander.services.urdf_scene.urdf_scene import WORLD_EXTENT_M
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -139,7 +138,7 @@ async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
         physics=Physical(),
     )
     scene.render_shapes(
-        [Plane(name="ground", nx=0, ny=0, nz=1, offset=0.3)],
+        [Box(name="wall", x=0.1, y=2.0, z=1.0, pose=(0.8, 0, 0.5, 0, 0, 0))],
         installation=[floor_shape],
     )
     floor = scene._shape_objects["install:floor"]
@@ -147,11 +146,8 @@ async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
     assert not scene._ground_disc.visible_, (
         "a described installation displaces the placeholder disc"
     )
-    # A plane keep-out is an unbounded half-space drawn as a finite window.
-    assert scene._shape_objects["shape:ground"].args[:2] == [
-        WORLD_EXTENT_M,
-        WORLD_EXTENT_M,
-    ]
+    # A program keep-out is drawn at the size it declares.
+    assert scene._shape_objects["shape:wall"].args[:3] == [0.1, 2.0, 1.0]
 
     # install:floor is what a backend reports when the arm reaches the floor.
     link = next(name for name, meshes in scene._link_to_meshes.items() if meshes)
@@ -405,40 +401,6 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
             break
         await asyncio.sleep(0.05)
     assert handle.confirmed and handle.installation == ()
-
-
-@pytest.mark.integration
-async def test_a_plane_does_not_swallow_the_empty_space_menu(user: User) -> None:
-    """A plane is an unbounded half-space drawn as a finite window, so a
-    right-click on it is a click on the space it fills: the add menu still
-    appears, and the plane's own items are appended to it."""
-    from types import SimpleNamespace
-
-    import waldoctl
-    from waldoctl import Box, Plane
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    handle = waldoctl.commander.scene
-    assert scene is not None and handle is not None
-
-    handle.shapes = [
-        Plane(name="ground", nx=0, ny=0, nz=1, offset=0.0),
-        Box(name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0)),
-    ]
-
-    def hit(name):
-        return SimpleNamespace(object_name=f"shape:{name}")
-
-    assert scene._shape_hit_name([hit("ground")]) is None, (
-        "a plane must not capture the context menu"
-    )
-    assert scene._plane_hit_names([hit("ground")]) == ["ground"]
-    # A real shape behind the plane still wins the menu.
-    assert scene._shape_hit_name([hit("ground"), hit("wall")]) == "wall"
-    handle.shapes = []
 
 
 @pytest.mark.integration
@@ -697,32 +659,17 @@ def test_preview_marking_replays_shape_boundaries() -> None:
 
 
 def test_shape_render_pose_matches_enforced_geometry() -> None:
-    """Cylinders stand along coal's Z axis and planes sit on their halfspace
-    surface — the drawn shape must match the blocked volume."""
+    """Cylinders stand along coal's Z axis — the drawn shape must match the
+    blocked volume."""
     import numpy as np
 
-    from waldoctl import Cylinder, Plane
+    from waldoctl import Cylinder
     from waldo_commander.services.urdf_scene.urdf_scene import _shape_render_pose
 
     # Identity pose: the render rotation is the Y->Z-up correction, not identity.
     pos, rot = _shape_render_pose(Cylinder(name="post", radius=0.05, length=0.5))
     assert pos == (0.0, 0.0, 0.0)
     assert np.allclose(rot, [[1, 0, 0], [0, 0, -1], [0, 1, 0]])
-
-    # z=0.4 ceiling: the slab sits at the surface, normal along +z.
-    pos, rot = _shape_render_pose(Plane(name="ceil", nx=0, ny=0, nz=1, offset=0.4))
-    assert np.allclose(pos, (0.0, 0.0, 0.4))
-    assert np.allclose(rot, np.eye(3))
-
-    # Non-unit normal: coal normalizes Halfspace(n, d) to (n/|n|, d/|n|), so
-    # (0,0,2), offset 0.8 enforces z <= 0.4 — the slab must render there.
-    pos, rot = _shape_render_pose(Plane(name="c2", nx=0, ny=0, nz=2, offset=0.8))
-    assert np.allclose(pos, (0.0, 0.0, 0.4))
-
-    # x-normal wall at x=0.2: slab normal (its local z) maps to +x.
-    pos, rot = _shape_render_pose(Plane(name="wall", nx=1, ny=0, nz=0, offset=0.2))
-    assert np.allclose(pos, (0.2, 0.0, 0.0))
-    assert np.allclose(np.array(rot) @ [0, 0, 1], [1, 0, 0])
 
 
 @pytest.mark.integration
