@@ -26,6 +26,7 @@ from nicegui.testing.screen_plugin import (
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
 import waldoctl
+import parol6.config as _parol6_config
 from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
 from selenium import webdriver as _webdriver
@@ -126,6 +127,18 @@ def _free_udp_port() -> int:
 
 CONTROLLER_PORT = _free_udp_port()
 MULTICAST_PORT = _free_udp_port()
+
+# parol6 reads its multicast port once, when `parol6.config` is imported —
+# which this file does at its own import, before the port above exists. An
+# environment variable set by a fixture is therefore never seen by the client
+# running in THIS process; the module attribute is what actually moves it. The
+# controller runs in a subprocess and picks the same value up from the
+# environment (`PAROL6_MCAST_PORT`, below), so the two ends agree.
+#
+# Without this the session falls back to parol6's built-in 50510: two runs on
+# one machine share a group and interleave, and a Windows runner that has
+# reserved that port fails every bind with WinError 10013.
+_parol6_config.MCAST_PORT = MULTICAST_PORT
 
 
 def _get_test_ports() -> tuple[int, int]:
@@ -629,7 +642,13 @@ def test_env_config() -> Generator[None, None, None]:
         "WALDO_LOG_LEVEL": "DEBUG",
         # Connect webapp to the session-randomized controller port
         "WALDO_CONTROLLER_PORT": str(controller_port),
-        "PAROL6_STATUS_MULTICAST_PORT": str(multicast_port),
+        # The name parol6's config actually reads. It was
+        # PAROL6_STATUS_MULTICAST_PORT, which nothing anywhere consumes, so
+        # every session fell back to the built-in 50510: the status stream
+        # was never session-isolated (two runs on one machine interleave on
+        # the same group), and on a Windows runner that reserves 50510 the
+        # bind fails outright with WinError 10013.
+        "PAROL6_MCAST_PORT": str(multicast_port),
         # Skip slow envelope generation by default (tests that need it enable explicitly)
         "WALDO_SKIP_ENVELOPE": "1",
         # Reduce status broadcast rate for tests (50Hz is for human-perceived real-time,
@@ -837,7 +856,7 @@ def session_controller(
         # at "Controller failed to become ready". Waiting is free when the
         # controller comes up quickly.
         timeout=60.0,
-        extra_env={"PAROL6_STATUS_MULTICAST_PORT": str(multicast_port)},
+        extra_env={"PAROL6_MCAST_PORT": str(multicast_port)},
     )
 
     try:
