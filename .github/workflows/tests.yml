@@ -47,6 +47,14 @@ jobs:
               # Rewrite the pin for THIS resolve only, so ".[dev]" does not
               # re-fetch a tag that may not exist yet.
               sed -i.bak "s#waldoctl.git@v[0-9.]*#waldoctl.git@${BRANCH}#" pyproject.toml
+              # ...and drop the parol6 pin from `dev` for the same resolve.
+              # A TAGGED parol6 carries its own `waldoctl @ git+...@vX.Y.Z`
+              # direct URL, and pip refuses to reconcile two direct URLs
+              # for one package — so a branch-matched waldoctl collides
+              # with whatever waldoctl the pinned parol6 wants. parol6 is
+              # installed separately below with --no-deps anyway, which is
+              # exactly why that install exists.
+              sed -i "\#parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v#d" pyproject.toml
             fi
           fi
           pip install -e ".[dev]"
