@@ -70,6 +70,32 @@ class _ToolCollectionProxy:
         return interceptor
 
 
+def _object_tracks(
+    result: Any, start: int | None = None, end: int | None = None
+) -> list[dict[str, Any]] | None:
+    """A result's object tracks as segment-dict rows, sliced like the joint
+    trajectory. A one-row (stationary) track is never sliced; None when the
+    backend reports no tracks."""
+    tracks = getattr(result, "object_tracks", None)
+    if tracks is None:
+        return None
+    rows = []
+    sliced = start is not None or end is not None
+    for t in tracks:
+        poses = t.poses
+        if sliced and len(poses) > 1:
+            poses = np.asarray(poses, dtype=np.float64)[start:end]
+        rows.append(
+            {
+                "name": t.name,
+                "poses": np.asarray(poses, dtype=np.float64).tolist(),
+                "carried": bool(t.carried),
+                "physics": bool(t.physics),
+            }
+        )
+    return rows
+
+
 class PathPreviewClient:
     """Wraps DryRunRobotClient with visualization metadata collection.
 
@@ -128,6 +154,17 @@ class PathPreviewClient:
         self._last_move_non_blocking: bool = False
         self._current_tool_position: float = 0.0  # 0=open, 1=closed
         self._first_motion_seen: bool = False
+        # Editor line per command the backend has recorded, in its order.
+        # The backend keeps the commands so they can be simulated
+        # afterwards but cannot know where they came from — the program
+        # is ours — so this is how a simulated row finds its line.
+        self.command_lines: list[int] = []
+        self._last_attributed_line = 0
+        # The program's own clock, in simulated seconds. A script that
+        # polls `time.monotonic()` in a loop needs this to advance or it
+        # never leaves the loop; the real clock cannot help, because a
+        # preview runs a minute of robot time in a fraction of a second.
+        self.sim_time_s: float = 0.0
 
         logger.debug("PathPreviewClient initialized")
 
@@ -139,6 +176,46 @@ class PathPreviewClient:
 
     def close(self):
         self._flush_blend()
+        # A last sweep: anything the backend recorded after the final
+        # collector ran still needs a line, and the flush above can add
+        # commands of its own.
+        self._attribute_commands(self._last_attributed_line)
+
+    def record_sleep(self, seconds: float) -> None:
+        """A script's ``time.sleep`` as the program means it.
+
+        Nothing happens during a sleep in a *plan* — the arm is already
+        where the last move left it — so this only spaces the timeline
+        there. In a *simulation* the arm holds itself against gravity for
+        that long, and whatever it is carrying settles or does not, which
+        is exactly where a naive preview and the real machine part ways.
+        So it is also queued as a delay for the run to execute.
+        """
+        if seconds <= 0:
+            return
+        self.sim_time_s += seconds
+        if self._last_move_non_blocking:
+            self._pending_sleep += seconds
+        try:
+            self._client.delay(seconds)
+        except (AttributeError, NotImplementedError):
+            pass  # a backend with no delay command simply loses the wait
+        self._attribute_commands(self._get_caller_line_number())
+
+    def _attribute_commands(self, line_number: int) -> None:
+        """Attribute every command recorded since the last call to
+        *line_number*.
+
+        Called from each site that already knows a line. A command type
+        with no site of its own is picked up by the next one, or by
+        :meth:`close`, so the list always ends the same length as the
+        backend's program.
+        """
+        self._last_attributed_line = line_number
+        recorded = getattr(self._client, "program_length", 0)
+        missing = recorded - len(self.command_lines)
+        if missing > 0:
+            self.command_lines.extend([line_number] * missing)
 
     @property
     def tool(self) -> _ToolCollectionProxy:
@@ -153,10 +230,10 @@ class PathPreviewClient:
         result: DryRunResult | None = None,
     ) -> None:
         """Record a tool action with TCP pose for path preview visualization."""
+        line_no = self._get_caller_line_number()
+        self._attribute_commands(line_no)
         if self._tool_metadata is None:
             return
-
-        line_no = self._get_caller_line_number()
 
         if method_name == "set_position" and args:
             target_pos = (float(args[0]),)
@@ -206,6 +283,7 @@ class PathPreviewClient:
             sleep_offset=sleep_offset,
             segment_index=len(self.segment_collector) - 1,
             tcp_path=tcp_path,
+            object_tracks=_object_tracks(result) if result is not None else None,
         )
         self.tool_action_collector.append(action)
 
@@ -324,13 +402,15 @@ class PathPreviewClient:
         if result is None:
             return
 
+        line_no = self._get_caller_line_number()
+        self._attribute_commands(line_no)
+        self.sim_time_s += float(getattr(result, "duration", 0.0) or 0.0)
+
         if result.end_joints_rad.size > 0:
             self.last_joints_rad = result.end_joints_rad.tolist()
 
         if result.tcp_poses.shape[0] == 0:
             return
-
-        line_no = self._get_caller_line_number()
         source_line = self._get_source_line(line_no)
 
         valid = result.valid
@@ -347,6 +427,7 @@ class PathPreviewClient:
 
         joint_traj_rad = getattr(result, "joint_trajectory_rad", None)
         joint_traj = joint_traj_rad.tolist() if joint_traj_rad is not None else None
+        tracks = _object_tracks(result)
 
         if valid is not None:
             # Per-pose validity: split into runs of consecutive valid/invalid
@@ -380,6 +461,7 @@ class PathPreviewClient:
                 "joint_trajectory": joint_traj,
                 "checkpoint": checkpoint,
                 "is_travel": not self._first_motion_seen,
+                "object_tracks": tracks,
             }
             self.segment_collector.append(segment)
 
@@ -480,6 +562,9 @@ class PathPreviewClient:
             run_joint_traj = None
             if joint_traj_rad is not None:
                 run_joint_traj = joint_traj_rad[start:end].tolist()
+            # The same rows as the joint trajectory, or the object drifts
+            # from the gripper that carries it.
+            run_tracks = _object_tracks(result, start, end)
 
             if len(run_poses) >= 2:
                 segment = {
@@ -496,6 +581,7 @@ class PathPreviewClient:
                     "timing_feasible": timing_feasible,
                     "joint_trajectory": run_joint_traj,
                     "is_travel": not self._first_motion_seen,
+                    "object_tracks": run_tracks,
                 }
                 self.segment_collector.append(segment)
 
@@ -526,6 +612,7 @@ class PathPreviewClient:
         except (AttributeError, NotImplementedError):
             pass  # dry-run client may not implement checkpoint
         line_no = self._get_caller_line_number()
+        self._attribute_commands(line_no)
         segment = {
             "points": [],
             "color": "#00000000",

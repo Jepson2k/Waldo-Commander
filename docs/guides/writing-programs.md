@@ -223,6 +223,44 @@ print("Done!")
   <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/tool_control_and_rotations.mp4" type="video/mp4">
 </video>
 
+## Keep-outs and objects
+
+The world your program moves through is two layers of shapes. The
+**installation** layer comes from the backend's robot config — cage walls, the
+table, the floor — and no program can change it. The **program** layer is
+yours: `set_shapes([...])` replaces it whole, last write wins, and it stays
+applied after the program ends, so a program that needs a clean world clears
+it with `set_shapes([])`.
+
+```python
+from waldoctl import Box, Cylinder, Physical
+
+rbt.set_shapes([
+    Box(name="bench", x=0.4, y=0.4, z=0.05, pose=(0.5, 0.0, 0.025, 0, 0, 0)),
+    Cylinder(name="post", radius=0.03, length=0.4, pose=(0.3, -0.3, 0.2, 0, 0, 0)),
+    Box(name="landing", x=0.1, y=0.1, z=0.001, collision=False,
+        pose=(0.4, 0.2, 0.0, 0, 0, 0)),
+    Box(name="block", x=0.036, y=0.036, z=0.06, pose=(0.37, 0.0, 0.04, 0, 0, 0),
+        physics=Physical(mass=0.05)),
+])
+```
+
+Units are metres and radians, poses are `(x, y, z, rx, ry, rz)`. A plain shape
+is a keep-out: the controller refuses any planned move or jog that would
+collide with it, previews mark the path red, and the scene draws it (slate once
+the backend confirms it, amber until then). `collision=False` makes a visual
+marker that is drawn and never enforced. A shape carrying `physics` is also a
+body in the simulator's contact world on backends that have one (par6): a
+fixture without `mass`, a free object with one — the dry run then previews the
+block being grasped, carried and released, and playback moves it. A backend
+without contact simulation refuses `physics` outright rather than ignoring it.
+`margin` overrides the default standoff for one shape.
+
+The floor is drawn where the backend enforces it, from the same readback that
+carries the layers; in the 3D view you can also add, drag, edit and delete
+program keep-outs from the right-click menu, propose a keep-out for the
+installation layer, and export the proposal as the robot config's TOML.
+
 ## The complete script
 
 Here's everything together — one continuous program that exercises all motion types across three sides of the workspace:

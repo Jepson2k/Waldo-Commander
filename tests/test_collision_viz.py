@@ -6,6 +6,8 @@ logic (name mapping, recolor, restore) deterministically. A browser-level render
 check lives in ``test_collision_viz_screen.py``.
 """
 
+import asyncio
+
 import pytest
 from nicegui.testing import User
 
@@ -105,6 +107,342 @@ async def test_shapes_render_and_can_be_highlighted(user: User) -> None:
     scene.update_from_robot_state()
     assert shape_obj.color == SceneColors.SHAPE_HEX
     assert bench.color == SceneColors.SHAPE_INSTALL_HEX
+
+
+@pytest.mark.integration
+async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
+    """The floor a robot stands on is a static installation fixture, not a
+    special case: it draws through the installation layer, tints like any
+    keep-out when the arm reaches it, survives an appearance repaint, and
+    displaces the placeholder disc simply by existing."""
+    import waldoctl
+    from waldoctl import Box, Physical
+    from waldo_commander.common.theme import SceneColors
+    from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    assert scene._ground_disc is not None and scene._ground_disc.visible_
+
+    # What the shipped robot config declares: a wide static box whose top
+    # face is the plane the robot stands on.
+    floor_shape = Box(
+        name="floor",
+        x=6.0,
+        y=6.0,
+        z=0.2,
+        pose=(0.0, 0.0, -0.1, 0, 0, 0),
+        physics=Physical(),
+    )
+    scene.render_shapes(
+        [Box(name="wall", x=0.1, y=2.0, z=1.0, pose=(0.8, 0, 0.5, 0, 0, 0))],
+        installation=[floor_shape],
+    )
+    floor = scene._shape_objects["install:floor"]
+    assert floor.color == SceneColors.SHAPE_INSTALL_HEX
+    assert not scene._ground_disc.visible_, (
+        "a described installation displaces the placeholder disc"
+    )
+    # A program keep-out is drawn at the size it declares.
+    assert scene._shape_objects["shape:wall"].args[:3] == [0.1, 2.0, 1.0]
+
+    # install:floor is what a backend reports when the arm reaches the floor.
+    link = next(name for name, meshes in scene._link_to_meshes.items() if meshes)
+    coll = waldoctl.commander.status.collision
+    coll.pairs = [(link, "install:floor")]
+    coll.active = True
+    scene.update_from_robot_state()
+    assert floor.color == SceneColors.COLLISION_HEX
+    coll.active = False
+    coll.pairs = []
+    scene.update_from_robot_state()
+    assert floor.color == SceneColors.SHAPE_INSTALL_HEX
+
+    scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+    assert floor.color == SceneColors.SHAPE_INSTALL_HEX
+    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+
+    # A backend describing no installation gets the placeholder back.
+    scene.render_shapes([])
+    assert "install:floor" not in scene._shape_objects
+    assert scene._ground_disc.visible_
+
+
+@pytest.mark.integration
+async def test_playback_moves_world_objects_and_restores_their_declared_pose(
+    user: User,
+) -> None:
+    """A tracked object follows the preview's pose during playback as a
+    pose-only move of the drawn shape, a guessed track is drawn as a ghost,
+    and clearing the override puts the object back where the program says."""
+    from waldoctl import Box, Cylinder
+    from waldo_commander.services.timeline import ObjectSample
+    from waldo_commander.services.urdf_scene.urdf_scene import (
+        _Y_TO_Z_UP,
+        SHAPE_OPACITY,
+    )
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    scene.render_shapes(
+        [
+            Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.3, 0.0, 0.04, 0, 0, 0)),
+            Cylinder(
+                name="can", radius=0.03, length=0.1, pose=(0.4, 0.0, 0.05, 0, 0, 0)
+            ),
+        ]
+    )
+    block = scene._shape_objects["shape:block"]
+    can = scene._shape_objects["shape:can"]
+    assert (block.x, block.z) == (0.3, 0.04)
+
+    scene.set_object_poses(
+        {
+            "block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False),
+            "can": ObjectSample((0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0), physics=True),
+        }
+    )
+    assert (block.x, block.y, block.z) == (0.5, 0.1, 0.2)
+    assert block.opacity == pytest.approx(SHAPE_OPACITY * 0.5), (
+        "a guessed track is a ghost"
+    )
+    assert can.z == 0.3 and can.opacity == pytest.approx(SHAPE_OPACITY)
+    assert can.R == _Y_TO_Z_UP.tolist(), (
+        "a cylinder keeps its Y-up correction while carried"
+    )
+
+    scene.set_object_poses(None)
+    assert (block.x, block.y, block.z) == (0.3, 0.0, 0.04)
+    assert block.opacity == pytest.approx(SHAPE_OPACITY)
+    assert can.z == 0.05
+
+    # A re-render that moves an object to a new declared pose ends the
+    # override, so the ghost look must end with it rather than stranding
+    # the object at half opacity nothing will restore.
+    scene.set_object_poses(
+        {"block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False)}
+    )
+    assert block.opacity == pytest.approx(SHAPE_OPACITY * 0.5)
+    scene.render_shapes(
+        [
+            Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.2, 0.0, 0.04, 0, 0, 0)),
+            Cylinder(
+                name="can", radius=0.03, length=0.1, pose=(0.4, 0.0, 0.05, 0, 0, 0)
+            ),
+        ]
+    )
+    assert (block.x, block.z) == (0.2, 0.04)
+    assert block.opacity == pytest.approx(SHAPE_OPACITY)
+
+
+@pytest.mark.integration
+async def test_playback_time_drives_world_objects(user: User) -> None:
+    """Scrubbing the dry run moves a tracked object along its track and
+    invalidating the timeline puts it back where the program declares it."""
+    import waldoctl
+    from waldoctl import Box
+    from waldo_commander.components.playback import playback
+    from waldo_commander.state import PathSegment, ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    scene.render_shapes(
+        [Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.3, 0.0, 0.04, 0, 0, 0))]
+    )
+    block = scene._shape_objects["shape:block"]
+
+    active = waldoctl.commander.programs.active
+    assert active is not None
+    active.dry_run.path_segments = [
+        PathSegment(
+            points=[[0.3, 0.0, 0.3], [0.3, 0.0, 0.5]],
+            color="#00ff00",
+            is_valid=True,
+            line_number=1,
+            joints=[0.0] * 6,
+            estimated_duration=2.0,
+            joint_trajectory=[[0.0] * 6, [0.0] * 6],
+            object_tracks=[
+                {
+                    "name": "block",
+                    "poses": [
+                        [0.3, 0.0, 0.04, 1, 0, 0, 0],
+                        [0.3, 0.0, 0.24, 1, 0, 0, 0],
+                    ],
+                    "carried": True,
+                    "physics": True,
+                }
+            ],
+        )
+    ]
+    playback.invalidate_timeline()
+    assert playback._ensure_timeline() is not None
+    playback._apply_time(1.0)
+    assert block.z == pytest.approx(0.14), "half way through the lift"
+    playback._apply_time(2.0)
+    assert block.z == pytest.approx(0.24)
+
+    playback.invalidate_timeline()
+    assert block.z == 0.04, "declared pose restored once the timeline is dropped"
+
+
+@pytest.mark.integration
+async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
+    user: User, tmp_path, monkeypatch
+) -> None:
+    """A keep-out proposed for the installation layer leaves the enforced
+    program layer, is drawn in its own colour, exports as the robot config's
+    TOML, and clears itself once readback shows the backend enforcing it."""
+    import waldoctl
+    from waldoctl import Box, ShapeWorld
+    from waldo_commander import constants
+    from waldo_commander.common.theme import SceneColors
+    from waldo_commander.services.urdf_scene.urdf_scene import SHAPE_OPACITY
+    from waldo_commander.state import ui_state
+
+    monkeypatch.setattr(constants, "default_program_dir", lambda: tmp_path)
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    handle = waldoctl.commander.scene
+    assert scene is not None and handle is not None
+
+    wall = Box(name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0))
+    handle.shapes = [wall]
+    handle.propose_installation(["wall"])
+    assert handle.shapes == [] and handle.installation_draft == (wall,)
+    assert "shape:wall" not in scene._shape_objects
+
+    def ghost_color(sc):
+        return sc._shape_objects["draft:wall"].color
+
+    proposal = scene._shape_objects["draft:wall"]
+    assert proposal.color == SceneColors.SHAPE_PROPOSED_HEX
+    assert proposal.opacity == pytest.approx(SHAPE_OPACITY)
+    with pytest.raises(ValueError, match="proposed for the installation layer"):
+        handle.shapes = [wall]
+    with pytest.raises(ValueError, match="no program-layer shape"):
+        handle.propose_installation(["nothing"])
+
+    with scene.scene.client:
+        scene._show_installation_toml_dialog()
+    await user.should_see(marker="installation-toml-dialog")
+    user.find(marker="installation-toml-save").click()
+    await user.should_see("Saved to")
+    saved = (tmp_path / "installation_shapes.toml").read_text()
+    assert "[[installation_shapes]]" in saved and 'name = "wall"' in saved
+
+    # A proposal is enforced by this process even though no backend enforces
+    # it yet — that is what makes it possible to design against.
+    encasing = Box(name="cage", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
+    handle.shapes = [*handle.shapes, encasing]
+    handle.propose_installation(["cage"])
+    q = waldoctl.commander.status.joints.angles.rad
+    assert ui_state.active_robot.in_collision(q), (
+        "the proposal must reach this process's collision world"
+    )
+    handle.discard_installation_draft(["cage"])
+    assert not ui_state.active_robot.in_collision(q)
+
+    # An appearance-mode repaint must not turn the proposal into a keep-out.
+    scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+    assert ghost_color(scene) == SceneColors.SHAPE_PROPOSED_HEX
+    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+    assert ghost_color(scene) == SceneColors.SHAPE_PROPOSED_HEX
+
+    # The backend's next boot enforces it: readback adopts the proposal. A
+    # refresh is skipped while the proposal's own push awaits its ack, so
+    # wait for that readback to land first.
+    for _ in range(200):
+        if handle.confirmed:
+            break
+        await asyncio.sleep(0.05)
+    assert handle.confirmed, "the program-layer push never confirmed"
+
+    # The config is authored by hand from the exported TOML, so what comes
+    # back is the same shape by name, not field for field.
+    enforced_wall = Box(
+        name="wall", x=0.1, y=0.1, z=0.3, pose=(0.3, 0.0, 0.15, 0, 0, 0), margin=0.01
+    )
+
+    async def _enforced() -> ShapeWorld:
+        return ShapeWorld(installation=(enforced_wall,), program=())
+
+    monkeypatch.setattr(waldoctl.commander.client, "shapes", _enforced)
+    await handle.refresh_from_backend()
+    assert handle.installation_draft == ()
+    assert "draft:wall" not in scene._shape_objects
+    assert scene._shape_objects["install:wall"].color == SceneColors.SHAPE_INSTALL_HEX
+
+    # A withdrawn proposal is a program keep-out again.
+    post = Box(name="post", x=0.05, y=0.05, z=0.2, pose=(0.4, 0.0, 0.1, 0, 0, 0))
+    handle.shapes = [post]
+    handle.propose_installation(["post"])
+    scene._withdraw_proposal("post")
+    assert handle.installation_draft == () and [s.name for s in handle.shapes] == [
+        "post"
+    ]
+
+    # The monkeypatched readback put `wall` into this process's installation
+    # checker; the real backend's readback has to take it back out, or a
+    # phantom keep-out sits in the middle of every later test's workspace.
+    monkeypatch.undo()
+    handle.shapes = []
+    for _ in range(200):
+        if handle.confirmed:
+            break
+        await asyncio.sleep(0.05)
+    assert handle.confirmed and handle.installation == ()
+
+
+@pytest.mark.integration
+async def test_shape_rerender_is_a_diff_not_a_rebuild(user: User) -> None:
+    """Re-rendering reconciles against what is drawn: a no-op sends nothing,
+    a pose-only change moves the same object, a geometry change recreates it
+    and a dropped shape is deleted — the group persists throughout."""
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    from waldoctl import Box, Cylinder
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    scene = ui_state.urdf_scene
+    assert scene is not None
+
+    wall = Box(name="wall", x=0.1, y=0.1, z=0.1, pose=(0.3, 0.0, 0.3, 0, 0, 0))
+    post = Cylinder(name="post", radius=0.05, length=0.5)
+    bench = Box(name="bench", x=0.4, y=0.4, z=0.05)
+    scene.render_shapes([wall, post], installation=[bench])
+    wall_obj = scene._shape_objects["shape:wall"]
+    group = scene._shapes_group
+
+    with patch.object(scene.scene.client, "run_javascript") as sent:
+        scene.render_shapes([wall, post], installation=[bench])
+    assert sent.call_count == 0, "an unchanged world must not be re-sent"
+    assert scene._shape_objects["shape:wall"] is wall_obj
+    assert scene._shapes_group is group
+
+    moved = replace(wall, pose=(0.5, 0.0, 0.3, 0, 0, 0))
+    scene.render_shapes([moved, post], installation=[bench])
+    assert scene._shape_objects["shape:wall"] is wall_obj, "pose-only: same object"
+    assert wall_obj.x == pytest.approx(0.5)
+
+    bigger = Box(name="wall", x=0.2, y=0.1, z=0.1, pose=moved.pose)
+    scene.render_shapes([bigger], installation=[bench])
+    assert scene._shape_objects["shape:wall"] is not wall_obj, "geometry: recreated"
+    assert wall_obj.id not in scene.scene.objects
+    assert "shape:post" not in scene._shape_objects
+    assert scene._shapes_group is group
 
 
 @pytest.mark.integration

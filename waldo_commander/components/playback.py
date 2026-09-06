@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import logging
 import time
 
@@ -21,6 +22,7 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
+from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import (
     playback_coordination,
     robot_state,
@@ -29,6 +31,13 @@ from waldo_commander.state import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _line_of(segments, index: int) -> int:
+    """The editor line a timeline segment came from, or 0 for none."""
+    if 0 <= index < len(segments):
+        return segments[index].line_number
+    return 0
 
 
 class PlaybackController:
@@ -97,6 +106,12 @@ class PlaybackController:
         Order: Play | Stop | Step program | Prev | Next | Slider | Speed FAB |
         Record | Capture | Log toggle
         """
+        # A fresh page has no physics pass in flight — teardown killed the
+        # worker — but `ticks_pending` outlives the client on the program,
+        # and a page loaded mid-pass would otherwise show controls that
+        # nothing is ever going to re-enable.
+        for program in waldoctl.commander.programs.items:
+            program.dry_run.ticks_pending = False
         with (
             ui.row()
             .classes("w-full items-center gap-2 bottom-playback-bar")
@@ -388,14 +403,14 @@ class PlaybackController:
 
     def _step_sim_preview(self, delta: int) -> None:
         """Scrub the sim preview to the neighboring segment, clamped to range."""
-        if not self._timeline:
+        if not self._timeline or not self._timeline.segments:
             return
         active = waldoctl.commander.programs.active
-        if active is None or active.dry_run.total_steps <= 0:
+        if active is None:
             return
         idx = min(
             max(active.dry_run.playback.current_step + delta, 0),
-            active.dry_run.total_steps - 1,
+            len(self._timeline.segments) - 1,
         )
         self._apply_time(self._timeline.cumulative_times[idx])
 
@@ -412,9 +427,12 @@ class PlaybackController:
     # ---- Bridge API (called by EditorPanel) ----
 
     def invalidate_timeline(self) -> None:
-        """Clear cached timeline so it gets rebuilt from new segments."""
+        """Clear cached timeline so it gets rebuilt from new segments; the
+        world's objects go back to where the program declares them."""
         self._timeline = None
         self._last_tool_selection = None
+        if ui_state.urdf_scene:
+            ui_state.urdf_scene.set_object_poses(None)
 
     def update_scrub_segments(self) -> None:
         """Update the segmented scrub bar to match path_segments.
@@ -534,14 +552,22 @@ class PlaybackController:
         self._highlight_current_segment()
         tab_id = script_exec.launching_tab_id
         if tab_id is not None:
-            decorations.highlight_executing_line(step, tab_id)
+            # A live run counts PLANNED segments; the script's step index
+            # is into that list, not into whatever the timeline holds.
+            tab = waldoctl.commander.programs.get(tab_id)
+            planned = tab.dry_run.path_segments if tab is not None else []
+            decorations.highlight_executing_line(_line_of(planned, step), tab_id)
 
     def _handle_step_complete(self, step: int) -> None:
         """Script reported segment end: snap slider to segment end."""
         self._highlight_current_segment()
         tab_id = script_exec.launching_tab_id
         if tab_id is not None:
-            decorations.highlight_executing_line(step, tab_id)
+            # A live run counts PLANNED segments; the script's step index
+            # is into that list, not into whatever the timeline holds.
+            tab = waldoctl.commander.programs.get(tab_id)
+            planned = tab.dry_run.path_segments if tab is not None else []
+            decorations.highlight_executing_line(_line_of(planned, step), tab_id)
         if self._timeline and self._scrub_slider:
             end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
             t = self._timeline.cumulative_times[end_idx]
@@ -585,99 +611,125 @@ class PlaybackController:
         tl = self._timeline
         if not tl:
             return
-        _apply_active = (
-            active if active is not None else waldoctl.commander.programs.active
-        )
-        if _apply_active is not None:
-            _apply_active.dry_run.playback.playback_time = t
-        sample = tl.sample(t)
-
-        # Sample tool position once (used for both teleport and URDF animation)
-        tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
-
-        if (
-            sample.joints
-            and ui_state.urdf_scene
-            and waldoctl.commander.status.simulator_active
-        ):
-            playback_coordination.sim_pose_override = True
-            ui_state.urdf_scene.set_axis_values(sample.joints)
-            waldoctl.commander.status.joints.angles.set_rad(np.asarray(sample.joints))
-            if ui_state.control_panel:
-                playback_coordination.last_teleport_ts = time.monotonic()
-                if self._teleport_task and not self._teleport_task.done():
-                    self._teleport_task.cancel()
-                self._teleport_task = asyncio.create_task(
-                    self._teleport(
-                        waldoctl.commander.status.joints.angles.deg.tolist(),
-                        list(tool_pos) if tool_pos else None,
-                    )
-                )
-
-        if (
-            _apply_active is not None
-            and sample.segment_index != _apply_active.dry_run.playback.current_step
-        ):
-            _apply_active.dry_run.playback.current_step = sample.segment_index
-            self._highlight_current_segment()
-            # Prev/next enabled state derives from current_step, so refresh at
-            # its mutation point (fires only on segment changes, not per tick).
-            self.update_play_button()
-            # Sim playback animates the active tab's simulation. If a
-            # script is also running, prefer the launching tab so the
-            # highlight stays on it even when the user scrubs while the
-            # script is paused on a different tab.
-            target_tab = (
-                script_exec.launching_tab_id or waldoctl.commander.programs.active_id
+        # The arm's pose and the world's objects have to land in the
+        # browser together: two flushes let three.js draw a frame with a
+        # carried object still at the previous tick's pose.
+        scene = ui_state.urdf_scene
+        with batch_scene(scene.scene) if scene and scene.scene else nullcontext():
+            _apply_active = (
+                active if active is not None else waldoctl.commander.programs.active
             )
-            if target_tab is not None:
-                decorations.highlight_executing_line(sample.segment_index, target_tab)
-            if ui_state.urdf_scene:
-                ui_state.urdf_scene.update_playback_opacity()
+            if _apply_active is not None:
+                _apply_active.dry_run.playback.playback_time = t
+            sample = tl.sample(t)
 
-        # Swap tool mesh when crossing a select_tool boundary
-        if tl.tool_selection_keyframes and ui_state.urdf_scene:
-            sel = tl.sample_tool_selection(t)
-            if sel is not None:
-                sel_pair = (sel.tool_key, sel.variant_key)
-                if sel_pair != self._last_tool_selection:
-                    self._last_tool_selection = sel_pair
-                    ui_state.urdf_scene.apply_tool_everywhere(
-                        sel.tool_key, variant_key=sel.variant_key or None
-                    )
-                    # Sync to controller so readout reflects tool TCP
-                    if ui_state.control_panel and ui_state.control_panel.client:
-                        asyncio.create_task(
-                            ui_state.control_panel.client.select_tool(
-                                sel.tool_key,
-                                variant_key=sel.variant_key or "",
-                            )
+            # Sample tool position once (used for both teleport and URDF animation)
+            tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
+
+            if (
+                sample.joints
+                and ui_state.urdf_scene
+                and waldoctl.commander.status.simulator_active
+            ):
+                playback_coordination.sim_pose_override = True
+                ui_state.urdf_scene.set_axis_values(sample.joints)
+                waldoctl.commander.status.joints.angles.set_rad(
+                    np.asarray(sample.joints)
+                )
+                if ui_state.control_panel:
+                    playback_coordination.last_teleport_ts = time.monotonic()
+                    if self._teleport_task and not self._teleport_task.done():
+                        self._teleport_task.cancel()
+                    self._teleport_task = asyncio.create_task(
+                        self._teleport(
+                            waldoctl.commander.status.joints.angles.deg.tolist(),
+                            list(tool_pos) if tool_pos else None,
                         )
+                    )
 
-        # Drive tool animation from timeline keyframes
-        if (
-            tool_pos
-            and ui_state.urdf_scene
-            and tool_pos != robot_state.tool_status.positions
-        ):
-            robot_state.tool_status.positions = tool_pos
-            robot_state.tool_status.engaged = any(p > 0 for p in tool_pos)
-            ui_state.urdf_scene.update_tool_animation()
+            if tl.object_keyframes and ui_state.urdf_scene:
+                ui_state.urdf_scene.set_object_poses(tl.sample_objects(t))
 
-        if update_slider and self._scrub_slider is not None:
-            now = time.monotonic()
-            # Throttle slider updates to ~10Hz to reduce WebSocket churn
-            if (now - self._last_slider_update) >= 0.09:
-                self._last_slider_update = now
-                self._updating_slider = True
-                self._scrub_slider.value = t
-                self._updating_slider = False
+            # Physics annotations for this instant, inside the same batch
+            # so contacts and the arm land in one frame.
+            if ui_state.urdf_scene is not None and _apply_active is not None:
+                ticks = _apply_active.dry_run.ticks
+                if ticks is not None:
+                    view = waldoctl.commander.settings.view
+                    ui_state.urdf_scene.physics_overlay.update_frame(
+                        ticks,
+                        ticks.row_at(t),
+                        show_contacts=view.contacts_visible,
+                        show_com=view.com_visible,
+                    )
+
+            if (
+                _apply_active is not None
+                and sample.segment_index != _apply_active.dry_run.playback.current_step
+            ):
+                _apply_active.dry_run.playback.current_step = sample.segment_index
+                self._highlight_current_segment()
+                # Prev/next enabled state derives from current_step, so refresh at
+                # its mutation point (fires only on segment changes, not per tick).
+                self.update_play_button()
+                # Sim playback animates the active tab's simulation. If a
+                # script is also running, prefer the launching tab so the
+                # highlight stays on it even when the user scrubs while the
+                # script is paused on a different tab.
+                target_tab = (
+                    script_exec.launching_tab_id
+                    or waldoctl.commander.programs.active_id
+                )
+                if target_tab is not None:
+                    decorations.highlight_executing_line(
+                        _line_of(tl.segments, sample.segment_index), target_tab
+                    )
+                if ui_state.urdf_scene:
+                    ui_state.urdf_scene.update_playback_opacity()
+
+            # Swap tool mesh when crossing a select_tool boundary
+            if tl.tool_selection_keyframes and ui_state.urdf_scene:
+                sel = tl.sample_tool_selection(t)
+                if sel is not None:
+                    sel_pair = (sel.tool_key, sel.variant_key)
+                    if sel_pair != self._last_tool_selection:
+                        self._last_tool_selection = sel_pair
+                        ui_state.urdf_scene.apply_tool_everywhere(
+                            sel.tool_key, variant_key=sel.variant_key or None
+                        )
+                        # Sync to controller so readout reflects tool TCP
+                        if ui_state.control_panel and ui_state.control_panel.client:
+                            asyncio.create_task(
+                                ui_state.control_panel.client.select_tool(
+                                    sel.tool_key,
+                                    variant_key=sel.variant_key or "",
+                                )
+                            )
+
+            # Drive tool animation from timeline keyframes
+            if (
+                tool_pos
+                and ui_state.urdf_scene
+                and tool_pos != robot_state.tool_status.positions
+            ):
+                robot_state.tool_status.positions = tool_pos
+                robot_state.tool_status.engaged = any(p > 0 for p in tool_pos)
+                ui_state.urdf_scene.update_tool_animation()
+
+            if update_slider and self._scrub_slider is not None:
+                now = time.monotonic()
+                # Throttle slider updates to ~10Hz to reduce WebSocket churn
+                if (now - self._last_slider_update) >= 0.09:
+                    self._last_slider_update = now
+                    self._updating_slider = True
+                    self._scrub_slider.value = t
+                    self._updating_slider = False
+                    text = self._format_time(t, tl.total_duration)
+                    self._scrub_slider.props(f'label-value="{text}"')
+            elif not update_slider and self._scrub_slider is not None:
+                # Scrub: slider already has the right value, just update the label
                 text = self._format_time(t, tl.total_duration)
                 self._scrub_slider.props(f'label-value="{text}"')
-        elif not update_slider and self._scrub_slider is not None:
-            # Scrub: slider already has the right value, just update the label
-            text = self._format_time(t, tl.total_duration)
-            self._scrub_slider.props(f'label-value="{text}"')
 
     @staticmethod
     async def _teleport(joints_deg: list[float], tool_pos: list[float] | None) -> None:
@@ -710,14 +762,26 @@ class PlaybackController:
         """Build or return cached timeline from current path segments."""
         active = waldoctl.commander.programs.active
         if active is None or not active.dry_run.path_segments:
-            self._timeline = None
+            if self._timeline is not None:
+                self.invalidate_timeline()
             return None
         if self._timeline is None:
-            self._timeline = Timeline.from_segments(
-                active.dry_run.path_segments,
-                active.dry_run.tool_actions or None,
-                tool_selections=active.dry_run.tool_selections or None,
-            )
+            ticks = active.dry_run.ticks
+            if ticks is not None and ticks.rows > 1:
+                # Play back what the arm did. The planned segments still
+                # supply the line numbers and the checkpoints; the poses,
+                # the timing and the objects come from the record.
+                self._timeline = Timeline.from_ticks(
+                    ticks,
+                    active.dry_run.path_segments,
+                    tool_selections=active.dry_run.tool_selections or None,
+                )
+            else:
+                self._timeline = Timeline.from_segments(
+                    active.dry_run.path_segments,
+                    active.dry_run.tool_actions or None,
+                    tool_selections=active.dry_run.tool_selections or None,
+                )
             active.dry_run.total_duration = self._timeline.total_duration
             if self._scrub_slider is not None:
                 self._scrub_slider.props(f"max={self._timeline.total_duration}")
@@ -840,6 +904,7 @@ class PlaybackController:
         """Update play/pause button icon and stop/step button visibility."""
         script_running = is_any_program_running()
         active = waldoctl.commander.programs.active
+        self.sync_physics_pending()
         play_prog = self._play_program()
         play_is_playing = (
             play_prog.dry_run.playback.is_playing if play_prog is not None else False
@@ -880,6 +945,23 @@ class PlaybackController:
             can_step = not play_is_playing if script_running else active is not None
             self.step_program_btn.set_enabled(not recording and can_step)
 
+    def sync_physics_pending(self) -> None:
+        """Lock playback while a physics pass is still building the record.
+
+        Scrubbing into a run that does not exist yet would seek to rows
+        that have not been computed, so the controls wait and the scrub
+        bar says why. On a backend that cannot simulate this is never
+        pending and nothing here does anything.
+        """
+        active = waldoctl.commander.programs.active
+        pending = active is not None and active.dry_run.ticks_pending
+        if self._sim_loading_progress is not None:
+            self._sim_loading_progress.visible = pending
+        if self._scrub_slider is not None:
+            self._scrub_slider.set_enabled(not pending)
+        if self.play_btn is not None:
+            self.play_btn.set_enabled(not pending)
+
     # ---- Scrub bar segments ----
 
     def _do_update_scrub_segments(self) -> None:
@@ -900,8 +982,7 @@ class PlaybackController:
         self._last_highlighted_index = -1
 
         active = waldoctl.commander.programs.active
-        segments = active.dry_run.path_segments if active is not None else []
-        if not segments:
+        if active is None or not active.dry_run.path_segments:
             return
 
         self._timeline = None
@@ -915,13 +996,16 @@ class PlaybackController:
         if not tl or total_dur <= 0:
             return
 
-        step = active.dry_run.playback.current_step if active is not None else 0
+        step = active.dry_run.playback.current_step
         cum = tl.cumulative_times
         seg_durs = tl.segment_durations
 
         with self._scrub_container:
-            # Segment divs, absolute-positioned by timeline position.
-            for idx, segment in enumerate(segments):
+            # One division per segment the TIMELINE is indexed by — which
+            # is the recorded commands when a run is being replayed, and
+            # the planned segments otherwise. Indexing the plan against a
+            # record's times paints the wrong windows and walks off the end.
+            for idx, segment in enumerate(tl.segments):
                 color = segment.color or PathColors.CARTESIAN
                 is_current = idx == step
                 left_pct = cum[idx] / total_dur * 100
@@ -955,19 +1039,12 @@ class PlaybackController:
                 self._checkpoint_markers.append(marker)
 
             # Tool action markers — full-height (blocking) or mini (overlapping).
-            kf = tl.tool_keyframes
-            ta = active.dry_run.tool_actions if active is not None else []
-            for i in range(0, len(kf) - 1, 2):
-                if (
-                    kf[i].positions == kf[i + 1].positions
-                    or kf[i + 1].time <= kf[i].time
-                ):
+            for span in tl.tool_spans:
+                if span.end <= span.start:
                     continue
-                left_pct = kf[i].time / total_dur * 100
-                width_pct = (kf[i + 1].time - kf[i].time) / total_dur * 100
-                action_idx = i // 2
-                is_blocking = action_idx < len(ta) and ta[action_idx].sleep_offset == 0
-                if is_blocking:
+                left_pct = span.start / total_dur * 100
+                width_pct = (span.end - span.start) / total_dur * 100
+                if span.blocking:
                     top, height, radius = "0", "100%", "0"
                 else:
                     top, height, radius = "25%", "50%", "3px"
@@ -1018,17 +1095,9 @@ class PlaybackController:
         tl = self._timeline
         if tl and self._tool_markers:
             t = active.dry_run.playback.playback_time if active is not None else 0.0
-            kf = tl.tool_keyframes
-            marker_idx = 0
-            for i in range(0, len(kf) - 1, 2):
-                if (
-                    kf[i].positions != kf[i + 1].positions
-                    and kf[i + 1].time > kf[i].time
-                ):
-                    if marker_idx < len(self._tool_markers):
-                        opacity = "0.3" if kf[i + 1].time <= t else "0.7"
-                        self._tool_markers[marker_idx].style(f"opacity: {opacity};")
-                    marker_idx += 1
+            drawn = [s for s in tl.tool_spans if s.end > s.start]
+            for marker, span in zip(self._tool_markers, drawn):
+                marker.style(f"opacity: {'0.3' if span.end <= t else '0.7'};")
 
     # ---- Utility ----
 

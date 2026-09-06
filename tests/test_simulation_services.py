@@ -353,6 +353,16 @@ class TestMotionRecorder:
         recorder.record_action("set_shapes", shapes=[box])
         assert mock_textarea.value.count("from waldoctl import Box") == 1
 
+        # A body's code says `physics=Physical(...)`, so it needs that import
+        # too — the class name alone leaves the program un-runnable.
+        from waldoctl import Physical
+
+        block = Box(name="block", x=0.04, y=0.04, z=0.06, physics=Physical(mass=0.05))
+        mock_textarea.value = ""
+        recorder.record_action("set_shapes", shapes=[block])
+        assert "from waldoctl import Box, Physical" in mock_textarea.value
+        assert "physics=Physical(" in mock_textarea.value
+
     def test_record_action_ignored_when_not_recording(self, mock_textarea):
         """record_action should be ignored when not recording."""
         recorder = MotionRecorder()
@@ -1788,3 +1798,396 @@ def test_notify_step_changed_only_fires_step_listeners():
     finally:
         simulation_state.remove_change_listener(on_change)
         simulation_state.remove_step_listener(on_step)
+
+
+class TestObjectTrackPlumbing:
+    """Object motion reported by a preview reaches the segment dicts and the
+    change detection that decides whether to re-render."""
+
+    def test_segments_that_differ_only_in_an_object_landing_do_not_match(self):
+        from waldo_commander.state import PathSegment
+
+        def seg(landing_z: float) -> PathSegment:
+            return PathSegment(
+                points=[[0.3, 0.0, 0.3], [0.4, 0.0, 0.3]],
+                color="#00ff00",
+                is_valid=True,
+                line_number=3,
+                object_tracks=[
+                    {
+                        "name": "block",
+                        "poses": [
+                            [0.3, 0.0, 0.04, 1, 0, 0, 0],
+                            [0.4, 0.0, landing_z, 1, 0, 0, 0],
+                        ],
+                        "carried": False,
+                        "physics": True,
+                    }
+                ],
+            )
+
+        assert PathVisualizer._segments_match([seg(0.04)], [seg(0.04)])
+        assert not PathVisualizer._segments_match([seg(0.04)], [seg(0.30)]), (
+            "a program whose only change is where the block lands must re-render"
+        )
+
+    def test_tracks_ride_segments_and_tool_actions_sliced_like_the_trajectory(self):
+        from unittest.mock import MagicMock
+
+        import numpy as np
+        from waldoctl.results import DryRunResultData, ObjectTrack
+
+        from waldo_commander.services.path_preview_client import PathPreviewClient
+        from waldo_commander.state import ToolAction
+
+        n = 5
+        traj = np.zeros((n, 6))
+        poses = np.zeros((n, 3))
+        poses[:, 0] = np.linspace(0.3, 0.4, n)
+        block = ObjectTrack(
+            name="block",
+            poses=np.column_stack([poses, np.tile([1.0, 0, 0, 0], (n, 1))]),
+            carried=True,
+            physics=True,
+        )
+        stand = ObjectTrack(
+            name="stand",
+            poses=np.array([[0.3, 0, 0.005, 1, 0, 0, 0]]),
+            carried=False,
+            physics=True,
+        )
+        # The last two waypoints are invalid: the run split must slice the
+        # moving track exactly like the joint trajectory and leave the parked
+        # one whole.
+        result = DryRunResultData(
+            tcp_poses=np.column_stack([poses, np.zeros((n, 3))]),
+            end_joints_rad=np.zeros(6),
+            duration=1.0,
+            valid=np.array([True, True, True, False, False]),
+            joint_trajectory_rad=traj,
+            object_tracks=(block, stand),
+        )
+        inner = MagicMock()
+        inner.move_j.return_value = result
+        inner.tool.close.return_value = result
+        # A real client counts the commands it has recorded, and the
+        # preview reads that to map each one back to a source line; a
+        # mock that answers with a mock is not a client.
+        inner.program_length = 0
+        segments: list[dict] = []
+        actions: list[ToolAction] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=MagicMock(return_value=inner),
+            segment_collector=segments,
+            tool_action_collector=actions,
+        )
+        client.move_j([0, 0, 0, 0, 0, 0])
+
+        assert len(segments) == 2
+        for seg in segments:
+            tracks = {t["name"]: t for t in seg["object_tracks"]}
+            assert len(tracks["block"]["poses"]) == len(seg["joint_trajectory"])
+            assert len(tracks["stand"]["poses"]) == 1
+        assert segments[0]["object_tracks"][0]["carried"] is True
+
+
+class TestSimulatedRunPlumbing:
+    """The second pass: a physics record reaching the display.
+
+    parol6 has no plant, so the whole path is gated off for it — that
+    gating is half of what these check. The other half drives the record
+    through the pieces that read it, with a record shaped exactly as a
+    backend produces one.
+    """
+
+    @staticmethod
+    def _ticks(rows: int = 6, joints: int = 6) -> waldoctl.TickIndex:
+        """A record the way a backend reports one: the arm lags its
+        command, and the lag grows along the run."""
+        t = np.linspace(0.0, 1.0, rows, dtype=np.float32)
+        commanded = np.tile(t[:, None], (1, joints))
+        achieved = commanded - np.tile(t[:, None], (1, joints)) * 0.01
+        tcp = np.zeros((rows, 6), dtype=np.float32)
+        tcp[:, 0] = 0.3 + t * 0.1
+        return waldoctl.TickIndex(
+            row_dt_s=0.02,
+            joints_rad=achieved.astype(np.float32),
+            commanded_rad=commanded.astype(np.float32),
+            tcp=tcp,
+            tool_closed=np.zeros(rows, dtype=np.float32),
+            tool_gripping=np.zeros(rows, dtype=np.bool_),
+            blocks=(
+                waldoctl.TickBlock(command=0, start_row=0, rows=rows, line_number=3),
+            ),
+            digest=b"same-run",
+        )
+
+    def test_a_record_reports_its_own_geometry_and_divergence(self):
+        ticks = self._ticks(rows=6)
+
+        assert ticks.rows == 6
+        assert ticks.duration_s == pytest.approx(0.12)
+        # Time maps to a row, and rows past the end clamp rather than
+        # raising: a scrub bar dragged to the far right must land
+        # somewhere real.
+        assert ticks.row_at(0.0) == 0
+        assert ticks.row_at(0.05) == 2
+        assert ticks.row_at(99.0) == 5
+        assert ticks.block_at(3) is ticks.blocks[0]
+        assert ticks.block_at(99) is None
+
+        err = ticks.tracking_error_rad()
+        assert err.shape == (6,)
+        assert err[0] == pytest.approx(0.0)
+        assert err[-1] > err[1], "the divergence must grow along the run"
+
+    def test_divergence_colors_run_from_on_track_to_diverged(self):
+        from waldo_commander.services.urdf_scene.physics_overlay import (
+            FULL_DIVERGENCE_RAD,
+            divergence_colors,
+        )
+
+        colors = divergence_colors(
+            np.array([0.0, FULL_DIVERGENCE_RAD / 2, FULL_DIVERGENCE_RAD * 3])
+        )
+        assert len(colors) == 3
+        on_track, half, diverged = colors
+        # Green where the arm is doing what it was told, red where it is
+        # not, and saturating past the scale rather than running off it.
+        assert on_track[1] > on_track[0], "on-track reads green"
+        assert diverged[0] > diverged[1], "diverged reads red"
+        assert on_track[1] > half[1] > diverged[1]
+        assert diverged == divergence_colors(np.array([FULL_DIVERGENCE_RAD]))[0]
+
+    def test_a_backend_without_physics_never_runs_the_second_pass(self):
+        """parol6 plans and does not simulate, so nothing here engages."""
+        robot = get_robot("parol6")
+        assert not robot.has_physics_simulation
+
+        old_robot = ui_state.robot
+        ui_state.robot = robot
+        try:
+            visualizer = PathVisualizer()
+            result = asyncio.run(visualizer.update_physics_simulation(tab_id="nope"))
+        finally:
+            ui_state.robot = old_robot
+        assert result is None
+
+    def test_an_unchanged_record_is_not_redrawn(self):
+        """The flash guard: an identical run repaints nothing.
+
+        The backend guarantees a bit-identical record for the same
+        program, so an equal digest means an equal picture — and the
+        overlay must take that as permission to leave the scene alone.
+        """
+        from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
+
+        overlay = PhysicsOverlay(MagicMock(scene=None))
+        # No live scene: the build is a no-op and nothing is cached, so a
+        # later call with a real scene still builds.
+        overlay.render(self._ticks(), show_divergence=True)
+        assert not overlay.is_built
+
+        overlay._digest = b"same-run"
+        overlay._group = object()
+        overlay.render(self._ticks(), show_divergence=True)
+        assert overlay.is_built, "an identical digest must not tear the group down"
+
+        overlay.render(None, show_divergence=True)
+        assert not overlay.is_built, "no record, no overlay"
+
+    def test_playback_over_a_record_replays_measured_poses(self):
+        """A timeline built from ticks plays what was measured.
+
+        The planned timeline interpolates between waypoints; this one has
+        the rows, so a pose at time t is the row at time t. The planned
+        segments still supply the line number, which is what keeps the
+        executing-line highlight pointing at the right place.
+        """
+        from waldo_commander.services.timeline import Timeline
+        from waldo_commander.state import PathSegment
+
+        ticks = self._ticks(rows=6)
+        planned = [
+            PathSegment(
+                points=[[0.3, 0.0, 0.2], [0.4, 0.0, 0.2]],
+                color="#00ff00",
+                is_valid=True,
+                line_number=3,
+                joint_trajectory=[[0.0] * 6, [1.0] * 6],
+                estimated_duration=99.0,
+            )
+        ]
+        tl = Timeline.from_ticks(ticks, planned)
+
+        # The run's duration, not the plan's guess at it.
+        assert tl.total_duration == pytest.approx(ticks.duration_s)
+        assert tl.cumulative_times[0] == 0.0
+        assert tl.cumulative_times[-1] == pytest.approx(ticks.duration_s)
+        assert tl._segments[0].line_number == 3
+
+        mid = tl.sample(ticks.duration_s / 2)
+        assert mid.segment_index == 0
+        assert mid.joints is not None
+        row = ticks.row_at(ticks.duration_s / 2)
+        assert mid.joints == pytest.approx(
+            [float(v) for v in ticks.joints_rad[row]], abs=1e-6
+        )
+        # Measured, so it carries the servo lag the plan cannot show.
+        assert mid.joints != pytest.approx(
+            [float(v) for v in ticks.commanded_rad[row]], abs=1e-6
+        )
+
+        end = tl.sample(999.0)
+        assert end.joints == pytest.approx(
+            [float(v) for v in ticks.joints_rad[-1]], abs=1e-6
+        )
+
+    def test_a_block_with_no_planned_segment_still_takes_a_slot(self):
+        """Index density: prev/next steps through commands, so a command
+        the planner drew nothing for cannot vanish from the sequence."""
+        from waldo_commander.services.timeline import Timeline
+
+        ticks = self._ticks(rows=6)
+        ticks.blocks = (
+            waldoctl.TickBlock(command=0, start_row=0, rows=3, line_number=3),
+            waldoctl.TickBlock(command=1, start_row=3, rows=3, line_number=9),
+        )
+        tl = Timeline.from_ticks(ticks, [])
+
+        assert len(tl._segments) == 2
+        assert [s.line_number for s in tl._segments] == [3, 9]
+        assert tl.sample(0.0).segment_index == 0
+        assert tl.sample(ticks.duration_s).segment_index == 1
+
+    def test_the_achieved_path_toggle_works_on_a_record_already_drawn(self):
+        """The toggle is a visibility flip, not a rebuild.
+
+        `render` short-circuits on the digest so an unchanged record is
+        not redrawn — but the toggle has to be read on that path too, or
+        it does nothing at all for as long as the record stays put, while
+        the legend (reading the same flag) hides its row and contradicts
+        the scene.
+        """
+        from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
+
+        overlay = PhysicsOverlay(MagicMock(scene=None))
+        drawn = MagicMock()
+        overlay._group = object()
+        overlay._achieved = drawn
+        overlay._digest = b"same-run"
+
+        overlay.render(self._ticks(), show_divergence=False)
+        drawn.visible.assert_called_with(False)
+        overlay.render(self._ticks(), show_divergence=True)
+        drawn.visible.assert_called_with(True)
+        assert overlay.is_built, "a toggle must not tear the geometry down"
+
+    def test_a_long_run_is_decimated_without_losing_a_divergence_spike(self):
+        """A ten-minute record is 30,000 rows; every one would cross as a
+        point triple and a colour triple in one scene command built on the
+        event loop. Positions are sampled, but the error is taken as the
+        max over each collapsed span — a spike lasting three rows is the
+        whole reason the overlay exists.
+        """
+        from waldo_commander.services.urdf_scene.physics_overlay import (
+            MAX_ACHIEVED_POINTS,
+            decimate,
+        )
+
+        rows = 30_000
+        tcp = np.zeros((rows, 6), dtype=np.float32)
+        tcp[:, 0] = np.linspace(0.0, 1.0, rows)
+        error = np.full(rows, 1e-4, dtype=np.float32)
+        error[17_000:17_003] = 0.05  # a three-row spike
+
+        points, worst = decimate(tcp, error)
+        assert len(points) == len(worst) <= MAX_ACHIEVED_POINTS
+        assert points[0][0] == pytest.approx(tcp[0][0])
+        assert worst.max() == pytest.approx(0.05), (
+            "sampling the error would drop a spike shorter than the stride"
+        )
+        # Short runs are left alone.
+        assert decimate(tcp[:10], error[:10])[0].shape[0] == 10
+
+
+class TestWorldStateRepair:
+    """Two ways the shape layers could be left in a state no edit escapes,
+    and one way the scene lied about the ground."""
+
+    def test_readback_never_leaves_a_name_in_both_layers(self):
+        """Adopting the backend's world drops a proposal it now enforces.
+
+        Readback is truth and is adopted wholesale, so a program shape
+        arriving under a drafted name would leave both layers holding it —
+        and `_assign`'s clash check then refuses every later edit,
+        including from handlers that do not catch it.
+        """
+        from waldoctl.shapes import Box
+
+        from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
+
+        handle = WcSceneHandle()
+        handle._installation_draft = (Box(name="wall", x=1, y=1, z=1),)
+        handle._shapes = []
+
+        # The backend comes back enforcing `wall` in the program layer.
+        handle._installation = ()
+        handle._shapes = [Box(name="wall", x=1, y=1, z=1)]
+        adopted = {s.name for s in handle._installation}
+        adopted |= {s.name for s in handle._shapes}
+        handle._installation_draft = tuple(
+            s for s in handle._installation_draft if s.name not in adopted
+        )
+
+        assert [s.name for s in handle.installation_draft] == []
+        names = [s.name for s in handle.enforced_locally]
+        assert names.count("wall") == 1, f"one layer only, got {names}"
+
+    def test_a_refused_withdrawal_keeps_the_proposal(self):
+        """Withdrawing moves both layers at once.
+
+        Discarding first and re-adding after destroys the drafted
+        geometry whenever the re-add is refused — and the caller has
+        nothing left to put back.
+        """
+        from waldoctl.shapes import Box
+
+        from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
+
+        handle = WcSceneHandle()
+        handle._installation_draft = (Box(name="wall", x=1, y=1, z=1),)
+        handle._shapes = []
+
+        with patch.object(WcSceneHandle, "_assign", side_effect=ValueError("refused")):
+            with pytest.raises(ValueError):
+                handle.withdraw_proposal("wall")
+
+        assert [s.name for s in handle.installation_draft] == ["wall"], (
+            "a refusal must leave the proposal where it was"
+        )
+
+    def test_only_actual_ground_replaces_the_placeholder_disc(self):
+        """A table is not a floor.
+
+        The disc stands in for a backend that describes no ground; hiding
+        it for any non-empty installation leaves a table floating in the
+        void, and the table-only layout is the example the backend's own
+        docs give.
+        """
+        from waldoctl.shapes import Box, Cylinder
+
+        from waldo_commander.services.urdf_scene.urdf_scene import _is_ground
+
+        floor = Box(name="floor", x=6, y=6, z=0.2, pose=(0, 0, -0.1, 0, 0, 0))
+        table = Box(name="table", x=1, y=1, z=0.7, pose=(0.6, 0, 0.35, 0, 0, 0))
+        # A cylinder spanning the origin at floor level counts too — the
+        # rule is about where a solid sits, not what kind it is.
+        disc = Cylinder(name="pad", radius=3.0, length=0.1, pose=(0, 0, -0.05, 0, 0, 0))
+        assert _is_ground(floor)
+        assert _is_ground(disc)
+        assert not _is_ground(table), "a table beside the robot is not the floor"
+        # A slab that spans the origin but rises above the base is furniture.
+        assert not _is_ground(
+            Box(name="plinth", x=6, y=6, z=1.0, pose=(0, 0, 0.5, 0, 0, 0))
+        )

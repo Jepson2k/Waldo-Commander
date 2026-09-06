@@ -296,8 +296,13 @@ class EditorDecorations:
             else:
                 logger.debug("Cannot flash editor tab: no client available")
 
-    def highlight_executing_line(self, step_index: int, tab_id: str) -> None:
-        """Highlight the source line on the launching tab for the current step.
+    def highlight_executing_line(self, line_number: int, tab_id: str) -> None:
+        """Highlight *line_number* on the launching tab; 0 clears it.
+
+        Takes the line rather than a step index on purpose. The two
+        callers do not share an index space — a live run counts planned
+        segments, while playback counts whatever the timeline is indexed
+        by — so each resolves its own line and this only draws.
 
         ``tab_id`` is the tab the script was launched from. Decorations
         stay on that tab even if the user switches away mid-run.
@@ -306,12 +311,7 @@ class EditorDecorations:
         if textarea is None:
             return
 
-        new_line: int | None = None
-        tab = waldoctl.commander.programs.get(tab_id)
-        if tab and 0 <= step_index < len(tab.dry_run.path_segments):
-            segment = tab.dry_run.path_segments[step_index]
-            if segment.line_number > 0:
-                new_line = segment.line_number
+        new_line: int | None = line_number if line_number > 0 else None
 
         current = self._executing_line_by_tab.get(tab_id)
         if new_line == current:

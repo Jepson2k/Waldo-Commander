@@ -520,3 +520,121 @@ async def test_handeye_auto_calibration(
         await asyncio.sleep(0.5)
         for key in ("handeye/MSG", "handeye/board", "tool_camera/MSG", "selected_tool"):
             ng_app.storage.general.pop(key, None)
+
+
+@pytest.mark.integration
+async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
+    """A Stop from anywhere else aborts auto-calibration.
+
+    The controller cancels the command without completing it and without
+    an error, so `wait_command` resolves neither True nor raises — and it
+    stays enabled through a Stop. A run that read the halt as success
+    would capture a view at the halted pose and then drive the arm to the
+    next one, seconds after a human deliberately stopped it.
+    """
+    from waldo_commander.components.handeye_calibration import (
+        HandEyeCalibrationPanel,
+    )
+
+    panel = HandEyeCalibrationPanel()
+    commander = waldoctl.commander
+
+    class _HaltingClient:
+        """Answers as the controller does through a Stop: the move starts,
+        then the action goes idle with no completion and no error."""
+
+        def __init__(self) -> None:
+            self.moves = 0
+            self.waits = 0
+
+        async def angles(self):
+            return [0.0] * 6
+
+        async def move_j(self, target, duration=None, **kw):
+            self.moves += 1
+            commander.status.action.state = waldoctl.ActionState.EXECUTING
+            return 7
+
+        async def wait_command(self, index, timeout=0.0):
+            self.waits += 1
+            if self.waits >= 2:
+                commander.status.action.state = waldoctl.ActionState.IDLE
+            return False
+
+    client = _HaltingClient()
+    before = commander.status.action.state
+    try:
+        index = await panel._auto_move(
+            type("C", (), {"client": client, "status": commander.status})(),
+            [10.0] * 6,
+        )
+    finally:
+        commander.status.action.state = before
+
+    assert index < 0, "a halted move must not report the index of a finished one"
+    assert panel._auto_cancel, "the run must stop, not roll on to the next view"
+    assert client.moves == 1, "no further motion may be commanded after a Stop"
+
+
+@pytest.mark.integration
+async def test_an_unpopulated_pose_is_never_captured(user: User) -> None:
+    """All-zeros is the uninitialised value, not a pose.
+
+    The status cache seeds it that way and fills it only once the arm
+    reports, so an unplugged robot answers zeros indefinitely. Stored as a
+    sample it raises "non-positive determinant" out of the *next* capture,
+    which reads as a camera fault rather than a disconnected robot.
+    """
+    from waldo_commander.components.handeye_calibration import (
+        HandEyeCalibrationPanel,
+    )
+    from waldo_commander.state import robot_state
+
+    panel = HandEyeCalibrationPanel()
+
+    class _ZeroPoseClient:
+        async def status(self):
+            return type("S", (), {"pose": [0.0] * 16})()
+
+    # `pose` is a preallocated array mutated in place, so it is restored
+    # the same way rather than reassigned.
+    before = robot_state.pose.copy()
+    robot_state.pose[:] = 0.0
+    try:
+        got = await panel._current_pose_matrix(
+            type("C", (), {"client": _ZeroPoseClient()})()
+        )
+    finally:
+        robot_state.pose[:] = before
+
+    assert got is None, "a zero pose must be refused by both branches alike"
+
+
+@pytest.mark.integration
+async def test_clearing_a_board_field_reverts_instead_of_wedging(user: User) -> None:
+    """NiceGUI sets a number's value to None the moment its text is
+    cleared — which is what selecting a field to retype it does. Parsing
+    that raised TypeError past the handler's except, so the revert never
+    ran and the field stayed blank, re-raising on every later edit to any
+    of the five inputs."""
+    from waldo_commander.services import handeye
+
+    spec = handeye.BoardSpec(
+        squares_x=5,
+        squares_y=7,
+        square_mm=25.0,
+        marker_mm=18.0,
+        dictionary="DICT_4X4_50",
+    )
+
+    def num(value, fallback, cast):
+        return fallback if value is None else cast(value)
+
+    rebuilt = handeye.BoardSpec(
+        squares_x=num(None, spec.squares_x, int),
+        squares_y=num(7.0, spec.squares_y, int),
+        square_mm=num(None, spec.square_mm, float),
+        marker_mm=num(18.0, spec.marker_mm, float),
+        dictionary=str(None or spec.dictionary),
+    )
+    assert rebuilt == spec, "an emptied field means unchanged, not zero"
