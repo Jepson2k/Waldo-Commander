@@ -289,49 +289,46 @@ class ScriptExecutionController:
 
     # ---- Internals ----
 
+    def _consume_script_events(self, ui_client: Client) -> None:
+        if self._step_controller is None:
+            return
+        events = self._step_controller.poll_events()
+        for event in events:
+            event_type = event.get("event")
+            method = event.get("method", "")
+            step = event.get("step", 0)
+            running_tab = self._launching_program()
+            if isinstance(event_type, str) and event_type.startswith("skill_"):
+                phase = event_type.removeprefix("skill_")
+                message = event.get("message", "")
+                fraction = event.get("fraction")
+                progress = f" ({fraction:.0%})" if fraction is not None else ""
+                detail = f": {message}" if message else ""
+                self._record_line(f"{method} {phase}{progress}{detail}", ui_client)
+            elif event_type == "start":
+                with ui_client:
+                    if running_tab is not None:
+                        running_tab.dry_run.playback.executing_step_index = step
+                        running_tab.dry_run.playback.executing_step_at_end = False
+                        running_tab.dry_run.playback.current_step = step
+                        running_tab.dry_run.playback.notify_step_changed()
+                    simulation_state.notify_step_changed()
+            elif event_type == "complete":
+                with ui_client:
+                    if running_tab is not None:
+                        running_tab.dry_run.playback.executing_step_index = step
+                        running_tab.dry_run.playback.executing_step_at_end = True
+                        running_tab.dry_run.playback.current_step = step
+                        running_tab.dry_run.playback.notify_step_changed()
+                    simulation_state.notify_step_changed()
+                logger.debug("Script event: %s completed (step %d)", method, step)
+
     async def _watch_script_events(self, ui_client: Client) -> None:
         """Poll for script events and publish step transitions to simulation_state."""
         watcher_crashed = False
         try:
             while is_any_program_running() and self._step_controller:
-                events = self._step_controller.poll_events()
-                for event in events:
-                    event_type = event.get("event")
-                    method = event.get("method", "")
-                    step = event.get("step", 0)
-                    running_tab = self._launching_program()
-                    if isinstance(event_type, str) and event_type.startswith("skill_"):
-                        phase = event_type.removeprefix("skill_")
-                        message = event.get("message", "")
-                        fraction = event.get("fraction")
-                        progress = f" ({fraction:.0%})" if fraction is not None else ""
-                        detail = f": {message}" if message else ""
-                        self._record_line(
-                            f"{method} {phase}{progress}{detail}", ui_client
-                        )
-                    elif event_type == "start":
-                        with ui_client:
-                            if running_tab is not None:
-                                running_tab.dry_run.playback.executing_step_index = step
-                                running_tab.dry_run.playback.executing_step_at_end = (
-                                    False
-                                )
-                                running_tab.dry_run.playback.current_step = step
-                                running_tab.dry_run.playback.notify_step_changed()
-                            simulation_state.notify_step_changed()
-                    elif event_type == "complete":
-                        with ui_client:
-                            if running_tab is not None:
-                                running_tab.dry_run.playback.executing_step_index = step
-                                running_tab.dry_run.playback.executing_step_at_end = (
-                                    True
-                                )
-                                running_tab.dry_run.playback.current_step = step
-                                running_tab.dry_run.playback.notify_step_changed()
-                            simulation_state.notify_step_changed()
-                        logger.debug(
-                            "Script event: %s completed (step %d)", method, step
-                        )
+                self._consume_script_events(ui_client)
                 await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             logger.debug("Event watcher task cancelled")
@@ -365,6 +362,9 @@ class ScriptExecutionController:
                     await t
             if self.script_handle is handle:
                 self.last_exit_code = rc
+                # The process can exit between polls; drain its terminal
+                # events before cleanup deletes the IPC file and tab identity.
+                self._consume_script_events(ui_client)
                 with ui_client:
                     self._reset_state()
                     logger.info("Script %s finished with code %s", filename, rc)

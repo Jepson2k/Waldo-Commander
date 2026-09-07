@@ -827,6 +827,13 @@ with RobotClient() as rbt:
             "waldo.retract progress (0%): Moving along tool Z" in entry.text
             for entry in tab.log.entries
         ), "skill progress must reach the program log through subprocess events"
+        user.find(marker="editor-play-btn").click()
+        async with asyncio.timeout(15):
+            while is_any_program_running():
+                await asyncio.sleep(0.05)
+        assert any(
+            "test.withdraw_twice completed" in entry.text for entry in tab.log.entries
+        ), "terminal skill events must survive subprocess cleanup"
     finally:
         if is_any_program_running():
             user.find(marker="editor-stop-btn").click()
