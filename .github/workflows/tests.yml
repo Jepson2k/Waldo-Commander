@@ -252,9 +252,13 @@ jobs:
       - name: cache pinocchio toolchain
         uses: actions/cache@v4
         with:
-          path: par6/.ffi
+          path: |
+            par6/.ffi/shim
+            par6/.ffi/toppra
+            par6/.ffi/src
+            par6/.ffi/mujoco
           key: >-
-            ffi-${{ runner.os }}-${{ steps.par6-build.outputs.pixi }}-${{
+            ffi-prefixes-v2-${{ runner.os }}-${{ steps.par6-build.outputs.pixi }}-${{
             hashFiles('par6/pixi.lock', 'par6/scripts/ffi/**', 'par6/cpp/**') }}
 
       # Release, not debug: the sim runs in wall-clock time and an
