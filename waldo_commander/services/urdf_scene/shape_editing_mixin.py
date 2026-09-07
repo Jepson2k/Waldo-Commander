@@ -26,11 +26,9 @@ from waldoctl.shapes import (
     Ellipsoid,
     Shape,
     Sphere,
+    param_names as shape_param_names,
 )
 
-# The documented per-shape split: these four are ShapeBase's common fields,
-# everything else on a subclass is a coal dimension param (shapes.params()).
-_COMMON = ("name", "pose", "collision", "margin")
 _KINDS: dict[str, type] = {
     c.__name__.lower(): c for c in (Box, Sphere, Cylinder, Capsule, Cone, Ellipsoid)
 }
@@ -154,7 +152,7 @@ class ShapeEditingMixin:
             kind = shape.kind
         assert kind is not None
         cls = _KINDS[kind]
-        param_names = [f.name for f in fields(cls) if f.name not in _COMMON]
+        param_names = shape_param_names(cls)
 
         if editing:
             pose = shape.pose
@@ -234,6 +232,7 @@ class ShapeEditingMixin:
                         params[p] = v / 1000
                     margin_v = margin_in.value
                     new = cls(
+                        physics=shape.physics if shape is not None else None,
                         name=str(name_in.value).strip() or name0,
                         pose=tuple(
                             [float(w.value) / 1000 for w in pos_in]

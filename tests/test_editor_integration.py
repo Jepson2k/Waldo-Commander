@@ -757,6 +757,84 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
     assert prev_btn.visible is True, "prev button should reappear after the run"
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("async_program", [False, True])
+async def test_nested_imported_skill_keeps_preview_and_gui_steps(
+    user: User, async_program: bool
+) -> None:
+    import numpy as np
+    import waldoctl
+
+    body = """from waldoctl.client import RobotClient as Client
+from waldoctl.skills import skill
+from waldo_commander.skills import retract
+
+@skill(id="test.withdraw_twice", version="1.0.0")
+async def withdraw_twice(rbt: Client):
+    await retract.async_call(rbt, distance_mm=2.0)
+    await retract.async_call(rbt, distance_mm=2.0)
+"""
+    if async_program:
+        body += """
+import asyncio
+from parol6 import AsyncRobotClient
+async def main():
+    async with AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
+        await withdraw_twice.async_call(rbt)
+asyncio.run(main())
+"""
+    else:
+        body += """
+from parol6 import RobotClient
+with RobotClient() as rbt:
+    rbt.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
+    withdraw_twice(rbt)
+"""
+    _, tab = await _open_simulated_three_move_program(user, body)
+    assert tab.dry_run.total_steps == 3
+    pb = tab.dry_run.playback
+
+    async def wait_step(step: int) -> None:
+        async with asyncio.timeout(30):
+            while pb.executing_step_index != step or not pb.executing_step_at_end:
+                await asyncio.sleep(0.05)
+
+    try:
+        user.find(marker="editor-step-program").click()
+        await wait_step(0)
+        first = await waldoctl.commander.client.pose()
+        assert first is not None
+
+        user.find(marker="editor-step-program").click()
+        await wait_step(1)
+        second = await waldoctl.commander.client.pose()
+        assert second is not None
+        assert np.linalg.norm(np.array(second[:3]) - first[:3]) == pytest.approx(
+            2.0, abs=0.3
+        )
+        assert is_any_program_running() and not pb.is_playing
+
+        user.find(marker="editor-step-program").click()
+        await wait_step(2)
+        third = await waldoctl.commander.client.pose()
+        assert third is not None
+        assert np.linalg.norm(np.array(third[:3]) - second[:3]) == pytest.approx(
+            2.0, abs=0.3
+        )
+        assert is_any_program_running() and not pb.is_playing
+        assert any(
+            "waldo.retract progress (0%): Moving along tool Z" in entry.text
+            for entry in tab.log.entries
+        ), "skill progress must reach the program log through subprocess events"
+    finally:
+        if is_any_program_running():
+            user.find(marker="editor-stop-btn").click()
+            async with asyncio.timeout(10):
+                while is_any_program_running():
+                    await asyncio.sleep(0.05)
+
+
 _BLENDED_SCRIPT = """from parol6 import RobotClient
 rbt = RobotClient()
 rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0, r=15, wait=False)

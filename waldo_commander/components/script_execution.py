@@ -300,7 +300,16 @@ class ScriptExecutionController:
                     method = event.get("method", "")
                     step = event.get("step", 0)
                     running_tab = self._launching_program()
-                    if event_type == "start":
+                    if isinstance(event_type, str) and event_type.startswith("skill_"):
+                        phase = event_type.removeprefix("skill_")
+                        message = event.get("message", "")
+                        fraction = event.get("fraction")
+                        progress = f" ({fraction:.0%})" if fraction is not None else ""
+                        detail = f": {message}" if message else ""
+                        self._record_line(
+                            f"{method} {phase}{progress}{detail}", ui_client
+                        )
+                    elif event_type == "start":
                         with ui_client:
                             if running_tab is not None:
                                 running_tab.dry_run.playback.executing_step_index = step
