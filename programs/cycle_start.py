@@ -7,6 +7,9 @@ a program, so no GUI configuration is needed:
   3. Drop Output 2 and run one cycle of moves.
   4. Repeat CYCLES times; use `while True:` for a free-running cell (the
      editor preview only renders programs that finish).
+
+Preview stops at the start-input wait because no live button/PLC observation is
+available. The home/standby path before that wait is still previewed.
 """
 
 from parol6 import RobotClient

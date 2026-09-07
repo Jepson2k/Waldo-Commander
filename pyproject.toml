@@ -15,7 +15,7 @@ dependencies = [
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.12.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.14.0",
   # <5: OpenCV 5.0 main-modules builds dropped cv2.calibrateHandEye, which
   # the hand-eye calibration panel requires.
   "opencv-python-headless>=4.8,<5",
@@ -52,11 +52,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.7.0"]
+parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.8.0"]
 par6 = ["par6 @ git+https://github.com/Jepson2k/par6.git@main#subdirectory=python"]
 v4l2 = ["linuxpy>=0.24"]
 dev = [
-  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.7.0",
+  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.8.0",
   "ruff",
   # ty 0.0.74 regressed ParamSpec-typed calls (numba's Dispatcher.__call__
   # stubs): every 2-arg call of a jitted pinokin function reports
@@ -75,6 +75,9 @@ dev = [
 
 [project.scripts]
 waldo-commander = "waldo_commander.main:main"
+
+[project.entry-points."waldoctl.skills"]
+retract = "waldo_commander.skills:retract"
 
 [project.entry-points."waldoctl.panels"]
 handeye = "waldo_commander.components.handeye_calibration:HandEyeCalibrationPanel"

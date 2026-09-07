@@ -17,8 +17,14 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
+from collections.abc import Coroutine
+from typing import TypeVar, cast
+
+from waldoctl.client import RobotClient
 
 from .path_preview_client import MOTION_METHODS
+
+R = TypeVar("R")
 
 # Methods that trigger wait_command and stepping: all motion methods plus
 # non-motion commands that queue on the controller.
@@ -203,6 +209,18 @@ class SteppingClientWrapper:
         self._step_io = step_io
         self._in_blend = False
         self._last_blend_index: int = -1
+
+    def run_skill(self, invoke: Callable[[RobotClient], Coroutine[Any, Any, R]]) -> R:
+        """Keep native motion stepping when a sync program calls an async skill."""
+        self._flush_blend()
+
+        async def execute(client: RobotClient) -> R:
+            wrapped = AsyncSteppingClientWrapper(client, self._step_io)
+            result = await invoke(cast(RobotClient, wrapped))
+            await wrapped.finalize()
+            return result
+
+        return self._wrapped.run_skill(execute)
 
     def finalize(self) -> None:
         """Barrier for a pending blend group: wait it out, emit completion,

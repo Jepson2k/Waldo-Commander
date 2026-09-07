@@ -186,7 +186,7 @@ def _update_warning_notification() -> None:
     if ps is None or not readiness_state.urdf_scene_ready.is_set():
         return
     entries = waldoctl.commander.status.warnings.entries
-    msg = "; ".join(str(e[2]) for e in entries)
+    msg = "; ".join(e.title for e in entries)
     if msg == ps.warning_banner_text:
         return
     ps.warning_banner_text = msg
@@ -1973,23 +1973,30 @@ async def _status_consumer() -> None:
                     # compare, copy on change — the decoder refills the
                     # buffer list in place.
                     entries = getattr(status, "warnings", None)
+                    if entries is not None:
+                        entries = [
+                            e
+                            if isinstance(e, waldoctl.RobotError)
+                            else waldoctl.RobotError.from_wire(e)
+                            for e in entries
+                        ]
                     if entries is not None and st.warnings.entries != entries:
                         # New conditions go to the durable log; the banner
                         # tracks only the standing (self-clearing) set.
-                        prev = {tuple(e) for e in st.warnings.entries}
+                        prev = set(st.warnings.entries)
                         for e in entries:
-                            if tuple(e) not in prev:
+                            if e not in prev:
                                 # The wire tuple is
                                 # (command_index, code, title, cause,
                                 #  effect, remedy) — the log keeps all of
                                 # it, since the remedy is the half that
                                 # says what to do about the condition.
                                 robot_events.add(
-                                    code=int(e[1]) if len(e) > 1 else 0,
-                                    title=str(e[2]) if len(e) > 2 else str(e),
-                                    cause=str(e[3]) if len(e) > 3 else "",
-                                    effect=str(e[4]) if len(e) > 4 else "",
-                                    remedy=str(e[5]) if len(e) > 5 else "",
+                                    code=e.code,
+                                    title=e.title,
+                                    cause=e.cause,
+                                    effect=e.effect,
+                                    remedy=e.remedy,
                                 )
                         st.warnings.entries = list(entries)
 

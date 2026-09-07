@@ -16,8 +16,7 @@ import threading
 import traceback
 from dataclasses import asdict
 from types import ModuleType
-from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 import numpy as np
 
 from nicegui import run
@@ -360,7 +359,7 @@ def _run_simulation_isolated(
         sys.modules["time"] = mock_time
 
         sim_globals = {
-            "__name__": "__simulation__",
+            "__name__": "__main__",
             "__file__": "simulation_script.py",
             "__builtins__": builtins.__dict__.copy(),
             "print": lambda *args, **kwargs: None,
@@ -386,37 +385,6 @@ def _run_simulation_isolated(
             code = compile(program_text, "simulation_script.py", "exec")
 
             exec(code, sim_globals)
-
-            if "main" in sim_globals:
-                main_func = sim_globals["main"]
-
-                if asyncio.iscoroutinefunction(main_func):
-                    # asyncio.run() works in the normal subprocess context.
-                    try:
-                        coro = main_func()
-                        asyncio.run(coro)
-                    except RuntimeError as e:
-                        if "cannot be called from a running event loop" in str(e):
-                            # The coroutine from asyncio.run() was never awaited;
-                            # close it explicitly to suppress the RuntimeWarning.
-                            coro.close()
-                            # Fallback in-process mode: already inside a running
-                            # loop, so spin up a fresh loop in a thread.
-                            import concurrent.futures
-
-                            def run_async_in_thread():
-                                return asyncio.run(main_func())
-
-                            with concurrent.futures.ThreadPoolExecutor(
-                                max_workers=1
-                            ) as pool:
-                                future = pool.submit(run_async_in_thread)
-                                future.result(timeout=_simulation_timeout_s())
-                        else:
-                            raise
-
-                elif callable(main_func):
-                    cast(Callable[[], None], main_func)()
 
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"

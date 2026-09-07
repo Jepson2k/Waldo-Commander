@@ -907,6 +907,9 @@ import parol6
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -929,6 +932,9 @@ async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([80, -80, 170, 10, 10, 170], speed=1.0)
         await rbt.move_j([100, -100, 190, -10, -10, 190], speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -954,6 +960,9 @@ import parol6
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -990,6 +999,9 @@ async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
         await rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -1021,6 +1033,9 @@ import parol6
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], duration=0.01)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -1061,6 +1076,9 @@ async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j(joints_a, speed=1.0)
         await rbt.move_j(joints_b, speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
