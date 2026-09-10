@@ -198,8 +198,10 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
             while not is_any_program_running():
                 await asyncio.sleep(0.05)
         assert await client.wait_status(
-            lambda s: s.executing_index > 0
-            and s.action_state == waldoctl.ActionState.EXECUTING,
+            lambda s: (
+                s.executing_index > 0
+                and s.action_state == waldoctl.ActionState.EXECUTING
+            ),
             timeout=15,
         ), "the cancellation case must reach actual motion"
         await script_exec.stop()
