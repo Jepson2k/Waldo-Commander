@@ -102,6 +102,7 @@ class StepIO:
         self._last_step_acked = 0
         self.capture_values = os.environ.get("WALDO_RECORD_VALUES") == "1"
         self._event_lock = threading.Lock()
+        self._events = self._read_events()
 
     def active_time(self) -> float:
         control = _read_control(self._control_file)
@@ -156,7 +157,7 @@ class StepIO:
             **extra: Additional event data
         """
         with self._event_lock:
-            events = self._read_events()
+            events = self._events
             sequence = events[-1].get("sequence", len(events)) + 1 if events else 1
             events.append(
                 {
@@ -170,8 +171,11 @@ class StepIO:
                     **extra,
                 }
             )
+            # Keep unpublished events for the next flush if a reader or virus
+            # scanner temporarily prevents replacing the file on Windows.
+            self._events = events[-256:]
             try:
-                _atomic_write(self._event_file, {"events": events[-256:]})
+                _atomic_write(self._event_file, {"events": self._events})
             except OSError:
                 # Diagnostics cannot change whether a command executes.
                 logging.getLogger(__name__).exception("Could not record command event")
