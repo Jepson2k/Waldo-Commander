@@ -615,20 +615,20 @@ class SettingsContent:
 
     def _build_tool_section(self) -> None:
         synchronizing = False
-        changing = False
+        pending_changes = 0
 
         async def change_tool(e):
-            nonlocal changing
+            nonlocal pending_changes
             try:
                 await _on_tool_change(e)
             finally:
-                changing = False
+                pending_changes -= 1
 
         def request_tool_change(e):
-            nonlocal changing
+            nonlocal pending_changes
             if synchronizing:
                 return None
-            changing = True
+            pending_changes += 1
             return change_tool(e)
 
         async def _on_tool_change(e):
@@ -699,7 +699,7 @@ class SettingsContent:
             status = waldoctl.commander.status
             tool = status.tool.key
             if (
-                changing
+                pending_changes
                 or self._tool_lock.locked()
                 or not (status.connected or status.simulator_active)
             ):
