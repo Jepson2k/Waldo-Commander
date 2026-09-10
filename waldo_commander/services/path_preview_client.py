@@ -15,7 +15,6 @@ from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar, cast
 
 import numpy as np
-
 from waldoctl import DryRunResult
 from waldoctl.client import RobotClient
 from waldoctl.skills import UnresolvedPreview
@@ -755,6 +754,8 @@ class PathPreviewClient:
 
             def set_tool_wrapper(*args: Any, **kw: Any) -> Any:
                 result = client_method(*args, **kw)
+                if isinstance(result, int) and result < 0:
+                    return result
                 self._current_tool_position = 0.0  # New tool starts open
                 if args:
                     key = str(args[0]).strip().upper()
@@ -784,7 +785,11 @@ class PathPreviewClient:
                             line_number=self._get_caller_line_number(),
                         )
                     )
-                return result
+                # Dry-run backends apply tool selection immediately. Return a
+                # collector-owned completion index, as motion commands do.
+                index = len(self._command_results)
+                self._command_results[index] = True
+                return index
 
             return set_tool_wrapper
 

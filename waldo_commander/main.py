@@ -729,12 +729,13 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
             elif css := _plugin_panel_static_size(p):
                 classes = sized
                 style = css
-            with ui.tab_panel(p.id).classes(classes).style(style):
+            with ui.tab_panel(p.id).classes(f"{classes} task-panel").style(style):
                 # A third-party plugin's build() must not blank the whole page;
                 # leave an empty-but-valid tab panel on failure (mirrors the
                 # init guard in _discover_plugin_panels).
                 try:
-                    p.build(commander)
+                    with ui.element("div").classes("plugin-panel-content"):
+                        p.build(commander)
                 except Exception as e:
                     logger.warning("Plugin panel %s build failed: %s", p.id, e)
                 if "resizable-panel" in classes:
@@ -874,7 +875,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
 
             ui_state._build_gripper_content = _build_gripper_content
 
-        with ui.tab_panel("diagnostics").classes("gap-2 overlay-card overflow-hidden"):
+        with ui.tab_panel("diagnostics").classes(
+            "gap-2 overlay-card task-panel diagnostics-view overflow-hidden"
+        ):
             with ui.row().classes("w-full items-center"):
                 ui.label("Diagnostics").classes("text-lg font-medium")
                 ui.space()
@@ -886,7 +889,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                 is_open=lambda: side_tabs.value == "diagnostics",
                 tab=diagnostics_tab,
             )
-            ui_state.diagnostics_page.build()
+            with ui.column().classes("panel-body gap-0"):
+                ui_state.diagnostics_page.build()
 
         _add_plugin_tab_panels(PanelSlot.LEFT_TOP_TAB, commander)
 

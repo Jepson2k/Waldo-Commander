@@ -7,7 +7,7 @@ import asyncio
 import inspect
 import textwrap
 import time
-from typing import Any, ClassVar, get_args, get_origin, get_type_hints, Literal
+from typing import Any, ClassVar, Literal, get_args, get_origin, get_type_hints
 
 from nicegui import ui
 from waldoctl import Commander, Panel, PanelSlot
@@ -18,6 +18,10 @@ from waldo_commander.services.skill_library import SkillEntry, call_source, libr
 from waldo_commander.setup import SetupStore
 
 
+def _label(name: str) -> str:
+    return name.rsplit(".", 1)[-1].replace("_", " ").capitalize()
+
+
 class SkillLibraryPanel(Panel):
     id: ClassVar[str] = "skills"
     display_name: ClassVar[str] = "Skills"
@@ -26,7 +30,7 @@ class SkillLibraryPanel(Panel):
     tab_tooltip: ClassVar[str] = "Reusable Python skills"
     order: ClassVar[int] = 25
     default_width: ClassVar[int] = 460
-    default_height: ClassVar[int] = 640
+    default_height: ClassVar[int] = 580
     min_width: ClassVar[int] = 380
     min_height: ClassVar[int] = 380
     resizable: ClassVar[bool] = True
@@ -35,6 +39,18 @@ class SkillLibraryPanel(Panel):
         entries, diagnostics = library(commander.client.skill_capabilities)
         readers: dict[str, Any] = {}
         running = False
+
+        def field_label(name: str) -> str:
+            for suffix, unit in (("_mm", "mm"), ("_deg", "°"), ("_s", "s")):
+                if name.endswith(suffix):
+                    return f"{_label(name.removesuffix(suffix))} ({unit})"
+            if entry().skill.spec.id.startswith("waldo."):
+                return {
+                    "timeout": "Timeout (s)",
+                    "speed": "Speed (0–1)",
+                    "duration": "Duration (s)",
+                }.get(name, _label(name))
+            return _label(name)
 
         def entry() -> SkillEntry:
             return entries[choice.value]
@@ -124,6 +140,8 @@ class SkillLibraryPanel(Panel):
                     source=text, filename=f"{entry().skill.spec.id}.py"
                 )
                 commander.programs.switch(program.id)
+                if ui_state._program_tab is not None:
+                    ui_state._program_tab.parent_slot.parent.set_value("program")
                 started_at = time.time()
                 await script_exec.start()
                 handle = script_exec.script_handle
@@ -153,10 +171,10 @@ class SkillLibraryPanel(Panel):
                 run_button.set_enabled(bool(choice.value) and not entry().unavailable)
 
         with ui.column().classes("w-full h-full min-h-0 flex-nowrap gap-2"):
-            ui.label("Skills").classes("text-h6")
+            ui.label("Skills").classes("panel-heading")
             choice = (
                 ui.select(
-                    {key: key for key in entries},
+                    {key: _label(key) for key in entries},
                     value=next(iter(entries), None),
                     label="Installed skill",
                 )
@@ -173,16 +191,24 @@ class SkillLibraryPanel(Panel):
                     )
                 description = ui.label().classes("text-caption whitespace-pre-line")
                 message = ui.label().classes("text-caption").mark("skill-message")
-                form = ui.column().classes("w-full shrink-0 gap-2")
-                asynchronous = ui.checkbox(
-                    "Insert async call", value=False, on_change=refresh_source
-                ).mark("skill-async")
-                code = (
-                    ui.code("", language="python")
-                    .classes("w-full shrink-0 overflow-x-auto")
-                    .mark("skill-call-preview")
+                form = ui.element("div").classes(
+                    "w-full shrink-0 grid grid-cols-2 gap-x-3 gap-y-2"
                 )
-            with ui.row().classes("shrink-0"):
+                with (
+                    ui.expansion("Python call", icon="code")
+                    .classes("w-full")
+                    .mark("skill-python-details")
+                ):
+                    asynchronous = ui.checkbox(
+                        "Insert async call", value=False, on_change=refresh_source
+                    ).mark("skill-async")
+                    code = (
+                        ui.code("", language="python")
+                        .classes("w-full shrink-0 overflow-x-auto")
+                        .mark("skill-call-preview")
+                    )
+                    api_details = ui.label().classes("panel-note")
+            with ui.row().classes("panel-actions"):
                 insert_button = (
                     ui.button("Insert call", on_click=insert)
                     .props("dense")
@@ -194,7 +220,7 @@ class SkillLibraryPanel(Panel):
                     .mark("skill-run")
                 )
             ui.label(
-                "Run once opens the exact call as a Python program. Recording keeps one completed skill call with its fixed arguments."
+                "Run once opens the Program tab with pause and stop controls."
             ).classes("text-caption")
 
         def rebuild() -> None:
@@ -207,7 +233,10 @@ class SkillLibraryPanel(Panel):
                 return
             candidate = entry()
             description.set_text(
-                f"v{candidate.skill.spec.version} · skill API {candidate.skill.spec.api_version}\n{candidate.description}"
+                candidate.description.split("\n\n", 1)[0].replace("\n", " ")
+            )
+            api_details.set_text(
+                f"{candidate.skill.spec.id} · v{candidate.skill.spec.version} · API {candidate.skill.spec.api_version}"
             )
             try:
                 annotations = get_type_hints(candidate.skill.function)
@@ -221,6 +250,35 @@ class SkillLibraryPanel(Panel):
             insert_button.set_enabled(not candidate.unavailable)
             run_button.set_enabled(not candidate.unavailable and not running)
             with form:
+                store = SetupStore()
+                names = store.names()
+                needs_setup = any(
+                    t in (Pose, SetupSnapshot)
+                    for t in annotations.values()
+                )
+                shared_setup = (
+                    ui.select(names, label="Setup", value=names[0] if names else None)
+                    .props("dense")
+                    .classes("w-full")
+                    .mark("skill-shared-setup")
+                )
+                shared_setup.classes("col-span-2")
+                shared_setup.set_visibility(needs_setup)
+                with ui.expansion("Setup overrides", icon="tune").classes(
+                    "w-full"
+                ) as overrides:
+                    ui.label("Use a different setup for individual arguments.").classes(
+                        "panel-note"
+                    )
+                    override_fields = ui.column().classes("w-full gap-2")
+                overrides.classes("col-span-2")
+                overrides.set_visibility(
+                    sum(
+                        t in (Pose, SetupSnapshot)
+                        for t in annotations.values()
+                    )
+                    > 1
+                )
                 for name, parameter in candidate.parameters.items():
                     annotation = annotations.get(name, parameter.annotation)
                     default = (
@@ -228,41 +286,51 @@ class SkillLibraryPanel(Panel):
                         if parameter.default is not inspect.Parameter.empty
                         else None
                     )
-                    if annotation in (Pose, SetupSnapshot):
-                        store = SetupStore()
-                        names = store.names()
-                        setup = (
-                            ui.select(
-                                names,
-                                label=f"{name}: saved setup",
-                                value=names[0] if names else None,
-                            )
-                            .props("dense")
-                            .classes("w-full")
-                            .mark(f"skill-{name}-setup")
-                        )
-                        if annotation is SetupSnapshot:
-                            readers[name] = (
-                                lambda widget=setup,
-                                selected_store=store: selected_store.load(widget.value)
-                            )
-                            setup.on_value_change(refresh_source)
-                        else:
-                            pose = (
-                                ui.select([], label=f"{name}: pose")
+                    if annotation in (
+                        Pose,
+                        SetupSnapshot,
+                    ):
+                        with override_fields:
+                            setup = (
+                                ui.select(
+                                    {"": "Use shared setup", **{n: n for n in names}},
+                                    label=_label(name),
+                                    value="",
+                                )
                                 .props("dense")
                                 .classes("w-full")
-                                .mark(f"skill-{name}-pose")
+                                .mark(f"skill-{name}-setup")
+                            )
+                        if annotation is SetupSnapshot:
+                            readers[name] = lambda widget=setup, selected_store=store: (
+                                selected_store.load(widget.value or shared_setup.value)
+                            )
+                            setup.on_value_change(refresh_source)
+                            shared_setup.on_value_change(refresh_source)
+                        else:
+                            resource = {
+                                Pose: "pose",
+                            }[annotation]
+                            pose = (
+                                ui.select([], label=_label(name))
+                                .props("dense")
+                                .classes("w-full")
+                                .mark(f"skill-{name}-{resource}")
                             )
 
                             def set_poses(
                                 setup_widget=setup,
                                 pose_widget=pose,
                                 selected_store=store,
+                                kind=annotation,
                             ):
                                 try:
-                                    snapshot = selected_store.load(setup_widget.value)
-                                    options = list(snapshot.poses)
+                                    snapshot = selected_store.load(
+                                        setup_widget.value or shared_setup.value
+                                    )
+                                    options = list(
+                                        snapshot.poses
+                                    )
                                     pose_widget.set_options(
                                         options, value=options[0] if options else None
                                     )
@@ -271,23 +339,30 @@ class SkillLibraryPanel(Panel):
                                 refresh_source()
 
                             setup.on_value_change(lambda _, update=set_poses: update())
+                            shared_setup.on_value_change(
+                                lambda _, update=set_poses: update()
+                            )
                             pose.on_value_change(refresh_source)
                             readers[name] = (
-                                lambda s=setup,
-                                p=pose,
-                                selected_store=store: selected_store.load(
-                                    s.value
-                                ).resolve(p.value)
+                                lambda s=setup, p=pose, selected_store=store, kind=annotation: (
+                                    selected_store.load(
+                                        s.value or shared_setup.value
+                                    ).resolve(p.value)
+                                )
                             )
                             set_poses()
                     elif annotation is bool or isinstance(default, bool):
                         checkbox = ui.checkbox(
-                            name, value=bool(default), on_change=refresh_source
+                            _label(name), value=bool(default), on_change=refresh_source
                         ).mark(f"skill-arg-{name}")
                         readers[name] = lambda widget=checkbox: widget.value
                     elif annotation in (int, float) or type(default) in (int, float):
                         number = (
-                            ui.number(name, value=default, on_change=refresh_source)
+                            ui.number(
+                                field_label(name),
+                                value=default,
+                                on_change=refresh_source,
+                            )
                             .props("dense")
                             .classes("w-full")
                             .mark(f"skill-arg-{name}")
@@ -307,7 +382,7 @@ class SkillLibraryPanel(Panel):
                             ui.select(
                                 list(get_args(annotation)),
                                 value=default,
-                                label=name,
+                                label=_label(name),
                                 on_change=refresh_source,
                             )
                             .props("dense")
@@ -319,7 +394,7 @@ class SkillLibraryPanel(Panel):
                         literal = annotation is not str and not isinstance(default, str)
                         field = (
                             ui.input(
-                                name + (" (Python literal)" if literal else ""),
+                                _label(name) + (" (Python literal)" if literal else ""),
                                 value=repr(default) if literal else default or "",
                                 on_change=refresh_source,
                             )
@@ -327,12 +402,8 @@ class SkillLibraryPanel(Panel):
                             .classes("w-full")
                             .mark(f"skill-arg-{name}")
                         )
-                        readers[name] = (
-                            lambda widget=field, parse=literal: ast.literal_eval(
-                                widget.value
-                            )
-                            if parse
-                            else widget.value
+                        readers[name] = lambda widget=field, parse=literal: (
+                            ast.literal_eval(widget.value) if parse else widget.value
                         )
             refresh_source()
 
