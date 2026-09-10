@@ -1,19 +1,20 @@
 """Tests for settings page functionality."""
 
 import asyncio
-
-import pytest
-from nicegui.testing import User
-from nicegui import ui, app as ng_app
 from typing import Any
 
-from waldo_commander.state import ui_state
+import pytest
+from nicegui import app as ng_app
+from nicegui import ui
+from nicegui.testing import User
+
 from tests.helpers.wait import (
     poll_until,
     wait_for_app_ready,
     wait_for_tool_key,
     wait_until,
 )
+from waldo_commander.state import ui_state
 
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
 app_storage: Any = getattr(ng_app, "storage")
@@ -38,10 +39,11 @@ async def test_settings_tab_accessible(user: User) -> None:
     # Verify the Settings tab panel is now showing by checking for expected content
     # The Serial Port section should be visible
     await user.should_see("Serial Port")
-    await user.should_see("Show Route")
-    await user.should_see("Theme")
     await user.should_see("Tool")
-    await user.should_see("Select end effector tool")
+    next(iter(user.find(marker="settings-category").elements)).set_value("View")
+    await user.should_see("Show Route")
+    next(iter(user.find(marker="settings-category").elements)).set_value("Robot")
+    await user.should_see("Tool")
 
 
 @pytest.mark.integration
@@ -76,6 +78,7 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
     settings_tab = user.find(kind=ui.tab, content="Settings")
     settings_tab.click()
     await asyncio.sleep(0)
+    next(iter(user.find(marker="settings-category").elements)).set_value("View")
 
     # Get initial state
     initial_visible = waldoctl.commander.settings.view.paths_visible
@@ -102,6 +105,7 @@ async def test_workspace_envelope_mode_changes(user: User) -> None:
     settings_tab = user.find(kind=ui.tab, content="Settings")
     settings_tab.click()
     await asyncio.sleep(0)
+    next(iter(user.find(marker="settings-category").elements)).set_value("View")
 
     # Find the Workspace Envelope select (by marker)
     envelope_select = user.find(marker="select-envelope-mode")
@@ -194,13 +198,10 @@ async def test_variant_selector_appears_for_tools_with_variants(user: User) -> N
     )
     await user.should_see("Variant")
 
-    # NONE has no variants — selector should be disabled but still visible
+    # NONE has no variants, so it should not occupy a Settings row.
     select_el.set_value("NONE")
     await asyncio.sleep(0.1)
-    variant_select = user.find(marker="select-tool-variant")
-    assert len(variant_select.elements) == 1, (
-        "Variant selector should still be visible for NONE (but disabled)"
-    )
+    await user.should_not_see("Variant")
 
 
 @pytest.mark.integration
@@ -212,6 +213,7 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     settings_tab = user.find(kind=ui.tab, content="Settings")
     settings_tab.click()
     await asyncio.sleep(0)
+    next(iter(user.find(marker="settings-tcp-details").elements)).set_value(True)
 
     tool_select = user.find(marker="select-tool")
     select_el = next(iter(tool_select.elements))
@@ -247,8 +249,8 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
     reads back; a tool change (which resets the controller's offset) gets
     the remembered offset pushed again; and an offset another client set
     is adopted when the page opens instead of being clobbered."""
-    from waldo_commander.state import ui_state
     from waldo_commander.services import tcp_calibration
+    from waldo_commander.state import ui_state
 
     confirmed = asyncio.Event()
     release_readback = asyncio.Event()
@@ -269,6 +271,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
 
     user.find(kind=ui.tab, content="Settings").click()
     await asyncio.sleep(0)
+    next(iter(user.find(marker="settings-tcp-details").elements)).set_value(True)
     tool_select = user.find(marker="select-tool")
 
     def offset_x():
@@ -316,6 +319,26 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         await select_tool("PNEUMATIC")
         await expect_controller_offset([12.5, 0.0, 0.0])
 
+        # A program's tool changes must update Settings without restoring
+        # browser offsets or sending another tool-selection command.
+        for key in ("NONE", "PNEUMATIC"):
+            index = await client.select_tool(key)
+            assert await client.wait_command(index, timeout=5)
+            await wait_for_tool_key(key, timeout_s=5)
+            await poll_until(
+                lambda: next(iter(tool_select.elements)).value,
+                lambda shown, expected=key: shown == expected,
+                timeout_s=5,
+                what=f"Settings adopting {key} from the controller",
+            )
+            await poll_until(
+                lambda: offset_x().value,
+                lambda shown: shown == 0.0,
+                timeout_s=5,
+                what="Settings adopting the controller's reset TCP",
+            )
+            await expect_controller_offset([0.0, 0.0, 0.0])
+
         # Set out of band (a program, another client), reopen the page: the
         # controller's offset wins and the inputs show it.
         await client.set_tcp_offset(1.0, 2.0, 3.0)
@@ -354,5 +377,6 @@ async def test_theme_selection_exists(user: User) -> None:
     settings_tab.click()
     await asyncio.sleep(0)
 
-    # The theme toggle should exist
+    next(iter(user.find(marker="settings-category").elements)).set_value("View")
+    next(iter(user.find(marker="settings-appearance").elements)).set_value(True)
     await user.should_see("Theme")

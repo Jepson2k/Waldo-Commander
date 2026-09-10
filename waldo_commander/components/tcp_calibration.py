@@ -15,13 +15,12 @@ from waldoctl.calibration import (
 from waldoctl.setup import Pose, PoseValues, SetupSnapshot, TcpCalibration
 
 from waldo_commander.services.control_lease import require_browser_control
-from waldo_commander.state import ui_state
-
 from waldo_commander.services.tcp_calibration import (
     ToolBinding,
     apply_tcp_calibration,
     observe_tcp,
 )
+from waldo_commander.state import ui_state
 
 
 class TcpCalibrationEditor:
@@ -42,7 +41,7 @@ class TcpCalibrationEditor:
         self.was_connected = commander.status.connected
         with ui.column().classes("w-full"):
             ui.label(
-                "Keep the same physical tip on a fixed point. Capture at least four poses with varied orientations."
+                "Hold the tip on a fixed point. Capture 4+ varied orientations."
             ).classes("text-caption")
             with ui.row().classes("w-full items-center"):
                 self.name = (
@@ -62,7 +61,7 @@ class TcpCalibrationEditor:
                     .mark("tcp-calibration-existing")
                 )
             self.tool_label = (
-                ui.label("Capture or read the controller to identify the tool.")
+                ui.label("Read the applied TCP or capture a pose to identify the tool.")
                 .classes("text-caption")
                 .mark("tcp-calibration-tool")
             )
@@ -85,48 +84,51 @@ class TcpCalibrationEditor:
                     )
                 ]
             self.message = (
-                ui.label(
-                    "Set calibration adds data to this setup; Save persists it. Apply sends the displayed transform."
-                )
+                ui.label("Save setup keeps these values. Apply updates the controller.")
                 .classes("text-caption")
                 .mark("tcp-calibration-status")
             )
-            with ui.row().classes("items-center"):
-                ui.button("Capture pivot pose", on_click=self.capture).props(
-                    "dense"
-                ).mark("tcp-calibration-capture")
-                ui.button("Clear samples", on_click=self.clear_samples).props(
-                    "dense flat"
-                ).mark("tcp-calibration-clear")
-                self.count = ui.label("0 new samples").classes("text-caption")
-            with ui.row().classes("items-center"):
-                self.tolerance = (
-                    ui.number("Max error (mm)", value=1.0, min=0.001)
-                    .props("dense")
-                    .classes("w-32")
-                    .mark("tcp-calibration-tolerance")
-                )
-                ui.button("Solve position", on_click=self.solve).props("dense").mark(
-                    "tcp-calibration-solve"
-                )
-            ui.label(
-                "Orientation is taught separately: align the physical tool with the selected frame axes, then capture."
-            ).classes("text-caption")
-            with ui.row().classes("items-center"):
-                self.reference = (
-                    ui.select(["WRF"], value="WRF", label="Reference axes")
-                    .props("dense")
-                    .classes("w-40")
-                    .mark("tcp-calibration-reference")
-                )
-                ui.button("Teach orientation", on_click=self.teach_orientation).props(
-                    "dense"
-                ).mark("tcp-calibration-orientation")
+            with (
+                ui.expansion("Measure TCP", icon="straighten")
+                .classes("w-full")
+                .mark("tcp-measure-details")
+            ):
+                with ui.row().classes("items-center"):
+                    ui.button("Capture pivot pose", on_click=self.capture).props(
+                        "dense"
+                    ).mark("tcp-calibration-capture")
+                    ui.button("Clear samples", on_click=self.clear_samples).props(
+                        "dense flat"
+                    ).mark("tcp-calibration-clear")
+                    self.count = ui.label("0 new samples").classes("text-caption")
+                with ui.row().classes("items-center"):
+                    self.tolerance = (
+                        ui.number("Max error (mm)", value=1.0, min=0.001)
+                        .props("dense")
+                        .classes("w-32")
+                        .mark("tcp-calibration-tolerance")
+                    )
+                    ui.button("Solve position", on_click=self.solve).props(
+                        "dense"
+                    ).mark("tcp-calibration-solve")
+                ui.label(
+                    "Align the tool with the reference axes, then teach orientation."
+                ).classes("text-caption")
+                with ui.row().classes("items-center"):
+                    self.reference = (
+                        ui.select(["WRF"], value="WRF", label="Reference axes")
+                        .props("dense")
+                        .classes("w-40")
+                        .mark("tcp-calibration-reference")
+                    )
+                    ui.button(
+                        "Teach orientation", on_click=self.teach_orientation
+                    ).props("dense").mark("tcp-calibration-orientation")
             with ui.row():
                 ui.button("Read applied", on_click=self.read_applied).props(
                     "dense flat"
                 ).mark("tcp-calibration-read")
-                ui.button("Set calibration", on_click=self.set_calibration).props(
+                ui.button("Keep calibration", on_click=self.set_calibration).props(
                     "dense"
                 ).mark("tcp-calibration-set")
                 ui.button("Apply to controller", on_click=self.apply).props(
@@ -154,7 +156,12 @@ class TcpCalibrationEditor:
 
     def refresh(self) -> None:
         snapshot = self.get_snapshot()
-        self.existing.set_options(list(snapshot.tcp_calibrations), value=None)
+        self.existing.set_options(
+            list(snapshot.tcp_calibrations),
+            value=self.existing.value
+            if self.existing.value in snapshot.tcp_calibrations
+            else None,
+        )
         options = ["WRF", *snapshot.frames]
         self.reference.set_options(
             options,
@@ -335,7 +342,7 @@ class TcpCalibrationEditor:
                     self.name.value, self.calibration()
                 )
             )
-            self.message.set_text("Calibration added to the setup; Save to persist it.")
+            self.message.set_text("Calibration kept. Save setup to persist it.")
         except ValueError as error:
             self.message.set_text(str(error))
 
