@@ -1,0 +1,289 @@
+[
+  {
+    "worktree": "PAROL6-python-API",
+    "repository": "PAROL6-python-API",
+    "commit": "6ac733b26c0a0ef373503a9850c2d4882410d627",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/PAROL6-python-API",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "PAROL6-python-API-demonstrations",
+    "repository": "PAROL6-python-API",
+    "commit": "88beb3761e672cb5d028263f26b8cdc9e1cdae5f",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/PAROL6-python-API-demonstrations",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "PAROL6-python-API-held",
+    "repository": "PAROL6-python-API",
+    "commit": "595ccdf636fab8f7fa1d7ea4ed89c83428a173fe",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/PAROL6-python-API-held",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "PAROL6-python-API-restart",
+    "repository": "PAROL6-python-API",
+    "commit": "ca62e2fb6979c4c9fc4e890fe3f7fdab0cc5e8a4",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/PAROL6-python-API-restart",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "PAROL6-python-API-signals",
+    "repository": "PAROL6-python-API",
+    "commit": "7e48e6f71f561620c6db8dc8b0106309f40ac1ad",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/PAROL6-python-API-signals",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "PAROL6-python-API-speed",
+    "repository": "PAROL6-python-API",
+    "commit": "ae5f97938f83a2e8a4937868bcf9b2b06512b44f",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/PAROL6-python-API-speed",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "PAROL6-python-API-tcp",
+    "repository": "PAROL6-python-API",
+    "commit": "460e4c79248c0e38fac9cf558cba759c467c5e98",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/PAROL6-python-API-tcp",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander",
+    "repository": "Waldo-Commander",
+    "commit": "9b60f077923c9a8741fa1a78a321b9ef89fc286a",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-baseline",
+    "repository": "Waldo-Commander",
+    "commit": "9ec8c6cbdcb02a7d42989cdc6f462fd565f0c200",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-baseline",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-camera",
+    "repository": "Waldo-Commander",
+    "commit": "fe56b180039f9af4705909b001a89e8d76d4b799",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-camera",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-demonstrations",
+    "repository": "Waldo-Commander",
+    "commit": "afdd70c08bcb9b66696592cc030d5eda21588946",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-demonstrations",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-held",
+    "repository": "Waldo-Commander",
+    "commit": "c1a03a391e682f6b25a7e3598f9e44dd37500e03",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-held",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-projects",
+    "repository": "Waldo-Commander",
+    "commit": "d1402660436b74ce352deb2ee6d736bfa93dd545",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-projects",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-records",
+    "repository": "Waldo-Commander",
+    "commit": "e68db824cffdc5c13b14b9c7d89f919d403026c5",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-records",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-restart",
+    "repository": "Waldo-Commander",
+    "commit": "d746a49906d7f7cdfca447022b7d3bbaa1f2f004",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-restart",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-scenarios",
+    "repository": "Waldo-Commander",
+    "commit": "2ed55c1bf2482ded29d473538e29550cade23f46",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-scenarios",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-setup-fix",
+    "repository": "Waldo-Commander",
+    "commit": "5f8ba6f877d6405e81caee63b27a81d67fd6b3bd",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-setup-fix",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-signals",
+    "repository": "Waldo-Commander",
+    "commit": "fbb41fb34a46e55b65114ddae7adf3d8c89cf663",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-signals",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-speed",
+    "repository": "Waldo-Commander",
+    "commit": "f6c0e26f2e7724e1fe1193b6de9e36cb33bd459c",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-speed",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-tcp",
+    "repository": "Waldo-Commander",
+    "commit": "6d8787f783ee64e304b39f9542ea870304a4b745",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-tcp",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-trays",
+    "repository": "Waldo-Commander",
+    "commit": "eb45c1b4aca41744bef56c7c5c2f68238ace489d",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-trays",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "Waldo-Commander-vision",
+    "repository": "Waldo-Commander",
+    "commit": "0f7441ba0d5cf0b631162ec9e0774df1707e562a",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/Waldo-Commander-vision",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "par6",
+    "repository": "par6",
+    "commit": "55b6fcf2d5fb91594a9f7bb68f857613e9ddd4d6",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/par6",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "par6-baseline",
+    "repository": "par6",
+    "commit": "10ab6eaa73f2b6d3197988798376a9fd947ec799",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/par6-baseline",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "par6-demonstrations",
+    "repository": "par6",
+    "commit": "18dc5af55e4e85ea0af7fcbb650ee63f4ac9ac8b",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/par6-demonstrations",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "par6-held",
+    "repository": "par6",
+    "commit": "33b3ae78ea762709f384c5520e29f7c0288d9f43",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/par6-held",
+    "uncommitted_patch": true
+  },
+  {
+    "worktree": "par6-restart",
+    "repository": "par6",
+    "commit": "ccd386a06b9daf22a070f1b99d4cba9ac382be71",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/par6-restart",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "par6-scenarios",
+    "repository": "par6",
+    "commit": "93834b450fd1b04c5b20b98aa96b5225e638986d",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/par6-scenarios",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "par6-signals",
+    "repository": "par6",
+    "commit": "f69ea151a2cfe652983244314998c2ebd8273f32",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/par6-signals",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "par6-speed",
+    "repository": "par6",
+    "commit": "bef61b084f28b9affea2d9f3f265d806b3c370e9",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/par6-speed",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "par6-tcp",
+    "repository": "par6",
+    "commit": "a7dc478ad458d11fdfe0ab2d130c67bca5084a4d",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/par6-tcp",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl",
+    "repository": "waldoctl",
+    "commit": "fef3f268c590558e1f720cc45d2197740c607ffe",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl-camera",
+    "repository": "waldoctl",
+    "commit": "f78b46b9b0cb4d46d8684e1c03270a1b262404a6",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl-camera",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl-demonstrations",
+    "repository": "waldoctl",
+    "commit": "f6bcd9e564968e7b781c66de47b7b5870c6e20cf",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl-demonstrations",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl-held",
+    "repository": "waldoctl",
+    "commit": "669eb37bc7943d551e1d81b6f07a6cad8cd80f7d",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl-held",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl-records",
+    "repository": "waldoctl",
+    "commit": "222a643b68cd2e159bf9606aef272d4ccb616675",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl-records",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl-restart",
+    "repository": "waldoctl",
+    "commit": "0b88b501ccb557b034470243cc05a316aca7e5eb",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl-restart",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl-setup-fix",
+    "repository": "waldoctl",
+    "commit": "8b7c93928af9ff63c1991fa5d9b93ccd7514f643",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl-setup-fix",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl-signals",
+    "repository": "waldoctl",
+    "commit": "699752007edb4acf0a303a57c5904f109fd28a46",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl-signals",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl-speed",
+    "repository": "waldoctl",
+    "commit": "bbb46f67646eeb281038555f60bba2f1bc0f8259",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl-speed",
+    "uncommitted_patch": false
+  },
+  {
+    "worktree": "waldoctl-tcp",
+    "repository": "waldoctl",
+    "commit": "4729df44fe5a94d626a30a7efd6111aeef4d5a8d",
+    "preserved_ref": "refs/archive/transfer-20260910/worktrees/waldoctl-tcp",
+    "uncommitted_patch": false
+  }
+]

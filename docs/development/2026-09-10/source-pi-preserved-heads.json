@@ -1,0 +1,89 @@
+[
+  {
+    "source": "par6",
+    "head": "75642dd93ba4b438486a19b842eb0eb20a3e6e3c",
+    "origin": "git@github.com:Jepson2k/par6.git",
+    "local_repository": "par6",
+    "preserved_ref": "refs/archive/source-pi-20260910/par6/saved-head"
+  },
+  {
+    "source": "Waldo-Commander",
+    "head": "70a3ce3df42cb0bd91dbbf37b4fdad59201923de",
+    "origin": "git@github.com:Jepson2k/Waldo-Commander.git",
+    "local_repository": ".",
+    "preserved_ref": "refs/archive/source-pi-20260910/Waldo-Commander/saved-head"
+  },
+  {
+    "source": "Waldo-Commander/pinokin",
+    "head": "2bf025fe0882e0a728fb6bb8353a8a49afc4cb46",
+    "origin": "git@github.com:Jepson2k/pinokin.git",
+    "local_repository": ".",
+    "preserved_ref": "refs/archive/source-pi-20260910/pinokin/saved-head"
+  },
+  {
+    "source": "Waldo-Commander/PAROL6-python-API",
+    "head": "a3a2cd2aa191951e1659f6b37383f580adc4bc29",
+    "origin": "git@github.com:PCrnjak/PAROL6-python-API.git",
+    "local_repository": "PAROL6-python-API",
+    "preserved_ref": "refs/archive/source-pi-20260910/PAROL6-python-API/saved-head"
+  },
+  {
+    "source": "Waldo-Commander/waldoctl",
+    "head": "3d7941d8741ba7e5636f33c97732fabe4ccb380b",
+    "origin": "git@github.com:Jepson2k/waldoctl.git",
+    "local_repository": "waldoctl",
+    "preserved_ref": "refs/archive/source-pi-20260910/waldoctl/saved-head"
+  },
+  {
+    "source": "Waldo-Commander/recap",
+    "head": "a6147f98031a306d66784d4bd71eef366c6ee960",
+    "origin": "git@github.com:Jepson2k/RECAP.git",
+    "local_repository": ".",
+    "preserved_ref": "refs/archive/source-pi-20260910/recap/saved-head"
+  },
+  {
+    "source": "Waldo-Commander/nicegui",
+    "head": "be1d73b526883fd4dfbcaf2747814079e9d47ef2",
+    "origin": "git@github.com:Jepson2k/nicegui.git",
+    "local_repository": "nicegui",
+    "preserved_ref": "refs/archive/source-pi-20260910/nicegui/saved-head"
+  },
+  {
+    "source": "Waldo-Commander/Spectral-Micro-BLDC-controller",
+    "head": "c8ce3fb7bfe32827b29f61969959ec838081fb87",
+    "origin": "https://github.com/PCrnjak/Spectral-Micro-BLDC-controller.git",
+    "local_repository": ".",
+    "preserved_ref": "refs/archive/source-pi-20260910/Spectral-Micro-BLDC-controller/saved-head"
+  },
+  {
+    "source": "Waldo-Commander/PAROL6-Desktop-robot-arm",
+    "head": "896fa9fd793a076a0b3790b8a4a29a6f5bb12fcb",
+    "origin": "https://github.com/PCrnjak/PAROL6-Desktop-robot-arm.git",
+    "local_repository": ".",
+    "preserved_ref": "refs/archive/source-pi-20260910/PAROL6-Desktop-robot-arm/saved-head"
+  },
+  {
+    "source": "Waldo-Commander/.claude/worktrees/snug-baking-mango",
+    "head": "60440db0a63f9d3210dcdf47048d4060a8dc9525",
+    "local_repository": ".",
+    "preserved_ref": "refs/archive/source-pi-20260910/worktrees/snug-baking-mango"
+  },
+  {
+    "source": "Waldo-Commander/.claude/worktrees/agent-a613cd1ad31ec1360",
+    "head": "60440db0a63f9d3210dcdf47048d4060a8dc9525",
+    "local_repository": ".",
+    "preserved_ref": "refs/archive/source-pi-20260910/worktrees/agent-a613cd1ad31ec1360"
+  },
+  {
+    "source": "Waldo-Commander/.claude/worktrees/mcp-server-investigate",
+    "head": "257788993b62089489e214dbd3bd21db760ae835",
+    "local_repository": ".",
+    "preserved_ref": "refs/archive/source-pi-20260910/worktrees/mcp-server-investigate"
+  },
+  {
+    "source": "Waldo-Commander/.claude/worktrees/agent-a98b79c4d8848fedb",
+    "head": "903bd50433141fb29017dfaa7baea6c406256d6c",
+    "local_repository": ".",
+    "preserved_ref": "refs/archive/source-pi-20260910/worktrees/agent-a98b79c4d8848fedb"
+  }
+]

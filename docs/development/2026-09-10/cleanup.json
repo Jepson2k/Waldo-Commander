@@ -1,0 +1,9 @@
+{
+  "removed": [
+    "/home/rbt/Waldo-Commander/bench",
+    "/home/rbt/Waldo-Commander/.local",
+    "/home/rbt/waldo-migration"
+  ],
+  "freed_bytes_during_deletion": 10623365120,
+  "unpublished_recovery_files": ".git/cleanup-archives/2026-09-10"
+}
