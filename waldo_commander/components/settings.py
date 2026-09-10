@@ -3,15 +3,14 @@
 import asyncio
 import logging
 import math
-from typing import cast
 from collections.abc import Callable
 from contextlib import contextmanager
-
-from nicegui import Client, app as ng_app
-from nicegui import background_tasks, context, ui
-from nicegui.client import ClientConnectionTimeout
+from typing import cast
 
 import waldoctl
+from nicegui import Client, background_tasks, context, ui
+from nicegui import app as ng_app
+from nicegui.client import ClientConnectionTimeout
 from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
 from waldoctl.setup import PoseValues, TcpCalibration
 
@@ -96,13 +95,11 @@ def get_available_serial_ports() -> list[str]:
 
 @contextmanager
 def _setting_row(title: str, description: str):
-    """Standard layout for a settings row: label column + yielded control widget."""
-    with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-        with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-            ui.label(title).classes("text-sm font-medium truncate")
-            ui.label(description).classes(
-                "text-xs text-gray-500 dark:text-gray-400 truncate"
-            )
+    """Keep the control visible; explanatory copy is available on hover/focus."""
+    with ui.row().classes("settings-row"):
+        ui.label(title).classes("settings-label").props("tabindex=0").tooltip(
+            description
+        )
         yield
 
 
@@ -235,7 +232,8 @@ class SettingsContent:
             tool_spec = None
         variants = tool_spec.variants if tool_spec else ()
         is_none = tool_key == "NONE"
-        if not variants and not is_none:
+        self._variant_container.set_visibility(bool(variants) and not is_none)
+        if not variants:
             return
 
         variant_options = (
@@ -287,7 +285,9 @@ class SettingsContent:
                 if is_none or not variants:
                     sel.props("disable")
 
-    def _rebuild_tcp_offset(self, tool_key: str, *, tool_changed: bool = False) -> None:
+    def _rebuild_tcp_offset(
+        self, tool_key: str, *, tool_changed: bool = False, adopt_only: bool = False
+    ) -> None:
         assert self._tcp_offset_container is not None
         self._tcp_offset_container.clear()
         full = ui_state.active_robot.has_tcp_transform
@@ -333,6 +333,7 @@ class SettingsContent:
                     inputs,
                     page_client,
                     tool_changed=tool_changed,
+                    adopt_only=adopt_only,
                     epoch=self._tool_epoch,
                 ),
                 name="tcp-offset-reconcile",
@@ -430,6 +431,7 @@ class SettingsContent:
         page_client: Client,
         *,
         tool_changed: bool,
+        adopt_only: bool = False,
         epoch: int,
     ) -> None:
         """Line the browser's remembered offset up with the controller's.
@@ -448,6 +450,9 @@ class SettingsContent:
                 logger.debug("tcp_offset readback failed: %s", exc)
                 return
             stored = self._get_tcp_offset(tool_key)
+            if adopt_only:
+                await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+                return
             mine = [float(stored.get(k, 0) or 0) for k in TCP_AXES]
             if all(abs(b - m) <= 1e-3 for b, m in zip(back, mine)):
                 # Another page may have updated storage since these inputs
@@ -564,9 +569,7 @@ class SettingsContent:
                 ng_app.storage.general[key] = bool(e.value)
                 simulation_state.notify_changed()
 
-            with _setting_row(
-                label, hint if simulates else f"{hint} (this robot has no physics)"
-            ):
+            with _setting_row(label, hint):
                 ui.switch(value=prefs[key], on_change=_on_change).props("dense").mark(
                     marker
                 ).set_enabled(simulates)
@@ -611,6 +614,23 @@ class SettingsContent:
         waldoctl.commander.settings.view.envelope_mode = prefs["envelope_mode"]
 
     def _build_tool_section(self) -> None:
+        synchronizing = False
+        changing = False
+
+        async def change_tool(e):
+            nonlocal changing
+            try:
+                await _on_tool_change(e)
+            finally:
+                changing = False
+
+        def request_tool_change(e):
+            nonlocal changing
+            if synchronizing:
+                return None
+            changing = True
+            return change_tool(e)
+
         async def _on_tool_change(e):
             async with self._tool_lock:
                 tool = e.value
@@ -638,7 +658,7 @@ class SettingsContent:
 
         tool_options = {}
         for tool in ui_state.active_robot.tools.available:
-            tool_options[tool.key] = tool.display_name
+            tool_options[tool.key] = tool.display_name.replace("_", " ")
 
         default_tool = next(iter(tool_options), "NONE")
         stored_tool = ng_app.storage.general.get("selected_tool", default_tool)
@@ -646,22 +666,62 @@ class SettingsContent:
             stored_tool = default_tool
 
         with _setting_row("Tool", "Select end effector tool"):
-            ui.select(
-                options=tool_options,
-                value=stored_tool,
-                on_change=_on_tool_change,
-            ).classes("w-32").props("dense").mark("select-tool")
+            tool_select = (
+                ui.select(
+                    options=tool_options,
+                    value=stored_tool,
+                    on_change=request_tool_change,
+                )
+                .classes("w-40")
+                .props("dense")
+                .mark("select-tool")
+            )
 
         self._variant_container = ui.column().classes("w-full gap-1")
         self._rebuild_variant_selector(stored_tool)
 
-        self._tcp_offset_container = ui.column().classes("w-full gap-1")
-        self._rebuild_tcp_offset(stored_tool)
+        with (
+            ui.expansion("TCP offset", icon="tune")
+            .classes("w-full")
+            .mark("settings-tcp-details")
+        ):
+            ui.label("Edits apply to the controller.").classes("panel-note")
+            self._tcp_offset_container = ui.column().classes("w-full gap-1")
+            self._rebuild_tcp_offset(stored_tool)
 
         vk_initial = self._get_variant_key(stored_tool)
         waldoctl.commander.status.tool.variant_key = vk_initial or ""
         if stored_tool:
             self._apply_tool_scene(stored_tool, variant_key=vk_initial)
+
+        def sync_tool() -> None:
+            nonlocal synchronizing
+            status = waldoctl.commander.status
+            tool = status.tool.key
+            if (
+                changing
+                or self._tool_lock.locked()
+                or not (status.connected or status.simulator_active)
+            ):
+                return
+            if tool not in tool_options or tool == tool_select.value:
+                return
+            # Status changes can come from another client. Reflect them without
+            # sending SELECT_TOOL or restoring an old browser TCP correction.
+            self._tool_epoch += 1
+            self._tcp_push_next = None
+            ng_app.storage.general["selected_tool"] = tool
+            ng_app.storage.general[f"tool_variant_{tool}"] = status.tool.variant_key
+            synchronizing = True
+            try:
+                tool_select.set_value(tool)
+            finally:
+                synchronizing = False
+            self._rebuild_variant_selector(tool)
+            self._rebuild_tcp_offset(tool, adopt_only=True)
+            self._apply_tool_camera(tool)
+
+        ui.timer(0.3, sync_tool)
 
     def _tool_spec(self, tool_key: str):
         """The active robot's ToolSpec for *tool_key*, or None."""
@@ -741,7 +801,7 @@ class SettingsContent:
                 .mark("select-camera")
             )
 
-        with ui.column().classes("w-full gap-0 px-2"):
+        with ui.expansion("Virtual camera help", icon="help_outline").classes("w-full"):
             ui.label(
                 "AI annotations: webcam \u2192 your script \u2192 pyvirtualcam \u2192 select virtual device"
             ).classes("text-xs text-gray-500 dark:text-gray-400")
@@ -806,14 +866,14 @@ class SettingsContent:
         ``commander.settings.plugins.backend`` and shows a "restart
         required" hint — backend switching takes effect on next launch.
         """
-        from waldo_commander.profiles import DEFAULT_ROBOT
         from waldoctl.discovery import available_backends
 
         installed = sorted(available_backends())
         if not installed:
             return  # Defensive: shouldn't happen since startup already resolved one
         plugins = waldoctl.commander.settings.plugins
-        current = plugins.backend or DEFAULT_ROBOT
+        active = ui_state.active_robot.name.lower()
+        current = plugins.backend or active
         if current not in installed:
             current = installed[0]
 
@@ -821,7 +881,10 @@ class SettingsContent:
             new = e.value
             plugins.backend = new
             ng_app.storage.general["plugins/backend"] = new
-            ui.notify("Backend change applies on next launch", color="info")
+            self._restart_notice.set_text(
+                f"Restart to use {new.upper()}. Active: {active.upper()}."
+            )
+            self._restart_notice.set_visibility(new != active)
 
         with _setting_row("Backend", "Robot driver (applied on next launch)"):
             ui.select(
@@ -829,6 +892,13 @@ class SettingsContent:
                 value=current,
                 on_change=_on_backend_change,
             ).classes("w-40").props("dense").mark("settings-backend-select")
+
+        self._restart_notice = (
+            ui.label(f"Restart to use {current.upper()}. Active: {active.upper()}.")
+            .classes("panel-note")
+            .mark("settings-restart-notice")
+        )
+        self._restart_notice.set_visibility(current != active)
 
     def _build_plugin_panels(self) -> None:
         """Panel-enable/disable toggle list.
@@ -891,7 +961,7 @@ class SettingsContent:
                 continue
             panel_id = cls.id
             label = cls.display_name
-            with _setting_row(label, f"Plugin id: {panel_id} (restart to apply)"):
+            with _setting_row(label, f"Plugin: {panel_id}"):
                 ui.switch(
                     value=panel_id not in plugins.disabled_panels,
                     on_change=_on_toggle(panel_id),
@@ -1128,30 +1198,89 @@ class SettingsContent:
         """
         prefs = self._load_preferences()
 
-        sections = [
-            lambda: self._build_serial_port(prefs),
-            lambda: self._build_show_route(prefs),
-            lambda: self._build_envelope(prefs),
-            lambda: self._build_physics_overlays(prefs),
-            self._build_tool_section,
-            self._build_camera,
-            lambda: self._build_motion_profile(prefs),
-            lambda: self._build_theme(prefs),
-            lambda: self._build_reference_frames(prefs),
-            lambda: self._build_jog_inversion(prefs),
-            lambda: self._build_blend_radius(prefs),
-            self._build_backend_selector,
-            self._build_plugin_panels,
-            *([ai_control_section] if ai_control_section else []),
-            self._build_mcp_server,
-            self._build_automation,
-        ]
-
-        for i, section in enumerate(sections):
-            section()
-            if i < len(sections) - 1:
-                ui.separator().classes("my-1")
-
-        self._build_plugin_settings()
+        with ui.column().classes("settings-content"):
+            category = (
+                ui.select(
+                    ["Robot", "Jog", "View", "Panels", "AI & Automation"], value="Robot"
+                )
+                .props('dense outlined aria-label="Settings category"')
+                .classes("settings-category")
+                .mark("settings-category")
+            )
+            with ui.column().classes("panel-body gap-1"):
+                with (
+                    ui.column()
+                    .classes("settings-group")
+                    .bind_visibility_from(category, "value", value="Robot")
+                ):
+                    self._build_backend_selector()
+                    if ui_state.active_robot.name.lower() == "parol6":
+                        self._build_serial_port(prefs)
+                    self._build_tool_section()
+                    with ui.expansion("Camera", icon="videocam").classes("w-full"):
+                        self._build_camera()
+                with (
+                    ui.column()
+                    .classes("settings-group")
+                    .bind_visibility_from(category, "value", value="Jog")
+                ):
+                    self._build_reference_frames(prefs)
+                    self._build_motion_profile(prefs)
+                    with (
+                        ui.expansion("Advanced", icon="tune")
+                        .classes("w-full")
+                        .mark("settings-jog-advanced")
+                    ):
+                        self._build_jog_inversion(prefs)
+                        self._build_blend_radius(prefs)
+                with (
+                    ui.column()
+                    .classes("settings-group")
+                    .bind_visibility_from(category, "value", value="View")
+                ):
+                    self._build_show_route(prefs)
+                    self._build_envelope(prefs)
+                    with ui.expansion("Physics overlays", icon="layers").classes(
+                        "w-full"
+                    ):
+                        if not ui_state.active_robot.has_physics_simulation:
+                            ui.label("Unavailable on this backend.").classes(
+                                "panel-note"
+                            )
+                        self._build_physics_overlays(prefs)
+                    with (
+                        ui.expansion("Appearance", icon="palette")
+                        .classes("w-full")
+                        .mark("settings-appearance")
+                    ):
+                        self._build_theme(prefs)
+                with (
+                    ui.column()
+                    .classes("settings-group")
+                    .bind_visibility_from(category, "value", value="Panels")
+                ):
+                    ui.label("Panel changes apply after restart.").classes("panel-note")
+                    self._build_plugin_panels()
+                    self._build_plugin_settings()
+                with (
+                    ui.column()
+                    .classes("settings-group")
+                    .bind_visibility_from(category, "value", value="AI & Automation")
+                ):
+                    if ai_control_section:
+                        ai_control_section()
+                    with ui.expansion("MCP server", icon="lan").classes("w-full"):
+                        ui.label("Connection changes apply after restart.").classes(
+                            "panel-note"
+                        )
+                        self._build_mcp_server()
+                    with (
+                        ui.expansion(
+                            "Hardware automation", icon="settings_input_component"
+                        )
+                        .classes("w-full")
+                        .mark("settings-automation")
+                    ):
+                        self._build_automation()
 
         simulation_state.notify_changed()
