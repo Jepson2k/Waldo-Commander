@@ -2,34 +2,28 @@
 
 import asyncio
 import dataclasses
+import importlib.resources as pkg_resources
 import logging
-import time
 import math
+import time
 from functools import partial
 from typing import Any, Callable, ClassVar
-import importlib.resources as pkg_resources
 
 import numpy as np
-
-from nicegui import ui, app, Client
 import waldoctl
+from nicegui import Client, app, ui
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
-from waldo_commander.constants import (
-    config,
-    DEFAULT_CAMERA,
-    CLICK_HOLD_THRESHOLD_S,
-    HOME_LONG_PRESS_S,
-)
-from waldo_commander.state import (
-    robot_state,
-    ui_state,
-    global_phase_timer,
-)
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import SettingsContent, _setting_row
+from waldo_commander.constants import (
+    CLICK_HOLD_THRESHOLD_S,
+    DEFAULT_CAMERA,
+    HOME_LONG_PRESS_S,
+    config,
+)
 from waldo_commander.services.control_lease import (
     BROWSER,
     ControlMode,
@@ -47,8 +41,13 @@ from waldo_commander.services.control_lease import (
 )
 from waldo_commander.services.keybindings import refresh_jog_key_descriptions
 from waldo_commander.services.motion_recorder import motion_recorder
-from waldo_commander.services.startup_mode import set_startup_mode
 from waldo_commander.services.programs import is_any_program_running
+from waldo_commander.services.startup_mode import set_startup_mode
+from waldo_commander.state import (
+    global_phase_timer,
+    robot_state,
+    ui_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,8 +241,16 @@ class _ToolQuickActions:
             )
             .mark("tool-quick-actions")
         ):
-            ui.label().bind_text_from(waldoctl.commander.status.tool, "key").classes(
-                "text-xs text-center w-full opacity-60"
+            ui.label().bind_text_from(
+                waldoctl.commander.status.tool,
+                "key",
+                backward=lambda key: (
+                    ui_state.active_robot.tools[key].display_name.replace("_", " ")
+                    if key in {t.key for t in ui_state.active_robot.tools.available}
+                    else key.replace("_", " ")
+                ),
+            ).classes("text-xs text-center w-full truncate text-neutral-300").style(
+                "max-width: 180px"
             )
 
             with ui.row().classes("items-center gap-2 justify-center"):

@@ -2,15 +2,15 @@ import logging
 import time
 from collections.abc import Callable
 
-from nicegui import ui
-
 import waldoctl
+from nicegui import ui
 from waldoctl import (
     ElectricGripperTool,
     GripperTool,
     RobotClient,
 )
 
+from waldo_commander.common.charts import chart_options, expand_chart_button
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S, config
 from waldo_commander.services.camera_service import camera_service
 from waldo_commander.services.control_lease import require_browser_control
@@ -166,8 +166,8 @@ class GripperPage:
         y_axis_left: dict = {
             "type": "value",
             "name": "%",
-            "nameTextStyle": {"fontSize": 11, "color": _CLR_POS},
-            "axisLabel": {"fontSize": 11, "color": _CLR_POS},
+            "nameTextStyle": {"fontSize": 12, "color": _CLR_POS},
+            "axisLabel": {"fontSize": 12, "color": _CLR_POS},
             "splitLine": {"lineStyle": {"color": "rgba(128,128,128,0.15)"}},
             "min": 0,
             "max": 100,
@@ -175,8 +175,8 @@ class GripperPage:
         y_axis_right: dict = {
             "type": "value",
             "name": "mA",
-            "nameTextStyle": {"fontSize": 11, "color": _CLR_CUR},
-            "axisLabel": {"fontSize": 11, "color": _CLR_CUR},
+            "nameTextStyle": {"fontSize": 12, "color": _CLR_CUR},
+            "axisLabel": {"fontSize": 12, "color": _CLR_CUR},
             "splitLine": {"show": False},
             "min": 0,
         }
@@ -186,13 +186,14 @@ class GripperPage:
         self._combined_chart = (
             ui.echart(
                 {
-                    "animation": True,
+                    "animation": False,
+                    "tooltip": chart_options()["tooltip"],
                     "animationDuration": 50,
                     "animationEasing": "linear",
                     "grid": {
                         "top": 24,
                         "right": 48,
-                        "bottom": 4,
+                        "bottom": 42,
                         "left": 38,
                         "containLabel": False,
                     },
@@ -200,13 +201,17 @@ class GripperPage:
                         "data": ["Position", "Current"],
                         "top": 0,
                         "left": 40,
-                        "textStyle": {"fontSize": 11, "color": "var(--ctk-text)"},
+                        "textStyle": {"fontSize": 12, "color": "#d4d4d4"},
                         "itemWidth": 12,
                         "itemHeight": 8,
                     },
                     "xAxis": {
                         "type": "time",
-                        "axisLabel": {"show": False},
+                        "name": "Time",
+                        "nameLocation": "middle",
+                        "nameGap": 26,
+                        "nameTextStyle": {"color": "#d4d4d4"},
+                        "axisLabel": {"color": "#d4d4d4", "fontSize": 12},
                         "axisTick": {"show": False},
                         "splitLine": {"show": False},
                         "axisLine": {"show": False},
@@ -218,7 +223,7 @@ class GripperPage:
                             "type": "line",
                             "yAxisIndex": 0,
                             "showSymbol": False,
-                            "smooth": True,
+                            "smooth": False,
                             "lineStyle": {"width": 1.5, "color": _CLR_POS},
                             "itemStyle": {"color": _CLR_POS},
                             "markLine": _make_mark_line(0, _CLR_POS, "target"),
@@ -229,7 +234,7 @@ class GripperPage:
                             "type": "line",
                             "yAxisIndex": 1,
                             "showSymbol": False,
-                            "smooth": True,
+                            "smooth": False,
                             "lineStyle": {"width": 1.5, "color": _CLR_CUR},
                             "itemStyle": {"color": _CLR_CUR},
                             "markLine": _make_mark_line(0, _CLR_CUR, "limit"),
@@ -242,8 +247,11 @@ class GripperPage:
                 renderer="svg",
             )
             .classes("w-full")
-            .style("height: 100px;")
+            .style("height: 200px;")
             .mark("gripper-chart")
+        )
+        expand_chart_button(
+            self._combined_chart, "Gripper position (%) and current (mA)"
         )
 
     def _ensure_chart_built(self) -> bool:
@@ -278,44 +286,26 @@ class GripperPage:
         )
         current_limit = waldoctl.commander.settings.gripper.current
 
-        if result is not None:
-            timestamps, positions, currents = result
-            ts_ms = [t * 1000 for t in timestamps]
-            self._combined_chart.run_chart_method(  # ty: ignore[unresolved-attribute]
-                "setOption",
-                {
-                    "series": [
-                        {
-                            "data": [
-                                [t, round(p * 100, 1)] for t, p in zip(ts_ms, positions)
-                            ],
-                            "markLine": _make_mark_line(
-                                target_pos_pct, _CLR_POS, "target"
-                            ),
-                        },
-                        {
-                            "data": [[t, round(c, 1)] for t, c in zip(ts_ms, currents)],
-                            "markLine": _make_mark_line(
-                                current_limit, _CLR_CUR, "limit"
-                            ),
-                        },
-                    ]
-                },
+        chart = self._combined_chart
+        if chart is None:
+            return
+        with chart.props.suspend_updates():
+            if result is not None:
+                timestamps, positions, currents = result
+                ts_ms = [t * 1000 for t in timestamps]
+                chart.options["series"][0]["data"] = [
+                    [t, round(p * 100, 1)] for t, p in zip(ts_ms, positions)
+                ]
+                chart.options["series"][1]["data"] = [
+                    [t, round(c, 1)] for t, c in zip(ts_ms, currents)
+                ]
+            chart.options["series"][0]["markLine"] = _make_mark_line(
+                target_pos_pct, _CLR_POS, "target"
             )
-        else:
-            self._combined_chart.run_chart_method(  # ty: ignore[unresolved-attribute]
-                "setOption",
-                {
-                    "series": [
-                        {
-                            "markLine": _make_mark_line(
-                                target_pos_pct, _CLR_POS, "target"
-                            )
-                        },
-                        {"markLine": _make_mark_line(current_limit, _CLR_CUR, "limit")},
-                    ]
-                },
+            chart.options["series"][1]["markLine"] = _make_mark_line(
+                current_limit, _CLR_CUR, "limit"
             )
+        chart.run_chart_method("setOption", {"series": chart.options["series"]})
 
     def set_target_position(self, position: float) -> None:
         """Set target position and update the slider. Called by control panel actions."""
