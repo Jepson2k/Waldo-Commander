@@ -12,8 +12,8 @@ import waldoctl
 from fastmcp import Client
 from nicegui import run
 from nicegui.testing import User
-from parol6.client.dry_run_client import DryRunRobotClient
 from parol6 import Robot
+from parol6.client.dry_run_client import DryRunRobotClient
 from pinokin import se3_from_rpy
 from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot
 from waldoctl.skills import MissingCapability
@@ -35,7 +35,6 @@ from waldo_commander.skills import (
     gripper_open,
 )
 from waldo_commander.state import ui_state
-
 
 START = [85, -85, 135, 10, 45, 170]
 
@@ -96,7 +95,8 @@ def test_starter_skills_plan_fixed_setup_alignment_and_gripper_actions():
     with pytest.raises(MissingCapability, match="Select a supported gripper"):
         gripper_open(client)
 
-    client.select_tool("PNEUMATIC")
+    selection = client.select_tool("PNEUMATIC")
+    assert selection >= 0 and client.wait_command(selection)
     assert gripper_open(client) >= 0
     assert gripper_close(client) >= 0
     assert len(client.tool_action_collector) == 2
@@ -198,8 +198,10 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
             while not is_any_program_running():
                 await asyncio.sleep(0.05)
         assert await client.wait_status(
-            lambda s: s.executing_index > 0
-            and s.action_state == waldoctl.ActionState.EXECUTING,
+            lambda s: (
+                s.executing_index > 0
+                and s.action_state == waldoctl.ActionState.EXECUTING
+            ),
             timeout=15,
         ), "the cancellation case must reach actual motion"
         await script_exec.stop()

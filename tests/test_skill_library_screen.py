@@ -64,7 +64,7 @@ def test_skill_library_form_keeps_actions_visible(screen, tmp_path, monkeypatch)
     screen.selenium.save_screenshot(str(tmp_path / "skill-library.png"))
     run_in_app(lambda: choose("waldo.locate_board"))
     WebDriverWait(screen.selenium, 10).until(
-        lambda driver: "Commander's active camera"
+        lambda driver: "Uses the active camera."
         in driver.find_element(By.TAG_NAME, "body").text
     )
     dimensions = screen.selenium.execute_script(
