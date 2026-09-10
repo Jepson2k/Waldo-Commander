@@ -10,7 +10,29 @@ from nicegui import Client, context, ui
 from waldoctl import EditId, Program, ProgramTarget
 
 from waldo_commander.common.theme import get_theme
+from waldo_commander.components.editor_decorations import decorations
+from waldo_commander.components.file_operations import FileOperationsMixin
+from waldo_commander.components.log_panel import (
+    LOG_COLLAPSED_VALUE,
+    LOG_MAX_LINES,
+    log_panel,
+)
+from waldo_commander.components.playback import playback
+from waldo_commander.components.script_execution import script_exec
+from waldo_commander.components.simulation_engine import (
+    default_python_snippet,
+    get_home_joints_rad,
+    is_default_script,
+    simulation,
+)
 from waldo_commander.constants import default_program_dir
+from waldo_commander.services import edit_decisions
+from waldo_commander.services.command_discovery import (
+    discover_robot_commands,
+    generate_completions_from_commands,
+)
+from waldo_commander.services.control_lease import control_mode
+from waldo_commander.services.motion_recorder import motion_recorder, move_snippet
 from waldo_commander.services.programs import (
     active_cursor_line,
     advance_active_cursor,
@@ -18,32 +40,10 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
-from waldo_commander.services import edit_decisions
-from waldo_commander.services.control_lease import control_mode
-from waldo_commander.services.motion_recorder import motion_recorder, move_snippet
 from waldo_commander.state import (
     simulation_state,
     ui_state,
 )
-from waldo_commander.services.command_discovery import (
-    discover_robot_commands,
-    generate_completions_from_commands,
-)
-from waldo_commander.components.editor_decorations import decorations
-from waldo_commander.components.log_panel import (
-    LOG_COLLAPSED_VALUE,
-    LOG_MAX_LINES,
-    log_panel,
-)
-from waldo_commander.components.simulation_engine import (
-    default_python_snippet,
-    get_home_joints_rad,
-    is_default_script,
-    simulation,
-)
-from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.playback import playback
-from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -1078,8 +1078,6 @@ class EditorPanel(FileOperationsMixin):
                 .classes("w-full items-center gap-2 px-2 no-wrap")
                 .style("height: 42px;")
             ):
-                ui.label("Program").classes("text-lg font-medium whitespace-nowrap")
-
                 # Tabs area (horizontal scroll)
                 with (
                     ui.scroll_area()
@@ -1129,15 +1127,32 @@ class EditorPanel(FileOperationsMixin):
                 )
                 save_btn.mark("editor-save-btn")
 
-                from waldo_commander.components.run_records import show_run_records
-
-                records_btn = (
-                    ui.button(icon="bug_report", on_click=show_run_records)
+                more_btn = (
+                    ui.button(icon="more_vert")
                     .props("flat dense color=white")
                     .classes("editor-toolbar-btn")
-                    .tooltip("Run records")
+                    .tooltip("More program actions")
+                    .mark("editor-more-btn")
                 )
-                records_btn.mark("editor-records-btn")
+                with (
+                    more_btn,
+                    ui.menu().props("auto-close").classes("editor-toolbar-menu"),
+                ):
+                    from waldo_commander.components.run_records import (
+                        show_run_records,
+                    )
+
+                    records_btn = (
+                        ui.button(
+                            "Run records",
+                            icon="bug_report",
+                            on_click=show_run_records,
+                        )
+                        .props("flat dense color=white")
+                        .classes("w-full justify-start")
+                        .tooltip("Run records")
+                    )
+                    records_btn.mark("editor-records-btn")
 
                 commands_btn = (
                     ui.button(icon="library_add")
@@ -1148,7 +1163,13 @@ class EditorPanel(FileOperationsMixin):
                 commands_btn.mark("editor-commands-btn")
                 with commands_btn:
                     self._build_command_menu()
-                self._toolbar_btns = [open_btn, save_btn, records_btn, commands_btn]
+                self._toolbar_btns = [
+                    open_btn,
+                    save_btn,
+                    more_btn,
+                    records_btn,
+                    commands_btn,
+                ]
 
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(

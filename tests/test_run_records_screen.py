@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+import waldoctl
 from nicegui import Client, core
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -15,7 +16,6 @@ from tests.helpers.wait import (
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import ui_state
-import waldoctl
 
 
 @pytest.mark.browser
@@ -56,6 +56,10 @@ def test_run_record_browser_shows_events_and_local_values(
         return asyncio.run_coroutine_threadsafe(coro, core.loop).result(30)
 
     element("tab-program").click()
+    element("editor-more-btn").click()
+    WebDriverWait(screen.selenium, 5).until(
+        lambda _: element("editor-records-btn").is_displayed()
+    )
     element("editor-records-btn").click()
     WebDriverWait(screen.selenium, 5).until(
         lambda _: element("record-runs-enabled").is_displayed()
@@ -70,6 +74,10 @@ def test_run_record_browser_shows_events_and_local_values(
         lambda _: not run_in_app(is_any_program_running)
     )
     assert run_in_app(lambda: script_exec.last_exit_code) == 0
+    element("editor-more-btn").click()
+    WebDriverWait(screen.selenium, 5).until(
+        lambda _: element("editor-records-btn").is_displayed()
+    )
     element("editor-records-btn").click()
     WebDriverWait(screen.selenium, 5).until(
         lambda _: "completed" in element("run-record-summary").text
@@ -78,14 +86,17 @@ def test_run_record_browser_shows_events_and_local_values(
     WebDriverWait(screen.selenium, 5).until(lambda _: "run_started" in table.text)
     element("run-record-filter").send_keys("skill")
     WebDriverWait(screen.selenium, 5).until(
-        lambda _: "skill_started" in table.text
-        and "controller_context" not in table.text
+        lambda _: (
+            "skill_started" in table.text and "controller_context" not in table.text
+        )
     )
     screen.selenium.save_screenshot(str(tmp_path / "run-records.png"))
     table.find_element(By.CSS_SELECTOR, "tbody tr").click()
     WebDriverWait(screen.selenium, 5).until(
-        lambda _: "Local event values"
-        in screen.selenium.find_element(By.TAG_NAME, "body").text
+        lambda _: (
+            "Local event values"
+            in screen.selenium.find_element(By.TAG_NAME, "body").text
+        )
     )
     assert '"seconds": 0.2' in screen.selenium.find_element(By.TAG_NAME, "body").text
     screen.selenium.save_screenshot(str(tmp_path / "run-record-values.png"))
