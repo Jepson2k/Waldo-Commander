@@ -349,7 +349,10 @@ class SkillLibraryPanel(Panel):
                             )
                             pose.on_value_change(refresh_source)
                             readers[name] = (
-                                lambda s=setup, p=pose, selected_store=store, kind=annotation: (
+                                lambda s=setup,
+                                p=pose,
+                                selected_store=store,
+                                kind=annotation: (
                                     selected_store.load(
                                         s.value or shared_setup.value
                                     ).resolve(p.value)
