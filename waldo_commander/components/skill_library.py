@@ -253,8 +253,7 @@ class SkillLibraryPanel(Panel):
                 store = SetupStore()
                 names = store.names()
                 needs_setup = any(
-                    t in (Pose, SetupSnapshot)
-                    for t in annotations.values()
+                    t in (Pose, SetupSnapshot) for t in annotations.values()
                 )
                 shared_setup = (
                     ui.select(names, label="Setup", value=names[0] if names else None)
@@ -273,11 +272,7 @@ class SkillLibraryPanel(Panel):
                     override_fields = ui.column().classes("w-full gap-2")
                 overrides.classes("col-span-2")
                 overrides.set_visibility(
-                    sum(
-                        t in (Pose, SetupSnapshot)
-                        for t in annotations.values()
-                    )
-                    > 1
+                    sum(t in (Pose, SetupSnapshot) for t in annotations.values()) > 1
                 )
                 for name, parameter in candidate.parameters.items():
                     annotation = annotations.get(name, parameter.annotation)
@@ -328,9 +323,7 @@ class SkillLibraryPanel(Panel):
                                     snapshot = selected_store.load(
                                         setup_widget.value or shared_setup.value
                                     )
-                                    options = list(
-                                        snapshot.poses
-                                    )
+                                    options = list(snapshot.poses)
                                     pose_widget.set_options(
                                         options, value=options[0] if options else None
                                     )
@@ -344,7 +337,10 @@ class SkillLibraryPanel(Panel):
                             )
                             pose.on_value_change(refresh_source)
                             readers[name] = (
-                                lambda s=setup, p=pose, selected_store=store, kind=annotation: (
+                                lambda s=setup,
+                                p=pose,
+                                selected_store=store,
+                                kind=annotation: (
                                     selected_store.load(
                                         s.value or shared_setup.value
                                     ).resolve(p.value)
