@@ -17,20 +17,18 @@ import asyncio
 import logging
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple, Sequence
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from dataclasses import dataclass
-
 import numpy as np
-from scipy.spatial.transform import Rotation
-from nicegui import ui, app
-from nicegui.elements.scene.scene_object3d import Object3D
-
 import waldoctl
-from waldoctl import LinearMotion, RotaryMotion, MeshRole, PartMotion
+from nicegui import app, ui
+from nicegui.elements.scene.scene_object3d import Object3D
+from scipy.spatial.transform import Rotation
+from waldoctl import LinearMotion, MeshRole, PartMotion, RotaryMotion
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, TOOL_PREFIX, pose_matrix
 
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
@@ -44,21 +42,21 @@ from waldo_commander.services.programs import active_cursor_line
 from waldo_commander.services.timeline import ObjectSample
 from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
 from waldo_commander.services.urdf_scene.scene_batch import batch_scene
-from waldo_commander.state import simulation_state, robot_state, ui_state
+from waldo_commander.state import robot_state, simulation_state, ui_state
 
 from .config import DRAFT_PREFIX, RobotAppearanceMode, ToolPose, UrdfSceneConfig
+from .editing_mixin import EditingMixin
+from .envelope_renderer import EnvelopeRenderer
 from .loader import (
-    load_urdf,
-    resolve_meshes_dir,
     get_transl_and_rpy,
+    load_urdf,
+    normalize_axis,
+    resolve_meshes_dir,
     rot_joint,
     transl_joint,
-    normalize_axis,
 )
-from .editing_mixin import EditingMixin
-from .tcp_controls_mixin import TCPControlsMixin
-from .envelope_renderer import EnvelopeRenderer
 from .path_renderer import PathRenderer
+from .tcp_controls_mixin import TCPControlsMixin
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
@@ -2300,17 +2298,36 @@ class UrdfScene(
                             self._draw_scene_cos(scale=0.05)
 
     def _plot_stls(self, link, scale: float = 1, material=None):
-        """Add all visual STLs from a link to the scene."""
+        """Add URDF meshes and primitives, retaining their visual transforms."""
         for visual in link.visuals:
-            obj = ui.scene.stl(
-                self._stl_to_url(visual.geometry.geometry.filename)
-            ).scale(scale)
-            if visual.origin is not None:
-                t, r = get_transl_and_rpy(visual.origin)
-                if any(v != 0 for v in t):
-                    obj.move(*t)
-                if any(v != 0 for v in r):
-                    obj.rotate(*r)
+            geometry = visual.geometry
+            rotation = np.eye(3)
+            if geometry.mesh is not None:
+                obj = ui.scene.stl(self._stl_to_url(geometry.mesh.filename))
+                mesh_scale = geometry.mesh.scale
+                if mesh_scale is not None:
+                    obj.scale(*(float(v) * scale for v in mesh_scale))
+                else:
+                    obj.scale(scale)
+            elif geometry.sphere is not None:
+                obj = ui.scene.sphere(geometry.sphere.radius).scale(scale)
+            elif geometry.box is not None:
+                obj = ui.scene.box(*geometry.box.size).scale(scale)
+            elif geometry.cylinder is not None:
+                cylinder = geometry.cylinder
+                obj = ui.scene.cylinder(
+                    cylinder.radius,
+                    cylinder.radius,
+                    cylinder.length,
+                    radial_segments=32,
+                ).scale(scale)
+                rotation = _Y_TO_Z_UP
+            else:
+                logger.warning("Unsupported URDF visual on link %s", link.name)
+                continue
+            origin = visual.origin if visual.origin is not None else np.eye(4)
+            obj.move(*origin[:3, 3])
+            obj.rotate_R((origin[:3, :3] @ rotation).tolist())
             if material is not None:
                 obj.material(material)
             # Tracked for simulator appearance changes.

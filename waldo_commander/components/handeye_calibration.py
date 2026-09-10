@@ -14,27 +14,26 @@ import time
 from typing import Literal, cast
 
 import numpy as np
-from nicegui import Client, app as ng_app
-from nicegui import background_tasks, context, run, ui
-from scipy.spatial.transform import Rotation
 import waldoctl
+from nicegui import Client, background_tasks, context, run, ui
+from nicegui import app as ng_app
+from scipy.spatial.transform import Rotation
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.camera import CameraCalibration
 from waldoctl.setup import Pose, SetupSnapshot, TcpCalibration
 
 from waldo_commander.camera import CameraUnavailable
 from waldo_commander.components.camera_calibration_data import CameraCalibrationData
+from waldo_commander.services import handeye
 from waldo_commander.services.camera_calibration import (
     CaptureBinding,
     calibration_from_result,
 )
-from waldo_commander.services.tcp_calibration import observe_tcp, read_applied_tcp
-
-from waldo_commander.services import handeye
 from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
+from waldo_commander.services.tcp_calibration import observe_tcp, read_applied_tcp
 from waldo_commander.state import robot_state
 
 logger = logging.getLogger(__name__)
@@ -135,7 +134,7 @@ class HandEyeCalibrationPanel(Panel):
     # can't balloon the layout.
     min_width = 440
     min_height = 320
-    default_width = 600
+    default_width = 540
     default_height = 640
     resizable = True
 
@@ -210,7 +209,7 @@ class HandEyeCalibrationPanel(Panel):
             "camera-panel-scroll w-full h-full min-h-0 flex-nowrap overflow-y-auto overflow-x-hidden gap-2"
         ):
             with ui.row().classes("w-full items-center"):
-                ui.label("Hand-Eye Calibration").classes("text-subtitle1")
+                ui.label("Camera calibration").classes("panel-heading")
                 ui.space()
                 ui.label().bind_text_from(
                     ng_app.storage.general,
@@ -462,9 +461,9 @@ class HandEyeCalibrationPanel(Panel):
         with ui.row().classes("items-center"):
             self._solve_btn = ui.button("Solve", icon="calculate", on_click=self._solve)
             self._solve_btn.mark("handeye-solve")
-            self._save_btn = ui.button("Save", icon="save", on_click=self._save).props(
-                "outline"
-            )
+            self._save_btn = ui.button(
+                "Save calibration", icon="save", on_click=self._save
+            ).props("outline")
             self._save_btn.mark("handeye-save")
             self._save_btn.set_enabled(False)
         self._result_container = ui.column().classes("w-full gap-0")

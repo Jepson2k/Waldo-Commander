@@ -29,13 +29,13 @@ from typing import Any, Callable
 import waldoctl
 from nicegui import background_tasks, ui
 
+from waldo_commander.common.charts import chart_options, expand_chart_button
+from waldo_commander.common.panel_theme import JOINT_COLORS as _JOINT_COLORS
 from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S
 from waldo_commander.state import robot_events, robot_state, ui_state
 
 logger = logging.getLogger(__name__)
-
-_JOINT_COLORS = ["#4fc3f7", "#81c784", "#ffb74d", "#e57373", "#ba68c8", "#fff176"]
 
 #: Error-code bands (waldoctl.errors). The band says what kind of thing went
 #: wrong, which is more use in a log than a severity word: a bus-off entry
@@ -271,50 +271,66 @@ class DiagnosticsPage:
                         "data": [],
                     }
                 )
-        with self._section("torques", "Torques [Nm] (solid measured, dashed external)"):
-            self._chart = (
-                ui.echart(
-                    {
-                        "animation": False,
-                        "grid": {
-                            "top": 24,
-                            "right": 8,
-                            "bottom": 4,
-                            "left": 40,
-                            "containLabel": False,
+        with self._section("torques", "Joint torque"):
+            with ui.row().classes("w-full items-center gap-2"):
+                mode = (
+                    ui.select(
+                        {
+                            "measured": "Measured",
+                            "external": "External",
+                            "both": "Both",
                         },
-                        "legend": {
-                            "data": [f"J{j + 1}" for j in range(n)],
-                            "top": 0,
-                            "left": 40,
-                            "textStyle": {"fontSize": 11, "color": "var(--ctk-text)"},
-                            "itemWidth": 12,
-                            "itemHeight": 8,
-                        },
-                        "xAxis": {
-                            "type": "time",
-                            "axisLabel": {"show": False},
-                            "axisTick": {"show": False},
-                            "splitLine": {"show": False},
-                            "axisLine": {"show": False},
-                        },
-                        "yAxis": {
-                            "type": "value",
-                            "axisLabel": {"fontSize": 11},
-                            "splitLine": {
-                                "lineStyle": {"color": "rgba(128,128,128,0.15)"}
-                            },
-                        },
-                        "series": series,
-                    },
-                    # The legend's colour is a CSS variable, which only a DOM
-                    # element resolves — a canvas fillStyle ignores it.
-                    renderer="svg",
+                        value="measured",
+                    )
+                    .props('dense aria-label="Torque source"')
+                    .classes("w-28")
+                    .mark("diag-torque-source")
                 )
+                joint = (
+                    ui.select(
+                        {0: "All joints", **{i: f"J{i}" for i in range(1, n + 1)}},
+                        value=0,
+                    )
+                    .props('dense aria-label="Torque joint"')
+                    .classes("w-28")
+                    .mark("diag-torque-joint")
+                )
+            options = chart_options(y_name="Nm")
+            options["series"] = series
+            options["legend"].update(
+                {"data": [f"J{i + 1}" for i in range(n)], "selectedMode": False}
+            )
+            self._chart = (
+                ui.echart(options, renderer="svg")
                 .classes("w-full")
-                .style("height: 140px;")
+                .style("height: 230px")
                 .mark("diag-torque-chart")
             )
+
+            def select_series():
+                assert self._chart is not None
+                selected = {}
+                for i in range(n):
+                    visible = joint.value in (0, i + 1)
+                    selected[f"J{i + 1}"] = visible and mode.value != "external"
+                    selected[f"J{i + 1} external"] = (
+                        visible and mode.value != "measured"
+                    )
+                self._chart.options["legend"]["data"] = [
+                    f"J{i + 1} external" if mode.value == "external" else f"J{i + 1}"
+                    for i in range(n)
+                ]
+                self._chart.options["legend"]["selected"] = selected
+                self._chart.update()
+
+            mode.on_value_change(select_series)
+            joint.on_value_change(select_series)
+            select_series()
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.label("Solid: measured · dashed: external").classes("panel-note")
+                expand_chart_button(self._chart, "Joint torque (Nm)").mark(
+                    "diag-expand-chart"
+                )
 
     def _build_homing_section(self) -> None:
         with self._section("homing", "Homing"):
@@ -536,6 +552,9 @@ class DiagnosticsPage:
                         ]
                     }
                 )
+        with self._chart.props.suspend_updates():
+            for destination, values in zip(self._chart.options["series"], series):
+                destination["data"] = values["data"]
         self._chart.run_chart_method("setOption", {"series": series})
 
     # ---- actions ----
