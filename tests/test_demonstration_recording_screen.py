@@ -83,3 +83,34 @@ def test_recording_chart_displays_actual_motion(screen, tmp_path, monkeypatch):
         f"c{insert}",
     )
     screen.selenium.save_screenshot(str(tmp_path / "demonstration-recording.png"))
+
+    def trim():
+        client = Client.instances[ui_state.active_client_id]
+        with client:
+
+            def marked(marker):
+                return next(e for e in client.elements.values() if marker in e._markers)
+
+            origin = recording.samples[0].observed_ns
+            marked("demo-name").set_value("trimmed-motion")
+            marked("demo-from-seconds").set_value(
+                (recording.samples[1].observed_ns - origin) / 1e9
+            )
+            marked("demo-to-seconds").set_value(
+                (recording.samples[3].observed_ns - origin) / 1e9
+            )
+            return marked("demo-save").id
+
+    save = run_in_app(trim)
+    screen.selenium.find_element(By.ID, f"c{save}").click()
+    trimmed_path = tmp_path / "trimmed-motion.json"
+    WebDriverWait(screen.selenium, 10).until(lambda _: trimmed_path.exists())
+    from waldo_commander.demonstrations import load_demonstration
+
+    trimmed = load_demonstration(trimmed_path)
+    assert [s.observed_ns for s in trimmed.samples] == [
+        s.observed_ns for s in recording.samples[1:4]
+    ]
+    assert [s.joints_deg for s in trimmed.samples] == [
+        s.joints_deg for s in recording.samples[1:4]
+    ]

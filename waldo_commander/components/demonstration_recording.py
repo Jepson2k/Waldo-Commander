@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 from typing import ClassVar
 
@@ -13,6 +14,7 @@ from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.recordings import Demonstration
 from waldoctl.setup import validate_name
 
+from waldo_commander.common.charts import chart_options, expand_chart_button
 from waldo_commander.demonstrations import (
     load_demonstration,
     record_demonstration,
@@ -28,7 +30,7 @@ class DemonstrationPanel(Panel):
     tab_tooltip: ClassVar[str] = "Record and inspect observed motion"
     order: ClassVar[int] = 30
     default_width: ClassVar[int] = 490
-    default_height: ClassVar[int] = 800
+    default_height: ClassVar[int] = 720
     min_width: ClassVar[int] = 390
     min_height: ClassVar[int] = 420
     resizable: ClassVar[bool] = True
@@ -61,7 +63,37 @@ class DemonstrationPanel(Panel):
         def names() -> list[str]:
             return sorted(p.stem for p in directory.glob("*.json"))
 
+        syncing_span = False
+        span_error: str | None = None
+
+        def update_span() -> None:
+            nonlocal syncing_span, span_error
+            if syncing_span or self.recording is None:
+                return
+            first, last = first_seconds.value, last_seconds.value
+            if (
+                first is None
+                or last is None
+                or not all(math.isfinite(v) for v in (first, last))
+                or first > last
+            ):
+                span_error = "Enter a valid time range."
+                summary.set_text(span_error)
+                return
+            span_error = None
+            times = [
+                (sample.observed_ns - self.recording.samples[0].observed_ns) / 1e9
+                for sample in self.recording.samples
+            ]
+            syncing_span = True
+            start.set_value(bisect_left(times, first))
+            end.set_value(bisect_right(times, last))
+            syncing_span = False
+            refresh_plot()
+
         def selected() -> Demonstration:
+            if span_error:
+                raise ValueError(span_error)
             if self.recording is None:
                 raise ValueError("Record or load observations first")
             for value in (start.value, end.value):
@@ -73,7 +105,15 @@ class DemonstrationPanel(Panel):
                     raise ValueError("Select whole-number observation indices")
             return self.recording.select(int(start.value), int(end.value))
 
+        def update_indices() -> None:
+            nonlocal span_error
+            span_error = None
+            refresh_plot()
+
         def refresh_plot() -> None:
+            nonlocal syncing_span
+            if syncing_span:
+                return
             try:
                 recording = selected()
             except (ValueError, TypeError) as error:
@@ -82,6 +122,10 @@ class DemonstrationPanel(Panel):
             gaps = {gap.sample_index for gap in recording.gaps}
             rows = recording.samples[:5000]
             origin = self.recording.samples[0].observed_ns if self.recording else 0
+            syncing_span = True
+            first_seconds.set_value((recording.samples[0].observed_ns - origin) / 1e9)
+            last_seconds.set_value((recording.samples[-1].observed_ns - origin) / 1e9)
+            syncing_span = False
             series = []
             for joint in range(len(rows[0].joints_deg)):
                 data = []
@@ -104,13 +148,15 @@ class DemonstrationPanel(Panel):
             rate = recording.observed_rate_hz
             summary.set_text(
                 f"{len(recording.samples)} observations · {recording.duration_s:.2f} s · "
-                f"{rate or 0:.1f} Hz observed / {recording.requested_rate_hz:g} Hz requested · "
-                f"{len(gaps)} gaps · ended: {recording.ended.replace('_', ' ')}"
+                f"{len(gaps)} gaps"
                 + (
                     " · chart shows first 5,000 observations"
                     if len(recording.samples) > 5000
                     else ""
                 )
+            )
+            capture_details.set_text(
+                f"{rate or 0:.1f} Hz observed / {recording.requested_rate_hz:g} Hz requested · Ended: {recording.ended.replace(chr(95), chr(32))}"
             )
             gap_table.rows = [
                 {
@@ -124,9 +170,13 @@ class DemonstrationPanel(Panel):
             gap_table.set_visibility(bool(gaps))
 
         def adopt(recording: Demonstration) -> None:
+            nonlocal syncing_span, span_error
             self.recording = recording
+            span_error = None
+            syncing_span = True
             start.set_value(0)
             end.set_value(len(recording.samples))
+            syncing_span = False
             refresh_plot()
 
         async def capture() -> None:
@@ -180,8 +230,8 @@ class DemonstrationPanel(Panel):
         def download() -> None:
             try:
                 recording = selected()
-                from dataclasses import asdict
                 import json
+                from dataclasses import asdict
 
                 ui.download(
                     json.dumps(
@@ -217,14 +267,14 @@ class DemonstrationPanel(Panel):
             except (OSError, ValueError) as error:
                 self._message = str(error)
 
-        with ui.column().classes("w-full h-full min-h-0 flex-nowrap"):
-            ui.label("Demonstrations").classes("text-h6")
+        with ui.column().classes("w-full h-full min-h-0 flex-nowrap gap-2"):
+            ui.label("Demonstrations").classes("panel-heading")
             ui.label(
                 "Capture joint and tool observations while jogging, hand guiding, or running a program."
             ).classes("text-caption")
             with ui.row().classes("items-center"):
                 duration = (
-                    ui.number("Maximum seconds", value=30, min=0.1, max=3600)
+                    ui.number("Max capture (s)", value=30, min=0.1, max=3600)
                     .props("dense")
                     .classes("w-32")
                     .mark("demo-duration")
@@ -254,9 +304,9 @@ class DemonstrationPanel(Panel):
                         ui.select(
                             names(),
                             label="Saved",
-                            on_change=lambda e: name.set_value(e.value)
-                            if e.value
-                            else None,
+                            on_change=lambda e: (
+                                name.set_value(e.value) if e.value else None
+                            ),
                         )
                         .props("dense")
                         .classes("flex-1 min-w-0")
@@ -272,33 +322,64 @@ class DemonstrationPanel(Panel):
                     ui.button("Export", on_click=download).props("dense flat").mark(
                         "demo-export"
                     )
-                with ui.row():
-                    start = (
+                with ui.row().classes("w-full gap-2"):
+                    first_seconds = (
                         ui.number(
-                            "First observation (0-based)",
+                            "From (s)",
                             value=0,
                             min=0,
-                            step=1,
-                            precision=0,
-                            on_change=refresh_plot,
+                            format="%.3f",
+                            on_change=update_span,
                         )
                         .props("dense")
-                        .classes("w-44")
-                        .mark("demo-first")
+                        .classes("flex-1 min-w-0")
+                        .mark("demo-from-seconds")
                     )
-                    end = (
+                    last_seconds = (
                         ui.number(
-                            "End (exclusive)",
-                            value=1,
-                            min=1,
-                            step=1,
-                            precision=0,
-                            on_change=refresh_plot,
+                            "To (s)",
+                            value=0,
+                            min=0,
+                            format="%.3f",
+                            on_change=update_span,
                         )
                         .props("dense")
-                        .classes("w-40")
-                        .mark("demo-end")
+                        .classes("flex-1 min-w-0")
+                        .mark("demo-to-seconds")
                     )
+                with (
+                    ui.expansion("Sample details", icon="tune")
+                    .classes("w-full")
+                    .mark("demo-sample-details")
+                ):
+                    with ui.row():
+                        start = (
+                            ui.number(
+                                "First sample (0-based)",
+                                value=0,
+                                min=0,
+                                step=1,
+                                precision=0,
+                                on_change=update_indices,
+                            )
+                            .props("dense")
+                            .classes("w-44")
+                            .mark("demo-first")
+                        )
+                        end = (
+                            ui.number(
+                                "End (exclusive)",
+                                value=1,
+                                min=1,
+                                step=1,
+                                precision=0,
+                                on_change=update_indices,
+                            )
+                            .props("dense")
+                            .classes("w-40")
+                            .mark("demo-end")
+                        )
+                    capture_details = ui.label().classes("panel-note")
                 summary = (
                     ui.label("No observations loaded")
                     .classes("text-caption")
@@ -306,37 +387,17 @@ class DemonstrationPanel(Panel):
                 )
                 chart = (
                     ui.echart(
-                        {
-                            "animation": False,
-                            "tooltip": {"trigger": "axis"},
-                            "legend": {
-                                "top": 0,
-                                "left": 40,
-                                "textStyle": {"color": "var(--ctk-text)"},
-                            },
-                            "grid": {"left": 48, "right": 16, "top": 40, "bottom": 42},
-                            "xAxis": {
-                                "type": "value",
-                                "name": "Seconds",
-                                "nameLocation": "middle",
-                                "nameGap": 25,
-                                "axisLabel": {"color": "var(--ctk-text)"},
-                                "nameTextStyle": {"color": "var(--ctk-text)"},
-                            },
-                            "yAxis": {
-                                "type": "value",
-                                "name": "Degrees",
-                                "scale": True,
-                                "axisLabel": {"color": "var(--ctk-text)"},
-                                "nameTextStyle": {"color": "var(--ctk-text)"},
-                            },
-                            "series": [],
-                        },
+                        chart_options(
+                            x_name="Time (s)", y_name="Angle (°)", x_type="value"
+                        ),
                         renderer="svg",
                     )
                     .classes("w-full shrink-0")
-                    .style("height: 200px")
+                    .style("height: 260px")
                     .mark("demo-chart")
+                )
+                expand_chart_button(chart, "Recorded joint angles (°)").mark(
+                    "demo-expand-chart"
                 )
                 gap_table = (
                     ui.table(
@@ -363,9 +424,12 @@ class DemonstrationPanel(Panel):
                 gripper = ui.checkbox(
                     "Replay observed gripper positions", value=False
                 ).mark("demo-gripper")
-                ui.label(
-                    "Replay stops at every waypoint and may be much slower. Gripper changes run sequentially at waypoint boundaries; recorded grasp signals are not replayed. Gaps must be excluded by selecting a continuous span."
-                ).classes("text-caption")
+                with ui.expansion("Replay behavior", icon="info_outline").classes(
+                    "w-full"
+                ):
+                    ui.label(
+                        "Replay stops at every waypoint and may be much slower. Gripper changes run sequentially at waypoint boundaries; recorded grasp signals are not replayed. Gaps must be excluded by selecting a continuous span."
+                    ).classes("text-caption")
             ui.button("Insert replay call", on_click=insert).props("dense").mark(
                 "demo-insert"
             )

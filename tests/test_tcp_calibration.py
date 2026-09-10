@@ -17,10 +17,10 @@ from tests.helpers.wait import (
     wait_for_app_ready,
     wait_until,
 )
+from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
 from waldo_commander.setup import SetupStore
 from waldo_commander.state import ui_state
-from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
 
 
 @pytest.mark.integration
@@ -64,6 +64,7 @@ async def test_pivot_orientation_saved_setup_and_confirmed_application(
         user.find(marker="setup-load").click()
         await user.should_see("Loaded bench")
         user.find(kind=ui.tab, content="TCP").click()
+        next(iter(user.find(marker="tcp-measure-details").elements)).set_value(True)
         user.find(marker="tcp-calibration-solve").click()
         await user.should_see("Pivot calibration requires at least four tool poses")
         program = waldoctl.commander.programs.active
@@ -90,7 +91,7 @@ async def test_pivot_orientation_saved_setup_and_confirmed_application(
             "Orientation taught against axes; position is unchanged.", retries=50
         )
         user.find(marker="tcp-calibration-set").click()
-        await user.should_see("Calibration added to the setup; Save to persist it.")
+        await user.should_see("Calibration kept. Save setup to persist it.")
         user.find(marker="setup-save").click()
         await user.should_see("Saved bench")
         saved = SetupStore(tmp_path).load("bench").tcp_calibrations["tip"]
@@ -169,6 +170,7 @@ with RobotClient() as rbt:
         user.find(marker="setup-load").click()
         await user.should_see("Loaded bench")
         user.find(kind=ui.tab, content="TCP").click()
+        next(iter(user.find(marker="tcp-measure-details").elements)).set_value(True)
         element("tcp-calibration-existing").set_value("tip")
         await completed(await client.select_tool("PNEUMATIC", variant_key="horizontal"))
         assert await wait_until(
