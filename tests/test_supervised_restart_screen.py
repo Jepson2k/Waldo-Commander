@@ -69,6 +69,10 @@ if __name__ == '__main__':
     element("tab-program").click()
     drive(interrupted())
     assert run_in_app(lambda: script_exec.last_outcome) == "stopped"
+    element("editor-more-btn").click()
+    WebDriverWait(screen.selenium, 5).until(
+        lambda _: element("editor-restart-btn").is_displayed()
+    )
     element("editor-restart-btn").click()
     WebDriverWait(screen.selenium, 10).until(
         lambda _: "Controller ready" in element("restart-controller-state").text

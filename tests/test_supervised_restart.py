@@ -1,7 +1,8 @@
 """Restart entry discovery must not execute module initialization or old locals."""
 
-import pytest
 import asyncio
+
+import pytest
 import waldoctl
 from nicegui.testing import User
 
@@ -108,6 +109,7 @@ if __name__ == '__main__':
     before = await client.angles()
     initial_state = await fresh_state(client)
     initial_state.require_ready()
+    user.find(marker="editor-more-btn").click()
     user.find(marker="editor-restart-btn").click()
     await user.should_see("Previous run: failed · same source")
     await user.should_see("Controller ready", retries=50)
