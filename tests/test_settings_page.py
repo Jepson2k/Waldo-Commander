@@ -191,7 +191,8 @@ async def test_variant_selector_appears_for_tools_with_variants(user: User) -> N
 
     # SSG-48 has variants (finger, pinch) — selector should appear
     select_el.set_value("SSG-48")
-    await asyncio.sleep(0.1)
+    await wait_for_tool_key("SSG-48", timeout_s=5)
+    await user.should_see("Variant")
     variant_select = user.find(marker="select-tool-variant")
     assert len(variant_select.elements) == 1, (
         "Variant selector should appear for SSG-48"
@@ -200,7 +201,7 @@ async def test_variant_selector_appears_for_tools_with_variants(user: User) -> N
 
     # NONE has no variants, so it should not occupy a Settings row.
     select_el.set_value("NONE")
-    await asyncio.sleep(0.1)
+    await wait_for_tool_key("NONE", timeout_s=5)
     await user.should_not_see("Variant")
 
 
