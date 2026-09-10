@@ -98,6 +98,10 @@ def test_browser_exports_selected_data_and_imports_without_starting_a_program(
 
     element("tab-program").click()
     tcp, world, record = drive(prepare())
+    element("editor-more-btn").click()
+    WebDriverWait(screen.selenium, 5).until(
+        lambda _: element("editor-projects-btn").is_displayed()
+    )
     element("editor-projects-btn").click()
     WebDriverWait(screen.selenium, 5).until(
         lambda _: element("project-export").is_displayed()
@@ -159,6 +163,8 @@ def test_browser_exports_selected_data_and_imports_without_starting_a_program(
     screen.selenium.save_screenshot(str(tmp_path / "project-import.png"))
     element("project-open").click()
     WebDriverWait(screen.selenium, 5).until(
-        lambda _: run_in_app(lambda: waldoctl.commander.programs.active.file_path)
-        == str(imported / "programs/demo.py")
+        lambda _: (
+            run_in_app(lambda: waldoctl.commander.programs.active.file_path)
+            == str(imported / "programs/demo.py")
+        )
     )

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
-from nicegui import run, ui
 import waldoctl
+from nicegui import run, ui
 
 from waldo_commander.project import find_project
 from waldo_commander.services.portable_projects import (
@@ -65,12 +66,17 @@ def show_portable_projects(
     destination: Path | None = None
     manifest = None
 
-    with ui.dialog() as dialog, ui.card().classes("w-[780px] max-w-full gap-2"):
-        ui.label("Portable projects").classes("text-lg font-semibold")
+    with (
+        ui.dialog() as dialog,
+        ui.card().classes("task-dialog w-[780px] max-w-full flex-nowrap"),
+    ):
+        ui.label("Projects").classes("text-lg font-semibold")
         with ui.tabs().classes("w-full") as tabs:
             export_tab = ui.tab("Export")
             import_tab = ui.tab("Import")
-        with ui.tab_panels(tabs, value=export_tab).classes("w-full"):
+        with ui.tab_panels(tabs, value=export_tab).classes(
+            "w-full min-h-0 overflow-y-auto"
+        ):
             with ui.tab_panel(export_tab).classes("gap-2"):
                 ui.label(
                     f"Data source: {project.name if project else 'shared saved data'}"
@@ -82,7 +88,7 @@ def show_portable_projects(
                         value=[active.id] if active else [],
                         label="Open programs",
                     )
-                    .props("use-chips")
+                    .props("dense use-chips")
                     .classes("w-full")
                     .mark("project-programs")
                 )
@@ -91,9 +97,9 @@ def show_portable_projects(
                         store.names(),
                         multiple=True,
                         value=[],
-                        label="Setup snapshots, including calibration",
+                        label="Setups & calibration",
                     )
-                    .props("use-chips")
+                    .props("dense use-chips")
                     .classes("w-full")
                     .mark("project-setups")
                 )
@@ -102,9 +108,9 @@ def show_portable_projects(
                         sorted(recordings),
                         multiple=True,
                         value=[],
-                        label="Demonstration recordings",
+                        label="Recordings",
                     )
-                    .props("use-chips")
+                    .props("dense use-chips")
                     .classes("w-full")
                     .mark("project-recordings")
                 )
@@ -112,35 +118,45 @@ def show_portable_projects(
                     ui.select(
                         sorted(worlds), multiple=True, value=[], label="Saved worlds"
                     )
-                    .props("use-chips")
+                    .props("dense use-chips")
                     .classes("w-full")
                     .mark("project-worlds")
                 )
                 record_choice = (
                     ui.select(
-                        sorted(records_by_name),
+                        {
+                            key: f"{datetime.fromtimestamp(path.stat().st_mtime, UTC).astimezone():%b %d %H:%M:%S} · {key[:8]}"
+                            for key, path in records_by_name.items()
+                        },
                         multiple=True,
                         value=[],
-                        label="Run records (numeric debugging exports)",
+                        label="Debug records",
                     )
-                    .props("use-chips")
+                    .props("dense use-chips")
                     .classes("w-full")
                     .mark("project-debug-records")
                 )
-                requirements = (
-                    ui.textarea(
-                        "Package requirements (one per line)",
-                        value="\n".join(
-                            current_requirements(ui_state.active_robot.backend_package)
-                        ),
-                    )
-                    .props("dense rows=3")
+                with (
+                    ui.expansion("Package requirements", icon="tune")
                     .classes("w-full")
-                    .mark("project-requirements")
-                )
-                ui.label(
-                    "Select helper modules as programs too. Source and selected data are preserved; environment files are excluded."
-                ).classes("text-sm")
+                    .mark("project-requirements-details")
+                ):
+                    requirements = (
+                        ui.textarea(
+                            "Requirements (one per line)",
+                            value="\n".join(
+                                current_requirements(
+                                    ui_state.active_robot.backend_package
+                                )
+                            ),
+                        )
+                        .props("dense rows=3")
+                        .classes("w-full")
+                        .mark("project-requirements")
+                    )
+                    ui.label(
+                        "Include helper modules in Programs. Environment files are excluded."
+                    ).classes("text-sm")
 
                 async def download():
                     try:
@@ -217,9 +233,9 @@ def show_portable_projects(
                     "project-export"
                 )
             with ui.tab_panel(import_tab).classes("gap-2"):
-                ui.label(
-                    "Import saves files into a new project folder. Opening and running a program are separate actions."
-                ).classes("text-sm")
+                ui.label("Inspect an archive, then import into a new folder.").classes(
+                    "text-sm"
+                )
                 summary = ui.label("Choose a project archive to inspect.").mark(
                     "project-import-summary"
                 )
@@ -340,6 +356,6 @@ def show_portable_projects(
                     "Open selected program", on_click=open_selected
                 ).mark("project-open")
                 open_button.disable()
-        ui.button("Close", on_click=dialog.close)
+        ui.button("Close", on_click=dialog.close).props("flat").classes("shrink-0")
     dialog.on("hide", dialog.delete)
     dialog.open()
