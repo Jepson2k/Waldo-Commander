@@ -2,7 +2,8 @@
 
 from collections.abc import Awaitable, Callable
 
-from nicegui import app as ng_app, ui
+from nicegui import app as ng_app
+from nicegui import ui
 from waldoctl import Commander
 from waldoctl.camera import CameraCalibration
 from waldoctl.setup import SetupSnapshot
@@ -29,26 +30,30 @@ class CameraCalibrationData:
         ) as self.container:
             with ui.row().classes("items-center w-full"):
                 self.setup_name = (
-                    ui.input("Setup", value="bench")
+                    ui.select(
+                        list(dict.fromkeys(["bench", *self.store.names()])),
+                        value="bench",
+                        label="Setup",
+                        new_value_mode="add-unique",
+                    )
+                    .props("use-input")
                     .props("dense")
-                    .classes("w-36")
+                    .classes("flex-1 min-w-0")
                     .mark("camera-setup")
                 )
                 self.name = (
                     ui.input("Camera name", value="camera")
                     .props("dense")
-                    .classes("w-36")
+                    .classes("flex-1 min-w-0")
                     .mark("camera-name")
                 )
                 self.reference = (
-                    ui.input("Fixed camera reference frame", value="WRF")
+                    ui.input("Reference frame", value="WRF")
                     .props("dense")
-                    .classes("w-48")
+                    .classes("w-full")
                     .mark("camera-reference")
                 )
-            ui.label(
-                "Save stores the measured result in this named setup. Export downloads a fixed Python snapshot."
-            ).classes("text-caption")
+            ui.label("Save keeps the result in this setup.").classes("text-caption")
             with ui.row():
                 ui.button("Load / check", on_click=self.load).props(
                     "dense outline"
@@ -59,7 +64,7 @@ class CameraCalibrationData:
             self.message = (
                 ui.label().classes("text-caption").mark("camera-data-message")
             )
-            with ui.expansion("Import existing hand-eye measurement").classes("w-full"):
+            with ui.expansion("Import older measurement").classes("w-full"):
                 self.confirm = ui.checkbox(
                     "Same physical camera, lens and mount as the stored measurement"
                 ).mark("camera-import-confirm")
@@ -67,7 +72,7 @@ class CameraCalibrationData:
                     "Import for current tool", on_click=self.import_measurement
                 ).props("dense outline").mark("camera-import")
                 ui.label(
-                    "This binds the older measurement to the current camera and tool variant. The original stays saved."
+                    "Binds a copy to the current camera and tool variant."
                 ).classes("text-caption")
 
     def snapshot(self) -> SetupSnapshot:
