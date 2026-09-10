@@ -361,10 +361,21 @@ jobs:
         run: |
           pytest -vv --tb=long --log-cli-level=DEBUG tests/test_par6_backend.py
 
+      - name: Review the par6 browser layout
+        env:
+          PYTHONUNBUFFERED: '1'
+          PYTHONUTF8: '1'
+          WALDO_PAR6_E2E: '1'
+          PAR6D_BIN: ${{ github.workspace }}/par6/target/release/par6d
+        run: |
+          pytest -vv --tb=long --junitxml=test-results-par6-layout.xml tests/test_gui_layout_screen.py::test_compact_layout_par6
+
       - name: Preserve test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-par6-e2e
-          path: test-results.xml
+          path: |
+            test-results.xml
+            test-results-par6-layout.xml
           retention-days: 7
