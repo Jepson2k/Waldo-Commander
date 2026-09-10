@@ -1,11 +1,11 @@
 """Explicit entry selection and physical setup review before a fresh run."""
 
-from nicegui import ui
 import waldoctl
+from nicegui import ui
 
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.run_records import load_record
 from waldo_commander.services.supervised_restart import (
     discover_entries,
@@ -30,7 +30,10 @@ async def show_supervised_restart() -> None:
         ui.notify(str(error), color="warning")
         return
     reference = None
-    with ui.dialog() as dialog, ui.card().classes("w-[720px] max-w-full gap-2"):
+    with (
+        ui.dialog() as dialog,
+        ui.card().classes("task-dialog w-[720px] max-w-full overflow-y-auto"),
+    ):
         ui.label("Supervised restart").classes("text-lg font-semibold")
         previous = script_exec.last_outcome or "No previous run in this session"
         if script_exec.last_run_source_digest is not None:
@@ -61,7 +64,7 @@ async def show_supervised_restart() -> None:
             ui.label(
                 "This program has no declared restart entries. Start runs it from the beginning."
             )
-            ui.button("Close", on_click=dialog.close)
+            ui.button("Close", on_click=dialog.close).props("flat")
             dialog.on("hide", dialog.delete)
             dialog.open()
             return
@@ -75,7 +78,7 @@ async def show_supervised_restart() -> None:
                     for e in entries
                 },
                 value=entries[0].name,
-                label="Python entry function",
+                label="Restart entry",
             )
             .classes("w-full")
             .mark("restart-entry-choice")
@@ -85,6 +88,8 @@ async def show_supervised_restart() -> None:
             .classes("whitespace-pre-line text-sm")
             .mark("restart-controller-state")
         )
+        with ui.expansion("Controller details", icon="info_outline").classes("w-full"):
+            controller_details = ui.label().classes("whitespace-pre-line panel-note")
         confirmation = ui.checkbox("I checked the physical setup for this entry").mark(
             "restart-physical-confirmation"
         )
@@ -100,17 +105,20 @@ async def show_supervised_restart() -> None:
                 current.require_ready()
                 reference = current
                 state_label.text = (
-                    f"Controller ready · session {current.session_id} · publication {current.seq}\n"
+                    "Controller ready\n"
                     f"Referenced · enabled · queue empty\n"
-                    f"Joints (°): {', '.join(f'{v:.1f}' for v in current.angles_deg)}\n"
-                    f"Tool: {current.tool or 'none'} {current.tool_variant} · TCP: {current.tcp}"
+                    f"Tool: {current.tool or 'none'} {current.tool_variant}"
                     + (
                         "\nHand-guiding available at rest; keep hands clear for execution."
                         if current.freedrive
                         else ""
                     )
                 )
+                controller_details.set_text(
+                    f"Session: {current.session_id} · publication: {current.seq}\nJoints (°): {', '.join(f'{v:.1f}' for v in current.angles_deg)}\nTCP: {current.tcp}"
+                )
             except Exception as error:
+                controller_details.set_text("")
                 state_label.text = (
                     f"Restart unavailable: {error or type(error).__name__}"
                 )
@@ -140,8 +148,10 @@ async def show_supervised_restart() -> None:
                 "restart-start"
             )
             start_button.disable()
-            ui.button("Refresh state", on_click=refresh).mark("restart-refresh")
-            ui.button("Close", on_click=dialog.close)
+            ui.button("Refresh state", on_click=refresh).props("flat").mark(
+                "restart-refresh"
+            )
+            ui.button("Close", on_click=dialog.close).props("flat")
         confirmation.on_value_change(
             lambda e: start_button.set_enabled(bool(e.value) and reference is not None)
         )

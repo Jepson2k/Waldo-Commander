@@ -1,16 +1,16 @@
 """Opted-in records follow real managed programs and remain bounded."""
 
+import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
-import asyncio
-import hashlib
 from uuid import uuid4
 
 import pytest
 import waldoctl
 from nicegui.testing import User
-from waldoctl.setup import SetupSnapshot, Pose
+from waldoctl.setup import Pose, SetupSnapshot
 
 from tests.helpers.wait import (
     enable_sim,
@@ -18,14 +18,13 @@ from tests.helpers.wait import (
     wait_for_app_ready,
 )
 from waldo_commander.services.run_records import (
-    RunRecord,
-    load_record,
-    debugging_export,
     MAX_RECORD_BYTES,
+    RunRecord,
+    debugging_export,
+    load_record,
 )
-from waldo_commander.setup import SetupStore
-
 from waldo_commander.services.stepping_client import GUIStepController, StepIO
+from waldo_commander.setup import SetupStore
 
 
 def test_event_backlog_is_bounded_and_reports_gaps_without_losing_latest_step():
@@ -152,6 +151,7 @@ if os.environ.get("WALDO_STEP_SESSION"):
     raise RuntimeError("error-secret-123")
 """
     ui_state.active_textarea.value = source
+    user.find(marker="editor-more-btn").click()
     user.find(marker="editor-records-btn").click()
     await user.should_see("Record future program runs")
     user.find(marker="record-runs-enabled").click()

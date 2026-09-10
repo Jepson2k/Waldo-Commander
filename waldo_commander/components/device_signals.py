@@ -7,8 +7,8 @@ from waldoctl import Commander
 from waldoctl.setup import SetupSnapshot
 from waldoctl.signals import DigitalSignal
 
-from waldo_commander.skills.signals import read_signal, write_signal
 from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.skills.signals import read_signal, write_signal
 from waldo_commander.state import ui_state
 
 
@@ -29,9 +29,7 @@ class DeviceSignalEditor:
             robot.digital_outputs,
         )
         with ui.column().classes("w-full"):
-            ui.label("Name an existing digital channel for use from Python.").classes(
-                "text-caption"
-            )
+            ui.label("Name a digital input or output.").classes("text-caption")
             with ui.row().classes("w-full items-center"):
                 self.name = (
                     ui.input("Signal name", value="part_ready")
@@ -66,7 +64,7 @@ class DeviceSignalEditor:
                     .mark("signal-direction")
                 )
                 self.index = (
-                    ui.number("Channel (starts at 0)", value=0, min=0, step=1)
+                    ui.number("Channel (0-based)", value=0, min=0, step=1)
                     .props("dense")
                     .classes("w-40")
                     .mark("signal-index")
@@ -74,13 +72,13 @@ class DeviceSignalEditor:
             self.active_high = ui.checkbox("Active high", value=True).mark(
                 "signal-active-high"
             )
-            ui.label(
-                "Unchecked: a low electrical level means True. E-stop is not a mappable channel."
-            ).classes("text-caption")
+            ui.label("Active low when unchecked. E-stop cannot be mapped.").classes(
+                "text-caption"
+            )
             with ui.row():
-                ui.button("Set mapping", on_click=self.set_mapping).props("dense").mark(
-                    "signal-set"
-                )
+                ui.button("Keep mapping", on_click=self.set_mapping).props(
+                    "dense"
+                ).mark("signal-set")
                 ui.button("Remove mapping", on_click=self.remove).props(
                     "dense flat"
                 ).mark("signal-remove")
@@ -96,7 +94,7 @@ class DeviceSignalEditor:
                 ).mark("signal-write")
             self.message = (
                 ui.label(
-                    "Set mapping updates this setup; Save persists it. Read and Write use the controller."
+                    "Save setup keeps the mapping. Read and Write use the controller."
                 )
                 .classes("text-caption")
                 .mark("signal-message")
@@ -118,7 +116,11 @@ class DeviceSignalEditor:
         self.show_binding()
 
     def refresh(self) -> None:
-        self.existing.set_options(list(self.get_snapshot().signals), value=None)
+        options = list(self.get_snapshot().signals)
+        self.existing.set_options(
+            options,
+            value=self.existing.value if self.existing.value in options else None,
+        )
 
     def load(self, name: str | None) -> None:
         if name is None:
