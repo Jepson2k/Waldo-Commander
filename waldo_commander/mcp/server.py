@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 
 import waldoctl
 
+from waldo_commander.constants import config
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
@@ -135,7 +137,8 @@ def get_mcp() -> "FastMCP":
                 "is approved individually; in Auto-edits, edits apply "
                 "immediately but each move is still approved; in Autopilot, "
                 "both are automatic (real hardware still asks once per "
-                "session). A refusal names what's pending — block on "
+                "session unless development_autopilot is enabled at startup). "
+                "A refusal names what's pending — block on "
                 "control.wait_approval and retry once it reports allowed; "
                 "never spin the refused call. A denial means change approach, "
                 "not retry."
@@ -165,6 +168,8 @@ async def start_mcp_server() -> None:
     if _server_task is not None and not _server_task.done():
         return
 
+    if config.dev_mcp_autopilot:
+        settings.host = "127.0.0.1"
     mcp = get_mcp()  # also triggers tool registration
     logger.info("Starting MCP server on http://%s:%d/mcp", settings.host, settings.port)
 

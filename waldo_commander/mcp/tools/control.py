@@ -17,6 +17,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_context
 from nicegui import Client
 
+from waldo_commander.constants import config
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.services.control_lease import (
     MCP,
@@ -88,7 +89,8 @@ def require_control() -> None:
 
 def require_session_consent() -> None:
     """Gate the first hardware (non-simulator) move of an MCP session on a
-    one-time human acknowledgement in the GUI.
+    one-time human acknowledgement in the GUI (unless development autopilot
+    was explicitly enabled at startup).
 
     Un-consented moves are refused and a prompt is armed; the user approves it
     and the client retries. Refused outright when no GUI page is connected — no
@@ -105,6 +107,8 @@ def require_session_consent() -> None:
             "not retry immediately; work in simulator mode or wait for the "
             "user to initiate"
         )
+    if config.dev_mcp_autopilot:
+        return
     cid = ui_state.active_client_id
     client = Client.instances.get(cid) if cid else None
     if client is None or client.is_deleted:
@@ -235,6 +239,7 @@ async def get_controller() -> dict:
         "holder": control_lease.describe(),
         "you_hold_it": control_lease.held_by(MCP, _session_id()),
         "mode": mode.value,
+        "development_autopilot": config.dev_mcp_autopilot,
         "mode_auto_applies_edits": mode.auto_applies_edits,
         "mode_auto_approves_motion": mode.auto_approves_motion,
     }

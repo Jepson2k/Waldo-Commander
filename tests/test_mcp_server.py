@@ -110,6 +110,56 @@ async def test_hardware_motion_needs_session_consent(user: User) -> None:
 
 
 @pytest.mark.integration
+async def test_development_autopilot_survives_sessions_and_keeps_browser_control(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastmcp.exceptions import ToolError
+
+    from waldo_commander.constants import config
+    from waldo_commander.services import control_lease as cl
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    monkeypatch.setitem(config._overrides, "dev_mcp_autopilot", True)
+    cl.set_control_mode(cl.ControlMode.AUTOPILOT)
+    mcp = get_mcp()
+    try:
+        # Reconnecting creates a fresh session, as does restarting the app.
+        for _ in range(2):
+            async with Client(mcp) as client:
+                await client.call_tool("control.take_control")
+                waldoctl.commander.status.simulator_active = False
+                result = await client.call_tool(
+                    "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+                )
+                assert _payload(result) >= 0
+                assert cl.pending_consents() == {}
+                status = _payload(await client.call_tool("control.get_controller"))
+                assert status["development_autopilot"] is True
+                await client.call_tool("motion.stop")
+
+                cl.control_lease.seize(cl.BROWSER, ui_state.active_client_id, "Browser")
+                with pytest.raises(ToolError, match="controlled"):
+                    await client.call_tool(
+                        "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+                    )
+                # Stop remains available even when the browser owns control.
+                await client.call_tool("motion.stop")
+                await client.call_tool("control.take_control")
+                cl.set_control_mode(cl.ControlMode.INSPECT)
+                with pytest.raises(ToolError, match="approval"):
+                    await client.call_tool(
+                        "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+                    )
+                await client.call_tool("control.release_control")
+                cl.set_control_mode(cl.ControlMode.AUTOPILOT)
+    finally:
+        waldoctl.commander.status.simulator_active = True
+        cl.control_lease.reset()
+
+
+@pytest.mark.integration
 async def test_denied_consent_is_terminal_for_a_cooldown(user: User) -> None:
     """Deny in the GUI must stick: the AI's immediate retry gets a terminal
     "denied" error and must NOT re-arm the prompt (no ~1s nag loop). After the

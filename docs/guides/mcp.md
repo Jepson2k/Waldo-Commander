@@ -73,7 +73,22 @@ at full strength while the AI is driving — and its color tracks the mode
 | **Autopilot** | applied immediately | runs automatically\* |
 
 \* In simulator mode everything is automatic. On **real hardware**, the first
-move of an AI session always asks for a one-time confirmation, even in Autopilot.
+move of an AI session asks for a one-time confirmation, even in Autopilot.
+
+For local robot development with repeated restarts, explicitly opt in at launch:
+
+```bash
+waldo-commander --dev-mcp-autopilot
+```
+
+Or set `WALDO_DEV_MCP_AUTOPILOT=1` in your development launch environment.
+This starts Autopilot and skips per-session hardware GUI consent across MCP
+reconnections. MCP binds to `127.0.0.1` in this mode. The mode chip shows
+**Autopilot · development**, and `control.get_controller` reports
+`development_autopilot: true`. Controller ownership, Stop, backend readiness
+and motion checks still apply. Switching the GUI to Inspect or Auto-edits
+restores per-action approval. Omit the flag and unset the environment variable
+to restore normal session consent on the next launch.
 
 At any time the amber **Take control** button (top-right, shown while an AI
 holds control) seizes control back for you and halts any motion the AI started.

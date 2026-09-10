@@ -2208,6 +2208,12 @@ def main():
         action="store_true",
         help="Enable auto-reload on file changes (dev mode)",
     )
+    parser.add_argument(
+        "--dev-mcp-autopilot",
+        action="store_true",
+        default=config.dev_mcp_autopilot,
+        help="Local development: start Autopilot without per-session hardware GUI consent; MCP binds to loopback",
+    )
     args, _ = parser.parse_known_args()
 
     # Entry-point wrappers (pip console_scripts) set __name__ to the module name,
@@ -2245,6 +2251,14 @@ def main():
     # The human's AI control mode (Inspect/Auto-edits/Autopilot) survives
     # restarts like the other persisted settings.
     restore_control_mode()
+    config.set("dev_mcp_autopilot", args.dev_mcp_autopilot)
+    if args.dev_mcp_autopilot:
+        from waldo_commander.services.control_lease import ControlMode, set_control_mode
+
+        set_control_mode(ControlMode.AUTOPILOT)
+        logger.warning(
+            "Development MCP autopilot enabled: local hardware sessions skip GUI consent"
+        )
 
     # Initialize robot, client, and component instances. The persisted GUI
     # backend selection is honored below an explicit --robot / WALDO_ROBOT

@@ -27,6 +27,8 @@ from enum import Enum
 
 from nicegui import Client, app
 
+from waldo_commander.constants import config
+
 BROWSER = "browser"
 MCP = "mcp"
 
@@ -59,7 +61,9 @@ class ControlMode(Enum):
         return {
             ControlMode.INSPECT: "Inspect",
             ControlMode.AUTO_EDITS: "Auto-edits",
-            ControlMode.AUTOPILOT: "Autopilot",
+            ControlMode.AUTOPILOT: (
+                "Autopilot · development" if config.dev_mcp_autopilot else "Autopilot"
+            ),
         }[self]
 
 

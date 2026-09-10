@@ -66,6 +66,18 @@ class _Config:
         )
 
     @property
+    def dev_mcp_autopilot(self) -> bool:
+        """Explicit local development opt-in; never stored in GUI settings."""
+        if "dev_mcp_autopilot" in self._overrides:
+            return bool(self._overrides["dev_mcp_autopilot"])
+        return os.getenv("WALDO_DEV_MCP_AUTOPILOT", "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+    @property
     def server_host(self) -> str:
         """Webserver bind host (NiceGUI)."""
         if "server_host" in self._overrides:
