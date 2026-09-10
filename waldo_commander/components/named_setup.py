@@ -545,6 +545,7 @@ class NamedSetupPanel(Panel):
                     tcp_editor = TcpCalibrationEditor(
                         commander, lambda: snapshot, set_snapshot
                     )
+
             @ui.refreshable
             def summary() -> None:
                 rows = []
