@@ -596,17 +596,17 @@
 
             if (savedSize && container) {
                 if (savedSize.width) {
-                    container.style.width = savedSize.width + 'px';
+                    container.style.width = Math.min(savedSize.width, getMaxWidth()) + 'px';
                 }
                 if (savedSize.height) {
-                    container.style.height = savedSize.height + 'px';
+                    container.style.height = Math.min(savedSize.height, getMaxHeight()) + 'px';
                 }
                 console.log('[PanelResize] Pre-set container size:', savedSize.width, 'x', savedSize.height);
             } else if (container) {
                 // No saved size - use panel's declared defaults or minima
                 const viewportHeight = window.innerHeight;
                 const defaultHeight = panelConfig.defaultHeight || panelConfig.minHeight || Math.min(Math.floor(viewportHeight * 0.5), 500);
-                container.style.height = defaultHeight + 'px';
+                container.style.height = Math.min(defaultHeight, getMaxHeight()) + 'px';
                 const defaultWidth = panelConfig.defaultWidth || panelConfig.minWidth;
                 if (defaultWidth) {
                     container.style.width = Math.min(defaultWidth, getMaxWidth()) + 'px';
@@ -708,6 +708,7 @@
 
     function onViewportResize() {
         const maxW = getMaxWidth();
+        const maxH = getMaxHeight();
 
         for (const [panelId, panelConfig] of Object.entries(config.panels)) {
             if (!panelConfig.selector) continue;
@@ -724,7 +725,11 @@
             if (currentWidth > maxW) {
                 container.style.setProperty('width', maxW + 'px', 'important');
             }
+            if (container.offsetHeight > maxH) {
+                container.style.setProperty('height', maxH + 'px', 'important');
+            }
         }
+        updateCouplingState();
     }
 
     // ========== Global Event Listeners ==========

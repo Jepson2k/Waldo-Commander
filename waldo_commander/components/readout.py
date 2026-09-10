@@ -6,9 +6,8 @@ import random
 from enum import Enum
 from pathlib import Path
 
-from nicegui import ui
-
 import waldoctl
+from nicegui import ui
 from waldoctl import ActionStatus
 
 from waldo_commander.common.theme import IO_COLOR_OFF, IO_COLOR_ON
@@ -187,7 +186,14 @@ class ReadoutPanel:
             self._last_tool_key = tool_key
             if self._tool_chip is not None and self._tool_label is not None:
                 if tool_key and tool_key != "NONE":
-                    self._tool_label.text = tool_key
+                    try:
+                        name = ui_state.active_robot.tools[
+                            tool_key
+                        ].display_name.replace("_", " ")
+                    except KeyError:
+                        name = tool_key.replace("_", " ")
+                    self._tool_label.text = name
+                    self._tool_label._props["title"] = tool_key
                     self._tool_chip.set_visibility(True)
                     if self._tool_separator is not None:
                         self._tool_separator.set_visibility(True)
@@ -240,11 +246,13 @@ class ReadoutPanel:
 
     def build(self, anchor: str = "tl") -> None:
         """Render the top-left readout panel as an overlay card."""
-        with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor}"):
+        with ui.card().classes(
+            f"overlay-panel overlay-card readout-panel overlay-{anchor}"
+        ):
             with ui.column().classes("gap-1"):
                 with (
                     ui.row()
-                    .classes("items-center w-full no-wrap gap-2")
+                    .classes("readout-header items-center w-full no-wrap gap-2")
                     .style("margin: -10px 0 0 -10px; width: calc(100% + 12px);")
                 ):
                     _init_face = (
@@ -294,13 +302,15 @@ class ReadoutPanel:
                     self._tool_chip = (
                         ui.chip()
                         .props("dense")
-                        .classes("text-lg font-medium")
-                        .style("box-shadow: none; margin: 0;")
+                        .classes("text-sm font-medium min-w-0")
+                        .style("box-shadow: none; margin: 0; max-width: 170px;")
                     )
                     self._tool_chip.set_visibility(False)
                     self._tool_label: ui.label | None = None
                     with self._tool_chip:
-                        self._tool_label = ui.label("").classes("text-lg font-medium")
+                        self._tool_label = ui.label("").classes(
+                            "text-sm font-medium truncate"
+                        )
                     ui.space()
                     with ui.row().classes("gap-0 no-wrap"):
                         self._io_chips = []
