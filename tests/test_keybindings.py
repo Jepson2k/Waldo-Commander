@@ -243,6 +243,9 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
 
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
 
+    user.find(marker="tab-settings").click()
+    next(iter(user.find(marker="settings-category").elements)).set_value("Jog")
+    next(iter(user.find(marker="settings-jog-advanced").elements)).set_value(True)
     invert_x = next(iter(user.find(marker="switch-invert-x").elements))
     invert_y = next(iter(user.find(marker="switch-invert-y").elements))
     # Inversion hydrates from app.storage.general, and a prior test's
