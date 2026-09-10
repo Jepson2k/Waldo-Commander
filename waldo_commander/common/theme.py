@@ -584,6 +584,9 @@ _RESIZE_HANDLE_CSS = _generate_resize_handle_css()
 
 def inject_layout_css() -> None:
     """Injects the app's layout and component CSS previously embedded in main.py."""
+    from waldo_commander.common.panel_theme import inject_panel_css
+
+    inject_panel_css()
     ui.add_css(
         """
 /* Prevent full-page scrollbar flash globally */
@@ -612,11 +615,11 @@ html, body {
 }
 
 /* Axis/TCP colors */
-.tcp-x  { color: var(--axis-x); }
+.tcp-x  { color: #fda4af; }
 .tcp-rx { color: var(--axis-rx); }
-.tcp-y  { color: var(--axis-y); }
+.tcp-y  { color: #86efac; }
 .tcp-ry { color: var(--axis-ry); }
-.tcp-z  { color: var(--axis-z); }
+.tcp-z  { color: #93c5fd; }
 .tcp-rz { color: var(--axis-rz); }
 
 
