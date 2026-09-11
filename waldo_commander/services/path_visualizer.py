@@ -908,7 +908,12 @@ class PathVisualizer:
             if target_tab:
                 previous_args = self._planned_args.get(target_tab.id)
                 same_inputs = pickle.dumps(previous_args) == pickle.dumps(sim_args)
-                self._planned_args[target_tab.id] = sim_args
+                # The physics pass refines exactly this plan, seconds later;
+                # a failed plan leaves nothing to refine.
+                if result.get("error"):
+                    self._planned_args.pop(target_tab.id, None)
+                else:
+                    self._planned_args[target_tab.id] = sim_args
                 new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
                 new_targets = [ProgramTarget.from_dict(d) for d in result["targets"]]
                 new_tool_actions = result.get("tool_actions", [])
