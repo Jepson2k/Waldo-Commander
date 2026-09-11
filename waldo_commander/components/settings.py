@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import math
+import weakref
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import cast
@@ -76,6 +77,8 @@ def adopt_applied_tcp(calibration: TcpCalibration) -> None:
         simulation.schedule_debounced_simulation()
     except RuntimeError:
         pass
+    for view in list(_settings_views):
+        view.show_applied_tcp(calibration)
 
 
 def get_available_serial_ports() -> list[str]:
@@ -103,11 +106,18 @@ def _setting_row(title: str, description: str):
         yield
 
 
+# Live Settings views, so a TCP applied from elsewhere (the Setup panel's
+# calibration editor) shows in their inputs before the next nudge pushes.
+_settings_views: weakref.WeakSet["SettingsContent"] = weakref.WeakSet()
+
+
 class SettingsContent:
     """Settings content that can be embedded in the control panel."""
 
     def __init__(self, client: RobotClient) -> None:
         self.client = client
+        self._tcp_inputs: tuple[str, OffsetInputs, Client] | None = None
+        _settings_views.add(self)
         self._port_select: ui.select | None = None
         self._refresh_timer: ui.timer | None = None
         self._cam_select: ui.select | None = None
@@ -173,9 +183,21 @@ class SettingsContent:
         if not variants:
             return None
         stored = ng_app.storage.general.get(f"tool_variant_{tool_key}")
-        if stored and any(v.key == stored for v in variants):
+        # "" is a stored answer, not a missing one: the controller carries the
+        # tool with no variant (a program's select_tool without variant_key).
+        if stored is not None and (
+            stored == "" or any(v.key == stored for v in variants)
+        ):
             return stored
         return variants[0].key
+
+    def _bound_variant(self, tool_key: str) -> str:
+        """The variant a TCP edit for ``tool_key`` must be bound to: the
+        controller's own when it carries that tool, else the browser's."""
+        tool = waldoctl.commander.status.tool
+        if tool.key == tool_key:
+            return tool.variant_key or ""
+        return self._get_variant_key(tool_key) or ""
 
     def _get_tcp_offset(self, tool_key: str) -> dict:
         """Get stored TCP offset for a tool (mm)."""
@@ -239,9 +261,11 @@ class SettingsContent:
         variant_options = (
             {v.key: v.display_name for v in variants} if variants else {"": "—"}
         )
-        current_vk = self._get_variant_key(tool_key) or (
-            next(iter(variant_options), "") if variants else ""
-        )
+        current_vk = self._get_variant_key(tool_key)
+        if current_vk is None:
+            current_vk = next(iter(variant_options), "") if variants else ""
+        if current_vk == "":
+            variant_options = {"": "—", **variant_options}
 
         async def _on_variant_change(e):
             async with self._tool_lock:
@@ -326,6 +350,7 @@ class SettingsContent:
                         .mark(f"tcp-offset-{axis}")
                         for axis in axes
                     )
+        self._tcp_inputs = (tool_key, inputs, page_client)
         if not disabled:
             background_tasks.create(
                 self._reconcile_tcp_offset(
@@ -338,6 +363,18 @@ class SettingsContent:
                 ),
                 name="tcp-offset-reconcile",
             )
+
+    def show_applied_tcp(self, calibration: TcpCalibration) -> None:
+        """Reflect a transform the controller confirmed for the shown tool."""
+        if self._tcp_inputs is None:
+            return
+        tool_key, inputs, page_client = self._tcp_inputs
+        if tool_key != calibration.tool_key or not page_client.has_socket_connection:
+            return
+        with page_client:
+            for inp, value in zip(inputs, calibration.values):
+                if inp.value != value:
+                    inp.set_value(value)
 
     @staticmethod
     def _notify(page_client: Client, message: str, color: str) -> None:
@@ -404,7 +441,7 @@ class SettingsContent:
         try:
             values = cast(PoseValues, tuple(float(vals.get(k, 0)) for k in TCP_AXES))
             calibration = TcpCalibration(
-                values, tool_key, self._get_variant_key(tool_key) or ""
+                values, tool_key, self._bound_variant(tool_key)
             )
             if ui_state.active_robot.has_tcp_transform:
                 from waldo_commander.services.tcp_calibration import (
@@ -477,9 +514,7 @@ class SettingsContent:
         page_client: Client,
     ) -> None:
         values = cast(PoseValues, tuple(float(v) for v in offset_mm))
-        calibration = TcpCalibration(
-            values, tool_key, self._get_variant_key(tool_key) or ""
-        )
+        calibration = TcpCalibration(values, tool_key, self._bound_variant(tool_key))
         adopt_applied_tcp(calibration)
         if not page_client.has_socket_connection:
             # The reconcile that adopts an out-of-band offset is started
@@ -704,7 +739,11 @@ class SettingsContent:
                 or not (status.connected or status.simulator_active)
             ):
                 return
-            if tool not in tool_options or tool == tool_select.value:
+            variant = status.tool.variant_key or ""
+            if tool not in tool_options or (
+                tool == tool_select.value
+                and variant == (self._get_variant_key(tool) or "")
+            ):
                 return
             # Status changes can come from another client. Reflect them without
             # sending SELECT_TOOL or restoring an old browser TCP correction.
