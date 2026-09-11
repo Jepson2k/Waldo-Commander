@@ -52,7 +52,7 @@ def test_speed_menu_shows_a_paused_live_program(screen, tmp_path):
             ui_state.active_textarea.value = (
                 "from parol6 import RobotClient\n\n"
                 "with RobotClient() as rbt:\n"
-                f"    rbt.move_j({target!r}, duration=30, timeout=60)\n"
+                f"    rbt.move_j({target!r}, duration=30)\n"
                 "    print('Motion completed')\n"
             )
             await script_exec.start()

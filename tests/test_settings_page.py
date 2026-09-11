@@ -368,6 +368,90 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
 
 
 @pytest.mark.integration
+async def test_settings_follows_controller_variants_and_setup_applied_tcp(
+    user: User,
+) -> None:
+    """Settings binds TCP edits to the tool the controller actually carries,
+    follows a variant another client selected, and shows a transform the
+    Setup panel applied so the next nudge does not push stale values."""
+    from waldoctl.setup import TcpCalibration
+
+    from waldo_commander.components.settings import adopt_applied_tcp
+    from waldo_commander.services.tcp_calibration import apply_tcp_calibration
+
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    user.find(kind=ui.tab, content="Settings").click()
+    await asyncio.sleep(0)
+    next(iter(user.find(marker="settings-tcp-details").elements)).set_value(True)
+
+    def shown(marker: str):
+        return next(iter(user.find(marker=marker).elements))
+
+    async def completed(index: int) -> None:
+        assert index >= 0 and await client.wait_command(index, timeout=5)
+
+    async def expect_transform(expected: list[float]) -> None:
+        await poll_until(
+            client.tcp_transform,
+            lambda got: [round(float(v), 3) for v in got] == expected,
+            timeout_s=5.0,
+            what=f"controller TCP transform {expected}",
+        )
+
+    try:
+        # A program fits a tool that has variants without naming one.
+        await completed(await client.select_tool("SSG-48"))
+        await wait_for_tool_key("SSG-48", timeout_s=5)
+        await poll_until(
+            lambda: shown("select-tool").value,
+            lambda v: v == "SSG-48",
+            timeout_s=5,
+            what="Settings adopting SSG-48",
+        )
+        await user.should_see("TCP Offset")
+        user.find(marker="tcp-offset-x").trigger("update:modelValue", 3.0)
+        await expect_transform([3.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+        # Variants selected elsewhere are followed, not just tool keys.
+        await completed(await client.select_tool("PNEUMATIC", variant_key="horizontal"))
+        await wait_for_tool_key("PNEUMATIC", timeout_s=5)
+        await poll_until(
+            lambda: shown("select-tool-variant").value,
+            lambda v: v == "horizontal",
+            timeout_s=5,
+            what="the variant select adopting horizontal",
+        )
+        await completed(await client.select_tool("PNEUMATIC", variant_key="vertical"))
+        await poll_until(
+            lambda: shown("select-tool-variant").value,
+            lambda v: v == "vertical",
+            timeout_s=5,
+            what="the variant select adopting vertical",
+        )
+        assert app_storage.general.get("tool_variant_PNEUMATIC") == "vertical"
+
+        # Applied from the Setup panel's calibration editor.
+        calibration = TcpCalibration(
+            (25.0, 0.0, 0.0, 0.0, 90.0, 0.0), "PNEUMATIC", "vertical"
+        )
+        await apply_tcp_calibration(client, calibration)
+        adopt_applied_tcp(calibration)
+        await poll_until(
+            lambda: shown("tcp-offset-x").value,
+            lambda v: v == 25.0,
+            timeout_s=5,
+            what="Settings showing the applied X",
+        )
+        user.find(marker="tcp-offset-y").trigger("update:modelValue", 1.0)
+        await expect_transform([25.0, 1.0, 0.0, 0.0, 90.0, 0.0])
+    finally:
+        await client.set_tcp_transform()
+        await client.select_tool("NONE")
+
+
+@pytest.mark.integration
 async def test_theme_selection_exists(user: User) -> None:
     """Test that theme toggle exists and has expected options."""
     await user.open("/")

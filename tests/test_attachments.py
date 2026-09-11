@@ -157,6 +157,38 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
             await detach_object.async_call(
                 client, name="part", world_pose=(1, 1, 1, 0, 0, 0)
             )
+
+        # A saved world's attachment carries an epoch the backend no longer
+        # honours: the push is refused and the draft stays displayed, so its
+        # own menu must be able to reconcile it against the current context.
+        world = await client.shapes()
+        assert world is not None
+        ghost = Sphere(name="ghost", radius=0.01).attach(
+            flange_pose=(0, 0, 0.25, 0, 0, 0), epoch=world.attachment_epoch + 1
+        )
+        handle.shapes = [marker, ghost]
+        async with asyncio.timeout(5):
+            while handle.confirmed or "shape:ghost" not in scene._shape_objects:
+                await asyncio.sleep(0.05)
+        assert all(s.name != "ghost" for s in (await client.shapes()).program)
+        with scene.scene:
+            scene._show_attachment_dialog("ghost")
+        for axis, value in zip(("x", "y", "z"), (0, 0, 250), strict=True):
+            element(f"attachment-pos-{axis}").set_value(value)
+        element("attachment-contacts").set_value("shape:fixture")
+        user.find(marker="attachment-apply").click()
+        await user.should_see("Attachment confirmed: ghost", retries=50)
+        applied = await client.shapes()
+        assert applied is not None and any(
+            s.name == "ghost" and s.attachment is not None for s in applied.program
+        )
+        assert handle.attachments_valid
+        caplog.records[:] = [
+            r
+            for r in caplog.records
+            if "set_shapes push unconfirmed" not in r.getMessage()
+            and "attachment context changed" not in r.getMessage()
+        ]
     finally:
         await client.stop()
         await client.set_shapes([])
