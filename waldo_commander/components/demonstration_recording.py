@@ -19,6 +19,7 @@ from waldo_commander.demonstrations import (
     load_demonstration,
     record_demonstration,
     save_demonstration,
+    to_program,
 )
 
 
@@ -48,6 +49,8 @@ class DemonstrationPanel(Panel):
             await self._capture
 
     def build(self, commander: Commander) -> None:
+        from waldo_commander.services.programs import is_any_program_running
+
         directory = (
             Path(
                 os.environ.get("WALDO_RECORDING_DIR")
@@ -242,9 +245,39 @@ class DemonstrationPanel(Panel):
             except (ValueError, TypeError) as error:
                 self._message = str(error)
 
+        def convert() -> None:
+            from waldo_commander.state import ui_state
+
+            try:
+                if is_any_program_running():
+                    raise ValueError("Stop the running program before converting")
+                recording = selected()
+                destination = path()
+                saved_span = (
+                    load_demonstration(destination) if destination.is_file() else None
+                )
+                conversion = to_program(
+                    recording,
+                    ui_state.active_robot,
+                    name=validate_name(name.value),
+                    # Only a saved span can be replayed by the program it
+                    # falls back to, so the path is offered when it holds
+                    # this span and withheld when it does not.
+                    source_path=(destination if saved_span == recording else None),
+                )
+                program = commander.programs.new(
+                    source=conversion.source,
+                    filename=f"{validate_name(name.value)}.py",
+                )
+                commander.programs.switch(program.id)
+                if ui_state._program_tab is not None:
+                    ui_state._program_tab.parent_slot.parent.set_value("program")
+                self._message = f"Converted: {conversion.summary()}"
+            except (OSError, ValueError, NotImplementedError) as error:
+                self._message = str(error)
+
         def insert() -> None:
             from waldo_commander.services.motion_recorder import motion_recorder
-            from waldo_commander.services.programs import is_any_program_running
 
             try:
                 if commander.programs.active is None or is_any_program_running():
@@ -430,9 +463,13 @@ class DemonstrationPanel(Panel):
                     ui.label(
                         "Replay stops at every waypoint and may be much slower. Gripper changes run sequentially at waypoint boundaries; recorded grasp signals are not replayed. Gaps must be excluded by selecting a continuous span."
                     ).classes("text-caption")
-            ui.button("Insert replay call", on_click=insert).props("dense").mark(
-                "demo-insert"
-            )
+            with ui.row().classes("w-full gap-2"):
+                ui.button("Convert to program", on_click=convert).props("dense").mark(
+                    "demo-convert"
+                )
+                ui.button("Insert replay call", on_click=insert).props(
+                    "dense flat"
+                ).mark("demo-insert")
 
         shown = self.recording
         if shown is not None:
