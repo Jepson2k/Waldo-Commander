@@ -230,6 +230,41 @@ with RobotClient() as rbt:
     assert last.is_valid and last.joints is not None
     assert math.degrees(last.joints[0]) == pytest.approx(before[0] + 2, abs=0.05)
     assert await client.angles() == pytest.approx(before, abs=0.05)
+
+    # Preview workers are reused: an edited helper must reach the next
+    # preview instead of the module cached by the previous one.
+    import numpy as np
+    from parol6.client.dry_run_client import DryRunRobotClient
+
+    from waldo_commander.services.path_visualizer import (
+        PathSegment,
+        _run_simulation_isolated,
+    )
+
+    def preview_in_process():
+        return _run_simulation_isolated(
+            program.source,
+            np.radians(before),
+            dry_run_client_cls=DryRunRobotClient,
+            setup_directory=str(destination_path / "setups"),
+            program_path=str(destination_path / "programs/main.py"),
+        )
+
+    first = preview_in_process()
+    assert first["error"] is None, first["error"]
+    (destination_path / "programs/helpers.py").write_text(
+        helper.replace(
+            "setup.parameters['j1'].value", "setup.parameters['j1'].value + 3"
+        )
+    )
+    second = preview_in_process()
+    assert second["error"] is None, second["error"]
+    refreshed = PathSegment.from_dict(second["segments"][-1])
+    assert refreshed.joints is not None
+    assert math.degrees(refreshed.joints[0]) == pytest.approx(
+        before[0] + 5, abs=0.05
+    ), "the preview ran the helper cached by the previous preview"
+    (destination_path / "programs/helpers.py").write_text(helper)
     assert await script_exec.start()
     async with asyncio.timeout(20):
         while is_any_program_running():

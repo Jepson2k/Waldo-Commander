@@ -58,6 +58,12 @@ def isolated_project(
     token = _current_root.set(directory)
     previous_path = list(sys.path)
     previous_cwd = Path.cwd()
+    # Preview workers are reused, so a helper this program imports would
+    # otherwise stay cached for the next preview — of edited code, or of
+    # another project's module by the same name.
+    if directory:
+        _evict_modules_under(directory)
+    loaded_before = set(sys.modules)
     try:
         if directory:
             sys.path.insert(0, str(directory / "programs"))
@@ -69,3 +75,12 @@ def isolated_project(
         os.chdir(previous_cwd)
         sys.path[:] = previous_path
         _current_root.reset(token)
+        for name in set(sys.modules) - loaded_before:
+            sys.modules.pop(name, None)
+
+
+def _evict_modules_under(directory: Path) -> None:
+    for name, module in list(sys.modules.items()):
+        file = getattr(module, "__file__", None)
+        if file and Path(file).resolve().is_relative_to(directory):
+            del sys.modules[name]
