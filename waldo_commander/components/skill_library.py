@@ -143,25 +143,42 @@ class SkillLibraryPanel(Panel):
                 if ui_state._program_tab is not None:
                     ui_state._program_tab.parent_slot.parent.set_value("program")
                 started_at = time.time()
-                await script_exec.start()
-                handle = script_exec.script_handle
-                if handle is None or not script_exec.is_launching_tab(program.id):
-                    message.set_text("Skill could not start; see the program log")
-                    return
-                message.set_text(
-                    "Running in the program editor; use its pause/stop controls"
-                )
-                while program.execution.is_running:
-                    await asyncio.sleep(0.1)
-                if handle["proc"].returncode != 0 or script_exec.last_exit_code != 0:
+
+                def still_recording() -> bool:
+                    return (
+                        recording is not None
+                        and recording in commander.programs.items
+                        and recording.recording.is_recording
+                    )
+
+                completed = False
+                try:
+                    await script_exec.start()
+                    handle = script_exec.script_handle
+                    if handle is None or not script_exec.is_launching_tab(program.id):
+                        message.set_text("Skill could not start; see the program log")
+                        return
+                    message.set_text(
+                        "Running in the program editor; use its pause/stop controls"
+                    )
+                    while program.execution.is_running:
+                        await asyncio.sleep(0.1)
+                    completed = (
+                        handle["proc"].returncode == 0
+                        and script_exec.last_exit_code == 0
+                    )
+                finally:
+                    # The recorder writes into the active program's textarea and
+                    # the editor blocks tab switches while recording, so the
+                    # recording program must be active again however the run
+                    # ended.
+                    if still_recording():
+                        assert recording is not None
+                        commander.programs.switch(recording.id)
+                if not completed:
                     message.set_text("Skill did not complete; see the program log")
                     return
-                if (
-                    recording is not None
-                    and recording in commander.programs.items
-                    and recording.recording.is_recording
-                ):
-                    commander.programs.switch(recording.id)
+                if still_recording():
                     motion_recorder.record_completed_skill(
                         snippet, started_at=started_at
                     )

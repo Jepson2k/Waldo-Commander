@@ -863,6 +863,11 @@ class PathVisualizer:
                 target_tab = waldoctl.commander.programs.active
 
             if target_tab:
+                # The physics pass refines exactly this plan, seconds later.
+                if result.get("error"):
+                    self._planned_args.pop(target_tab.id, None)
+                else:
+                    self._planned_args[target_tab.id] = sim_args
                 new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
                 new_targets = [ProgramTarget.from_dict(d) for d in result["targets"]]
                 new_tool_actions = result.get("tool_actions", [])
