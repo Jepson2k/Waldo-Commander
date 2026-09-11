@@ -51,6 +51,11 @@ _UNRESOLVED = frozenset(
 ) | {"command_verdict", "is_estop_pressed"}
 
 
+#: Tool calls that move the jaws. Anything else on a tool is a read, and a
+#: read answers with what it read, not with a queue index.
+_TOOL_ACTIONS = frozenset({"set_position", "open", "close", "calibrate", "grip"})
+
+
 class _ToolCollectionProxy:
     """Wraps DryRunRobotClient.tool with collection + visualization metadata.
 
@@ -68,10 +73,16 @@ class _ToolCollectionProxy:
         if not callable(attr):
             return attr
 
+        if name not in _TOOL_ACTIONS:
+            # A read (`tool.status()`, `tool.is_open(...)`) answers with its
+            # value; minting an index for it would hand a program a number
+            # where the live client hands it a reading.
+            return attr
+
         def interceptor(*args: Any, **kwargs: Any) -> Any:
             result = attr(*args, **kwargs)
             self._preview._record_tool_action(name, args, kwargs, result)
-            return self._preview._command_result(result)
+            return self._preview._queued_result(result)
 
         return interceptor
 
@@ -204,7 +215,11 @@ class PathPreviewClient:
             result.valid is None or bool(np.all(result.valid))
         )
 
-    def wait_command(self, command_index: int, **kwargs: Any) -> bool:
+    def wait_command(
+        self, command_index: int, timeout: float = 10.0, **kwargs: Any
+    ) -> bool:
+        """The live signature, positional *timeout* included: a program written
+        as ``rbt.wait_command(index, 30.0)`` runs in preview as it does live."""
         self._flush_blend()
         return self._command_results.get(command_index) is True
 
@@ -859,6 +874,11 @@ class AsyncPathPreviewClient:
         return self._sync_client.tool_selection_collector
 
     def __getattr__(self, name: str) -> Any:
+        # `run_skill` is the sync client's own entry point; exposing it here as
+        # a coroutine would let a sync skill call on an async client preview as
+        # a no-op where the real client raises AttributeError.
+        if name == "run_skill":
+            raise AttributeError(name)
         attr = getattr(self._sync_client, name)
         if callable(attr) and name != "close":
 

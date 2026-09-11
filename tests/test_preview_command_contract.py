@@ -11,6 +11,7 @@ way in preview, or the preview passes what the arm refuses.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from parol6.client.dry_run_client import DryRunRobotClient
 from waldoctl import CommandKind, command_table
 from waldoctl.skills import UnresolvedPreview
@@ -135,3 +136,39 @@ def test_the_preview_honours_the_command_table_for_every_command():
     assert exercised[CommandKind.SYSTEM] >= 6
     assert exercised[CommandKind.CONTROL] == 2
     assert exercised[CommandKind.OBSERVATION] >= 3
+
+
+def test_a_tool_read_answers_with_its_reading_and_an_action_with_an_index():
+    """`rbt.tool.status()` is a read: the preview hands back what it read.
+
+    Only the calls that move the jaws queue work, and only those answer with
+    an index. A read turned into an index is worse than wrong — the par6 tool
+    answers with a `ToolStatus`, which has no planner fields at all, so the
+    preview used to die on the first `tool.status()` in a program.
+    """
+    par6 = pytest.importorskip("par6", reason="needs a backend whose tool reads state")
+    robot = par6.Robot()
+    client = PathPreviewClient(
+        dry_run_client_cls=lambda **kwargs: robot.create_dry_run_client(**kwargs),
+    )
+    index = client.tool.calibrate()
+    assert isinstance(index, int) and index >= 0
+    assert client.wait_command(index, 30.0) is True, (
+        "a tool action mints an index the program can wait on, with the live "
+        "signature's positional timeout"
+    )
+    status = client.tool.status()
+    assert not isinstance(status, int), "a tool read is not a queue index"
+    assert client.tool.is_open(status.positions[0]) is True
+    closing = client.tool.close()
+    assert isinstance(closing, int) and closing > index
+    assert not client.tool.is_open(client.tool.status().positions[0])
+
+
+def test_the_async_preview_does_not_offer_the_sync_clients_run_skill():
+    """A sync skill call on an async client raises in both, or a mistake
+    previews as a silent no-op and runs as an AttributeError."""
+    from waldo_commander.services.path_preview_client import AsyncPathPreviewClient
+
+    with pytest.raises(AttributeError):
+        AsyncPathPreviewClient.from_sync(_preview()).run_skill
