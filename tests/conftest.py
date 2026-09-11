@@ -295,7 +295,7 @@ def pytest_runtest_makereport(item, call):
 class _AppConfigTeardownFilter(logging.Filter):
     """Suppress NiceGUI's AppConfig-attribute errors during app teardown.
 
-    CLAUDE.md documents these as secondary symptoms: once teardown has
+    AGENTS.md documents these as secondary symptoms: once teardown has
     reset ``app.config``, NiceGUI's own outbox/binding loops error on the
     next tick with ``'AppConfig' object has no attribute ...`` before they
     stop. The condition carries no information about the test; on slower

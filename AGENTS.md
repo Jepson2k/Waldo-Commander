@@ -1,4 +1,4 @@
-# AGENTS.md - Project Guidelines for Claude Code
+# AGENTS.md - Waldo Commander
 
 ## Project Overview
 
@@ -68,7 +68,10 @@ When debugging CI failures, this error is a **secondary symptom** that occurs af
 
 - `@pytest.mark.integration` - Integration tests requiring full app setup
 - `@pytest.mark.browser` - Tests requiring real browser (Selenium)
-- `@pytest.mark.slow` - Long-running tests
+- `@pytest.mark.rate` - Control-rate cadence tests
+
+`--strict-markers` is on, so a marker that is not in `pyproject.toml`'s
+`markers` list aborts collection. Register one there before using it.
 
 ### Testing Philosophy
 
@@ -116,7 +119,8 @@ Global state is managed through dataclasses in `waldo_commander/state.py`:
 - `robot_state` - Robot joint angles, position, I/O status
 - `simulation_state` - Path visualization, targets, playback
 - `ui_state` - UI component references
-- `recording_state` - Motion recording mode
+Motion recording lives on the program rather than in a module-level global:
+`waldoctl.commander.programs.active.recording`.
 
 ### NiceGUI Components
 
@@ -263,6 +267,9 @@ To make `nicegui/` edits live in WC's running process, run `pip install -e niceg
 
 WC pins NiceGUI to a SHA on `Jepson2k/nicegui`'s `combo-all-prs` branch — a synthetic branch that merges all of our open upstream PRs together so WC can use them as one unit. SHA pin (not branch ref) for reproducibility.
 
-When an underlying PR branch changes, combo goes stale. Refresh it with `/nicegui-combo-bump`, which rebuilds combo and re-pins WC's `pyproject.toml`.
+When an underlying PR branch changes, combo goes stale. Rebuilding it means
+merging the open PR branches into a fresh `combo-all-prs` and re-pinning WC's
+`pyproject.toml` to the new SHA. (In Claude Code the `/nicegui-combo-bump`
+skill does this; other agents do it by hand.)
 
 **Never commit directly to `combo-all-prs`** — it's regenerated each cycle and direct commits get clobbered. Anything that needs to persist must land on a feature branch first.
