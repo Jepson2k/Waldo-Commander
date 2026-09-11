@@ -56,6 +56,7 @@ from waldo_commander.components.readout import ReadoutPanel
 from waldo_commander.components.settings import adopt_applied_tcp
 from waldo_commander.services.tcp_calibration import read_applied_tcp
 from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
+from waldo_commander.components import calibration
 from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
@@ -351,6 +352,7 @@ async def start_controller(com_port: str | None) -> None:
     # 60s timeout (vs parol6's 10s default) accommodates first-run numba JIT
     # warmup on slower machines; cached runs are much faster.
     if config.exclusive_start:
+        calibration.prepare_managed_runtime_env()
         await asyncio.to_thread(
             robot.start,
             host=config.controller_host,
@@ -382,6 +384,14 @@ async def start_controller(com_port: str | None) -> None:
         status_consumer_task = asyncio.create_task(_status_consumer())
     controller_state.running = True
     logger.debug("Controller started")
+
+
+async def restart_controller() -> None:
+    """Stop the managed runtime and start it again on the current environment
+    (a newly installed calibration config), then wait for it to answer."""
+    await stop_controller()
+    await start_controller(None)
+    await client.wait_ready(timeout=30.0)
 
 
 async def stop_controller() -> None:
@@ -1278,6 +1288,7 @@ def _register_handlers() -> None:
     when NiceGUI didn't fully reset between tests).
     """
     register_camera_routes()
+    calibration.restart_runtime = restart_controller
     if ng_app.is_started:
         return
 

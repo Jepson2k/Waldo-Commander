@@ -134,6 +134,7 @@ class DiagnosticsPage:
             self._build_drives_section()
             self._build_torque_section()
             self._build_homing_section()
+            self._build_calibration_section()
             self._build_events_section()
             self._nothing = (
                 ui.label("This backend reports no diagnostics.")
@@ -320,6 +321,16 @@ class DiagnosticsPage:
         with self._section("homing", "Homing"):
             self._row("Sequence step", "diag-homing-step")
             self._row("Joints", "diag-homing-joints")
+
+    def _build_calibration_section(self) -> None:
+        """par6 only: the arm-specific calibration routines and their
+        install/rollback step. Absent, not blank, on every other backend."""
+        from waldo_commander.components import calibration
+
+        if not calibration.available():
+            return
+        with self._section("calibration", "Calibration", visible=True):
+            calibration.CalibrationSection(self.client).build()
 
     def _build_events_section(self) -> None:
         """Warnings and errors, with room for what the readout could not show.
