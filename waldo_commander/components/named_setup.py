@@ -105,15 +105,7 @@ class NamedSetupPanel(Panel):
             inform(f"Loaded {setup_name.value}")
 
         def signature(kind: str) -> tuple:
-            values = tuple(field.value for field in fields[kind])
-            if kind == "tcp":
-                return (
-                    *values,
-                    tcp_editor.binding,
-                    tcp_editor.position,
-                    tcp_editor.taught,
-                )
-            return values
+            return tuple(field.value for field in fields[kind])
 
         def remember(kind: str | None = None) -> None:
             for key in [kind] if kind else fields:
