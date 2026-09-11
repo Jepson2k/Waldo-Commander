@@ -1220,7 +1220,12 @@ async def test_delayed_shape_edit_cannot_overwrite_a_newer_clear(user: User):
         ]
         await asyncio.wait_for(held.wait(), 5)
         handle.shapes = []
-        await asyncio.sleep(0.2)  # let an overlapping clear overtake the held edit
+        # The clear parks on the lock the held edit owns; wait for it to be
+        # there rather than for a fixed time.
+        await _until(
+            lambda: handle._pushes_inflight >= 2,
+            "the overlapping clear never reached the push lock",
+        )
         release.set()
         await _until(
             lambda: handle._pushes_inflight == 0, "shape requests did not drain"

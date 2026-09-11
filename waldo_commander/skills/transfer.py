@@ -129,18 +129,25 @@ async def transfer_with_signal(
 ) -> int:
     """Transfer using a named output for grip/release, with electrical readback.
 
-    Start with the output/tool in its open state. Preview requires separate
-    explicit open and closed SignalFixtures. Readback is the electrical level;
-    it does not confirm a grasp or physical part placement.
+    The output must start at its open level, and that is read and enforced: a
+    run that was cancelled after the grip leaves the tool closed on a part, and
+    descending onto the pickup cell with it still closed is a collision. Preview
+    requires separate explicit open and closed SignalFixtures. Readback is the
+    electrical level; it does not confirm a grasp or physical part placement.
     """
     _validate(pick, place, clearance_mm, speed, timeout)
     grip.encode(closed_value)
     preview = "execution.preview" in rbt.skill_capabilities
     if not preview and (open_fixture is not None or closed_fixture is not None):
         raise ValueError("Signal fixtures require a preview client")
-    await read_signal.async_call(
+    observed = await read_signal.async_call(
         rbt, grip, timeout=min(timeout, 1.0), fixture=open_fixture
     )
+    if observed.value == closed_value:
+        raise ValueError(
+            "The grip output is already at its closed level; release it (and "
+            "clear whatever it is holding) before transferring again"
+        )
     # Refuse incomplete preview data before planning any transfer motion.
     if preview:
         await read_signal.async_call(rbt, grip, fixture=closed_fixture)

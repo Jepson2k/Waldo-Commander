@@ -71,10 +71,17 @@ def test_tray_frames_transfer_preview_and_advisory_progress(tmp_path):
         {"pitch_x_mm": 0},
         {"pitch_y_mm": float("nan")},
         {"layers": 100_000},
+        # A tray built from configuration or CSV data arrives as text, and the
+        # message promises a ValueError about the pitch rather than a TypeError
+        # from inside a finiteness check.
+        {"pitch_x_mm": "25"},
     ):
         args = {"rows": 2, "columns": 2, "pitch_x_mm": 1, "pitch_y_mm": 1, **changes}
         with pytest.raises(ValueError):
             grid_poses(origin, **args)
+    for bad in ([("0", "25", "0")], [(0, 0, None)], [(0, 0)]):
+        with pytest.raises(ValueError, match="millimeter"):
+            offset_poses(origin, bad)
 
     progress = PatternProgress.for_poses(poses).mark(1).mark(3)
     progress = progress.mark(1, completed=False)
