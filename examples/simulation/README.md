@@ -10,7 +10,9 @@ python -m waldo_commander.services.simulation_scenarios examples/simulation/*.js
 
 Each JSON file contains a Python program, initial joint angles in degrees,
 reference state, simulated time budget, perturbation inputs, and expected stop
-reason. `world` optionally contains a `waldoctl.world` snapshot of program
+reason. `initial_tool` selects the tool the run starts with as
+`["KEY", "variant"]`, the variant left empty for a tool that has none — which
+is every PAR6 gripper today. `world` optionally contains a `waldoctl.world` snapshot of program
 geometry. Installation geometry comes from the installed PAR6 model. Declare
 attachments in Python using the new preview's attachment context.
 

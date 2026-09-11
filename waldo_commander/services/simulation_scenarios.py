@@ -64,9 +64,17 @@ class SimulationCase:
         if self.initial_tool is not None and (
             not isinstance(self.initial_tool, (list, tuple))
             or len(self.initial_tool) != 2
-            or any(not isinstance(v, str) or not v for v in self.initial_tool)
+            or any(not isinstance(v, str) for v in self.initial_tool)
+            or not self.initial_tool[0]
         ):
-            raise ValueError("initial_tool must contain tool and variant keys")
+            # The variant may be empty, which is how a tool without variants is
+            # selected -- the shape the preview itself seeds with. Demanding one
+            # meant no case could select its starting tool at all, and inventing
+            # a variant to satisfy the check is refused by the runtime.
+            raise ValueError(
+                "initial_tool must be a tool key and a variant key, the variant "
+                "empty for a tool without variants"
+            )
         if self.expected_stop not in ("completed", "failed", "budget_exhausted"):
             raise ValueError(
                 "expected_stop must be completed, failed, or budget_exhausted"

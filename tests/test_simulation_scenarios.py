@@ -69,6 +69,14 @@ async def test_reusable_cases_report_replay_faults_and_enforce_worker_deadlines(
     assert not Path(f"/proc/{spinning}").exists(), (
         f"the worker that exceeded its deadline (pid {spinning}) is still running"
     )
+    # A tool without variants is selected with an empty variant key, the shape
+    # the preview itself seeds with; demanding one left no case able to choose
+    # its starting tool.
+    with_tool = replace(load_case(fixtures / "idle.json"), initial_tool=("SSG48", ""))
+    assert with_tool.initial_tool == ("SSG48", "")
+    with pytest.raises(ValueError, match="tool key"):
+        replace(load_case(fixtures / "idle.json"), initial_tool=("", ""))
+
     # An unrun case still reports every field a consumer reads.
     assert set(result) == set(reports["idle"]), (
         "a timed-out case reports a different shape than a completed one"
