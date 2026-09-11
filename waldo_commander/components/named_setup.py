@@ -112,13 +112,6 @@ class NamedSetupPanel(Panel):
 
         def signature(kind: str) -> tuple:
             values = tuple(field.value for field in fields[kind])
-            if kind == "tcp":
-                return (
-                    *values,
-                    tcp_editor.binding,
-                    tcp_editor.position,
-                    tcp_editor.taught,
-                )
             if kind == "signals":
                 return (*values, signal_editor.binding)
             return values
@@ -326,7 +319,9 @@ class NamedSetupPanel(Panel):
                     )
                     if observed is None:
                         raise ValueError("No fresh TCP pose is available")
-                    local = snapshot.relative_pose(
+                    # Frame edits pending on the Frames tab are saved in the
+                    # same write as this pose, so resolve against them.
+                    local = pending_snapshot(["frames"]).relative_pose(
                         Pose(cast(PoseValues, tuple(observed))), reference.value
                     )
                     for element, number in zip(inputs, local.values):
@@ -390,6 +385,19 @@ class NamedSetupPanel(Panel):
 
             def remove(kind: str, name: str) -> None:
                 nonlocal snapshot
+                if kind == "frames":
+                    for selector, dependent in (
+                        (pose_frame, "poses"),
+                        (frame_parent, "frames"),
+                    ):
+                        if selector.value == name and signature(
+                            dependent
+                        ) != baselines.get(dependent):
+                            inform(
+                                f"Keep or discard the pending {dependent[:-1]} in "
+                                f"{name} before removing the frame"
+                            )
+                            return
                 try:
                     snapshot = snapshot.without(kind, name)
                     refresh()
@@ -481,7 +489,9 @@ class NamedSetupPanel(Panel):
                         ui.button(
                             icon="delete",
                             on_click=lambda: remove("frames", frame_name.value),
-                        ).props("dense flat").tooltip("Remove frame")
+                        ).props("dense flat").tooltip("Remove frame").mark(
+                            "setup-remove-frame"
+                        )
                 with ui.tab_panel(poses_tab).classes("p-0"):
                     pose_existing = (
                         ui.select(
