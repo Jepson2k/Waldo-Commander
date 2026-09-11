@@ -1,0 +1,27 @@
+# MHZ2-10D — passive tool: no CAN driver, no homing, kinematics only.
+# Values transcribed from vendor grippers/MHZ2-10D.xml (CAN_gripper = 0).
+#
+# Air-actuated: the solenoid hangs off whichever digital output the
+# installation wired it to, driven with `write_io`. The vendor binds no
+# particular output to this tool and neither does par6 — the binding is
+# the installation's, not the gripper's.
+#
+# There is no MHZ2-10D URDF, so the collision model is the bare flange's
+# while the mass and com below are this tool's: gravity sees the gripper,
+# the keep-out check does not. Authoring the tree is what fixes that.
+
+name = "MHZ2-10D"
+urdf_variant = "flange"
+
+# J4 homes against the gripper's lower arm — offset depends on gripper geometry.
+[[arm_joint_home_offsets]]
+joint = 4
+home_offset_rad = 0.0
+
+[kinematics]
+d_m = -0.0628
+a_m = -0.04525
+alpha_rad = 3.141592653589793
+mass_kg = 0.195
+com_m = [0.0, 0.0, 0.03]
+inertia_kg_m2 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

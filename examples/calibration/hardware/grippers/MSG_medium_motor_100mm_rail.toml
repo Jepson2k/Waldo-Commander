@@ -1,0 +1,52 @@
+# MSG_medium_motor_100mm_rail — CAN-driven motor gripper.
+# Values transcribed from vendor grippers/MSG_medium_motor_100mm_rail.xml.
+# Vendor TODO markers carried over: kt, kinematics d/mass/com unverified.
+# Motor size names the mechanical build, not the drive: the vendor gives
+# every small/medium/large variant identical kt, current/velocity limits,
+# gains and pinion radius. Only stroke and the tool link change.
+
+name = "MSG_medium_motor_100mm_rail"
+urdf_variant = "msg"
+
+[driver]
+driver_type = "stepfoc"
+stroke_mm = 100.0
+kt_nm_a = 0.111
+ilim_ma = 1700.0
+voltage_limit_mv = 6000
+velocity_limit_ticks_s = 80000.0
+watchdog_timeout_ms = 5000
+gear_r_m = 0.0083
+
+[driver.gains]
+kpp = 5.0
+kpv = 0.015
+kiv = 0.0005
+kpiq = 7.0
+kiiq = 1.0
+kp = 0.12
+kd = 0.002
+
+[homing]
+strategy = "stall"
+speed_ticks_s = 7000.0
+direction = 0
+current_ma = 700.0
+timeout_s = 8.0
+backoff_s = 0.8
+two_pass = true
+two_pass_max_diff_ticks = 200
+home_offset_rad = 0.0
+
+# J4 homes against the gripper's lower arm — offset depends on gripper geometry.
+[[arm_joint_home_offsets]]
+joint = 4
+home_offset_rad = -2.070
+
+[kinematics]
+d_m = -0.11745
+a_m = 0.0
+alpha_rad = 3.141592653589793
+mass_kg = 0.41484
+com_m = [0.00001, -0.00012, -0.03721]
+inertia_kg_m2 = [3.2619e-4, 2.2519e-4, 2.8541e-4, -3.917e-7, -1.2089e-6, -2.998e-7]

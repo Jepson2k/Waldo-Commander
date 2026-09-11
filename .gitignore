@@ -29,3 +29,6 @@ nicegui/
 pinokin/
 /tools/
 waldoctl/
+
+# Private hardware calibration captures and profiles
+/calibration-runs/

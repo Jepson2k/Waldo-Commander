@@ -1,0 +1,18 @@
+# Bare flange — passive tool: no CAN driver, no homing, kinematics only.
+# Values transcribed from vendor grippers/Flange.xml (vendor CAN_gripper = 0).
+
+name = "Flange"
+urdf_variant = "flange"
+
+# J4 homes against the flange — offset depends on tool geometry.
+[[arm_joint_home_offsets]]
+joint = 4
+home_offset_rad = -2.258
+
+[kinematics]
+d_m = -0.0571
+a_m = 0.0
+alpha_rad = 3.141592653589793
+mass_kg = 0.0555
+com_m = [0.0, 0.0, 0.0]
+inertia_kg_m2 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
