@@ -375,7 +375,9 @@ async def test_joint_jog_rapid_clicks(user: User) -> None:
     assert all(b[0] >= a[0] for a, b in zip(targets, targets[1:])), (
         f"a click targeted behind its predecessor: {[t[0] for t in targets]}"
     )
-    assert targets[-1][0] > targets[0][0] - 1e-9, "no click moved the target at all"
+    assert targets[-1][0] > targets[0][0], (
+        f"five presses left the target where it started: {[t[0] for t in targets]}"
+    )
     # A joint step is ABSOLUTE — `measured + step`, read when the click is
     # handled — so clicks that overlap the motion resolve to the same target
     # and the arm ends on the last one rather than five steps along. That is
