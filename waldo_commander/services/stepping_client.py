@@ -24,7 +24,7 @@ from typing import TypeVar, cast
 from waldoctl.client import RobotClient
 
 from .path_preview_client import MOTION_METHODS
-from .completion_budget import CompletionBudget, current_budget
+from .completion_budget import CompletionBudget, PlanWatchdog, current_budget
 
 R = TypeVar("R")
 
@@ -40,12 +40,14 @@ _EXECUTION_CONTROLS = frozenset(
 
 
 def _nonblocking(method: Callable, kwargs: dict) -> tuple[dict, float | None]:
+    """Dispatch without the client's own wait; the wrapper is the barrier.
+
+    Only an explicit ``timeout=`` becomes a hard deadline. The client's
+    default is sized for a standalone call, not for a managed program whose
+    moves run as long as the operator planned them.
+    """
     parameters = inspect.signature(method).parameters
     timeout = kwargs.get("timeout")
-    if timeout is None and "timeout" in parameters:
-        default = parameters["timeout"].default
-        if isinstance(default, (int, float)):
-            timeout = default
     if "wait" in parameters or any(
         p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
     ):
@@ -296,8 +298,9 @@ class SteppingClientWrapper:
                 )
             raise
 
-    def _check_health(self) -> None:
-        if self._wrapped.status() is None:
+    def _check_health(self) -> Any:
+        status = self._wrapped.status()
+        if status is None:
             raise ConnectionError("Controller unavailable during managed pause")
         if self._wrapped.wait_status(lambda status: not status.enabled, timeout=0.01):
             raise RuntimeError("Controller was disabled during managed pause")
@@ -306,17 +309,22 @@ class SteppingClientWrapper:
             if isinstance(error, BaseException):
                 raise error
             raise RuntimeError(f"Controller fault during managed pause: {error}")
+        return status
 
-    def wait_command(self, command_index: int, timeout: float | None = 10.0) -> bool:
+    def wait_command(self, command_index: int, timeout: float | None = None) -> bool:
         budget = current_budget.get() or CompletionBudget(timeout)
         budget.bind(self._wrapped, self._step_io.active_time)
+        watchdog = PlanWatchdog(self._step_io.active_time)
         while budget.remaining > 0:
             if self._wrapped.wait_command(
                 command_index, timeout=min(0.1, budget.remaining)
             ):
                 budget.confirmed_index = command_index
                 return True
-            self._check_health()
+            if budget.timeout is None and not watchdog.check(self._check_health()):
+                return False
+            elif budget.timeout is not None:
+                self._check_health()
         return False
 
     def finalize(self) -> None:
@@ -325,7 +333,10 @@ class SteppingClientWrapper:
         if not self._in_blend:
             return
         try:
-            for index, budget in self._blend_waits:
+            # Indices complete in order: the group's last member covers the
+            # rest, and its budget is what the whole group was dispatched with.
+            if self._blend_waits:
+                index, budget = self._blend_waits[-1]
                 token = current_budget.set(budget)
                 try:
                     self._wait_completed(index)
@@ -492,8 +503,9 @@ class AsyncSteppingClientWrapper:
                     )
             raise
 
-    async def _check_health(self) -> None:
-        if await self._wrapped.status() is None:
+    async def _check_health(self) -> Any:
+        status = await self._wrapped.status()
+        if status is None:
             raise ConnectionError("Controller unavailable during managed pause")
         if await self._wrapped.wait_status(
             lambda status: not status.enabled, timeout=0.01
@@ -504,19 +516,23 @@ class AsyncSteppingClientWrapper:
             if isinstance(error, BaseException):
                 raise error
             raise RuntimeError(f"Controller fault during managed pause: {error}")
+        return status
 
     async def wait_command(
-        self, command_index: int, timeout: float | None = 10.0
+        self, command_index: int, timeout: float | None = None
     ) -> bool:
         budget = current_budget.get() or CompletionBudget(timeout)
         budget.bind(self._wrapped, self._step_io.active_time)
+        watchdog = PlanWatchdog(self._step_io.active_time)
         while budget.remaining > 0:
             if await self._wrapped.wait_command(
                 command_index, timeout=min(0.1, budget.remaining)
             ):
                 budget.confirmed_index = command_index
                 return True
-            await self._check_health()
+            status = await self._check_health()
+            if budget.timeout is None and not watchdog.check(status):
+                return False
         return False
 
     async def finalize(self) -> None:
@@ -525,7 +541,8 @@ class AsyncSteppingClientWrapper:
         if not self._in_blend:
             return
         try:
-            for index, budget in self._blend_waits:
+            if self._blend_waits:
+                index, budget = self._blend_waits[-1]
                 token = current_budget.set(budget)
                 try:
                     await self._wait_completed(index)
