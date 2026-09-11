@@ -174,6 +174,17 @@ with RobotClient() as rbt:
             "This calibration belongs to a different tool or variant", retries=50
         )
         assert await client.tcp_transform() == pytest.approx([0] * 6)
+        # Capturing under the fitted tool identifies that tool for new samples
+        # but must not rebind the loaded values to it on the next save.
+        user.find(marker="tcp-calibration-capture").click()
+        await user.should_see(
+            "Tool or variant changed; samples cleared. Capture again.", retries=50
+        )
+        user.find(marker="setup-save").click()
+        await user.should_see("Saved bench")
+        kept = SetupStore(tmp_path).load("bench").tcp_calibrations["tip"]
+        assert (kept.tool_key, kept.variant_key) == ("NONE", "")
+        assert kept.values == saved.values
     finally:
         await client.stop()
         await completed(await client.select_tool("NONE"))

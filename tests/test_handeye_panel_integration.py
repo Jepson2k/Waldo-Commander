@@ -378,6 +378,30 @@ async def test_handeye_panel_workflow(
                 )
                 raise
 
+        # A page rebuild (reload, second tab) must not restart the camera: a
+        # new capture session would refuse every later capture as "changed".
+        session = camera_service.snapshot().session_id
+        ui_state.active_client_id = None
+        await user.open("/")
+        await wait_for_app_ready()
+        user.find(marker="tab-handeye").click()
+        await asyncio.sleep(0)
+        assert camera_service.snapshot().session_id == session, (
+            "rebuilding the page restarted the camera"
+        )
+        assert next(p for p in ui_state.plugin_panels if p.id == "handeye") is panel
+        await _wait_for(
+            lambda: (panel._last_status_text or "").startswith("Board detected"),
+            timeout=15.0,
+            message="detect tick did not report the board after the reload",
+        )
+        user.find(marker="handeye-capture").click()
+        await _wait_for(
+            lambda: len(panel._samples) == n_views + 1,
+            message="a capture after the page reload was refused",
+        )
+        n_views += 1
+
         # Without a detectable board the capture path stays gated.
         blank = _blank_jpeg()
         _FrameBackend.holder["jpeg"] = blank
@@ -497,6 +521,20 @@ async def test_handeye_auto_calibration(
             )
 
         await wait_board_detected()
+        # One dropped frame during the run is retried, not fatal.
+        real_next_snapshot = camera_service.next_snapshot
+        drops: list[str] = []
+
+        async def flaky_next_snapshot(**kwargs):
+            if not drops:
+                drops.append("dropped")
+                raise CameraUnavailable(
+                    "No new camera frame arrived before the deadline"
+                )
+            return await real_next_snapshot(**kwargs)
+
+        monkeypatch.setattr(camera_service, "next_snapshot", flaky_next_snapshot)
+
         user.find(marker="handeye-auto").click()
         await user.should_see(marker="handeye-auto-confirm")
         user.find(marker="handeye-auto-confirm").click()
@@ -517,6 +555,7 @@ async def test_handeye_auto_calibration(
         )
         result = panel._result
         assert result is not None, "auto run did not solve"
+        assert drops, "the dropped frame was never exercised"
         trans_err = float(np.linalg.norm(result.T_camera_parent[:3, 3] - X_TRUE[:3, 3]))
         rot_err = np.degrees(
             np.linalg.norm(
