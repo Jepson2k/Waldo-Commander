@@ -319,7 +319,10 @@ class SkillLibraryPanel(Panel):
                         ).classes("text-caption")
                         insert_button.disable()
                         run_button.disable()
-                        return
+                        # Falls through to refresh_source: it is the only writer
+                        # of the snippet and the message, so returning here left
+                        # the previously selected skill's call on screen.
+                        break
                     elif annotation == LocalizationLimits | None:
                         readers[name] = lambda: None
                         ui.label("Uses default detection limits.").classes(

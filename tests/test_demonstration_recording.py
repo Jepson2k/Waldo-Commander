@@ -428,3 +428,44 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         for line in span.lines
         if line.startswith("rbt.")
     ), "the panel converted a different program than the same span converts to"
+
+
+@pytest.mark.integration
+async def test_a_stall_near_the_end_of_a_capture_is_a_disconnect(
+    user: User, monkeypatch
+):
+    """A controller that stops publishing inside the last stale window ended the
+    capture as a clean `duration_limit`, so the file and the panel claimed a
+    complete recording whose final seconds were never observed. Which limit was
+    reached is the clock's answer: how long the wire has been quiet."""
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+
+    live = client.stream_status
+    frames = 44  # ~2.2 s at the suite's 20 Hz status rate
+
+    async def stalls_after_a_while():
+        seen = 0
+        async for status in live():
+            yield status
+            seen += 1
+            if seen >= frames:
+                await asyncio.sleep(60)  # the wire goes quiet, mid-capture
+
+    monkeypatch.setattr(client, "stream_status", stalls_after_a_while)
+    # The silence starts inside the final stale window, so the wait is cut short
+    # by the duration rather than by the stale timeout — the case that used to be
+    # reported as a clean end.
+    recording = await record_demonstration(
+        client, duration_s=3.0, stale_timeout_s=1.0, gap_threshold_s=0.2
+    )
+    assert recording.ended == "disconnected", (
+        f"the capture lost the controller with {3.0 - recording.duration_s:.1f} s "
+        f"left and reported {recording.ended}"
+    )
+    # Every frame the wire delivered was kept: the first is the baseline the
+    # capture compares against rather than a sample of its own.
+    assert len(recording.samples) == frames - 1

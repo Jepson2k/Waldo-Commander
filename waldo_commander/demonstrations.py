@@ -124,12 +124,20 @@ async def record_demonstration(
                 async with asyncio.timeout(min(stale_timeout_s, remaining)):
                     status = await anext(stream)
             except TimeoutError:
+                # How long the wire has been quiet decides this, not which of
+                # the two limits the wait happened to be cut short by. A
+                # controller that stops publishing inside the final stale window
+                # used to be reported as a clean end, so the file and the panel
+                # claimed a complete recording whose last seconds -- tens of
+                # missed publications -- were never observed. The threshold is
+                # the recording's own notion of a gap needing reconciliation.
+                silent_for = time.monotonic() - samples[-1].received_ns / 1e9
                 ended = (
                     "stopped"
                     if stop is not None and stop.is_set()
-                    else "duration_limit"
-                    if remaining <= stale_timeout_s
                     else "disconnected"
+                    if silent_for >= min(stale_timeout_s, gap_threshold_s)
+                    else "duration_limit"
                 )
                 break
             except (OSError, RuntimeError, StopAsyncIteration):
@@ -184,13 +192,24 @@ async def record_demonstration(
             await close()
 
 
-def save_demonstration(path: str | Path, recording: Demonstration) -> None:
-    """Atomically save the explicit recording to a selected path."""
+def encode_demonstration(recording: Demonstration) -> bytes:
+    """The recording's portable bytes, refusing one too large to reload.
+
+    One encoder for the saved file and the panel's export: a schema bump in one
+    of them would otherwise leave the other writing documents this build cannot
+    read back, and the export used to stream a payload the loader would refuse.
+    """
     data = json.dumps({"schema": 1, **asdict(recording)}, allow_nan=False).encode(
         "utf-8"
     )
     if len(data) > MAX_RECORDING_BYTES:
         raise ValueError("Recording exceeds the portable file size limit")
+    return data
+
+
+def save_demonstration(path: str | Path, recording: Demonstration) -> None:
+    """Atomically save the explicit recording to a selected path."""
+    data = encode_demonstration(recording)
     path = Path(path)
     temporary: str | None = None
     try:

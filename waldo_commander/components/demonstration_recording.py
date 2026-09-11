@@ -16,6 +16,7 @@ from waldoctl.setup import validate_name
 
 from waldo_commander.common.charts import chart_options, expand_chart_button
 from waldo_commander.demonstrations import (
+    encode_demonstration,
     load_demonstration,
     record_demonstration,
     save_demonstration,
@@ -158,8 +159,10 @@ class DemonstrationPanel(Panel):
                     else ""
                 )
             )
+            ended = recording.ended.replace("_", " ")
             capture_details.set_text(
-                f"{rate or 0:.1f} Hz observed / {recording.requested_rate_hz:g} Hz requested · Ended: {recording.ended.replace(chr(95), chr(32))}"
+                f"{rate or 0:.1f} Hz observed / "
+                f"{recording.requested_rate_hz:g} Hz requested · Ended: {ended}"
             )
             gap_table.rows = [
                 {
@@ -232,14 +235,8 @@ class DemonstrationPanel(Panel):
 
         def download() -> None:
             try:
-                recording = selected()
-                import json
-                from dataclasses import asdict
-
                 ui.download(
-                    json.dumps(
-                        {"schema": 1, **asdict(recording)}, allow_nan=False
-                    ).encode(),
+                    encode_demonstration(selected()),
                     f"{validate_name(name.value)}.json",
                 )
             except (ValueError, TypeError) as error:
