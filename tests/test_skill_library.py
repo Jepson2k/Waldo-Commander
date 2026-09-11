@@ -215,6 +215,14 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
         assert original.source == before_cancel, (
             "a cancelled run is not recorded as success"
         )
+        assert waldoctl.commander.programs.active is original, (
+            "the recording program is active again after a failed run"
+        )
+        motion_recorder.record_action("move_j", angles=list(START))
+        await asyncio.sleep(0)
+        assert "rbt.move_j(" in original.source[len(before_cancel) :], (
+            "recorded actions land in the recording program, not the skill program"
+        )
     finally:
         if is_any_program_running():
             await script_exec.stop()

@@ -123,6 +123,52 @@ async def test_editor_pause_holds_native_motion_and_managed_program(user: User):
 
 
 @pytest.mark.integration
+async def test_managed_waits_are_sized_by_the_plan_not_a_default_deadline(
+    user: User,
+):
+    """A managed move or blend group runs as long as it was planned: the
+    client's standalone 10 s default is not a deadline under the wrapper."""
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    start = await client.angles()
+    assert start is not None
+    start = list(start)
+    target = list(start)
+    target[0] += 8
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = (
+        "from parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        f"    rbt.move_j({target!r}, duration=13)\n"
+        "    for i in range(6):\n"
+        f"        rbt.move_j({start!r} if i % 2 else {target!r}, duration=2.5, r=15, wait=False)\n"
+        f"    rbt.move_j({start!r}, duration=1)\n"
+        "    print('FINISHED', flush=True)\n"
+    )
+    program = waldoctl.commander.programs.active
+    assert program is not None
+    program.source = ui_state.active_textarea.value
+    try:
+        await script_exec.start()
+        async with asyncio.timeout(90):
+            while is_any_program_running():
+                await asyncio.sleep(0.1)
+        log = [entry.text for entry in program.log.entries]
+        assert script_exec.last_exit_code == 0, "\n".join(log)
+        assert "FINISHED" in log
+    finally:
+        if is_any_program_running():
+            await script_exec.stop()
+
+
+@pytest.mark.integration
 async def test_managed_completion_preserves_remaining_budget_during_pause(user: User):
     await user.open("/")
     await wait_for_app_ready()

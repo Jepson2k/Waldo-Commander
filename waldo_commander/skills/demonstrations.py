@@ -100,7 +100,13 @@ async def replay_demonstration(
         raise ValueError("Select a recording span with one tool configuration")
     gripper: GripperTool | None = None
     if replay_gripper:
-        tool = rbt.tool
+        try:
+            tool = rbt.tool
+        except RuntimeError as error:
+            # The client only learns its tool from its own select_tool().
+            raise MissingCapability(
+                "Call select_tool() for the recorded gripper before replaying its actions"
+            ) from error
         if tool.tool_type != ToolType.GRIPPER or tool.key != identity[0]:
             raise MissingCapability("Select the recorded gripper before replay")
         if any(
@@ -179,8 +185,6 @@ async def replay_demonstration(
             _near(
                 await rbt.tcp_transform(), recording.tcp_transform, 1e-5, "Applied TCP"
             )
-            if rbt.tool.key != identity[0]:
-                raise SkillError("Select the recorded tool before replay")
             _near(await rbt.angles(), first.joints_deg, 0.5, "Start joint position")
         if stream is not None:
             async with asyncio.timeout(observation_timeout):
@@ -195,6 +199,10 @@ async def replay_demonstration(
                 session_id != recording.session_id and not reconciled_session
             ):
                 raise SkillError("Reconcile the new controller session before replay")
+            # The controller's word, not the client's: a client that never
+            # called select_tool() in-process still replays on the right tool.
+            if (status.tool_status.key, status.tool_status.variant_key) != identity:
+                raise SkillError("Select the recorded tool before replay")
             healthy(status)
             if status.action_state != ActionState.IDLE or any(
                 not math.isfinite(v) or abs(v) > 0.02 for v in status.speeds
