@@ -267,7 +267,10 @@ class ScriptExecutionController:
                 self.active_record.append(
                     {
                         "event": "restart_selected",
-                        "entry": restart_entry,
+                        # The same key the bootstrap's entry_started uses, so
+                        # the export keeps the entry name instead of dropping
+                        # it as an unknown field.
+                        "method": restart_entry,
                         "snapshot": asdict(restart_state),
                     }
                 )

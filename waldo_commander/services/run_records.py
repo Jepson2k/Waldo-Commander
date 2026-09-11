@@ -215,7 +215,22 @@ def load_record(path: Path) -> list[dict[str, Any]]:
 # Only these schema labels survive inside arbitrary captured values. User
 # mapping keys and all string values are removed, including paths and URLs.
 _FIELDS = frozenset(
-    "positions values scale target_scale applied_scale resume_scale speed accel torque timeout wait r args kwargs angles pose frames poses parameters signals cameras frame parent schema_version shape mass collision physics xyz rpy translation rotation index code enabled homed angles_deg speeds_rad_s session_id seq mono_time_ns executing_index completed_index scene_epoch collision_active drive_health link_health temperatures_c currents_ma bus_voltage_v faults state restarts tx_errors rx_frames installation program attachment_epoch".split()
+    (
+        "positions values scale target_scale applied_scale resume_scale speed "
+        "accel torque timeout wait r args kwargs angles pose frames poses "
+        "parameters signals cameras frame parent schema_version shape mass "
+        "collision physics xyz rpy translation rotation index code enabled "
+        "homed angles_deg speeds_rad_s session_id seq mono_time_ns "
+        "executing_index completed_index scene_epoch collision_active "
+        "drive_health link_health temperatures_c currents_ma bus_voltage_v "
+        "faults state restarts tx_errors rx_frames installation program "
+        "attachment_epoch "
+        # The restart state observed at launch: without these its booleans and
+        # counters export as field_7, field_13 and nobody can tell which was
+        # the fault flag and which the empty queue.
+        "controller_ns received_ns tool tool_variant tcp queue_empty fault "
+        "freedrive"
+    ).split()
 )
 
 

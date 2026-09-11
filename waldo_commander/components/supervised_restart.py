@@ -119,9 +119,12 @@ async def show_supervised_restart() -> None:
                 )
             except Exception as error:
                 controller_details.set_text("")
-                state_label.text = (
-                    f"Restart unavailable: {error or type(error).__name__}"
-                )
+                # An exception is always truthy, so `error or type(error)` never
+                # reached the class name -- and the likeliest failure here, an
+                # argless TimeoutError from the state read, printed nothing at
+                # all after the colon.
+                reason = str(error) or type(error).__name__
+                state_label.text = f"Restart unavailable: {reason}"
 
         async def start():
             nonlocal reference

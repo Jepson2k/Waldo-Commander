@@ -41,6 +41,19 @@ if __name__ == "__main__":
             execute_entry(initialization + "\n" + source, "program.py", "first")
         assert not marker.exists()
 
+    # A skill decorator binds the module name to a Skill, not a function, so
+    # the entry could never be launched: it is refused at discovery rather than
+    # offered in the dialog and failing at the marker check.
+    both = """from waldoctl.restart import restart_entry
+from waldoctl.skills import skill
+@skill(id="demo.after_pick", version="1.0.0")
+@restart_entry
+def after_pick():
+    return 1
+"""
+    with pytest.raises(ValueError, match="both a skill and a restart entry"):
+        discover_entries(both)
+
 
 @pytest.mark.integration
 async def test_supervised_restart_selects_a_fresh_entry_and_refuses_changed_state(

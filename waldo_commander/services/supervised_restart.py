@@ -107,6 +107,19 @@ def discover_entries(source: str) -> list[RestartEntry]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
             _dotted(d) in decorators for d in node.decorator_list
         ):
+            if any(
+                isinstance(d, ast.Call) and _dotted(d.func) in skills
+                for d in node.decorator_list
+            ):
+                # A skill decorator binds the module name to a Skill, which is
+                # not a function and so is not a restart entry: offering it
+                # would be offering a launch that fails at the marker check
+                # (or, with the decorators the other way round, a program that
+                # fails at import).
+                raise ValueError(
+                    f"{node.name} is declared as both a skill and a restart "
+                    f"entry; a restart entry is a plain no-argument function"
+                )
             required = (
                 len(node.args.posonlyargs)
                 + len(node.args.args)
