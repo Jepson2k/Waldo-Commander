@@ -824,7 +824,10 @@ class SettingsContent:
 
         self._cam_refresh_timer = ui.timer(10.0, _refresh_camera_devices)
 
-        if cam_value != -1:
+        # A page build must not restart a capture already running on this
+        # device: a restart mints a new session and a calibration in progress
+        # refuses every later capture as "camera changed".
+        if cam_value != -1 and camera_service.device != cam_value:
             camera_service.start(cam_value)
 
     def _build_motion_profile(self, prefs: dict) -> None:

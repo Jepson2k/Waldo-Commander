@@ -180,3 +180,46 @@ async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
             async with asyncio.timeout(10):
                 while is_any_program_running():
                     await asyncio.sleep(0.05)
+
+
+async def test_setup_save_keeps_sections_written_by_other_panels(
+    user: User, tmp_path, monkeypatch
+):
+    """The camera calibration panel writes its section straight to the setup
+    file; the Setup panel saving its own edits afterwards must not drop it."""
+    from waldoctl.setup import TcpCalibration
+
+    from tests.test_handeye_service import SPEC, _samples
+    from waldo_commander.services import handeye
+    from waldo_commander.services.camera_calibration import (
+        CaptureBinding,
+        calibration_from_result,
+    )
+
+    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(marker="tab-setup").click()
+    user.find(marker="setup-save").click()
+    await user.should_see(content="Saved bench")
+
+    store = SetupStore(tmp_path)
+    binding = CaptureBinding(
+        "camera-A", "session", "parol6", TcpCalibration((0, 0, 0, 0, 0, 0), "MSG")
+    )
+    on_disk = store.load("bench")
+    calibration = calibration_from_result(
+        handeye.solve_hand_eye(_samples(), SPEC), SPEC, binding, on_disk
+    )
+    store.save("bench", on_disk.with_camera("overhead", calibration))
+
+    user.find(kind=ui.tab, content="Parameters").click()
+    user.find(marker="setup-set-parameter").click()
+    await user.should_see(content="Parameter clearance updated. Save setup to keep it.")
+    user.find(marker="setup-save").click()
+    await user.should_see(content="Saved bench")
+    saved = load_setup("bench")
+    assert "clearance" in saved.parameters
+    assert "overhead" in saved.cameras, "saving the Setup panel dropped the camera"

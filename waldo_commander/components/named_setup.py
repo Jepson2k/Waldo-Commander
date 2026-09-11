@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import ClassVar, cast
 
 from nicegui import ui
@@ -174,6 +175,15 @@ class NamedSetupPanel(Panel):
             nonlocal snapshot, persisted
             try:
                 updated = pending_snapshot()
+                # Sections this panel never edits belong to whoever wrote the
+                # file last (the camera calibration panel), not to the copy
+                # loaded here before they did.
+                try:
+                    on_disk = store.load(setup_name.value)
+                except FileNotFoundError:
+                    on_disk = None
+                if on_disk is not None:
+                    updated = replace(updated, cameras=on_disk.cameras)
                 store.save(setup_name.value, updated)
             except (OSError, ValueError, TypeError) as error:
                 inform(str(error))
