@@ -631,8 +631,15 @@ class MotionRecorder:
         self._last_action_wall_time = time.time()
 
     def insert_skill_call(self, source: str) -> None:
-        """Insert an explicitly requested Python call at the editor cursor."""
+        """Insert an explicitly requested Python call at the editor cursor.
+
+        The insertion is an action in the recording like a captured pose, so it
+        stamps the action clock: otherwise the next recorded jog is delayed by
+        the time the operator spent composing the call, and the program waits
+        that long every time it runs.
+        """
         self._insert_snippet(source)
+        self._last_action_wall_time = time.time()
 
     def _insert_snippet(self, snippet: str) -> None:
         """Insert code below the recording session's insertion cursor (or the
