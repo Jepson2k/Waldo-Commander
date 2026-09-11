@@ -12,7 +12,7 @@ import numpy as np
 from nicegui.testing import User
 from nicegui import run
 from parol6.client.dry_run_client import DryRunRobotClient
-from waldoctl.skills import SkillError
+from waldoctl.skills import MissingCapability, SkillError
 
 from tests.helpers.wait import (
     enable_sim,
@@ -263,6 +263,18 @@ async def test_gripper_recording_replays_through_managed_pause_and_fault(user: U
         assert await client.wait_status(
             lambda s: s.tool_status.positions[0] == 1, timeout=3
         )
+
+        # Standalone replay, as documented: a fresh client that never called
+        # select_tool() replays on the tool the controller already carries.
+        async with type(client)(host=client.host, port=client.port) as fresh:
+            standalone = await replay_demonstration.async_call(
+                cast(waldoctl.RobotClient, fresh), recording, timeout=2
+            )
+            assert standalone.completed_samples == len(recording.samples)
+            with pytest.raises(MissingCapability, match="select_tool"):
+                await replay_demonstration.async_call(
+                    cast(waldoctl.RobotClient, fresh), recording, replay_gripper=True
+                )
 
         task = asyncio.create_task(replay_demonstration.async_call(managed, recording))
         if not await client.wait_status(lambda s: bool(s.action_current), timeout=5):
