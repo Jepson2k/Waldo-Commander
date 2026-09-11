@@ -870,18 +870,6 @@ class GUIStepController:
         except (json.JSONDecodeError, OSError):
             return []
 
-    def get_step_count(self) -> int:
-        """Get the current step count from events."""
-        try:
-            data = json.loads(self._event_file.read_text())
-            events = data.get("events", [])
-            return max(
-                (e.get("step", 0) + int(e.get("event") == "complete") for e in events),
-                default=0,
-            )
-        except (json.JSONDecodeError, OSError):
-            return 0
-
     def cleanup(self) -> None:
         """Remove IPC files."""
         try:
