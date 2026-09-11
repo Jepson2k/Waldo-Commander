@@ -99,6 +99,14 @@ def load_case(path: str | Path) -> SimulationCase:
     return SimulationCase(**data)
 
 
+#: Said on every report: the numbers are a model's, not a measurement's.
+_MODEL_NOTE = (
+    "Simulation output. Perturbations, powered support, friction, and supply "
+    "decay are assumed inputs; this is not a measured hardware or capacitor "
+    "response."
+)
+
+
 def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
     from waldoctl.world import world_from_dict
 
@@ -180,13 +188,47 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
         ).hexdigest(),
         "scenario": case.scenario,
         "assumptions": case.assumptions,
-        "model_note": "Simulation output. Perturbations, powered support, friction, and supply decay are assumed inputs; this is not a measured hardware or capacitor response.",
+        "model_note": _MODEL_NOTE,
         "duration_s": ticks.duration_s if ticks is not None else 0.0,
         "rows": ticks.rows if ticks is not None else 0,
         "digest": ticks.digest.hex() if ticks is not None else "",
         "final_joints_deg": np.rad2deg(ticks.joints_rad[-1]).tolist()
         if ticks is not None and ticks.rows
         else None,
+    }
+
+
+def _unrun_report(case: SimulationCase, stop: str, error: str) -> dict[str, Any]:
+    """A report for a case that never produced ticks, with every field the
+    documented shape carries.
+
+    A consumer reading anything beyond ``passed`` -- the duration, the digest,
+    the versions the run was made with -- used to get a KeyError for exactly
+    the cases worth investigating.
+    """
+    return {
+        "name": case.name,
+        "passed": False,
+        "stop": stop,
+        "error": error,
+        "command_errors": [],
+        "expected_stop": case.expected_stop,
+        "expected_error_code": case.expected_error_code,
+        "backend": case.backend,
+        "backend_version": version(case.backend),
+        "commander_version": version("waldo-commander"),
+        "program_sha256": hashlib.sha256(case.program.encode()).hexdigest(),
+        "model_sha256": "",
+        "case_sha256": hashlib.sha256(
+            json.dumps(asdict(case), sort_keys=True, allow_nan=False).encode()
+        ).hexdigest(),
+        "scenario": case.scenario,
+        "assumptions": case.assumptions,
+        "model_note": _MODEL_NOTE,
+        "duration_s": 0.0,
+        "rows": 0,
+        "digest": "",
+        "final_joints_deg": None,
     }
 
 
@@ -200,19 +242,13 @@ async def run_case(case: SimulationCase) -> dict[str, Any]:
             pool.run(_run_case_worker, (asdict(case),)), timeout=case.wall_timeout_s
         )
     except TimeoutError:
-        return {
-            "name": case.name,
-            "passed": False,
-            "stop": "wall_timeout",
-            "error": "Preview worker exceeded its wall-clock deadline",
-        }
+        return _unrun_report(
+            case,
+            "wall_timeout",
+            "Preview worker exceeded its wall-clock deadline",
+        )
     except Exception as exc:
-        return {
-            "name": case.name,
-            "passed": False,
-            "stop": "error",
-            "error": f"{type(exc).__name__}: {exc}",
-        }
+        return _unrun_report(case, "error", f"{type(exc).__name__}: {exc}")
     finally:
         pool.shutdown()
 
