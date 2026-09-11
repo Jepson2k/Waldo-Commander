@@ -148,6 +148,9 @@ def main() -> None:
 
     # Drop our bootstrap script from argv so the user script sees correct args.
     sys.argv = [str(script_path)] + sys.argv[2:]
+    # The program imports its neighbours (`from setups.bench import setup`)
+    # exactly as it would when run with `python program.py`.
+    sys.path.insert(0, str(script_path.parent))
 
     script_globals = {
         "__name__": "__main__",

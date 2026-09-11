@@ -4,8 +4,9 @@ installation TOML."""
 
 from __future__ import annotations
 
-import tomllib
 import asyncio
+import json
+import tomllib
 
 import pytest
 from fastmcp import Client
@@ -16,7 +17,8 @@ from tests.helpers.mcp import payload as _payload
 from tests.helpers.wait import wait_for_app_ready
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.services import world_files
-from waldoctl import Box, Physical, Sphere
+from waldoctl import Box, Physical, ShapeWorld, Sphere
+from waldoctl.world import world_to_dict
 
 
 @pytest.mark.integration
@@ -190,12 +192,23 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
                 )
             )
             assert (
-                path.endswith("block.json")
-                and (tmp_path / "lib" / "block.json").is_file()
+                path.endswith("block.py") and (tmp_path / "lib" / "block.py").is_file()
             )
             assert world_files.load_entry("block").program[0].physics == Physical(
                 mass=0.05
             ), "a saved object keeps its physics"
+            # The entry is an ordinary module a program can import directly.
+            namespace: dict = {}
+            exec((tmp_path / "lib" / "block.py").read_text(), namespace)
+            assert namespace["world"].program[0].name == "block"
+            # A hand edit that breaks the module is refused, not read as empty.
+            (tmp_path / "lib" / "block.py").write_text("world = None\n")
+            with pytest.raises(ValueError, match="must define"):
+                world_files.load_entry("block")
+            await client.call_tool(
+                "world.library_save",
+                {"name": "block", "shapes": [list(block.to_wire())]},
+            )
             post_entry = Sphere(
                 name="post", radius=0.05, pose=(0.4, 0.0, 0.05, 0, 0, 0)
             )
@@ -203,10 +216,18 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
                 "world.library_save",
                 {"name": "post", "shapes": [list(post_entry.to_wire())]},
             )
+            (tmp_path / "lib" / "legacy.json").write_text(
+                json.dumps(world_to_dict(ShapeWorld(program=(post_entry,))))
+            )
             assert _payload(await client.call_tool("world.library_list")) == [
                 "block",
+                "legacy",
                 "post",
             ]
+            assert (tmp_path / "lib" / "legacy.py").is_file()
+            assert not (tmp_path / "lib" / "legacy.json").exists()
+            assert world_files.load_entry("legacy").program[0].name == "post"
+            world_files.delete_entry("legacy")
             with pytest.raises(ToolError, match="letters, digits"):
                 await client.call_tool("world.library_save", {"name": "../escape"})
 

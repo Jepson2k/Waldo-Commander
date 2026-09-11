@@ -23,7 +23,7 @@ from waldo_commander.setup import SetupStore, export_snapshot, load_setup
 from waldo_commander.state import ui_state
 
 
-def test_named_storage_and_export_remain_independent_snapshots(tmp_path):
+def test_named_storage_and_export_remain_independent_snapshots(tmp_path, monkeypatch):
     store = SetupStore(tmp_path)
     original = SetupSnapshot(
         frames={"fixture": Frame((10, 20, 30, 0, 0, 90))},
@@ -43,11 +43,45 @@ def test_named_storage_and_export_remain_independent_snapshots(tmp_path):
     for bad_name in ("../outside", "", "a/b", "a\\b"):
         with pytest.raises(ValueError, match="Names"):
             store.save(bad_name, original)
+    # A setup is an ordinary module: a program can import it directly, and a
+    # hand edit that breaks it is refused with the module's own error.
+    assert (tmp_path / "bench.py").is_file()
+    namespace = {}
+    exec((tmp_path / "bench.py").read_text(), namespace)
+    assert namespace["setup"].resolve("pick").values[:3] == pytest.approx((40, 25, 30))
     corrupt = original.to_dict()
     corrupt["frames"]["fixture"]["parent"] = "missing"
-    (tmp_path / "broken.json").write_text(json.dumps(corrupt))
+    (tmp_path / "broken.py").write_text(
+        "from waldoctl.setup import SetupSnapshot\n"
+        f"setup = SetupSnapshot.from_dict({corrupt!r})\n"
+    )
     with pytest.raises(ValueError, match="Unknown frame"):
         store.load("broken")
+    (tmp_path / "noise.py").write_text("x = 1\n")
+    with pytest.raises(ValueError, match="must define"):
+        store.load("noise")
+    # A setup saved as JSON by an earlier release is converted on first use.
+    (tmp_path / "legacy.json").write_text(json.dumps(original.to_dict()))
+    legacy_store = SetupStore(tmp_path)
+    assert "legacy" in legacy_store.names()
+    assert legacy_store.load("legacy").resolve("pick").values[:3] == pytest.approx(
+        (10, 25, 30)
+    )
+    assert not (tmp_path / "legacy.json").exists()
+    # The default store also imports the previous release's home-directory
+    # store, so an upgrade keeps every taught setup.
+    old_home = tmp_path / "old-home"
+    old_home.mkdir()
+    (old_home / "cell.json").write_text(json.dumps(original.to_dict()))
+    monkeypatch.setattr("waldo_commander.setup._legacy_home_dir", lambda: old_home)
+    monkeypatch.setattr(
+        "waldo_commander.setup.default_program_dir", lambda: tmp_path / "programs"
+    )
+    monkeypatch.delenv("WALDO_SETUP_DIR", raising=False)
+    default_store = SetupStore()
+    assert default_store.directory == (tmp_path / "programs" / "setups").resolve()
+    assert default_store.names() == ["cell"]
+    assert not (old_home / "cell.json").exists()
 
 
 @pytest.mark.integration
