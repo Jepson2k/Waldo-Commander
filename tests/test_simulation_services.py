@@ -1477,34 +1477,27 @@ class TestScriptExecutionLifecycle:
     async def test_cleanup_preserves_stepping_ipc_across_page_reload(
         self, tmp_path, monkeypatch
     ):
-        """Per-page ``cleanup()`` must NOT delete the stepping IPC files.
+        """Per-page ``cleanup()`` must NOT close the stepping link.
 
-        Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``
-        which deleted ``/tmp/.parol_control_X`` and ``/tmp/.parol_events_X``.
-        With the subprocess still alive, ``check_should_pause()`` then read
-        the missing control file → defaulted to ``paused=True``. (Nowadays a
-        missing control file makes ``wait_for_step_or_play`` return
-        immediately — free-run, not a hang — but the files must still be
-        preserved for stepping to keep working across reloads.)
+        Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``,
+        which tore the session down under a still-running program — the
+        program then ran unmanaged (free-run) for the rest of its life.
 
         After fix: ``cleanup()`` cancels only the event watcher; the step
-        controller, session id, and IPC files are preserved so the
-        subprocess can keep stepping, and ``set_ui_client`` on the next
-        page rebinds a fresh watcher to the new client.
+        controller, session id and link are preserved so the program keeps
+        stepping, and ``set_ui_client`` on the next page rebinds a fresh
+        watcher to the new client.
         """
         from waldo_commander.components import script_execution as se
         from waldo_commander.services.stepping_client import GUIStepController
 
         # Simulate "script is running mid-stepping" — initialize a real
-        # step controller (which creates IPC files), then flag the
+        # step controller (which opens the link), then flag the
         # simulation_state so the watcher-restart logic sees it.
         session_id = "test_cross_reload_ipc"
         step_controller = GUIStepController(session_id)
         step_controller.initialize()
-
-        # Sanity: IPC files exist after initialize.
-        assert step_controller._control_file.exists()
-        assert step_controller._event_file.exists()
+        assert step_controller._listener is not None
 
         active_program = waldoctl.commander.programs.active
         if active_program is None:
@@ -1544,9 +1537,8 @@ class TestScriptExecutionLifecycle:
             # Step controller + session preserved across the disconnect.
             assert se.script_exec._step_controller is step_controller
             assert se.script_exec._step_session_id == session_id
-            # IPC files survived.
-            assert step_controller._control_file.exists()
-            assert step_controller._event_file.exists()
+            # The link survived.
+            assert step_controller._listener is not None
 
             # New page connecting — set_ui_client should rebind a new
             # watcher because the subprocess is still flagged as running.
@@ -1555,8 +1547,7 @@ class TestScriptExecutionLifecycle:
             assert se.script_exec._event_watcher_task is not None
             assert not se.script_exec._event_watcher_task.done()
         finally:
-            # Drop the restarted watcher; it polls IPC files we're about
-            # to delete and would otherwise log noisy errors.
+            # Drop the restarted watcher before the link it polls is closed.
             if (
                 se.script_exec._event_watcher_task is not None
                 and not se.script_exec._event_watcher_task.done()

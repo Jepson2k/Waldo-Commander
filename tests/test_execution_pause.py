@@ -23,20 +23,20 @@ from waldo_commander.services.stepping_client import (
 from waldo_commander.skills._motion import completed
 
 
-def test_step_ack_cannot_erase_a_newer_pause(monkeypatch):
+def test_step_ack_cannot_erase_a_newer_pause():
+    """A step granted and a pause requested right behind it: the program
+    takes the step, and the pause is still standing when it looks again —
+    control states travel in order and only the GUI writes them."""
     controller = GUIStepController(uuid4().hex)
     controller.initialize()
     step_io = StepIO(controller.session_id)
-    acknowledge = step_io._ack_step
-
-    def concurrent_pause(control, signal):
-        controller.signal_pause()
-        acknowledge(control, signal)
-
-    monkeypatch.setattr(step_io, "_ack_step", concurrent_pause)
     try:
         controller.signal_step()
-        step_io.wait_for_step_or_play()
+        controller.signal_pause()
+        step_io.wait_for_step_or_play(poll_interval=0.01)
+        deadline = time.monotonic() + 1.0
+        while not step_io.hold_requested() and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert step_io.hold_requested(), "step acknowledgement overwrote the GUI pause"
     finally:
         controller.cleanup()
