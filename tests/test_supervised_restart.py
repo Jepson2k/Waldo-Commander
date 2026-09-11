@@ -171,7 +171,16 @@ if __name__ == '__main__':
     changed = list(tcp)
     changed[0] += 1
     assert await client.set_tcp_transform(*changed) > 0
+    program = waldoctl.commander.programs.active
+    assert program is not None
+    outcome_before = script_exec.last_outcome
+    record_before = script_exec.last_record
+    log_before = [entry.text for entry in program.log.entries]
     assert not await selected("after_pick", reference)
+    # A refused restart leaves the interrupted run's context for review.
+    assert script_exec.last_outcome == outcome_before
+    assert script_exec.last_record == record_before
+    assert [entry.text for entry in program.log.entries] == log_before
     assert await client.set_tcp_transform(*tcp) > 0
     reference = await fresh_state(client)
     ui_state.active_textarea.value = source + "\n# Edited after review\n"
@@ -186,6 +195,14 @@ if __name__ == '__main__':
     assert not await selected("after_pick", reference)
     assert marker.read_text() == "sync:1\nasync:1\n"
     assert not is_any_program_running()
+
+    # A lost queue readback is not an empty queue.
+    from unittest.mock import AsyncMock
+
+    with monkeypatch.context() as patched:
+        patched.setattr(client, "queue", AsyncMock(return_value=None))
+        with pytest.raises(ConnectionError):
+            await fresh_state(client)
 
     # Ordinary Start ignores even an inherited entry setting.
     monkeypatch.setenv("WALDO_RESTART_ENTRY", "after_pick")

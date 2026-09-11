@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from waldoctl.client import RobotClient
+from waldoctl.status import ActionState
 from waldoctl.restart import is_restart_entry
 
 
@@ -269,6 +270,11 @@ async def fresh_state(client: RobotClient, *, timeout: float = 3.0) -> RestartSt
     """Require advancing publications and read current queue/fault/TCP state."""
     async with asyncio.timeout(timeout):
         queue = await client.queue()
+        if queue is None:
+            # A lost readback is not an empty queue.
+            raise ConnectionError(
+                "The controller queue could not be read; review again"
+            )
         error = await client.error()
         tcp = tuple(await client.tcp_transform())
         stream = client.stream_status()
@@ -300,7 +306,9 @@ async def fresh_state(client: RobotClient, *, timeout: float = 3.0) -> RestartSt
                         bool(status.enabled),
                         int(status.executing_index),
                         queue == [],
-                        error is not None or bool(status.collision_active),
+                        error is not None
+                        or bool(status.collision_active)
+                        or status.action_state == ActionState.ERROR,
                         bool(status.freedrive),
                     )
                 previous = identity
