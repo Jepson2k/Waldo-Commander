@@ -34,7 +34,11 @@ class TcpCalibrationEditor:
         self.get_snapshot = get_snapshot
         self.set_snapshot = set_snapshot
         self.samples: list[Pose] = []
+        # The tool the controller last reported (keeps pivot samples on one
+        # tool) and the tool the displayed six values belong to. They differ
+        # after loading a saved calibration for a tool that is not fitted.
         self.binding: ToolBinding | None = None
+        self.values_binding: ToolBinding | None = None
         self.position: PivotCalibration | None = None
         self.taught: tuple[tuple[float, float, float], str] | None = None
         self.saved_measurement: TcpCalibration | None = None
@@ -232,6 +236,7 @@ class TcpCalibrationEditor:
             for element, value in zip(self.coordinates[:3], result.offset_mm):
                 element.set_value(value)
             self.position = result
+            self.values_binding = self.binding
             self.message.set_text(
                 f"Position: {result.sample_count} samples · RMS {result.rms_error_mm:.3f} mm · max {result.max_error_mm:.3f} mm. Orientation is unchanged."
             )
@@ -247,6 +252,7 @@ class TcpCalibrationEditor:
             )
             rotation = teach_tcp_orientation(observation.nominal_tool, reference)
             self.taught = (rotation, self.reference.value)
+            self.values_binding = self.binding
             for element, value in zip(self.coordinates[3:], rotation):
                 element.set_value(value)
             self.message.set_text(
@@ -259,6 +265,7 @@ class TcpCalibrationEditor:
         try:
             observation = await observe_tcp(self.commander.client)
             self.bind_tool(observation.binding)
+            self.values_binding = observation.binding
             for element, value in zip(self.coordinates, observation.applied):
                 element.set_value(value)
             self.message.set_text("Read the controller's applied TCP transform.")
@@ -266,7 +273,7 @@ class TcpCalibrationEditor:
             self.message.set_text(str(error))
 
     def calibration(self) -> TcpCalibration:
-        if self.binding is None:
+        if self.values_binding is None:
             raise ValueError(
                 "Read or capture the current tool before applying or saving"
             )
@@ -294,8 +301,8 @@ class TcpCalibrationEditor:
         )
         return TcpCalibration(
             values,
-            self.binding.tool_key,
-            self.binding.variant_key,
+            self.values_binding.tool_key,
+            self.values_binding.variant_key,
             position_rms_mm=measured.rms_error_mm
             if measured
             else saved.position_rms_mm
@@ -318,6 +325,7 @@ class TcpCalibrationEditor:
         self.taught = None
         self.saved_measurement = calibration
         self.binding = ToolBinding(calibration.tool_key, calibration.variant_key)
+        self.values_binding = self.binding
         self.tool_label.set_text(
             f"{calibration.tool_key} · {calibration.variant_key or 'default variant'}"
         )

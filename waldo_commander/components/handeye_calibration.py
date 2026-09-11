@@ -623,7 +623,11 @@ class HandEyeCalibrationPanel(Panel):
         try:
             before = await observe_tcp(commander.client)
             observation = await camera_service.next_snapshot()
-        except (ValueError, OSError, NotImplementedError, CameraUnavailable) as error:
+        except (CameraUnavailable, TimeoutError, ValueError) as error:
+            # A dropped frame, an arm still settling or a mid-capture tool
+            # readback are worth another attempt; the auto run retries them.
+            raise _CaptureRefused(str(error)) from error
+        except (OSError, NotImplementedError) as error:
             raise _CaptureRefused(str(error), fatal=True) from error
         binding = CaptureBinding(
             observation.camera_id,
@@ -653,7 +657,9 @@ class HandEyeCalibrationPanel(Panel):
         try:
             after = await observe_tcp(commander.client)
             latest = camera_service.snapshot()
-        except (ValueError, OSError, NotImplementedError, CameraUnavailable) as error:
+        except (CameraUnavailable, TimeoutError, ValueError) as error:
+            raise _CaptureRefused(str(error)) from error
+        except (OSError, NotImplementedError) as error:
             raise _CaptureRefused(str(error), fatal=True) from error
         if (
             after.binding != before.binding

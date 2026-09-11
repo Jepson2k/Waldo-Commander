@@ -180,10 +180,16 @@ class CameraService:
         self._received_monotonic = 0.0
         self._camera_id: str | None = None
         self._session_id = ""
+        self._device: int | str | None = None
 
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def device(self) -> int | str | None:
+        """The device the running capture was opened on."""
+        return self._device if self._active else None
 
     @property
     def camera_id(self) -> str | None:
@@ -246,6 +252,7 @@ class CameraService:
 
         self._backend = backend
         self._active = True
+        self._device = device
         descriptor = json.dumps([type(device).__name__, device, width, height])
         self._camera_id = (
             "capture-" + hashlib.sha256(descriptor.encode()).hexdigest()[:24]
