@@ -43,6 +43,18 @@ _EXECUTION_CONTROLS = frozenset(
 )
 
 
+#: How long the last ask of an exhausted budget waits: one status frame at the
+#: slowest rate the controller serves. Asking with no time at all cannot
+#: confirm anything, which is the same as not asking.
+_FINAL_ASK_S = 0.1
+
+
+def _ask_for(remaining: float) -> float:
+    """The slice to wait on the controller for, with a budget already spent
+    still getting one real chance to answer."""
+    return min(0.1, remaining) if remaining > 0 else _FINAL_ASK_S
+
+
 def _nonblocking(method: Callable, kwargs: dict) -> tuple[dict, float | None]:
     """Dispatch without the client's own wait; the wrapper is the barrier.
 
@@ -319,9 +331,14 @@ class SteppingClientWrapper:
         budget = current_budget.get() or CompletionBudget(timeout)
         budget.bind(self._wrapped, self._step_io.active_time)
         watchdog = PlanWatchdog(self._step_io.active_time)
-        while budget.remaining > 0:
+        asked = False
+        while budget.remaining > 0 or not asked:
+            # Always ask at least once: a command the controller finished
+            # inside its budget is complete however late the wrapper gets
+            # around to checking, and reporting it as a timeout stops the arm.
+            asked = True
             if self._wrapped.wait_command(
-                command_index, timeout=min(0.1, budget.remaining)
+                command_index, timeout=_ask_for(budget.remaining)
             ):
                 budget.confirmed_index = command_index
                 return True
@@ -547,9 +564,14 @@ class AsyncSteppingClientWrapper:
         budget = current_budget.get() or CompletionBudget(timeout)
         budget.bind(self._wrapped, self._step_io.active_time)
         watchdog = PlanWatchdog(self._step_io.active_time)
-        while budget.remaining > 0:
+        asked = False
+        while budget.remaining > 0 or not asked:
+            # Always ask at least once: a command the controller finished
+            # inside its budget is complete however late the wrapper gets
+            # around to checking, and reporting it as a timeout stops the arm.
+            asked = True
             if await self._wrapped.wait_command(
-                command_index, timeout=min(0.1, budget.remaining)
+                command_index, timeout=_ask_for(budget.remaining)
             ):
                 budget.confirmed_index = command_index
                 return True

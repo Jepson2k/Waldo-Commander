@@ -349,10 +349,16 @@ class PlaybackController:
                 prog.dry_run.playback.is_playing = True
             logger.debug("Script playing")
         else:
-            await script_exec.signal_pause()
-            if prog is not None:
-                prog.dry_run.playback.is_playing = False
-            logger.debug("Script paused")
+            try:
+                await script_exec.signal_pause()
+                logger.debug("Script paused")
+            finally:
+                # The subprocess is held before the controller's pause is
+                # requested, so the button has to show a held program even when
+                # that request goes unconfirmed -- otherwise it offers to pause
+                # a program that is already stopped at its next command.
+                if prog is not None:
+                    prog.dry_run.playback.is_playing = False
         simulation_state.notify_changed()
 
     async def toggle_play(self, *, control_verified: bool = False) -> None:
