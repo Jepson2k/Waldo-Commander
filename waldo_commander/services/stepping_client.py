@@ -32,6 +32,10 @@ STEPPABLE_METHODS = frozenset(MOTION_METHODS) | frozenset(
     {"home", "tool_action", "delay"}
 )
 
+# Controls that must reach the controller at once: they cancel whatever a
+# pending blend group was waiting for, so they never wait on it first.
+_IMMEDIATE_CONTROLS = frozenset({"stop", "estop"})
+
 
 def _atomic_write(path: Path, data: dict) -> None:
     """Write data to file atomically using temp file + move."""
@@ -248,6 +252,16 @@ class SteppingClientWrapper:
         if self._step_io.check_should_pause():
             self._step_io.wait_for_step_or_play()
 
+    def _discard_blend(self) -> None:
+        """Close a pending blend group without waiting: the controller has
+        just been told to drop it, so its indices will never complete."""
+        if not self._in_blend:
+            return
+        self._in_blend = False
+        self._last_blend_index = -1
+        self._step_io.emit_event("complete", "blend_group")
+        self._step_io.increment_step_count()
+
     @property
     def tool(self):
         """Return the sync tool with stepping behavior on action methods."""
@@ -275,6 +289,15 @@ class SteppingClientWrapper:
 
         if name in STEPPABLE_METHODS and callable(attr):
             return self._wrap_motion_method(name, attr)
+
+        if name in _IMMEDIATE_CONTROLS:
+
+            def immediate(*args: Any, **kwargs: Any) -> Any:
+                result = attr(*args, **kwargs)
+                self._discard_blend()
+                return result
+
+            return immediate
 
         self._flush_blend()
         return attr
@@ -398,6 +421,14 @@ class AsyncSteppingClientWrapper:
         if self._step_io.check_should_pause():
             await self._step_io.wait_for_step_or_play_async()
 
+    def _discard_blend(self) -> None:
+        if not self._in_blend:
+            return
+        self._in_blend = False
+        self._last_blend_index = -1
+        self._step_io.emit_event("complete", "blend_group")
+        self._step_io.increment_step_count()
+
     @property
     def tool(self):
         """Return the async tool with stepping behavior on action methods."""
@@ -422,6 +453,14 @@ class AsyncSteppingClientWrapper:
             return self._wrap_motion_method(name, attr)
 
         if asyncio.iscoroutinefunction(attr):
+            if name in _IMMEDIATE_CONTROLS:
+
+                async def immediate(*args: Any, **kwargs: Any) -> Any:
+                    result = await attr(*args, **kwargs)
+                    self._discard_blend()
+                    return result
+
+                return immediate
 
             async def passthrough(*args: Any, **kwargs: Any) -> Any:
                 await self._flush_blend()
