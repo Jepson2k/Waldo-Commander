@@ -95,6 +95,29 @@ async def test_saved_named_output_readback_wait_cancellation_and_disconnection(
             lambda s: s.action_state == ActionState.IDLE, timeout=3
         ), "cancelled signal wait did not request native stop"
 
+        # Rebinding a mapping saved for another robot is an unsaved edit, and
+        # no widget value changes when it happens — so without the panel being
+        # told, Load discards the rebinding without asking.
+        from waldoctl.setup import SetupSnapshot
+
+        SetupStore(tmp_path).save(
+            "cell",
+            SetupSnapshot(signals={"valve": DigitalSignal("par6", "output", 0, 2, 2)}),
+        )
+        user.find(marker="tab-setup").click()
+        user.find(kind=ui.tab, content="Signals").click()
+        element("setup-name").set_value("cell")
+        user.find(marker="setup-load").click()
+        await user.should_see("Loaded cell")
+        await user.should_not_see(marker="setup-dirty")
+        user.find(marker="signal-bind").click()
+        await asyncio.sleep(0)
+        await user.should_see(marker="setup-dirty")
+        user.find(marker="setup-save").click()
+        await user.should_see("Saved cell")
+        await user.should_not_see(marker="setup-dirty")
+        assert SetupStore(tmp_path).load("cell").signals["valve"].backend == "parol6"
+
         wrong_layout = DigitalSignal("parol6", "output", 0, 3, 2)
         with pytest.raises(ValueError, match="layout"):
             await write_signal.async_call(client, wrong_layout, True)

@@ -569,7 +569,7 @@ class NamedSetupPanel(Panel):
                     )
                 with ui.tab_panel(signals_tab).classes("p-0"):
                     signal_editor = DeviceSignalEditor(
-                        commander, lambda: snapshot, set_snapshot
+                        commander, lambda: snapshot, set_snapshot, update_dirty
                     )
 
             @ui.refreshable
