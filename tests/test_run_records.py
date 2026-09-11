@@ -21,6 +21,7 @@ from waldo_commander.services.run_records import (
     MAX_RECORD_BYTES,
     RunRecord,
     debugging_export,
+    RECORD_SCHEMA,
     load_record,
 )
 from waldo_commander.services.stepping_client import GUIStepController, StepIO
@@ -95,6 +96,16 @@ def test_export_removes_personal_values_and_journal_recovers_a_partial_tail(tmp_
     with record.path.open("ab") as stream:
         stream.write(b'{"event":')
     assert load_record(record.path)[-1]["outcome"] == "failed"
+    # A journal from another schema names itself rather than being read with
+    # this Commander's meaning for its fields.
+    lines = record.path.read_bytes().splitlines(keepends=True)
+    first = json.loads(lines[0])
+    assert first["schema"] == RECORD_SCHEMA
+    first["schema"] = RECORD_SCHEMA + 1
+    foreign = record.path.with_name("foreign.jsonl")
+    foreign.write_bytes(json.dumps(first).encode() + b"\n" + b"".join(lines[1:]))
+    with pytest.raises(ValueError, match=f"{RECORD_SCHEMA + 1}"):
+        load_record(foreign)
 
 
 @pytest.mark.integration

@@ -19,6 +19,12 @@ from waldoctl.record_values import snapshot_value
 logger = logging.getLogger(__name__)
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 
+#: Bumped when an event's fields change meaning. A journal is read by a
+#: Commander that may be newer or older than the one that wrote it, so the
+#: label travels in the first entry and the reader refuses what it cannot
+#: read rather than rendering the wrong field.
+RECORD_SCHEMA = 1
+
 
 def record_directory() -> Path:
     return Path(
@@ -56,7 +62,7 @@ class RunRecord:
         self.append(
             {
                 "event": "run_started",
-                "schema": 1,
+                "schema": RECORD_SCHEMA,
                 "run_id": self.id,
                 "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
                 "backend": backend,
@@ -192,7 +198,12 @@ class RunRecord:
 
 
 def load_record(path: Path) -> list[dict[str, Any]]:
-    """Read a bounded journal, preserving complete entries after an abrupt exit."""
+    """Read a bounded journal, preserving complete entries after an abrupt exit.
+
+    A journal written to another schema is refused by name: its events carry
+    the same keys with different meanings, so reading it anyway would show
+    wrong values as confidently as right ones.
+    """
     with path.open("rb") as stream:
         content = stream.read(MAX_RECORD_BYTES + 1)
     if len(content) > MAX_RECORD_BYTES:
@@ -208,6 +219,12 @@ def load_record(path: Path) -> list[dict[str, Any]]:
             raise ValueError("Invalid run record entry") from None
         if not isinstance(event, dict) or not isinstance(event.get("event"), str):
             raise ValueError("Invalid run record entry")
+        if event["event"] == "run_started" and event.get("schema") != RECORD_SCHEMA:
+            raise ValueError(
+                f"Run record schema {event.get('schema')!r} is not this "
+                f"Commander's ({RECORD_SCHEMA}); open it with the version that "
+                f"wrote it"
+            )
         events.append(event)
     return events
 
@@ -338,7 +355,7 @@ def debugging_export(path: Path) -> bytes:
         events.append(clean)
     return (
         json.dumps(
-            {"schema": 1, "export": "numeric-debug", "events": events},
+            {"schema": RECORD_SCHEMA, "export": "numeric-debug", "events": events},
             indent=2,
             allow_nan=False,
         )
