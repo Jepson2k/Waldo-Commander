@@ -18,6 +18,7 @@ import numpy as np
 
 from waldoctl import DryRunResult
 from waldoctl.client import RobotClient
+from waldoctl.commands import CommandKind, command_table
 from waldoctl.skills import UnresolvedPreview
 
 from waldo_commander.common.theme import get_color_for_move_type
@@ -34,18 +35,20 @@ _LITERAL_LIST_RE = re.compile(
 )
 _DURATION_RE = re.compile(r"duration\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)")
 
-# Methods that produce trajectory segments for visualization.
+_COMMANDS = command_table()
+
+# Methods that produce trajectory segments for visualization, by path shape.
 MOTION_METHODS: dict[str, str] = {
-    "move_j": "joints",
-    "move_l": "cartesian",
-    "move_c": "smooth_arc",
-    "move_s": "smooth_spline",
-    "move_p": "cartesian",
-    "jog_j": "jog",
-    "jog_l": "jog",
-    "servo_j": "jog",
-    "servo_l": "jog",
+    name: spec.move_type or ""
+    for name, spec in _COMMANDS.items()
+    if spec.kind is CommandKind.MOTION
 }
+
+# There is no observation behind these in a planning preview; the PAROL6
+# extras are not on the ABC but answer the same live-only questions.
+_UNRESOLVED = frozenset(
+    name for name, spec in _COMMANDS.items() if spec.kind is CommandKind.OBSERVATION
+) | {"command_verdict", "is_estop_pressed"}
 
 
 class _ToolCollectionProxy:
@@ -156,12 +159,39 @@ class PathPreviewClient:
             self._skill_line = line
 
     def _command_result(self, result: DryRunResult | None) -> int:
+        """A planned (or blend-held, ``None``) motion's collector-owned index."""
+        return self._mint_index(
+            self._result_valid(result) if result is not None else None
+        )
+
+    def _mint_index(self, success: bool | None) -> int:
         index = len(self._command_results)
-        success = self._result_valid(result) if result is not None else None
         if success is not None:
             self._complete_pending(success)
         self._command_results[index] = success
         return -1 if success is False else index
+
+    def _queued_result(self, result: Any) -> int:
+        """The index a queued non-motion command returns: a backend's own
+        index or code, a planner result, or ``None`` when there was nothing
+        to plan and the command simply applied."""
+        if isinstance(result, bool) or result is None:
+            return self._mint_index(True if result is None else result)
+        if isinstance(result, int):
+            return self._mint_index(result >= 0)
+        return self._mint_index(self._result_valid(result))
+
+    @staticmethod
+    def _system_result(result: Any) -> int:
+        """The live client's 1/0/negative code for a system or control
+        command, whatever the dry run answered with."""
+        if isinstance(result, bool):
+            return int(result)
+        if isinstance(result, int):
+            return result
+        if result is None:
+            return 1
+        return 1 if PathPreviewClient._result_valid(result) else -1
 
     def _complete_pending(self, success: bool) -> None:
         for index, status in self._command_results.items():
@@ -473,8 +503,13 @@ class PathPreviewClient:
         if pose_kwarg is not None:
             pose = [float(v) for v in pose_kwarg[:6]]
         elif move_type in ("cartesian", "smooth_arc", "smooth_spline") and args:
-            # move_l/move_p/move_c: first arg is [x,y,z,rx,ry,rz] in mm/deg
-            pose = [float(v) for v in args[0][:6]]
+            # move_l/move_c: the first arg is [x,y,z,rx,ry,rz] in mm/deg;
+            # move_p/move_s pass a list of such waypoints, and the last one
+            # is the pose the move was trying to reach.
+            first = args[0]
+            if len(first) and isinstance(first[0], (list, tuple, np.ndarray)):
+                first = first[-1]
+            pose = [float(v) for v in first[:6]]
         # move_j with joint angles: skip — we'd need FK to get TCP pose
 
         if pose is None or len(pose) < 3:
@@ -599,7 +634,7 @@ class PathPreviewClient:
             "is_travel": not self._first_motion_seen,
         }
         self.segment_collector.append(segment)
-        return 0
+        return self._mint_index(True)
 
     # ---- Dynamic dispatch ----
 
@@ -610,13 +645,18 @@ class PathPreviewClient:
         # Motion methods: dispatch through _client + collect visualization
         move_type = MOTION_METHODS.get(name)
         if move_type is not None:
+            # A backend without this optional motion raises here, as the live
+            # client would, rather than previewing a refusal.
+            method = getattr(self._client, name)
+            # Streamed motion (jog, servo) is fire-and-forget on the live
+            # client: it answers 1/0/negative, never an index to wait on.
+            mints_index = _COMMANDS[name].mints_index
 
             def motion_method(*args: Any, **kwargs: Any) -> int:
                 try:
                     self._first_motion_seen = True
                     self._pending_sleep = 0.0
                     self._last_move_non_blocking = not kwargs.get("wait", True)
-                    method = getattr(self._client, name)
                     result = method(*args, **kwargs)
                     if result is None:
                         # Buffered for blending — track move_type of first buffered cmd
@@ -640,7 +680,9 @@ class PathPreviewClient:
                             )
                         else:
                             self._collect_from_result(result, mt)
-                    return self._command_result(result)
+                    if mints_index:
+                        return self._command_result(result)
+                    return self._system_result(result)
                 except Exception as e:
                     self._first_motion_seen = True
                     line_no = self._get_caller_line_number()
@@ -694,14 +736,9 @@ class PathPreviewClient:
                             line_number=self._get_caller_line_number(),
                         )
                     )
-                return result
+                return self._system_result(result)
 
             return set_tool_wrapper
-
-        # Intercept set_tcp_offset — flush blend since it changes kinematics
-        if name == "set_tcp_offset":
-            self._flush_blend()
-            return getattr(self._client, name)
 
         # Intercept set_shapes — record the boundary so collision marking can
         # replay the world that was active at each segment (like tool
@@ -720,22 +757,14 @@ class PathPreviewClient:
                         line_number=self._get_caller_line_number(),
                     )
                 )
-                return result
+                return self._system_result(result)
 
             return set_shapes_wrapper
 
         # There is no observation behind a status predicate in a planning
         # preview. Inventing a successful handshake would select the wrong
         # branch of an ordinary Python program or skill.
-        if name in {
-            "wait_status",
-            "io",
-            "status",
-            "stream_status",
-            "command_verdict",
-            "is_estop_pressed",
-            "is_freedrive",
-        }:
+        if name in _UNRESOLVED:
             self._flush_blend()
 
             def unresolved(*args: Any, **kwargs: Any) -> Any:
@@ -743,10 +772,28 @@ class PathPreviewClient:
 
             return unresolved
 
-        # All other methods: flush blend first, then delegate to backend.
-        # It raises AttributeError for unknown names, catching typos.
+        # Everything else flushes the blend first and delegates to the
+        # backend, which raises AttributeError for unknown names, catching
+        # typos. Queued and system commands answer with the live client's
+        # return contract, not the dry run's planner result.
+        underlying = getattr(self._client, name)
+        spec = _COMMANDS.get(name)
         self._flush_blend()
-        return getattr(self._client, name)
+        if spec is None or not callable(underlying):
+            return underlying
+        if spec.kind is CommandKind.QUEUED:
+
+            def queued(*args: Any, **kwargs: Any) -> int:
+                return self._queued_result(underlying(*args, **kwargs))
+
+            return queued
+        if spec.kind in (CommandKind.SYSTEM, CommandKind.CONTROL):
+
+            def applied(*args: Any, **kwargs: Any) -> int:
+                return self._system_result(underlying(*args, **kwargs))
+
+            return applied
+        return underlying
 
 
 class AsyncPathPreviewClient:
