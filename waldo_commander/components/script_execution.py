@@ -182,9 +182,9 @@ class ScriptExecutionController:
             ui.notify("Script already running", color="warning")
             return False
 
-        self.last_exit_code = None
         self._launch_task = asyncio.current_task()
         self._cancel_launch_from_stop = False
+        restart_state = None
         try:
             filename_input = ui_state.active_filename_input
             filename = (
@@ -207,6 +207,12 @@ class ScriptExecutionController:
                     entry.name for entry in discover_entries(content)
                 }:
                     raise ValueError("The selected restart entry is no longer declared")
+                # Refuse before anything of the interrupted run is wiped: its
+                # log, outcome and record are what the operator reviews next.
+                restart_state = await fresh_state(waldoctl.commander.client)
+                restart_state.require_ready()
+                restart_state.require_same_setup(restart_reference)
+            self.last_exit_code = None
             assert self._program_dir is not None, "program_dir not set"
             runtime_dir = self._program_dir / ".runtime"
             script_path = runtime_dir / filename
@@ -268,19 +274,15 @@ class ScriptExecutionController:
 
             if launching_tab is not None:
                 launching_tab.execution.is_running = True
-            if restart_entry is not None:
-                current = await fresh_state(waldoctl.commander.client)
-                current.require_ready()
-                assert restart_reference is not None
-                current.require_same_setup(restart_reference)
-                if self.active_record:
-                    self.active_record.append(
-                        {
-                            "event": "restart_selected",
-                            "entry": restart_entry,
-                            "snapshot": asdict(current),
-                        }
-                    )
+            if restart_entry is not None and self.active_record:
+                assert restart_state is not None
+                self.active_record.append(
+                    {
+                        "event": "restart_selected",
+                        "entry": restart_entry,
+                        "snapshot": asdict(restart_state),
+                    }
+                )
             if "execution.speed" in waldoctl.commander.client.skill_capabilities:
                 if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
                     raise TimeoutError("Controller resume was not confirmed")

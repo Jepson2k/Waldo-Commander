@@ -514,7 +514,7 @@ class ShapeEditingMixin:
                         return
                     if detach:
                         result = await detach_object.async_call(
-                            client, name=name, world_pose=pose
+                            client, name=name, world_pose=pose, shape=shape
                         )
                         source = f"from waldo_commander.skills import detach_object\ndetach_object(rbt, name={name!r}, world_pose={pose!r})"
                     else:
@@ -528,7 +528,11 @@ class ShapeEditingMixin:
                             else ()
                         )
                         result = await attach_object.async_call(
-                            client, name=name, flange_pose=pose, allowed_contacts=names
+                            client,
+                            name=name,
+                            flange_pose=pose,
+                            allowed_contacts=names,
+                            shape=shape,
                         )
                         source = f"from waldo_commander.skills import attach_object\nattach_object(rbt, name={name!r}, flange_pose={pose!r}, allowed_contacts={names!r})"
                     handle = self._shape_handle()
