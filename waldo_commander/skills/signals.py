@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import math
 import time
 from dataclasses import dataclass
@@ -75,58 +74,53 @@ async def wait_signal(
     value: bool = True,
     *,
     timeout: float = 5.0,
-    poll_interval: float = 0.05,
-    observation_timeout: float = 1.0,
     fixture: SignalFixture | None = None,
 ) -> SignalWaitResult:
-    """Wait for a logical level; timeout is distinct from lost communication."""
+    """Wait for a logical level; timeout is distinct from lost communication.
+
+    The wait reads the status broadcast the controller already sends, so it
+    sees a level the tick it is published and never asks for I/O the stream
+    carries anyway. Silence is lost communication: a controller that
+    broadcasts nothing raises rather than reporting a timeout it cannot
+    distinguish from a level that never arrived.
+    """
     if type(value) is not bool:
         raise ValueError("The expected logical level must be a boolean")
-    for number, label in (
-        (timeout, "Wait timeout"),
-        (poll_interval, "Poll interval"),
-        (observation_timeout, "Observation timeout"),
-    ):
-        _seconds(number, label)
-    preview = _binding(rbt, signal)
-    if preview:
-        observation = await _observe(rbt, signal, observation_timeout, fixture)
+    _seconds(timeout, "Wait timeout")
+    if _binding(rbt, signal):
+        observation = await _observe(rbt, signal, timeout, fixture)
         if observation.value == value:
             return SignalWaitResult("matched", observation, 0.0)
         # A constant fixture cannot change. Account for the wait on the
         # preview's program clock without polling the wall clock.
         await rbt.delay(timeout)
         return SignalWaitResult("timeout", observation, timeout)
+
     start = time.monotonic()
-    deadline = start + timeout
-    observation: SignalObservation | None = None
-    last_receipt = start
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return SignalWaitResult("timeout", observation, time.monotonic() - start)
+    latest: SignalObservation | None = None
+    refused: ValueError | None = None
+
+    def reached(status) -> bool:
+        nonlocal latest, refused
         try:
-            observation = await _observe(
-                rbt, signal, min(observation_timeout, remaining), fixture
-            )
-        except ConnectionError:
-            now = time.monotonic()
-            if (
-                observation is not None
-                and remaining < observation_timeout
-                and now - last_receipt < observation_timeout
-            ):
-                # Event-loop timers can expire a clock tick early (notably
-                # on Windows). Classify by the requested final read budget.
-                await asyncio.sleep(max(0.0, deadline - now))
-                return SignalWaitResult(
-                    "timeout", observation, time.monotonic() - start
-                )
-            raise
-        last_receipt = time.monotonic()
-        if observation.value == value:
-            return SignalWaitResult("matched", observation, time.monotonic() - start)
-        await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+            levels = [int(level) for level in status.io]
+            latest = SignalObservation(signal.decode(levels), time.time())
+        except ValueError as error:
+            # A mapping the controller's I/O layout no longer fits. Stop the
+            # wait and report it: `wait_status` logs a raising predicate and
+            # carries on, which would show up as a timeout.
+            refused = error
+            return True
+        return latest.value == value
+
+    matched = await rbt.wait_status(reached, timeout=timeout)
+    if refused is not None:
+        raise refused
+    if latest is None:
+        raise ConnectionError("The controller broadcast no status to observe I/O in")
+    return SignalWaitResult(
+        "matched" if matched else "timeout", latest, time.monotonic() - start
+    )
 
 
 @skill(id="waldo.write_signal", version="1.0.0", requires=frozenset({"io.digital"}))

@@ -18,10 +18,14 @@ class DeviceSignalEditor:
         commander: Commander,
         get_snapshot: Callable[[], SetupSnapshot],
         set_snapshot: Callable[[SetupSnapshot], None],
+        on_binding_change: Callable[[], None] = lambda: None,
     ) -> None:
         self.commander = commander
         self.get_snapshot = get_snapshot
         self.set_snapshot = set_snapshot
+        #: The binding is part of the setup's unsaved-edit signature, and no
+        #: widget value changes when it is rebound, so the panel is told.
+        self.on_binding_change = on_binding_change
         robot = ui_state.active_robot
         self.binding = (
             robot.backend_package,
@@ -114,6 +118,7 @@ class DeviceSignalEditor:
             robot.digital_outputs,
         )
         self.show_binding()
+        self.on_binding_change()
 
     def refresh(self) -> None:
         options = list(self.get_snapshot().signals)
