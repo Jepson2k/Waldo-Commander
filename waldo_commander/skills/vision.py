@@ -22,6 +22,20 @@ from waldo_commander.vision import (
 )
 
 
+#: Budget for the arm observations a tool camera's localization brackets its
+#: capture with: two status frames each plus two transform reads, which a short
+#: image-acquisition window cannot cover.
+_OBSERVE_TCP_S = 3.0
+
+
+def _client_backend(rbt: RobotClient, fallback: str) -> str:
+    """The backend this client drives, from the capabilities it advertises."""
+    for capability in rbt.skill_capabilities:
+        if capability.startswith("backend."):
+            return capability.removeprefix("backend.")
+    return fallback
+
+
 @skill(id="waldo.locate_board", version="1.0.0")
 async def locate_board(
     rbt: RobotClient,
@@ -37,6 +51,12 @@ async def locate_board(
     Preview requires an explicit ImageFixture. Live programs request a fresh
     image from their FrameSource. Missing and rejected detections return no
     pose; unavailable sources and invalid calibration bindings raise errors.
+
+    ``timeout_s`` bounds the image acquisition. The arm observations a tool
+    camera needs before and after it get their own budget: several status
+    frames and two transform reads do not fit in a short acquisition window,
+    and a localization that failed for that reason used to report that the arm
+    had moved.
     """
     check_timeout(timeout_s)
     if f"backend.{calibration.backend}" not in rbt.skill_capabilities:
@@ -53,8 +73,9 @@ async def locate_board(
     else:
         if isinstance(source, ImageFixture):
             raise ValueError("Image fixtures require a preview client")
+        observe_s = max(timeout_s, _OBSERVE_TCP_S)
         before = (
-            await observe_tcp(rbt, timeout=timeout_s)
+            await observe_tcp(rbt, timeout=observe_s)
             if calibration.mount == "tool"
             else None
         )
@@ -66,7 +87,7 @@ async def locate_board(
                 "The source did not return an image received during this acquisition"
             )
         if before is not None:
-            after = await observe_tcp(rbt, timeout=timeout_s)
+            after = await observe_tcp(rbt, timeout=observe_s)
             relative = (
                 np.linalg.inv(before.nominal_tool.matrix())
                 @ after.nominal_tool.matrix()
@@ -95,7 +116,10 @@ async def locate_board(
         observation,
         calibration,
         setup,
-        backend=calibration.backend,
+        # The client's own backend, not the calibration's: comparing the
+        # calibration against itself made `validate`'s recalibrate-after-a-
+        # backend-change check unreachable.
+        backend=_client_backend(rbt, calibration.backend),
         tcp_pose=tcp_pose,
         tool=tool,
         limits=limits if limits is not None else LocalizationLimits(),
