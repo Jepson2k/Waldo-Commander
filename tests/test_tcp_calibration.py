@@ -145,8 +145,15 @@ with RobotClient() as rbt:
             matrix[:3, 3] + 2 * matrix[:3, 2], abs=0.2
         )
 
-        ui_state.active_client_id = None
-        await user.open("/")
+        # User.open leaves the previous simulated page alive. Close it first
+        # so its heartbeat cannot schedule a competing reload of the same user.
+        previous_page = user.client
+        assert previous_page is not None
+        for handler in previous_page.disconnect_handlers:
+            previous_page.safe_invoke(handler)
+        previous_page.delete()
+        reloaded_page = await user.open("/")
+        assert ui_state.active_client_id == reloaded_page.id
         await wait_for_app_ready()
         await user.should_not_see("Connecting to controller...", retries=200)
         angles = await client.angles()

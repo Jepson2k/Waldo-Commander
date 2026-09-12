@@ -3,6 +3,9 @@
 For pose grids, transfer helpers, and editable completion notes, see
 [Tray patterns](tray-patterns.md).
 
+For observed motion capture and native waypoint replay, see
+[Demonstration recording](demonstration-recording.md).
+
 Skills are reusable Python functions. Write one typed async implementation and
 call it from either a synchronous program or an async program. The supplied
 robot client owns the connection and command execution.

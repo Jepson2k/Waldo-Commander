@@ -12,6 +12,7 @@ from typing import Any, ClassVar, Literal, get_args, get_origin, get_type_hints
 from nicegui import ui
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.camera import CameraCalibration
+from waldoctl.recordings import Demonstration
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.signals import DigitalSignal
 from waldoctl.tools import ToolType
@@ -350,6 +351,16 @@ class SkillLibraryPanel(Panel):
                             "text-caption"
                         ).mark("skill-camera-source")
                         readers[name] = CommanderCameraSource
+                    elif annotation is Demonstration:
+                        ui.label(
+                            "Select and save an uninterrupted span in the Demonstrations panel, then use its Insert replay call button. In Python, pass load_demonstration(path)."
+                        ).classes("text-caption")
+                        insert_button.disable()
+                        run_button.disable()
+                        # Falls through to refresh_source: it is the only writer
+                        # of the snippet and the message, so returning here left
+                        # the previously selected skill's call on screen.
+                        break
                     elif annotation == LocalizationLimits | None:
                         readers[name] = lambda: None
                         ui.label("Uses default detection limits.").classes(

@@ -78,6 +78,7 @@ dev = [
 waldo-commander = "waldo_commander.main:main"
 
 [project.entry-points."waldoctl.skills"]
+replay_demonstration = "waldo_commander.skills:replay_demonstration"
 transfer = "waldo_commander.skills:transfer"
 transfer_with_signal = "waldo_commander.skills:transfer_with_signal"
 locate_board = "waldo_commander.skills:locate_board"
@@ -92,6 +93,7 @@ gripper_open = "waldo_commander.skills:gripper_open"
 gripper_close = "waldo_commander.skills:gripper_close"
 
 [project.entry-points."waldoctl.panels"]
+demonstrations = "waldo_commander.components.demonstration_recording:DemonstrationPanel"
 handeye = "waldo_commander.components.handeye_calibration:HandEyeCalibrationPanel"
 setup = "waldo_commander.components.named_setup:NamedSetupPanel"
 skills = "waldo_commander.components.skill_library:SkillLibraryPanel"

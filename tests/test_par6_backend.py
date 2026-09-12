@@ -564,6 +564,26 @@ async def test_commander_runs_on_the_par6_runtime(
             if script_exec.script_handle is not None:
                 await script_exec.stop()
 
+        from waldo_commander.demonstrations import (
+            load_demonstration,
+            record_demonstration,
+            save_demonstration,
+        )
+
+        recording = await record_demonstration(client, duration_s=0.3)
+        assert recording.backend == "par6" and len(recording.samples) >= 2
+        assert recording.tcp_transform == pytest.approx(correction)
+        recording_path = tmp_path / "par6-demonstration.json"
+        save_demonstration(recording_path, recording)
+        assert load_demonstration(recording_path) == recording
+        from waldo_commander.skills import replay_demonstration
+
+        replayed = await replay_demonstration.async_call(client, recording)
+        assert replayed.completed_samples == len(recording.samples)
+        assert await client.angles() == pytest.approx(
+            recording.samples[-1].joints_deg, abs=0.5
+        )
+
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)
