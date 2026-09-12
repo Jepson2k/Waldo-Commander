@@ -22,6 +22,44 @@ def _label(name: str) -> str:
     return name.rsplit(".", 1)[-1].replace("_", " ").capitalize()
 
 
+def _skill_labels(ids) -> dict[str, str]:
+    """Option labels for skill ids, qualified only where they would collide.
+
+    Two plugins can each provide a `retract`; shown by trailing name alone they
+    are two identical entries and the user cannot tell which one they are about
+    to insert.
+    """
+    labels: dict[str, str] = {}
+    seen: dict[str, list[str]] = {}
+    for key in ids:
+        seen.setdefault(_label(key), []).append(key)
+    for label, keys in seen.items():
+        for key in keys:
+            namespace = key.rsplit(".", 1)[0] if "." in key else ""
+            labels[key] = (
+                f"{label} ({namespace})" if len(keys) > 1 and namespace else label
+            )
+    return labels
+
+
+def _loaded(store, name: str | None) -> SetupSnapshot:
+    """The named setup, or a request to save one.
+
+    With no setup saved there is no name to load, and the store's name-format
+    complaint tells the user nothing about what to do next.
+    """
+    if not name:
+        raise ValueError("Save a setup in the Setup panel to fill this field")
+    return store.load(name)
+
+
+def _pose(snapshot: SetupSnapshot, name: str | None):
+    """A pose from the setup, or a request to teach one."""
+    if not name:
+        raise ValueError("This setup has no poses; teach one in the Setup panel")
+    return snapshot.resolve(name)
+
+
 class SkillLibraryPanel(Panel):
     id: ClassVar[str] = "skills"
     display_name: ClassVar[str] = "Skills"
@@ -191,7 +229,7 @@ class SkillLibraryPanel(Panel):
             ui.label("Skills").classes("panel-heading")
             choice = (
                 ui.select(
-                    {key: _label(key) for key in entries},
+                    _skill_labels(entries),
                     value=next(iter(entries), None),
                     label="Installed skill",
                 )
@@ -315,7 +353,9 @@ class SkillLibraryPanel(Panel):
                             )
                         if annotation is SetupSnapshot:
                             readers[name] = lambda widget=setup, selected_store=store: (
-                                selected_store.load(widget.value or shared_setup.value)
+                                _loaded(
+                                    selected_store, widget.value or shared_setup.value
+                                )
                             )
                             setup.on_value_change(refresh_source)
                             shared_setup.on_value_change(refresh_source)
@@ -337,8 +377,9 @@ class SkillLibraryPanel(Panel):
                                 kind=annotation,
                             ):
                                 try:
-                                    snapshot = selected_store.load(
-                                        setup_widget.value or shared_setup.value
+                                    snapshot = _loaded(
+                                        selected_store,
+                                        setup_widget.value or shared_setup.value,
                                     )
                                     options = list(snapshot.poses)
                                     pose_widget.set_options(
@@ -358,9 +399,13 @@ class SkillLibraryPanel(Panel):
                                 p=pose,
                                 selected_store=store,
                                 kind=annotation: (
-                                    selected_store.load(
-                                        s.value or shared_setup.value
-                                    ).resolve(p.value)
+                                    _pose(
+                                        _loaded(
+                                            selected_store,
+                                            s.value or shared_setup.value,
+                                        ),
+                                        p.value,
+                                    )
                                 )
                             )
                             set_poses()

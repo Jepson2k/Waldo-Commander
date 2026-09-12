@@ -90,7 +90,10 @@ class NamedSetupPanel(Panel):
             tcp_editor.saved_measurement = None
             tcp_editor.taught = None
             refresh()
-            saved.set_value(setup_name.value)
+            # Another session (or a script) can write a setup after this panel
+            # was built; without the options the dropdown drops a value it
+            # does not list and shows nothing for the setup just loaded.
+            saved.set_options(store.names(), value=setup_name.value)
             for selector, entries, select in (
                 (frame_existing, snapshot.frames, select_frame),
                 (pose_existing, snapshot.poses, select_pose),
@@ -103,6 +106,10 @@ class NamedSetupPanel(Panel):
             loading = False
             remember()
             inform(f"Loaded {setup_name.value}")
+
+        #: The entry each tab's fields are currently showing, so a refused
+        #: switch can put the selector back on it.
+        shown: dict[str, str | None] = {}
 
         def signature(kind: str) -> tuple:
             return tuple(field.value for field in fields[kind])
@@ -141,15 +148,23 @@ class NamedSetupPanel(Panel):
             return updated
 
         def keep_current(kind: str) -> bool:
+            """Commit the pending edit before the selection moves off it.
+
+            The committed entry is part of the working snapshot, so the frame
+            option lists, the entry selectors and the resolved-pose table are
+            rebuilt with it -- otherwise a frame the user just kept is absent
+            from every list until some unrelated Keep or Remove rebuilds them.
+            """
             nonlocal snapshot
             if loading or not fields:
                 return True
             try:
                 snapshot = pending_snapshot([kind])
-                return True
             except (ValueError, TypeError) as error:
                 inform(f"Keep the current edit valid before switching: {error}")
                 return False
+            refresh()
+            return True
 
         def save() -> None:
             nonlocal snapshot, persisted
@@ -387,7 +402,13 @@ class NamedSetupPanel(Panel):
                 if name not in snapshot.frames:
                     return
                 if not keep_current("frames"):
+                    # The selector has already moved to *name*; NiceGUI
+                    # suppresses a same-value change, so leaving it there would
+                    # make re-picking this entry do nothing for the rest of the
+                    # session. Put it back on the entry the fields still show.
+                    frame_existing.set_value(shown.get("frames"))
                     return
+                shown["frames"] = name
                 entry = snapshot.frames[name]
                 frame_name.set_value(name)
                 frame_parent.set_value(entry.parent)
@@ -399,7 +420,13 @@ class NamedSetupPanel(Panel):
                 if name not in snapshot.poses:
                     return
                 if not keep_current("poses"):
+                    # The selector has already moved to *name*; NiceGUI
+                    # suppresses a same-value change, so leaving it there would
+                    # make re-picking this entry do nothing for the rest of the
+                    # session. Put it back on the entry the fields still show.
+                    pose_existing.set_value(shown.get("poses"))
                     return
+                shown["poses"] = name
                 entry = snapshot.poses[name]
                 pose_name.set_value(name)
                 pose_frame.set_value(entry.frame)
@@ -411,7 +438,13 @@ class NamedSetupPanel(Panel):
                 if name not in snapshot.parameters:
                     return
                 if not keep_current("parameters"):
+                    # The selector has already moved to *name*; NiceGUI
+                    # suppresses a same-value change, so leaving it there would
+                    # make re-picking this entry do nothing for the rest of the
+                    # session. Put it back on the entry the fields still show.
+                    parameter_existing.set_value(shown.get("parameters"))
                     return
+                shown["parameters"] = name
                 entry = snapshot.parameters[name]
                 parameter_name.set_value(name)
                 parameter_type.set_value(

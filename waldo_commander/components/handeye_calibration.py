@@ -228,27 +228,55 @@ class HandEyeCalibrationPanel(Panel):
     def _build_board_section(self) -> None:
         with ui.expansion("Target board", icon="grid_on").classes("w-full"):
             with ui.row().classes("items-end gap-2"):
-                sx = ui.number(
-                    "Squares X", value=self._spec.squares_x, min=3, max=20, precision=0
-                ).classes("w-20")
-                sy = ui.number(
-                    "Squares Y", value=self._spec.squares_y, min=3, max=20, precision=0
-                ).classes("w-20")
-                sq = ui.number(
-                    "Square mm",
-                    value=self._spec.square_mm,
-                    min=5.0,
-                    max=MAX_SQUARE_MM,
-                    step=0.5,
-                ).classes("w-24")
-                mk = ui.number(
-                    "Marker mm", value=self._spec.marker_mm, min=3.0, step=0.5
-                ).classes("w-24")
-                dic = ui.select(
-                    list(handeye.ARUCO_DICTIONARIES),
-                    value=self._spec.dictionary,
-                    label="Dictionary",
-                ).classes("w-32")
+                sx = (
+                    ui.number(
+                        "Squares X",
+                        value=self._spec.squares_x,
+                        min=3,
+                        max=20,
+                        precision=0,
+                    )
+                    .classes("w-20")
+                    .mark("handeye-squares-x")
+                )
+                sy = (
+                    ui.number(
+                        "Squares Y",
+                        value=self._spec.squares_y,
+                        min=3,
+                        max=20,
+                        precision=0,
+                    )
+                    .classes("w-20")
+                    .mark("handeye-squares-y")
+                )
+                sq = (
+                    ui.number(
+                        "Square mm",
+                        value=self._spec.square_mm,
+                        min=5.0,
+                        max=MAX_SQUARE_MM,
+                        step=0.5,
+                    )
+                    .classes("w-24")
+                    .mark("handeye-square-mm")
+                )
+                mk = (
+                    ui.number(
+                        "Marker mm", value=self._spec.marker_mm, min=3.0, step=0.5
+                    )
+                    .classes("w-24")
+                    .mark("handeye-marker-mm")
+                )
+                dic = (
+                    ui.select(
+                        list(handeye.ARUCO_DICTIONARIES),
+                        value=self._spec.dictionary,
+                        label="Dictionary",
+                    )
+                    .classes("w-32")
+                    .mark("handeye-dictionary")
+                )
 
             def current_inputs() -> handeye.BoardSpec:
                 """The board the five inputs describe, treating an emptied
@@ -893,7 +921,16 @@ class HandEyeCalibrationPanel(Panel):
                 state = commander.status.action.state
                 if state == waldoctl.ActionState.EXECUTING:
                     started = True
-                elif started and state == waldoctl.ActionState.IDLE:
+                elif state == waldoctl.ActionState.IDLE and (
+                    started or not await self._queued(commander)
+                ):
+                    # Idle with nothing queued and no completion is a cancelled
+                    # move, whether or not this loop ever saw it execute -- a
+                    # Stop inside the first wait slice lands in that window, and
+                    # reading it as a timeout would let the run walk to the next
+                    # view after a human stopped it.
+                    if await commander.client.wait_command(index, timeout=0.0):
+                        return index  # it completed between the slice and here
                     logger.info("Auto-calibration halted: the move was cancelled")
                     self._auto_cancel = True
                     return -1
@@ -904,6 +941,21 @@ class HandEyeCalibrationPanel(Panel):
         except Exception as e:
             logger.warning("Auto-calibration move failed: %s", e)
             return -1
+
+    @staticmethod
+    async def _queued(commander: Commander) -> bool:
+        """Whether the controller still holds queued work.
+
+        Read only to tell a move that has not started yet from one that was
+        cancelled: both look idle. An unanswered query counts as queued, so an
+        unreachable controller ends the move on the deadline rather than being
+        reported as a Stop nobody pressed.
+        """
+        try:
+            return bool(await commander.client.queue())
+        except Exception as error:
+            logger.debug("Queue readback during an auto move failed: %s", error)
+            return True
 
     async def _wait_stationary(self) -> None:
         deadline = time.monotonic() + AUTO_STATIONARY_TIMEOUT_S
