@@ -15,7 +15,6 @@ from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar, cast
 
 import numpy as np
-
 from waldoctl import DryRunResult
 from waldoctl.client import RobotClient
 from waldoctl.commands import CommandKind, command_table
@@ -722,6 +721,8 @@ class PathPreviewClient:
 
             def set_tool_wrapper(*args: Any, **kw: Any) -> Any:
                 result = client_method(*args, **kw)
+                if isinstance(result, int) and result < 0:
+                    return result
                 self._current_tool_position = 0.0  # New tool starts open
                 if args:
                     key = str(args[0]).strip().upper()
@@ -751,6 +752,8 @@ class PathPreviewClient:
                             line_number=self._get_caller_line_number(),
                         )
                     )
+                # select_tool is a SYSTEM command: the live client answers with
+                # its 1/0/negative code, not with a queue index.
                 return self._system_result(result)
 
             return set_tool_wrapper

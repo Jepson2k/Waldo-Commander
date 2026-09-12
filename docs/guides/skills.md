@@ -23,6 +23,30 @@ an async client. Start an async program explicitly with `asyncio.run(main())`,
 just as when running its Python file directly. A function definition by itself
 does not execute, including in preview.
 
+The **Skills** panel lists installed skills, their Python parameters and backend
+requirements. **Insert call** inserts an import and a call into the active program.
+Saved poses and setups are inserted as fixed snapshots; saving different setup
+data later does not change that call. To follow saved data on the next run, edit
+the Python to load it explicitly with `load_setup`.
+
+**Run once** opens the generated call in a program tab and runs it with the usual
+pause and stop controls. During motion recording, a successfully completed run
+adds one skill call with its fixed arguments to the recording program. Failed or
+cancelled runs do not add a successful call. Edit the generated Python normally;
+the panel does not read edited Python back into its fields.
+
+| Skill | Behavior |
+|---|---|
+| `retract` | Move a positive distance along current tool Z. |
+| `approach` | Move to positive target-tool-Z clearance, then linearly to an explicit WRF `Pose`. |
+| `park` | Joint-interpolate to a named pose in an explicit `SetupSnapshot`. |
+| `align_tool_axis` | Rotate one tool axis toward a WRF direction while keeping the TCP position. Returns `None` if already aligned. |
+| `gripper_open`, `gripper_close` | Command the selected supported gripper and wait for completion. Native calibration requirements still apply. |
+
+Each motion goes through the backend planner and collision checks. Approach
+does not search for a detour. Gripper command completion does not confirm that
+an object was grasped.
+
 ## Write and compose skills
 
 ```python
@@ -61,6 +85,12 @@ withdraw_twice = "mybench.skills:withdraw_twice"
 `waldoctl.skills.discover_skills()` returns skills keyed by stable id. Broken
 plugins are diagnosed and skipped; duplicate ids exclude all conflicting
 providers. A panel may call a skill but the skill does not subclass a panel.
+The decorator's `api_version` defaults to `1`. An incompatible API version is
+refused before execution and shown in the panel's discovery diagnostics. For
+headless discovery, pass a list as `diagnostics=` to collect the same messages.
+Skill function names also appear in editor completion, with their import module.
+Use ordinary Python for arguments that cannot be represented by the panel's
+literal fields, such as image sources or custom resource objects.
 
 ## Preview, stepping and progress
 

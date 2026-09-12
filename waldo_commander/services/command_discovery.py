@@ -131,4 +131,30 @@ def generate_completions_from_commands() -> list[CompletionItem]:
         }
         completions.append(completion)
 
+    from waldoctl.skills import discover_skills
+
+    skills = discover_skills().values()
+    trailing: dict[str, int] = {}
+    for candidate in skills:
+        trailing[getattr(candidate.function, "__name__", "")] = (
+            trailing.get(getattr(candidate.function, "__name__", ""), 0) + 1
+        )
+    for candidate in skills:
+        name = getattr(candidate.function, "__name__", None)
+        if not isinstance(name, str):
+            continue
+        # Two plugins can provide the same function name; an unqualified
+        # completion list would offer them as one entry and insert whichever
+        # was discovered first.
+        label = f"{name} ({candidate.spec.id})" if trailing[name] > 1 else name
+        completions.append(
+            {
+                "label": label,
+                "detail": str(inspect.signature(candidate.function)),
+                "info": f"{candidate.spec.id} · Import from {candidate.function.__module__}. {inspect.getdoc(candidate.function) or ''}",
+                "apply": name,
+                "type": "function",
+            }
+        )
+
     return completions
