@@ -2,8 +2,11 @@
 
 import ast
 import asyncio
+import re
 import textwrap
 from dataclasses import asdict
+from pathlib import Path
+import tempfile
 from typing import cast
 
 import numpy as np
@@ -168,6 +171,27 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
         setup.resolve("pick").values[:3], abs=0.1
     )
 
+    # Inserting a call is an action in the recording: the delay before the next
+    # recorded action measures from the insert, not from whatever the operator
+    # last did before opening the panel and composing the call.
+    motion_recorder.toggle_recording()
+    motion_recorder.record_action("io", port=0, state=1)
+    await asyncio.sleep(0.8)
+    mark = len(original.source)
+    user.find(marker="skill-insert").click()
+    await user.should_see(content="Inserted Python skill call")
+    await asyncio.sleep(0.1)
+    motion_recorder.record_action("io", port=0, state=0)
+    composed = original.source[mark:]
+    delays = [
+        float(v)
+        for v in re.findall(r"(?:rbt\.delay|time\.sleep)\(([0-9.]+)\)", composed)
+    ]
+    assert delays and max(delays) < 0.5, (
+        f"the program waits out the time spent composing the call: {composed}"
+    )
+    motion_recorder.toggle_recording()
+
     element("skill-choice").set_value("waldo.retract")
     await asyncio.sleep(0)
     element("skill-arg-distance_mm").set_value(2)
@@ -295,3 +319,27 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
     await user.should_see(content="Skill completed")
     after_run_once = await client.io()
     assert after_run_once is not None and after_run_once[2] == opened[2]
+
+
+def test_a_skill_without_a_saved_setup_or_a_pose_says_what_to_do():
+    """The panel surfaces these as its status text, so they have to name the
+    missing thing: with no setup saved there is no name to load, and the
+    store's name-format complaint says nothing about saving a setup."""
+    from waldo_commander.components.skill_library import _loaded, _pose, _skill_labels
+
+    store = SetupStore(Path(tempfile.mkdtemp()))
+    with pytest.raises(ValueError, match="Save a setup"):
+        _loaded(store, None)
+    with pytest.raises(ValueError, match="Save a setup"):
+        _loaded(store, "")
+    store.save("bench", SetupSnapshot(frames={"fixture": Frame()}))
+    snapshot = _loaded(store, "bench")
+    with pytest.raises(ValueError, match="no poses"):
+        _pose(snapshot, None)
+
+    # Two plugins can each provide a `retract`; unqualified they are two
+    # identical entries and the user cannot tell which is about to be inserted.
+    labels = _skill_labels(["waldo.retract", "acme.retract", "waldo.approach"])
+    assert labels["waldo.approach"] == "Approach"
+    assert labels["waldo.retract"] != labels["acme.retract"]
+    assert "waldo" in labels["waldo.retract"] and "acme" in labels["acme.retract"]
