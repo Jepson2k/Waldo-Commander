@@ -50,6 +50,41 @@ The controller timestamp identifies its snapshot/publication, without claiming
 that every sensor was acquired simultaneously. Tool positions and grasp flags
 retain the backend's reporting semantics; some tools report commanded state.
 
+## Convert to a program
+
+**Convert to program** turns the selected span into an ordinary Python program
+in a new editor tab. The arm holding still is what separates the moves: each
+still span of at least 0.3 s becomes an `rbt.delay`, a gripper position that
+changed in one becomes `rbt.tool.set_position`, and the motion between them
+becomes a single `rbt.move_l` where the tool travelled in a straight line, or
+the joint waypoints that hold its path otherwise, blended so the arm does not
+stop at each one. Each move carries the recorded leg's duration, so the program
+keeps the demonstration's pace as far as the configured limits allow. A hold at
+the start or end of the capture becomes a comment rather than a delay: it is
+when you started and stopped recording, not something the arm was asked to do.
+
+Every motion span is planned in the backend's preview and compared against the
+recorded path before it is written: within 5 mm of tool position, 2° of tool
+orientation, and 2° on every joint. The posture is compared as well as the
+path, because a Cartesian move can trace the same line through a flipped wrist
+and sweep the cell differently. A span that fails both forms becomes a
+`replay_demonstration` call over its sample range, so a converted program can
+be part generated moves and part replayed observations; that needs the span
+saved first, and the panel says so. The result message reports the worst
+deviation and any replayed ranges.
+
+Read the program before running it. Its first statement moves the arm to the
+demonstration's starting position at 10 % speed from wherever the arm is.
+
+```python
+from waldo_commander.demonstrations import load_demonstration, to_program
+
+recording = load_demonstration("demonstration.json")
+conversion = to_program(recording, robot, source_path="demonstration.json")
+print(conversion.summary())
+open("picked.py", "w").write(conversion.source)
+```
+
 ## Replay
 
 ```python

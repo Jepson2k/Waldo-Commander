@@ -45,7 +45,10 @@ application. The controller requires idle motion and a fresh position reference
 when applying attachments.
 
 Allowed contacts are exact names from collision reports: URDF link names,
-`shape:name`, `install:name`, and PAROL6's `tool:name` tool-geometry names.
+`shape:name`, `install:name`, and tool geometry as `tool:KEY:role` — the
+selected tool's key and the part that reported, for example
+`tool:SSG48:moving`. A name the controller does not know is refused with the
+list it does know.
 Only pairs involving the declaring attached shape are exempted. Wildcards,
 unknown partners, self names, duplicates, and more than 32 partners are refused.
 Unrelated robot and fixture collision checks remain active.
