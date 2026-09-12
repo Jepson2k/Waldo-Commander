@@ -26,6 +26,7 @@ nav:
   - Python Skills: guides/skills.md
   - Named Setup: guides/named-setup.md
   - Camera Localization: guides/vision-localization.md
+  - Tray Patterns: guides/tray-patterns.md
   - AI Control (MCP): guides/mcp.md
   - API Reference: guides/api-reference.md
   - Backend Development: guides/backend-development.md

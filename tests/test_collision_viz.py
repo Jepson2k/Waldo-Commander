@@ -763,6 +763,7 @@ async def test_shape_push_honors_ack_contract(monkeypatch, caplog) -> None:
             return self.world
 
     client = _Client()
+    monkeypatch.setattr(sh.ui_state, "robot", waldoctl.commander.robot)
     # Patch the client on the locator-resolved commander instance — NEVER
     # monkeypatch `waldoctl.commander` itself: that materializes a module
     # attribute which permanently shadows the PEP 562 locator on teardown.
@@ -1198,3 +1199,69 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     await asyncio.sleep(0)
     assert all(s.name != "bench" for s in handle.shapes)
     assert "shape:bench" not in scene._shape_objects
+    await _until(
+        lambda: handle.confirmed and handle._pushes_inflight == 0,
+        "deletion was not confirmed by the controller",
+    )
+    world = await waldoctl.commander.client.shapes()
+    assert world is not None and not world.program
+
+
+async def _until(cond, message: str) -> None:
+    import asyncio
+
+    try:
+        async with asyncio.timeout(10):
+            while not cond():
+                await asyncio.sleep(0.05)
+    except TimeoutError as error:
+        raise AssertionError(message) from error
+
+
+@pytest.mark.integration
+async def test_delayed_shape_edit_cannot_overwrite_a_newer_clear(user: User):
+    import asyncio
+    import waldoctl
+    from waldoctl import Box
+
+    await user.open("/")
+    await wait_for_urdf_ready()
+    handle = waldoctl.commander.scene
+    client = waldoctl.commander.client
+    assert handle is not None
+    held, release = asyncio.Event(), asyncio.Event()
+    original = client.set_shapes
+
+    async def delayed(shapes):
+        if shapes and shapes[0].name == "delayed":
+            held.set()
+            await release.wait()
+        return await original(shapes)
+
+    client.set_shapes = delayed
+    try:
+        handle.shapes = [
+            Box(name="delayed", x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
+        ]
+        await asyncio.wait_for(held.wait(), 5)
+        handle.shapes = []
+        # The clear parks on the lock the held edit owns; wait for it to be
+        # there rather than for a fixed time.
+        await _until(
+            lambda: handle._pushes_inflight >= 2,
+            "the overlapping clear never reached the push lock",
+        )
+        release.set()
+        await _until(
+            lambda: handle._pushes_inflight == 0, "shape requests did not drain"
+        )
+        world = await client.shapes()
+        assert world is not None and not world.program, "older edit overwrote the clear"
+    finally:
+        client.set_shapes = original
+        release.set()
+        handle.shapes = []
+        await _until(
+            lambda: handle.confirmed and handle._pushes_inflight == 0,
+            "cleanup did not confirm",
+        )

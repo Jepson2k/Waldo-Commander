@@ -78,6 +78,8 @@ dev = [
 waldo-commander = "waldo_commander.main:main"
 
 [project.entry-points."waldoctl.skills"]
+transfer = "waldo_commander.skills:transfer"
+transfer_with_signal = "waldo_commander.skills:transfer_with_signal"
 locate_board = "waldo_commander.skills:locate_board"
 read_signal = "waldo_commander.skills:read_signal"
 wait_signal = "waldo_commander.skills:wait_signal"
