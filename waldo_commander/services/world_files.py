@@ -89,7 +89,11 @@ def installation_toml(shapes: Iterable[Shape]) -> str:
     the robot TOML."""
     blocks = []
     for s in shapes:
-        kind, params, pose, collision, margin, name, physics = s.to_wire()
+        kind, params, pose, collision, margin, name, physics, attachment = s.to_wire()
+        if attachment is not None:
+            raise ValueError(
+                "detach held geometry before exporting installation configuration"
+            )
         lines = [
             "[[installation_shapes]]",
             f"name = {_toml_value(name)}",

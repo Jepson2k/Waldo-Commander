@@ -6,6 +6,9 @@ For pose grids, transfer helpers, and editable completion notes, see
 For observed motion capture and native waypoint replay, see
 [Demonstration recording](demonstration-recording.md).
 
+For attachment declarations and scoped collision contacts, see
+[Held-object geometry](held-objects.md).
+
 Skills are reusable Python functions. Write one typed async implementation and
 call it from either a synchronous program or an async program. The supplied
 robot client owns the connection and command execution.
@@ -48,6 +51,7 @@ the panel does not read edited Python back into its fields.
 | `park` | Joint-interpolate to a named pose in an explicit `SetupSnapshot`. |
 | `align_tool_axis` | Rotate one tool axis toward a WRF direction while keeping the TCP position. Returns `None` if already aligned. |
 | `gripper_open`, `gripper_close` | Command the selected supported gripper and wait for completion. Native calibration requirements still apply. |
+| `attach_object`, `detach_object` | Declare a program shape attached to the flange or fixed at an explicit world pose; confirm applied geometry without operating the gripper. |
 
 Each motion goes through the backend planner and collision checks. Approach
 does not search for a detour. Gripper command completion does not confirm that

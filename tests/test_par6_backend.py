@@ -584,6 +584,77 @@ async def test_commander_runs_on_the_par6_runtime(
             recording.samples[-1].joints_deg, abs=0.5
         )
 
+        from waldoctl import Sphere
+        from nicegui import run
+        from waldo_commander.skills import attach_object, detach_object
+        from waldo_commander.services.path_visualizer import _run_simulation_isolated
+        from par6.client.dry_run_client import DryRunRobotClient
+
+        original_world = await client.shapes()
+        assert original_world is not None
+        part = Sphere(name="held-part", radius=0.01, pose=(1, 1, 1, 0, 0, 0))
+        assert await client.set_shapes([*original_world.program, part]) == 1
+        held = await attach_object.async_call(
+            client,
+            name="held-part",
+            flange_pose=(0, 0, 0.3, 0, 0, 0),
+        )
+        world = await client.shapes()
+        assert world is not None and world.attachments_valid
+        assert held in world.program
+        await waldoctl.commander.scene.refresh_from_backend()
+        scene = ui_state.urdf_scene
+        assert scene is not None
+        assert (
+            scene._shape_objects["shape:held-part"].parent
+            is scene.joint_groups["gripper_JOINT"]
+        )
+        source = (
+            "from par6 import RobotClient\n"
+            "from waldo_commander.skills import detach_object\n"
+            "with RobotClient() as rbt:\n"
+            "    assert rbt.shapes().attachments_valid\n"
+            "    detach_object(rbt, name='held-part', world_pose=(1, 1, 1, 0, 0, 0))\n"
+            "    assert all(s.attachment is None for s in rbt.shapes().program)\n"
+        )
+        preview = await run.cpu_bound(
+            _run_simulation_isolated,
+            source,
+            np.radians(await client.angles()),
+            backend_package="par6",
+            dry_run_client_cls=DryRunRobotClient,
+            shapes_wire=[s.to_wire() for s in world.program],
+            attachment_epoch=world.attachment_epoch,
+        )
+        assert preview["error"] is None, preview["error"]
+        assert (await client.shapes()).program == world.program
+        await detach_object.async_call(
+            client, name="held-part", world_pose=(1, 1, 1, 0, 0, 0)
+        )
+        assert await client.set_shapes(list(original_world.program)) == 1
+
+        from waldo_commander.services.path_visualizer import PathVisualizer
+
+        await waldoctl.commander.scene.refresh_from_backend()
+        visualizer = PathVisualizer()
+        physics_source = (
+            "from par6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    rbt.delay(0.2)\n"
+        )
+        try:
+            assert await visualizer.update_path_visualization(physics_source) is None
+            program = waldoctl.commander.programs.active
+            assert program is not None
+            program.dry_run.ticks = None
+            assert await visualizer.update_physics_simulation() is None
+            ticks = program.dry_run.ticks
+            assert ticks is not None, "the editor must produce a physics record"
+            assert ticks.rows > 1 and ticks.duration_s >= 0.2
+            assert str(ticks.stop) == "completed"
+        finally:
+            visualizer.cancel_physics()
+
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)

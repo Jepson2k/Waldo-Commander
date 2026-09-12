@@ -126,7 +126,14 @@ class SimulationEngine:
                 if tab is None or not tab.dry_run.path_segments:
                     return
                 playback.update_play_button()
-                await path_visualizer.update_physics_simulation(tab_id=tab_id)
+                error = await path_visualizer.update_physics_simulation(tab_id=tab_id)
+                if error:
+                    line = f"[PHYSICS ERROR] {error}"
+                    tab.log.append(
+                        LogEntry(timestamp=time.time(), stream="stderr", text=line)
+                    )
+                    if tab.id == waldoctl.commander.programs.active_id:
+                        log_panel.push(line)
                 # Playback now has measured poses to replay instead of
                 # interpolated ones, so the cached timeline is stale.
                 playback.invalidate_timeline()

@@ -58,12 +58,14 @@ def _snapshot(scene: Any) -> dict:
     return {
         **world_to_dict(_world(scene)),
         "confirmed": bool(scene.confirmed),
+        "attachment_epoch": scene.attachment_epoch,
+        "attachments_valid": scene.attachments_valid,
         "installation_draft": world_to_dict(draft)["program"],
     }
 
 
 def _parse(entry: Any) -> Shape:
-    """One shape from its wire form — the 7-item list ``Shape.to_wire()``
+    """One shape from its wire form — the 8-item list ``Shape.to_wire()``
     yields, or the same fields as a dict."""
     try:
         if isinstance(entry, dict):
@@ -107,9 +109,12 @@ def _apply(scene: Any, shapes: list[Shape]) -> dict:
 async def get_world() -> dict:
     """The collision world as displayed: installation layer (robot config,
     the floor among its shapes), program layer, and whether the program
-    layer is confirmed by backend readback. Shapes are 7-item wire rows
-    ``[kind, params, pose, collision, margin, name, physics]`` in metres and
-    radians; the same document ``world.import_world`` accepts."""
+    layer is confirmed by backend readback. Shapes are 8-item wire rows
+    ``[kind, params, pose, collision, margin, name, physics, attachment]`` in
+    metres and radians. An attachment is ``[epoch, allowed_contacts]`` or null;
+    its pose is flange-relative. ``attachment_epoch`` is the current context;
+    ``attachments_valid`` reports whether all declarations still match it.
+    Context fields are observations and are never restored from an import."""
     return _snapshot(_scene())
 
 

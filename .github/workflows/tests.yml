@@ -232,12 +232,8 @@ jobs:
           workspaces: par6
           key: par6-e2e
 
-      # par6 provisions its native dependencies one of two ways depending on
-      # the ref this resolved to, and the branch being tested may be either:
-      # `scripts/ffi/setup.sh` writing `.ffi/env.sh`, or pixi, which supplies
-      # the same closure through environment activation and additionally sets
-      # `MUJOCO_DOWNLOAD_DIR` for `mujoco-rs`. Building a pixi tree the old
-      # way fails in `mujoco-rs`'s build script with nowhere to download to.
+      # Branch matching can resolve to either the pixi build or an older
+      # pinned backend using scripts/ffi/setup.sh.
       - name: Detect par6 provisioning
         id: par6-build
         run: |
@@ -273,24 +269,17 @@ jobs:
       # unoptimized RT loop misses its deadlines. Kinematics is not a
       # feature — par6d links the FFI shim unconditionally.
       #
-      # Whichever provisioning ran then publishes its variables to the job,
-      # because two later steps need them from outside this shell: the par6
-      # wheel is a maturin build (it links the shim and downloads libmujoco),
-      # and it is built into WC's own Python environment, not the provisioner's
-      # — so `pixi run pip` would install into the wrong interpreter. par6d
-      # embeds no rpath either, so the spawned runtime needs the library path.
-      # The names follow par6's `[activation.env]` and its `.ffi/env.sh`;
-      # whichever of them is set gets forwarded.
+      # The test process needs the native libraries from the selected build.
       - name: build the shim and par6d
         working-directory: par6
         env:
           PAR6_FORWARD: >-
             PAR6_SHIM_LIB_DIR PAR6_SHIM_INCLUDE_DIR PAR6_MUJOCO_LIB_DIR
-            MUJOCO_DOWNLOAD_DIR LD_LIBRARY_PATH
+            MUJOCO_DOWNLOAD_DIR MUJOCO_DYNAMIC_LINK_DIR LD_LIBRARY_PATH
         run: |
           FWD='for v in $PAR6_FORWARD; do [ -n "${!v:-}" ] && printf "%s=%s\n" "$v" "${!v}"; done; true'
           if [ "${{ steps.par6-build.outputs.pixi }}" = "true" ]; then
-            pixi run setup
+            if [ -f scripts/ffi/setup.sh ]; then pixi run setup; fi
             pixi run cargo build -p par6d --release
             pixi run bash -c "$FWD" >> "$GITHUB_ENV"
           else
@@ -340,13 +329,16 @@ jobs:
           fi
           pip install --no-deps "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@${PAROL6_REF}"
           pip install interpolatepy msgspec numba ormsgpack psutil toppra
-          # The par6 client must be the same tree the binary was built from,
-          # and that tree is already checked out at the branch-matched ref.
-          # It is a maturin package embedding the Rust engine, so the shim
-          # env must be live for the build (and no build isolation, so the
-          # toolchain above is the one that compiles it).
+          # Compile against pixi's native closure while installing into the
+          # interpreter that runs WC's tests.
           pip install "maturin>=1.7,<2" patchelf
-          pip install --force-reinstall --no-deps --no-build-isolation ./par6/python
+          if [ "${{ steps.par6-build.outputs.pixi }}" = "true" ]; then
+            WALDO_TEST_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+            pixi run --manifest-path par6/pixi.toml "$WALDO_TEST_PYTHON" -m pip install \
+              --force-reinstall --no-deps --no-build-isolation ./par6/python
+          else
+            pip install --force-reinstall --no-deps --no-build-isolation ./par6/python
+          fi
 
       # WALDO_PAR6_E2E=1 makes a missing backend or binary a FAILURE inside
       # the test, not a skip — this job must never go green without the e2e

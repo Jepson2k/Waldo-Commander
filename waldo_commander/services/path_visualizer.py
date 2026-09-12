@@ -8,10 +8,12 @@ dry-run in the main process.
 
 import asyncio
 import builtins
+import inspect
 import linecache
 import logging
 import multiprocessing
 import os
+import pickle
 import sys
 import threading
 import traceback
@@ -101,10 +103,11 @@ def _mark_colliding_segments(
     # Unconditional — including the EMPTY set: a reused pool worker keeps its
     # process-global checker between runs, so a cleared world must clear it.
     submit_world = [shape_from_wire(*t) for t in shapes_wire or []]
-    robot.apply_shapes(submit_world)
     tool_key, variant = initial_tool or ("NONE", "")
     try:
+        robot.apply_shapes([])
         robot.set_active_tool(tool_key, variant_key=variant or None)
+        robot.apply_shapes(submit_world)
         # A boundary recorded at segment_index i applies to segments after i.
         # Recorded order IS chronological (indexes are non-decreasing) — a sort
         # would reorder same-index back-to-back entries and replay the wrong
@@ -130,6 +133,7 @@ def _mark_colliding_segments(
                 d["collision_step"] = int(hit)
                 d["color"] = SceneColors.COLLISION_HEX
     finally:
+        robot.apply_shapes([])
         robot.set_active_tool(tool_key, variant_key=variant or None)
         robot.apply_shapes(submit_world)
 
@@ -203,6 +207,7 @@ def _run_simulation_isolated(
     initial_homed: bool = True,
     setup_directory: str | None = None,
     simulate_seconds: float | None = None,
+    attachment_epoch: int = 0,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -211,8 +216,9 @@ def _run_simulation_isolated(
     isolation. It returns serializable results (dicts) rather than modifying
     global state.
 
-    The simulation starts with no tool attached. The script must call
-    select_tool() explicitly to configure the correct tool and variant.
+    The simulation starts with the submitted tool and world snapshot.
+    Valid held declarations are bound to the isolated preview's own context.
+    Stale declarations require reconciliation before preview.
 
     Args:
         program_text: The Python program to simulate
@@ -270,6 +276,35 @@ def _run_simulation_isolated(
 
         _dr_cls: type = dry_run_client_cls
 
+        def seed_world(preview: PathPreviewClient) -> None:
+            from dataclasses import replace
+            from waldoctl import shape_from_wire
+
+            if initial_tool is not None:
+                preview.select_tool(initial_tool[0], variant_key=initial_tool[1])
+            shapes = [shape_from_wire(*t) for t in shapes_wire or []]
+            if not shapes:
+                return
+            context = preview._client.shapes()
+            if context is None:
+                raise ValueError("Preview world readback is unavailable")
+            bound = []
+            for shape in shapes:
+                if shape.attachment is not None:
+                    if shape.attachment.epoch != attachment_epoch:
+                        raise ValueError(
+                            "Attachment context is stale; reconcile the scene before preview"
+                        )
+                    shape = replace(
+                        shape,
+                        attachment=replace(
+                            shape.attachment, epoch=context.attachment_epoch
+                        ),
+                    )
+                bound.append(shape)
+            if preview._client.set_shapes(bound) != 1:
+                raise ValueError("Preview world application was not confirmed")
+
         class LocalPathPreviewClient(PathPreviewClient):
             def __init__(self, *args: Any, **kwargs: Any):
                 super().__init__(
@@ -284,6 +319,7 @@ def _run_simulation_isolated(
                     tool_meta_registry=tool_meta_registry,
                 )
                 created_clients.append(self)
+                seed_world(self)
 
         class LocalAsyncPathPreviewClient(AsyncPathPreviewClient):
             def __init__(self, *args: Any, **kwargs: Any):
@@ -299,6 +335,7 @@ def _run_simulation_isolated(
                     tool_meta_registry=tool_meta_registry,
                 )
                 created_clients.append(self._sync_client)
+                seed_world(self._sync_client)
 
         for module in (backend, getattr(backend, "client", None)):
             if module is None:
@@ -316,13 +353,10 @@ def _run_simulation_isolated(
         # guard. Empty included. Installation shapes come from robot config at
         # backend import and are untouched.
         from waldo_commander.profiles import get_robot
-        from waldoctl import shape_from_wire
 
         _preview_robot = get_robot(backend_package)
         if _preview_robot.has_collision_checking:
-            _preview_robot.apply_shapes(
-                [shape_from_wire(*t) for t in shapes_wire or []]
-            )
+            _preview_robot.apply_shapes([])
 
         # Inserted into sys.modules so `import time` returns this mock. The
         # mock behavior is scoped to the simulating thread: in the thread
@@ -495,12 +529,14 @@ def _run_simulation_isolated(
     # it kept the commands, so nothing is re-executed and no script runs
     # twice. A failure here costs the physics, not the plan.
     ticks = None
+    physics_error = None
     if simulate_seconds is not None and created_clients:
         client = created_clients[-1]
         try:
             ticks = client._client.simulate(simulate_seconds)
             ticks = _label_blocks(ticks, client.command_lines)
         except Exception as e:
+            physics_error = f"{type(e).__name__}: {e}"
             logger.warning("Physics simulation failed: %s", e)
 
     return {
@@ -514,6 +550,7 @@ def _run_simulation_isolated(
         "total_steps": len(local_segments),
         "final_joints_rad": final_state.get("joints_rad"),
         "ticks": ticks,
+        "physics_error": physics_error,
     }
 
 
@@ -684,7 +721,7 @@ class PathVisualizer:
         # Current robot joint angles seed the simulation's initial position.
         initial_joints_rad: np.ndarray | None = None
         if len(waldoctl.commander.status.joints.angles) >= robot.joints.count:
-            initial_joints_rad = waldoctl.commander.status.joints.angles.rad
+            initial_joints_rad = waldoctl.commander.status.joints.angles.rad.copy()
             logger.debug(
                 "Using current robot joints as initial: %s deg",
                 waldoctl.commander.status.joints.angles.deg,
@@ -768,6 +805,7 @@ class PathVisualizer:
             initial_homed,
             str(SetupStore().directory),
             simulate_seconds,
+            scene_handle.attachment_epoch if scene_handle is not None else 0,
         )
 
     async def update_path_visualization(
@@ -868,7 +906,10 @@ class PathVisualizer:
                 target_tab = waldoctl.commander.programs.active
 
             if target_tab:
-                # The physics pass refines exactly this plan, seconds later.
+                previous_args = self._planned_args.get(target_tab.id)
+                same_inputs = pickle.dumps(previous_args) == pickle.dumps(sim_args)
+                # The physics pass refines exactly this plan, seconds later;
+                # a failed plan leaves nothing to refine.
                 if result.get("error"):
                     self._planned_args.pop(target_tab.id, None)
                 else:
@@ -886,9 +927,11 @@ class PathVisualizer:
                 # to avoid unnecessary scrub bar rebuilds and visual flash.
                 # Don't skip when there's an error: the caller needs the error
                 # string to apply diagnostics even if segments are the same.
-                if self._segments_match(
-                    target_tab.dry_run.path_segments, new_segments
-                ) and not result.get("error"):
+                if (
+                    self._segments_match(target_tab.dry_run.path_segments, new_segments)
+                    and not result.get("error")
+                    and same_inputs
+                ):
                     logger.info(
                         "Simulation results unchanged (sim_id=%d), skipping update",
                         sim_id,
@@ -952,7 +995,9 @@ class PathVisualizer:
         planned = self._planned_args.get(tab.id)
         if planned is None:
             return None  # nothing planned to refine
-        args = (*planned[:-1], MAX_SIMULATED_SECONDS)
+        bound = inspect.signature(_run_simulation_isolated).bind(*planned)
+        bound.arguments["simulate_seconds"] = MAX_SIMULATED_SECONDS
+        args = bound.args
 
         tab.dry_run.ticks_pending = True
         try:
@@ -978,7 +1023,7 @@ class PathVisualizer:
         tab.dry_run.ticks_pending = False
         ticks = (result or {}).get("ticks")
         if ticks is None:
-            return (result or {}).get("error")
+            return (result or {}).get("error") or (result or {}).get("physics_error")
         # The backend guarantees the same program gives a bit-identical
         # record, so an equal digest means an identical picture and the
         # scene keeps what it has. This is the flash guard.
