@@ -1,4 +1,14 @@
-"""The camera panel displays a populated calibration without horizontal clipping."""
+"""The camera panel displays a populated calibration without horizontal clipping.
+
+A layout check, in a real browser, of the one state the panel is widest in: a
+solved fixed-mount calibration with its residuals and its saved-data row. The
+solve is the real one (board views rendered through the real detector and
+`solve_hand_eye`) and the save is driven by the panel's own button through the
+real measurement path, so the text being measured is text the panel produces.
+The samples are handed to the panel rather than captured a pose at a time,
+which is the part a browser cannot afford; the capture/solve/save workflow
+itself is covered end to end by `test_handeye_panel_workflow`.
+"""
 
 import json
 

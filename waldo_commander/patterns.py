@@ -22,6 +22,17 @@ class _ExecutionContext(Protocol):
     def skill_capabilities(self) -> frozenset[str]: ...
 
 
+def _number(value: object) -> bool:
+    """A finite real measurement. Typed first: a pattern built from
+    configuration or CSV data arrives as text, and math.isfinite on text
+    raises TypeError where these messages promise a ValueError."""
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+    )
+
+
 def offset_poses(
     origin: Pose, offsets_mm: Iterable[Sequence[float]]
 ) -> tuple[Pose, ...]:
@@ -30,9 +41,7 @@ def offset_poses(
     for offset in offsets_mm:
         if len(poses) >= MAX_CELLS:
             raise ValueError(f"A pattern may contain at most {MAX_CELLS} poses")
-        if len(offset) != 3 or any(
-            isinstance(v, bool) or not math.isfinite(v) for v in offset
-        ):
+        if len(offset) != 3 or any(not _number(v) for v in offset):
             raise ValueError("Offsets require three finite millimeter values")
         poses.append(
             Pose(
@@ -73,11 +82,7 @@ def grid_poses(
         (pitch_y_mm, rows),
         (pitch_z_mm, layers),
     ):
-        if (
-            isinstance(pitch, bool)
-            or not math.isfinite(pitch)
-            or (count > 1 and pitch == 0)
-        ):
+        if not _number(pitch) or (count > 1 and pitch == 0):
             raise ValueError("Pitch must be finite and nonzero for a repeated axis")
     offsets = (
         (column * pitch_x_mm, row * pitch_y_mm, layer * pitch_z_mm)

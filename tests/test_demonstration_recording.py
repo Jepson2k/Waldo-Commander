@@ -23,9 +23,11 @@ from waldo_commander.demonstrations import (
     load_demonstration,
     record_demonstration,
     save_demonstration,
+    to_program,
 )
 from waldo_commander.skills import replay_demonstration
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
+from waldo_commander.state import ui_state
 from waldo_commander.services.stepping_client import (
     AsyncSteppingClientWrapper,
     GUIStepController,
@@ -300,3 +302,170 @@ async def test_gripper_recording_replays_through_managed_pause_and_fault(user: U
         index = await client.select_tool("NONE")
         assert await client.wait_command(index, timeout=5)
         controller.cleanup()
+
+
+@pytest.mark.integration
+async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
+    user: User, tmp_path, monkeypatch
+):
+    """Observed motion becomes an ordinary program: moves where the planner
+    reproduces the recorded path, delays where the arm waited, and a replay
+    call over a span it cannot."""
+    monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    robot = ui_state.active_robot
+
+    first = asyncio.Event()
+    task = asyncio.create_task(
+        record_demonstration(
+            client, duration_s=20, on_sample=lambda sample: first.set()
+        )
+    )
+    try:
+        await asyncio.wait_for(first.wait(), 5)
+        start = await client.angles()
+        assert start is not None
+        # Three legs with a hold between them: a shoulder swing, a lift, and a
+        # return. The holds are what the conversion reads as waypoints.
+        legs = []
+        for axis, delta in ((0, 6.0), (2, -5.0), (0, -6.0)):
+            target = list(start)
+            target[axis] += delta
+            start = target
+            legs.append(target)
+            index = await client.move_j(target, duration=1.0)
+            assert await client.wait_command(index, timeout=10)
+            await asyncio.sleep(0.6)
+        recording = await asyncio.wait_for(task, 25)
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    # Real status streams drop publications under load; convert a measured
+    # continuous span rather than erasing the gaps.
+    boundaries = [
+        0,
+        *(gap.sample_index for gap in recording.gaps),
+        len(recording.samples),
+    ]
+    begin, end = max(
+        zip(boundaries, boundaries[1:]), key=lambda span: span[1] - span[0]
+    )
+    recording = recording.select(begin, end)
+    recording.require_continuous()
+    assert recording.duration_s > 1.0, "need a span with motion in it to convert"
+
+    path = tmp_path / "demonstration.json"
+    save_demonstration(path, recording)
+    conversion = to_program(recording, robot, name="converted", source_path=path)
+    assert not conversion.replayed, conversion.summary()
+    assert conversion.position_error_mm <= 5.0
+    assert conversion.orientation_error_deg <= 2.0
+
+    # Each hold between moves became a delay of its observed length, and the
+    # hold at the end of the capture did not.
+    still = sum(
+        (b.observed_ns - a.observed_ns) / 1e9
+        for a, b in zip(recording.samples, recording.samples[1:])
+        if max(abs(x - y) for x, y in zip(a.joints_deg, b.joints_deg)) <= 0.05
+    )
+    delays = [span for span in conversion.spans if span.kind == "delay"]
+    delayed = sum(span.seconds for span in delays)
+    trailing = max(span.stop for span in delays) == len(recording.samples) - 1
+    assert trailing, (
+        "the capture outlasted the demonstration; its hold is the last span"
+    )
+    assert delayed < still, "the trailing hold is a comment, not a delay"
+    assert "rbt.delay(" in conversion.source
+    assert "before or after the demonstration" in conversion.source
+    moves = [s for s in conversion.spans if s.kind in ("move_j", "move_l")]
+    assert moves, conversion.source
+
+    # The generated program plans through the real preview, and its last
+    # position is where the demonstration ended.
+    preview = await run.cpu_bound(
+        _run_simulation_isolated,
+        conversion.source,
+        np.radians(recording.samples[0].joints_deg),
+        dry_run_client_cls=DryRunRobotClient,
+    )
+    assert preview["error"] is None, preview["error"]
+    assert len(preview["segments"]) >= len(moves)
+    final = preview["segments"][-1]["joints"]
+    assert np.degrees(final) == pytest.approx(recording.samples[-1].joints_deg, abs=0.5)
+
+    # A tolerance the planner cannot meet keeps the observations instead.
+    strict = to_program(
+        recording, robot, name="converted", source_path=path, tolerance_mm=1e-6
+    )
+    assert (
+        strict.replayed
+        and "replay_demonstration(rbt, recording.select(" in strict.source
+    )
+    assert "load_demonstration" in strict.source
+    with pytest.raises(ValueError, match="save the recording"):
+        to_program(recording, robot, name="converted", tolerance_mm=1e-6)
+
+    def element(marker):
+        return next(iter(user.find(marker=marker).elements))
+
+    user.find(marker="tab-demonstrations").click()
+    element("demo-name").set_value("demonstration")
+    user.find(marker="demo-load").click()
+    await user.should_see("Loaded observations")
+    user.find(marker="demo-convert").click()
+    await user.should_see("Converted:", retries=50)
+    program = waldoctl.commander.programs.active
+    assert program is not None and program.filename == "demonstration.py"
+    assert all(
+        line in program.source
+        for span in conversion.spans
+        for line in span.lines
+        if line.startswith("rbt.")
+    ), "the panel converted a different program than the same span converts to"
+
+
+@pytest.mark.integration
+async def test_a_stall_near_the_end_of_a_capture_is_a_disconnect(
+    user: User, monkeypatch
+):
+    """A controller that stops publishing inside the last stale window ended the
+    capture as a clean `duration_limit`, so the file and the panel claimed a
+    complete recording whose final seconds were never observed. Which limit was
+    reached is the clock's answer: how long the wire has been quiet."""
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+
+    live = client.stream_status
+    frames = 44  # ~2.2 s at the suite's 20 Hz status rate
+
+    async def stalls_after_a_while():
+        seen = 0
+        async for status in live():
+            yield status
+            seen += 1
+            if seen >= frames:
+                await asyncio.sleep(60)  # the wire goes quiet, mid-capture
+
+    monkeypatch.setattr(client, "stream_status", stalls_after_a_while)
+    # The silence starts inside the final stale window, so the wait is cut short
+    # by the duration rather than by the stale timeout — the case that used to be
+    # reported as a clean end.
+    recording = await record_demonstration(
+        client, duration_s=3.0, stale_timeout_s=1.0, gap_threshold_s=0.2
+    )
+    assert recording.ended == "disconnected", (
+        f"the capture lost the controller with {3.0 - recording.duration_s:.1f} s "
+        f"left and reported {recording.ended}"
+    )
+    # Every frame the wire delivered was kept: the first is the baseline the
+    # capture compares against rather than a sample of its own.
+    assert len(recording.samples) == frames - 1
