@@ -97,8 +97,13 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
                 await asyncio.sleep(0)
         with scene.scene:
             scene._show_attachment_dialog("part")
-        for axis, value in zip(("x", "y", "z"), (0, 0, 250), strict=True):
+        # The dialog opens with empty position fields; a blank one has to be
+        # named, not reach the operator as a Python type error.
+        for axis, value in zip(("x", "y"), (0, 0), strict=True):
             element(f"attachment-pos-{axis}").set_value(value)
+        user.find(marker="attachment-apply").click()
+        await user.should_see("Fill in Z", retries=20)
+        element("attachment-pos-z").set_value(250)
         element("attachment-contacts").set_value("shape:typo")
         user.find(marker="attachment-apply").click()
         await user.should_see("unknown contact", retries=50)

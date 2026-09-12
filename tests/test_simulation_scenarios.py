@@ -38,7 +38,16 @@ async def test_reusable_cases_report_replay_faults_and_enforce_worker_deadlines(
     endless = replace(
         load_case(fixtures / "idle.json"),
         name="endless",
-        program=f"from pathlib import Path\nPath({str(marker)!r}).touch()\nwhile True:\n    pass\n",
+        # The program records the pid it is spinning in, so the deadline can be
+        # checked for what it has to do: end that process. Touching a file only
+        # proves the program started.
+        program=(
+            "import os\n"
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text(str(os.getpid()))\n"
+            "while True:\n"
+            "    pass\n"
+        ),
         wall_timeout_s=15,
     )
     path = tmp_path / "endless.json"
@@ -50,6 +59,32 @@ async def test_reusable_cases_report_replay_faults_and_enforce_worker_deadlines(
     result = await run_case(loaded)
     assert result["stop"] == "wall_timeout" and not result["passed"], result
     assert marker.exists(), "the deadline must interrupt an executing program"
+    # The timed-out worker is gone, not left spinning: a report is not a
+    # deadline if the process it abandoned keeps burning a core.
+    spinning = int(marker.read_text())
+    for _ in range(100):
+        if not Path(f"/proc/{spinning}").exists():
+            break
+        await asyncio.sleep(0.05)
+    assert not Path(f"/proc/{spinning}").exists(), (
+        f"the worker that exceeded its deadline (pid {spinning}) is still running"
+    )
+    # A tool without variants is selected with an empty variant key, the shape
+    # the preview itself seeds with; demanding one left no case able to choose
+    # its starting tool.
+    with_tool = replace(load_case(fixtures / "idle.json"), initial_tool=("SSG48", ""))
+    assert with_tool.initial_tool == ("SSG48", "")
+    with pytest.raises(ValueError, match="tool key"):
+        replace(load_case(fixtures / "idle.json"), initial_tool=("", ""))
+
+    # An unrun case still reports every field a consumer reads.
+    assert set(result) == set(reports["idle"]), (
+        "a timed-out case reports a different shape than a completed one"
+    )
+    assert (
+        result["rows"] == 0 and result["digest"] == "" and result["duration_s"] == 0.0
+    )
+    assert result["backend_version"] and result["case_sha256"]
     # A killed worker cannot poison the next case.
     assert (await asyncio.wait_for(run_case(load_case(fixtures / "idle.json")), 30))[
         "passed"

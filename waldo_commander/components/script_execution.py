@@ -343,6 +343,11 @@ class ScriptExecutionController:
         """Pause a running script subprocess (no-op if no script is stepping)."""
         async with self._execution_control_lock:
             if self._step_controller:
+                # The subprocess is held first, so no further commands are
+                # issued while the controller's pause is in flight. The caller
+                # is told about an unconfirmed pause only after the hold is
+                # reported, or the play button keeps showing a program that is
+                # in fact held.
                 self._step_controller.signal_pause()
                 if "execution.speed" in waldoctl.commander.client.skill_capabilities:
                     if await waldoctl.commander.client.pause(timeout=3.0) <= 0:

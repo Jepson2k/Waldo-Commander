@@ -24,25 +24,44 @@ from typing import TypeVar, cast
 
 from waldoctl.client import RobotClient
 
-from .path_preview_client import MOTION_METHODS
+from waldoctl.commands import CommandKind, command_table
+
 from .command_records import recorded_method
 from .completion_budget import CompletionBudget, PlanWatchdog, current_budget
 
 R = TypeVar("R")
 
-# Methods that trigger wait_command and stepping: all motion methods plus
-# non-motion commands that queue on the controller.
-STEPPABLE_METHODS = frozenset(MOTION_METHODS) | frozenset(
-    {"home", "tool_action", "delay"}
-)
+_COMMANDS = command_table()
+
+# Commands that queue on the controller and return an index: the ones the
+# wrapper waits on and steps.
+STEPPABLE_METHODS = frozenset(n for n, s in _COMMANDS.items() if s.mints_index)
 
 # Controls that must reach the controller at once: they cancel whatever a
 # pending blend group was waiting for, so they never wait on it first.
-_IMMEDIATE_CONTROLS = frozenset({"stop", "estop"})
-
-_EXECUTION_CONTROLS = frozenset(
-    {"pause", "resume", "stop", "estop", "execution_speed", "set_execution_speed"}
+_IMMEDIATE_CONTROLS = frozenset(
+    n for n, s in _COMMANDS.items() if s.kind is CommandKind.CONTROL and s.cancels
 )
+
+# Controls and their readback: these act on the queue rather than adding to it,
+# so they never wait on a pending blend group.
+_EXECUTION_CONTROLS = frozenset(
+    n
+    for n, s in _COMMANDS.items()
+    if s.kind is CommandKind.CONTROL or n == "execution_speed"
+)
+
+
+#: How long the last ask of an exhausted budget waits: one status frame at the
+#: slowest rate the controller serves. Asking with no time at all cannot
+#: confirm anything, which is the same as not asking.
+_FINAL_ASK_S = 0.1
+
+
+def _ask_for(remaining: float) -> float:
+    """The slice to wait on the controller for, with a budget already spent
+    still getting one real chance to answer."""
+    return min(0.1, remaining) if remaining > 0 else _FINAL_ASK_S
 
 
 def _nonblocking(method: Callable, kwargs: dict) -> tuple[dict, float | None]:
@@ -363,9 +382,14 @@ class SteppingClientWrapper:
         budget = current_budget.get() or CompletionBudget(timeout)
         budget.bind(self._wrapped, self._step_io.active_time)
         watchdog = PlanWatchdog(self._step_io.active_time)
-        while budget.remaining > 0:
+        asked = False
+        while budget.remaining > 0 or not asked:
+            # Always ask at least once: a command the controller finished
+            # inside its budget is complete however late the wrapper gets
+            # around to checking, and reporting it as a timeout stops the arm.
+            asked = True
             if self._wrapped.wait_command(
-                command_index, timeout=min(0.1, budget.remaining)
+                command_index, timeout=_ask_for(budget.remaining)
             ):
                 budget.confirmed_index = command_index
                 return True
@@ -623,9 +647,14 @@ class AsyncSteppingClientWrapper:
         budget = current_budget.get() or CompletionBudget(timeout)
         budget.bind(self._wrapped, self._step_io.active_time)
         watchdog = PlanWatchdog(self._step_io.active_time)
-        while budget.remaining > 0:
+        asked = False
+        while budget.remaining > 0 or not asked:
+            # Always ask at least once: a command the controller finished
+            # inside its budget is complete however late the wrapper gets
+            # around to checking, and reporting it as a timeout stops the arm.
+            asked = True
             if await self._wrapped.wait_command(
-                command_index, timeout=min(0.1, budget.remaining)
+                command_index, timeout=_ask_for(budget.remaining)
             ):
                 budget.confirmed_index = command_index
                 return True
