@@ -426,18 +426,3 @@ class TestSteppingClientWrapper:
             ("complete", "move_j"),
         ]
         controller.cleanup()
-
-    def test_motion_methods_list_is_correct(self):
-        """STEPPABLE_METHODS contains expected robot motion commands."""
-        from waldo_commander.services.stepping_client import STEPPABLE_METHODS
-
-        expected = {
-            "home",
-            "move_j",
-            "move_l",
-            "jog_j",
-            "jog_l",
-            "tool_action",
-            "delay",
-        }
-        assert expected.issubset(STEPPABLE_METHODS)

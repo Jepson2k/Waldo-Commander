@@ -15,6 +15,10 @@ from tests.helpers.wait import (
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
 )
+from waldo_commander.services.completion_budget import (
+    CompletionBudget,
+    current_budget,
+)
 from waldo_commander.services.stepping_client import (
     AsyncSteppingClientWrapper,
     GUIStepController,
@@ -236,6 +240,24 @@ async def test_managed_completion_preserves_remaining_budget_during_pause(user: 
         assert await client.resume() == 1
         controller.signal_play()
         assert await asyncio.wait_for(task, 5) >= 0
+
+        # A command the controller has already finished is complete however
+        # late the wrapper checks it: asking is what decides, not the clock.
+        # Reporting it as a timeout here would stop the arm mid-program.
+        index = await client.delay(0.05)
+        assert index >= 0 and await client.wait_command(index, timeout=3)
+        spent = CompletionBudget(0.2)
+        spent.bind(client, time.monotonic)
+        await asyncio.sleep(0.3)  # the budget runs out before the wrapper looks
+        assert spent.remaining == 0
+        token = current_budget.set(spent)
+        try:
+            assert await managed.wait_command(index, timeout=0.2), (
+                "a finished command was reported as a timeout because the "
+                "budget had run out before the wrapper looked"
+            )
+        finally:
+            current_budget.reset(token)
 
         # The skill budget includes dispatch through the stepping wrapper.
         began = time.monotonic()

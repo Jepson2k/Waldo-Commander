@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import os
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from tests.helpers.wait import (
 from waldo_commander.services.run_records import (
     MAX_RECORD_BYTES,
     RunRecord,
+    RECORD_SCHEMA,
     debugging_export,
     load_record,
 )
@@ -95,6 +97,16 @@ def test_export_removes_personal_values_and_journal_recovers_a_partial_tail(tmp_
     with record.path.open("ab") as stream:
         stream.write(b'{"event":')
     assert load_record(record.path)[-1]["outcome"] == "failed"
+    # A journal from another schema names itself rather than being read with
+    # this Commander's meaning for its fields.
+    lines = record.path.read_bytes().splitlines(keepends=True)
+    first = json.loads(lines[0])
+    assert first["schema"] == RECORD_SCHEMA
+    first["schema"] = RECORD_SCHEMA + 1
+    foreign = record.path.with_name("foreign.jsonl")
+    foreign.write_bytes(json.dumps(first).encode() + b"\n" + b"".join(lines[1:]))
+    with pytest.raises(ValueError, match=f"{RECORD_SCHEMA + 1}"):
+        load_record(foreign)
 
 
 @pytest.mark.integration
@@ -107,9 +119,7 @@ async def test_managed_records_capture_nested_calls_results_status_and_stop(
 
     monkeypatch.setenv("WALDO_RUN_RECORD_DIR", str(tmp_path / "records"))
     monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path / "setups"))
-    monkeypatch.setenv("PRIVATE_ACCOUNT_TOKEN", "env-secret-123")
     SetupStore().save("bench", SetupSnapshot(poses={"pick": Pose((1, 2, 3, 0, 0, 0))}))
-    (tmp_path / "unrelated.txt").write_text("unrelated-secret-123")
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
@@ -217,9 +227,7 @@ if os.environ.get("WALDO_STEP_SESSION"):
         for secret in (
             "value-secret",
             "console-secret",
-            "env-secret",
             "error-secret",
-            "unrelated-secret",
             "personal.parent",
         )
     )

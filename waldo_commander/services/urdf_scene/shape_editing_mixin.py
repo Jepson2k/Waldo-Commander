@@ -492,7 +492,9 @@ class ShapeEditingMixin:
                     .mark("attachment-contacts")
                 )
                 ui.label(
-                    "Examples: tool:finger, shape:fixture. All other collision checks remain active."
+                    "Exact collision-report names, e.g. tool:SSG48:moving "
+                    "(tool:KEY:role), shape:fixture, install:bench, or a link "
+                    "name like L6. All other collision checks remain active."
                 ).classes("text-xs opacity-70")
             feedback = (
                 ui.label().classes("text-sm text-warning").mark("attachment-feedback")
@@ -502,6 +504,19 @@ class ShapeEditingMixin:
                 button.disable()
                 started_at = time.time()
                 try:
+                    blank = [
+                        field._props.get("label", "")
+                        for field in (*pos, *rot)
+                        if field.value is None
+                    ]
+                    if blank:
+                        # float(None) would reach the feedback label as a raw
+                        # Python type error, which tells the operator nothing
+                        # about which box to fill in.
+                        raise ValueError(
+                            f"Fill in {', '.join(blank)} before declaring this "
+                            f"attachment"
+                        )
                     pose = cast(
                         Pose6,
                         tuple(

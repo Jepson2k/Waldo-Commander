@@ -148,8 +148,11 @@ change that inserted snapshot.
 
 `read_signal` returns a logical value, a host receipt timestamp, and its source.
 `wait_signal` returns `matched` or `timeout` with the latest observation and
-elapsed time. Missing replies raise `ConnectionError`; a rejected command or an
-unconfirmed output write raises an error. Controller output readback confirms
+elapsed time; it reads the controller's status broadcast rather than asking for
+I/O, so a level is seen on the tick it is published and there is no poll
+interval to tune. A controller that broadcasts nothing raises `ConnectionError`
+instead of reporting a timeout it could not tell apart from a level that never
+arrived; a rejected command or an unconfirmed output write raises an error. Controller output readback confirms
 the reported electrical level, not that an attached actuator moved or gripped.
 Cancelling a skill requests the backend's existing Stop behavior and prevents
 further commands from that invocation; it does not undo an output write.

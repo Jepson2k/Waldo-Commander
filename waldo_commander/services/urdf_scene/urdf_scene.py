@@ -1674,8 +1674,21 @@ class UrdfScene(
                                 else self._shapes_group
                             )
                             if parent is None:
+                                # A readback can be adopted before the URDF's
+                                # joint groups exist (a reconnect racing the
+                                # model load). Draw the held shape in the world
+                                # group for now rather than abandoning the rest
+                                # of the render: the next render, with the
+                                # flange group in place, reparents it.
+                                logger.warning(
+                                    "No flange group yet for held shape %s; drawing "
+                                    "it in the world group until the model loads",
+                                    s.name,
+                                )
+                                parent = self._shapes_group
+                            if parent is None:
                                 raise ValueError(
-                                    "No flange group is available for held geometry"
+                                    "No shape group is available to draw into"
                                 )
                             with parent:
                                 obj = self._make_shape_object(s)
