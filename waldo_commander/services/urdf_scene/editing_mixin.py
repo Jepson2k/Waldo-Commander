@@ -357,10 +357,13 @@ class EditingMixin(ShapeEditingMixin):
             )
 
         shape_name = self._shape_hit_name(hits)
+        draft_name = self._draft_hit_name(hits)
 
         with self.context_menu:
             if shape_name and not target_id:
                 self._populate_shape_menu(shape_name)
+            elif draft_name and not target_id:
+                self._populate_draft_menu(draft_name)
             elif target_id:
                 target = self._find_target_by_id(target_id)
                 if target:
@@ -404,6 +407,7 @@ class EditingMixin(ShapeEditingMixin):
                 self._populate_shape_add_menu(
                     self._last_click_coords or (0.3, 0.0, 0.0)
                 )
+                self._populate_installation_menu()
 
     def _is_envelope_hit(self, object_name: str) -> bool:
         """Check if object is the workspace envelope."""

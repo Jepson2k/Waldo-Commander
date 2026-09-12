@@ -14,4 +14,5 @@ from waldo_commander.mcp.tools import (  # noqa: F401 — side-effect imports
     settings,
     simulation,
     status,
+    world,
 )

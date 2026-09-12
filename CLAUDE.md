@@ -213,12 +213,19 @@ plus all dev tools (ruff, ty, pytest, pre-commit, selenium).
 
 #### Advanced: editing sibling repos in place
 
-If you also need to edit `waldoctl/` or `PAROL6-python-API/` directly, clone
-them as sibling directories and use this multi-step install:
+If you also need to edit `waldoctl/` or your arm backend directly, clone them
+as sibling directories and use this multi-step install:
 
 ```bash
 pip install -e waldoctl/
+
+# then an editable checkout of the backend you are editing, not both —
+# parol6 and par6 drive different arms. ([dev] below installs parol6 from
+# its pin either way, as the default test backend.)
 pip install -e PAROL6-python-API/ --config-settings editable_mode=compat --no-deps
+#   or
+pip install -e par6/python --no-deps   # after par6/scripts/ffi/setup.sh
+
 pip install -e . --no-deps
 pip install -e ".[dev]"   # final pass picks up the rest of the deps
 ```

@@ -145,6 +145,30 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
             "an unreferenced arm reported itself back-driveable"
         )
 
+        # The physics pass refines the plan the editor adopted: a planned
+        # program yields a tick record, not a permanently pending scrub bar.
+        from waldo_commander.services.path_visualizer import path_visualizer
+
+        program = waldoctl.commander.programs.active
+        assert program is not None
+        assert robot.has_physics_simulation
+        target = [float(v) for v in status.joints.angles.deg]
+        target[0] += 5.0
+        source = (
+            "from par6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    rbt.home()\n"
+            f"    rbt.move_j({target!r}, speed=0.5)\n"
+        )
+        assert (
+            await path_visualizer.update_path_visualization(source, program.id) is None
+        )
+        assert program.dry_run.path_segments, "the planning pass produced no path"
+        assert program.dry_run.ticks_pending
+        assert await path_visualizer.update_physics_simulation(program.id) is None
+        assert program.dry_run.ticks is not None, "the physics pass never ran"
+        assert not program.dry_run.ticks_pending
+
         # Diagnostics off the wire, all of it from the status broadcast:
         # the loop's tail, the drives' readings, and the torque series the
         # chart draws.
