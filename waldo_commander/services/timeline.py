@@ -506,9 +506,21 @@ class Timeline:
         return tuple(a + (b - a) * frac for a, b in zip(k0.positions, k1.positions))
 
     def sample_objects(self, t: float) -> dict[str, ObjectSample]:
-        """Every tracked object's pose at time t: held before its first and
-        after its last keyframe, interpolated between (orientation slerped)."""
+        """Sample recorded physics rows, or interpolate estimated keyframes.
+
+        Nonfinite physics rows mean the object has no free body at that
+        instant; interpolation across its birth or removal would invent one.
+        """
         out: dict[str, ObjectSample] = {}
+        if self._ticks is not None:
+            row = self._ticks.row_at(t)
+            for obj in self._ticks.objects:
+                if len(obj.poses) == 0:
+                    continue
+                pose = obj.poses[min(row, len(obj.poses) - 1)]
+                if all(math.isfinite(v) for v in pose):
+                    out[obj.name] = ObjectSample(tuple(float(v) for v in pose), True)
+            return out
         for name, kf in self.object_keyframes.items():
             if t <= kf[0].time:
                 out[name] = ObjectSample(kf[0].pose, kf[0].physics)

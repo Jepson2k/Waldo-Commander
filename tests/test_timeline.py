@@ -504,3 +504,28 @@ class TestObjectTracks:
     def test_no_tracks_means_no_objects(self):
         tl = Timeline.from_segments([_seg(duration=1.0, joints=[0] * 6)])
         assert tl.sample_objects(0.5) == {}
+
+    def test_physics_objects_follow_recorded_birth_and_removal(self):
+        import numpy as np
+        from waldoctl import ObjectTicks, TickIndex
+
+        positions = np.full((6, 7), np.nan, dtype=np.float32)
+        positions[1] = (0.3, 0, 0.2, *_Q_ID)
+        positions[2] = (0.3, 0, 0.1, *_Q_ID)
+        positions[4] = (0.5, 0, 0.1, *_Q_ID)
+        ticks = TickIndex(
+            row_dt_s=0.1,
+            joints_rad=np.zeros((6, 6), dtype=np.float32),
+            commanded_rad=np.zeros((6, 6), dtype=np.float32),
+            tcp=np.zeros((6, 6), dtype=np.float32),
+            tool_closed=np.zeros(6, dtype=np.float32),
+            tool_gripping=np.zeros(6, dtype=np.bool_),
+            objects=(ObjectTicks("part", positions),),
+        )
+        timeline = Timeline.from_ticks(ticks, [])
+        for time in (0, 0.05, 0.35, 0.55, 2):
+            assert timeline.sample_objects(time) == {}
+        assert timeline.sample_objects(0.15)["part"].pose == pytest.approx(positions[1])
+        assert timeline.sample_objects(0.25)["part"].pose == pytest.approx(positions[2])
+        assert timeline.sample_objects(0.45)["part"].pose == pytest.approx(positions[4])
+        assert timeline.sample_objects(0.15)["part"].physics

@@ -1758,22 +1758,19 @@ class UrdfScene(
         if not self.scene:
             return
         with batch_scene(self.scene):
+            active = {self._object_entry(name)[0] for name in poses or {}}
+            for key, drawn in self._drawn.items():
+                if not drawn.overridden or key in active:
+                    continue
+                was_guess = drawn.guess
+                drawn.overridden, drawn.guess, drawn.placed_pose = False, False, None
+                obj = self._shape_objects.get(key)
+                if obj is None:
+                    continue
+                obj.move(*drawn.declared_pose[0]).rotate_R(drawn.declared_pose[1])
+                if was_guess:
+                    self._paint_shape(obj, key)
             if poses is None:
-                for key, drawn in self._drawn.items():
-                    if not drawn.overridden:
-                        continue
-                    was_guess = drawn.guess
-                    drawn.overridden, drawn.guess, drawn.placed_pose = (
-                        False,
-                        False,
-                        None,
-                    )
-                    obj = self._shape_objects.get(key)
-                    if obj is None:
-                        continue
-                    obj.move(*drawn.declared_pose[0]).rotate_R(drawn.declared_pose[1])
-                    if was_guess:
-                        self._paint_shape(obj, key)
                 return
             for name, sample in poses.items():
                 key, drawn = self._object_entry(name)

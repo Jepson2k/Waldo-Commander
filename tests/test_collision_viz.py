@@ -217,6 +217,13 @@ async def test_playback_moves_world_objects_and_restores_their_declared_pose(
         "a cylinder keeps its Y-up correction while carried"
     )
 
+    # A body leaving the record must not strand its previous override.
+    scene.set_object_poses(
+        {"block": ObjectSample((0.5, 0.1, 0.2, 1.0, 0.0, 0.0, 0.0), physics=False)}
+    )
+    assert can.z == 0.05
+    assert block.z == 0.2 and block.opacity == pytest.approx(SHAPE_OPACITY * 0.5)
+
     scene.set_object_poses(None)
     assert (block.x, block.y, block.z) == (0.3, 0.0, 0.04)
     assert block.opacity == pytest.approx(SHAPE_OPACITY)

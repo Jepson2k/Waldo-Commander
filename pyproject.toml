@@ -75,6 +75,7 @@ dev = [
 ]
 
 [project.scripts]
+waldo-sim-cases = "waldo_commander.services.simulation_scenarios:main"
 waldo-commander = "waldo_commander.main:main"
 
 [project.entry-points."waldoctl.skills"]
