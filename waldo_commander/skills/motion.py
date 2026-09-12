@@ -30,14 +30,14 @@ async def retract(
         raise ValueError("distance_mm must be finite and positive")
     validate_motion(speed, timeout)
     report_progress("Moving along tool Z", fraction=0.0)
-    index = await rbt.move_l(
+    dispatch = rbt.move_l(
         [0.0, 0.0, distance_mm, 0.0, 0.0, 0.0],
         frame="TRF",
         rel=True,
         speed=speed,
         wait=False,
     )
-    await completed(rbt, index, timeout, "Retract")
+    index = await completed(rbt, dispatch, timeout, "Retract")
     report_progress("Retract completed", fraction=1.0)
     return index
 
@@ -66,14 +66,14 @@ async def approach(
     report_progress("Moving to approach clearance", fraction=0.0)
     await completed(
         rbt,
-        await rbt.move_l(Pose.from_matrix(before).as_list(), speed=speed, wait=False),
+        rbt.move_l(Pose.from_matrix(before).as_list(), speed=speed, wait=False),
         timeout,
         "Approach clearance",
     )
     report_progress("Moving to target", fraction=0.5)
     index = await completed(
         rbt,
-        await rbt.move_l(target.as_list(), speed=speed, wait=False),
+        rbt.move_l(target.as_list(), speed=speed, wait=False),
         timeout,
         "Approach target",
     )
@@ -96,7 +96,7 @@ async def park(
     report_progress(f"Moving to {name}", fraction=0.0)
     index = await completed(
         rbt,
-        await rbt.move_j(pose=target.as_list(), speed=speed, wait=False),
+        rbt.move_j(pose=target.as_list(), speed=speed, wait=False),
         timeout,
         "Park",
     )
@@ -153,9 +153,7 @@ async def align_tool_axis(
     report_progress("Aligning tool axis", fraction=0.0)
     index = await completed(
         rbt,
-        await rbt.move_l(
-            Pose.from_matrix(transform).as_list(), speed=speed, wait=False
-        ),
+        rbt.move_l(Pose.from_matrix(transform).as_list(), speed=speed, wait=False),
         timeout,
         "Tool-axis alignment",
     )

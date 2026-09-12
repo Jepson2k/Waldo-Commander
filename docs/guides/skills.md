@@ -97,6 +97,9 @@ literal fields, such as image sources or custom resource objects.
 
 ## Preview, stepping and progress
 
+For controller speed selection and completion timeouts during a managed pause,
+see [Execution speed and pause](execution-controls.md).
+
 Skills pass through the same native planning and stepping wrappers as direct
 commands. Nested motion appears in the preview and advances through the usual
 Step control. The existing program log shows skill lifecycle and progress

@@ -55,13 +55,19 @@ class PlaybackController:
         self._checkpoint_markers: list[ui.element] = []
         self._tool_markers: list[ui.element] = []
         self.speed_fab: ui.fab | None = None
+        self._speed_2x: ui.fab_action | None = None
+        self._speed_tooltip: ui.tooltip | None = None
+        self._speed_query_pending = False
         self._scrub_slider: ui.slider | None = None
         self._sim_loading_progress: ui.element | None = None
         self._sim_timer: ui.timer | None = None
         self._timeline: Timeline | None = None
         self._updating_slider: bool = False
         self._last_tick_time: float = 0.0
-        self._exec_start_time: float = 0.0
+        self._exec_last_time: float = 0.0
+        self._exec_elapsed: float = 0.0
+        self._execution_speed: waldoctl.ExecutionSpeed | None = None
+        self._execution_speed_at: float = 0.0
         self._exec_step_index: int = -1
         self._teleport_task: asyncio.Task | None = None
         self._last_highlighted_index: int = -1
@@ -197,26 +203,29 @@ class PlaybackController:
                     )
                     self._scrub_slider.mark("editor-scrub-slider")
 
-            # Speed FAB (simulator only).
             with (
                 ui.fab(icon="1x_mobiledata", color="amber", direction="up")
                 .props("dense unelevated round size=sm")
-                .tooltip("Playback Speed") as speed_fab
+                .mark("editor-speed") as speed_fab
             ):
                 self.speed_fab = speed_fab
-                speed_fab.visible = waldoctl.commander.status.simulator_active
+                self._speed_tooltip = ui.tooltip("Playback Speed").props(
+                    f'target="#c{speed_fab.id}"'
+                )
                 ui.fab_action(
                     "sym_o_speed_0_5x",
                     on_click=lambda: self._set_speed(0.5),
-                )
+                ).mark("editor-speed-half")
                 ui.fab_action(
                     "1x_mobiledata",
                     on_click=lambda: self._set_speed(1.0),
-                )
-                ui.fab_action(
+                ).mark("editor-speed-normal")
+                self._speed_2x = ui.fab_action(
                     "sym_o_speed_2x",
                     on_click=lambda: self._set_speed(2.0),
-                )
+                ).mark("editor-speed-double")
+            ui.timer(0.5, self._refresh_execution_speed)
+            self.sync_mode()
 
             self.record_btn = ui.button(
                 icon="fiber_manual_record", on_click=self._toggle_recording
@@ -328,22 +337,28 @@ class PlaybackController:
             return waldoctl.commander.programs.get(script_exec.launching_tab_id)
         return waldoctl.commander.programs.active
 
-    def set_script_playing(self, playing: bool) -> None:
+    async def set_script_playing(self, playing: bool) -> None:
         """Pause/resume the running script AND mirror it into the play program's
         playback state + the simulation change channel. Every pause/resume path
         — the GUI play button and the MCP ``execution.pause/resume`` tools —
         must go through here, or the play button desyncs from the subprocess."""
         prog = self._play_program()
         if playing:
-            script_exec.signal_play()
+            await script_exec.signal_play()
             if prog is not None:
                 prog.dry_run.playback.is_playing = True
             logger.debug("Script playing")
         else:
-            script_exec.signal_pause()
-            if prog is not None:
-                prog.dry_run.playback.is_playing = False
-            logger.debug("Script paused")
+            try:
+                await script_exec.signal_pause()
+                logger.debug("Script paused")
+            finally:
+                # The subprocess is held before the controller's pause is
+                # requested, so the button has to show a held program even when
+                # that request goes unconfirmed -- otherwise it offers to pause
+                # a program that is already stopped at its next command.
+                if prog is not None:
+                    prog.dry_run.playback.is_playing = False
         simulation_state.notify_changed()
 
     async def toggle_play(self, *, control_verified: bool = False) -> None:
@@ -358,9 +373,13 @@ class PlaybackController:
         active = waldoctl.commander.programs.active
         if is_any_program_running():
             prog = self._play_program()
-            self.set_script_playing(
-                not (prog is not None and prog.dry_run.playback.is_playing)
-            )
+            playing = not (prog is not None and prog.dry_run.playback.is_playing)
+            if (
+                not playing
+                or control_verified
+                or require_browser_control(ui_state.active_client_id)
+            ):
+                await self.set_script_playing(playing)
         elif waldoctl.commander.status.simulator_active and (
             active is not None and active.dry_run.total_steps > 0
         ):
@@ -382,16 +401,21 @@ class PlaybackController:
         if is_any_program_running():
             prog = self._play_program()
             if prog is not None and not prog.dry_run.playback.is_playing:
-                script_exec.signal_step()
+                if require_browser_control(ui_state.active_client_id):
+                    await script_exec.signal_step()
         elif waldoctl.commander.programs.active is not None and require_browser_control(
             ui_state.active_client_id
         ):
             await script_exec.start(paused=True)
 
-    def step_forward(self) -> None:
+    async def step_forward(self, *, control_verified: bool = False) -> None:
         """Step forward one segment."""
         if is_any_program_running():
-            script_exec.signal_step()
+            if not control_verified and not require_browser_control(
+                ui_state.active_client_id
+            ):
+                return
+            await script_exec.signal_step()
             logger.debug("Step forward signal sent to script")
         else:
             self._step_sim_preview(1)
@@ -422,7 +446,22 @@ class PlaybackController:
             else:
                 self._scrub_slider.props("readonly")
         if self.speed_fab:
-            self.speed_fab.visible = waldoctl.commander.status.simulator_active
+            live = self._uses_live_speed()
+            self.speed_fab.visible = (
+                "execution.speed" in waldoctl.commander.client.skill_capabilities
+                if live
+                else waldoctl.commander.status.simulator_active
+            )
+            if self._speed_2x:
+                self._speed_2x.visible = not live
+            if not live:
+                active = waldoctl.commander.programs.active
+                value = active.dry_run.playback.playback_speed if active else 1.0
+                self.speed_fab.props(
+                    f'icon="{self._SPEED_ICONS.get(value, "1x_mobiledata")}"'
+                )
+                if self._speed_tooltip:
+                    self._speed_tooltip.text = "Preview playback speed"
 
     # ---- Bridge API (called by EditorPanel) ----
 
@@ -542,13 +581,16 @@ class PlaybackController:
             self._pause_sim_playback()
         if active is not None:
             active.dry_run.playback.playback_time = 0.0
+        self.invalidate_timeline()
+        self._execution_speed = None
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
 
     def _handle_step_start(self, step: int) -> None:
         """Script reported segment start: advance UI to segment-start position."""
         self._exec_step_index = step
-        self._exec_start_time = time.monotonic()
+        self._exec_last_time = time.monotonic()
+        self._exec_elapsed = 0.0
         self._ensure_timeline()
         if self._sim_timer:
             self._sim_timer.active = True
@@ -776,14 +818,14 @@ class PlaybackController:
 
     def _ensure_timeline(self) -> Timeline | None:
         """Build or return cached timeline from current path segments."""
-        active = waldoctl.commander.programs.active
+        active = self._play_program()
         if active is None or not active.dry_run.path_segments:
             if self._timeline is not None:
                 self.invalidate_timeline()
             return None
         if self._timeline is None:
             ticks = active.dry_run.ticks
-            if ticks is not None and ticks.rows > 1:
+            if not is_any_program_running() and ticks is not None and ticks.rows > 1:
                 # Play back what the arm did. The planned segments still
                 # supply the line numbers and the checkpoints; the poses,
                 # the timing and the objects come from the record.
@@ -877,8 +919,14 @@ class PlaybackController:
         self._apply_time(t, active=active)
 
     def _script_slider_tick(self) -> None:
-        """Advance slider smoothly during real script execution."""
+        """Estimate progress from confirmed speed until a completion event."""
         assert self._timeline is not None
+        now = time.monotonic()
+        dt = max(0.0, now - self._exec_last_time)
+        self._exec_last_time = now
+        program = self._play_program()
+        if program is None or program.dry_run.playback.executing_step_at_end:
+            return
         step = self._exec_step_index
         times = self._timeline.cumulative_times
         if step < 0 or step >= len(times) - 1:
@@ -887,8 +935,19 @@ class PlaybackController:
         seg_dur = times[step + 1] - seg_start
         if seg_dur <= 0:
             return
-        elapsed = time.monotonic() - self._exec_start_time
-        frac = min(elapsed / seg_dur, 1.0)
+        state = self._execution_speed
+        rate = 1.0
+        if "execution.speed" in waldoctl.commander.client.skill_capabilities:
+            if state is None or now - self._execution_speed_at > 2.0:
+                return
+            motion_duration = self._timeline.segment_durations[step]
+            rate = (
+                state.applied_scale
+                if self._exec_elapsed < motion_duration
+                else float(state.target_scale > 0)
+            )
+        self._exec_elapsed += dt * rate
+        frac = min(self._exec_elapsed / seg_dur, 1.0)
         t = seg_start + frac * seg_dur
         if self._scrub_slider is not None:
             self._set_slider_time(t)
@@ -903,8 +962,68 @@ class PlaybackController:
         2.0: "sym_o_speed_2x",
     }
 
-    def _set_speed(self, value: float) -> None:
-        """Set playback speed and update FAB icon to match."""
+    @staticmethod
+    def _uses_live_speed() -> bool:
+        return (
+            is_any_program_running() or not waldoctl.commander.status.simulator_active
+        )
+
+    async def _refresh_execution_speed(self) -> None:
+        self.sync_mode()
+        if (
+            self._speed_query_pending
+            or not self._uses_live_speed()
+            or "execution.speed" not in waldoctl.commander.client.skill_capabilities
+        ):
+            return
+        self._speed_query_pending = True
+        try:
+            state = await waldoctl.commander.client.execution_speed(timeout=1.0)
+            if not self._uses_live_speed():
+                return
+            if self._timeline is not None and self._exec_step_index >= 0:
+                self._script_slider_tick()
+            self._execution_speed = state
+            self._execution_speed_at = time.monotonic()
+            if self.speed_fab:
+                icon = self._SPEED_ICONS.get(state.resume_scale, "speed")
+                self.speed_fab.props(f'icon="{icon}"')
+            if self._speed_tooltip:
+                prefix = (
+                    "Paused" if state.paused else f"Applied {state.applied_scale:.0%}"
+                )
+                self._speed_tooltip.text = (
+                    f"Execution: {state.resume_scale:.0%} selected · {prefix}"
+                )
+        except (
+            TimeoutError,
+            ConnectionError,
+            RuntimeError,
+            waldoctl.RobotError,
+        ) as exc:
+            logger.debug("Execution speed readback unavailable: %s", exc)
+            self._execution_speed = None
+            if self._speed_tooltip:
+                self._speed_tooltip.text = "Execution speed readback unavailable"
+        finally:
+            self._speed_query_pending = False
+
+    async def _set_speed(self, value: float) -> None:
+        """Set preview timing or request a confirmed backend execution scale."""
+        if self._uses_live_speed():
+            if value > 1:
+                ui.notify("2× is available for preview playback", color="warning")
+                return
+            if not require_browser_control(ui_state.active_client_id):
+                return
+            if (
+                await waldoctl.commander.client.set_execution_speed(value, timeout=3.0)
+                <= 0
+            ):
+                ui.notify("Execution speed change was not confirmed", color="warning")
+                return
+            await self._refresh_execution_speed()
+            return
         active = waldoctl.commander.programs.active
         if active is not None:
             active.dry_run.playback.playback_speed = value

@@ -100,5 +100,5 @@ async def step() -> dict:
     """Step forward one segment (mirrors the GUI step button)."""
     require_actuation("step the timeline forward")
     with _page_client():
-        playback.step_forward()
+        await playback.step_forward(control_verified=True)
     return await get_mode()

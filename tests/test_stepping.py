@@ -10,7 +10,10 @@ These are unit tests for the IPC components.
 
 import json
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 
 # ============================================================================
@@ -277,8 +280,8 @@ class TestSteppingClientWrapper:
 
         result = wrapper.move_j([0, 0, 0, 0, 0, 0])
 
-        mock_client.move_j.assert_called_once_with([0, 0, 0, 0, 0, 0])
-        mock_client.wait_command.assert_called_once_with(42)
+        mock_client.move_j.assert_called_once_with([0, 0, 0, 0, 0, 0], wait=False)
+        mock_client.wait_command.assert_called_once_with(42, timeout=0.1)
         assert result == 42
 
         # Verify events were emitted
@@ -339,7 +342,7 @@ class TestSteppingClientWrapper:
         result = wrapper.move_j([0, 0, 0, 0, 0, 0], r=15, wait=False)
         assert result == 7
         assert mock_client.move_j.call_args.kwargs["r"] == 0.0
-        mock_client.wait_command.assert_called_with(7)
+        mock_client.wait_command.assert_called_with(7, timeout=0.1)
 
         controller.signal_step()
         wrapper.move_j([1, 1, 1, 1, 1, 1], r=15, wait=False)
@@ -364,6 +367,39 @@ class TestSteppingClientWrapper:
             ("complete", "move_j"),
         ]
         assert wrapper._in_blend is False
+
+    @pytest.mark.timeout(30)
+    def test_unbounded_wait_still_ends_when_the_plan_is_empty(
+        self, tmp_path, monkeypatch
+    ):
+        """Without an explicit deadline the wait is sized by the controller's
+        queued motion; a command it reports nothing left to play for, and
+        never completes, times out after the grace period rather than never."""
+        import time
+
+        from waldo_commander.services import completion_budget
+        from waldo_commander.services.stepping_client import (
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr(completion_budget, "PLAN_GRACE_S", 0.3)
+        control_file = tmp_path / ".parol_control_test_grace"
+        control_file.write_text(json.dumps({"paused": False, "step_signal": 0}))
+        client = MagicMock()
+        client.wait_command = MagicMock(return_value=False)
+        client.wait_status = MagicMock(return_value=False)
+        client.error = MagicMock(return_value=None)
+        client.status = MagicMock(
+            return_value=SimpleNamespace(
+                queued_duration=0.0, completed_index=-1, executing_index=-1
+            )
+        )
+        wrapper = SteppingClientWrapper(client, StepIO("test_grace"))
+        started = time.monotonic()
+        assert wrapper.wait_command(5) is False
+        assert time.monotonic() - started < 3.0
 
     def test_stop_reaches_controller_while_a_blend_group_is_pending(
         self, tmp_path, monkeypatch, session_controller

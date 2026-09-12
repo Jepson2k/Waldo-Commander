@@ -47,9 +47,7 @@ async def _transfer(
         clearance[:3, 3] += clearance[:3, 2] * clearance_mm
         return await completed(
             rbt,
-            await rbt.move_l(
-                Pose.from_matrix(clearance).as_list(), speed=speed, wait=False
-            ),
+            rbt.move_l(Pose.from_matrix(clearance).as_list(), speed=speed, wait=False),
             timeout,
             "Transfer withdrawal",
         )

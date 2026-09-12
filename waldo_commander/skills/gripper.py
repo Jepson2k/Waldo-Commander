@@ -27,9 +27,7 @@ async def gripper_open(rbt: RobotClient, *, timeout: float = 10.0) -> int:
     validate_motion(1.0, timeout)
     gripper = _gripper(rbt)
     report_progress("Opening gripper", fraction=0.0)
-    index = await completed(
-        rbt, await gripper.open(wait=False), timeout, "Gripper open"
-    )
+    index = await completed(rbt, gripper.open(wait=False), timeout, "Gripper open")
     report_progress("Open command completed", fraction=1.0)
     return index
 
@@ -40,8 +38,6 @@ async def gripper_close(rbt: RobotClient, *, timeout: float = 10.0) -> int:
     validate_motion(1.0, timeout)
     gripper = _gripper(rbt)
     report_progress("Closing gripper", fraction=0.0)
-    index = await completed(
-        rbt, await gripper.close(wait=False), timeout, "Gripper close"
-    )
+    index = await completed(rbt, gripper.close(wait=False), timeout, "Gripper close")
     report_progress("Close command completed", fraction=1.0)
     return index
