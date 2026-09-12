@@ -186,6 +186,7 @@ def _run_simulation_isolated(
     shapes_wire: list[tuple] | None = None,
     initial_tool: tuple[str, str] | None = None,
     initial_homed: bool = True,
+    setup_directory: str | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -384,7 +385,10 @@ def _run_simulation_isolated(
             # "simulation_script.py" frames during inspection.
             code = compile(program_text, "simulation_script.py", "exec")
 
-            exec(code, sim_globals)
+            from waldo_commander.setup import using_setup_directory
+
+            with using_setup_directory(setup_directory):
+                exec(code, sim_globals)
 
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
@@ -625,6 +629,8 @@ class PathVisualizer:
             # moves until the script homes.
             initial_homed = robot_state.homed
 
+            from waldo_commander.setup import SetupStore
+
             sim_args = (
                 program_text,
                 initial_joints_rad,
@@ -635,6 +641,7 @@ class PathVisualizer:
                 shapes_wire,
                 initial_tool,
                 initial_homed,
+                str(SetupStore().directory),
             )
             # The simulated program always runs in a pool worker, which is
             # discarded afterwards. It mutates process globals — the time

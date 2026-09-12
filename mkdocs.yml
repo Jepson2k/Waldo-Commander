@@ -24,6 +24,7 @@ nav:
   - Home: index.md
   - Writing Programs: guides/writing-programs.md
   - Python Skills: guides/skills.md
+  - Named Setup: guides/named-setup.md
   - AI Control (MCP): guides/mcp.md
   - API Reference: guides/api-reference.md
   - Backend Development: guides/backend-development.md
