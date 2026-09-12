@@ -13,8 +13,9 @@ import asyncio
 import inspect
 import json
 import os
-import shutil
+import logging
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -25,6 +26,7 @@ from waldoctl.client import RobotClient
 
 from waldoctl.commands import CommandKind, command_table
 
+from .command_records import recorded_method
 from .completion_budget import CompletionBudget, PlanWatchdog, current_budget
 
 R = TypeVar("R")
@@ -79,16 +81,18 @@ def _nonblocking(method: Callable, kwargs: dict) -> tuple[dict, float | None]:
 
 
 def _atomic_write(path: Path, data: dict) -> None:
-    """Write data to file atomically using temp file + move."""
-    temp_path = path.with_suffix(".tmp")
+    # Event payloads can contain opted-in recording values. mkstemp makes
+    # them private from creation, before either process sees the new file.
+    descriptor, name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=path.parent
+    )
+    temp_path = Path(name)
     try:
-        temp_path.write_text(json.dumps(data, indent=2))
-        shutil.move(str(temp_path), str(path))
-    except Exception:
-        # Remove the temp file so a failed move leaves no partial artifact.
-        if temp_path.exists():
-            temp_path.unlink()
-        raise
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, indent=2)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _read_control(control_file: Path) -> dict:
@@ -121,6 +125,9 @@ class StepIO:
         self._ack_file = self._temp_dir / f".parol_ack_{session_id}"
         self._step_count = 0
         self._last_step_acked = 0
+        self.capture_values = os.environ.get("WALDO_RECORD_VALUES") == "1"
+        self._event_lock = threading.Lock()
+        self._events = self._read_events()
 
     def active_time(self) -> float:
         control = _read_control(self._control_file)
@@ -174,17 +181,29 @@ class StepIO:
             method: Name of the motion method
             **extra: Additional event data
         """
-        events = self._read_events()
-        events.append(
-            {
-                "event": event_type,
-                "method": method,
-                "step": self._step_count,
-                "ts": time.time(),
-                **extra,
-            }
-        )
-        _atomic_write(self._event_file, {"events": events})
+        with self._event_lock:
+            events = self._events
+            sequence = events[-1].get("sequence", len(events)) + 1 if events else 1
+            events.append(
+                {
+                    "event": event_type,
+                    "method": method,
+                    "step": self._step_count,
+                    "ts": time.time(),
+                    "mono_ns": time.monotonic_ns(),
+                    "active_s": self.active_time(),
+                    "sequence": sequence,
+                    **extra,
+                }
+            )
+            # Keep unpublished events for the next flush if a reader or virus
+            # scanner temporarily prevents replacing the file on Windows.
+            self._events = events[-256:]
+            try:
+                _atomic_write(self._event_file, {"events": self._events})
+            except OSError:
+                # Diagnostics cannot change whether a command executes.
+                logging.getLogger(__name__).exception("Could not record command event")
 
     def check_should_pause(self) -> bool:
         """Check if the script should pause (paused flag is true)."""
@@ -268,7 +287,9 @@ class _SteppingToolProxy:
         if not callable(attr) or name not in _STEPPABLE_TOOL_METHODS:
             return attr
 
-        return self._owner._wrap_motion_method("tool_action", attr)
+        return self._owner._wrap_motion_method(
+            "tool_action", attr, record_name=f"tool.{name}"
+        )
 
 
 class SteppingClientWrapper:
@@ -335,6 +356,29 @@ class SteppingClientWrapper:
         return status
 
     def wait_command(self, command_index: int, timeout: float | None = None) -> bool:
+        try:
+            result = self._wait_command_active(command_index, timeout)
+        except BaseException as error:
+            if self._step_io.capture_values:
+                self._step_io.emit_event(
+                    "command_wait_failed",
+                    "wait_command",
+                    index=command_index,
+                    error_type=type(error).__name__,
+                    message=str(error)[:512],
+                )
+            raise
+        if self._step_io.capture_values:
+            self._step_io.emit_event(
+                "command_completed" if result else "command_unconfirmed",
+                "wait_command",
+                index=command_index,
+            )
+        return result
+
+    def _wait_command_active(
+        self, command_index: int, timeout: float | None = None
+    ) -> bool:
         budget = current_budget.get() or CompletionBudget(timeout)
         budget.bind(self._wrapped, self._step_io.active_time)
         watchdog = PlanWatchdog(self._step_io.active_time)
@@ -435,10 +479,17 @@ class SteppingClientWrapper:
 
         if name not in _EXECUTION_CONTROLS:
             self._flush_blend()
-        return attr
+        return (
+            recorded_method(self._step_io, name, attr)
+            if callable(attr) and not name.startswith("_")
+            else attr
+        )
 
-    def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
+    def _wrap_motion_method(
+        self, name: str, method: Callable, *, record_name: str | None = None
+    ) -> Callable:
         """Create a wrapper function for a motion method."""
+        method = recorded_method(self._step_io, record_name or name, method)
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             kwargs, timeout = _nonblocking(method, kwargs)
@@ -520,7 +571,9 @@ class _AsyncSteppingToolProxy:
         if not callable(attr) or name not in _STEPPABLE_TOOL_METHODS:
             return attr
 
-        return self._owner._wrap_motion_method("tool_action", attr)
+        return self._owner._wrap_motion_method(
+            "tool_action", attr, record_name=f"tool.{name}"
+        )
 
 
 class AsyncSteppingClientWrapper:
@@ -566,6 +619,29 @@ class AsyncSteppingClientWrapper:
         return status
 
     async def wait_command(
+        self, command_index: int, timeout: float | None = None
+    ) -> bool:
+        try:
+            result = await self._wait_command_active(command_index, timeout)
+        except BaseException as error:
+            if self._step_io.capture_values:
+                self._step_io.emit_event(
+                    "command_wait_failed",
+                    "wait_command",
+                    index=command_index,
+                    error_type=type(error).__name__,
+                    message=str(error)[:512],
+                )
+            raise
+        if self._step_io.capture_values:
+            self._step_io.emit_event(
+                "command_completed" if result else "command_unconfirmed",
+                "wait_command",
+                index=command_index,
+            )
+        return result
+
+    async def _wait_command_active(
         self, command_index: int, timeout: float | None = None
     ) -> bool:
         budget = current_budget.get() or CompletionBudget(timeout)
@@ -659,13 +735,17 @@ class AsyncSteppingClientWrapper:
             async def passthrough(*args: Any, **kwargs: Any) -> Any:
                 if name not in _EXECUTION_CONTROLS:
                     await self._flush_blend()
-                return await attr(*args, **kwargs)
+                return await recorded_method(self._step_io, name, attr)(*args, **kwargs)
 
             return passthrough
 
         return attr
 
-    def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
+    def _wrap_motion_method(
+        self, name: str, method: Callable, *, record_name: str | None = None
+    ) -> Callable:
+        method = recorded_method(self._step_io, record_name or name, method)
+
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             kwargs, timeout = _nonblocking(method, kwargs)
             if name == "tool_action" and timeout is None:
@@ -807,20 +887,17 @@ class GUIStepController:
         try:
             data = json.loads(self._event_file.read_text())
             events = data.get("events", [])
-            new_events = events[self._last_event_count :]
-            self._last_event_count = len(events)
+            new_events = [
+                e for e in events if e.get("sequence", 0) > self._last_event_count
+            ]
+            if new_events:
+                missed = new_events[0]["sequence"] - self._last_event_count - 1
+                self._last_event_count = new_events[-1]["sequence"]
+                if missed:
+                    new_events.insert(0, {"event": "events_lost", "count": missed})
             return new_events
         except (json.JSONDecodeError, OSError):
             return []
-
-    def get_step_count(self) -> int:
-        """Get the current step count from events."""
-        try:
-            data = json.loads(self._event_file.read_text())
-            events = data.get("events", [])
-            return sum(1 for e in events if e.get("event") == "complete")
-        except (json.JSONDecodeError, OSError):
-            return 0
 
     def cleanup(self) -> None:
         """Remove IPC files."""

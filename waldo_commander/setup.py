@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+import logging
+from collections.abc import Iterator, Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -18,6 +19,21 @@ from pprint import pformat
 from waldoctl.setup import SetupSnapshot, validate_name
 
 _directory: ContextVar[Path | None] = ContextVar("waldo_setup_directory", default=None)
+_load_observer: ContextVar[Callable[[str, SetupSnapshot], None] | None] = ContextVar(
+    "waldo_setup_load_observer", default=None
+)
+
+
+@contextmanager
+def observe_setup_loads(
+    observer: Callable[[str, SetupSnapshot], None],
+) -> Iterator[None]:
+    """Observe the snapshots this program actually loads, without scanning storage."""
+    token = _load_observer.set(observer)
+    try:
+        yield
+    finally:
+        _load_observer.reset(token)
 
 
 @contextmanager
@@ -57,9 +73,16 @@ class SetupStore:
         return sorted(names)
 
     def load(self, name: str) -> SetupSnapshot:
-        return SetupSnapshot.from_dict(
+        snapshot = SetupSnapshot.from_dict(
             json.loads(self._path(name).read_text(encoding="utf-8"))
         )
+        observer = _load_observer.get()
+        if observer is not None:
+            try:
+                observer(name, snapshot)
+            except Exception:
+                logging.getLogger(__name__).exception("Setup recording observer failed")
+        return snapshot
 
     def save(self, name: str, snapshot: SetupSnapshot) -> None:
         destination = self._path(name)

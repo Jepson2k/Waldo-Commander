@@ -521,6 +521,10 @@ async def test_commander_runs_on_the_par6_runtime(
         assert load_progress(path, places).pending() == (0,)
 
         from waldo_commander.components.script_execution import script_exec
+        from waldo_commander.services.run_records import load_record
+
+        monkeypatch.setenv("WALDO_RUN_RECORD_DIR", str(tmp_path / "run-records"))
+        script_exec.record_runs = True
 
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
@@ -550,6 +554,24 @@ async def test_commander_runs_on_the_par6_runtime(
                         await asyncio.sleep(0.05)
             assert handle["proc"].returncode is None
             await script_exec.stop()
+            assert script_exec.last_record is not None
+            run_events = load_record(script_exec.last_record)
+            assert run_events[-1]["outcome"] == "stopped"
+            assert any(
+                e["event"] == "command_started" and e["arguments"].get("seconds") == 60
+                for e in run_events
+            )
+            assert not any(e["event"] == "command_completed" for e in run_events)
+            assert any(
+                e["event"] == "status"
+                and e["snapshot"]["seq"] > 0
+                and e["snapshot"]["session_id"] > 0
+                for e in run_events
+            )
+            assert any(
+                e["event"] == "controller_context" and e["method"] == "shapes"
+                for e in run_events
+            )
             await poll_until(
                 client.queue_state,
                 lambda q: q is not None and q.executing_index < 0,
