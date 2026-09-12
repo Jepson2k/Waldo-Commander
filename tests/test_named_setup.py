@@ -246,3 +246,69 @@ async def test_pending_frame_edits_are_honoured_by_teach_and_block_frame_removal
     ] == pytest.approx(
         saved.relative_pose(saved.resolve("pick"), "fixture").values[2] + 5.0, abs=0.01
     )
+
+
+@pytest.mark.integration
+async def test_the_panel_keeps_its_lists_and_its_selector_usable_while_switching(
+    user: User, tmp_path, monkeypatch
+):
+    """Switching the edited entry commits the pending one, so the lists have to
+    be rebuilt with it; and a switch refused for an invalid edit must leave the
+    selector usable."""
+    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    await user.open("/")
+    await wait_for_app_ready()
+
+    def element(marker):
+        return next(iter(user.find(marker=marker).elements))
+
+    async def message(text):
+        await user.should_see(content=text)
+
+    user.find(marker="tab-setup").click()
+    element("setup-frame-name").set_value("fixture")
+    element("setup-frame-x").set_value(10.0)
+    user.find(marker="setup-set-frame").click()
+    await message("Frame fixture updated. Save setup to keep it.")
+
+    # A second frame, committed only by switching the selection to the first.
+    element("setup-frame-name").set_value("tray")
+    element("setup-frame-x").set_value(20.0)
+    element("setup-frame-existing").set_value("fixture")
+    await asyncio.sleep(0)
+    assert element("setup-frame-name").value == "fixture"
+    assert "tray" in element("setup-frame-existing").options, (
+        "the frame the switch kept is in the working snapshot, so it is in the list"
+    )
+    assert "tray" in element("setup-frame-parent").options
+    user.find(kind=ui.tab, content="Poses").click()
+    assert "tray" in element("setup-pose-frame").options
+
+    # An invalid pending edit refuses the switch; the selector must still be
+    # able to make that switch once the edit is valid.
+    user.find(kind=ui.tab, content="Frames").click()
+    element("setup-frame-name").set_value("")
+    element("setup-frame-existing").set_value("tray")
+    await message("Keep the current edit valid before switching")
+    assert element("setup-frame-name").value == ""
+    assert element("setup-frame-existing").value == "fixture", (
+        "the refused switch leaves the selector on the entry the fields show"
+    )
+    element("setup-frame-name").set_value("fixture")
+    element("setup-frame-existing").set_value("tray")
+    await asyncio.sleep(0)
+    assert element("setup-frame-name").value == "tray"
+    assert element("setup-frame-x").value == pytest.approx(20.0)
+
+    # A setup written after the panel was built loads and appears in the list.
+    SetupStore(tmp_path).save(
+        "cell", SetupSnapshot(frames={"bench": Frame((1, 2, 3, 0, 0, 0))})
+    )
+    element("setup-name").set_value("cell")
+    user.find(marker="setup-load").click()
+    user.find(content="Discard and load").click()
+    await message("Loaded cell")
+    assert element("setup-saved").value == "cell"
+    assert "cell" in element("setup-saved").options
