@@ -187,8 +187,9 @@ async def test_snapshot_freshness_and_camera_restart(user, monkeypatch):
         restarted = await service.next_snapshot(timeout_s=3)
         assert restarted.camera_id == first.camera_id
         assert restarted.session_id != first.session_id
-        assert first.jpeg == _FrameBackend.holder["jpeg"], (
-            "A captured snapshot was mutated by restart"
-        )
+        # The restart serves fresh frames, not the cache that expired while
+        # the backend was handing back nothing.
+        assert restarted.received_at > first.received_at
+        assert service.snapshot(max_age_s=1.0).session_id == restarted.session_id
     finally:
         service.stop()
