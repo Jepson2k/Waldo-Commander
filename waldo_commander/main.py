@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from importlib.resources import files as pkg_files
 from pathlib import Path
 
-
 import numpy as np
-from nicegui import Client, app as ng_app, background_tasks, ui
-from pinokin import arrays_equal_n
 import waldoctl
+from nicegui import Client, background_tasks, ui
+from nicegui import app as ng_app
+from pinokin import arrays_equal_n
 from waldoctl import (
     Commander,
     FrameJogAvailability,
@@ -32,66 +32,69 @@ from waldoctl import (
 )
 
 from waldo_commander.common.logging_config import (
+    TRACE,
     attach_ui_log,
     configure_logging,
-    TRACE,
 )
 from waldo_commander.common.loop_timer import LoopMetrics, format_hz_summary
 from waldo_commander.common.theme import (
+    PANEL_RESIZE_CONFIG,
+    SceneColors,
     apply_theme,
     inject_layout_css,
     is_dark_theme,
-    PANEL_RESIZE_CONFIG,
-    SceneColors,
 )
 from waldo_commander.components.control import ControlPanel
+from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.components.editor import EditorPanel
 from waldo_commander.components.gripper import GripperPage
 from waldo_commander.components.help_menu import help_menu
 from waldo_commander.components.io import IoPage
 from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
-from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
+from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import adopt_applied_tcp
-from waldo_commander.services.tcp_calibration import read_applied_tcp
-from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
-from waldo_commander.components.diagnostics import DiagnosticsPage
+from waldo_commander.constants import DEFAULT_CAMERA, RESERVED_TAB_IDS, config
+from waldo_commander.mcp import start_mcp_server, stop_mcp_server
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
     warmup_pipelines,
 )
 from waldo_commander.profiles import get_robot
-from waldo_commander.services.camera_service import camera_service
-from waldo_commander.services.path_visualizer import warm_process_pool
-from waldo_commander.services.urdf_scene import (
-    UrdfScene,
-    UrdfSceneConfig,
-    ToolPose,
-    init_angle_buffers,
-    update_urdf_angles,
-)
-from waldo_commander.mcp import start_mcp_server, stop_mcp_server
-from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
+from waldo_commander.services import startup_mode
 from waldo_commander.services.action_log import action_log_service
+from waldo_commander.services.camera_service import (
+    camera_service,
+    register_camera_routes,
+)
 from waldo_commander.services.control_lease import (
     BROWSER,
     browser_claim_if_unheld,
     control_lease,
     restore_control_mode,
 )
+from waldo_commander.services.path_visualizer import warm_process_pool
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
-from waldo_commander.services import startup_mode
+from waldo_commander.services.tcp_calibration import read_applied_tcp
+from waldo_commander.services.urdf_scene import (
+    ToolPose,
+    UrdfScene,
+    UrdfSceneConfig,
+    init_angle_buffers,
+    update_urdf_angles,
+)
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
+from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
 from waldo_commander.state import (
     automation_state,
-    robot_state,
     controller_state,
-    ui_state,
-    readiness_state,
-    playback_coordination,
     global_phase_timer,
+    playback_coordination,
+    readiness_state,
     robot_events,
+    robot_state,
+    ui_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -1278,6 +1281,7 @@ def _register_handlers() -> None:
     Skip registration if NiceGUI is already started (e.g., during test reruns
     when NiceGUI didn't fully reset between tests).
     """
+    register_camera_routes()
     if ng_app.is_started:
         return
 

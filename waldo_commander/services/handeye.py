@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, cast
+from typing import Literal, Any, cast
 
 import cv2
 import numpy as np
@@ -207,13 +207,14 @@ class IntrinsicsResult:
 
 @dataclass
 class HandEyeResult:
-    T_cam2gripper: np.ndarray  # (4, 4) float64, translation mm
+    T_camera_parent: np.ndarray  # camera → TCP (tool) or WRF (fixed), mm
     method: str
     rot_residual_deg: tuple[float, float]  # (mean, max) over motion pairs
     trans_residual_mm: tuple[float, float]
     target_spread_mm: float
     intrinsics: IntrinsicsResult
     n_views: int
+    mount: Literal["tool", "fixed"] = "tool"
 
 
 def _matched_points(
@@ -333,7 +334,17 @@ def solve_hand_eye(
     *,
     method: str = "PARK",
     intrinsics: IntrinsicsResult | None = None,
+    mount: Literal["tool", "fixed"] = "tool",
 ) -> HandEyeResult:
+    if mount not in {"tool", "fixed"}:
+        raise CalibrationError("Camera mount must be tool or fixed")
+    if mount == "fixed":
+        # inv(T_base_tcp) @ T_base_camera @ T_camera_board is the fixed
+        # board-to-TCP transform, so the same AX=XB solve applies.
+        samples = [
+            HandEyeSample(np.linalg.inv(s.T_base_gripper), s.detection, s.timestamp)
+            for s in samples
+        ]
     if method not in HAND_EYE_METHODS:
         raise CalibrationError(f"Unknown hand-eye method {method!r}")
     if len(samples) < MIN_SAMPLES:
@@ -409,7 +420,8 @@ def solve_hand_eye(
     target_spread = float(np.mean(np.std(target_positions, axis=0)))
 
     return HandEyeResult(
-        T_cam2gripper=X,
+        T_camera_parent=X,
+        mount=mount,
         method=method,
         rot_residual_deg=(float(np.mean(rot_errs)), float(np.max(rot_errs))),
         trans_residual_mm=(float(np.mean(trans_errs)), float(np.max(trans_errs))),
@@ -435,6 +447,10 @@ def to_storage_dict(
     tcp_offset: dict[str, float],
     timestamp: str,
 ) -> dict[str, Any]:
+    if result.mount != "tool":
+        raise CalibrationError(
+            "Per-tool hand-eye storage cannot represent a fixed camera"
+        )
     return {
         "version": 1,
         "tool_key": tool_key,
@@ -444,7 +460,7 @@ def to_storage_dict(
         "camera_matrix": result.intrinsics.camera_matrix.ravel().tolist(),
         "dist_coeffs": result.intrinsics.dist_coeffs.ravel().tolist(),
         "reproj_rms_px": result.intrinsics.reproj_rms_px,
-        "T_cam2gripper_mm": result.T_cam2gripper.ravel().tolist(),
+        "T_cam2gripper_mm": result.T_camera_parent.ravel().tolist(),
         "method": result.method,
         "rot_residual_deg": {
             "mean": result.rot_residual_deg[0],
