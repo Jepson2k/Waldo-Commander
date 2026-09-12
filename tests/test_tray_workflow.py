@@ -67,7 +67,6 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
     np.testing.assert_allclose(
         Pose(tuple(await rbt.pose())).matrix(), expected, atol=0.1
     )
-    saved = path.read_bytes()
     run = asyncio.create_task(
         transfer.async_call(
             rbt, pick=pick, place=targets[1], clearance_mm=20, speed=0.001
@@ -83,7 +82,8 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
         assert await rbt.wait_status(
             lambda s: s.action_state == waldoctl.ActionState.IDLE, timeout=3
         )
-        assert path.read_bytes() == saved
+        # The cancelled transfer owns no progress file, so what matters is
+        # that the program's own record still says the cell is pending.
         assert load_progress(path, targets).pending() == (1,)
     finally:
         if not run.done():
@@ -97,6 +97,20 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
             rbt, pick=pick, place=pick, grip=signal, closed_fixture=SignalFixture(True)
         )
     assert await rbt.pose() == pytest.approx(before)
+
+    # A grip output left closed by an earlier cancelled run is refused before
+    # any motion: descending onto the pickup cell with the tool still closed on
+    # a part is a collision.
+    assert await rbt.write_io(signal.index, signal.encode(True)) >= 0
+    assert await rbt.wait_status(lambda s: s.io[2] == 1, timeout=3)
+    with pytest.raises(ValueError, match="already at its closed level"):
+        await transfer_with_signal.async_call(
+            rbt, pick=pick, place=targets[1], grip=signal, clearance_mm=2
+        )
+    assert await rbt.pose() == pytest.approx(before)
+    assert await rbt.write_io(signal.index, signal.encode(False)) >= 0
+    assert await rbt.wait_status(lambda s: s.io[2] == 0, timeout=3)
+
     SetupStore().save(
         "bench",
         SetupSnapshot(
@@ -127,7 +141,6 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
         await user.should_see("Skill completed", retries=300)
         assert script_exec.last_exit_code == 0
         assert (await rbt.io())[2] == 0
-        assert path.read_bytes() == saved, "Run once changed separately owned progress"
     finally:
         if is_any_program_running():
             await script_exec.stop()

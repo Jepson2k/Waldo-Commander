@@ -2076,37 +2076,9 @@ class TestSimulatedRunPlumbing:
 
 
 class TestWorldStateRepair:
-    """Two ways the shape layers could be left in a state no edit escapes,
-    and one way the scene lied about the ground."""
-
-    def test_readback_never_leaves_a_name_in_both_layers(self):
-        """Adopting the backend's world drops a proposal it now enforces.
-
-        Readback is truth and is adopted wholesale, so a program shape
-        arriving under a drafted name would leave both layers holding it —
-        and `_assign`'s clash check then refuses every later edit,
-        including from handlers that do not catch it.
-        """
-        from waldoctl.shapes import Box
-
-        from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
-
-        handle = WcSceneHandle()
-        handle._installation_draft = (Box(name="wall", x=1, y=1, z=1),)
-        handle._shapes = []
-
-        # The backend comes back enforcing `wall` in the program layer.
-        handle._installation = ()
-        handle._shapes = [Box(name="wall", x=1, y=1, z=1)]
-        adopted = {s.name for s in handle._installation}
-        adopted |= {s.name for s in handle._shapes}
-        handle._installation_draft = tuple(
-            s for s in handle._installation_draft if s.name not in adopted
-        )
-
-        assert [s.name for s in handle.installation_draft] == []
-        names = [s.name for s in handle.enforced_locally]
-        assert names.count("wall") == 1, f"one layer only, got {names}"
+    """One way the shape layers could be left in a state no edit escapes, and
+    one way the scene lied about the ground. (Readback adopting a drafted name
+    is driven through the real client in test_collision_viz.py.)"""
 
     def test_a_refused_withdrawal_keeps_the_proposal(self):
         """Withdrawing moves both layers at once.

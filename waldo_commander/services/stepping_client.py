@@ -23,23 +23,30 @@ from typing import TypeVar, cast
 
 from waldoctl.client import RobotClient
 
-from .path_preview_client import MOTION_METHODS
+from waldoctl.commands import CommandKind, command_table
+
 from .completion_budget import CompletionBudget, PlanWatchdog, current_budget
 
 R = TypeVar("R")
 
-# Methods that trigger wait_command and stepping: all motion methods plus
-# non-motion commands that queue on the controller.
-STEPPABLE_METHODS = frozenset(MOTION_METHODS) | frozenset(
-    {"home", "tool_action", "delay"}
-)
+_COMMANDS = command_table()
+
+# Commands that queue on the controller and return an index: the ones the
+# wrapper waits on and steps.
+STEPPABLE_METHODS = frozenset(n for n, s in _COMMANDS.items() if s.mints_index)
 
 # Controls that must reach the controller at once: they cancel whatever a
 # pending blend group was waiting for, so they never wait on it first.
-_IMMEDIATE_CONTROLS = frozenset({"stop", "estop"})
+_IMMEDIATE_CONTROLS = frozenset(
+    n for n, s in _COMMANDS.items() if s.kind is CommandKind.CONTROL and s.cancels
+)
 
+# Controls and their readback: these act on the queue rather than adding to it,
+# so they never wait on a pending blend group.
 _EXECUTION_CONTROLS = frozenset(
-    {"pause", "resume", "stop", "estop", "execution_speed", "set_execution_speed"}
+    n
+    for n, s in _COMMANDS.items()
+    if s.kind is CommandKind.CONTROL or n == "execution_speed"
 )
 
 

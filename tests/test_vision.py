@@ -108,7 +108,7 @@ def test_board_localization_in_world_and_tool_frames():
 
 def test_localization_preview_requires_explicit_observations(tmp_path):
     from parol6.client.dry_run_client import DryRunRobotClient
-    from waldoctl.skills import UnresolvedPreview
+    from waldoctl.skills import MissingCapability, UnresolvedPreview
     from waldo_commander.camera_sources import CommanderCameraSource, ImageFixture
     from waldo_commander.services.path_preview_client import PathPreviewClient
     from waldo_commander.skills import locate_board
@@ -144,3 +144,15 @@ def test_localization_preview_requires_explicit_observations(tmp_path):
     )
     np.testing.assert_allclose(found.pose.matrix()[:3, 3], expected[:3, 3], atol=2)
     assert not preview.segment_collector, "Localization must not create motion"
+
+    # The skill localizes against the backend the client drives, not the one
+    # the calibration names: comparing the calibration against itself made the
+    # recalibrate-after-a-backend-change refusal unreachable.
+    from dataclasses import replace as _replace
+
+    other_backend = _replace(calibration, backend="par6")
+    with pytest.raises(MissingCapability, match="par6"):
+        locate_board(preview, other_backend, fixture, setup)
+    from waldo_commander.skills.vision import _client_backend
+
+    assert _client_backend(preview, "unused") == "parol6"
