@@ -533,6 +533,9 @@ class PlaybackController:
 
     def _handle_script_start_edge(self) -> None:
         """Cancel sim playback and prep the scrub slider for script-driven mode."""
+        if self._teleport_task and not self._teleport_task.done():
+            self._teleport_task.cancel()
+            self._teleport_task = None
         # Tear down any in-progress sim playback before the script takes over.
         active = waldoctl.commander.programs.active
         if active is not None and active.dry_run.playback.is_active:
@@ -571,7 +574,7 @@ class PlaybackController:
         if self._timeline and self._scrub_slider:
             end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
             t = self._timeline.cumulative_times[end_idx]
-            self._scrub_slider.value = t
+            self._set_slider_time(t)
             text = self._format_time(t, self._timeline.total_duration)
             self._scrub_slider.props(f'label-value="{text}"')
 
@@ -585,14 +588,25 @@ class PlaybackController:
             # Snap slider to timeline end so the user sees the final position.
             if self._timeline:
                 t = self._timeline.total_duration
-                self._scrub_slider.value = t
+                self._set_slider_time(t)
                 text = self._format_time(t, t)
                 self._scrub_slider.props(f'label-value="{text}"')
 
     # ---- Scrub / slider ----
 
+    def _set_slider_time(self, t: float) -> None:
+        if self._scrub_slider is None:
+            return
+        self._updating_slider = True
+        try:
+            self._scrub_slider.value = t
+        finally:
+            self._updating_slider = False
+
     def _on_scrub_change(self, e) -> None:
         """Handle scrub slider value change (user interaction only, not programmatic)."""
+        if is_any_program_running():
+            return
         active = waldoctl.commander.programs.active
         is_active = active is not None and active.dry_run.playback.is_active
         if self._timeline and not self._updating_slider and not is_active:
@@ -608,6 +622,8 @@ class PlaybackController:
             update_slider: If False, skip programmatic slider update (caller
                 already has the right value, e.g. during user scrubbing).
         """
+        if is_any_program_running():
+            return
         tl = self._timeline
         if not tl:
             return
@@ -721,9 +737,7 @@ class PlaybackController:
                 # Throttle slider updates to ~10Hz to reduce WebSocket churn
                 if (now - self._last_slider_update) >= 0.09:
                     self._last_slider_update = now
-                    self._updating_slider = True
-                    self._scrub_slider.value = t
-                    self._updating_slider = False
+                    self._set_slider_time(t)
                     text = self._format_time(t, tl.total_duration)
                     self._scrub_slider.props(f'label-value="{text}"')
             elif not update_slider and self._scrub_slider is not None:
@@ -734,6 +748,8 @@ class PlaybackController:
     @staticmethod
     async def _teleport(joints_deg: list[float], tool_pos: list[float] | None) -> None:
         """Send a fire-and-forget teleport to the backend."""
+        if is_any_program_running():
+            return
         try:
             await ui_state.control_panel.client.teleport(
                 joints_deg,
@@ -875,9 +891,7 @@ class PlaybackController:
         frac = min(elapsed / seg_dur, 1.0)
         t = seg_start + frac * seg_dur
         if self._scrub_slider is not None:
-            self._updating_slider = True
-            self._scrub_slider.value = t
-            self._updating_slider = False
+            self._set_slider_time(t)
             text = self._format_time(t, self._timeline.total_duration)
             self._scrub_slider.props(f'label-value="{text}"')
 

@@ -10,10 +10,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from waldoctl.setup import Pose, SetupSnapshot
+from waldoctl.camera import CameraCalibration
 from waldoctl.skills import Skill, discover_skills
 from waldoctl.signals import DigitalSignal
 
 from waldo_commander.skills.signals import SignalFixture
+from waldo_commander.camera_sources import CommanderCameraSource
+from waldo_commander.vision import LocalizationLimits
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,21 @@ def library(capabilities: frozenset[str]) -> tuple[dict[str, SkillEntry], list[s
 
 
 def _literal(value: Any, imports: set[str]) -> str:
+    if isinstance(value, CameraCalibration):
+        imports.add("from waldoctl.camera import CameraCalibration")
+        return f"CameraCalibration.from_dict({value.to_dict()!r})"
+    if isinstance(value, CommanderCameraSource):
+        if value.endpoint is not None or value.token is not None:
+            raise ValueError(
+                "Camera session credentials cannot be exported; use CommanderCameraSource()"
+            )
+        imports.add("from waldo_commander.camera_sources import CommanderCameraSource")
+        return "CommanderCameraSource()"
+    if isinstance(value, LocalizationLimits):
+        from dataclasses import asdict
+
+        imports.add("from waldo_commander.vision import LocalizationLimits")
+        return f"LocalizationLimits(**{asdict(value)!r})"
     if isinstance(value, DigitalSignal):
         imports.add("from waldoctl.signals import DigitalSignal")
         return f"DigitalSignal(**{value.to_dict()!r})"

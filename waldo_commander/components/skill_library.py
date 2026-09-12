@@ -11,12 +11,15 @@ from typing import Any, ClassVar, Literal, get_args, get_origin, get_type_hints
 
 from nicegui import ui
 from waldoctl import Commander, Panel, PanelSlot
+from waldoctl.camera import CameraCalibration
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.signals import DigitalSignal
 from waldoctl.tools import ToolType
 
+from waldo_commander.camera_sources import CommanderCameraSource, FrameSource
 from waldo_commander.services.skill_library import SkillEntry, call_source, library
 from waldo_commander.setup import SetupStore
+from waldo_commander.vision import LocalizationLimits
 
 
 def _label(name: str) -> str:
@@ -309,7 +312,7 @@ class SkillLibraryPanel(Panel):
                 store = SetupStore()
                 names = store.names()
                 needs_setup = any(
-                    t in (Pose, SetupSnapshot, DigitalSignal)
+                    t in (Pose, SetupSnapshot, DigitalSignal, CameraCalibration)
                     for t in annotations.values()
                 )
                 shared_setup = (
@@ -330,7 +333,7 @@ class SkillLibraryPanel(Panel):
                 overrides.classes("col-span-2")
                 overrides.set_visibility(
                     sum(
-                        t in (Pose, SetupSnapshot, DigitalSignal)
+                        t in (Pose, SetupSnapshot, DigitalSignal, CameraCalibration)
                         for t in annotations.values()
                     )
                     > 1
@@ -342,10 +345,21 @@ class SkillLibraryPanel(Panel):
                         if parameter.default is not inspect.Parameter.empty
                         else None
                     )
-                    if annotation in (
+                    if annotation is FrameSource:
+                        ui.label("Uses the active camera.").classes(
+                            "text-caption"
+                        ).mark("skill-camera-source")
+                        readers[name] = CommanderCameraSource
+                    elif annotation == LocalizationLimits | None:
+                        readers[name] = lambda: None
+                        ui.label("Uses default detection limits.").classes(
+                            "text-caption"
+                        )
+                    elif annotation in (
                         Pose,
                         SetupSnapshot,
                         DigitalSignal,
+                        CameraCalibration,
                     ):
                         with override_fields:
                             setup = (
@@ -370,6 +384,7 @@ class SkillLibraryPanel(Panel):
                             resource = {
                                 Pose: "pose",
                                 DigitalSignal: "signal",
+                                CameraCalibration: "camera",
                             }[annotation]
                             pose = (
                                 ui.select([], label=_label(name))
@@ -392,6 +407,8 @@ class SkillLibraryPanel(Panel):
                                     options = list(
                                         snapshot.poses
                                         if kind is Pose
+                                        else snapshot.cameras
+                                        if kind is CameraCalibration
                                         else snapshot.signals
                                     )
                                     pose_widget.set_options(
@@ -419,6 +436,11 @@ class SkillLibraryPanel(Panel):
                                         p.value,
                                     )
                                     if kind is Pose
+                                    else _loaded(
+                                        selected_store,
+                                        s.value or shared_setup.value,
+                                    ).cameras[p.value]
+                                    if kind is CameraCalibration
                                     else _loaded(
                                         selected_store,
                                         s.value or shared_setup.value,

@@ -115,3 +115,8 @@ has stopped. There is no automatic recovery move or restart after power loss.
 Named digital I/O skills (`read_signal`, `wait_signal`, and `write_signal`) use
 saved mappings and typed outcomes. See [Named device signals](named-setup.md#named-device-signals)
 for configuration, Python calls, and explicit preview fixtures.
+
+`locate_board` returns a ChArUco board pose, detection quality, and a typed
+missing/rejected outcome using an explicit camera source. See
+[Camera localization](vision-localization.md) for live acquisition, pure image
+localization, and preview fixtures.

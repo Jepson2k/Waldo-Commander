@@ -228,13 +228,19 @@ class SteppingClientWrapper:
 
         return self._wrapped.run_skill(execute)
 
+    def _wait_completed(self, index: int) -> None:
+        # A wait window expiring says nothing about command completion.
+        while not self._wrapped.wait_command(index):
+            if self._wrapped.status() is None:
+                raise ConnectionError("Controller unavailable while waiting for a step")
+
     def finalize(self) -> None:
         """Barrier for a pending blend group: wait it out, emit completion,
         clear. No pause gate — callers add one where stepping applies."""
         if not self._in_blend:
             return
         if self._last_blend_index >= 0:
-            self._wrapped.wait_command(self._last_blend_index)
+            self._wait_completed(self._last_blend_index)
         self._in_blend = False
         self._last_blend_index = -1
         self._step_io.emit_event("complete", "blend_group")
@@ -315,7 +321,7 @@ class SteppingClientWrapper:
                     self._in_blend = True
                 result = method(*args, **{**kwargs, "r": 0.0})
                 if isinstance(result, int) and result >= 0:
-                    self._wrapped.wait_command(result)
+                    self._wait_completed(result)
                 if self._step_io.check_should_pause():
                     self._step_io.wait_for_step_or_play()
                 return result
@@ -339,7 +345,7 @@ class SteppingClientWrapper:
             result = method(*args, **kwargs)
 
             if isinstance(result, int) and result >= 0:
-                self._wrapped.wait_command(result)
+                self._wait_completed(result)
 
             self._step_io.emit_event("complete", name)
             self._step_io.increment_step_count()
@@ -393,13 +399,18 @@ class AsyncSteppingClientWrapper:
         self._in_blend = False
         self._last_blend_index: int = -1
 
+    async def _wait_completed(self, index: int) -> None:
+        while not await self._wrapped.wait_command(index):
+            if await self._wrapped.status() is None:
+                raise ConnectionError("Controller unavailable while waiting for a step")
+
     async def finalize(self) -> None:
         """Barrier for a pending blend group: wait it out, emit completion,
         clear. No pause gate — callers add one where stepping applies."""
         if not self._in_blend:
             return
         if self._last_blend_index >= 0:
-            await self._wrapped.wait_command(self._last_blend_index)
+            await self._wait_completed(self._last_blend_index)
         self._in_blend = False
         self._last_blend_index = -1
         self._step_io.emit_event("complete", "blend_group")
@@ -473,7 +484,7 @@ class AsyncSteppingClientWrapper:
                     self._in_blend = True
                 result = await method(*args, **{**kwargs, "r": 0.0})
                 if isinstance(result, int) and result >= 0:
-                    await self._wrapped.wait_command(result)
+                    await self._wait_completed(result)
                 if self._step_io.check_should_pause():
                     await self._step_io.wait_for_step_or_play_async()
                 return result
@@ -492,7 +503,7 @@ class AsyncSteppingClientWrapper:
             self._step_io.emit_event("start", name)
             result = await method(*args, **kwargs)
             if isinstance(result, int) and result >= 0:
-                await self._wrapped.wait_command(result)
+                await self._wait_completed(result)
             self._step_io.emit_event("complete", name)
             self._step_io.increment_step_count()
 

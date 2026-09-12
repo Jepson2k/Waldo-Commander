@@ -6,7 +6,9 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Callable, TypedDict
+from typing import Callable, NotRequired, TypedDict
+
+from waldo_commander.services.camera_session import CameraSession
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,8 @@ class ScriptProcessHandle(TypedDict):
     stdout_task: asyncio.Task
     stderr_task: asyncio.Task
     start_ts: float
+    camera_session: NotRequired[CameraSession]
+    camera_cleanup: NotRequired[asyncio.Task]
 
 
 async def _stream_output(
@@ -82,6 +86,8 @@ async def run_script(
         raise FileNotFoundError(f"Python executable not found: {python_exe}")
 
     env = {**os.environ, **cfg.get("env", {})}
+    env.pop("WALDO_CAMERA_ENDPOINT", None)
+    env.pop("WALDO_CAMERA_TOKEN", None)
     from waldo_commander.setup import SetupStore
 
     env.setdefault("WALDO_SETUP_DIR", str(SetupStore().directory))
@@ -116,7 +122,23 @@ async def run_script(
     if sys.platform != "win32":
         kwargs["start_new_session"] = True
 
-    proc = await asyncio.create_subprocess_exec(*exec_args, **kwargs)
+    from waldo_commander.services.camera_service import camera_service
+
+    camera_session = CameraSession(camera_service.next_snapshot)
+    env.update(await camera_session.start())
+    try:
+        proc = await asyncio.create_subprocess_exec(*exec_args, **kwargs)
+    except BaseException:
+        await camera_session.close()
+        raise
+
+    async def close_camera_on_exit() -> None:
+        try:
+            await proc.wait()
+        finally:
+            await camera_session.close()
+
+    camera_cleanup = asyncio.create_task(close_camera_on_exit())
 
     if proc.stdout:
         stdout_task = asyncio.create_task(_stream_output(proc.stdout, on_stdout))
@@ -133,6 +155,8 @@ async def run_script(
         "stdout_task": stdout_task,
         "stderr_task": stderr_task,
         "start_ts": time.time(),
+        "camera_session": camera_session,
+        "camera_cleanup": camera_cleanup,
     }
 
     logger.info("Started script process: %s (PID: %s)", cfg["filename"], proc.pid)
@@ -148,6 +172,8 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
         timeout: Seconds to wait for graceful termination before force kill
     """
     proc = handle["proc"]
+    if camera_session := handle.get("camera_session"):
+        await camera_session.close()
 
     if proc.returncode is not None:
         logger.debug("Script process already terminated (code: %s)", proc.returncode)
