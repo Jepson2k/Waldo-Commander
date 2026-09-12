@@ -1,8 +1,9 @@
 """World files: the object library on disk and the installation TOML export.
 
-A library entry *is* a world file — ``waldoctl.world``'s JSON schema, one
-file per entry under the program directory — so the same codec serves a
-saved world, a library object and the MCP import/export tools. The
+A library entry is a Python module under ``programs/worlds/`` holding one
+``ShapeWorld`` literal in ``waldoctl.world``'s dict schema, so a saved world
+is copied, diffed and imported like the program that uses it, and the same
+codec serves the MCP import/export tools. The
 installation export renders shapes as the backend's ``[[installation_shapes]]``
 TOML, the form a robot config declares them in, because installation
 authoring is config authoring: the GUI and MCP draft it, the config enforces it.
@@ -11,22 +12,31 @@ authoring is config authoring: the GUI and MCP draft it, the config enforces it.
 from __future__ import annotations
 
 import json
+import keyword
+import logging
 import os
 import re
 from collections.abc import Iterable
 from pathlib import Path
+from pprint import pformat
 
 from waldoctl.shapes import Shape, ShapeWorld
 from waldoctl.world import world_from_dict, world_to_dict
 
 from waldo_commander.constants import default_program_dir
 
+logger = logging.getLogger(__name__)
+
 _ENTRY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def library_dir() -> Path:
-    """Where library entries live: beside the programs, in ``world_library/``."""
-    return default_program_dir() / "world_library"
+    """Where library entries live: beside the programs, in ``worlds/``.
+
+    An entry is a Python module holding one ``ShapeWorld`` literal, so a
+    saved world is copied, diffed and imported like the program that uses it.
+    """
+    return default_program_dir() / "worlds"
 
 
 def _entry_path(name: str) -> Path:
@@ -34,27 +44,42 @@ def _entry_path(name: str) -> Path:
         raise ValueError(
             f"library entry name {name!r} must be letters, digits, '_', '-' or '.'"
         )
-    return library_dir() / f"{name}.json"
+    return library_dir() / f"{name}.py"
 
 
 def list_entries() -> list[str]:
     root = library_dir()
     if not root.is_dir():
         return []
-    return sorted(p.stem for p in root.glob("*.json"))
+    _convert_legacy_json(root)
+    return sorted(p.stem for p in root.glob("*.py") if _ENTRY_NAME.match(p.stem))
+
+
+def world_module(world: ShapeWorld, *, variable: str = "world") -> str:
+    """Ordinary Python holding the world's shapes, without storage I/O."""
+    if not variable.isidentifier() or keyword.iskeyword(variable):
+        raise ValueError("World variable must be a Python identifier")
+    return (
+        "from waldoctl.world import world_from_dict\n\n"
+        f"{variable} = world_from_dict({pformat(world_to_dict(world), sort_dicts=True)})\n"
+    )
 
 
 def save_entry(name: str, world: ShapeWorld) -> Path:
     """Write a library entry, replacing any previous one atomically.
 
     Through a temp file and `os.replace` so an interrupted write cannot
-    leave a truncated entry behind: the library is the user's own saved
-    work, and a half-written world reads back as a parse failure.
+    leave a truncated module behind: the library is the user's own saved
+    work, and a half-written world reads back as an import failure.
     """
     path = _entry_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(json.dumps(world_to_dict(world), indent=2), encoding="utf-8")
+    tmp.write_text(
+        f'"""World library entry {name!r}, written by Commander; edit freely."""\n\n'
+        + world_module(world),
+        encoding="utf-8",
+    )
     os.replace(tmp, path)
     return path
 
@@ -62,8 +87,24 @@ def save_entry(name: str, world: ShapeWorld) -> Path:
 def load_entry(name: str) -> ShapeWorld:
     path = _entry_path(name)
     if not path.is_file():
+        _convert_legacy_json(library_dir())
+    if not path.is_file():
         raise FileNotFoundError(f"no library entry {name!r} in {path.parent}")
-    return world_from_dict(json.loads(path.read_text(encoding="utf-8")))
+    # Compiled from source, never through the bytecode cache: it is keyed on
+    # mtime and size, so a same-second re-save could read back stale shapes.
+    namespace: dict[str, object] = {"__name__": f"worlds.{name}", "__file__": str(path)}
+    try:
+        exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), namespace)
+    except Exception as error:
+        raise ValueError(
+            f"world module {path.name} failed to import: {error}"
+        ) from error
+    world = namespace.get("world")
+    if not isinstance(world, ShapeWorld):
+        raise ValueError(
+            f"world module {path.name} must define `world = ...` as a ShapeWorld"
+        )
+    return world
 
 
 def delete_entry(name: str) -> None:
@@ -71,6 +112,25 @@ def delete_entry(name: str) -> None:
     if not path.is_file():
         raise FileNotFoundError(f"no library entry {name!r} in {path.parent}")
     path.unlink()
+
+
+def _convert_legacy_json(root: Path) -> None:
+    """A `.json` entry from an earlier release becomes its `.py` twin; the JSON
+    goes once the module is on disk, so deleting the entry later does not
+    resurrect it."""
+    for legacy in root.glob("*.json"):
+        target = legacy.with_suffix(".py")
+        if target.exists() or not _ENTRY_NAME.match(legacy.stem):
+            continue
+        try:
+            world = world_from_dict(json.loads(legacy.read_text(encoding="utf-8")))
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            logger.warning(
+                "Legacy world entry %s not converted: %s", legacy.name, error
+            )
+            continue
+        save_entry(legacy.stem, world)
+        legacy.unlink()
 
 
 def _toml_value(value: object) -> str:

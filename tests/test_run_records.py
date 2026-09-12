@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,15 +21,15 @@ from tests.helpers.wait import (
 from waldo_commander.services.run_records import (
     MAX_RECORD_BYTES,
     RunRecord,
-    debugging_export,
     RECORD_SCHEMA,
+    debugging_export,
     load_record,
 )
 from waldo_commander.services.stepping_client import GUIStepController, StepIO
 from waldo_commander.setup import SetupStore
 
 
-def test_event_backlog_is_bounded_and_reports_gaps_without_losing_latest_step():
+def test_every_command_event_reaches_the_record_with_its_step():
     controller = GUIStepController(uuid4().hex)
     controller.initialize()
     io = StepIO(controller.session_id)
@@ -36,15 +37,16 @@ def test_event_backlog_is_bounded_and_reports_gaps_without_losing_latest_step():
         for _ in range(300):
             io.emit_event("complete", "delay")
             io.increment_step_count()
-        events = controller.poll_events()
-        assert len(events) <= 257
-        assert events[0]["event"] == "events_lost"
-        assert events[0]["count"] == 44
-        assert events[-1]["step"] == 299
-        assert controller.poll_events() == []
         io.emit_event("start", "move_j")
-        assert controller.poll_events()[0]["step"] == 300
-        assert len(json.loads(io._event_file.read_text())["events"]) == 256
+        deadline = time.monotonic() + 5.0
+        events = []
+        while len(events) < 301 and time.monotonic() < deadline:
+            events.extend(controller.poll_events())
+            time.sleep(0.01)
+        assert len(events) == 301, "no event window, no loss"
+        assert [e["step"] for e in events[:300]] == list(range(300))
+        assert events[-1]["event"] == "start" and events[-1]["step"] == 300
+        assert controller.poll_events() == []
     finally:
         controller.cleanup()
 
@@ -261,32 +263,27 @@ if os.environ.get("WALDO_STEP_SESSION"):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX file permission requirement")
-def test_recording_ipc_is_private_before_and_after_replacement(tmp_path, monkeypatch):
-    import tempfile
-
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+def test_recorded_values_travel_only_over_the_owners_link(tmp_path, monkeypatch):
     monkeypatch.setenv("WALDO_RECORD_VALUES", "1")
     controller = GUIStepController(uuid4().hex)
-    for name in ("rename", "replace"):
-        original = getattr(os, name)
-
-        def private_replace(source, destination, *args, _original=original, **kwargs):
-            assert Path(source).stat().st_mode & 0o077 == 0, (
-                "IPC temporary file exposes recorded values"
-            )
-            return _original(source, destination, *args, **kwargs)
-
-        monkeypatch.setattr(os, name, private_replace)
     try:
         controller.initialize()
+        if os.name == "posix":
+            # Recorded values travel over a socket only its owner can open.
+            from waldo_commander.services.stepping_client import _step_address
+
+            assert (
+                Path(_step_address(controller.session_id)).stat().st_mode & 0o077 == 0
+            )
         io = StepIO(controller.session_id)
         io.emit_event("command_started", "move_j", arguments={"label": "private-value"})
-        events = controller.poll_events()
-        assert events[-1]["arguments"]["label"] == "private-value"
-        assert io._event_file.stat().st_mode & 0o077 == 0
-        io._event_file.chmod(0o644)
         io.emit_event("command_completed", "move_j", result="private-result")
-        assert io._event_file.stat().st_mode & 0o077 == 0
-        assert controller.poll_events()[-1]["result"] == "private-result"
+        deadline = time.monotonic() + 2.0
+        events = []
+        while len(events) < 2 and time.monotonic() < deadline:
+            events.extend(controller.poll_events())
+            time.sleep(0.01)
+        assert events[0]["arguments"]["label"] == "private-value"
+        assert events[1]["result"] == "private-result"
     finally:
         controller.cleanup()

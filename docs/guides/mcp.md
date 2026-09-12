@@ -95,7 +95,7 @@ physics]` in metres and radians — or as dicts with the same fields.
 | `world.get` / `world.export` | the world document: installation layer (the floor is one of its shapes), program layer, whether the program layer is confirmed by readback, and the installation proposal |
 | `world.set_shapes`, `world.add_shape`, `world.update_shape`, `world.remove_shape` | edit the program layer (the installation layer is the robot config's and read-only here) |
 | `world.import_world` | apply a world document's program layer; reports whether its installation entries match the live one |
-| `world.library_list` / `library_save` / `library_load` / `library_delete` | the object library — world documents saved beside the programs |
+| `world.library_list` / `library_save` / `library_load` / `library_delete` | the object library — `ShapeWorld` Python modules in `programs/worlds/` |
 | `world.place_object` | drop a one-shape library entry into the layer under a new name and pose, physics intact |
 | `world.propose_installation` / `world.discard_installation_draft` | move program shapes into the installation proposal, or drop them from it |
 | `world.export_installation_toml` | the proposal (or the program layer) as the robot config's `[[installation_shapes]]` TOML |

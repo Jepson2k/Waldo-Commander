@@ -522,6 +522,10 @@ async def test_commander_runs_on_the_par6_runtime(
 
         from waldo_commander.components.script_execution import script_exec
         from waldo_commander.services.run_records import load_record
+        from waldo_commander.services.supervised_restart import (
+            fresh_state,
+            source_digest,
+        )
 
         monkeypatch.setenv("WALDO_RUN_RECORD_DIR", str(tmp_path / "run-records"))
         script_exec.record_runs = True
@@ -529,8 +533,14 @@ async def test_commander_runs_on_the_par6_runtime(
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
         ui_state.active_textarea.value = (
-            "from par6 import RobotClient\nwith RobotClient() as rbt:\n"
-            "    index = rbt.delay(60)\n    rbt.wait_command(index, timeout=90)\n"
+            "from par6 import RobotClient\n"
+            "from waldoctl.restart import restart_entry\n"
+            "@restart_entry\ndef after_stop():\n"
+            "    with RobotClient() as rbt:\n"
+            "        rbt.delay(0.01)\n"
+            "if __name__ == '__main__':\n"
+            "    with RobotClient() as rbt:\n"
+            "        index = rbt.delay(60)\n        rbt.wait_command(index, timeout=90)\n"
         )
         try:
             await script_exec.start()
@@ -582,6 +592,25 @@ async def test_commander_runs_on_the_par6_runtime(
             assert await client.wait_command(index, timeout=3), (
                 "Stop must clear the previous program's native queue"
             )
+            for _ in range(6):
+                reference = await fresh_state(client)
+                assert await script_exec.start(
+                    restart_entry="after_stop",
+                    restart_reference=reference,
+                    reviewed_source_digest=source_digest(
+                        ui_state.active_textarea.value
+                    ),
+                )
+                async with asyncio.timeout(15):
+                    while script_exec.script_handle is not None:
+                        await asyncio.sleep(0.05)
+                assert script_exec.last_exit_code == 0, "\n".join(
+                    entry.text for entry in program.log.entries
+                )
+                assert any(
+                    e["event"] == "entry_returned" and e["method"] == "after_stop"
+                    for e in load_record(script_exec.last_record)
+                )
         finally:
             if script_exec.script_handle is not None:
                 await script_exec.stop()
@@ -627,6 +656,9 @@ async def test_commander_runs_on_the_par6_runtime(
         await waldoctl.commander.scene.refresh_from_backend()
         scene = ui_state.urdf_scene
         assert scene is not None
+        async with asyncio.timeout(3):
+            while "shape:held-part" not in scene._shape_objects:
+                await asyncio.sleep(0.01)
         assert (
             scene._shape_objects["shape:held-part"].parent
             is scene.joint_groups["gripper_JOINT"]
