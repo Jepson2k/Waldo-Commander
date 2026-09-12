@@ -53,6 +53,8 @@ from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
+from waldo_commander.components.settings import adopt_applied_tcp
+from waldo_commander.services.tcp_calibration import read_applied_tcp
 from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
 from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.numba_pipelines import (
@@ -273,10 +275,15 @@ async def initialize_urdf_scene() -> None:
 
     # Align TCP and load tool mesh from the controller's active tool.
     try:
-        result = await client.tools()
-        if result and result.tool:
-            vk = ng_app.storage.general.get(f"tool_variant_{result.tool}")
-            ui_state.urdf_scene.apply_tool_everywhere(result.tool, variant_key=vk)
+        if robot.has_tcp_transform:
+            adopt_applied_tcp(await read_applied_tcp(client))
+        else:
+            result = await client.tools()
+            if result and result.tool:
+                vk = ng_app.storage.general.get(f"tool_variant_{result.tool}")
+                ui_state.urdf_scene.apply_tool_everywhere(result.tool, variant_key=vk)
+    except (ValueError, TimeoutError, OSError) as e:
+        logger.debug("TCP scene initialization deferred: %s", e)
     except Exception as e:
         logger.error("Failed to sync TCP tool pose: %s", e)
 
@@ -307,14 +314,8 @@ async def initialize_urdf_scene() -> None:
 
     readiness_state.signal_urdf_scene_ready()
 
-    # Settings page may have built before the scene was ready.
-    stored_tool = ng_app.storage.general.get("selected_tool")
-    if stored_tool and stored_tool != "NONE" and ui_state.urdf_scene:
-        vk = ng_app.storage.general.get(f"tool_variant_{stored_tool}")
-        ui_state.urdf_scene.apply_tool_everywhere(stored_tool, variant_key=vk)
-    else:
-        # Gizmo sync needs fresh FK even without a tool change.
-        ui_state.urdf_scene.invalidate_fk_cache()
+    # A new scene needs fresh FK even when the controller tool is unchanged.
+    ui_state.urdf_scene.invalidate_fk_cache()
 
     # Generate the workspace hull with the correct tool offset (after tool applied).
     if not os.environ.get("WALDO_SKIP_ENVELOPE") and not workspace_envelope.is_ready:
@@ -566,8 +567,9 @@ def update_ui_from_status() -> None:
     # readouts that bind through a backward function.
     ts = robot_state.tool_status
     pub_tool = waldoctl.commander.status.tool
-    tool_key_changed = ts.key != pub_tool.key
+    tool_key_changed = ts.key != pub_tool.key or ts.variant_key != pub_tool.variant_key
     pub_tool.key = ts.key
+    pub_tool.variant_key = ts.variant_key
     pub_tool.positions = ts.positions
     pub_tool.engaged = ts.engaged
     pub_tool.part_detected = ts.part_detected

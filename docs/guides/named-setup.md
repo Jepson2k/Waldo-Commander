@@ -51,3 +51,46 @@ Commander passes its directory to launched scripts and isolated previews.
 Files use a versioned JSON format and atomic replacement. Corrupt or
 unsupported snapshots fail explicitly. Loading or saving setup issues no
 motion and does not apply robot configuration.
+
+## TCP position calibration and orientation teaching
+
+In **Setup → TCP**, keep the same physical tip touching one stationary point and
+capture at least four poses with varied wrist orientations. Each capture reads
+the referenced, stationary arm and removes any existing user TCP correction.
+**Solve position** estimates the tip translation and reports RMS and maximum
+sample error. A single orientation or inconsistent captures are rejected.
+The position solve leaves the displayed orientation unchanged.
+
+To teach orientation, align the physical tool with the axes of WRF or a named
+setup frame, select those reference axes, and choose **Teach orientation**.
+This changes only roll/pitch/yaw. Both operations use millimetres and intrinsic
+XYZ degrees relative to the registered tool. You can also enter all six values
+manually after **Read applied** identifies the active tool.
+
+**Set calibration** adds the displayed values to the working setup; **Save**
+persists them. Saved entries show measurement provenance and their tool/variant
+binding. Saving does not configure the robot or edit the program. **Apply to
+controller** explicitly queues the displayed transform, waits for completion,
+and checks readback before updating the scene. A different tool or variant is
+refused. A disconnected capture session discards its unsaved samples.
+
+Programs apply saved data explicitly:
+
+```python
+from parol6 import RobotClient  # or: from par6 import RobotClient
+from waldo_commander.setup import load_setup
+
+calibration = load_setup("bench").tcp_calibrations["tip"]
+with RobotClient() as rbt:
+    # Select the matching physical tool and variant before applying its data.
+    index = rbt.set_tcp_transform(*calibration.values)
+    if not rbt.wait_command(index):
+        raise RuntimeError("TCP application was not confirmed")
+    applied = rbt.tcp_transform()
+```
+
+The legacy XYZ setter remains available and clears user rotation. Changing the
+tool/variant or resetting the controller clears the applied correction. Native
+FK, preview and motion share the correction; collision meshes remain attached
+to the physical tool links. A calibrated tip does not replace the tool's
+physical geometry model.

@@ -1143,7 +1143,7 @@ class HandEyeCalibrationPanel(Panel):
             snapshot = info["tcp_offset_snapshot"]
             if any(
                 abs(float(current_offset.get(k, 0)) - float(snapshot.get(k, 0))) > 1e-9
-                for k in ("x", "y", "z")
+                for k in ("x", "y", "z", "roll", "pitch", "yaw")
             ):
                 ui.label(
                     "TCP offset changed since this calibration was saved — "

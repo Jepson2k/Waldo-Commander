@@ -556,6 +556,7 @@ async def test_translation_frame_toggle_changes_jog_frame(
 
     user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
+    next(iter(user.find(marker="settings-category").elements)).set_value("Jog")
     frame_select = next(iter(user.find(marker="select-translation-frame").elements))
     user.find(marker="tab-cartesian").click()
     await asyncio.sleep(0)
@@ -672,6 +673,8 @@ async def test_jog_arrow_inversion_flips_button_direction_and_label(user: User) 
 
     user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
+    next(iter(user.find(marker="settings-category").elements)).set_value("Jog")
+    next(iter(user.find(marker="settings-jog-advanced").elements)).set_value(True)
     invert_switch = next(iter(user.find(marker="switch-invert-x").elements))
     try:
         invert_switch.set_value(True)
