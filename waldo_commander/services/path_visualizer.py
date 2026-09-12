@@ -27,6 +27,7 @@ from nicegui import app as ng_app
 
 import waldoctl
 from waldoctl import LinearMotion, TickIndex
+from waldoctl.skills import UnresolvedPreview
 
 from waldo_commander.state import (
     robot_state,
@@ -244,6 +245,7 @@ def _run_simulation_isolated(
     final_state: dict[str, Any] = {"joints_rad": None}
     truncated = False
     error_message: str | None = None
+    unresolved = False
 
     import importlib
 
@@ -424,6 +426,9 @@ def _run_simulation_isolated(
             with using_setup_directory(setup_directory):
                 exec(code, sim_globals)
 
+        except UnresolvedPreview as e:
+            unresolved = True
+            error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
@@ -505,6 +510,7 @@ def _run_simulation_isolated(
         "tool_selections": local_tool_selections,
         "truncated": truncated,
         "error": error_message,
+        "unresolved": unresolved,
         "total_steps": len(local_segments),
         "final_joints_rad": final_state.get("joints_rad"),
         "ticks": ticks,
@@ -838,9 +844,8 @@ class PathVisualizer:
                 return "Simulation returned no result"
 
             if result.get("error"):
-                logger.error(
-                    "Simulation error (sim_id=%d): %s", sim_id, result["error"]
-                )
+                report = logger.warning if result.get("unresolved") else logger.error
+                report("Simulation error (sim_id=%d): %s", sim_id, result["error"])
 
             if result.get("truncated"):
                 logger.warning(

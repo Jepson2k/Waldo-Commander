@@ -12,6 +12,7 @@ from typing import Any, ClassVar, Literal, get_args, get_origin, get_type_hints
 from nicegui import ui
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.setup import Pose, SetupSnapshot
+from waldoctl.signals import DigitalSignal
 from waldoctl.tools import ToolType
 
 from waldo_commander.services.skill_library import SkillEntry, call_source, library
@@ -308,7 +309,8 @@ class SkillLibraryPanel(Panel):
                 store = SetupStore()
                 names = store.names()
                 needs_setup = any(
-                    t in (Pose, SetupSnapshot) for t in annotations.values()
+                    t in (Pose, SetupSnapshot, DigitalSignal)
+                    for t in annotations.values()
                 )
                 shared_setup = (
                     ui.select(names, label="Setup", value=names[0] if names else None)
@@ -327,7 +329,11 @@ class SkillLibraryPanel(Panel):
                     override_fields = ui.column().classes("w-full gap-2")
                 overrides.classes("col-span-2")
                 overrides.set_visibility(
-                    sum(t in (Pose, SetupSnapshot) for t in annotations.values()) > 1
+                    sum(
+                        t in (Pose, SetupSnapshot, DigitalSignal)
+                        for t in annotations.values()
+                    )
+                    > 1
                 )
                 for name, parameter in candidate.parameters.items():
                     annotation = annotations.get(name, parameter.annotation)
@@ -339,6 +345,7 @@ class SkillLibraryPanel(Panel):
                     if annotation in (
                         Pose,
                         SetupSnapshot,
+                        DigitalSignal,
                     ):
                         with override_fields:
                             setup = (
@@ -362,6 +369,7 @@ class SkillLibraryPanel(Panel):
                         else:
                             resource = {
                                 Pose: "pose",
+                                DigitalSignal: "signal",
                             }[annotation]
                             pose = (
                                 ui.select([], label=_label(name))
@@ -381,7 +389,11 @@ class SkillLibraryPanel(Panel):
                                         selected_store,
                                         setup_widget.value or shared_setup.value,
                                     )
-                                    options = list(snapshot.poses)
+                                    options = list(
+                                        snapshot.poses
+                                        if kind is Pose
+                                        else snapshot.signals
+                                    )
                                     pose_widget.set_options(
                                         options, value=options[0] if options else None
                                     )
@@ -406,6 +418,11 @@ class SkillLibraryPanel(Panel):
                                         ),
                                         p.value,
                                     )
+                                    if kind is Pose
+                                    else _loaded(
+                                        selected_store,
+                                        s.value or shared_setup.value,
+                                    ).signals[p.value]
                                 )
                             )
                             set_poses()

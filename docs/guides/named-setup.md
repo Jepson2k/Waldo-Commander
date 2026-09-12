@@ -94,3 +94,62 @@ tool/variant or resetting the controller clears the applied correction. Native
 FK, preview and motion share the correction; collision meshes remain attached
 to the physical tool links. A calibrated tip does not replace the tool's
 physical geometry model.
+
+## Named device signals
+
+Use **Setup → Signals** to name an existing input or output. Select its bank,
+zero-based channel, and polarity. For example, channel 0 is **OUTPUT 1** in the
+I/O panel. Unchecking **Active high** makes a low electrical level mean `True`.
+**Set mapping** changes the current setup; **Save** persists it. Neither action
+writes an output. **Read** queries the controller; **Write output** writes the
+displayed logical value and waits for the controller to report it.
+
+A mapping records its backend and input/output bank sizes. A loaded mapping
+keeps that binding until **Use current robot** explicitly replaces it. A
+mismatched backend or layout is refused, and the E-stop status bit cannot be
+mapped as an ordinary signal.
+
+```python
+from parol6 import RobotClient  # or: from par6 import RobotClient
+from waldo_commander.setup import load_setup
+from waldo_commander.skills import read_signal, wait_signal, write_signal
+
+setup = load_setup("bench")
+with RobotClient() as rbt:
+    ready = wait_signal(rbt, setup.signals["part_ready"], timeout=5.0)
+    if ready.outcome == "matched":
+        write_signal(rbt, setup.signals["valve"], True, timeout=2.0)
+    else:
+        print("Part did not arrive before the deadline")
+```
+
+Async programs use `await wait_signal.async_call(async_rbt, ...)`, and the same
+pattern for reads and writes. The **Skills** tab can select a saved mapping and
+insert a call containing its fixed values. Editing the setup later does not
+change that inserted snapshot.
+
+`read_signal` returns a logical value, a host receipt timestamp, and its source.
+`wait_signal` returns `matched` or `timeout` with the latest observation and
+elapsed time; it reads the controller's status broadcast rather than asking for
+I/O, so a level is seen on the tick it is published and there is no poll
+interval to tune. A controller that broadcasts nothing raises `ConnectionError`
+instead of reporting a timeout it could not tell apart from a level that never
+arrived; a rejected command or an unconfirmed output write raises an error. Controller output readback confirms
+the reported electrical level, not that an attached actuator moved or gripped.
+Cancelling a skill requests the backend's existing Stop behavior and prevents
+further commands from that invocation; it does not undo an output write.
+
+Preview requires explicit observations:
+
+```python
+from waldo_commander.skills import SignalFixture, wait_signal
+
+result = wait_signal(
+    rbt, setup.signals["part_ready"], timeout=5.0,
+    fixture=SignalFixture(False),
+)
+```
+
+A fixture supplies a constant logical value. If it cannot match the requested
+value, preview advances by the wait duration and takes the timeout branch. No
+fixture means an unresolved preview. Live clients refuse fixtures.

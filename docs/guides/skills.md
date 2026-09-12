@@ -111,3 +111,7 @@ from a cancelled invocation, including nested skills. Cancellation remains
 cooperative Python execution; await child work and keep motion on the supplied
 client. A timeout or an unconfirmed stop is a failure, not proof that motion
 has stopped. There is no automatic recovery move or restart after power loss.
+
+Named digital I/O skills (`read_signal`, `wait_signal`, and `write_signal`) use
+saved mappings and typed outcomes. See [Named device signals](named-setup.md#named-device-signals)
+for configuration, Python calls, and explicit preview fixtures.

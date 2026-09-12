@@ -492,6 +492,9 @@ class SettingsContent:
                 return
             mine = [float(stored.get(k, 0) or 0) for k in TCP_AXES]
             if all(abs(b - m) <= 1e-3 for b, m in zip(back, mine)):
+                # Another page may have updated storage since these inputs
+                # were built. Reconcile the page even when storage agrees.
+                await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
                 return
             never_told = tool_key not in _pushed_offset_tools and not any(
                 abs(b) > 1e-3 for b in back

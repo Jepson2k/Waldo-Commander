@@ -527,6 +527,63 @@ async def test_handeye_auto_calibration(
 
 
 @pytest.mark.integration
+async def test_auto_move_distinguishes_late_completion_from_stop(
+    user: User, monkeypatch
+):
+    """A timed-out poll can return after a newer completion status arrived."""
+    await user.open("/")
+    await wait_for_app_ready()
+    commander = waldoctl.commander
+    client = commander.client
+    assert await client.home(wait=True, timeout=30) >= 0
+    angles = list(await client.angles())
+    target = [*angles[:5], angles[5] - 10]
+    panel = HandEyeCalibrationPanel()
+    wait_command = client.wait_command
+    polls = 0
+    delayed = False
+
+    async def delayed_timeout(index, timeout=10):
+        nonlocal polls, delayed
+        polls += 1
+        done = await wait_command(index, timeout=timeout)
+        if polls == 2 and not done:
+            assert await wait_command(index, timeout=10)
+            await _wait_for(
+                lambda: commander.status.action.state == waldoctl.ActionState.IDLE
+            )
+            delayed = True
+        return done
+
+    monkeypatch.setattr(client, "wait_command", delayed_timeout)
+    try:
+        index = await panel._auto_move(commander, target)
+        assert delayed, "The deadline/completion interleaving was not exercised"
+        assert index >= 0 and not panel._auto_cancel, (
+            "A completed move was mistaken for a Stop"
+        )
+        np.testing.assert_allclose(await client.angles(), target, atol=0.1)
+        saw_running = asyncio.Event()
+
+        async def observed_poll(index, timeout=10):
+            done = await wait_command(index, timeout=timeout)
+            if (
+                not done
+                and commander.status.action.state == waldoctl.ActionState.EXECUTING
+            ):
+                saw_running.set()
+            return done
+
+        monkeypatch.setattr(client, "wait_command", observed_poll)
+        pending = asyncio.create_task(panel._auto_move(commander, angles))
+        await asyncio.wait_for(saw_running.wait(), timeout=5)
+        await client.stop()
+        assert await asyncio.wait_for(pending, timeout=5) < 0
+        assert panel._auto_cancel
+    finally:
+        await client.stop()
+
+
 async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
     """A Stop from anywhere else aborts auto-calibration.
 

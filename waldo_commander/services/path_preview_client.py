@@ -293,6 +293,16 @@ class PathPreviewClient:
             pass  # a backend with no delay command simply loses the wait
         self._attribute_commands(self._get_caller_line_number())
 
+    def delay(self, seconds: float) -> int:
+        """Advance the program clock at a queued delay boundary."""
+        if isinstance(seconds, bool) or not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("Delay must be positive and finite")
+        self._flush_blend()
+        self.record_sleep(seconds)
+        index = len(self._command_results)
+        self._command_results[index] = True
+        return index
+
     def _attribute_commands(self, line_number: int) -> None:
         """Attribute every command recorded since the last call to
         *line_number*.

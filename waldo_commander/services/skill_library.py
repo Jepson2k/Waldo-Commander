@@ -11,6 +11,9 @@ from typing import Any
 
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.skills import Skill, discover_skills
+from waldoctl.signals import DigitalSignal
+
+from waldo_commander.skills.signals import SignalFixture
 
 
 @dataclass(frozen=True)
@@ -38,7 +41,13 @@ def library(capabilities: frozenset[str]) -> tuple[dict[str, SkillEntry], list[s
     return entries, diagnostics
 
 
-def _literal(value: Any) -> str:
+def _literal(value: Any, imports: set[str]) -> str:
+    if isinstance(value, DigitalSignal):
+        imports.add("from waldoctl.signals import DigitalSignal")
+        return f"DigitalSignal(**{value.to_dict()!r})"
+    if isinstance(value, SignalFixture):
+        imports.add("from waldo_commander.skills.signals import SignalFixture")
+        return f"SignalFixture({value.value!r})"
     if isinstance(value, Pose):
         return f"Pose({value.values!r}, frame={value.frame!r})"
     if isinstance(value, SetupSnapshot):
@@ -48,7 +57,7 @@ def _literal(value: Any) -> str:
     if type(value) is float and math.isfinite(value):
         return repr(value)
     if isinstance(value, (list, tuple)):
-        parts = ", ".join(_literal(item) for item in value)
+        parts = ", ".join(_literal(item, imports) for item in value)
         return (
             f"[{parts}]"
             if isinstance(value, list)
@@ -59,7 +68,9 @@ def _literal(value: Any) -> str:
     if isinstance(value, dict) and all(isinstance(key, str) for key in value):
         return (
             "{"
-            + ", ".join(f"{key!r}: {_literal(item)}" for key, item in value.items())
+            + ", ".join(
+                f"{key!r}: {_literal(item, imports)}" for key, item in value.items()
+            )
             + "}"
         )
     raise ValueError(
@@ -90,6 +101,10 @@ def call_source(
         )
     alias = "_skill_" + re.sub(r"[^A-Za-z0-9_]", "_", candidate.spec.id)
     callable_name = ".".join([alias, *parts[1:]])
-    kwargs = ", ".join(f"{name}={_literal(value)}" for name, value in arguments.items())
+    imports = {"from waldoctl.setup import Pose, SetupSnapshot"}
+    kwargs = ", ".join(
+        f"{name}={_literal(value, imports)}" for name, value in arguments.items()
+    )
     call = f"{callable_name}{'.async_call' if async_call else ''}(rbt{', ' if kwargs else ''}{kwargs})"
-    return f"from {module} import {parts[0]} as {alias}\nfrom waldoctl.setup import Pose, SetupSnapshot\n{'await ' if async_call else ''}{call}"
+    prelude = "\n".join(sorted(imports))
+    return f"from {module} import {parts[0]} as {alias}\n{prelude}\n{'await ' if async_call else ''}{call}"
