@@ -1052,6 +1052,9 @@ class PathVisualizer:
         args = bound.args
 
         self._physics_tabs.add(tab.id)
+        # The playback bar shows a pass in flight off this set; tell it now
+        # and again when the pass is over, whichever way it ends.
+        simulation_state.notify_changed()
         try:
             result = await asyncio.wait_for(
                 self._physics.run(_run_simulation_packed, args),
@@ -1070,6 +1073,7 @@ class PathVisualizer:
             return str(e)
         finally:
             self._physics_tabs.discard(tab.id)
+            simulation_state.notify_changed()
 
         predicted: TickIndex | None = (result or {}).get("predicted")
         if predicted is None:
