@@ -86,7 +86,7 @@ async def get_view() -> dict:
         "gizmo_visible": v.gizmo_visible,
         "paths_visible": v.paths_visible,
         "envelope_mode": v.envelope_mode.value,
-        "divergence_visible": v.divergence_visible,
+        "predicted_visible": v.predicted_visible,
         "contacts_visible": v.contacts_visible,
         "com_visible": v.com_visible,
     }
@@ -97,17 +97,18 @@ async def set_view(
     gizmo_visible: bool | None = None,
     paths_visible: bool | None = None,
     envelope_mode: str | None = None,
-    divergence_visible: bool | None = None,
+    predicted_visible: bool | None = None,
     contacts_visible: bool | None = None,
     com_visible: bool | None = None,
 ) -> None:
     """Update one or more view preferences. ``envelope_mode`` accepts
     ``"auto"`` / ``"on"`` / ``"off"``.
 
-    The last three draw what a simulated dry run measured: the achieved
-    path beside the planned one, the contacts the solver resolved, and
-    the scene's centre of mass. They show nothing on a backend that does
-    not simulate."""
+    The last three are the program's playback layers, drawn from the
+    predicted record where it differs from the commanded one: the
+    predicted path beside the commanded one, the contacts the solver
+    resolved, and the scene's centre of mass. Each shows only when the
+    record on screen carries it."""
     v = waldoctl.commander.settings.view
     if gizmo_visible is not None:
         v.gizmo_visible = gizmo_visible
@@ -115,8 +116,8 @@ async def set_view(
         v.paths_visible = paths_visible
     if envelope_mode is not None:
         v.envelope_mode = EnvelopeMode(envelope_mode)
-    if divergence_visible is not None:
-        v.divergence_visible = divergence_visible
+    if predicted_visible is not None:
+        v.predicted_visible = predicted_visible
     if contacts_visible is not None:
         v.contacts_visible = contacts_visible
     if com_visible is not None:

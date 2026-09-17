@@ -72,7 +72,7 @@ def show_run_records() -> None:
                             "label": "Skill / command",
                             "field": "method",
                         },
-                        {"name": "step", "label": "Step", "field": "step"},
+                        {"name": "command", "label": "Command", "field": "command"},
                     ],
                     rows=[],
                     row_key="row",
@@ -122,7 +122,7 @@ def show_run_records() -> None:
                             ),
                             "event": e["event"],
                             "method": e.get("method", ""),
-                            "step": e.get("step", ""),
+                            "command": e.get("command", ""),
                         }
                         for i, e in enumerate(events)
                     ]
@@ -147,7 +147,7 @@ def show_run_records() -> None:
                                 "outcome",
                                 "error",
                                 "message",
-                                "step",
+                                "command",
                                 "fraction",
                                 "stop_confirmed",
                                 "status",

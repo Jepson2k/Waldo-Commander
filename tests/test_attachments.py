@@ -7,7 +7,6 @@ import pytest
 import waldoctl
 from nicegui import run
 from nicegui.testing import User
-from parol6.client.dry_run_client import DryRunRobotClient
 from waldoctl import Sphere
 
 from tests.helpers.wait import (
@@ -50,7 +49,6 @@ async def test_preview_seeds_held_world_and_confirms_explicit_detach(user: User)
         _run_simulation_isolated,
         source,
         np.radians(joints),
-        dry_run_client_cls=DryRunRobotClient,
         shapes_wire=[part.to_wire()],
         initial_tool=("NONE", ""),
         attachment_epoch=world.attachment_epoch,
@@ -61,7 +59,6 @@ async def test_preview_seeds_held_world_and_confirms_explicit_detach(user: User)
         _run_simulation_isolated,
         source,
         np.radians(joints),
-        dry_run_client_cls=DryRunRobotClient,
         shapes_wire=[part.to_wire()],
         attachment_epoch=world.attachment_epoch + 1,
     )

@@ -515,7 +515,7 @@ def reset_editor_singletons(
     try:
         for p in waldoctl.commander.programs.items:
             p.execution.is_running = False
-            p.dry_run.playback.executing_step_index = -1
+            p.dry_run.playback.executing_command = -1
             p.dry_run.playback.executing_step_at_end = False
     except RuntimeError:
         pass
@@ -962,9 +962,8 @@ async def controller_reset(
         ) as client:
             await client.reset_state()
             await client.reset()
-            if "execution.speed" in client.skill_capabilities:
-                assert await client.resume() == 1
-                assert await client.set_execution_speed(1) == 1
+            assert await client.resume() == 1
+            assert await client.set_execution_speed(1) == 1
             # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
             # Use short timeouts since simulator homing is instant
             await client.home(wait=True, timeout=10.0)

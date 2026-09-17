@@ -73,9 +73,8 @@ class TestStepIO:
         try:
             io = StepIO(controller.session_id)
             for i in range(2000):
-                io.emit_event("complete", "delay", index=i)
-                io.increment_step_count()
-            io.emit_event("start", "move_j", extra_data="test")
+                io.emit_event("complete", "delay", command=io.issue(), index=i)
+            io.emit_event("start", "move_j", command=io.issue(), extra_data="test")
             deadline = time.monotonic() + 5.0
             events = []
             while len(events) < 2001 and time.monotonic() < deadline:
@@ -86,7 +85,7 @@ class TestStepIO:
             assert (
                 events[-1]["method"] == "move_j" and events[-1]["extra_data"] == "test"
             )
-            assert events[-1]["step"] == 2000
+            assert events[-1]["command"] == 2000
             assert controller.poll_events() == []
         finally:
             controller.cleanup()

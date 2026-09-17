@@ -29,23 +29,22 @@ from waldo_commander.services.stepping_client import GUIStepController, StepIO
 from waldo_commander.setup import SetupStore
 
 
-def test_every_command_event_reaches_the_record_with_its_step():
+def test_every_command_event_reaches_the_record_with_its_command():
     controller = GUIStepController(uuid4().hex)
     controller.initialize()
     io = StepIO(controller.session_id)
     try:
         for _ in range(300):
-            io.emit_event("complete", "delay")
-            io.increment_step_count()
-        io.emit_event("start", "move_j")
+            io.emit_event("complete", "delay", command=io.issue())
+        io.emit_event("start", "move_j", command=io.issue())
         deadline = time.monotonic() + 5.0
         events = []
         while len(events) < 301 and time.monotonic() < deadline:
             events.extend(controller.poll_events())
             time.sleep(0.01)
         assert len(events) == 301, "no event window, no loss"
-        assert [e["step"] for e in events[:300]] == list(range(300))
-        assert events[-1]["event"] == "start" and events[-1]["step"] == 300
+        assert [e["command"] for e in events[:300]] == list(range(300))
+        assert events[-1]["event"] == "start" and events[-1]["command"] == 300
         assert controller.poll_events() == []
     finally:
         controller.cleanup()
