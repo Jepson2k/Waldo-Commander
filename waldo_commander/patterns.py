@@ -10,16 +10,12 @@ import tempfile
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
+from waldoctl.dry_run import DryRunClient
 from waldoctl.setup import Pose
 
 MAX_CELLS = 100_000
-
-
-class _ExecutionContext(Protocol):
-    @property
-    def skill_capabilities(self) -> frozenset[str]: ...
 
 
 def _number(value: object) -> bool:
@@ -198,14 +194,14 @@ def save_progress(
     path: str | Path,
     progress: PatternProgress,
     *,
-    client: _ExecutionContext,
+    client: object,
 ) -> bool:
     """Atomically save explicit progress; return False without writing in preview.
 
     Call after a successful transfer, passing the same client used to execute
     it. There is no implicit loading, skipping, reset, or recovery move.
     """
-    if "execution.preview" in client.skill_capabilities:
+    if isinstance(client, DryRunClient):
         return False
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

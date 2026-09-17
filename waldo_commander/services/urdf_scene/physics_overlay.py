@@ -1,6 +1,6 @@
-"""What the simulated run measured, drawn over the scene.
+"""What the predicted record shows, drawn over the scene.
 
-MuJoCo computes; we render. Nothing here re-derives physics — every
+The backend computes; we render. Nothing here re-derives physics — every
 number is a column the backend already produced, mapped onto drawables
 the scene already knows how to make, so the arm, the paths and the
 editable points keep being drawn the way they always were.
@@ -8,8 +8,9 @@ editable points keep being drawn the way they always were.
 Two kinds of overlay, and picking the right one decides whether this is
 fast or unusable:
 
-- **Whole-run** geometry is built once per record and then left alone.
-  The achieved path is one polyline over every row; rebuilding it per
+- **Whole-run** geometry is built once per record pair and then left
+  alone. The predicted path is one polyline over every row, coloured by
+  its following error against the commanded record; rebuilding it per
   frame would be absurd.
 - **Per-frame** annotations come from a small pool of drawables created
   once and thereafter only moved, rotated and hidden. They must never
@@ -29,14 +30,14 @@ from typing import Any
 import numpy as np
 from nicegui import ui
 from scipy.spatial.transform import Rotation as ScipyRotation
-from waldoctl import TickIndex
+from waldoctl import TickIndex, following_error
 
 logger = logging.getLogger(__name__)
 
-#: Tracking error at which the achieved path is drawn fully "diverged"
-#: \[rad\]. Half a degree: below that the arm is doing what it was told,
-#: above it something is worth looking at.
-FULL_DIVERGENCE_RAD = 0.0087
+#: Following error at which the predicted path is drawn fully off its
+#: command \[rad\]. Half a degree: below that the arm is doing what it was
+#: told, above it something is worth looking at.
+FULL_FOLLOWING_ERROR_RAD = 0.0087
 
 #: Contact arrows are drawn at this many metres per newton.
 FORCE_SCALE_M_PER_N = 0.004
@@ -45,11 +46,11 @@ FORCE_SCALE_M_PER_N = 0.004
 #: pathological scene must not create hundreds of scene objects.
 MAX_CONTACT_ARROWS = 12
 
-#: The most vertices the achieved path is drawn with. A ten-minute run
+#: The most vertices the predicted path is drawn with. A ten-minute run
 #: records 30,000 rows, and every one would cross as a point triple AND a
 #: colour triple in a single scene command built on the event loop. The
 #: line is a few hundred pixels long; more vertices than this buy nothing.
-MAX_ACHIEVED_POINTS = 2000
+MAX_PREDICTED_POINTS = 2000
 
 #: Base size of a contact arrow \[m\] before the force scales it.
 _ARROW_BASE_M = 0.01
@@ -62,15 +63,15 @@ _DIVERGED = np.array([0.95, 0.35, 0.25])
 _CONE_AXIS = np.array([0.0, 1.0, 0.0])
 
 
-def divergence_colors(error_rad: np.ndarray) -> list[list[float]]:
+def following_error_colors(error_rad: np.ndarray) -> list[list[float]]:
     """One RGB triple per row: green where the arm is on its command,
     red where it is not."""
-    t = np.clip(error_rad / FULL_DIVERGENCE_RAD, 0.0, 1.0)[:, None]
+    t = np.clip(error_rad / FULL_FOLLOWING_ERROR_RAD, 0.0, 1.0)[:, None]
     return (_ON_TRACK * (1 - t) + _DIVERGED * t).tolist()
 
 
 def decimate(
-    tcp: np.ndarray, error_rad: np.ndarray, budget: int = MAX_ACHIEVED_POINTS
+    tcp: np.ndarray, error_rad: np.ndarray, budget: int = MAX_PREDICTED_POINTS
 ) -> tuple[np.ndarray, np.ndarray]:
     """Thin a run to `budget` vertices, keeping both endpoints.
 
@@ -103,21 +104,21 @@ def _cone_rpy(direction: np.ndarray) -> tuple[float, float, float]:
 
 
 class PhysicsOverlay:
-    """The simulated run's overlays for one scene.
+    """The predicted record's overlays for one scene.
 
     Owned by ``UrdfScene``, in a group of its own so a rebuild never
-    disturbs the path diff, and keyed on the record's digest so an
-    identical run is not redrawn.
+    disturbs the path diff, and keyed on both records' digests so an
+    identical pair is not redrawn.
     """
 
     def __init__(self, scene_owner: Any) -> None:
         self._owner = scene_owner
         self._group: Any = None
-        self._achieved: Any = None
+        self._predicted: Any = None
         self._com: Any = None
         self._com_drop: Any = None
         self._contacts: list[Any] = []
-        self._digest: bytes | None = None
+        self._digest: tuple[bytes, bytes] | None = None
 
     @property
     def is_built(self) -> bool:
@@ -125,27 +126,43 @@ class PhysicsOverlay:
 
     # ---- whole-run geometry -------------------------------------------------
 
-    def render(self, ticks: TickIndex | None, *, show_divergence: bool) -> None:
-        """(Re)build the whole-run geometry for *ticks*.
+    def render(
+        self,
+        commanded: TickIndex | None,
+        predicted: TickIndex | None,
+        *,
+        show_predicted: bool,
+    ) -> None:
+        """(Re)build the whole-run geometry for *predicted* against
+        *commanded*.
 
-        A record with an unchanged digest paints an identical picture and
-        is left alone; the backend's determinism contract is what makes
-        that sound, and it is the flash guard.
+        Nothing is built without a predicted record, or when it is the
+        commanded one — then there is nothing the commanded path does not
+        already show. An unchanged pair paints an identical picture and is
+        left alone; the backend's determinism contract is what makes that
+        sound, and it is the flash guard.
         """
-        if ticks is None or ticks.rows < 2:
+        if (
+            commanded is None
+            or predicted is None
+            or predicted.rows < 2
+            or predicted.digest == commanded.digest
+        ):
             self.clear()
             return
-        if self._digest is not None and ticks.digest and self._digest == ticks.digest:
-            # Same record, so the geometry stands; only the toggle can
+        digest = (commanded.digest, predicted.digest)
+        if self._digest is not None and predicted.digest and self._digest == digest:
+            # Same records, so the geometry stands; only the toggle can
             # have moved, and it is a visibility flip rather than a
-            # rebuild. Reading it here is what makes the setting work at
-            # all — it used to be consulted only when a record changed.
-            if self._achieved is not None:
-                self._achieved.visible(show_divergence)
+            # rebuild.
+            if self._predicted is not None:
+                self._predicted.visible(show_predicted)
             return
-        self._build(ticks, show_divergence)
+        self._build(commanded, predicted, show_predicted)
 
-    def _build(self, ticks: TickIndex, show_divergence: bool) -> None:
+    def _build(
+        self, commanded: TickIndex, predicted: TickIndex, show_predicted: bool
+    ) -> None:
         """Build the group, the path, and the per-frame pool.
 
         The pool is made here rather than on first use because a scene
@@ -162,18 +179,20 @@ class PhysicsOverlay:
             with scene:
                 with ui.scene.group().with_name("simulation:physics") as grp:
                     self._group = grp
-                    # One polyline over the whole run: where the TCP
-                    # actually went, coloured by how far that is from the
+                    # One polyline over the whole run: where the TCP is
+                    # predicted to go, coloured by how far that is from the
                     # command that produced it. Built once and shown or
                     # hidden — a toggle must not need a rebuild.
-                    points, error = decimate(ticks.tcp, ticks.tracking_error_rad())
-                    self._achieved = ui.scene.polyline(
+                    points, error = decimate(
+                        predicted.tcp, following_error(commanded, predicted)
+                    )
+                    self._predicted = ui.scene.polyline(
                         [[float(v) for v in row[:3]] for row in points],
-                        colors=divergence_colors(error),
+                        colors=following_error_colors(error),
                     )
                     # color=None tells three.js to use the per-vertex colours.
-                    self._achieved.material(None, 0.95)
-                    self._achieved.visible(show_divergence)
+                    self._predicted.material(None, 0.95)
+                    self._predicted.visible(show_predicted)
                     self._com = ui.scene.sphere(0.012).material("#ffd166", 0.9)
                     self._com.visible(False)
                     # A drop line to the ground: a lone sphere in a
@@ -203,11 +222,11 @@ class PhysicsOverlay:
             logger.exception("Physics overlay build failed")
             self.clear()
             return
-        self._digest = ticks.digest
+        self._digest = (commanded.digest, predicted.digest)
 
     def clear(self) -> None:
         group, self._group = self._group, None
-        self._achieved = None
+        self._predicted = None
         self._com = None
         self._com_drop = None
         self._contacts = []

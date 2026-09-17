@@ -12,7 +12,6 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass, field
-from importlib import import_module
 from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
@@ -132,17 +131,11 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
         raise ValueError(
             f"Backend {case.backend!r} does not support simulation scenarios"
         )
-    client = import_module("par6.client.dry_run_client").DryRunRobotClient()
-    if client is None or "simulation.scenarios" not in client.skill_capabilities:
-        raise ValueError(
-            f"Backend {case.backend!r} does not support simulation scenarios"
-        )
     world = world_from_dict(case.world) if case.world is not None else None
     result = _run_simulation_isolated(
         case.program,
         initial_joints_rad=np.deg2rad(case.initial_joints_deg),
         backend_package=robot.backend_package,
-        dry_run_client_cls=type(client),
         tool_meta_registry=_tool_metadata(robot),
         shapes_wire=[shape.to_wire() for shape in world.program] if world else None,
         initial_tool=case.initial_tool,
@@ -150,7 +143,7 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
         simulate_seconds=case.max_seconds,
         scenario=case.scenario,
     )
-    ticks = result["ticks"]
+    ticks = result["predicted"]
     error = result["error"] or result["physics_error"]
     errors = (
         [
@@ -165,7 +158,7 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
         if ticks is not None
         else []
     )
-    stop = "error" if error or result["truncated"] or ticks is None else ticks.stop
+    stop = "error" if error or ticks is None else ticks.stop
     passed = stop == case.expected_stop and (
         case.expected_error_code is None
         or any(e["code"] == case.expected_error_code for e in errors)

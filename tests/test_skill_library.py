@@ -3,10 +3,10 @@
 import ast
 import asyncio
 import re
+import tempfile
 import textwrap
 from dataclasses import asdict
 from pathlib import Path
-import tempfile
 from typing import cast
 
 import numpy as np
@@ -22,6 +22,7 @@ from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot
 from waldoctl.skills import MissingCapability
 
 from tests.helpers.mcp import payload
+from tests.helpers.preview import block_end_tcp, motion_blocks
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
@@ -59,15 +60,14 @@ def test_starter_skills_plan_fixed_setup_alignment_and_gripper_actions():
         },
     )
     start = pose_of(client)
-    entries, diagnostics = library(client.skill_capabilities)
+    entries, diagnostics = library(client.robot)
     assert not diagnostics
     approach(client, target=start, clearance_mm=2, speed=0.5)
-    assert len(client.segment_collector) == 2
+    moves = motion_blocks(client)
+    assert len(moves) == 2
     native_transform = np.empty((4, 4))
     se3_from_rpy(*start.values[:3], *np.radians(start.values[3:]), native_transform)
-    assert np.asarray(
-        client.segment_collector[0]["points"][-1]
-    ) * 1000 == pytest.approx(
+    assert np.asarray(block_end_tcp(client, moves[0])[:3]) * 1000 == pytest.approx(
         native_transform[:3, 3] + 2 * native_transform[:3, 2], abs=0.1
     ), "approach clearance must follow native tool Z, including mixed rotations"
     assert pose_of(client).matrix() == pytest.approx(start.matrix(), abs=0.1)
@@ -87,9 +87,9 @@ def test_starter_skills_plan_fixed_setup_alignment_and_gripper_actions():
     aligned = pose_of(client).matrix()
     assert aligned[:3, 3] == pytest.approx(before[:3, 3], abs=0.1)
     assert aligned[:3, 2] == pytest.approx(desired / np.linalg.norm(desired), abs=0.002)
-    count = len(client.segment_collector)
+    count = len(motion_blocks(client))
     assert align_tool_axis(client, direction=tuple(aligned[:3, 2])) is None
-    assert len(client.segment_collector) == count
+    assert len(motion_blocks(client)) == count
     for invalid in ((0, 0, 0), (float("nan"), 0, 1), (0, 1), (float("inf"), 0, 1)):
         with pytest.raises(ValueError, match="direction"):
             align_tool_axis(client, direction=invalid)
@@ -103,7 +103,7 @@ def test_starter_skills_plan_fixed_setup_alignment_and_gripper_actions():
     assert gripper_open(client) >= 0
     assert gripper_close(client) >= 0
     assert len(client.tool_action_collector) == 2
-    assert all(segment["is_valid"] for segment in client.segment_collector)
+    assert all(block.error is None for block in motion_blocks(client))
 
 
 @pytest.mark.integration
@@ -162,12 +162,14 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
         _run_simulation_isolated,
         original.source,
         np.radians(START),
-        dry_run_client_cls=DryRunRobotClient,
         setup_directory=str(tmp_path),
     )
     assert result["error"] is None, result["error"]
-    assert len(result["segments"]) == 2
-    assert np.asarray(result["segments"][-1]["points"][-1]) * 1000 == pytest.approx(
+    record = result["commanded"]
+    moves = [b for b in record.blocks if b.move_type is not None]
+    assert len(moves) == 2
+    last = moves[-1]
+    assert record.tcp[last.start_row + last.rows - 1][:3] * 1000 == pytest.approx(
         setup.resolve("pick").values[:3], abs=0.1
     )
 
@@ -252,7 +254,7 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
             await script_exec.stop()
         motion_recorder.toggle_recording()
 
-    entries, _ = library(client.skill_capabilities)
+    entries, _ = library(client.robot)
     snippet = call_source(
         entries["waldo.retract"], {"distance_mm": 2.0}, async_call=True
     )

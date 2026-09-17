@@ -106,15 +106,14 @@ class SimulationEngine:
         path_visualizer.cancel_physics()
 
     def schedule_physics_simulation(self, tab_id: str | None = None) -> None:
-        """Schedule the physics pass behind its own, longer idle.
+        """Schedule the predicted pass behind its own, longer idle.
 
-        No-op on a backend with no plant. The planned preview has already
-        landed by the time this fires; this refines it with what the arm
-        would actually do, and the scrub bar stays locked meanwhile.
+        The commanded preview has already landed by the time this fires;
+        this answers it with what the arm would do. Nothing waits on it:
+        the scrub bar plays the commanded record meanwhile. The visualizer
+        decides whether the backend has anything to add.
         """
         self._cancel_physics()
-        if not ui_state.active_robot.has_physics_simulation:
-            return
         if tab_id is None:
             tab_id = waldoctl.commander.programs.active_id
         if not tab_id:
@@ -123,9 +122,9 @@ class SimulationEngine:
         async def run_physics_quietly():
             try:
                 tab = waldoctl.commander.programs.get(tab_id)
-                if tab is None or not tab.dry_run.path_segments:
+                if tab is None or tab.dry_run.commanded is None:
                     return
-                playback.update_play_button()
+                playback.refresh_layers()
                 error = await path_visualizer.update_physics_simulation(tab_id=tab_id)
                 if error:
                     line = f"[PHYSICS ERROR] {error}"
@@ -134,8 +133,8 @@ class SimulationEngine:
                     )
                     if tab.id == waldoctl.commander.programs.active_id:
                         log_panel.push(line)
-                # Playback now has measured poses to replay instead of
-                # interpolated ones, so the cached timeline is stale.
+                # Playback now has predicted poses to replay instead of
+                # commanded ones, so the cached timeline is stale.
                 playback.invalidate_timeline()
                 playback.update_scrub_segments()
             except asyncio.CancelledError:
@@ -145,11 +144,7 @@ class SimulationEngine:
             finally:
                 if self._physics_timer is my_timer:
                     self._physics_timer = None
-                # Whatever happened, the controls stop waiting on it.
-                tab = waldoctl.commander.programs.get(tab_id)
-                if tab is not None:
-                    tab.dry_run.ticks_pending = False
-                playback.update_play_button()
+                playback.refresh_layers()
 
         my_timer = ui.timer(self._physics_delay, run_physics_quietly, once=True)
         self._physics_timer = my_timer
@@ -179,12 +174,14 @@ class SimulationEngine:
         if not content:
             return None
 
+        tab = waldoctl.commander.programs.get(tab_id)
+        revision = tab.dry_run.revision if tab is not None else 0
         loading = playback.sim_loading_progress
         if loading:
             loading.visible = True
         try:
             error = await path_visualizer.update_path_visualization(
-                content, tab_id=tab_id
+                content, tab_id=tab_id, revision=revision
             )
         finally:
             if loading:
@@ -263,8 +260,12 @@ class SimulationEngine:
             self._simulation_debounce_timer.cancel(with_current_invocation=True)
             self._simulation_debounce_timer = None
         # The edit retires whatever physics was running or queued: it
-        # describes a program that no longer exists.
+        # describes a program that no longer exists — and the revision
+        # says so, so a pass already past cancelling lands against nothing.
         self._cancel_physics()
+        edited = waldoctl.commander.programs.get(tab_id)
+        if edited is not None:
+            edited.dry_run.revision += 1
 
         async def run_simulation_quietly():
             try:
@@ -274,15 +275,16 @@ class SimulationEngine:
                 tab = waldoctl.commander.programs.get(tab_id)
                 if tab and is_default_script(tab.source):
                     tab.dry_run.final_joints_rad = list(get_home_joints_rad())
+                    tab.dry_run.commanded = None
+                    tab.dry_run.commanded_revision = -1
+                    tab.dry_run.predicted = None
+                    tab.dry_run.predicted_revision = -1
+                    tab.dry_run.commands = []
                     tab.dry_run.path_segments = []
                     tab.dry_run.targets = []
                     tab.dry_run.tool_actions = []
                     tab.dry_run.tool_selections = []
                     tab.dry_run.total_steps = 0
-                    # No plan, so no physics pass will run to clear this:
-                    # leaving it set locks playback for good.
-                    tab.dry_run.ticks = None
-                    tab.dry_run.ticks_pending = False
                     path_visualizer.forget_plan(tab_id)
                     playback.update_play_button()
                     if tab_id == waldoctl.commander.programs.active_id:
