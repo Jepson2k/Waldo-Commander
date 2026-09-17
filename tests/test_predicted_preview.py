@@ -137,10 +137,14 @@ async def test_scrub_bar_never_locks_on_a_planner_only_backend(user: User) -> No
     simulation._physics_delay = 0.2
 
     def edit(source: str) -> None:
-        assert ui_state.active_textarea is not None
-        ui_state.active_textarea.value = source
+        textarea = ui_state.active_textarea
+        assert textarea is not None
+        textarea.value = source
         program.source = source
-        simulation.schedule_debounced_simulation(program.id)
+        # The editor schedules from its change handler, inside its client's
+        # slot; the debounce timer needs that client.
+        with textarea:
+            simulation.schedule_debounced_simulation(program.id)
 
     edit(_SCRIPT)
     assert await wait_until(lambda: dry_run.commanded is not None, timeout_s=30)
