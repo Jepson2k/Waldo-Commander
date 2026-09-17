@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 
 from waldoctl.client import RobotClient
+from waldoctl.dry_run import DryRunClient
 from waldoctl.signals import DigitalSignal, SignalObservation, SignalWaitResult
 from waldoctl.skills import MissingCapability, UnresolvedPreview, skill
 
@@ -28,9 +29,12 @@ def _seconds(value: float, label: str) -> None:
 
 
 def _binding(rbt: RobotClient, signal: DigitalSignal) -> bool:
-    if f"backend.{signal.backend}" not in rbt.skill_capabilities:
+    """Whether *rbt* previews rather than drives, once the mapping is
+    known to belong to the backend it drives."""
+    robot = rbt.robot
+    if robot is None or robot.backend_package != signal.backend:
         raise MissingCapability(f"This signal mapping belongs to {signal.backend}")
-    return "execution.preview" in rbt.skill_capabilities
+    return isinstance(rbt, DryRunClient)
 
 
 async def _observe(
@@ -54,7 +58,7 @@ async def _observe(
     return SignalObservation(signal.decode(levels), time.time())
 
 
-@skill(id="waldo.read_signal", version="1.0.0", requires=frozenset({"io.digital"}))
+@skill(id="waldo.read_signal", version="1.0.0")
 async def read_signal(
     rbt: RobotClient,
     signal: DigitalSignal,
@@ -67,7 +71,7 @@ async def read_signal(
     return await _observe(rbt, signal, timeout, fixture)
 
 
-@skill(id="waldo.wait_signal", version="1.0.0", requires=frozenset({"io.digital"}))
+@skill(id="waldo.wait_signal", version="1.0.0")
 async def wait_signal(
     rbt: RobotClient,
     signal: DigitalSignal,
@@ -123,7 +127,7 @@ async def wait_signal(
     )
 
 
-@skill(id="waldo.write_signal", version="1.0.0", requires=frozenset({"io.digital"}))
+@skill(id="waldo.write_signal", version="1.0.0")
 async def write_signal(
     rbt: RobotClient,
     signal: DigitalSignal,
