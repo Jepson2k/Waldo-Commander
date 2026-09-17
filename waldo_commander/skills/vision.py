@@ -9,6 +9,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from waldoctl import RobotClient
 from waldoctl.camera import CameraCalibration
+from waldoctl.dry_run import DryRunClient
 from waldoctl.setup import Pose, SetupSnapshot, TcpCalibration
 from waldoctl.skills import MissingCapability, UnresolvedPreview, report_progress, skill
 
@@ -29,11 +30,9 @@ _OBSERVE_TCP_S = 3.0
 
 
 def _client_backend(rbt: RobotClient, fallback: str) -> str:
-    """The backend this client drives, from the capabilities it advertises."""
-    for capability in rbt.skill_capabilities:
-        if capability.startswith("backend."):
-            return capability.removeprefix("backend.")
-    return fallback
+    """The backend this client drives, from the Robot it carries."""
+    robot = rbt.robot
+    return fallback if robot is None else robot.backend_package
 
 
 @skill(id="waldo.locate_board", version="1.0.0")
@@ -59,9 +58,10 @@ async def locate_board(
     had moved.
     """
     check_timeout(timeout_s)
-    if f"backend.{calibration.backend}" not in rbt.skill_capabilities:
+    robot = rbt.robot
+    if robot is None or robot.backend_package != calibration.backend:
         raise MissingCapability(f"This calibration belongs to {calibration.backend}")
-    preview = "execution.preview" in rbt.skill_capabilities
+    preview = isinstance(rbt, DryRunClient)
     tcp_pose, tool = None, None
     if preview:
         if not isinstance(source, ImageFixture):

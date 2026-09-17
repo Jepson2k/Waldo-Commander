@@ -447,11 +447,6 @@ class PlaybackController:
                 self._scrub_slider.props("readonly")
         if self.speed_fab:
             live = self._uses_live_speed()
-            self.speed_fab.visible = (
-                "execution.speed" in waldoctl.commander.client.skill_capabilities
-                if live
-                else waldoctl.commander.status.simulator_active
-            )
             if self._speed_2x:
                 self._speed_2x.visible = not live
             if not live:
@@ -936,16 +931,14 @@ class PlaybackController:
         if seg_dur <= 0:
             return
         state = self._execution_speed
-        rate = 1.0
-        if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-            if state is None or now - self._execution_speed_at > 2.0:
-                return
-            motion_duration = self._timeline.segment_durations[step]
-            rate = (
-                state.applied_scale
-                if self._exec_elapsed < motion_duration
-                else float(state.target_scale > 0)
-            )
+        if state is None or now - self._execution_speed_at > 2.0:
+            return
+        motion_duration = self._timeline.segment_durations[step]
+        rate = (
+            state.applied_scale
+            if self._exec_elapsed < motion_duration
+            else float(state.target_scale > 0)
+        )
         self._exec_elapsed += dt * rate
         frac = min(self._exec_elapsed / seg_dur, 1.0)
         t = seg_start + frac * seg_dur
@@ -970,11 +963,7 @@ class PlaybackController:
 
     async def _refresh_execution_speed(self) -> None:
         self.sync_mode()
-        if (
-            self._speed_query_pending
-            or not self._uses_live_speed()
-            or "execution.speed" not in waldoctl.commander.client.skill_capabilities
-        ):
+        if self._speed_query_pending or not self._uses_live_speed():
             return
         self._speed_query_pending = True
         try:
