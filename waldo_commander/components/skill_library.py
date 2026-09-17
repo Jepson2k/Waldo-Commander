@@ -13,6 +13,7 @@ from nicegui import ui
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.signals import DigitalSignal
+from waldoctl.tools import ToolStatus
 
 from waldo_commander.services.skill_library import SkillEntry, call_source, library
 from waldo_commander.setup import SetupStore
@@ -58,6 +59,24 @@ def _pose(snapshot: SetupSnapshot, name: str | None):
     if not name:
         raise ValueError("This setup has no poses; teach one in the Setup panel")
     return snapshot.resolve(name)
+
+
+def _selected_tool_preamble(tool: ToolStatus) -> str:
+    """Bind the tool the arm carries in the program the panel runs.
+
+    That program opens a fresh client, and a client knows no tool until it
+    selects one — so a skill that reads ``rbt.tool`` would refuse even with
+    the right gripper fitted. Selecting the arm's current tool first gives
+    the run the same view as the operator's session; a skill that needs no
+    tool is unaffected.
+    """
+    if tool.key in ("", "NONE"):
+        return ""
+    return (
+        f"_skill_tool_index = rbt.select_tool({tool.key!r}, variant_key={tool.variant_key!r})\n"
+        "if _skill_tool_index < 0 or not rbt.wait_command(_skill_tool_index, timeout=10.0):\n"
+        "    raise RuntimeError('Tool selection was not confirmed')\n"
+    )
 
 
 class SkillLibraryPanel(Panel):
@@ -156,7 +175,9 @@ class SkillLibraryPanel(Panel):
                 )
                 text = (
                     f"from {commander.robot.backend_package} import RobotClient\n\nwith RobotClient() as rbt:\n"
-                    + textwrap.indent(snippet, "    ")
+                    + textwrap.indent(
+                        _selected_tool_preamble(commander.status.tool) + snippet, "    "
+                    )
                     + "\n"
                 )
                 program = commander.programs.new(
