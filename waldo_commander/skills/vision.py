@@ -9,7 +9,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from waldoctl import RobotClient
 from waldoctl.camera import CameraCalibration
-from waldoctl.dry_run import DryRunClient
+from waldoctl.dry_run import is_dry_run
 from waldoctl.setup import Pose, SetupSnapshot, TcpCalibration
 from waldoctl.skills import MissingCapability, UnresolvedPreview, report_progress, skill
 
@@ -61,7 +61,7 @@ async def locate_board(
     robot = rbt.robot
     if robot is None or robot.backend_package != calibration.backend:
         raise MissingCapability(f"This calibration belongs to {calibration.backend}")
-    preview = isinstance(rbt, DryRunClient)
+    preview = is_dry_run(rbt)
     tcp_pose, tool = None, None
     if preview:
         if not isinstance(source, ImageFixture):
