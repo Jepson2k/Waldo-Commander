@@ -270,6 +270,10 @@ def _run_simulation_isolated(
 
         _dr_cls: type = dry_run_client_cls
 
+        from waldo_commander.profiles import get_robot
+
+        _preview_robot = get_robot(backend_package)
+
         class LocalPathPreviewClient(PathPreviewClient):
             def __init__(self, *args: Any, **kwargs: Any):
                 super().__init__(
@@ -282,6 +286,7 @@ def _run_simulation_isolated(
                     initial_homed=initial_homed,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
+                    robot=_preview_robot,
                 )
                 created_clients.append(self)
 
@@ -297,6 +302,7 @@ def _run_simulation_isolated(
                     initial_homed=initial_homed,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
+                    robot=_preview_robot,
                 )
                 created_clients.append(self._sync_client)
 
@@ -315,10 +321,8 @@ def _run_simulation_isolated(
         # otherwise carries a previous run's shapes into this run's planning
         # guard. Empty included. Installation shapes come from robot config at
         # backend import and are untouched.
-        from waldo_commander.profiles import get_robot
         from waldoctl import shape_from_wire
 
-        _preview_robot = get_robot(backend_package)
         if _preview_robot.has_collision_checking:
             _preview_robot.apply_shapes(
                 [shape_from_wire(*t) for t in shapes_wire or []]

@@ -55,7 +55,7 @@ def test_imported_skill_previews_sync_async_and_failed_motion():
 
 
 def test_blended_skill_waits_use_planner_results():
-    @skill(id="test.blend", version="1.0.0", requires=frozenset({"backend.parol6"}))
+    @skill(id="test.blend", version="1.0.0")
     async def blend(rbt: RobotClient) -> bool:
         first = await rbt.move_j([85, -85, 175, 5, 5, 175], speed=0.5, r=2.0)
         last = await rbt.move_j([90, -90, 180, 0, 0, 180], speed=0.5, r=0.0)
