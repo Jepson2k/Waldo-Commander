@@ -28,7 +28,11 @@ from parol6.protocol.wire import StatusResultStruct
 from scipy.spatial.transform import Rotation
 
 from tests.helpers.charuco_render import board_center, render_board_view
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import (
+    enable_sim,
+    ensure_robot_ready_for_motion,
+    wait_for_app_ready,
+)
 from waldo_commander.components.handeye_calibration import (
     AUTO_VIEW_DELTAS_DEG,
     STATIONARY_SPEED_DEG_S,
@@ -520,3 +524,143 @@ async def test_handeye_auto_calibration(
         await asyncio.sleep(0.5)
         for key in ("handeye/MSG", "handeye/board", "tool_camera/MSG", "selected_tool"):
             ng_app.storage.general.pop(key, None)
+
+
+@pytest.mark.integration
+async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
+    """A Stop from anywhere else aborts auto-calibration.
+
+    The controller cancels the command without completing it and without an
+    error, so `wait_command` resolves neither True nor raises — and it stays
+    enabled through a Stop. A run that read the halt as success would capture
+    a view at the halted pose and then drive the arm to the next one, seconds
+    after a human deliberately stopped it.
+
+    Driven against the controller: the halt is an ack ladder and a status
+    edge, and a fake that answers both tests the panel against this test's
+    idea of a Stop rather than against the one the arm performs.
+    """
+    from waldo_commander.components.handeye_calibration import (
+        HandEyeCalibrationPanel,
+    )
+
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    commander = waldoctl.commander
+    client = commander.client
+    panel = HandEyeCalibrationPanel()
+
+    start = await client.angles()
+    assert start is not None
+    target = list(start)
+    target[0] += 25.0  # long enough at the auto speed to stop it mid-move
+    moving = asyncio.create_task(panel._auto_move(commander, target))
+    try:
+        assert await client.wait_status(
+            lambda s: s.action_state == waldoctl.ActionState.EXECUTING, timeout=10
+        ), "the auto move never started"
+        assert await client.stop() > 0
+        index = await asyncio.wait_for(moving, 30)
+    finally:
+        if not moving.done():
+            moving.cancel()
+            await asyncio.gather(moving, return_exceptions=True)
+        await client.reset()
+
+    assert index < 0, "a halted move must not report the index of a finished one"
+    assert panel._auto_cancel, "the run must stop, not roll on to the next view"
+    halted = await client.angles()
+    assert halted is not None
+    assert abs(halted[0] - target[0]) > 1.0, (
+        "the arm reached the view it was stopped on the way to"
+    )
+
+
+@pytest.mark.integration
+async def test_an_unpopulated_pose_is_never_captured(user: User) -> None:
+    """All-zeros is the uninitialised value, not a pose.
+
+    The status cache seeds it that way and fills it only once the arm
+    reports, so an unplugged robot answers zeros indefinitely. Stored as a
+    sample it raises "non-positive determinant" out of the *next* capture,
+    which reads as a camera fault rather than a disconnected robot.
+    """
+    from waldo_commander.components.handeye_calibration import (
+        HandEyeCalibrationPanel,
+    )
+    from waldo_commander.state import robot_state
+
+    panel = HandEyeCalibrationPanel()
+
+    class _ZeroPoseClient:
+        async def status(self):
+            return type("S", (), {"pose": [0.0] * 16})()
+
+    # `pose` is a preallocated array mutated in place, so it is restored
+    # the same way rather than reassigned.
+    before = robot_state.pose.copy()
+    robot_state.pose[:] = 0.0
+    try:
+        got = await panel._current_pose_matrix(
+            type("C", (), {"client": _ZeroPoseClient()})()
+        )
+    finally:
+        robot_state.pose[:] = before
+
+    assert got is None, "a zero pose must be refused by both branches alike"
+
+
+@pytest.mark.integration
+async def test_clearing_a_board_field_reverts_instead_of_wedging(user: User) -> None:
+    """NiceGUI sets a number's value to None the moment its text is cleared,
+    which is what selecting a field to retype it does. Parsing that raised
+    TypeError past the handler's except, so the revert never ran, the field
+    stayed blank, and every later edit to any of the five inputs raised
+    through it again.
+
+    Driven through the panel's own inputs: the bug lives in the handler they
+    fire, so a test that rebuilds the spec itself cannot see it.
+    """
+    from waldo_commander.components.handeye_calibration import (
+        HandEyeCalibrationPanel,
+    )
+
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    await user.open("/")
+    await wait_for_app_ready()
+    await user.should_see(marker="tab-handeye")
+    user.find(marker="tab-handeye").click()
+    await asyncio.sleep(0)
+    await user.should_see(marker="handeye-board-download")
+    panel = next(p for p in ui_state.plugin_panels if p.id == "handeye")
+    assert isinstance(panel, HandEyeCalibrationPanel)
+
+    def field(marker):
+        return next(iter(user.find(marker=marker).elements))
+
+    before = panel._spec
+    field("handeye-squares-x").set_value(None)
+    await asyncio.sleep(0)
+    assert panel._spec == before, "an emptied field means unchanged, not zero"
+
+    # The field the user retypes next still applies — which it could not while
+    # the cleared one left the handler raising on every later edit.
+    field("handeye-square-mm").set_value(before.square_mm + 5.0)
+    await asyncio.sleep(0)
+    assert panel._spec.square_mm == pytest.approx(before.square_mm + 5.0)
+    assert panel._spec.squares_x == before.squares_x
+    applied = panel._spec
+
+    # A board the detector refuses is reverted in the inputs, so what the
+    # fields show is the board being used.
+    field("handeye-marker-mm").set_value(applied.square_mm + 5.0)
+    await asyncio.sleep(0)
+    assert panel._spec == applied, "a refused board must not be adopted"
+    assert field("handeye-marker-mm").value == pytest.approx(applied.marker_mm), (
+        "the refused value is reverted, not left in the field"
+    )
