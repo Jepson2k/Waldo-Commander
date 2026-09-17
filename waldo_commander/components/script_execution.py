@@ -204,9 +204,8 @@ class ScriptExecutionController:
 
             if launching_tab is not None:
                 launching_tab.execution.is_running = True
-            if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-                if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
-                    raise TimeoutError("Controller resume was not confirmed")
+            if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                raise TimeoutError("Controller resume was not confirmed")
 
             self.script_handle = await run_script(
                 script_config, on_stdout, on_stderr, session_id=self._step_session_id
@@ -307,9 +306,8 @@ class ScriptExecutionController:
         """Resume a paused script subprocess (no-op if no script is stepping)."""
         async with self._execution_control_lock:
             if self._step_controller:
-                if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-                    if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
-                        raise TimeoutError("Controller resume was not confirmed")
+                if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                    raise TimeoutError("Controller resume was not confirmed")
                 self._step_controller.signal_play()
 
     async def signal_pause(self) -> None:
@@ -322,19 +320,17 @@ class ScriptExecutionController:
                 # reported, or the play button keeps showing a program that is
                 # in fact held.
                 self._step_controller.signal_pause()
-                if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-                    if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
-                        raise TimeoutError(
-                            "Script held, but controller pause was not confirmed"
-                        )
+                if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
+                    raise TimeoutError(
+                        "Script held, but controller pause was not confirmed"
+                    )
 
     async def signal_step(self) -> None:
         """Step a paused script forward by one command (no-op if not stepping)."""
         async with self._execution_control_lock:
             if self._step_controller:
-                if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-                    if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
-                        raise TimeoutError("Controller resume was not confirmed")
+                if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                    raise TimeoutError("Controller resume was not confirmed")
                 self._step_controller.signal_step()
 
     # ---- Internals ----
@@ -385,14 +381,10 @@ class ScriptExecutionController:
                         and self._step_controller.waiting_for_step()
                     ):
                         self._step_controller.signal_pause()
-                        if (
-                            "execution.speed"
-                            in waldoctl.commander.client.skill_capabilities
-                        ):
-                            if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
-                                raise TimeoutError(
-                                    "Step completed, but controller pause was not confirmed"
-                                )
+                        if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
+                            raise TimeoutError(
+                                "Step completed, but controller pause was not confirmed"
+                            )
                 await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             logger.debug("Event watcher task cancelled")

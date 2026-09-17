@@ -14,7 +14,6 @@ from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.camera import CameraCalibration
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.signals import DigitalSignal
-from waldoctl.tools import ToolType
 
 from waldo_commander.camera_sources import CommanderCameraSource, FrameSource
 from waldo_commander.services.skill_library import SkillEntry, call_source, library
@@ -78,7 +77,7 @@ class SkillLibraryPanel(Panel):
     resizable: ClassVar[bool] = True
 
     def build(self, commander: Commander) -> None:
-        entries, diagnostics = library(commander.client.skill_capabilities)
+        entries, diagnostics = library(commander.robot)
         readers: dict[str, Any] = {}
         running = False
 
@@ -99,24 +98,9 @@ class SkillLibraryPanel(Panel):
 
         def source(*, synchronous: bool = False) -> str:
             arguments = {name: read() for name, read in readers.items()}
-            is_async = asynchronous.value and not synchronous
-            snippet = call_source(
+            return call_source(
                 entry(), arguments, async_call=asynchronous.value and not synchronous
             )
-            if "tool.gripper" in entry().skill.spec.requires:
-                tool_status = commander.status.tool
-                tool = commander.robot.tools[tool_status.key]
-                if tool.tool_type != ToolType.GRIPPER:
-                    raise ValueError(
-                        "Select a supported gripper before inserting or running this skill"
-                    )
-                snippet = (
-                    f"_skill_tool_index = {'await ' if is_async else ''}rbt.select_tool({tool_status.key!r}, variant_key={tool_status.variant_key!r})\n"
-                    f"if _skill_tool_index < 0 or not {'await ' if is_async else ''}rbt.wait_command(_skill_tool_index, timeout=10.0):\n"
-                    "    raise RuntimeError('Tool selection was not confirmed')\n"
-                    + snippet
-                )
-            return snippet
 
         def refresh_source() -> None:
             try:
