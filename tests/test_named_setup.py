@@ -9,7 +9,6 @@ import pytest
 import waldoctl
 from nicegui import run, ui
 from nicegui.testing import User
-from parol6.client.dry_run_client import DryRunRobotClient
 from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot
 
 from tests.helpers.wait import (
@@ -145,14 +144,14 @@ async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
         _run_simulation_isolated,
         program.source,
         np.radians(initial),
-        dry_run_client_cls=DryRunRobotClient,
         setup_directory=str(tmp_path),
     )
     assert result["error"] is None, result["error"]
-    assert len(result["segments"]) == 1 and result["segments"][0]["is_valid"]
-    assert np.asarray(result["segments"][0]["points"][-1]) * 1000 == pytest.approx(
-        target.values[:3], abs=0.1
-    )
+    record = result["commanded"]
+    moves = [b for b in record.blocks if b.move_type is not None]
+    assert len(moves) == 1 and moves[0].error is None and moves[0].rows > 0
+    end = record.tcp[moves[0].start_row + moves[0].rows - 1]
+    assert np.asarray(end[:3]) * 1000 == pytest.approx(target.values[:3], abs=0.1)
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
