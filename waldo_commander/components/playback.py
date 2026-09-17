@@ -295,7 +295,6 @@ class PlaybackController:
                 setattr(view, flag, bool(stored[flag]))
         self._layer_checks = {}
         with ui.button(icon="layers").props("round dense flat color=white") as button:
-            ui.tooltip("Preview layers")
             with ui.menu():
                 with ui.column().classes("p-2 gap-0"):
                     for flag, label, mark in _LAYERS:
