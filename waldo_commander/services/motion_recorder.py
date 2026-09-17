@@ -396,6 +396,15 @@ class MotionRecorder:
         self._insert_line = None
         logger.info("Recording stopped")
 
+    def record_completed_skill(self, source: str, *, started_at: float) -> None:
+        """Keep a successful skill once, without adding its duration as idle time."""
+        if not is_any_program_recording():
+            return
+        delay = started_at - self._last_action_wall_time
+        if self._last_action_wall_time > 0 and delay > 0.05:
+            self._record_action_impl("delay", seconds=delay)
+        self._record_action_impl("skill", source=source)
+
     def record_action(self, action_type: str, **params) -> None:
         """Record any robot action when recording is active.
 
@@ -446,6 +455,9 @@ class MotionRecorder:
         Returns:
             Python code snippet string
         """
+        if action_type == "skill":
+            return params["source"]
+
         if action_type == "move_j":
             spd = waldoctl.commander.settings.jog.speed / 100.0
             acc = waldoctl.commander.settings.jog.accel / 100.0
@@ -616,6 +628,17 @@ class MotionRecorder:
             move_type: "cartesian" or "joints"
         """
         self._insert_snippet(self.current_pose_snippet(move_type))
+        self._last_action_wall_time = time.time()
+
+    def insert_skill_call(self, source: str) -> None:
+        """Insert an explicitly requested Python call at the editor cursor.
+
+        The insertion is an action in the recording like a captured pose, so it
+        stamps the action clock: otherwise the next recorded jog is delayed by
+        the time the operator spent composing the call, and the program waits
+        that long every time it runs.
+        """
+        self._insert_snippet(source)
         self._last_action_wall_time = time.time()
 
     def _insert_snippet(self, snippet: str) -> None:

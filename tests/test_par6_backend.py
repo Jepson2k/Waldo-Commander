@@ -237,6 +237,61 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
             await wait_until(lambda: bool(table.rows))
             present = {row["node"] for row in table.rows if row["present"] == "yes"}
             assert {0, 1, 2, 3, 4, 5} <= present, f"scan rows: {table.rows}"
+
+        import numpy as np
+        from par6 import config as par6_config
+        from waldo_commander.skills import gripper_open, gripper_close, retract
+        from waldoctl.setup import Pose
+        from par6._par6 import pose_matrix
+
+        mixed = Pose((0, 0, 0, 37, 25, -28))
+        assert mixed.matrix() == pytest.approx(
+            np.asarray(
+                pose_matrix([0, 0, 0], np.radians(mixed.values[3:]).tolist())
+            ).reshape(4, 4)
+        ), "shared setup rotation must match PAR6's native pose conversion"
+
+        client = waldoctl.commander.client
+        park = np.degrees(par6_config.config().park_pose_rad()).tolist()
+        await client.reset()
+        async with asyncio.timeout(20):
+            while True:
+                await client.teleport(park)
+                if await client.wait_status(
+                    lambda s: s.homed and np.allclose(s.angles, park, atol=0.5),
+                    timeout=0.5,
+                ):
+                    break
+        before = await client.pose()
+        assert before is not None
+        native = await client.status()
+        assert native is not None
+        assert Pose(tuple(before)).matrix()[:3, :3] == pytest.approx(
+            np.asarray(native.pose).reshape(4, 4)[:3, :3], abs=0.01
+        ), "setup pose rotations must agree with the native PAR6 transform"
+        await retract.async_call(client, distance_mm=10, speed=0.2)
+        after = await client.pose()
+        assert after is not None
+        assert np.linalg.norm(np.array(after[:3]) - before[:3]) == pytest.approx(
+            10, abs=1.0
+        )
+        assert await client.select_tool(par6_config.fitted_tool_key()) >= 0
+        index = await client.tool.calibrate()
+        assert await client.wait_command(index, timeout=15)
+        await gripper_close.async_call(client)
+        assert await client.wait_status(
+            lambda s: s.tool_status is not None
+            and bool(s.tool_status.positions)
+            and s.tool_status.positions[0] > 0.9,
+            timeout=5,
+        )
+        await gripper_open.async_call(client)
+        assert await client.wait_status(
+            lambda s: s.tool_status is not None
+            and bool(s.tool_status.positions)
+            and s.tool_status.positions[0] < 0.1,
+            timeout=5,
+        )
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)
