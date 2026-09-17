@@ -79,10 +79,10 @@ async def record_demonstration(
             raise ValueError("Recording durations must be positive and finite")
     if type(max_samples) is not int or not 1 <= max_samples <= MAX_RECORDING_SAMPLES:
         raise ValueError("Invalid recording sample limit")
-    caps = client.skill_capabilities
-    backends = [c.removeprefix("backend.") for c in caps if c.startswith("backend.")]
-    if "observation.timed" not in caps or len(backends) != 1:
-        raise ValueError("This client does not provide identified, timed observations")
+    robot = client.robot
+    if robot is None:
+        raise ValueError("This client does not name the backend it observes")
+    backend = robot.backend_package
 
     stream = client.stream_status()
     samples: list[RecordedSample] = []
@@ -177,7 +177,7 @@ async def record_demonstration(
         else:
             ended = "sample_limit"
         return Demonstration(
-            backend=backends[0],
+            backend=backend,
             session_id=session_id,
             simulator=simulator,
             tcp_transform=tuple(tcp),

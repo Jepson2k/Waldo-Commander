@@ -324,6 +324,10 @@ def _run_simulation_isolated(
             if preview._client.set_shapes(bound) != 1:
                 raise ValueError("Preview world application was not confirmed")
 
+        from waldo_commander.profiles import get_robot
+
+        _preview_robot = get_robot(backend_package)
+
         class LocalPathPreviewClient(PathPreviewClient):
             def __init__(self, *args: Any, **kwargs: Any):
                 super().__init__(

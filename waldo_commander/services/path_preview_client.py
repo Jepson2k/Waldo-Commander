@@ -188,14 +188,6 @@ class PathPreviewClient:
             self._clock_s = self._client.plan().duration_s
         return self._clock_s
 
-    @property
-    def skill_capabilities(self) -> frozenset[str]:
-        return getattr(
-            self._client,
-            "skill_capabilities",
-            frozenset({"motion.joint", "motion.linear"}),
-        )
-
     def run_skill(self, invoke: Callable[[RobotClient], Coroutine[Any, Any, R]]) -> R:
         """Use this collector's async view, without opening a backend client."""
         line = self._skill_line

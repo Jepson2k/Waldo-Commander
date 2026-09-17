@@ -37,9 +37,7 @@ async def _apply(rbt: RobotClient, world: ShapeWorld, shape: Shape) -> Shape:
     return shape
 
 
-@skill(
-    id="waldo.attach_object", version="1.0.0", requires=frozenset({"world.attachments"})
-)
+@skill(id="waldo.attach_object", version="1.0.0")
 async def attach_object(
     rbt: RobotClient,
     *,
@@ -71,9 +69,7 @@ async def attach_object(
     )
 
 
-@skill(
-    id="waldo.detach_object", version="1.0.0", requires=frozenset({"world.attachments"})
-)
+@skill(id="waldo.detach_object", version="1.0.0")
 async def detach_object(
     rbt: RobotClient, *, name: str, world_pose: Pose6, shape: Shape | None = None
 ) -> Shape:
