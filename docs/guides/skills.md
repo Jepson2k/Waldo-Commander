@@ -64,8 +64,7 @@ from waldoctl.client import RobotClient
 from waldoctl.skills import skill
 from waldo_commander.skills import retract
 
-@skill(id="mybench.withdraw_twice", version="1.0.0",
-       requires=frozenset({"motion.linear"}))
+@skill(id="mybench.withdraw_twice", version="1.0.0")
 async def withdraw_twice(rbt: RobotClient, *, distance_mm: float = 5) -> int:
     await retract.async_call(rbt, distance_mm=distance_mm)
     return await retract.async_call(rbt, distance_mm=distance_mm)
@@ -74,8 +73,11 @@ async def withdraw_twice(rbt: RobotClient, *, distance_mm: float = 5) -> int:
 The normal call is `withdraw_twice(rbt, distance_mm=5)`. Inside another async
 function, call `await withdraw_twice.async_call(rbt, distance_mm=5)`. Parameters
 and return values retain their Python types. Backend-specific implementations
-can annotate a concrete backend async client and require `backend.par6` or
-`backend.parol6`. These capabilities identify API support, not readiness.
+annotate a concrete backend async client, which makes passing the wrong one a
+type error. A skill that needs an optional feature declares it —
+`requires=Requires(force_torque=True)`, one flag per `Robot.has_*` capability —
+and is refused before its body runs on a backend whose `Robot` does not report
+it. A flag says the backend implements the feature, not that the arm is ready.
 
 Keep shared, backend-independent implementations in `waldo_commander.skills`.
 Backend-native implementations belong in the backend package. Personal skills

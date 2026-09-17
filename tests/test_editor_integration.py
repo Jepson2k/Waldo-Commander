@@ -6,10 +6,10 @@ import pytest
 from nicegui.testing import User
 
 from tests.helpers.wait import (
-    wait_for_app_ready,
     enable_sim,
     ensure_robot_ready_for_motion,
     simulate_click,
+    wait_for_app_ready,
     wait_for_motion_stable,
     wait_for_motion_start,
 )
@@ -367,8 +367,9 @@ async def test_dirty_icon_appears_after_editing(user: User) -> None:
     When tab content is modified from its saved state, a dirty indicator
     should become visible to show unsaved changes.
     """
-    from waldo_commander.state import ui_state
     import waldoctl
+
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -413,8 +414,9 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     tabs simply re-points readers to the new active program. There is no
     longer a global ``simulation_state`` mirror to drive the per-tab copy.
     """
-    from waldo_commander.state import ui_state
     import waldoctl
+
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -463,8 +465,9 @@ async def test_create_and_remove_tab(user: User) -> None:
     Creating a tab should increase the tab count.
     Closing a tab should decrease the tab count.
     """
-    from waldo_commander.state import ui_state
     import waldoctl
+
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -521,8 +524,9 @@ async def test_external_program_mutation_renders(user: User) -> None:
     the tab widget on ``new``/``open``, follows ``switch``, and tears the widget
     down on ``close``, with no GUI button involved.
     """
-    from waldo_commander.state import ui_state
     import waldoctl
+
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -571,8 +575,9 @@ async def test_step_button_enabled_after_simulation(user: User) -> None:
     - Step button is not disabled
     - Play button starts simulation playback (not script execution)
     """
-    from waldo_commander.state import ui_state
     import waldoctl
+
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -641,15 +646,24 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
 rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
 """
 
+_SLEEP_SCRIPT = """from parol6 import RobotClient
+import time
+rbt = RobotClient()
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+time.sleep(0.5)
+rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+"""
+
 
 async def _open_simulated_three_move_program(
     user: User, script: str = _THREE_MOVE_SCRIPT
 ):
     """Open the editor, load a three-move program, and dry-run simulate it.
     Returns ``(editor, tab)`` once the playback timeline is built."""
+    import waldoctl
+
     from waldo_commander.components.simulation_engine import simulation as _sim
     from waldo_commander.state import ui_state
-    import waldoctl
 
     await user.open("/")
     await wait_for_app_ready()
@@ -677,6 +691,16 @@ async def _open_simulated_three_move_program(
     # up front exactly as pressing any step control would.
     assert editor.playback._ensure_timeline() is not None, "timeline build failed"
     return editor, tab
+
+
+def _move_commands(tab) -> list[int]:
+    """The program indices of the plan's moves, in order: what a live run
+    reports as ``executing_command`` for the k-th move. Program indices
+    count every command the backend queued, the preview's own tool and
+    world setup included, so they are read off the record, never assumed."""
+    record = tab.dry_run.commanded
+    assert record is not None
+    return [b.command for b in record.blocks if b.move_type is not None]
 
 
 async def _wait_j1_near(target: float, timeout_s: float = 3.0) -> None:
@@ -712,16 +736,17 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
     assert prev_btn.visible is True, "prev button should be visible when idle"
 
     pb = tab.dry_run.playback
+    moves = _move_commands(tab)
 
     async def wait_step_complete(step: int, timeout_s: float) -> None:
         interval = 0.05
         for _ in range(int(timeout_s / interval)):
-            if pb.executing_step_index == step and pb.executing_step_at_end:
+            if pb.executing_command == step and pb.executing_step_at_end:
                 return
             await asyncio.sleep(interval)
         tail = [entry.text for entry in tab.log.entries[-5:]]
         raise TimeoutError(
-            f"step {step} never completed: index={pb.executing_step_index}, "
+            f"step {step} never completed: index={pb.executing_command}, "
             f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
             f"log tail={tail}"
         )
@@ -729,7 +754,7 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
     try:
         # First press from idle: subprocess starts paused, runs command #1 only.
         user.find(marker="editor-step-program").click()
-        await wait_step_complete(0, timeout_s=30.0)
+        await wait_step_complete(moves[0], timeout_s=30.0)
 
         assert pb.is_playing is False, "paused start must not enter play mode"
         assert prev_btn.visible is False, "prev button must hide during a live run"
@@ -738,7 +763,9 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
         # Exactly one command: even given time to continue, the script must
         # still be blocked on command #1.
         await asyncio.sleep(0.5)
-        assert pb.executing_step_index == 0, "paused start ran more than one command"
+        assert pb.executing_command == moves[0], (
+            "paused start ran more than one command"
+        )
         assert is_any_program_running() is True, "program must be paused, not finished"
 
         # A preview scrub must not reposition the controller while Python owns it,
@@ -758,7 +785,7 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
 
         # Second press while running-paused: exactly one more command.
         user.find(marker="editor-step-program").click()
-        await wait_step_complete(1, timeout_s=15.0)
+        await wait_step_complete(moves[1], timeout_s=15.0)
         assert pb.is_playing is False
         await _wait_j1_near(95.0)
         assert is_any_program_running() is True, "still paused after the second step"
@@ -811,20 +838,21 @@ with RobotClient() as rbt:
     _, tab = await _open_simulated_three_move_program(user, body)
     assert tab.dry_run.total_steps == 3
     pb = tab.dry_run.playback
+    moves = _move_commands(tab)
 
     async def wait_step(step: int) -> None:
         async with asyncio.timeout(30):
-            while pb.executing_step_index != step or not pb.executing_step_at_end:
+            while pb.executing_command != step or not pb.executing_step_at_end:
                 await asyncio.sleep(0.05)
 
     try:
         user.find(marker="editor-step-program").click()
-        await wait_step(0)
+        await wait_step(moves[0])
         first = await waldoctl.commander.client.pose()
         assert first is not None
 
         user.find(marker="editor-step-program").click()
-        await wait_step(1)
+        await wait_step(moves[1])
         second = await waldoctl.commander.client.pose()
         assert second is not None
         assert np.linalg.norm(np.array(second[:3]) - first[:3]) == pytest.approx(
@@ -833,7 +861,7 @@ with RobotClient() as rbt:
         assert is_any_program_running() and not pb.is_playing
 
         user.find(marker="editor-step-program").click()
-        await wait_step(2)
+        await wait_step(moves[2])
         third = await waldoctl.commander.client.pose()
         assert third is not None
         assert np.linalg.norm(np.array(third[:3]) - second[:3]) == pytest.approx(
@@ -910,11 +938,13 @@ async def test_step_program_blended_moves_run_one_per_press(user: User) -> None:
         await wait_controller_j1(95.0)
         assert is_any_program_running() is True, "still paused after the second member"
 
-        # Third press: the non-blended move closes the group (step 1 in the
-        # timeline, which renders the blend pair as one segment).
+        # Third press: the non-blended move closes the group, whose events
+        # carry the head's command; its own events carry command 2.
         user.find(marker="editor-step-program").click()
         await wait_controller_j1(90.0)
-        assert tab.dry_run.playback.executing_step_index == 1
+        assert tab.dry_run.playback.executing_command == _move_commands(tab)[2], (
+            "the closing move is the program's third move"
+        )
         assert is_any_program_running() is True
 
         # Play resumes normal execution through to completion.
@@ -958,31 +988,34 @@ async def test_step_program_async_client_runs_one_per_press(user: User) -> None:
         user, script=_ASYNC_THREE_MOVE_SCRIPT
     )
     pb = tab.dry_run.playback
+    moves = _move_commands(tab)
 
     async def wait_step_complete(step: int, timeout_s: float) -> None:
         interval = 0.05
         for _ in range(int(timeout_s / interval)):
-            if pb.executing_step_index == step and pb.executing_step_at_end:
+            if pb.executing_command == step and pb.executing_step_at_end:
                 return
             await asyncio.sleep(interval)
         tail = [entry.text for entry in tab.log.entries[-5:]]
         raise TimeoutError(
-            f"step {step} never completed: index={pb.executing_step_index}, "
+            f"step {step} never completed: index={pb.executing_command}, "
             f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
             f"log tail={tail}"
         )
 
     try:
         user.find(marker="editor-step-program").click()
-        await wait_step_complete(0, timeout_s=30.0)
+        await wait_step_complete(moves[0], timeout_s=30.0)
         await _wait_j1_near(85.0)
 
         await asyncio.sleep(0.5)
-        assert pb.executing_step_index == 0, "paused start ran more than one command"
+        assert pb.executing_command == moves[0], (
+            "paused start ran more than one command"
+        )
         assert is_any_program_running() is True, "program must be paused, not finished"
 
         user.find(marker="editor-step-program").click()
-        await wait_step_complete(1, timeout_s=15.0)
+        await wait_step_complete(moves[1], timeout_s=15.0)
         await _wait_j1_near(95.0)
         assert is_any_program_running() is True, "still paused after the second step"
     finally:
@@ -1061,8 +1094,9 @@ async def test_simulation_creates_targets_for_literal_moves(
     tracked by the CM6 StateField for interactive 3D editing. No markers are
     added to the user's source code.
     """
-    from waldo_commander.state import ui_state
     import waldoctl
+
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -1346,6 +1380,7 @@ async def test_recorded_steps_insert_below_cursor(user: User) -> None:
     the cursor line in chronological order, without moving the user's cursor
     and without touching the surrounding lines."""
     import waldoctl
+
     from waldo_commander.services.motion_recorder import motion_recorder
     from waldo_commander.state import ui_state
 
@@ -1416,6 +1451,7 @@ async def test_recording_cursor_tracks_user_edits(user: User) -> None:
     reads the echoed position back, so recorded steps keep landing at the
     taught spot instead of a stale line number."""
     import waldoctl
+
     from waldo_commander.services.motion_recorder import (
         _RECORD_ANCHOR_ID,
         motion_recorder,
@@ -1480,6 +1516,7 @@ async def test_manual_inserts_follow_cursor(user: User) -> None:
     consecutive inserts stay in order; with the cursor unset or on the last
     line they append at EOF exactly as before."""
     import waldoctl
+
     from waldo_commander.components.editor_decorations import decorations
     from waldo_commander.state import ui_state
 
@@ -1554,91 +1591,75 @@ async def test_manual_inserts_follow_cursor(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_a_record_and_a_plan_of_different_lengths_still_build_a_scrub_bar(
-    user: User,
-) -> None:
-    """The scrub bar is built from the timeline's own segments.
-
-    A record does not have one block per planned segment: a `time.sleep`
-    between two moves is a third command with no plan segment of its own,
-    and a run that hits its budget stops with segments left over. Reading
-    the timeline's times at a *planned* segment's index therefore paints
-    the wrong window, or walks off the end — and the rebuild clears the
-    bar before it throws, so a single miss leaves it permanently empty.
-    """
-    import numpy as np
+async def test_a_sleep_between_two_moves_owns_a_scrub_division(user: User) -> None:
+    """A delay is a command that owns time on the commanded record, so the
+    scrub bar shows it as a division of its own between the two moves it
+    separates, and the timeline plays the arm holding through it."""
     import waldoctl
 
-    from waldo_commander.components.playback import playback
-    from waldo_commander.state import PathSegment
+    editor, tab = await _open_simulated_three_move_program(user, _SLEEP_SCRIPT)
+    playback = editor.playback
+    record = tab.dry_run.commanded
+    assert record is not None
+    assert [b.line_number for b in record.blocks if b.rows] == [4, 5, 6]
 
-    await user.open("/")
-    await wait_for_app_ready()
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    def record(blocks: int, rows_each: int = 4) -> waldoctl.TickIndex:
-        rows = blocks * rows_each
-        q = np.zeros((rows, 6), dtype=np.float32)
-        return waldoctl.TickIndex(
-            row_dt_s=0.02,
-            joints_rad=q,
-            commanded_rad=q.copy(),
-            tcp=np.zeros((rows, 6), dtype=np.float32),
-            tool_closed=np.zeros(rows, dtype=np.float32),
-            tool_gripping=np.zeros(rows, dtype=np.bool_),
-            blocks=tuple(
-                waldoctl.TickBlock(
-                    command=i,
-                    start_row=i * rows_each,
-                    rows=rows_each,
-                    line_number=3 + i,
-                )
-                for i in range(blocks)
-            ),
-        )
-
-    def plan(n: int) -> list[PathSegment]:
-        return [
-            PathSegment(
-                points=[[0.3, 0.0, 0.2], [0.4, 0.0, 0.2]],
-                color="#00ff00",
-                is_valid=True,
-                line_number=3 + i,
-                estimated_duration=0.5,
-            )
-            for i in range(n)
-        ]
+    playback._do_update_scrub_segments()
+    tl = playback._ensure_timeline()
+    assert tl is not None
+    assert [s.move_type for s in tl.segments] == ["joints", "sleep", "joints"]
+    assert tl.segments[1].line_number == 5
+    assert tl.segment_durations[1] == pytest.approx(0.5, abs=record.row_dt_s)
+    assert len(playback._segment_elements) == 3, (
+        "the bar must index the record's commands, a sleep included"
+    )
+    held = tl.sample(tl.cumulative_times[1] + 0.25)
+    assert held.segment_index == 1
+    assert held.joints == pytest.approx(tl.sample(tl.cumulative_times[1]).joints)
 
     program = waldoctl.commander.programs.active
-    assert program is not None
+    assert program is tab
 
-    # More blocks than segments: a sleep between two moves.
-    # Then fewer: a run that stopped on its budget.
-    for blocks, segments in ((3, 2), (1, 3)):
-        program.dry_run.path_segments = plan(segments)
-        program.dry_run.total_steps = segments
-        program.dry_run.ticks = record(blocks)
-        playback.invalidate_timeline()
-        assert playback._scrub_container is not None, "scrub bar not built"
-        # The public entry defers onto a timer for NiceGUI's benefit; the
-        # body is what indexes, and it is what this is about.
-        playback._do_update_scrub_segments()
 
-        tl = playback._ensure_timeline()
-        assert tl is not None
-        assert len(tl.segments) == len(tl.segment_durations) == blocks
-        assert len(tl.cumulative_times) == blocks + 1
-        divisions = len(playback._segment_elements)
-        assert divisions == blocks, (
-            f"{blocks} recorded commands must give {blocks} scrub divisions, "
-            f"got {divisions} — the bar is indexing the plan, not the record"
+@pytest.mark.integration
+async def test_live_run_highlight_follows_program_command(user: User) -> None:
+    """The stepping wrapper numbers the queued commands it runs; the host
+    resolves that number to the program command the preview drew. A sleep
+    between two moves is a command on the plan the wrapper never sees, so
+    counting positions would put the second move's highlight on the sleep's
+    division and line."""
+    import waldoctl
+
+    from waldo_commander.components.editor_decorations import decorations
+
+    editor, tab = await _open_simulated_three_move_program(user, _SLEEP_SCRIPT)
+    segments = tab.dry_run.path_segments
+    assert [s.move_type for s in segments] == ["joints", "sleep", "joints"]
+    pb = tab.dry_run.playback
+    moves = _move_commands(tab)
+
+    async def wait_complete(command: int) -> None:
+        async with asyncio.timeout(30):
+            while not (pb.executing_command == command and pb.executing_step_at_end):
+                await asyncio.sleep(0.05)
+
+    try:
+        user.find(marker="editor-step-program").click()
+        await wait_complete(moves[0])
+        assert pb.current_step == 0
+        assert decorations._executing_line_by_tab.get(tab.id) == 4
+
+        # The sleep runs on its own; the next grant runs the second move.
+        user.find(marker="editor-step-program").click()
+        await wait_complete(moves[1])
+        assert pb.current_step == 2, (
+            "the highlight must land on the move, not the sleep"
         )
-        # And the highlight follows the record's own line numbers.
-        sample = tl.sample(tl.total_duration)
-        assert tl.segments[sample.segment_index].line_number == 3 + blocks - 1
-
-    program.dry_run.ticks = None
-    program.dry_run.path_segments = []
-    program.dry_run.total_steps = 0
-    playback.invalidate_timeline()
+        assert decorations._executing_line_by_tab.get(tab.id) == 6
+        assert editor.playback._exec_step_index == 2
+    finally:
+        if is_any_program_running():
+            await editor.playback.toggle_play()
+        async with asyncio.timeout(30):
+            while is_any_program_running():
+                await asyncio.sleep(0.1)
+    assert waldoctl.commander.programs.active is tab

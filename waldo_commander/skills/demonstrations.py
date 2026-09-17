@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from waldoctl.client import RobotClient
+from waldoctl.dry_run import DryRunClient
 from waldoctl.recordings import Demonstration, RecordedTool
 from waldoctl.skills import MissingCapability, SkillError, report_progress, skill
 from waldoctl.status import ActionState, StatusBuffer
@@ -51,11 +52,7 @@ async def _fresh(stream: AsyncIterator[StatusBuffer], timeout: float) -> StatusB
                 return status
 
 
-@skill(
-    id="waldo.replay_demonstration",
-    version="1.0.0",
-    requires=frozenset({"motion.joint"}),
-)
+@skill(id="waldo.replay_demonstration", version="1.0.0")
 async def replay_demonstration(
     rbt: RobotClient,
     recording: Demonstration,
@@ -88,12 +85,10 @@ async def replay_demonstration(
     validate_motion(1.0, observation_timeout)
     if type(replay_gripper) is not bool or type(reconciled_session) is not bool:
         raise ValueError("Replay options must be booleans")
-    caps = rbt.skill_capabilities
-    if f"backend.{recording.backend}" not in caps:
+    robot = rbt.robot
+    if robot is None or robot.backend_package != recording.backend:
         raise MissingCapability(f"This recording belongs to {recording.backend}")
-    preview = "execution.preview" in caps
-    if not preview and "observation.timed" not in caps:
-        raise MissingCapability("Replay requires identified, timed status observations")
+    preview = isinstance(rbt, DryRunClient)
     first = recording.samples[0]
     identity = _identity(first.tool)
     if any(_identity(s.tool) != identity for s in recording.samples):

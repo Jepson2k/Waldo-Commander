@@ -24,7 +24,6 @@ def _seg(
     is_dashed=True,
     show_arrows=True,
     is_travel=False,
-    joints=None,
 ):
     """Create a PathSegment with sensible defaults."""
     if points is None:
@@ -34,7 +33,6 @@ def _seg(
         color=color,
         is_valid=is_valid,
         line_number=line_number,
-        joints=joints or [0.0] * 6,
         is_dashed=is_dashed,
         show_arrows=show_arrows,
         is_travel=is_travel,

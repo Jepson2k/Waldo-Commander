@@ -1,13 +1,13 @@
-"""The key to the physics overlays.
+"""The key to the predicted overlays.
 
-A picture whose magnitudes are unstated lies. The achieved path is
-coloured by tracking error and contact arrows are scaled by force, and
+A picture whose magnitudes are unstated lies. The predicted path is
+coloured by following error and contact arrows are scaled by force, and
 neither number is guessable from the scene — a millimetre of sag drawn
 at its true size is invisible, and an arrow whose length means nothing
 in particular reads as though it did. So the scale is written down.
 
-Shown only while a record is on screen and something is drawn from it.
-Nothing here exists on a backend that does not simulate.
+Shown only while a predicted record that differs from the commanded one
+is on screen, row by row for what that record carries.
 """
 
 from __future__ import annotations
@@ -17,13 +17,14 @@ import math
 import waldoctl
 from nicegui import ui
 
+from waldo_commander.components.playback import layers_available
 from waldo_commander.services.urdf_scene.physics_overlay import (
     FORCE_SCALE_M_PER_N,
-    FULL_DIVERGENCE_RAD,
+    FULL_FOLLOWING_ERROR_RAD,
 )
 from waldo_commander.state import simulation_state
 
-_TRACKING_DEG = math.degrees(FULL_DIVERGENCE_RAD)
+_TRACKING_DEG = math.degrees(FULL_FOLLOWING_ERROR_RAD)
 _ARROW_CM_PER_N = FORCE_SCALE_M_PER_N * 100.0
 
 
@@ -50,11 +51,11 @@ class PhysicsLegend:
             self._rows = [
                 (
                     self._swatch_row(
-                        "Achieved path",
-                        f"green on target, red at {_TRACKING_DEG:.1f}° of error",
+                        "Predicted path",
+                        f"green on its command, red at {_TRACKING_DEG:.1f}° of error",
                         ("#59d973", "#f25940"),
                     ),
-                    "divergence_visible",
+                    "predicted_visible",
                 ),
                 (
                     self._swatch_row(
@@ -94,11 +95,11 @@ class PhysicsLegend:
         if self._root is None:
             return
         active = waldoctl.commander.programs.active
-        has_record = active is not None and active.dry_run.ticks is not None
+        available = layers_available(active.dry_run if active is not None else None)
         view = waldoctl.commander.settings.view
         shown = 0
         for row, flag in self._rows:
-            on = has_record and getattr(view, flag)
+            on = available.get(flag, False) and getattr(view, flag)
             row.set_visibility(on)
             shown += int(on)
         self._root.set_visibility(shown > 0)

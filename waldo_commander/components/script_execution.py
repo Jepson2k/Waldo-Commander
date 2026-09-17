@@ -20,6 +20,7 @@ import contextlib
 import logging
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 from nicegui import Client, context, ui
@@ -36,11 +37,33 @@ from waldo_commander.services.stepping_client import GUIStepController
 from waldo_commander.services.run_records import RunRecord
 from waldo_commander.services.programs import is_any_program_running
 import waldoctl
-from waldoctl import LogEntry
+from waldoctl import CommandNote, LogEntry
+from waldoctl.commands import command_table
 
 from waldo_commander.state import playback_coordination, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
+
+_COMMANDS = command_table()
+
+
+def program_command(notes: Sequence[CommandNote], ordinal: int) -> int:
+    """The program index of the *ordinal*-th queued command a running script
+    issued.
+
+    The dry run notes every command in program order, and the stepping
+    wrapper counts only the ones the command table says mint a queue index,
+    so the ordinal walks the notes that do. Without notes — no plan for the
+    program — the ordinal is the best index there is.
+    """
+    seen = -1
+    for index, note in enumerate(notes):
+        spec = _COMMANDS.get(note.method)
+        if spec is not None and spec.mints_index:
+            seen += 1
+            if seen == ordinal:
+                return index
+    return ordinal
 
 
 class ScriptExecutionController:
@@ -221,9 +244,8 @@ class ScriptExecutionController:
 
             if launching_tab is not None:
                 launching_tab.execution.is_running = True
-            if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-                if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
-                    raise TimeoutError("Controller resume was not confirmed")
+            if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                raise TimeoutError("Controller resume was not confirmed")
 
             self.script_handle = await run_script(
                 script_config, on_stdout, on_stderr, session_id=self._step_session_id
@@ -234,7 +256,7 @@ class ScriptExecutionController:
             # the script-start edge and reacts.
             if launching_tab is not None:
                 launching_tab.execution.is_running = True
-                launching_tab.dry_run.playback.executing_step_index = -1
+                launching_tab.dry_run.playback.executing_command = -1
                 launching_tab.dry_run.playback.executing_step_at_end = False
                 launching_tab.dry_run.playback.is_playing = not paused
                 launching_tab.dry_run.playback.notify_step_changed()
@@ -332,9 +354,8 @@ class ScriptExecutionController:
         """Resume a paused script subprocess (no-op if no script is stepping)."""
         async with self._execution_control_lock:
             if self._step_controller:
-                if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-                    if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
-                        raise TimeoutError("Controller resume was not confirmed")
+                if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                    raise TimeoutError("Controller resume was not confirmed")
                 self._step_controller.signal_play()
                 if self.active_record:
                     self.active_record.append({"event": "resume"})
@@ -349,11 +370,10 @@ class ScriptExecutionController:
                 # reported, or the play button keeps showing a program that is
                 # in fact held.
                 self._step_controller.signal_pause()
-                if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-                    if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
-                        raise TimeoutError(
-                            "Script held, but controller pause was not confirmed"
-                        )
+                if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
+                    raise TimeoutError(
+                        "Script held, but controller pause was not confirmed"
+                    )
                 if self.active_record:
                     self.active_record.append({"event": "pause"})
 
@@ -361,9 +381,8 @@ class ScriptExecutionController:
         """Step a paused script forward by one command (no-op if not stepping)."""
         async with self._execution_control_lock:
             if self._step_controller:
-                if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-                    if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
-                        raise TimeoutError("Controller resume was not confirmed")
+                if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                    raise TimeoutError("Controller resume was not confirmed")
                 self._step_controller.signal_step()
                 if self.active_record:
                     self.active_record.append({"event": "step"})
@@ -379,8 +398,13 @@ class ScriptExecutionController:
                 self.active_record.append(event)
             event_type = event.get("event")
             method = event.get("method", "")
-            step = event.get("step", 0)
+            ordinal = int(event.get("command", -1))
             running_tab = self._launching_program()
+            command = (
+                program_command(running_tab.dry_run.commands, ordinal)
+                if running_tab is not None
+                else ordinal
+            )
             if isinstance(event_type, str) and event_type.startswith("skill_"):
                 phase = event_type.removeprefix("skill_")
                 message = event.get("message", "")
@@ -388,23 +412,18 @@ class ScriptExecutionController:
                 progress = f" ({fraction:.0%})" if fraction is not None else ""
                 detail = f": {message}" if message else ""
                 self._record_line(f"{method} {phase}{progress}{detail}", ui_client)
-            elif event_type == "start":
+            elif event_type in ("start", "complete"):
                 with ui_client:
                     if running_tab is not None:
-                        running_tab.dry_run.playback.executing_step_index = step
-                        running_tab.dry_run.playback.executing_step_at_end = False
-                        running_tab.dry_run.playback.current_step = step
-                        running_tab.dry_run.playback.notify_step_changed()
+                        pb = running_tab.dry_run.playback
+                        pb.executing_command = command
+                        pb.executing_step_at_end = event_type == "complete"
+                        pb.notify_step_changed()
                     simulation_state.notify_step_changed()
-            elif event_type == "complete":
-                with ui_client:
-                    if running_tab is not None:
-                        running_tab.dry_run.playback.executing_step_index = step
-                        running_tab.dry_run.playback.executing_step_at_end = True
-                        running_tab.dry_run.playback.current_step = step
-                        running_tab.dry_run.playback.notify_step_changed()
-                    simulation_state.notify_step_changed()
-                logger.debug("Script event: %s completed (step %d)", method, step)
+                if event_type == "complete":
+                    logger.debug(
+                        "Script event: %s completed (command %d)", method, command
+                    )
 
     async def _watch_script_events(self, ui_client: Client) -> None:
         """Poll for script events and publish step transitions to simulation_state."""
@@ -418,14 +437,10 @@ class ScriptExecutionController:
                         and self._step_controller.waiting_for_step()
                     ):
                         self._step_controller.signal_pause()
-                        if (
-                            "execution.speed"
-                            in waldoctl.commander.client.skill_capabilities
-                        ):
-                            if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
-                                raise TimeoutError(
-                                    "Step completed, but controller pause was not confirmed"
-                                )
+                        if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
+                            raise TimeoutError(
+                                "Step completed, but controller pause was not confirmed"
+                            )
                 await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             logger.debug("Event watcher task cancelled")

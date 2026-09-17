@@ -216,13 +216,14 @@ async def test_commander_runs_on_the_par6_runtime(
             "an unreferenced arm reported itself back-driveable"
         )
 
-        # The physics pass refines the plan the editor adopted: a planned
-        # program yields a tick record, not a permanently pending scrub bar.
+        # The predicted pass answers the plan the editor adopted: a planned
+        # program yields a predicted record, and nothing waits on it — the
+        # scrub bar plays the commanded record meanwhile.
+        from waldo_commander.components.playback import layers_available, playback
         from waldo_commander.services.path_visualizer import path_visualizer
 
         program = waldoctl.commander.programs.active
         assert program is not None
-        assert robot.has_physics_simulation
         target = [float(v) for v in status.joints.angles.deg]
         target[0] += 5.0
         source = (
@@ -235,10 +236,18 @@ async def test_commander_runs_on_the_par6_runtime(
             await path_visualizer.update_path_visualization(source, program.id) is None
         )
         assert program.dry_run.path_segments, "the planning pass produced no path"
-        assert program.dry_run.ticks_pending
+        assert program.dry_run.predicted_current is None, (
+            "predicted is commanded until the pass lands"
+        )
+        assert playback._scrub_slider is not None and playback._scrub_slider.enabled
         assert await path_visualizer.update_physics_simulation(program.id) is None
-        assert program.dry_run.ticks is not None, "the physics pass never ran"
-        assert not program.dry_run.ticks_pending
+        predicted = program.dry_run.predicted_current
+        assert predicted is not None, "the predicted pass never ran"
+        assert "setpoint_rad" in predicted.channels
+        assert layers_available(program.dry_run)["predicted_visible"]
+        playback.refresh_layers()
+        assert playback._layer_checks["predicted_visible"].enabled
+        assert playback._scrub_slider.enabled
 
         # Diagnostics off the wire, all of it from the status broadcast:
         # the loop's tail, the drives' readings, and the torque series the
@@ -610,7 +619,6 @@ async def test_commander_runs_on_the_par6_runtime(
         from nicegui import run
         from waldo_commander.skills import attach_object, detach_object
         from waldo_commander.services.path_visualizer import _run_simulation_isolated
-        from par6.client.dry_run_client import DryRunRobotClient
 
         original_world = await client.shapes()
         assert original_world is not None
@@ -644,7 +652,6 @@ async def test_commander_runs_on_the_par6_runtime(
             source,
             np.radians(await client.angles()),
             backend_package="par6",
-            dry_run_client_cls=DryRunRobotClient,
             shapes_wire=[s.to_wire() for s in world.program],
             attachment_epoch=world.attachment_epoch,
         )
@@ -668,12 +675,11 @@ async def test_commander_runs_on_the_par6_runtime(
             assert await visualizer.update_path_visualization(physics_source) is None
             program = waldoctl.commander.programs.active
             assert program is not None
-            program.dry_run.ticks = None
             assert await visualizer.update_physics_simulation() is None
-            ticks = program.dry_run.ticks
-            assert ticks is not None, "the editor must produce a physics record"
-            assert ticks.rows > 1 and ticks.duration_s >= 0.2
-            assert str(ticks.stop) == "completed"
+            predicted = program.dry_run.predicted_current
+            assert predicted is not None, "the editor must produce a predicted record"
+            assert predicted.rows > 1 and predicted.duration_s >= 0.2
+            assert str(predicted.stop) == "completed"
         finally:
             visualizer.cancel_physics()
 

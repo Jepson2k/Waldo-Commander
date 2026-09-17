@@ -36,6 +36,9 @@ _COMMANDS = command_table()
 # Commands that queue on the controller and return an index: the ones the
 # wrapper waits on and steps.
 STEPPABLE_METHODS = frozenset(n for n, s in _COMMANDS.items() if s.mints_index)
+# Plain attribute reads a skill makes on its client; not commands, so a
+# pending blend group has nothing to close.
+_PASSTHROUGH_ATTRS = frozenset({"robot"})
 
 # Controls that must reach the controller at once: they cancel whatever a
 # pending blend group was waiting for, so they never wait on it first.
@@ -123,7 +126,7 @@ class StepIO:
         self._control_file = self._temp_dir / f".parol_control_{session_id}"
         self._event_file = self._temp_dir / f".parol_events_{session_id}"
         self._ack_file = self._temp_dir / f".parol_ack_{session_id}"
-        self._step_count = 0
+        self._issued = 0
         self._last_step_acked = 0
         self.capture_values = os.environ.get("WALDO_RECORD_VALUES") == "1"
         self._event_lock = threading.Lock()
@@ -172,13 +175,26 @@ class StepIO:
         except (json.JSONDecodeError, OSError):
             return []
 
-    def emit_event(self, event_type: str, method: str, **extra: Any) -> None:
+    def issue(self) -> int:
+        """The ordinal of the queued command about to be issued: how many
+        the script issued before it. The dry run numbers the program's
+        queued commands the same way, so an event carrying this ordinal
+        names the command its preview drew."""
+        ordinal = self._issued
+        self._issued += 1
+        return ordinal
+
+    def emit_event(
+        self, event_type: str, method: str, *, command: int = -1, **extra: Any
+    ) -> None:
         """
         Emit an event to the event file.
 
         Args:
             event_type: "start" or "complete"
             method: Name of the motion method
+            command: Ordinal of the queued command the event is about; a
+                blend group's events carry its head's
             **extra: Additional event data
         """
         with self._event_lock:
@@ -188,7 +204,7 @@ class StepIO:
                 {
                     "event": event_type,
                     "method": method,
-                    "step": self._step_count,
+                    "command": command,
                     "ts": time.time(),
                     "mono_ns": time.monotonic_ns(),
                     "active_s": self.active_time(),
@@ -267,10 +283,6 @@ class StepIO:
             self._ack_file, {"step_acked": self._last_step_acked, "waiting": waiting}
         )
 
-    def increment_step_count(self) -> None:
-        """Increment the internal step counter."""
-        self._step_count += 1
-
 
 _STEPPABLE_TOOL_METHODS = frozenset({"set_position", "open", "close", "calibrate"})
 
@@ -316,8 +328,24 @@ class SteppingClientWrapper:
         self._wrapped = wrapped_client
         self._step_io = step_io
         self._in_blend = False
+        self._blend_head: int = -1
         self._last_blend_index: int = -1
         self._blend_waits: list[tuple[int, CompletionBudget]] = []
+
+    def _open_group(self, name: str) -> None:
+        """Count this blend member; the first one opens the group, and its
+        ordinal is the one the group's events carry."""
+        command = self._step_io.issue()
+        if not self._in_blend:
+            self._in_blend = True
+            self._blend_head = command
+            self._step_io.emit_event("start", name, command=command, blend=True)
+
+    def _close_group(self) -> None:
+        self._in_blend = False
+        self._blend_head = -1
+        self._last_blend_index = -1
+        self._blend_waits.clear()
 
     def run_skill(self, invoke: Callable[[RobotClient], Coroutine[Any, Any, R]]) -> R:
         """Keep native motion stepping when a sync program calls an async skill."""
@@ -404,6 +432,7 @@ class SteppingClientWrapper:
         clear. No pause gate — callers add one where stepping applies."""
         if not self._in_blend:
             return
+        head = self._blend_head
         try:
             # Indices complete in order: the group's last member covers the
             # rest, and its budget is what the whole group was dispatched with.
@@ -415,11 +444,8 @@ class SteppingClientWrapper:
                 finally:
                     current_budget.reset(token)
         finally:
-            self._in_blend = False
-            self._last_blend_index = -1
-            self._blend_waits.clear()
-        self._step_io.emit_event("complete", "blend_group")
-        self._step_io.increment_step_count()
+            self._close_group()
+        self._step_io.emit_event("complete", "blend_group", command=head)
 
     def _flush_blend(self) -> None:
         """Flush any pending blend group, emit events, and pause if stepping."""
@@ -434,10 +460,9 @@ class SteppingClientWrapper:
         just been told to drop it, so its indices will never complete."""
         if not self._in_blend:
             return
-        self._in_blend = False
-        self._last_blend_index = -1
-        self._step_io.emit_event("complete", "blend_group")
-        self._step_io.increment_step_count()
+        head = self._blend_head
+        self._close_group()
+        self._step_io.emit_event("complete", "blend_group", command=head)
 
     @property
     def tool(self):
@@ -453,9 +478,7 @@ class SteppingClientWrapper:
         if args[0] is None:
             self.finalize()
         else:
-            self._in_blend = False
-            self._last_blend_index = -1
-            self._blend_waits.clear()
+            self._close_group()
         return self._wrapped.__exit__(*args)
 
     def __getattr__(self, name: str) -> Any:
@@ -476,6 +499,9 @@ class SteppingClientWrapper:
                 return result
 
             return immediate
+
+        if name in _PASSTHROUGH_ATTRS:
+            return attr
 
         if name not in _EXECUTION_CONTROLS:
             self._flush_blend()
@@ -513,9 +539,7 @@ class SteppingClientWrapper:
                 # semantics). Events stay grouped — the preview timeline
                 # renders the blend as a single segment, so per-member
                 # events would desync the executing-step highlight.
-                if not self._in_blend:
-                    self._step_io.emit_event("start", name, blend=True)
-                    self._in_blend = True
+                self._open_group(name)
                 result = method(*args, **{**kwargs, "r": 0.0})
                 if isinstance(result, int) and result >= 0:
                     self._wait_completed(result)
@@ -526,9 +550,7 @@ class SteppingClientWrapper:
             if is_blended:
                 # Blended command — emit start event on first blend command,
                 # then execute without waiting or stepping
-                if not self._in_blend:
-                    self._step_io.emit_event("start", name, blend=True)
-                    self._in_blend = True
+                self._open_group(name)
                 result = method(*args, **kwargs)
                 if isinstance(result, int) and result >= 0:
                     self._last_blend_index = result
@@ -540,15 +562,15 @@ class SteppingClientWrapper:
             # Non-blended command — flush any pending blend group first
             self.finalize()
 
-            self._step_io.emit_event("start", name)
+            command = self._step_io.issue()
+            self._step_io.emit_event("start", name, command=command)
 
             result = method(*args, **kwargs)
 
             if isinstance(result, int) and result >= 0:
                 self._wait_completed(result)
 
-            self._step_io.emit_event("complete", name)
-            self._step_io.increment_step_count()
+            self._step_io.emit_event("complete", name, command=command)
 
             if self._step_io.check_should_pause():
                 self._step_io.wait_for_step_or_play(check=self._check_health)
@@ -588,8 +610,12 @@ class AsyncSteppingClientWrapper:
         self._wrapped = wrapped_client
         self._step_io = step_io
         self._in_blend = False
+        self._blend_head: int = -1
         self._last_blend_index: int = -1
         self._blend_waits: list[tuple[int, CompletionBudget]] = []
+
+    _open_group = SteppingClientWrapper._open_group
+    _close_group = SteppingClientWrapper._close_group
 
     async def _wait_completed(self, index: int) -> None:
         try:
@@ -668,6 +694,7 @@ class AsyncSteppingClientWrapper:
         clear. No pause gate — callers add one where stepping applies."""
         if not self._in_blend:
             return
+        head = self._blend_head
         try:
             if self._blend_waits:
                 index, budget = self._blend_waits[-1]
@@ -677,11 +704,8 @@ class AsyncSteppingClientWrapper:
                 finally:
                     current_budget.reset(token)
         finally:
-            self._in_blend = False
-            self._last_blend_index = -1
-            self._blend_waits.clear()
-        self._step_io.emit_event("complete", "blend_group")
-        self._step_io.increment_step_count()
+            self._close_group()
+        self._step_io.emit_event("complete", "blend_group", command=head)
 
     async def _flush_blend(self) -> None:
         if not self._in_blend:
@@ -693,10 +717,9 @@ class AsyncSteppingClientWrapper:
     def _discard_blend(self) -> None:
         if not self._in_blend:
             return
-        self._in_blend = False
-        self._last_blend_index = -1
-        self._step_io.emit_event("complete", "blend_group")
-        self._step_io.increment_step_count()
+        head = self._blend_head
+        self._close_group()
+        self._step_io.emit_event("complete", "blend_group", command=head)
 
     @property
     def tool(self):
@@ -711,9 +734,7 @@ class AsyncSteppingClientWrapper:
         if exc_type is None:
             await self.finalize()
         else:
-            self._in_blend = False
-            self._last_blend_index = -1
-            self._blend_waits.clear()
+            self._close_group()
         return await self._wrapped.__aexit__(exc_type, exc, tb)
 
     def __getattr__(self, name: str) -> Any:
@@ -765,9 +786,7 @@ class AsyncSteppingClientWrapper:
             if is_blended and self._step_io.check_should_pause():
                 # Stepping: exact-stop group members, one per step grant,
                 # with events at group granularity (see the sync wrapper).
-                if not self._in_blend:
-                    self._step_io.emit_event("start", name, blend=True)
-                    self._in_blend = True
+                self._open_group(name)
                 result = await method(*args, **{**kwargs, "r": 0.0})
                 if isinstance(result, int) and result >= 0:
                     await self._wait_completed(result)
@@ -778,9 +797,7 @@ class AsyncSteppingClientWrapper:
                 return result
 
             if is_blended:
-                if not self._in_blend:
-                    self._step_io.emit_event("start", name, blend=True)
-                    self._in_blend = True
+                self._open_group(name)
                 result = await method(*args, **kwargs)
                 if isinstance(result, int) and result >= 0:
                     self._last_blend_index = result
@@ -791,12 +808,12 @@ class AsyncSteppingClientWrapper:
 
             await self.finalize()
 
-            self._step_io.emit_event("start", name)
+            command = self._step_io.issue()
+            self._step_io.emit_event("start", name, command=command)
             result = await method(*args, **kwargs)
             if isinstance(result, int) and result >= 0:
                 await self._wait_completed(result)
-            self._step_io.emit_event("complete", name)
-            self._step_io.increment_step_count()
+            self._step_io.emit_event("complete", name, command=command)
 
             if self._step_io.check_should_pause():
                 await self._step_io.wait_for_step_or_play_async(
