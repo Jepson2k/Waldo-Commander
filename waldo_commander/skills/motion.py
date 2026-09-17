@@ -6,7 +6,7 @@ from waldoctl.client import RobotClient
 from waldoctl.skills import SkillError, report_progress, skill
 
 
-@skill(id="waldo.retract", version="1.0.0", requires=frozenset({"motion.linear"}))
+@skill(id="waldo.retract", version="1.0.0")
 async def retract(
     rbt: RobotClient,
     *,
