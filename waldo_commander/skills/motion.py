@@ -12,7 +12,7 @@ from waldoctl.skills import SkillError, report_progress, skill
 from waldo_commander.skills._motion import completed, validate_motion
 
 
-@skill(id="waldo.retract", version="1.0.0", requires=frozenset({"motion.linear"}))
+@skill(id="waldo.retract", version="1.0.0")
 async def retract(
     rbt: RobotClient,
     *,
