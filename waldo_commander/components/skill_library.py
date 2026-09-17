@@ -76,9 +76,8 @@ def _selected_tool_preamble(tool: ToolStatus) -> str:
     if tool.key in ("", "NONE"):
         return ""
     return (
-        f"_skill_tool_index = rbt.select_tool({tool.key!r}, variant_key={tool.variant_key!r})\n"
-        "if _skill_tool_index < 0 or not rbt.wait_command(_skill_tool_index, timeout=10.0):\n"
-        "    raise RuntimeError('Tool selection was not confirmed')\n"
+        f"if rbt.select_tool({tool.key!r}, variant_key={tool.variant_key!r}) < 0:\n"
+        "    raise RuntimeError('Tool selection was refused')\n"
     )
 
 
