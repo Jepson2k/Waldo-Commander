@@ -6,6 +6,7 @@ import math
 from collections.abc import Awaitable, Callable
 
 from waldoctl import RobotClient
+from waldoctl.dry_run import DryRunClient
 from waldoctl.setup import Pose
 from waldoctl.signals import DigitalSignal
 from waldoctl.skills import report_progress, skill
@@ -73,11 +74,7 @@ async def _transfer(
     return index
 
 
-@skill(
-    id="waldo.transfer",
-    version="1.0.0",
-    requires=frozenset({"motion.linear", "tool.gripper"}),
-)
+@skill(id="waldo.transfer", version="1.0.0")
 async def transfer(
     rbt: RobotClient,
     *,
@@ -109,11 +106,7 @@ async def transfer(
     )
 
 
-@skill(
-    id="waldo.transfer_with_signal",
-    version="1.0.0",
-    requires=frozenset({"motion.linear", "io.digital"}),
-)
+@skill(id="waldo.transfer_with_signal", version="1.0.0")
 async def transfer_with_signal(
     rbt: RobotClient,
     *,
@@ -137,7 +130,7 @@ async def transfer_with_signal(
     """
     _validate(pick, place, clearance_mm, speed, timeout)
     grip.encode(closed_value)
-    preview = "execution.preview" in rbt.skill_capabilities
+    preview = isinstance(rbt, DryRunClient)
     if not preview and (open_fixture is not None or closed_fixture is not None):
         raise ValueError("Signal fixtures require a preview client")
     observed = await read_signal.async_call(
