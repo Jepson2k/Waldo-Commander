@@ -136,10 +136,21 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
         "_skill_waldo_transfer_with_signal("
         in waldoctl.commander.programs.active.source
     )
+    previous = waldoctl.commander.programs.active
     user.find(marker="skill-run").click()
     try:
+        async with asyncio.timeout(60):
+            while (
+                waldoctl.commander.programs.active is previous
+                or is_any_program_running()
+            ):
+                await asyncio.sleep(0.05)
+        launched = waldoctl.commander.programs.active
+        assert launched is not None
+        assert script_exec.last_exit_code == 0, "\n".join(
+            entry.text for entry in launched.log.entries
+        )
         await user.should_see("Skill completed", retries=300)
-        assert script_exec.last_exit_code == 0
         assert (await rbt.io())[2] == 0
     finally:
         if is_any_program_running():
