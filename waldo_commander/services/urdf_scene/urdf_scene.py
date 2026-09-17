@@ -755,12 +755,14 @@ class UrdfScene(
 
         active = waldoctl.commander.programs.active
         view = waldoctl.commander.settings.view
-        # The achieved path, where a run measured one. Its own group, so
-        # a rebuild never disturbs the planned-path diff below, and keyed
-        # on the record's digest so an identical run is left alone.
+        # The predicted path, where a pass produced one that differs from
+        # the commanded path. Its own group, so a rebuild never disturbs
+        # the commanded-path diff below, and keyed on both records'
+        # digests so an identical pair is left alone.
         self.physics_overlay.render(
-            active.dry_run.ticks if active is not None else None,
-            show_divergence=view.divergence_visible,
+            active.dry_run.commanded if active is not None else None,
+            active.dry_run.predicted_current if active is not None else None,
+            show_predicted=view.predicted_visible,
         )
         if active is not None:
             all_segments = active.dry_run.path_segments

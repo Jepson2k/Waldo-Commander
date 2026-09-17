@@ -1,8 +1,13 @@
 """
 Path preview client for offline simulation and visualization.
 
-Wraps a backend's DryRunRobotClient with visualization
-metadata collection (path segments, targets, colors).
+Wraps a backend's DryRunRobotClient with what the backend cannot know
+about the program: the editor line each command came from, the duration
+it asked for, the checkpoint label it carries, and whether its target was
+written as a literal the host may edit in place. The motion itself lives
+in the backend's records — ``plan()`` for what the program commands,
+``simulate()`` for what the arm would do — one block per command, and
+this client's notes line up with those blocks by index.
 """
 
 import asyncio
@@ -12,15 +17,16 @@ import logging
 import math
 import re
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from typing import Any, TypeVar, cast
 
 import numpy as np
-from waldoctl import DryRunResult
+from waldoctl import CommandNote, TickIndex
 from waldoctl.client import RobotClient
 from waldoctl.commands import CommandKind, command_table
 from waldoctl.skills import UnresolvedPreview
 
-from waldo_commander.common.theme import get_color_for_move_type
+from waldo_commander.services.preview_segments import targets_from_record
 from waldo_commander.state import ShapeChange, ToolAction, ToolSelection
 
 logger = logging.getLogger(__name__)
@@ -49,18 +55,21 @@ _UNRESOLVED = frozenset(
     name for name, spec in _COMMANDS.items() if spec.kind is CommandKind.OBSERVATION
 ) | {"command_verdict", "is_estop_pressed"}
 
-
 #: Tool calls that move the jaws. Anything else on a tool is a read, and a
 #: read answers with what it read, not with a queue index.
 _TOOL_ACTIONS = frozenset({"set_position", "open", "close", "calibrate", "grip"})
 
+#: Reads a program makes on its client that are not commands: nothing to
+#: note, and no blend hold to close first.
+_PASSTHROUGH = frozenset({"robot", "tool", "program_length", "active_tool_key"})
+
 
 class _ToolCollectionProxy:
-    """Wraps DryRunRobotClient.tool with collection + visualization metadata.
+    """Wraps DryRunRobotClient.tool with visualization metadata.
 
     Intercepts tool action method calls, delegates to the dry-run tool
-    (which dispatches through the planner), collects the DryRunResult,
-    and augments with tool visualization metadata for 3D arrow rendering.
+    (which dispatches through the planner), notes the action's command
+    and augments it with tool visualization metadata for 3D rendering.
     """
 
     def __init__(self, preview_client: "PathPreviewClient"):
@@ -79,56 +88,31 @@ class _ToolCollectionProxy:
             return attr
 
         def interceptor(*args: Any, **kwargs: Any) -> Any:
-            result = attr(*args, **kwargs)
-            self._preview._record_tool_action(name, args, kwargs, result)
-            return self._preview._queued_result(result)
+            index = attr(*args, **kwargs)
+            self._preview._record_tool_action(name, args, kwargs, index)
+            return index
 
         return interceptor
 
 
-def _object_tracks(
-    result: Any, start: int | None = None, end: int | None = None
-) -> list[dict[str, Any]] | None:
-    """A result's object tracks as segment-dict rows, sliced like the joint
-    trajectory. A one-row (stationary) track is never sliced; None when the
-    backend reports no tracks."""
-    tracks = getattr(result, "object_tracks", None)
-    if tracks is None:
-        return None
-    rows = []
-    sliced = start is not None or end is not None
-    for t in tracks:
-        poses = t.poses
-        if sliced and len(poses) > 1:
-            poses = np.asarray(poses, dtype=np.float64)[start:end]
-        rows.append(
-            {
-                "name": t.name,
-                "poses": np.asarray(poses, dtype=np.float64).tolist(),
-                "carried": bool(t.carried),
-                "physics": bool(t.physics),
-            }
-        )
-    return rows
-
-
 class PathPreviewClient:
-    """Wraps DryRunRobotClient with visualization metadata collection.
+    """Wraps DryRunRobotClient with the program's own knowledge.
 
-    Delegates all commands to the backend's DryRunClient (which runs
-    through the real command pipeline with ControllerState). After each
-    motion, collects path segment dicts for 3D visualization.
+    Delegates every command to the backend's DryRunClient (which runs it
+    through the real planning pipeline) and answers exactly what it
+    answered: a queue index for queued work, a code for the rest. After
+    each call it notes the command's line and what the program asked for,
+    so the records the client hands back can be labelled by line.
 
     Methods are resolved via __getattr__:
-    - Motion methods: dispatch through _client + collect visualization
+    - Motion methods: dispatch through _client + note the command
     - All other methods: delegate to _client (which raises AttributeError
       for unknown names, catching typos in user scripts)
     """
 
     def __init__(
         self,
-        dry_run_client_cls: type,
-        segment_collector: list[dict] | None = None,
+        dry_run_client_cls: Callable[..., Any],
         target_collector: list[dict] | None = None,
         tool_action_collector: list[ToolAction] | None = None,
         tool_selection_collector: list | None = None,
@@ -136,10 +120,8 @@ class PathPreviewClient:
         initial_joints: list[float] | np.ndarray | None = None,
         initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
+        robot: Any = None,
     ):
-        self.segment_collector: list[dict] = (
-            [] if segment_collector is None else segment_collector
-        )
         self.target_collector: list[dict] = (
             [] if target_collector is None else target_collector
         )
@@ -155,7 +137,6 @@ class PathPreviewClient:
         self._tool_meta_registry: dict[str, dict] = tool_meta_registry or {}
         self._tool_metadata: dict | None = None
         self.accumulated_errors: list[str] = []
-        self._command_results: dict[int, bool | None] = {}
         self._skill_line: int = 0
 
         init_deg: list[float] | None = None
@@ -165,26 +146,47 @@ class PathPreviewClient:
         self._client = dry_run_client_cls(
             initial_joints_deg=init_deg, initial_homed=initial_homed
         )
+        if robot is not None:
+            # The worker already holds the backend it planned with; a bare
+            # client would otherwise build its own on first read.
+            self._client.robot = robot
         self._tool_proxy = _ToolCollectionProxy(self)
-        self.last_joints_rad: list[float] | None = None
-        self._blend_move_type: str = ""
         self._pending_sleep: float = 0.0
         self._last_move_non_blocking: bool = False
         self._current_tool_position: float = 0.0  # 0=open, 1=closed
         self._first_motion_seen: bool = False
-        # Editor line per command the backend has recorded, in its order.
-        # The backend keeps the commands so they can be simulated
-        # afterwards but cannot know where they came from — the program
-        # is ours — so this is how a simulated row finds its line.
-        self.command_lines: list[int] = []
+        # A corner move waits in the backend's blend hold for the move
+        # behind it; reading a record closes the hold, so the program's
+        # clock is not refreshed while one is open.
+        self._holding: bool = False
+        self._clock_s: float = 0.0
+        # One note per command the backend has recorded, in its order. The
+        # backend keeps the commands so they can be planned and simulated
+        # but cannot know where they came from — the program is ours.
+        self.notes: list[CommandNote] = []
         self._last_attributed_line = 0
-        # The program's own clock, in simulated seconds. A script that
-        # polls `time.monotonic()` in a loop needs this to advance or it
-        # never leaves the loop; the real clock cannot help, because a
-        # preview runs a minute of robot time in a fraction of a second.
-        self.sim_time_s: float = 0.0
 
         logger.debug("PathPreviewClient initialized")
+
+    @property
+    def robot(self) -> Any:
+        """The backend the preview stands in for; what a skill checks its
+        requirements against."""
+        return self._client.robot
+
+    @property
+    def sim_time_s(self) -> float:
+        """The program's own clock, in simulated seconds.
+
+        A script that polls ``time.monotonic()`` in a loop needs this to
+        advance or it never leaves the loop; the real clock cannot help,
+        because a preview runs a minute of robot time in a fraction of a
+        second. It is the commanded record's length: every move, delay
+        and jaw travel is time on it.
+        """
+        if not self._holding:
+            self._clock_s = self._client.plan().duration_s
+        return self._clock_s
 
     @property
     def skill_capabilities(self) -> frozenset[str]:
@@ -205,134 +207,136 @@ class PathPreviewClient:
         finally:
             self._skill_line = line
 
-    def _command_result(self, result: DryRunResult | None) -> int:
-        """A planned (or blend-held, ``None``) motion's collector-owned index."""
-        return self._mint_index(
-            self._result_valid(result) if result is not None else None
-        )
-
-    def _mint_index(self, success: bool | None) -> int:
-        index = len(self._command_results)
-        if success is not None:
-            self._complete_pending(success)
-        self._command_results[index] = success
-        return -1 if success is False else index
-
-    def _queued_result(self, result: Any) -> int:
-        """The index a queued non-motion command returns: a backend's own
-        index or code, a planner result, or ``None`` when there was nothing
-        to plan and the command simply applied."""
-        if isinstance(result, bool) or result is None:
-            return self._mint_index(True if result is None else result)
-        if isinstance(result, int):
-            return self._mint_index(result >= 0)
-        return self._mint_index(self._result_valid(result))
-
-    @staticmethod
-    def _system_result(result: Any) -> int:
-        """The live client's 1/0/negative code for a system or control
-        command, whatever the dry run answered with."""
-        if isinstance(result, bool):
-            return int(result)
-        if isinstance(result, int):
-            return result
-        if result is None:
-            return 1
-        return 1 if PathPreviewClient._result_valid(result) else -1
-
-    def _complete_pending(self, success: bool) -> None:
-        for index, status in self._command_results.items():
-            if status is None:
-                self._command_results[index] = success
-
-    @staticmethod
-    def _result_valid(result: DryRunResult) -> bool:
-        return result.error is None and (
-            result.valid is None or bool(np.all(result.valid))
-        )
-
     def wait_command(
         self, command_index: int, timeout: float = 10.0, **kwargs: Any
     ) -> bool:
         """The live signature, positional *timeout* included: a program written
         as ``rbt.wait_command(index, 30.0)`` runs in preview as it does live."""
-        self._flush_blend()
-        return self._command_results.get(command_index) is True
+        self._holding = False
+        return bool(self._client.wait_command(command_index, timeout))
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        self._flush_blend()
+        self.flush()
 
     def close(self):
-        self._flush_blend()
-        # A last sweep: anything the backend recorded after the final
-        # collector ran still needs a line, and the flush above can add
-        # commands of its own.
+        """Close the blend hold, note whatever the backend recorded after
+        the last noted call, and place a target at the end of every move
+        the program wrote with literal coordinates."""
+        self.flush()
         self._attribute_commands(self._last_attributed_line)
+        known = {t["id"] for t in self.target_collector}
+        for target in targets_from_record(self._client.plan(), self.notes):
+            if target.id not in known:
+                self.target_collector.append(
+                    {
+                        "id": target.id,
+                        "line_number": target.line_number,
+                        "pose": target.pose,
+                        "move_type": target.move_type,
+                        "scene_object_id": target.scene_object_id,
+                    }
+                )
+
+    def flush(self) -> None:
+        """Plan whatever the backend's blend hold still holds."""
+        self._client.flush()
+        self._holding = False
+
+    # The name the rest of the preview machinery calls it by.
+    _flush_blend = flush
+
+    def plan(self, max_seconds: float | None = None) -> TickIndex:
+        """The commanded record, its blocks labelled with the lines that
+        produced them."""
+        self._holding = False
+        return self._label(self._client.plan(max_seconds))
+
+    def simulate(self, max_seconds: float | None = None) -> TickIndex:
+        """The predicted record, labelled the same way."""
+        self._holding = False
+        return self._label(self._client.simulate(max_seconds))
+
+    def _label(self, record: TickIndex) -> TickIndex:
+        """Give each block the editor line that produced it."""
+        notes = self.notes
+        record.blocks = tuple(
+            replace(
+                b,
+                line_number=notes[b.command].line_number
+                if b.command < len(notes)
+                else None,
+            )
+            for b in record.blocks
+        )
+        return record
 
     def record_sleep(self, seconds: float) -> None:
         """A script's ``time.sleep`` as the program means it.
 
-        Nothing happens during a sleep in a *plan* — the arm is already
-        where the last move left it — so this only spaces the timeline
-        there. In a *simulation* the arm holds itself against gravity for
-        that long, and whatever it is carrying settles or does not, which
-        is exactly where a naive preview and the real machine part ways.
-        So it is also queued as a delay for the run to execute.
+        The arm holds where the last move left it for that long — time on
+        the timeline, and in a simulation the moment whatever it carries
+        settles or does not — so it is queued as a delay the live program
+        never sends, and noted as a sleep so the live run's command count
+        is not thrown off by it.
         """
         if seconds <= 0:
             return
-        self.sim_time_s += seconds
         if self._last_move_non_blocking:
             self._pending_sleep += seconds
-        try:
-            self._client.delay(seconds)
-        except (AttributeError, NotImplementedError):
-            pass  # a backend with no delay command simply loses the wait
-        self._attribute_commands(self._get_caller_line_number())
+        self._client.delay(seconds)
+        self._attribute_commands(self._get_caller_line_number(), method="sleep")
 
     def delay(self, seconds: float) -> int:
-        """Advance the program clock at a queued delay boundary."""
+        """A queued delay: the arm holds for *seconds*."""
         if isinstance(seconds, bool) or not math.isfinite(seconds) or seconds <= 0:
             raise ValueError("Delay must be positive and finite")
-        self._flush_blend()
-        self.record_sleep(seconds)
-        index = len(self._command_results)
-        self._command_results[index] = True
+        index = self._client.delay(seconds)
+        self._attribute_commands(self._get_caller_line_number(), method="delay")
         return index
 
-    def _attribute_commands(self, line_number: int) -> None:
-        """Attribute every command recorded since the last call to
-        *line_number*.
+    def _attribute_commands(
+        self, line_number: int, method: str = "", **fields: Any
+    ) -> None:
+        """Note every command recorded since the last call as issued by
+        *method* on *line_number*; *fields* describe the last of them.
 
-        Called from each site that already knows a line. A command type
-        with no site of its own is picked up by the next one, or by
-        :meth:`close`, so the list always ends the same length as the
-        backend's program.
+        Called from each site that already knows a line. A command the
+        backend queued on the program's behalf is picked up by the next
+        site, or by :meth:`close`, so the notes always end the same length
+        as the backend's program.
         """
         self._last_attributed_line = line_number
-        recorded = getattr(self._client, "program_length", 0)
-        missing = recorded - len(self.command_lines)
-        if missing > 0:
-            self.command_lines.extend([line_number] * missing)
+        recorded = self._client.program_length
+        missing = recorded - len(self.notes)
+        for k in range(missing):
+            extra = fields if k == missing - 1 else {}
+            self.notes.append(
+                CommandNote(
+                    line_number=line_number,
+                    method=method,
+                    travel=not self._first_motion_seen,
+                    **extra,
+                )
+            )
 
     @property
     def tool(self) -> _ToolCollectionProxy:
-        """Return a proxy that delegates to DryRunRobotClient.tool and collects results."""
+        """Return a proxy that delegates to DryRunRobotClient.tool and notes
+        the actions it takes."""
         return self._tool_proxy
 
     def _record_tool_action(
-        self,
-        method_name: str,
-        args: tuple,
-        kwargs: dict,
-        result: DryRunResult | None = None,
+        self, method_name: str, args: tuple, kwargs: dict, index: Any
     ) -> None:
-        """Record a tool action with TCP pose for path preview visualization."""
+        """Note a tool action's command and keep what the scene needs to
+        draw it; where the TCP stood and how long the arm held are read
+        off the record later."""
         line_no = self._get_caller_line_number()
-        self._attribute_commands(line_no)
+        self._attribute_commands(line_no, method="tool_action")
+        self._holding = False
         if self._tool_metadata is None:
             return
 
@@ -347,123 +351,29 @@ class PathPreviewClient:
 
         start_pos = (self._current_tool_position,)
         self._current_tool_position = target_pos[0]
-
-        # Include all 6 elements (x,y,z,rx,ry,rz) so rotation can transform the axis.
-        tcp_pose = None
-        if result is not None and result.tcp_poses.shape[0] > 0:
-            tcp_pose = result.tcp_poses[-1].tolist()
-        elif self.segment_collector:
-            last_seg = self.segment_collector[-1]
-            if last_seg.get("points"):
-                tcp_pose = last_seg["points"][-1]
-
-        duration = result.duration if result is not None else 0.0
-
-        # If there's a pending sleep from time.sleep() after a non-blocking
-        # move (wait=False), the tool fires mid-motion. Offset into the
-        # preceding segment instead of using the end-of-move position.
-        sleep_offset = self._pending_sleep
-        # Don't reset: let accumulation continue from move start so subsequent
-        # tool actions see the correct absolute offset.
-
-        pose_at_offset, tcp_path = self._slice_trajectory(sleep_offset, duration)
-        if pose_at_offset is not None and tcp_pose is not None and len(tcp_pose) >= 3:
-            tcp_pose[:3] = pose_at_offset[:3]
-        elif pose_at_offset is not None:
-            tcp_pose = pose_at_offset + [0.0, 0.0, 0.0]
-
-        action = ToolAction(
-            tcp_pose=tcp_pose,
-            motions=self._tool_metadata["motions"],
-            target_positions=target_pos,
-            start_positions=start_pos,
-            activation_type=self._tool_metadata["activation_type"],
-            line_number=line_no,
-            method=method_name,
-            estimated_duration=duration,
-            sleep_offset=sleep_offset,
-            segment_index=len(self.segment_collector) - 1,
-            tcp_path=tcp_path,
-            object_tracks=_object_tracks(result) if result is not None else None,
+        command = (
+            index
+            if isinstance(index, int) and not isinstance(index, bool) and index >= 0
+            else self._client.program_length - 1
         )
-        self.tool_action_collector.append(action)
-
-    def _slice_trajectory(
-        self, offset: float, duration: float
-    ) -> tuple[list[float] | None, list[list[float]] | None]:
-        """Slice TCP path from the preceding segment's trajectory points.
-
-        Uses the same points at the same rate as the arm trajectory — no
-        re-sampling. For mid-motion actions (offset > 0), slices around the
-        offset point. For end-of-move actions (offset == 0), slices the tail.
-
-        If the arm is stationary (no segment or single-point segment), returns
-        the TCP pose repeated for the action duration.
-
-        Returns (tcp_pose_at_offset, tcp_path_slice).
-        """
-        if not self.segment_collector:
-            return None, None
-
-        last_seg = self.segment_collector[-1]
-        points = last_seg.get("points")
-        seg_duration = last_seg.get("estimated_duration")
-
-        if not points or not seg_duration or seg_duration <= 0:
-            # Stationary: repeat TCP position
-            if points and len(points) >= 1:
-                pose = list(points[-1])
-                n = max(2, int(duration * 100))  # ~100Hz
-                return pose, [pose] * n
-            return None, None
-
-        n_pts = len(points)
-        if n_pts < 2:
-            pose = list(points[0])
-            n = max(2, int(duration * 100))
-            return pose, [pose] * n
-
-        dur_indices = max(1, int(n_pts * duration / seg_duration))
-
-        if offset > 0:
-            # Mid-motion: center slice around offset point
-            offset_idx = int(min(1.0, offset / seg_duration) * (n_pts - 1))
-            half = dur_indices // 2
-            start = max(0, offset_idx - half)
-            end = min(n_pts, start + dur_indices)
-        else:
-            # End-of-move: arm is stationary at final position
-            return list(points[-1]), None
-
-        tcp_pose = list(points[offset_idx])
-        path_slice = [list(p) for p in points[start:end]]
-
-        if len(path_slice) < 2:
-            return tcp_pose, None
-
-        # If all points are at the same position, the robot is stationary —
-        # return None to force single-point rendering instead of cascading
-        p0 = path_slice[0]
-        if all(
-            abs(p[0] - p0[0]) < 1e-4
-            and abs(p[1] - p0[1]) < 1e-4
-            and abs(p[2] - p0[2]) < 1e-4
-            for p in path_slice[1:]
-        ):
-            return tcp_pose, None
-
-        return tcp_pose, path_slice
-
-    def _flush_blend(self) -> None:
-        """Flush pending blend buffer from the underlying dry-run client."""
-        results = self._client.flush()
-        for result in results:
-            self._collect_from_result(result, self._blend_move_type or "joints")
-        if results:
-            self._complete_pending(
-                all(self._result_valid(result) for result in results)
+        self.tool_action_collector.append(
+            ToolAction(
+                tcp_pose=None,
+                motions=self._tool_metadata["motions"],
+                target_positions=target_pos,
+                start_positions=start_pos,
+                activation_type=self._tool_metadata["activation_type"],
+                line_number=line_no,
+                method=method_name,
+                estimated_duration=0.0,
+                # A sleep after a non-blocking move puts the action mid-motion,
+                # offset from the start of the move it rides.
+                sleep_offset=self._pending_sleep,
+                segment_index=-1,
+                tcp_path=None,
+                command=command,
             )
-        self._blend_move_type = ""
+        )
 
     # ---- Source introspection ----
 
@@ -500,93 +410,6 @@ class PathPreviewClient:
             val = float(match.group(1))
             return val if val > 0 else None
         return None
-
-    # ---- Segment collection ----
-
-    def _collect_from_result(
-        self, result: DryRunResult | None, move_type: str, checkpoint: str | None = None
-    ):
-        if result is None:
-            return
-
-        line_no = self._get_caller_line_number()
-        self._attribute_commands(line_no)
-        self.sim_time_s += float(getattr(result, "duration", 0.0) or 0.0)
-
-        if result.end_joints_rad.size > 0:
-            self.last_joints_rad = result.end_joints_rad.tolist()
-
-        if result.tcp_poses.shape[0] == 0:
-            return
-        source_line = self._get_source_line(line_no)
-
-        valid = result.valid
-        has_error = result.error is not None
-
-        end_joints = self.last_joints_rad if self.last_joints_rad else []
-
-        estimated = result.duration  # 0.0 is valid (e.g. teleport/home)
-        requested = self._extract_requested_duration(source_line)
-        if estimated is not None and requested is not None:
-            timing_feasible = estimated <= requested * 1.05
-        else:
-            timing_feasible = True
-
-        joint_traj_rad = getattr(result, "joint_trajectory_rad", None)
-        joint_traj = joint_traj_rad.tolist() if joint_traj_rad is not None else None
-        tracks = _object_tracks(result)
-
-        if valid is not None:
-            # Per-pose validity: split into runs of consecutive valid/invalid
-            self._collect_validity_segments(
-                result,
-                valid,
-                move_type,
-                line_no,
-                end_joints,
-                estimated,
-                requested,
-                timing_feasible,
-                joint_traj_rad,
-            )
-        else:
-            # All valid or all invalid (legacy path)
-            is_valid = not has_error
-            points = result.tcp_poses[:, :3].tolist()
-            segment = {
-                "points": points,
-                "color": get_color_for_move_type(move_type, is_valid),
-                "is_valid": is_valid,
-                "line_number": line_no,
-                "joints": end_joints,
-                "move_type": move_type,
-                "is_dashed": len(points) <= 2,
-                "show_arrows": True,
-                "estimated_duration": estimated,
-                "requested_duration": requested,
-                "timing_feasible": timing_feasible,
-                "joint_trajectory": joint_traj,
-                "checkpoint": checkpoint,
-                "is_travel": not self._first_motion_seen,
-                "object_tracks": tracks,
-            }
-            self.segment_collector.append(segment)
-
-        has_literal_args = self._has_literal_list_args(source_line)
-
-        if has_literal_args:
-            end_pose_m = result.tcp_poses[-1].copy()
-
-            target_id = f"auto_{line_no}"
-            target = {
-                "id": target_id,
-                "line_number": line_no,
-                "pose": end_pose_m.tolist(),
-                "move_type": move_type,
-                "scene_object_id": "",
-            }
-            self.target_collector.append(target)
-            logger.debug("Created target %s at line %d", target_id, line_no)
 
     def _collect_failed_target(
         self,
@@ -642,110 +465,31 @@ class PathPreviewClient:
         )
         logger.debug("Created failed-move target %s at line %d", target_id, line_no)
 
-    def _collect_validity_segments(
-        self,
-        result: DryRunResult,
-        valid: np.ndarray,
-        move_type: str,
-        line_no: int,
-        end_joints: list[float],
-        estimated: float | None,
-        requested: float | None,
-        timing_feasible: bool,
-        joint_traj_rad: np.ndarray | None = None,
-    ) -> None:
-        """Split a result with per-pose validity into green/red segments."""
-        poses = result.tcp_poses
-        n = len(valid)
-
-        # Find runs of consecutive same-validity poses
-        i = 0
-        while i < n:
-            run_valid = bool(valid[i])
-            j = i + 1
-            while j < n and bool(valid[j]) == run_valid:
-                j += 1
-
-            # Include one overlapping point at boundaries for visual continuity
-            end = min(j + 1, n) if j < n else j
-            start = max(i - 1, 0) if i > 0 else i
-            run_poses = poses[start:end, :3].tolist()
-
-            run_joint_traj = None
-            if joint_traj_rad is not None:
-                run_joint_traj = joint_traj_rad[start:end].tolist()
-            # The same rows as the joint trajectory, or the object drifts
-            # from the gripper that carries it.
-            run_tracks = _object_tracks(result, start, end)
-
-            if len(run_poses) >= 2:
-                segment = {
-                    "points": run_poses,
-                    "color": get_color_for_move_type(move_type, run_valid),
-                    "is_valid": run_valid,
-                    "line_number": line_no,
-                    "joints": end_joints if j >= n else [],
-                    "move_type": move_type,
-                    "is_dashed": False,
-                    "show_arrows": run_valid,
-                    "estimated_duration": estimated if j >= n else None,
-                    "requested_duration": requested if j >= n else None,
-                    "timing_feasible": timing_feasible,
-                    "joint_trajectory": run_joint_traj,
-                    "is_travel": not self._first_motion_seen,
-                    "object_tracks": run_tracks,
-                }
-                self.segment_collector.append(segment)
-
-            i = j
-
-    # ---- Explicit: home ----
+    # ---- Explicit: home and checkpoint ----
 
     def home(self, **kw: Any) -> int:
-        self._flush_blend()
         self._first_motion_seen = True
+        line_no = self._get_caller_line_number()
         try:
-            result = self._client.home(**kw)
+            index = self._client.home(**kw)
         except Exception as e:
             logger.warning("home failed: %s", e)
-            self.accumulated_errors.append(
-                f"Line {self._get_caller_line_number()}: {e}"
-            )
+            self.accumulated_errors.append(f"Line {line_no}: {e}")
+            self._attribute_commands(line_no, method="home", checkpoint="home")
             return -1
-        self._collect_from_result(result, "joints", checkpoint="home")
-        return self._command_result(result)
+        self._holding = False
+        self._attribute_commands(line_no, method="home", checkpoint="home")
+        return index
 
     def checkpoint(self, label: str) -> int:
-        """Record a checkpoint marker in the timeline.
-
-        Creates a zero-width segment so the checkpoint appears in the
-        timeline without taking any duration.
-        """
-        self._flush_blend()
-        try:
-            self._client.checkpoint(label)
-        except (AttributeError, NotImplementedError):
-            pass  # dry-run client may not implement checkpoint
-        line_no = self._get_caller_line_number()
-        self._attribute_commands(line_no)
-        segment = {
-            "points": [],
-            "color": "#00000000",
-            "is_valid": True,
-            "line_number": line_no,
-            "joints": self.last_joints_rad or [],
-            "move_type": "checkpoint",
-            "is_dashed": False,
-            "show_arrows": False,
-            "estimated_duration": 0.0,
-            "requested_duration": None,
-            "timing_feasible": True,
-            "joint_trajectory": None,
-            "checkpoint": label,
-            "is_travel": not self._first_motion_seen,
-        }
-        self.segment_collector.append(segment)
-        return self._mint_index(True)
+        """Record a checkpoint marker in the timeline: a command that owns
+        no rows and carries its label."""
+        index = self._client.checkpoint(label)
+        self._holding = False
+        self._attribute_commands(
+            self._get_caller_line_number(), method="checkpoint", checkpoint=label
+        )
+        return index
 
     # ---- Dynamic dispatch ----
 
@@ -753,71 +497,53 @@ class PathPreviewClient:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        # Motion methods: dispatch through _client + collect visualization
+        if name in _PASSTHROUGH:
+            return getattr(self._client, name)
+
+        # Motion methods: dispatch through _client + note the command
         move_type = MOTION_METHODS.get(name)
         if move_type is not None:
             # A backend without this optional motion raises here, as the live
             # client would, rather than previewing a refusal.
             method = getattr(self._client, name)
-            # Streamed motion (jog, servo) is fire-and-forget on the live
-            # client: it answers 1/0/negative, never an index to wait on.
-            mints_index = _COMMANDS[name].mints_index
 
             def motion_method(*args: Any, **kwargs: Any) -> int:
+                self._first_motion_seen = True
+                self._pending_sleep = 0.0
+                self._last_move_non_blocking = not kwargs.get("wait", True)
+                line_no = self._get_caller_line_number()
+                source_line = self._get_source_line(line_no)
+                fields = {
+                    "requested_duration": self._extract_requested_duration(source_line),
+                    "literal": self._has_literal_list_args(source_line),
+                }
                 try:
-                    self._first_motion_seen = True
-                    self._pending_sleep = 0.0
-                    self._last_move_non_blocking = not kwargs.get("wait", True)
                     result = method(*args, **kwargs)
-                    if result is None:
-                        # Buffered for blending — track move_type of first buffered cmd
-                        if not self._blend_move_type:
-                            self._blend_move_type = move_type
-                    else:
-                        # Result returned (single dispatch or flushed composite)
-                        mt = self._blend_move_type or move_type
-                        self._blend_move_type = ""
-                        # IK failure with no trajectory: dry run returns an
-                        # empty-poses DryRunResult with .error set. Without this
-                        # branch, _collect_from_result silently drops it and
-                        # nothing renders — no segment, no marker.
-                        if result.tcp_poses.shape[0] == 0 and result.error is not None:
-                            line_no = self._get_caller_line_number()
-                            self.accumulated_errors.append(
-                                f"Line {line_no}: {result.error.title}"
-                            )
-                            self._collect_failed_target(
-                                line_no, move_type, args, kwargs
-                            )
-                        else:
-                            self._collect_from_result(result, mt)
-                    if mints_index:
-                        return self._command_result(result)
-                    return self._system_result(result)
                 except Exception as e:
-                    self._first_motion_seen = True
-                    line_no = self._get_caller_line_number()
                     self.accumulated_errors.append(f"Line {line_no}: {e}")
                     logger.warning("%s failed: %s", name, e)
                     # Still create a target for the failed move so the user
                     # can see and drag it to a valid position
-                    self._collect_failed_target(
-                        line_no,
-                        move_type,
-                        args,
-                        kwargs,
-                    )
+                    self._collect_failed_target(line_no, move_type, args, kwargs)
+                    self._attribute_commands(line_no, method=name, **fields)
                     return -1
+                # A corner move waits for its successor; a stopping move,
+                # and every stream, closes whatever waited.
+                self._holding = float(kwargs.get("r", 0) or 0) > 0
+                self._attribute_commands(line_no, method=name, **fields)
+                return result
 
             return motion_method
 
         # Intercept select_tool to update tool metadata from registry
         if name == "select_tool":
-            self._flush_blend()
             client_method = getattr(self._client, name)
 
             def set_tool_wrapper(*args: Any, **kw: Any) -> Any:
+                line_no = self._get_caller_line_number()
                 result = client_method(*args, **kw)
+                self._holding = False
+                self._attribute_commands(line_no, method="select_tool")
                 if isinstance(result, int) and result < 0:
                     return result
                 self._current_tool_position = 0.0  # New tool starts open
@@ -845,34 +571,35 @@ class PathPreviewClient:
                         ToolSelection(
                             tool_key=key,
                             variant_key=str(variant_key),
-                            segment_index=len(self.segment_collector) - 1,
-                            line_number=self._get_caller_line_number(),
+                            segment_index=-1,
+                            line_number=line_no,
+                            command=self._client.program_length - 1,
                         )
                     )
-                # select_tool is a SYSTEM command: the live client answers with
-                # its 1/0/negative code, not with a queue index.
-                return self._system_result(result)
+                return result
 
             return set_tool_wrapper
 
         # Intercept set_shapes — record the boundary so collision marking can
-        # replay the world that was active at each segment (like tool
-        # selections). Blend flushes first: pending motions were issued under
-        # the old world.
+        # replay the world that was active at each command (like tool
+        # selections).
         if name == "set_shapes":
             underlying = getattr(self._client, name)
 
             def set_shapes_wrapper(shapes: list, *args: Any, **kwargs: Any) -> Any:
-                self._flush_blend()
+                line_no = self._get_caller_line_number()
                 result = underlying(shapes, *args, **kwargs)
+                self._holding = False
+                self._attribute_commands(line_no, method="set_shapes")
                 self.shape_change_collector.append(
                     ShapeChange(
                         shapes=tuple(shapes),
-                        segment_index=len(self.segment_collector) - 1,
-                        line_number=self._get_caller_line_number(),
+                        segment_index=-1,
+                        line_number=line_no,
+                        command=self._client.program_length - 1,
                     )
                 )
-                return self._system_result(result)
+                return result
 
             return set_shapes_wrapper
 
@@ -880,35 +607,30 @@ class PathPreviewClient:
         # preview. Inventing a successful handshake would select the wrong
         # branch of an ordinary Python program or skill.
         if name in _UNRESOLVED:
-            self._flush_blend()
 
             def unresolved(*args: Any, **kwargs: Any) -> Any:
                 raise UnresolvedPreview(f"{name} needs an explicit observation fixture")
 
             return unresolved
 
-        # Everything else flushes the blend first and delegates to the
-        # backend, which raises AttributeError for unknown names, catching
-        # typos. Queued and system commands answer with the live client's
-        # return contract, not the dry run's planner result.
+        # Everything else delegates to the backend, which raises
+        # AttributeError for unknown names, catching typos. A command is
+        # noted; a read answers with what it read.
         underlying = getattr(self._client, name)
         spec = _COMMANDS.get(name)
-        self._flush_blend()
         if spec is None or not callable(underlying):
             return underlying
-        if spec.kind is CommandKind.QUEUED:
+        if spec.kind in (CommandKind.QUERY, CommandKind.SYNC):
+            return underlying
 
-            def queued(*args: Any, **kwargs: Any) -> int:
-                return self._queued_result(underlying(*args, **kwargs))
+        def command(*args: Any, **kwargs: Any) -> Any:
+            line_no = self._get_caller_line_number()
+            result = underlying(*args, **kwargs)
+            self._holding = False
+            self._attribute_commands(line_no, method=name)
+            return result
 
-            return queued
-        if spec.kind in (CommandKind.SYSTEM, CommandKind.CONTROL):
-
-            def applied(*args: Any, **kwargs: Any) -> int:
-                return self._system_result(underlying(*args, **kwargs))
-
-            return applied
-        return underlying
+        return command
 
 
 class AsyncPathPreviewClient:
@@ -924,10 +646,13 @@ class AsyncPathPreviewClient:
     def tool(self) -> "_AsyncPreviewTool":
         return _AsyncPreviewTool(self._sync_client.tool)
 
+    @property
+    def robot(self) -> Any:
+        return self._sync_client.robot
+
     def __init__(
         self,
-        dry_run_client_cls: type,
-        segment_collector: list[dict] | None = None,
+        dry_run_client_cls: Callable[..., Any],
         target_collector: list[dict] | None = None,
         tool_action_collector: list[ToolAction] | None = None,
         tool_selection_collector: list | None = None,
@@ -935,10 +660,10 @@ class AsyncPathPreviewClient:
         initial_joints: list[float] | np.ndarray | None = None,
         initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
+        robot: Any = None,
     ):
         self._sync_client = PathPreviewClient(
             dry_run_client_cls=dry_run_client_cls,
-            segment_collector=segment_collector,
             target_collector=target_collector,
             tool_action_collector=tool_action_collector,
             tool_selection_collector=tool_selection_collector,
@@ -946,20 +671,21 @@ class AsyncPathPreviewClient:
             initial_joints=initial_joints,
             initial_homed=initial_homed,
             tool_meta_registry=tool_meta_registry,
+            robot=robot,
         )
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        self._sync_client._flush_blend()
+        self._sync_client.flush()
 
     async def close(self):
-        self._sync_client._flush_blend()
+        self._sync_client.flush()
 
     @property
-    def segment_collector(self) -> list[dict]:
-        return self._sync_client.segment_collector
+    def notes(self) -> list[CommandNote]:
+        return self._sync_client.notes
 
     @property
     def target_collector(self) -> list[dict]:

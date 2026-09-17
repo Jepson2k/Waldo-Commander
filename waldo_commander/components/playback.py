@@ -10,6 +10,7 @@ import time
 import numpy as np
 import waldoctl
 from nicegui import Client, ui, context
+from nicegui import app as ng_app
 
 from waldo_commander.common.theme import PathColors
 from waldo_commander.components.editor_decorations import decorations
@@ -17,6 +18,11 @@ from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.services.path_visualizer import path_visualizer
+from waldo_commander.services.preview_segments import (
+    command_segments,
+    preceding_segment,
+)
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.services.programs import (
     is_any_program_recording,
@@ -38,6 +44,36 @@ def _line_of(segments, index: int) -> int:
     if 0 <= index < len(segments):
         return segments[index].line_number
     return 0
+
+
+#: The playback bar's layer toggles: the view flag each drives, its label
+#: and its marker.
+_LAYERS = (
+    ("predicted_visible", "Predicted path", "layer-predicted"),
+    ("contacts_visible", "Contacts", "layer-contacts"),
+    ("com_visible", "Centre of mass", "layer-com"),
+)
+_LAYER_PREFS = "preview_layers"
+
+
+def layers_available(dry_run) -> dict[str, bool]:
+    """Which layers the program's predicted record can draw, keyed by the
+    view flag that shows each: the predicted path only where it differs
+    from the commanded one, contacts and the centre of mass only when the
+    record carries those channels. A predicted record answering an older
+    plan than the one on screen counts as none."""
+    none = {flag: False for flag, _, _ in _LAYERS}
+    if dry_run is None or dry_run.commanded is None:
+        return none
+    predicted = dry_run.predicted_current
+    if predicted is None:
+        return none
+    return {
+        "predicted_visible": predicted.rows > 1
+        and predicted.digest != dry_run.commanded.digest,
+        "contacts_visible": "contact_starts" in predicted.channels,
+        "com_visible": "com" in predicted.channels,
+    }
 
 
 class PlaybackController:
@@ -73,6 +109,8 @@ class PlaybackController:
         self._last_highlighted_index: int = -1
         self._last_slider_update: float = 0.0  # throttle slider visual updates
         self._last_tool_selection: tuple[str, str] | None = None
+        self._layer_checks: dict[str, ui.checkbox] = {}
+        self._physics_busy: ui.spinner | None = None
 
         # The record button and its tooltip live in the playback bar, so
         # PlaybackController owns them. The notification reference is kept
@@ -85,7 +123,7 @@ class PlaybackController:
         # Edge-detection state for the simulation_state change listener.
         # Mirrors EditorDecorations._on_state_change / LogPanelController._on_state_change.
         self._last_script_running: bool = False
-        self._last_executing_step_index: int = -1
+        self._last_executing_command: int = -1
         self._last_executing_step_at_end: bool = False
 
     def set_ui_client(self, client: Client | None) -> None:
@@ -109,15 +147,9 @@ class PlaybackController:
     def build_bar(self) -> None:
         """Build the bottom playback bar with controls.
 
-        Order: Play | Stop | Step program | Prev | Next | Slider | Speed FAB |
-        Record | Capture | Log toggle
+        Order: Play | Stop | Step program | Prev | Next | Slider | Layers |
+        Speed FAB | Record | Capture | Log toggle
         """
-        # A fresh page has no physics pass in flight — teardown killed the
-        # worker — but `ticks_pending` outlives the client on the program,
-        # and a page loaded mid-pass would otherwise show controls that
-        # nothing is ever going to re-enable.
-        for program in waldoctl.commander.programs.items:
-            program.dry_run.ticks_pending = False
         with (
             ui.row()
             .classes("w-full items-center gap-2 bottom-playback-bar")
@@ -203,6 +235,13 @@ class PlaybackController:
                     )
                     self._scrub_slider.mark("editor-scrub-slider")
 
+            self._physics_busy = ui.spinner(size="xs", color="grey-5")
+            with self._physics_busy:
+                ui.tooltip("Predicting the run")
+            self._physics_busy.mark("physics-busy")
+            self._physics_busy.set_visibility(False)
+            self._build_layers_menu()
+
             with (
                 ui.fab(icon="1x_mobiledata", color="amber", direction="up")
                 .props("dense unelevated round size=sm")
@@ -244,6 +283,74 @@ class PlaybackController:
             ui_state.capture_pose_tooltip = capture_tooltip
 
             log_panel.build_toggle_button()
+
+    def _build_layers_menu(self) -> None:
+        """The program's view layers: a menu of toggles that the predicted
+        record enables as it carries the data for them. The choices
+        persist across sessions; what is drawable does not."""
+        view = waldoctl.commander.settings.view
+        stored = ng_app.storage.general.get(_LAYER_PREFS, {})
+        for flag, _, _ in _LAYERS:
+            if flag in stored:
+                setattr(view, flag, bool(stored[flag]))
+        self._layer_checks = {}
+        with ui.button(icon="layers").props("round dense flat color=white") as button:
+            ui.tooltip("Preview layers")
+            with ui.menu():
+                with ui.column().classes("p-2 gap-0"):
+                    for flag, label, mark in _LAYERS:
+                        checkbox = (
+                            ui.checkbox(
+                                label,
+                                on_change=lambda e, flag=flag: self._set_layer(
+                                    flag, bool(e.value)
+                                ),
+                            )
+                            .bind_value(view, flag)
+                            .props("dense")
+                        )
+                        checkbox.mark(mark)
+                        self._layer_checks[flag] = checkbox
+        button.mark("preview-layers")
+        self.refresh_layers()
+
+    def _set_layer(self, flag: str, on: bool) -> None:
+        """Persist a layer choice and repaint what it shows: the whole-run
+        overlay through the scene's view update, the per-frame
+        annotations at the instant playback is on."""
+        stored = dict(ng_app.storage.general.get(_LAYER_PREFS, {}))
+        stored[flag] = on
+        ng_app.storage.general[_LAYER_PREFS] = stored
+        simulation_state.notify_changed()
+        active = waldoctl.commander.programs.active
+        scene = ui_state.urdf_scene
+        tl = self._timeline
+        if flag == "predicted_visible" or scene is None or active is None or not tl:
+            return
+        predicted = active.dry_run.predicted_current
+        if predicted is None:
+            return
+        view = waldoctl.commander.settings.view
+        scene.physics_overlay.update_frame(
+            predicted,
+            tl.predicted_row(active.dry_run.playback.playback_time),
+            show_contacts=view.contacts_visible,
+            show_com=view.com_visible,
+        )
+
+    def refresh_layers(self) -> None:
+        """Enable each layer toggle for the data the active program's
+        predicted record carries, and show the busy spinner while a pass
+        that could add some is running. Nothing else waits on that pass:
+        the bar keeps playing the commanded record."""
+        active = waldoctl.commander.programs.active
+        available = layers_available(active.dry_run if active is not None else None)
+        for flag, checkbox in self._layer_checks.items():
+            checkbox.set_enabled(available[flag])
+        if self._physics_busy is not None:
+            self._physics_busy.set_visibility(
+                path_visualizer.physics_in_flight(waldoctl.commander.programs.active_id)
+            )
 
     # ---- Recording lifecycle ----
 
@@ -296,14 +403,12 @@ class PlaybackController:
         self._last_script_running = is_any_program_running()
         active = waldoctl.commander.programs.active
         if active is not None:
-            self._last_executing_step_index = (
-                active.dry_run.playback.executing_step_index
-            )
+            self._last_executing_command = active.dry_run.playback.executing_command
             self._last_executing_step_at_end = (
                 active.dry_run.playback.executing_step_at_end
             )
         else:
-            self._last_executing_step_index = -1
+            self._last_executing_command = -1
             self._last_executing_step_at_end = False
         simulation_state.add_change_listener(self._on_state_change)
         simulation_state.add_step_listener(self._on_step_change)
@@ -325,6 +430,7 @@ class PlaybackController:
         if active is not None:
             active.dry_run.playback.playback_time = 0.0
         self.update_scrub_segments()
+        self.refresh_layers()
 
     # ---- Public actions ----
 
@@ -447,11 +553,6 @@ class PlaybackController:
                 self._scrub_slider.props("readonly")
         if self.speed_fab:
             live = self._uses_live_speed()
-            self.speed_fab.visible = (
-                "execution.speed" in waldoctl.commander.client.skill_capabilities
-                if live
-                else waldoctl.commander.status.simulator_active
-            )
             if self._speed_2x:
                 self._speed_2x.visible = not live
             if not live:
@@ -532,6 +633,7 @@ class PlaybackController:
 
         # Always refresh play-button visuals; the call is idempotent.
         self.update_play_button()
+        self.refresh_layers()
 
     def _on_step_change(self) -> None:
         """React to step-lifecycle events on the dedicated step channel.
@@ -544,26 +646,29 @@ class PlaybackController:
         # Step events belong to the launching program (see _play_program).
         active = self._play_program()
         if active is not None:
-            step = active.dry_run.playback.executing_step_index
+            command = active.dry_run.playback.executing_command
             at_end = active.dry_run.playback.executing_step_at_end
         else:
-            step = -1
+            command = -1
             at_end = False
 
         if (
             running
-            and step >= 0
+            and active is not None
+            and command >= 0
             and (
-                step != self._last_executing_step_index
+                command != self._last_executing_command
                 or at_end != self._last_executing_step_at_end
             )
         ):
+            step = self._segment_of(active, command)
+            active.dry_run.playback.current_step = max(step, 0)
             if at_end:
-                self._handle_step_complete(step)
+                self._handle_step_complete(active, command, step)
             else:
-                self._handle_step_start(step)
+                self._handle_step_start(active, command, step)
 
-        self._last_executing_step_index = step
+        self._last_executing_command = command
         self._last_executing_step_at_end = at_end
 
         # Play-button visuals can change on step edges (e.g. enabling
@@ -586,8 +691,29 @@ class PlaybackController:
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
 
-    def _handle_step_start(self, step: int) -> None:
-        """Script reported segment start: advance UI to segment-start position."""
+    @staticmethod
+    def _segment_of(program, command: int) -> int:
+        """The index of the segment drawing program *command*: the first it
+        owns, else the last one before it — a command that draws nothing,
+        such as a write to an output between two moves, is shown at the
+        move it follows. -1 without segments."""
+        segments = program.dry_run.path_segments
+        step = command_segments(segments).get(command)
+        if step is None:
+            step = preceding_segment(segments, command)
+        return step
+
+    @staticmethod
+    def _line_for(program, command: int, step: int) -> int:
+        """The editor line to highlight for program *command*: the line the
+        preview noted it on, else its segment's."""
+        notes = program.dry_run.commands
+        if 0 <= command < len(notes) and notes[command].line_number:
+            return notes[command].line_number
+        return _line_of(program.dry_run.path_segments, step)
+
+    def _handle_step_start(self, program, command: int, step: int) -> None:
+        """Script reported a command start: advance UI to its segment's start."""
         self._exec_step_index = step
         self._exec_last_time = time.monotonic()
         self._exec_elapsed = 0.0
@@ -597,23 +723,19 @@ class PlaybackController:
         self._highlight_current_segment()
         tab_id = script_exec.launching_tab_id
         if tab_id is not None:
-            # A live run counts PLANNED segments; the script's step index
-            # is into that list, not into whatever the timeline holds.
-            tab = waldoctl.commander.programs.get(tab_id)
-            planned = tab.dry_run.path_segments if tab is not None else []
-            decorations.highlight_executing_line(_line_of(planned, step), tab_id)
+            decorations.highlight_executing_line(
+                self._line_for(program, command, step), tab_id
+            )
 
-    def _handle_step_complete(self, step: int) -> None:
-        """Script reported segment end: snap slider to segment end."""
+    def _handle_step_complete(self, program, command: int, step: int) -> None:
+        """Script reported a command end: snap slider to its segment's end."""
         self._highlight_current_segment()
         tab_id = script_exec.launching_tab_id
         if tab_id is not None:
-            # A live run counts PLANNED segments; the script's step index
-            # is into that list, not into whatever the timeline holds.
-            tab = waldoctl.commander.programs.get(tab_id)
-            planned = tab.dry_run.path_segments if tab is not None else []
-            decorations.highlight_executing_line(_line_of(planned, step), tab_id)
-        if self._timeline and self._scrub_slider:
+            decorations.highlight_executing_line(
+                self._line_for(program, command, step), tab_id
+            )
+        if self._timeline and self._scrub_slider and step >= 0:
             end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
             t = self._timeline.cumulative_times[end_idx]
             self._set_slider_time(t)
@@ -705,21 +827,20 @@ class PlaybackController:
                         )
                     )
 
-            if tl.object_keyframes and ui_state.urdf_scene:
+            predicted = tl.predicted
+            if predicted is not None and predicted.objects and ui_state.urdf_scene:
                 ui_state.urdf_scene.set_object_poses(tl.sample_objects(t))
 
-            # Physics annotations for this instant, inside the same batch
-            # so contacts and the arm land in one frame.
-            if ui_state.urdf_scene is not None and _apply_active is not None:
-                ticks = _apply_active.dry_run.ticks
-                if ticks is not None:
-                    view = waldoctl.commander.settings.view
-                    ui_state.urdf_scene.physics_overlay.update_frame(
-                        ticks,
-                        ticks.row_at(t),
-                        show_contacts=view.contacts_visible,
-                        show_com=view.com_visible,
-                    )
+            # The predicted record's annotations for this instant, inside
+            # the same batch so contacts and the arm land in one frame.
+            if ui_state.urdf_scene is not None and predicted is not None:
+                view = waldoctl.commander.settings.view
+                ui_state.urdf_scene.physics_overlay.update_frame(
+                    predicted,
+                    tl.predicted_row(t),
+                    show_contacts=view.contacts_visible,
+                    show_com=view.com_visible,
+                )
 
             if (
                 _apply_active is not None
@@ -817,29 +938,24 @@ class PlaybackController:
     # ---- Simulation playback engine ----
 
     def _ensure_timeline(self) -> Timeline | None:
-        """Build or return cached timeline from current path segments."""
+        """Build or return the cached timeline over the program's records.
+
+        The commanded record is the axis; the predicted record, when it
+        answers the plan on screen, supplies the poses played back.
+        """
         active = self._play_program()
-        if active is None or not active.dry_run.path_segments:
+        commanded = active.dry_run.commanded if active is not None else None
+        if active is None or commanded is None or not active.dry_run.path_segments:
             if self._timeline is not None:
                 self.invalidate_timeline()
             return None
         if self._timeline is None:
-            ticks = active.dry_run.ticks
-            if not is_any_program_running() and ticks is not None and ticks.rows > 1:
-                # Play back what the arm did. The planned segments still
-                # supply the line numbers and the checkpoints; the poses,
-                # the timing and the objects come from the record.
-                self._timeline = Timeline.from_ticks(
-                    ticks,
-                    active.dry_run.path_segments,
-                    tool_selections=active.dry_run.tool_selections or None,
-                )
-            else:
-                self._timeline = Timeline.from_segments(
-                    active.dry_run.path_segments,
-                    active.dry_run.tool_actions or None,
-                    tool_selections=active.dry_run.tool_selections or None,
-                )
+            self._timeline = Timeline.from_record(
+                commanded,
+                active.dry_run.path_segments,
+                predicted=active.dry_run.predicted_current,
+                tool_selections=active.dry_run.tool_selections or None,
+            )
             active.dry_run.total_duration = self._timeline.total_duration
             if self._scrub_slider is not None:
                 self._scrub_slider.props(f"max={self._timeline.total_duration}")
@@ -936,16 +1052,14 @@ class PlaybackController:
         if seg_dur <= 0:
             return
         state = self._execution_speed
-        rate = 1.0
-        if "execution.speed" in waldoctl.commander.client.skill_capabilities:
-            if state is None or now - self._execution_speed_at > 2.0:
-                return
-            motion_duration = self._timeline.segment_durations[step]
-            rate = (
-                state.applied_scale
-                if self._exec_elapsed < motion_duration
-                else float(state.target_scale > 0)
-            )
+        if state is None or now - self._execution_speed_at > 2.0:
+            return
+        motion_duration = self._timeline.segment_durations[step]
+        rate = (
+            state.applied_scale
+            if self._exec_elapsed < motion_duration
+            else float(state.target_scale > 0)
+        )
         self._exec_elapsed += dt * rate
         frac = min(self._exec_elapsed / seg_dur, 1.0)
         t = seg_start + frac * seg_dur
@@ -970,11 +1084,7 @@ class PlaybackController:
 
     async def _refresh_execution_speed(self) -> None:
         self.sync_mode()
-        if (
-            self._speed_query_pending
-            or not self._uses_live_speed()
-            or "execution.speed" not in waldoctl.commander.client.skill_capabilities
-        ):
+        if self._speed_query_pending or not self._uses_live_speed():
             return
         self._speed_query_pending = True
         try:
@@ -1037,7 +1147,6 @@ class PlaybackController:
         """Update play/pause button icon and stop/step button visibility."""
         script_running = is_any_program_running()
         active = waldoctl.commander.programs.active
-        self.sync_physics_pending()
         play_prog = self._play_program()
         play_is_playing = (
             play_prog.dry_run.playback.is_playing if play_prog is not None else False
@@ -1078,23 +1187,6 @@ class PlaybackController:
             can_step = not play_is_playing if script_running else active is not None
             self.step_program_btn.set_enabled(not recording and can_step)
 
-    def sync_physics_pending(self) -> None:
-        """Lock playback while a physics pass is still building the record.
-
-        Scrubbing into a run that does not exist yet would seek to rows
-        that have not been computed, so the controls wait and the scrub
-        bar says why. On a backend that cannot simulate this is never
-        pending and nothing here does anything.
-        """
-        active = waldoctl.commander.programs.active
-        pending = active is not None and active.dry_run.ticks_pending
-        if self._sim_loading_progress is not None:
-            self._sim_loading_progress.visible = pending
-        if self._scrub_slider is not None:
-            self._scrub_slider.set_enabled(not pending)
-        if self.play_btn is not None:
-            self.play_btn.set_enabled(not pending)
-
     # ---- Scrub bar segments ----
 
     def _do_update_scrub_segments(self) -> None:
@@ -1134,10 +1226,9 @@ class PlaybackController:
         seg_durs = tl.segment_durations
 
         with self._scrub_container:
-            # One division per segment the TIMELINE is indexed by — which
-            # is the recorded commands when a run is being replayed, and
-            # the planned segments otherwise. Indexing the plan against a
-            # record's times paints the wrong windows and walks off the end.
+            # One division per segment the timeline is indexed by: every
+            # command that owns rows of the commanded record, a delay
+            # between two moves included.
             for idx, segment in enumerate(tl.segments):
                 color = segment.color or PathColors.CARTESIAN
                 is_current = idx == step

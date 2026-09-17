@@ -92,7 +92,7 @@ async def test_delayed_preview_retains_the_submitted_joint_pose(user):
         await path_visualizer.update_path_visualization(source, tab_id=program.id)
         is None
     )
-    submitted = path_visualizer._planned_args[program.id]
+    submitted, _ = path_visualizer._planned_args[program.id]
     frozen = pickle.dumps(submitted)
     initial = submitted[1].copy()
     assert program.dry_run.final_joints_rad is not None

@@ -546,20 +546,14 @@ def _probe(
             0.0,
             f"{type(error).__name__}: {error}",
         )
-    rows: list[list[float]] = []
-    planned = 0.0
-    for segment in client.segment_collector:
-        planned += float(segment.get("estimated_duration") or 0.0)
-        trajectory = segment.get("joint_trajectory")
-        if trajectory:
-            rows.extend(trajectory)
+    record = client.plan()
     if client.accumulated_errors:
         return (
             np.empty((0, len(start_joints_deg))),
-            planned,
+            record.duration_s,
             "; ".join(client.accumulated_errors),
         )
-    return np.degrees(np.array(rows, dtype=float)), planned, ""
+    return np.degrees(np.asarray(record.joints_rad, dtype=float)), record.duration_s, ""
 
 
 def to_program(
