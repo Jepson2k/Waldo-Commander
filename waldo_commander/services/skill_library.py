@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from waldoctl import Robot
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.skills import Skill, discover_skills
 
@@ -27,12 +28,14 @@ class SkillEntry:
         return dict(list(inspect.signature(self.skill.function).parameters.items())[1:])
 
 
-def library(capabilities: frozenset[str]) -> tuple[dict[str, SkillEntry], list[str]]:
+def library(robot: Robot | None) -> tuple[dict[str, SkillEntry], list[str]]:
+    """Every discovered skill, marked unavailable where *robot* lacks a
+    capability it requires; without a backend every requirement is missing."""
     diagnostics: list[str] = []
     skills = discover_skills(diagnostics=diagnostics)
     entries = {}
     for identity, candidate in skills.items():
-        missing = candidate.spec.requires - capabilities
+        missing = candidate.spec.requires.missing_from(robot)
         unavailable = f"Backend lacks: {', '.join(sorted(missing))}" if missing else ""
         entries[identity] = SkillEntry(candidate, unavailable)
     return entries, diagnostics
