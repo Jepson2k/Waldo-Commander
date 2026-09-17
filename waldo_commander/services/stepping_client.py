@@ -31,6 +31,9 @@ _COMMANDS = command_table()
 # Commands that queue on the controller and return an index: the ones the
 # wrapper waits on and steps.
 STEPPABLE_METHODS = frozenset(n for n, s in _COMMANDS.items() if s.mints_index)
+# Plain attribute reads a skill makes on its client; not commands, so a
+# pending blend group has nothing to close.
+_PASSTHROUGH_ATTRS = frozenset({"robot"})
 
 # Controls that must reach the controller at once: they cancel whatever a
 # pending blend group was waiting for, so they never wait on it first.
@@ -300,6 +303,9 @@ class SteppingClientWrapper:
                 return result
 
             return immediate
+
+        if name in _PASSTHROUGH_ATTRS:
+            return attr
 
         self._flush_blend()
         return attr

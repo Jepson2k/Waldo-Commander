@@ -136,6 +136,7 @@ class PathPreviewClient:
         initial_joints: list[float] | np.ndarray | None = None,
         initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
+        robot: Any = None,
     ):
         self.segment_collector: list[dict] = (
             [] if segment_collector is None else segment_collector
@@ -165,6 +166,10 @@ class PathPreviewClient:
         self._client = dry_run_client_cls(
             initial_joints_deg=init_deg, initial_homed=initial_homed
         )
+        if robot is not None:
+            # The worker already holds the backend it planned with; a bare
+            # client would otherwise build its own on first read.
+            self._client.robot = robot
         self._tool_proxy = _ToolCollectionProxy(self)
         self.last_joints_rad: list[float] | None = None
         self._blend_move_type: str = ""
@@ -187,12 +192,10 @@ class PathPreviewClient:
         logger.debug("PathPreviewClient initialized")
 
     @property
-    def skill_capabilities(self) -> frozenset[str]:
-        return getattr(
-            self._client,
-            "skill_capabilities",
-            frozenset({"motion.joint", "motion.linear"}),
-        )
+    def robot(self) -> Any:
+        """The backend the preview stands in for; what a skill checks its
+        requirements against."""
+        return self._client.robot
 
     def run_skill(self, invoke: Callable[[RobotClient], Coroutine[Any, Any, R]]) -> R:
         """Use this collector's async view, without opening a backend client."""
@@ -924,6 +927,10 @@ class AsyncPathPreviewClient:
     def tool(self) -> "_AsyncPreviewTool":
         return _AsyncPreviewTool(self._sync_client.tool)
 
+    @property
+    def robot(self) -> Any:
+        return self._sync_client.robot
+
     def __init__(
         self,
         dry_run_client_cls: type,
@@ -935,6 +942,7 @@ class AsyncPathPreviewClient:
         initial_joints: list[float] | np.ndarray | None = None,
         initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
+        robot: Any = None,
     ):
         self._sync_client = PathPreviewClient(
             dry_run_client_cls=dry_run_client_cls,
@@ -946,6 +954,7 @@ class AsyncPathPreviewClient:
             initial_joints=initial_joints,
             initial_homed=initial_homed,
             tool_meta_registry=tool_meta_registry,
+            robot=robot,
         )
 
     async def __aenter__(self):
