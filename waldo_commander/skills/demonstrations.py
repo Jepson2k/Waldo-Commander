@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from waldoctl.client import RobotClient
-from waldoctl.dry_run import DryRunClient
+from waldoctl.dry_run import is_dry_run
 from waldoctl.recordings import Demonstration, RecordedTool
 from waldoctl.skills import MissingCapability, SkillError, report_progress, skill
 from waldoctl.status import ActionState, StatusBuffer
@@ -88,7 +88,7 @@ async def replay_demonstration(
     robot = rbt.robot
     if robot is None or robot.backend_package != recording.backend:
         raise MissingCapability(f"This recording belongs to {recording.backend}")
-    preview = isinstance(rbt, DryRunClient)
+    preview = is_dry_run(rbt)
     first = recording.samples[0]
     identity = _identity(first.tool)
     if any(_identity(s.tool) != identity for s in recording.samples):

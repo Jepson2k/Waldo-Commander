@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 
 from waldoctl.client import RobotClient
-from waldoctl.dry_run import DryRunClient
+from waldoctl.dry_run import is_dry_run
 from waldoctl.signals import DigitalSignal, SignalObservation, SignalWaitResult
 from waldoctl.skills import MissingCapability, UnresolvedPreview, skill
 
@@ -34,7 +34,7 @@ def _binding(rbt: RobotClient, signal: DigitalSignal) -> bool:
     robot = rbt.robot
     if robot is None or robot.backend_package != signal.backend:
         raise MissingCapability(f"This signal mapping belongs to {signal.backend}")
-    return isinstance(rbt, DryRunClient)
+    return is_dry_run(rbt)
 
 
 async def _observe(
