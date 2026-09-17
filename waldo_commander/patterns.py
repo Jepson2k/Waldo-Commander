@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from waldoctl.dry_run import DryRunClient
+from waldoctl.dry_run import is_dry_run
 from waldoctl.setup import Pose
 
 MAX_CELLS = 100_000
@@ -201,7 +201,7 @@ def save_progress(
     Call after a successful transfer, passing the same client used to execute
     it. There is no implicit loading, skipping, reset, or recovery move.
     """
-    if isinstance(client, DryRunClient):
+    if is_dry_run(client):
         return False
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
