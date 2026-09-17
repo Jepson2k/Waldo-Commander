@@ -28,22 +28,21 @@ from waldo_commander.services.stepping_client import GUIStepController, StepIO
 from waldo_commander.setup import SetupStore
 
 
-def test_event_backlog_is_bounded_and_reports_gaps_without_losing_latest_step():
+def test_event_backlog_is_bounded_and_reports_gaps_without_losing_latest_command():
     controller = GUIStepController(uuid4().hex)
     controller.initialize()
     io = StepIO(controller.session_id)
     try:
         for _ in range(300):
-            io.emit_event("complete", "delay")
-            io.increment_step_count()
+            io.emit_event("complete", "delay", command=io.issue())
         events = controller.poll_events()
         assert len(events) <= 257
         assert events[0]["event"] == "events_lost"
         assert events[0]["count"] == 44
-        assert events[-1]["step"] == 299
+        assert events[-1]["command"] == 299
         assert controller.poll_events() == []
-        io.emit_event("start", "move_j")
-        assert controller.poll_events()[0]["step"] == 300
+        io.emit_event("start", "move_j", command=io.issue())
+        assert controller.poll_events()[0]["command"] == 300
         assert len(json.loads(io._event_file.read_text())["events"]) == 256
     finally:
         controller.cleanup()
