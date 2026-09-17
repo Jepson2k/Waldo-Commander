@@ -21,7 +21,7 @@ def _gripper(rbt: RobotClient) -> GripperTool:
     return cast(GripperTool, tool)
 
 
-@skill(id="waldo.gripper_open", version="1.0.0", requires=frozenset({"tool.gripper"}))
+@skill(id="waldo.gripper_open", version="1.0.0")
 async def gripper_open(rbt: RobotClient, *, timeout: float = 10.0) -> int:
     """Open the selected gripper and wait for its native command completion."""
     validate_motion(1.0, timeout)
@@ -34,7 +34,7 @@ async def gripper_open(rbt: RobotClient, *, timeout: float = 10.0) -> int:
     return index
 
 
-@skill(id="waldo.gripper_close", version="1.0.0", requires=frozenset({"tool.gripper"}))
+@skill(id="waldo.gripper_close", version="1.0.0")
 async def gripper_close(rbt: RobotClient, *, timeout: float = 10.0) -> int:
     """Close the selected gripper; completion does not imply a sensed grasp."""
     validate_motion(1.0, timeout)
