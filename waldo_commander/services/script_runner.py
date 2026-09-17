@@ -82,6 +82,9 @@ async def run_script(
         raise FileNotFoundError(f"Python executable not found: {python_exe}")
 
     env = {**os.environ, **cfg.get("env", {})}
+    from waldo_commander.setup import SetupStore
+
+    env.setdefault("WALDO_SETUP_DIR", str(SetupStore().directory))
     if session_id:
         env["WALDO_STEP_SESSION"] = session_id
     # Pass backend package to subprocess so stepping_bootstrap can patch the right module

@@ -81,6 +81,7 @@ retract = "waldo_commander.skills:retract"
 
 [project.entry-points."waldoctl.panels"]
 handeye = "waldo_commander.components.handeye_calibration:HandEyeCalibrationPanel"
+setup = "waldo_commander.components.named_setup:NamedSetupPanel"
 
 [tool.setuptools.packages.find]
 where = ["."]
