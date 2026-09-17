@@ -59,7 +59,7 @@ def test_starter_skills_plan_fixed_setup_alignment_and_gripper_actions():
         },
     )
     start = pose_of(client)
-    entries, diagnostics = library(client.skill_capabilities)
+    entries, diagnostics = library(client.robot)
     assert not diagnostics
     approach(client, target=start, clearance_mm=2, speed=0.5)
     assert len(client.segment_collector) == 2
@@ -239,7 +239,7 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
             await script_exec.stop()
         motion_recorder.toggle_recording()
 
-    entries, _ = library(client.skill_capabilities)
+    entries, _ = library(client.robot)
     snippet = call_source(
         entries["waldo.retract"], {"distance_mm": 2.0}, async_call=True
     )

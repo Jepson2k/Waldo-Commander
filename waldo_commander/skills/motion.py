@@ -42,7 +42,7 @@ async def retract(
     return index
 
 
-@skill(id="waldo.approach", version="1.0.0", requires=frozenset({"motion.linear"}))
+@skill(id="waldo.approach", version="1.0.0")
 async def approach(
     rbt: RobotClient,
     *,
@@ -81,7 +81,7 @@ async def approach(
     return index
 
 
-@skill(id="waldo.park", version="1.0.0", requires=frozenset({"motion.joint"}))
+@skill(id="waldo.park", version="1.0.0")
 async def park(
     rbt: RobotClient,
     *,
@@ -104,9 +104,7 @@ async def park(
     return index
 
 
-@skill(
-    id="waldo.align_tool_axis", version="1.0.0", requires=frozenset({"motion.linear"})
-)
+@skill(id="waldo.align_tool_axis", version="1.0.0")
 async def align_tool_axis(
     rbt: RobotClient,
     *,
