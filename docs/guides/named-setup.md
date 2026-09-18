@@ -12,14 +12,32 @@ Shape definitions have their own documented rotation convention. A frame's paren
 frame. Cycles, missing parents and non-finite values are rejected. TRF remains
 the existing native relative-motion frame and cannot be a static setup frame.
 
+Saving writes `programs/setups/<name>.py`: an ordinary Python module holding
+one `SetupSnapshot` literal, the way the recorder writes programs. Copy it,
+diff it, keep it under version control with the programs that use it, and
+load it either way:
+
 ```python
 from parol6 import RobotClient
 from waldo_commander.setup import load_setup
 
-setup = load_setup("bench")
+setup = load_setup("bench")            # imports programs/setups/bench.py
 with RobotClient() as rbt:
     rbt.move_l(setup.resolve("pick").as_list(), speed=0.2)
 ```
+
+```python
+from setups.bench import setup         # the same module, imported directly
+```
+
+The direct import works wherever `programs/` is on the import path: a
+program run from Commander, or `python programs/pick.py` from that folder.
+`load_setup` also works from the in-process preview, so prefer it in
+programs that must preview and run unchanged.
+
+A setup saved as JSON by an earlier release, including the old
+`~/.waldo-commander/setups` store, is converted to its `.py` twin the first
+time the store is opened, and the JSON is removed.
 
 `resolve` produces a normal WRF numeric pose. The same function runs in preview,
 stepping and standalone Python; the backend still plans and checks every move.
