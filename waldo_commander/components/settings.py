@@ -55,17 +55,11 @@ def adopt_applied_tcp(calibration: TcpCalibration) -> None:
         calibration.variant_key
     )
     _pushed_offset_tools.add(calibration.tool_key)
-    robot = ui_state.active_robot
-    kwargs = (
-        {"tcp_rotation_rad": tuple(math.radians(v) for v in calibration.values[3:])}
-        if robot.has_tcp_transform
-        else {}
-    )
-    robot.set_active_tool(
+    ui_state.active_robot.set_active_tool(
         calibration.tool_key,
         tcp_offset_m=tuple(v / 1000 for v in calibration.values[:3]),
         variant_key=calibration.variant_key or None,
-        **kwargs,
+        tcp_rotation_rad=tuple(math.radians(v) for v in calibration.values[3:]),
     )
     if ui_state.urdf_scene:
         ui_state.urdf_scene.apply_tool(
@@ -229,15 +223,9 @@ class SettingsContent:
             tool_key,
             tcp_offset_m=self._tcp_offset_m(tool_key),
             variant_key=variant_key,
-            **(
-                {
-                    "tcp_rotation_rad": tuple(
-                        math.radians(float(self._get_tcp_offset(tool_key).get(k, 0)))
-                        for k in TCP_AXES[3:]
-                    )
-                }
-                if ui_state.active_robot.has_tcp_transform
-                else {}
+            tcp_rotation_rad=tuple(
+                math.radians(float(self._get_tcp_offset(tool_key).get(k, 0)))
+                for k in TCP_AXES[3:]
             ),
         )
         if ui_state.urdf_scene:
@@ -314,25 +302,20 @@ class SettingsContent:
     ) -> None:
         assert self._tcp_offset_container is not None
         self._tcp_offset_container.clear()
-        full = ui_state.active_robot.has_tcp_transform
-        disabled = tool_key == "NONE" and not full
         offset = self._get_tcp_offset(tool_key)
-        axes = TCP_AXES if full else TCP_AXES[:3]
         page_client = context.client
         inputs: OffsetInputs = ()
 
         async def _on_offset_change(_e=None):
             if any(item.value is None for item in inputs):
                 return
-            vals = {axis: item.value for axis, item in zip(axes, inputs)}
+            vals = {axis: item.value for axis, item in zip(TCP_AXES, inputs)}
             await self._push_tcp_offset(tool_key, vals, inputs, page_client)
 
         with self._tcp_offset_container:
             with _setting_row(
                 "TCP Offset",
-                "Tool-local mm / intrinsic XYZ degrees"
-                if full
-                else "Offset from default TCP (mm)",
+                "Tool-local mm / intrinsic XYZ degrees",
             ):
                 with ui.grid(columns=3).classes("gap-1"):
                     inputs = tuple(
@@ -340,7 +323,7 @@ class SettingsContent:
                             label=axis.upper(), value=offset.get(axis, 0), step=0.5
                         )
                         .classes("w-16")
-                        .props("dense borderless" + (" disable" if disabled else ""))
+                        .props("dense borderless")
                         .on(
                             "update:model-value",
                             _on_offset_change,
@@ -348,21 +331,20 @@ class SettingsContent:
                             leading_events=False,
                         )
                         .mark(f"tcp-offset-{axis}")
-                        for axis in axes
+                        for axis in TCP_AXES
                     )
         self._tcp_inputs = (tool_key, inputs, page_client)
-        if not disabled:
-            background_tasks.create(
-                self._reconcile_tcp_offset(
-                    tool_key,
-                    inputs,
-                    page_client,
-                    tool_changed=tool_changed,
-                    adopt_only=adopt_only,
-                    epoch=self._tool_epoch,
-                ),
-                name="tcp-offset-reconcile",
-            )
+        background_tasks.create(
+            self._reconcile_tcp_offset(
+                tool_key,
+                inputs,
+                page_client,
+                tool_changed=tool_changed,
+                adopt_only=adopt_only,
+                epoch=self._tool_epoch,
+            ),
+            name="tcp-offset-reconcile",
+        )
 
     def show_applied_tcp(self, calibration: TcpCalibration) -> None:
         """Reflect a transform the controller confirmed for the shown tool."""
@@ -409,10 +391,7 @@ class SettingsContent:
             self._tcp_pushing = False
 
     async def _read_tcp(self) -> list[float]:
-        if ui_state.active_robot.has_tcp_transform:
-            values = await self.client.tcp_transform()
-        else:
-            values = [*(await self.client.tcp_offset()), 0.0, 0.0, 0.0]
+        values = await self.client.tcp_transform()
         return list(TcpCalibration(cast(PoseValues, tuple(values)), "readback").values)
 
     async def _send_tcp_offset(
@@ -443,16 +422,11 @@ class SettingsContent:
             calibration = TcpCalibration(
                 values, tool_key, self._bound_variant(tool_key)
             )
-            if ui_state.active_robot.has_tcp_transform:
-                from waldo_commander.services.tcp_calibration import (
-                    apply_tcp_calibration,
-                )
+            from waldo_commander.services.tcp_calibration import (
+                apply_tcp_calibration,
+            )
 
-                await apply_tcp_calibration(self.client, calibration)
-            else:
-                index = await self.client.set_tcp_offset(*values[:3])
-                if index < 0 or not await self.client.wait_command(index, timeout=15.0):
-                    raise TimeoutError("TCP offset application was not confirmed")
+            await apply_tcp_calibration(self.client, calibration)
             back = await self._read_tcp()
             if epoch != self._tool_epoch:
                 return
