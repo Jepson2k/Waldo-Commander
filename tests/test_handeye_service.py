@@ -56,9 +56,9 @@ def _samples(n_views: int = 12) -> list[handeye.HandEyeSample]:
 def test_solve_recovers_known_transform():
     result = handeye.solve_hand_eye(_samples(), SPEC, method="PARK")
 
-    R_err = result.T_cam2gripper[:3, :3].T @ X_TRUE[:3, :3]
+    R_err = result.T_camera_parent[:3, :3].T @ X_TRUE[:3, :3]
     rot_err_deg = math.degrees(np.linalg.norm(Rotation.from_matrix(R_err).as_rotvec()))
-    trans_err_mm = float(np.linalg.norm(result.T_cam2gripper[:3, 3] - X_TRUE[:3, 3]))
+    trans_err_mm = float(np.linalg.norm(result.T_camera_parent[:3, 3] - X_TRUE[:3, 3]))
     assert rot_err_deg < 0.5, f"rotation off by {rot_err_deg:.3f} deg"
     assert trans_err_mm < 2.0, f"translation off by {trans_err_mm:.3f} mm"
 
@@ -75,7 +75,7 @@ def test_solve_recovers_known_transform():
         result, SPEC, "NONE", {"x": 0.0, "y": 0.0, "z": 0.0}, "2026-01-01T00:00:00Z"
     )
     restored = handeye.from_storage_dict(stored)
-    np.testing.assert_allclose(restored["T_cam2gripper"], result.T_cam2gripper)
+    np.testing.assert_allclose(restored["T_cam2gripper"], result.T_camera_parent)
     assert restored["n_samples"] == result.n_views
 
 
@@ -150,9 +150,9 @@ def test_solve_rejections():
         azimuths=(0.0, 90.0, 180.0, 270.0),
     )
     try:
-        R_flipped = handeye.solve_hand_eye(flipped, SPEC, method="PARK").T_cam2gripper[
-            :3, :3
-        ]
+        R_flipped = handeye.solve_hand_eye(
+            flipped, SPEC, method="PARK"
+        ).T_camera_parent[:3, :3]
     except handeye.CalibrationError as e:
         assert "non-rigid" in str(e), f"unexpected rejection: {e}"
     else:
@@ -194,3 +194,64 @@ def test_board_png_roundtrip():
     detection = handeye.detect_board(image, handeye.make_detector(SPEC))
     assert detection is not None
     assert len(detection.corners) == (SPEC.squares_x - 1) * (SPEC.squares_y - 1)
+
+
+def test_fixed_camera_and_saved_measurement_import():
+    from waldoctl.setup import SetupSnapshot, TcpCalibration
+    from waldo_commander.services.camera_calibration import (
+        CaptureBinding,
+        calibration_from_result,
+        import_saved_handeye,
+    )
+
+    # The same rendered observations describe a board on the tool when robot
+    # poses are inverted. Ground truth then becomes camera→WRF.
+    samples = _samples()
+    fixed_samples = [
+        handeye.HandEyeSample(np.linalg.inv(s.T_base_gripper), s.detection, s.timestamp)
+        for s in samples
+    ]
+    result = handeye.solve_hand_eye(fixed_samples, SPEC, mount="fixed")
+    np.testing.assert_allclose(result.T_camera_parent[:3, 3], X_TRUE[:3, 3], atol=2.0)
+    np.testing.assert_allclose(
+        result.T_camera_parent[:3, :3], X_TRUE[:3, :3], atol=0.01
+    )
+    binding = CaptureBinding(
+        "camera-A", "session", "parol6", TcpCalibration((0, 0, 0, 0, 0, 0), "MSG")
+    )
+    setup = SetupSnapshot()
+    calibration = calibration_from_result(result, SPEC, binding, setup)
+    world = calibration.world_pose(
+        setup, camera_id="camera-A", image_size=IMAGE_SIZE, backend="parol6"
+    )
+    np.testing.assert_allclose(world.matrix(), result.T_camera_parent, atol=1e-8)
+
+    tool_result = handeye.solve_hand_eye(samples, SPEC)
+    stored = handeye.to_storage_dict(
+        tool_result, SPEC, "MSG", {"x": 0, "y": 0, "z": 0}, "2025-01-01T00:00:00Z"
+    )
+    imported = import_saved_handeye(
+        stored,
+        camera_id="camera-A",
+        image_size=IMAGE_SIZE,
+        backend="parol6",
+        tool=binding.tool,
+    )
+    np.testing.assert_allclose(
+        imported.pose.matrix(), tool_result.T_camera_parent, atol=1e-8
+    )
+    assert imported.calibrated_at == "2025-01-01T00:00:00Z"
+    assert imported.quality.sample_count == len(samples)
+    for image_size, tool, message in (
+        ((1280, 960), binding.tool, "resolution"),
+        (IMAGE_SIZE, TcpCalibration((0, 0, 0, 0, 0, 1), "MSG"), "TCP"),
+        (IMAGE_SIZE, TcpCalibration((0, 0, 0, 0, 0, 0), "NONE"), "tool"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            import_saved_handeye(
+                stored,
+                camera_id="camera-A",
+                image_size=image_size,
+                backend="parol6",
+                tool=tool,
+            )

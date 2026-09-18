@@ -153,3 +153,74 @@ result = wait_signal(
 A fixture supplies a constant logical value. If it cannot match the requested
 value, preview advances by the wait duration and takes the timeout branch. No
 fixture means an unresolved preview. Live clients refuse fixtures.
+
+## Camera calibration
+
+The **Hand-Eye Calibration** panel supports **Camera on tool** and **Fixed
+camera** placement. For a tool camera, keep the printed ChArUco board fixed in
+the workspace. For a fixed camera, attach the board rigidly to the tool and
+leave the camera stationary. The fixed-camera controls can list and start a
+video device independently of a tool's camera assignment.
+
+Reference the arm, hold it stationary, and capture at least four views with
+rotation about multiple wrist axes; 10–15 diverse views are preferable. Capture
+waits for a subsequent camera frame and reads the controller's tool/TCP binding.
+Changing the camera session, tool, TCP transform or image dimensions requires
+clearing the sample set. The timestamp is host receipt time, not hardware
+exposure time: this acquisition workflow requires stationary observations.
+
+**Solve** estimates pinhole intrinsics and the camera transform. A tool camera
+is expressed relative to the current TCP; a fixed camera is expressed in WRF.
+Both report reprojection error, rotational/translational residuals and board
+position spread. Review those measurements against the accuracy your task needs.
+The fixed-camera case uses inverse robot poses with OpenCV's
+[hand-eye calibration solver](https://docs.opencv.org/4.8.0/d9/d0c/group__calib3d.html).
+
+In **Saved camera data**, select the setup and camera name before pressing
+**Save**. A fixed camera can be expressed in a static named frame already in
+that setup; saving records the frame's WRF transform as its reference.
+**Load / check** reads the saved measurement and checks it against the current
+camera and controller. **Export snapshot** downloads ordinary Python containing
+the setup's fixed values. Saving, loading and exporting issue no robot motion
+or configuration commands.
+
+```python
+from waldo_commander.setup import load_setup
+
+setup = load_setup("bench")
+camera = setup.cameras["overhead"]
+K = camera.intrinsics.camera_matrix  # flat row-major 3×3, pixels
+size = camera.intrinsics.image_size  # width, height
+quality = camera.quality
+```
+
+`CameraCalibration.validate` takes the setup plus the observed `camera_id`,
+`image_size`, robot `backend`, and (for tool cameras) a current `TcpCalibration`.
+`world_pose` accepts the same context and the image's WRF `tcp_pose` for tool
+cameras. It returns a `Pose` after validation. Camera optical axes are +X right,
++Y down and +Z forward; translations use millimetres. A tool camera's stored
+pose has frame `TCP`; use `world_pose` to resolve it before motion calculations.
+
+Tool, variant and all six TCP components must match a tool-mounted calibration.
+Fixed cameras remain usable across tool changes but reject a changed reference
+frame, including changes to its parents. Changed camera source, resolution or
+backend is rejected in either mode. These checks use the explicitly supplied
+snapshot and observations; a running program's loaded setup remains immutable.
+
+The camera service provides `snapshot(max_age_s=...)` and bounded
+`next_snapshot(timeout_s=...)` for acquisition in the app process. Observations
+include JPEG bytes, host receipt time, source identity, sequence and capture
+session. Inactive, stale and missing images raise `CameraUnavailable`; display
+placeholders are never returned as observations.
+
+The built-in source identity fingerprints the configured device and requested
+capture dimensions without exporting the device string. Replacing a camera at
+the same device index, moving its mount, changing its lens/focus or moving the
+robot base may be invisible to software. Recalibrate after those changes.
+
+Existing per-tool measurements remain available in the panel. **Import existing
+hand-eye measurement** requires confirmation of the same physical camera, lens
+and mount, then checks the recorded tool, TCP and resolution. Import binds the
+original intrinsics, transform, date and quality measurements to the current
+source and tool variant, and saves a named setup entry. The original measurement
+is preserved.
