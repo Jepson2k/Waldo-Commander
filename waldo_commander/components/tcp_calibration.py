@@ -7,7 +7,7 @@ from typing import cast
 
 from nicegui import ui
 from waldoctl import Commander
-from waldoctl.calibration import (
+from waldo_commander.services.tcp_calibration import (
     PivotCalibration,
     calibrate_tcp_position,
     teach_tcp_orientation,
