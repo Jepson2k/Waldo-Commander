@@ -120,6 +120,48 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         # the status pipeline from throwing on every frame.
         assert len(robot_state.io) == robot.digital_inputs + robot.digital_outputs + 1
 
+        from waldoctl.signals import DigitalSignal
+        from waldo_commander.skills.signals import (
+            read_signal,
+            wait_signal,
+            write_signal,
+        )
+
+        signal = DigitalSignal(
+            "par6", "output", 0, robot.digital_inputs, robot.digital_outputs
+        )
+        client = waldoctl.commander.client
+        before_io = await client.io(timeout=2)
+        assert before_io is not None
+        try:
+            observation = await write_signal.async_call(client, signal, True)
+            assert observation.value and observation.source == "controller"
+            assert (await read_signal.async_call(client, signal)).value
+            result = await wait_signal.async_call(client, signal, False, timeout=0.2)
+            assert (
+                result.outcome == "timeout"
+                and result.observation is not None
+                and result.observation.value
+            )
+            user.find(marker="tab-setup").click()
+            from nicegui import ui
+
+            user.find(kind=ui.tab, content="Signals").click()
+
+            def element(marker):
+                return next(iter(user.find(marker=marker).elements))
+
+            element("signal-direction").set_value("output")
+            user.find(marker="signal-read").click()
+            await user.should_see("Observed logical value: True", retries=30)
+            user.find(marker="signal-write").click()
+            await user.should_see(
+                "Controller reports logical output: False", retries=30
+            )
+            assert (await client.io(timeout=2))[robot.digital_inputs] == 0
+        finally:
+            await client.write_io(0, before_io[robot.digital_inputs], timeout=2)
+
         # UI actually rendered against this backend.
         await user.should_see(marker="btn-estop")
         await user.should_see(marker="readout-x")

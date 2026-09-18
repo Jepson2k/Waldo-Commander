@@ -2,8 +2,18 @@
 
 from waldo_commander.skills.motion import align_tool_axis, approach, park, retract
 from waldo_commander.skills.gripper import gripper_close, gripper_open
+from waldo_commander.skills.signals import (
+    SignalFixture,
+    read_signal,
+    wait_signal,
+    write_signal,
+)
 
 __all__ = [
+    "SignalFixture",
+    "read_signal",
+    "wait_signal",
+    "write_signal",
     "align_tool_axis",
     "approach",
     "park",

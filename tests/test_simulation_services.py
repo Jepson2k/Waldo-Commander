@@ -1490,47 +1490,33 @@ class TestScriptExecutionLifecycle:
 
                 await stop_script(handle)
 
-    @pytest.mark.asyncio
-    async def test_start_handles_subdir_filename(self, tmp_path, monkeypatch):
-        """Filenames with path separators (from files loaded out of subdirs) must
-        not break start()'s write to ``.runtime/<filename>``.
-
-        Regression: file tree IDs are relative paths (``str(item.relative_to(base))``),
-        so loading ``programs/sub/foo.py`` puts ``"sub/foo.py"`` in the filename
-        input. Pre-fix, ``script_path.write_text`` raised FileNotFoundError because
-        only ``.runtime`` was created, not ``.runtime/sub``.
-        """
+    @pytest.mark.integration
+    async def test_start_handles_subdir_filename(self, user, tmp_path):
+        """A program loaded from a subdirectory can actually run to completion."""
         from waldo_commander.components import script_execution as se
+        from tests.helpers.wait import wait_for_app_ready
 
-        # Stub run_script so we don't actually launch a subprocess — the bug
-        # is in the file write that happens before run_script is called.
-        async def stub_run_script(*args, **kwargs):
-            raise RuntimeError("stub: stop after file write")
-
-        monkeypatch.setattr(se, "run_script", stub_run_script)
-        monkeypatch.setattr(se.ui, "notify", lambda *a, **k: None)
-        monkeypatch.setattr(se.log_panel, "clear", lambda: None)
-        monkeypatch.setattr(se.log_panel, "push", lambda line: None)
-        monkeypatch.setattr(se.log_panel, "expand", lambda: None)
-
-        fake_textarea = MagicMock()
-        fake_textarea.value = "# subdir regression\n"
-        fake_filename_input = MagicMock()
-        fake_filename_input.value = "sub/regression.py"
-        ui_state.active_textarea = fake_textarea
-        ui_state.active_filename_input = fake_filename_input
-
+        await user.open("/")
+        await wait_for_app_ready()
         se.script_exec.set_program_dir(tmp_path)
-
+        assert ui_state.active_textarea is not None
+        assert ui_state.active_filename_input is not None
+        content = 'print("subdirectory program finished")\n'
+        ui_state.active_textarea.value = content
+        ui_state.active_filename_input.value = "sub/regression.py"
         try:
             await se.script_exec.start()
-
+            await user.should_see("subdirectory program finished", retries=100)
+            deadline = time.monotonic() + 10
+            while se.script_exec.last_exit_code is None and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert se.script_exec.last_exit_code == 0
+            assert not is_any_program_running()
             written = tmp_path / ".runtime" / "sub" / "regression.py"
-            assert written.exists(), f"Expected {written} to exist after start() ran"
-            assert written.read_text(encoding="utf-8") == "# subdir regression\n"
+            assert written.read_text(encoding="utf-8") == content
         finally:
-            ui_state.active_textarea = None
-            ui_state.active_filename_input = None
+            if se.script_exec.script_handle is not None:
+                await se.script_exec.stop()
 
     @pytest.mark.asyncio
     async def test_cleanup_preserves_stepping_ipc_across_page_reload(

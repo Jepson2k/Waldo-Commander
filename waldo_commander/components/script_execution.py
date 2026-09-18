@@ -250,7 +250,7 @@ class ScriptExecutionController:
             self._reset_state()
 
     async def stop(self) -> None:
-        """Stop the running script process."""
+        """Terminate the program, then cancel its native motion and queue."""
         if not is_any_program_running() or not self.script_handle:
             ui.notify("No script running", color="warning")
             return
@@ -258,19 +258,24 @@ class ScriptExecutionController:
         try:
             handle = self.script_handle
             self.script_handle = None
-            running_tab = self._launching_program()
-            if running_tab is not None:
-                running_tab.execution.is_running = False
-                running_tab.dry_run.playback.is_playing = False
-            simulation_state.notify_changed()
             self.cleanup_stepping()
             if handle:
                 await stop_script(handle)
+            # The process can no longer enqueue commands. Keep the run marked
+            # active until its previously queued motion has been cancelled.
+            async with asyncio.timeout(3.0):
+                if await waldoctl.commander.client.stop() <= 0:
+                    raise TimeoutError(
+                        "Program exited, but controller stop was not confirmed"
+                    )
             ui.notify("Script stopped", color="warning")
             logger.info("Script stopped by user")
         except Exception as e:
             ui.notify(f"Error stopping script: {e}", color="negative")
             logger.error("Error stopping script: %s", e)
+            raise
+        finally:
+            self._reset_state()
 
     # ---- Public step-controller actions (called from playback UI handlers) ----
 

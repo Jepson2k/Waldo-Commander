@@ -221,8 +221,21 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
         async with asyncio.timeout(10):
             while not is_any_program_running():
                 await asyncio.sleep(0.05)
+        assert await client.wait_status(
+            lambda s: (
+                s.executing_index > 0
+                and s.action_state == waldoctl.ActionState.EXECUTING
+            ),
+            timeout=15,
+        ), "the cancellation case must reach actual motion"
         await script_exec.stop()
-        await user.should_see(content="Skill did not complete; see the program log")
+        assert await client.wait_status(
+            lambda s: s.action_state == waldoctl.ActionState.IDLE,
+            timeout=2,
+        ), "stopping a program must cancel its active native motion"
+        await user.should_see(
+            content="Skill did not complete; see the program log", retries=50
+        )
         assert original.source == before_cancel, (
             "a cancelled run is not recorded as success"
         )
@@ -263,7 +276,7 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
                 await mcp.call_tool("execution.wait_active", {"timeout": 30})
             )
             log = payload(await mcp.call_tool("programs.get_log"))
-        assert result["finished"] and result["exit_ok"], result
+        assert result["finished"] and result["exit_ok"], (result, log)
         actual = await client.pose()
         assert actual is not None
         assert np.linalg.norm(np.array(actual[:3]) - before[:3]) == pytest.approx(
