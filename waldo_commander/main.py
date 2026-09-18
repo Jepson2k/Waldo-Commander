@@ -278,13 +278,7 @@ async def initialize_urdf_scene() -> None:
 
     # Align TCP and load tool mesh from the controller's active tool.
     try:
-        if robot.has_tcp_transform:
-            adopt_applied_tcp(await read_applied_tcp(client))
-        else:
-            result = await client.tools()
-            if result and result.tool:
-                vk = ng_app.storage.general.get(f"tool_variant_{result.tool}")
-                ui_state.urdf_scene.apply_tool_everywhere(result.tool, variant_key=vk)
+        adopt_applied_tcp(await read_applied_tcp(client))
     except (ValueError, TimeoutError, OSError) as e:
         logger.debug("TCP scene initialization deferred: %s", e)
     except Exception as e:
