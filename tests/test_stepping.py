@@ -69,6 +69,36 @@ class TestStepIO:
         assert data["events"][0]["method"] == "move_j"
         assert data["events"][0]["extra_data"] == "test"
 
+    def test_event_publication_recovers_after_transient_file_lock(
+        self, tmp_path, monkeypatch
+    ):
+        from waldo_commander.services import stepping_client
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = stepping_client.GUIStepController("locked-event-file")
+        controller.initialize()
+        publisher = stepping_client.StepIO(controller.session_id)
+        publisher.emit_event("command_started", "move_j")
+        assert [e["event"] for e in controller.poll_events()] == ["command_started"]
+
+        with monkeypatch.context() as fault:
+
+            def locked_file(source, destination):
+                raise PermissionError("event file temporarily held by a reader")
+
+            fault.setattr(stepping_client.os, "replace", locked_file)
+            publisher.emit_event("command_completed", "move_j")
+        assert controller.poll_events() == []
+        publisher.emit_event("command_started", "delay")
+        events = controller.poll_events()
+        assert [(e["event"], e["method"]) for e in events] == [
+            ("command_completed", "move_j"),
+            ("command_started", "delay"),
+        ]
+        assert [e["sequence"] for e in events] == [2, 3]
+        assert controller.poll_events() == []
+        controller.cleanup()
+
     def test_check_should_pause_behavior(self, tmp_path, monkeypatch):
         """check_should_pause returns True by default, False when control file says so."""
         from waldo_commander.services.stepping_client import StepIO
@@ -214,18 +244,12 @@ class TestGUIStepController:
         controller = GUIStepController("test_poll")
         controller.initialize()
 
-        # Write some events to event file
+        from waldo_commander.services.stepping_client import StepIO
+
+        step_io = StepIO(controller.session_id)
         event_file = tmp_path / ".parol_events_test_poll"
-        event_file.write_text(
-            json.dumps(
-                {
-                    "events": [
-                        {"event": "start", "method": "move_j", "step": 0},
-                        {"event": "complete", "method": "move_j", "step": 0},
-                    ]
-                }
-            )
-        )
+        step_io.emit_event("start", "move_j")
+        step_io.emit_event("complete", "move_j")
 
         events = controller.poll_events()
         assert len(events) == 2

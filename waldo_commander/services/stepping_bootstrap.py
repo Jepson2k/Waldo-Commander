@@ -76,6 +76,11 @@ def main() -> None:
             message=event.message,
             fraction=event.fraction,
             stop_confirmed=event.stop_confirmed,
+            **(
+                {"arguments": event.arguments, "result": event.result}
+                if event.values_captured
+                else {}
+            ),
         )
 
     # Set by the GUI process.
@@ -155,7 +160,23 @@ def main() -> None:
     try:
         # Compile with the script's filename for proper tracebacks.
         code = compile(script_code, str(script_path), "exec")
-        with observe_skills(record_skill):
+        from waldo_commander.setup import observe_setup_loads
+
+        def record_setup(name, snapshot):
+            if step_io.capture_values:
+                from waldoctl.record_values import snapshot_value
+
+                step_io.emit_event(
+                    "setup_loaded",
+                    "load_setup",
+                    name=name,
+                    snapshot=snapshot_value(snapshot.to_dict()),
+                )
+
+        with (
+            observe_skills(record_skill, capture_values=step_io.capture_values),
+            observe_setup_loads(record_setup),
+        ):
             exec(code, script_globals)
         # Bare-construction scripts never hit __exit__: barrier any queued
         # blended moves so the process doesn't exit while the arm still runs.
