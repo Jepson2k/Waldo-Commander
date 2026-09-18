@@ -501,7 +501,18 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User) -> None:
     user.find(marker="btn-j1-min-limit").click()
 
     # Wait for motion to start (action_state becomes EXECUTING or angles change)
-    await wait_for_motion_start(timeout_s=5.0)
+    try:
+        await wait_for_motion_start(timeout_s=5.0)
+    except TimeoutError as exc:
+        exc.add_note(
+            f"Full joint angles: {list(waldoctl.commander.status.joints.angles.deg)}; "
+            f"collision pairs: {waldoctl.commander.status.collision.pairs}"
+        )
+        error = await waldoctl.commander.client.error()
+        exc.add_note(f"Controller error: {error.to_wire() if error else None}")
+        exc.add_note(f"Collision world: {await waldoctl.commander.client.shapes()}")
+        exc.add_note(f"Tool state: {await waldoctl.commander.client.tools()}")
+        raise
 
     # Wait for motion to complete and stabilize (limit moves can take 5+ seconds)
     final_j1 = await wait_for_motion_stable(
