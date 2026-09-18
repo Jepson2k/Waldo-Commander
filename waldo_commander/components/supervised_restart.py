@@ -9,6 +9,7 @@ from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.run_records import load_record
 from waldo_commander.services.supervised_restart import (
     discover_entries,
+    discover_hook,
     fresh_state,
     source_digest,
 )
@@ -26,6 +27,7 @@ async def show_supervised_restart() -> None:
     digest = source_digest(source)
     try:
         entries = discover_entries(source)
+        hook = discover_hook(source)
     except (SyntaxError, ValueError) as error:
         ui.notify(str(error), color="warning")
         return
@@ -71,6 +73,12 @@ async def show_supervised_restart() -> None:
         ui.label(
             "The selected function starts with fresh Python state. Check the arm, tool, held part and work area before continuing."
         ).classes("text-sm")
+        if hook is not None:
+            ui.label(
+                f"before_restart() runs first: {hook.description}"
+                if hook.description
+                else "before_restart() runs first."
+            ).classes("text-sm").mark("restart-hook")
         choice = (
             ui.select(
                 {

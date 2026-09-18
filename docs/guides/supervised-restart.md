@@ -12,6 +12,13 @@ from parol6 import RobotClient
 from waldo_commander.setup import load_setup
 
 
+def before_restart():
+    """Release anything held and clear the outputs before any restart."""
+    with RobotClient() as rbt:
+        rbt.tool.open()
+        rbt.write_io(0, 0)
+
+
 def after_pick():
     """Continue with the held part checked and the destination clear."""
     setup = load_setup("bench")
@@ -33,6 +40,13 @@ Every top-level function that can be called without arguments is offered,
 including `main`; async functions are supported too. Names starting with an
 underscore, generators, skills and decorated functions are not offered. Nothing
 in the program is imported or run to build the list.
+
+A top-level `before_restart()` is the program's restart hook, the counterpart
+of a controller's restart event routine: it runs in the fresh process before
+the chosen function on every supervised restart, never on ordinary **Start**,
+and is never offered as a place to start. Put the cell reset there: release a
+held part, clear outputs, check a sensor. If it raises, the chosen function
+does not run.
 
 Each selection launches a new Python process with fresh globals and calls only
 the selected entry. It does not reconstruct locals or resume at a source line.

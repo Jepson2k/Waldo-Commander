@@ -11,6 +11,8 @@ from waldo_commander.services.supervised_restart import discover_entries, execut
 
 def test_entries_execute_in_fresh_globals_and_do_not_run_the_main_sequence(tmp_path):
     source = """values = []
+def before_restart():
+    values.append(0)
 def first():
     values.append(1)
     return len(values)
@@ -27,13 +29,16 @@ if __name__ == "__main__":
     raise RuntimeError("The whole original program was replayed")
 """
     assert [e.name for e in discover_entries(source)] == ["first", "second"]
-    assert execute_entry(source, "program.py", "first") == 1
-    assert execute_entry(source, "program.py", "first") == 1
-    assert execute_entry(source, "program.py", "second") == [2]
-    assert discover_entries("from missing_dependency import anything\n" + source)
-    for name in ("missing", "_helper", "needs", "steps"):
+    # The hook runs first, in the same fresh globals, on every restart.
+    assert execute_entry(source, "program.py", "first") == 2
+    assert execute_entry(source, "program.py", "first") == 2
+    assert execute_entry(source, "program.py", "second") == [0, 2]
+    for name in ("missing", "_helper", "needs", "steps", "before_restart"):
         with pytest.raises(ValueError, match="restart from"):
             execute_entry(source, "program.py", name)
+    with pytest.raises(ValueError, match="before_restart"):
+        discover_entries("def before_restart(part): pass\n" + source)
+    assert discover_entries("from missing_dependency import anything\n" + source)
     marker = tmp_path / "initialization-ran"
     for initialization in (
         f"open({str(marker)!r}, 'w').write('ran')",
@@ -85,6 +90,8 @@ async def test_supervised_restart_selects_a_fresh_entry_and_refuses_changed_stat
     source = f'''import os
 from parol6 import RobotClient, AsyncRobotClient
 values = []
+def before_restart():
+    values.append(1)
 def after_pick():
     """Continue after checking the held part."""
     values.append(1)
@@ -138,7 +145,7 @@ if __name__ == '__main__':
     assert script_exec.last_exit_code == 0
     assert control_lease.held_by(BROWSER, ui_state.active_client_id)
     await user.should_see("You've taken control from the AI")
-    assert marker.read_text() == "sync:1\n"
+    assert marker.read_text() == "sync:2\n"
     assert (await client.angles())[0] == pytest.approx(before[0] + 3, abs=0.1)
     events = load_record(script_exec.last_record)
     assert any(e["event"] == "restart_selected" for e in events)
@@ -158,7 +165,7 @@ if __name__ == '__main__':
     assert await selected("after_place", reference)
     await finished()
     assert script_exec.last_exit_code == 0
-    assert marker.read_text() == "sync:1\nasync:1\n"
+    assert marker.read_text() == "sync:2\nasync:2\n"
     assert (await client.angles())[0] == pytest.approx(before[0], abs=0.1)
 
     reference = await fresh_state(client)
@@ -170,7 +177,7 @@ if __name__ == '__main__':
                 await asyncio.sleep(0)
         await script_exec.stop()
         assert not await launch
-        assert marker.read_text() == "sync:1\nasync:1\n"
+        assert marker.read_text() == "sync:2\nasync:2\n"
     finally:
         if is_any_program_running():
             await script_exec.stop()
@@ -205,7 +212,7 @@ if __name__ == '__main__':
     assert await client.resume() > 0
     await client.reset_state()
     assert not await selected("after_pick", reference)
-    assert marker.read_text() == "sync:1\nasync:1\n"
+    assert marker.read_text() == "sync:2\nasync:2\n"
     assert not is_any_program_running()
 
     # A lost queue readback is not an empty queue.

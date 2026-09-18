@@ -15,6 +15,12 @@ from waldoctl.client import RobotClient
 from waldoctl.status import ActionState
 
 
+BEFORE_RESTART = "before_restart"
+"""A program's pre-start hook, by name: the controller vendors' restart event
+routine. It runs in the fresh process before the chosen function and is never
+itself a place to restart from."""
+
+
 @dataclass(frozen=True)
 class RestartEntry:
     name: str
@@ -92,14 +98,41 @@ def _callable_without_arguments(node: ast.FunctionDef | ast.AsyncFunctionDef) ->
     return required == 0 and all(v is not None for v in args.kw_defaults)
 
 
+def _plain_zero_argument(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return (
+        not node.decorator_list
+        and _callable_without_arguments(node)
+        and not _generator(node)
+    )
+
+
+def discover_hook(source: str) -> RestartEntry | None:
+    """The program's ``before_restart`` function, refusing one that cannot run."""
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == BEFORE_RESTART
+        ):
+            if not _plain_zero_argument(node):
+                raise ValueError(
+                    f"{BEFORE_RESTART} must be a plain function callable without arguments"
+                )
+            return RestartEntry(
+                node.name, (ast.get_docstring(node) or "").split("\n")[0], node.lineno
+            )
+    return None
+
+
 def discover_entries(source: str) -> list[RestartEntry]:
     """Top-level functions callable without arguments; nothing in the program runs.
 
     Like an industrial controller's routine list, any plain function the
-    operator could start cold is offered. Private names, generators, skills
-    and decorated functions are not places to restart from.
+    operator could start cold is offered. Private names, generators, skills,
+    decorated functions and the ``before_restart`` hook are not places to
+    restart from.
     """
     tree = ast.parse(source)
+    discover_hook(source)
     skills = {"waldoctl.skills.skill"}
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -123,9 +156,8 @@ def discover_entries(source: str) -> list[RestartEntry]:
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and not node.name.startswith("_")
-        and not node.decorator_list
-        and _callable_without_arguments(node)
-        and not _generator(node)
+        and node.name != BEFORE_RESTART
+        and _plain_zero_argument(node)
     ]
     if not entries:
         return []
@@ -180,13 +212,7 @@ def discover_entries(source: str) -> list[RestartEntry]:
     return entries
 
 
-def execute_entry(source: str, filename: str, name: str) -> Any:
-    """Call one function in fresh globals; no prior locals are reused."""
-    if name not in {entry.name for entry in discover_entries(source)}:
-        raise ValueError(f"{name} is not a function this program can restart from")
-    namespace: dict[str, Any] = {"__name__": "__waldo_restart__", "__file__": filename}
-    exec(compile(source, filename, "exec"), namespace)
-    function = namespace[name]
+def _call(name: str, function: Any) -> Any:
     if (
         not inspect.isfunction(function)
         or inspect.isgeneratorfunction(function)
@@ -205,6 +231,17 @@ def execute_entry(source: str, filename: str, name: str) -> Any:
 
         return asyncio.run(finish())
     return result
+
+
+def execute_entry(source: str, filename: str, name: str) -> Any:
+    """Run ``before_restart`` if declared, then the chosen function, in fresh globals."""
+    if name not in {entry.name for entry in discover_entries(source)}:
+        raise ValueError(f"{name} is not a function this program can restart from")
+    namespace: dict[str, Any] = {"__name__": "__waldo_restart__", "__file__": filename}
+    exec(compile(source, filename, "exec"), namespace)
+    if BEFORE_RESTART in namespace:
+        _call(BEFORE_RESTART, namespace[BEFORE_RESTART])
+    return _call(name, namespace[name])
 
 
 @dataclass(frozen=True)
