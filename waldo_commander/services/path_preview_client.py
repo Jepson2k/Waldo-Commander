@@ -246,10 +246,22 @@ class PathPreviewClient:
         self._holding = False
         return self._label(self._client.plan(max_seconds))
 
-    def simulate(self, max_seconds: float | None = None) -> TickIndex:
-        """The predicted record, labelled the same way."""
+    def simulate(
+        self,
+        max_seconds: float | None = None,
+        *,
+        scenario: dict[str, Any] | None = None,
+    ) -> TickIndex:
+        """The predicted record, labelled the same way. A *scenario* is
+        handed to the backend as given: only a backend that replays
+        scenarios takes one."""
         self._holding = False
-        return self._label(self._client.simulate(max_seconds))
+        record = (
+            self._client.simulate(max_seconds)
+            if scenario is None
+            else self._client.simulate(max_seconds, scenario=scenario)
+        )
+        return self._label(record)
 
     def _label(self, record: TickIndex) -> TickIndex:
         """Give each block the editor line that produced it."""

@@ -206,6 +206,42 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
         logger.warning("Failed to warm process pool workers: %s", e)
 
 
+def _tool_metadata(robot: Any) -> dict[str, dict]:
+    """Serializable tool motions for isolated program preview."""
+    tool_meta_registry: dict[str, dict] = {}
+
+    def _serialize_motions(motion_list):
+        return [
+            {"type": "linear", **asdict(m)}
+            if isinstance(m, LinearMotion)
+            else {"type": "rotary", **asdict(m)}
+            for m in motion_list
+        ]
+
+    for spec in robot.tools.available:
+        if spec.key == "NONE":
+            continue
+        try:
+            base_motions = _serialize_motions(spec.motions) if spec.motions else []
+            variants_dict: dict[str, dict] = {}
+            for v in spec.variants:
+                if v.motions:
+                    variants_dict[v.key] = {
+                        "motions": _serialize_motions(v.motions),
+                    }
+            if not base_motions and not variants_dict:
+                continue
+            tool_meta_registry[spec.key] = {
+                "motions": base_motions,
+                "variants": variants_dict,
+                "activation_type": spec.activation_type.value,
+            }
+        except (KeyError, AttributeError):
+            pass
+
+    return tool_meta_registry
+
+
 def _run_simulation_isolated(
     program_text: str,
     initial_joints_rad: np.ndarray | None = None,
@@ -218,6 +254,7 @@ def _run_simulation_isolated(
     setup_directory: str | None = None,
     simulate_seconds: float | None = None,
     attachment_epoch: int = 0,
+    scenario: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -576,7 +613,11 @@ def _run_simulation_isolated(
                 logger.warning("Preview collision marking failed: %s", e)
         if simulate_seconds is not None and commanded is not None:
             try:
-                predicted = _portable(client.simulate(simulate_seconds))
+                predicted = _portable(
+                    client.simulate(simulate_seconds, scenario=scenario)
+                    if scenario is not None
+                    else client.simulate(simulate_seconds)
+                )
             except Exception as e:
                 physics_error = f"{type(e).__name__}: {e}"
                 logger.warning("Physics simulation failed: %s", e)
@@ -757,40 +798,7 @@ class PathVisualizer:
             simulation_state.notify_changed()
             return None
 
-        # Build serializable tool metadata registry for all tools.
-        # Scripts can call select_tool() to switch tools mid-program, so we
-        # need metadata for every tool — not just the currently active one.
-        # Each entry includes base motions + per-variant motions.
-        tool_meta_registry: dict[str, dict] = {}
-
-        def _serialize_motions(motion_list):
-            return [
-                {"type": "linear", **asdict(m)}
-                if isinstance(m, LinearMotion)
-                else {"type": "rotary", **asdict(m)}
-                for m in motion_list
-            ]
-
-        for spec in robot.tools.available:
-            if spec.key == "NONE":
-                continue
-            try:
-                base_motions = _serialize_motions(spec.motions) if spec.motions else []
-                variants_dict: dict[str, dict] = {}
-                for v in spec.variants:
-                    if v.motions:
-                        variants_dict[v.key] = {
-                            "motions": _serialize_motions(v.motions),
-                        }
-                if not base_motions and not variants_dict:
-                    continue
-                tool_meta_registry[spec.key] = {
-                    "motions": base_motions,
-                    "variants": variants_dict,
-                    "activation_type": spec.activation_type.value,
-                }
-            except (KeyError, AttributeError):
-                pass
+        tool_meta_registry = _tool_metadata(robot)
 
         # Collision-marking inputs: the live shapes (wire form crosses the
         # process boundary) and the live tool as the checker's starting

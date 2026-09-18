@@ -1,0 +1,14 @@
+{
+  "name": "held-object",
+  "program": "from par6 import RobotClient\nfrom waldoctl import Sphere\nfrom waldo_commander.skills.attachments import attach_object, detach_object\n\nwith RobotClient() as rbt:\n    rbt.set_shapes([Sphere(radius=0.01, name=\"part\", pose=(1, 1, 0.3, 0, 0, 0))])\n    attach_object(rbt, name=\"part\", flange_pose=(0, 0, 0.3, 0, 0, 0))\n    rbt.delay(0.2)\n    detach_object(rbt, name=\"part\", world_pose=(1, 1, 0.3, 0, 0, 0))\n    rbt.delay(0.2)\n",
+  "initial_joints_deg": [
+    0,
+    -90,
+    180,
+    0,
+    0,
+    180
+  ],
+  "max_seconds": 2,
+  "assumptions": "Explicit collision geometry declaration. No sensed grasp and no attached physical payload are inferred."
+}

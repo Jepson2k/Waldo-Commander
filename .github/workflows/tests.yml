@@ -351,7 +351,7 @@ jobs:
           WALDO_PAR6_E2E: '1'
           PAR6D_BIN: ${{ github.workspace }}/par6/target/release/par6d
         run: |
-          pytest -vv --tb=long --log-cli-level=DEBUG tests/test_par6_backend.py
+          pytest -vv --tb=long --log-cli-level=DEBUG tests/test_par6_backend.py tests/test_simulation_scenarios.py
 
       - name: Review the par6 browser layout
         env:
