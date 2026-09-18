@@ -45,12 +45,9 @@ def test_browser_reviews_stopped_run_and_selects_an_entry(
             await ensure_robot_ready_for_motion()
             assert ui_state.active_textarea is not None
             ui_state.active_textarea.value = f'''from parol6 import RobotClient
-from waldoctl.restart import restart_entry
-@restart_entry
 def after_pick():
     """Held part checked."""
     raise RuntimeError('Wrong entry selected')
-@restart_entry
 def after_place():
     """Part placed and tool clear."""
     with open({str(marker)!r}, 'w') as file:

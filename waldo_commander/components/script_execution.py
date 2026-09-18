@@ -229,7 +229,9 @@ class ScriptExecutionController:
                 if restart_entry not in {
                     entry.name for entry in discover_entries(content)
                 }:
-                    raise ValueError("The selected restart entry is no longer declared")
+                    raise ValueError(
+                        "The selected function can no longer be started on its own"
+                    )
                 # Refuse before anything of the interrupted run is wiped: its
                 # log, outcome and record are what the operator reviews next.
                 restart_state = await fresh_state(waldoctl.commander.client)

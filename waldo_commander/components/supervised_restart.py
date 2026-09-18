@@ -62,7 +62,7 @@ async def show_supervised_restart() -> None:
                 ui.label("Previous run record is unavailable.").classes("text-sm")
         if not entries:
             ui.label(
-                "This program has no declared restart entries. Start runs it from the beginning."
+                "This program has no top-level function that runs without arguments. Start runs it from the beginning."
             )
             ui.button("Close", on_click=dialog.close).props("flat")
             dialog.on("hide", dialog.delete)
@@ -78,7 +78,7 @@ async def show_supervised_restart() -> None:
                     for e in entries
                 },
                 value=entries[0].name,
-                label="Restart entry",
+                label="Start from",
             )
             .classes("w-full")
             .mark("restart-entry-choice")

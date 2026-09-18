@@ -543,8 +543,7 @@ async def test_commander_runs_on_the_par6_runtime(
         await asyncio.sleep(0)
         ui_state.active_textarea.value = (
             "from par6 import RobotClient\n"
-            "from waldoctl.restart import restart_entry\n"
-            "@restart_entry\ndef after_stop():\n"
+            "def after_stop():\n"
             "    with RobotClient() as rbt:\n"
             "        rbt.delay(0.01)\n"
             "if __name__ == '__main__':\n"

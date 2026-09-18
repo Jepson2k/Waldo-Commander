@@ -1,18 +1,17 @@
 # Supervised restart
 
 Use the editor's **Supervised restart** button after an interrupted program to
-select an explicit Python entry function. Review the previous run, read fresh
-controller state, select the entry, check the physical setup, then click
-**Start from entry**. Optional [run records](../run-records.md) retain the selected
+start again from any of its top-level functions, the way an industrial
+controller lets the operator move the program pointer to a routine. Review the
+previous run, read fresh controller state, pick the function, check the
+physical setup, then click **Start from entry**. Optional [run records](../run-records.md) retain the selected
 entry and the state observed at launch.
 
 ```python
 from parol6 import RobotClient
-from waldoctl.restart import restart_entry
 from waldo_commander.setup import load_setup
 
 
-@restart_entry
 def after_pick():
     """Continue with the held part checked and the destination clear."""
     setup = load_setup("bench")
@@ -30,18 +29,18 @@ if __name__ == "__main__":
     main()
 ```
 
-An entry is a top-level, zero-argument callable marked with `@restart_entry`.
-Async functions are supported too. The decorator preserves ordinary Python
-calling behavior; calling an entry directly in a standalone program does not
-perform Commander's review checks.
+Every top-level function that can be called without arguments is offered,
+including `main`; async functions are supported too. Names starting with an
+underscore, generators, skills and decorated functions are not offered. Nothing
+in the program is imported or run to build the list.
 
 Each selection launches a new Python process with fresh globals and calls only
 the selected entry. It does not reconstruct locals or resume at a source line.
 Load the data and create the client inside functions. Module-level imports,
 literal constants, function declarations, docstrings and a conventional
 `if __name__ == "__main__":` block are supported. Function defaults must be
-literals; initialization calls and arbitrary decorators are refused in entry
-mode. `@waldoctl.skills.skill(...)` with literal metadata is supported.
+literals; initialization calls and decorators other than a skill's are refused
+in entry mode. `@waldoctl.skills.skill(...)` with literal metadata is supported.
 Imported packages and Python declarations remain trusted application code;
 this validation is not a Python sandbox.
 
@@ -59,5 +58,5 @@ pose does not authorize continuation. Restart never homes the robot or restores
 configuration automatically. **Stop** clears old queued motion; **Pause** leaves
 it pending and therefore prevents a new restart.
 
-Ordinary **Start** always runs from the beginning, including for programs without
-entries. Supervised restart works with run recording disabled.
+Ordinary **Start** always runs from the beginning, including for programs whose
+functions all take arguments. Supervised restart works with run recording disabled.

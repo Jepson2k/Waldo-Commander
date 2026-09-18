@@ -10,16 +10,19 @@ from waldo_commander.services.supervised_restart import discover_entries, execut
 
 
 def test_entries_execute_in_fresh_globals_and_do_not_run_the_main_sequence(tmp_path):
-    source = """from waldoctl.restart import restart_entry as entry
-values = []
-@entry
+    source = """values = []
 def first():
     values.append(1)
     return len(values)
-@entry
 async def second():
     values.append(2)
     return values
+def _helper():
+    return 3
+def needs(part):
+    return part
+def steps():
+    yield 1
 if __name__ == "__main__":
     raise RuntimeError("The whole original program was replayed")
 """
@@ -28,8 +31,9 @@ if __name__ == "__main__":
     assert execute_entry(source, "program.py", "first") == 1
     assert execute_entry(source, "program.py", "second") == [2]
     assert discover_entries("from missing_dependency import anything\n" + source)
-    with pytest.raises(ValueError, match="No declared"):
-        execute_entry(source, "program.py", "missing")
+    for name in ("missing", "_helper", "needs", "steps"):
+        with pytest.raises(ValueError, match="restart from"):
+            execute_entry(source, "program.py", name)
     marker = tmp_path / "initialization-ran"
     for initialization in (
         f"open({str(marker)!r}, 'w').write('ran')",
@@ -41,18 +45,16 @@ if __name__ == "__main__":
             execute_entry(initialization + "\n" + source, "program.py", "first")
         assert not marker.exists()
 
-    # A skill decorator binds the module name to a Skill, not a function, so
-    # the entry could never be launched: it is refused at discovery rather than
-    # offered in the dialog and failing at the marker check.
-    both = """from waldoctl.restart import restart_entry
-from waldoctl.skills import skill
+    # A skill binds its name to a Skill that needs a client, so it is not a
+    # place to restart from; the plain function beside it is.
+    with_skill = """from waldoctl.skills import skill
 @skill(id="demo.after_pick", version="1.0.0")
-@restart_entry
-def after_pick():
+def after_pick(rbt):
     return 1
+def main():
+    return 2
 """
-    with pytest.raises(ValueError, match="both a skill and a restart entry"):
-        discover_entries(both)
+    assert [e.name for e in discover_entries(with_skill)] == ["main"]
 
 
 @pytest.mark.integration
@@ -82,9 +84,7 @@ async def test_supervised_restart_selects_a_fresh_entry_and_refuses_changed_stat
     marker = tmp_path / "entries.txt"
     source = f'''import os
 from parol6 import RobotClient, AsyncRobotClient
-from waldoctl.restart import restart_entry
 values = []
-@restart_entry
 def after_pick():
     """Continue after checking the held part."""
     values.append(1)
@@ -94,7 +94,6 @@ def after_pick():
         rbt.move_j(joints, duration=0.5, timeout=15)
     with open({str(marker)!r}, 'a') as log:
         log.write(f'sync:{{len(values)}}\\n')
-@restart_entry
 async def after_place():
     values.append(1)
     async with AsyncRobotClient() as rbt:

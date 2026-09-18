@@ -1,4 +1,4 @@
-"""Discover explicit entries without executing code, then verify fresh state."""
+"""List where a program can restart without executing it, then verify fresh state."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from typing import Any
 
 from waldoctl.client import RobotClient
 from waldoctl.status import ActionState
-from waldoctl.restart import is_restart_entry
 
 
 @dataclass(frozen=True)
@@ -73,24 +72,37 @@ def _annotation(node: ast.expr | None) -> bool:
     )
 
 
+def _generator(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    pending = list(node.body)
+    while pending:
+        child = pending.pop()
+        if isinstance(child, (ast.Yield, ast.YieldFrom)):
+            return True
+        if isinstance(
+            child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+        ):
+            continue
+        pending.extend(ast.iter_child_nodes(child))
+    return False
+
+
+def _callable_without_arguments(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    args = node.args
+    required = len(args.posonlyargs) + len(args.args) - len(args.defaults)
+    return required == 0 and all(v is not None for v in args.kw_defaults)
+
+
 def discover_entries(source: str) -> list[RestartEntry]:
-    """Parse declarations; imports, decorators and the program body are not run."""
+    """Top-level functions callable without arguments; nothing in the program runs.
+
+    Like an industrial controller's routine list, any plain function the
+    operator could start cold is offered. Private names, generators, skills
+    and decorated functions are not places to restart from.
+    """
     tree = ast.parse(source)
-    decorators = {"waldoctl.restart.restart_entry"}
     skills = {"waldoctl.skills.skill"}
     for node in tree.body:
-        if isinstance(node, ast.ImportFrom) and node.module == "waldoctl.restart":
-            decorators.update(
-                alias.asname or alias.name
-                for alias in node.names
-                if alias.name == "restart_entry"
-            )
         if isinstance(node, ast.Import):
-            decorators.update(
-                f"{alias.asname}.restart_entry"
-                for alias in node.names
-                if alias.name == "waldoctl.restart" and alias.asname
-            )
             skills.update(
                 f"{alias.asname}.skill"
                 for alias in node.names
@@ -102,40 +114,19 @@ def discover_entries(source: str) -> list[RestartEntry]:
                 for alias in node.names
                 if alias.name == "skill"
             )
-    entries = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
-            _dotted(d) in decorators for d in node.decorator_list
-        ):
-            if any(
-                isinstance(d, ast.Call) and _dotted(d.func) in skills
-                for d in node.decorator_list
-            ):
-                # A skill decorator binds the module name to a Skill, which is
-                # not a function and so is not a restart entry: offering it
-                # would be offering a launch that fails at the marker check
-                # (or, with the decorators the other way round, a program that
-                # fails at import).
-                raise ValueError(
-                    f"{node.name} is declared as both a skill and a restart "
-                    f"entry; a restart entry is a plain no-argument function"
-                )
-            required = (
-                len(node.args.posonlyargs)
-                + len(node.args.args)
-                - len(node.args.defaults)
-            )
-            if required or any(v is None for v in node.args.kw_defaults):
-                raise ValueError(
-                    f"Restart entry {node.name} must be callable without arguments"
-                )
-            entries.append(
-                RestartEntry(
-                    node.name,
-                    (ast.get_docstring(node) or "").split("\n")[0],
-                    node.lineno,
-                )
-            )
+    entries = [
+        RestartEntry(
+            node.name,
+            (ast.get_docstring(node) or "").split("\n")[0],
+            node.lineno,
+        )
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not node.name.startswith("_")
+        and not node.decorator_list
+        and _callable_without_arguments(node)
+        and not _generator(node)
+    ]
     if not entries:
         return []
     # A fresh module must not replay an unguarded previous motion sequence.
@@ -151,13 +142,10 @@ def discover_entries(source: str) -> list[RestartEntry]:
             args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
             args += [v for v in (node.args.vararg, node.args.kwarg) if v is not None]
             safe_decorators = all(
-                _dotted(d) in decorators
-                or (
-                    isinstance(d, ast.Call)
-                    and _dotted(d.func) in skills
-                    and all(_literal(a) for a in d.args)
-                    and all(k.arg is not None and _literal(k.value) for k in d.keywords)
-                )
+                isinstance(d, ast.Call)
+                and _dotted(d.func) in skills
+                and all(_literal(a) for a in d.args)
+                and all(k.arg is not None and _literal(k.value) for k in d.keywords)
                 for d in node.decorator_list
             )
             if (
@@ -193,14 +181,22 @@ def discover_entries(source: str) -> list[RestartEntry]:
 
 
 def execute_entry(source: str, filename: str, name: str) -> Any:
-    """Execute a declared entry in fresh globals; no prior locals are reused."""
+    """Call one function in fresh globals; no prior locals are reused."""
     if name not in {entry.name for entry in discover_entries(source)}:
-        raise ValueError(f"No declared restart entry named {name}")
+        raise ValueError(f"{name} is not a function this program can restart from")
     namespace: dict[str, Any] = {"__name__": "__waldo_restart__", "__file__": filename}
     exec(compile(source, filename, "exec"), namespace)
     function = namespace[name]
-    if not is_restart_entry(function):
-        raise ValueError(f"{name} is no longer a declared restart entry")
+    if (
+        not inspect.isfunction(function)
+        or inspect.isgeneratorfunction(function)
+        or inspect.isasyncgenfunction(function)
+    ):
+        raise ValueError(f"{name} is no longer a plain function")
+    try:
+        inspect.signature(function).bind()
+    except TypeError as error:
+        raise ValueError(f"{name} is no longer callable without arguments") from error
     result = function()
     if inspect.isawaitable(result):
 
