@@ -2426,12 +2426,11 @@ class ControlPanel:
                 self._refresh_cartesian_icons()
 
             # Settings panel
-            with ui.tab_panel(settings_tab).classes("gap-0 p-0"):
-                with ui.scroll_area().classes("w-full h-full p-0"):
-                    self._settings_content = SettingsContent(self.client)
-                    self._settings_content.build_embedded(
-                        ai_control_section=self._build_control_mode_selector
-                    )
+            with ui.tab_panel(settings_tab).classes("gap-0 p-0 task-panel"):
+                self._settings_content = SettingsContent(self.client)
+                self._settings_content.build_embedded(
+                    ai_control_section=self._build_control_mode_selector
+                )
 
     _PREF_TARGETS = {
         "jog_speed": ("jog", "speed"),

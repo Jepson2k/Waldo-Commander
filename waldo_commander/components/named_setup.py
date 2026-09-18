@@ -9,6 +9,7 @@ from nicegui import ui
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.setup import Frame, Parameter, Pose, PoseValues, SetupSnapshot
 
+from waldo_commander.components.tcp_calibration import TcpCalibrationEditor
 from waldo_commander.services.python_source import insert_prelude
 from waldo_commander.setup import SetupStore, export_snapshot
 
@@ -55,6 +56,21 @@ class NamedSetupPanel(Panel):
                     value=selector.value if selector.value in entries else None,
                 )
             summary.refresh()
+            tcp_editor.refresh()
+
+        def set_snapshot(updated: SetupSnapshot) -> None:
+            nonlocal snapshot
+            changed = [
+                kind
+                for kind, before, after in (
+                    ("tcp", snapshot.tcp_calibrations, updated.tcp_calibrations),
+                )
+                if before != after
+            ]
+            snapshot = updated
+            for kind in changed:
+                remember(kind)
+            refresh()
 
         def load() -> None:
             nonlocal snapshot, persisted, loading
@@ -69,6 +85,10 @@ class NamedSetupPanel(Panel):
             for kind, widgets in fields.items():
                 for widget, value in zip(widgets, initial_values[kind]):
                     widget.set_value(value)
+            tcp_editor.clear_samples()
+            tcp_editor.binding = None
+            tcp_editor.saved_measurement = None
+            tcp_editor.taught = None
             refresh()
             # Another session (or a script) can write a setup after this panel
             # was built; without the options the dropdown drops a value it
@@ -78,6 +98,7 @@ class NamedSetupPanel(Panel):
                 (frame_existing, snapshot.frames, select_frame),
                 (pose_existing, snapshot.poses, select_pose),
                 (parameter_existing, snapshot.parameters, select_parameter),
+                (tcp_editor.existing, snapshot.tcp_calibrations, tcp_editor.load),
             ):
                 if entries:
                     selector.set_value(next(iter(entries)))
@@ -91,8 +112,7 @@ class NamedSetupPanel(Panel):
         shown: dict[str, str | None] = {}
 
         def signature(kind: str) -> tuple:
-            values = tuple(field.value for field in fields[kind])
-            return values
+            return tuple(field.value for field in fields[kind])
 
         def remember(kind: str | None = None) -> None:
             for key in [kind] if kind else fields:
@@ -121,6 +141,10 @@ class NamedSetupPanel(Panel):
                     )
                 elif kind == "parameters":
                     updated = updated.with_parameter(parameter_name.value, parameter())
+                elif kind == "tcp":
+                    updated = updated.with_tcp_calibration(
+                        tcp_editor.name.value, tcp_editor.calibration()
+                    )
             return updated
 
         def keep_current(kind: str) -> bool:
@@ -253,6 +277,7 @@ class NamedSetupPanel(Panel):
                 frames_tab = ui.tab("Frames")
                 poses_tab = ui.tab("Poses")
                 params_tab = ui.tab("Parameters")
+                tcp_tab = ui.tab("TCP")
 
             def coordinates(prefix: str) -> list[ui.number]:
                 with ui.grid(columns=3).classes("w-full"):
@@ -558,6 +583,11 @@ class NamedSetupPanel(Panel):
                             on_click=lambda: remove("parameters", parameter_name.value),
                         ).props("dense flat").tooltip("Remove parameter")
 
+                with ui.tab_panel(tcp_tab).classes("p-0"):
+                    tcp_editor = TcpCalibrationEditor(
+                        commander, lambda: snapshot, set_snapshot
+                    )
+
             @ui.refreshable
             def summary() -> None:
                 rows = []
@@ -599,6 +629,7 @@ class NamedSetupPanel(Panel):
                         parameter_value,
                         parameter_unit,
                     ],
+                    "tcp": [tcp_editor.name, *tcp_editor.coordinates],
                 }
             )
             initial_values.update(
@@ -611,3 +642,4 @@ class NamedSetupPanel(Panel):
             for widgets in fields.values():
                 for field in widgets:
                     field.on_value_change(update_dirty)
+            tcp_editor.existing.on_value_change(lambda: remember("tcp"))

@@ -58,6 +58,8 @@ async def test_blend_radius_setting_controls_r_in_generated_code(user: User) -> 
     # Raise the setting through the real settings row
     user.find(kind=ui.tab, content="Settings").click()
     await asyncio.sleep(0)
+    next(iter(user.find(marker="settings-category").elements)).set_value("Jog")
+    next(iter(user.find(marker="settings-jog-advanced").elements)).set_value(True)
     await _set_blend_radius(user, 5)
 
     # Insert-command palette: blended moves queue (r=5 plus wait=False — the

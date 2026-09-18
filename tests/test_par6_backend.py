@@ -316,6 +316,32 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
             and s.tool_status.positions[0] < 0.1,
             timeout=5,
         )
+        from nicegui import ui
+
+        user.find(marker="tab-setup").click()
+        user.find(kind=ui.tab, content="TCP").click()
+        user.find(marker="tcp-calibration-read").click()
+        await user.should_see(
+            "Read the controller's applied TCP transform.", retries=50
+        )
+        correction = (4.0, -2.0, 20.0, 12.0, -18.0, 7.0)
+        for axis, value in zip(("x", "y", "z", "roll", "pitch", "yaw"), correction):
+            next(iter(user.find(marker=f"tcp-calibration-{axis}").elements)).set_value(
+                value
+            )
+        user.find(marker="tcp-calibration-apply").click()
+        await user.should_see(
+            "Controller confirmed the displayed TCP transform.", retries=100
+        )
+        assert await client.tcp_transform() == pytest.approx(correction)
+        angles = await client.angles()
+        pose = await client.pose()
+        assert angles is not None and pose is not None
+        fk = robot.fk(np.radians(angles), np.empty(6))
+        local = Pose(tuple([*(fk[:3] * 1000), *np.degrees(fk[3:])])).matrix()
+        applied = Pose(tuple(pose)).matrix()
+        assert local[:3, 3] == pytest.approx(applied[:3, 3], abs=0.1)
+        assert local[:3, :3] == pytest.approx(applied[:3, :3], abs=0.003)
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)
