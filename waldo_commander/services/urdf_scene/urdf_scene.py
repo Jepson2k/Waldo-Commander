@@ -755,12 +755,14 @@ class UrdfScene(
 
         active = waldoctl.commander.programs.active
         view = waldoctl.commander.settings.view
-        # The achieved path, where a run measured one. Its own group, so
-        # a rebuild never disturbs the planned-path diff below, and keyed
-        # on the record's digest so an identical run is left alone.
+        # The predicted path, where a pass produced one that differs from
+        # the commanded path. Its own group, so a rebuild never disturbs
+        # the commanded-path diff below, and keyed on both records'
+        # digests so an identical pair is left alone.
         self.physics_overlay.render(
-            active.dry_run.ticks if active is not None else None,
-            show_divergence=view.divergence_visible,
+            active.dry_run.commanded if active is not None else None,
+            active.dry_run.predicted_current if active is not None else None,
+            show_predicted=view.predicted_visible,
         )
         if active is not None:
             all_segments = active.dry_run.path_segments
@@ -1603,6 +1605,7 @@ class UrdfScene(
         installation=(),
         draft=False,
         installation_draft=(),
+        attachment_epoch=0,
     ) -> None:
         """Draw the keep-out shapes by layer and map them for highlighting.
 
@@ -1632,7 +1635,13 @@ class UrdfScene(
             (SHAPE_PREFIX, shapes, program_hex),
         ):
             for s in layer:
-                desired[f"{prefix}{s.name}"] = (s, color, SHAPE_OPACITY)
+                shape_color = (
+                    SceneColors.SHAPE_DRAFT_HEX
+                    if s.attachment is not None
+                    and s.attachment.epoch != attachment_epoch
+                    else color
+                )
+                desired[f"{prefix}{s.name}"] = (s, shape_color, SHAPE_OPACITY)
         changed = False
         with batch_scene(self.scene):
             # The disc is a placeholder for a backend that describes no
@@ -1653,7 +1662,7 @@ class UrdfScene(
                     self._shapes_group = self.scene.group().with_name("shapes")
                 with self._shapes_group:
                     for key, (s, color, opacity) in desired.items():
-                        geometry = (s.kind, tuple(s.params()))
+                        geometry = (s.kind, tuple(s.params()), s.attachment is not None)
                         pose = tuple(s.pose)
                         obj = self._shape_objects.get(key)
                         last = self._drawn.get(key)
@@ -1661,7 +1670,30 @@ class UrdfScene(
                             self._forget_shape_object(key)
                             obj = None
                         if obj is None:
-                            obj = self._make_shape_object(s)
+                            parent = (
+                                self.last_actuated_group
+                                if s.attachment is not None
+                                else self._shapes_group
+                            )
+                            if parent is None:
+                                # A readback can be adopted before the URDF's
+                                # joint groups exist (a reconnect racing the
+                                # model load). Draw the held shape in the world
+                                # group for now rather than abandoning the rest
+                                # of the render: the next render, with the
+                                # flange group in place, reparents it.
+                                logger.warning(
+                                    "No flange group yet for held shape %s; drawing "
+                                    "it in the world group until the model loads",
+                                    s.name,
+                                )
+                                parent = self._shapes_group
+                            if parent is None:
+                                raise ValueError(
+                                    "No shape group is available to draw into"
+                                )
+                            with parent:
+                                obj = self._make_shape_object(s)
                             if obj is None:
                                 continue
                             obj.with_name(key)

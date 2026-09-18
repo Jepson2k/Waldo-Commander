@@ -20,6 +20,7 @@ async def test_collision_highlight_tints_reported_links_and_restores(
     user: User,
 ) -> None:
     import waldoctl
+
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.state import ui_state
 
@@ -55,6 +56,7 @@ async def test_collision_highlight_tints_reported_links_and_restores(
 async def test_shapes_render_and_can_be_highlighted(user: User) -> None:
     import waldoctl
     from waldoctl import Box
+
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.state import ui_state
 
@@ -117,6 +119,7 @@ async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
     displaces the placeholder disc simply by existing."""
     import waldoctl
     from waldoctl import Box, Physical
+
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
     from waldo_commander.state import ui_state
@@ -179,6 +182,7 @@ async def test_playback_moves_world_objects_and_restores_their_declared_pose(
     pose-only move of the drawn shape, a guessed track is drawn as a ghost,
     and clearing the override puts the object back where the program says."""
     from waldoctl import Box, Cylinder
+
     from waldo_commander.services.timeline import ObjectSample
     from waldo_commander.services.urdf_scene.urdf_scene import (
         _Y_TO_Z_UP,
@@ -245,10 +249,13 @@ async def test_playback_moves_world_objects_and_restores_their_declared_pose(
 async def test_playback_time_drives_world_objects(user: User) -> None:
     """Scrubbing the dry run moves a tracked object along its track and
     invalidating the timeline puts it back where the program declares it."""
+    import numpy as np
     import waldoctl
     from waldoctl import Box
+
     from waldo_commander.components.playback import playback
-    from waldo_commander.state import PathSegment, ui_state
+    from waldo_commander.services.preview_segments import segments_from_record
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_urdf_ready()
@@ -259,39 +266,64 @@ async def test_playback_time_drives_world_objects(user: User) -> None:
     )
     block = scene._shape_objects["shape:block"]
 
+    # Two seconds of lift at the record's rate; the predicted record is the
+    # one that knows where the carried block went.
+    rows = 101
+    tcp = np.zeros((rows, 6), dtype=np.float32)
+    tcp[:, 0] = 0.3
+    tcp[:, 2] = np.linspace(0.3, 0.5, rows)
+    poses = np.zeros((rows, 7), dtype=np.float32)
+    poses[:, 0] = 0.3
+    poses[:, 2] = np.linspace(0.04, 0.24, rows)
+    poses[:, 3] = 1.0
+
+    def record(digest: bytes, objects=()) -> waldoctl.TickIndex:
+        return waldoctl.TickIndex(
+            row_dt_s=0.02,
+            joints_rad=np.zeros((rows, 6), dtype=np.float32),
+            tcp=tcp,
+            tool_closed=np.zeros(rows, dtype=np.float32),
+            tool_gripping=np.zeros(rows, dtype=np.bool_),
+            blocks=(
+                waldoctl.TickBlock(
+                    command=0,
+                    start_row=0,
+                    rows=rows,
+                    line_number=1,
+                    move_type="cartesian",
+                ),
+            ),
+            objects=objects,
+            digest=digest,
+        )
+
     active = waldoctl.commander.programs.active
     assert active is not None
-    active.dry_run.path_segments = [
-        PathSegment(
-            points=[[0.3, 0.0, 0.3], [0.3, 0.0, 0.5]],
-            color="#00ff00",
-            is_valid=True,
-            line_number=1,
-            joints=[0.0] * 6,
-            estimated_duration=2.0,
-            joint_trajectory=[[0.0] * 6, [0.0] * 6],
-            object_tracks=[
-                {
-                    "name": "block",
-                    "poses": [
-                        [0.3, 0.0, 0.04, 1, 0, 0, 0],
-                        [0.3, 0.0, 0.24, 1, 0, 0, 0],
-                    ],
-                    "carried": True,
-                    "physics": True,
-                }
-            ],
-        )
-    ]
-    playback.invalidate_timeline()
-    assert playback._ensure_timeline() is not None
-    playback._apply_time(1.0)
-    assert block.z == pytest.approx(0.14), "half way through the lift"
-    playback._apply_time(2.0)
-    assert block.z == pytest.approx(0.24)
+    commanded = record(b"commanded")
+    active.dry_run.commanded = commanded
+    active.dry_run.commanded_revision = 1
+    active.dry_run.predicted = record(
+        b"predicted", (waldoctl.ObjectTicks(name="block", poses=poses),)
+    )
+    active.dry_run.predicted_revision = 1
+    active.dry_run.path_segments = segments_from_record(commanded, [])
+    active.dry_run.total_steps = 1
+    try:
+        playback.invalidate_timeline()
+        assert playback._ensure_timeline() is not None
+        playback._apply_time(1.0)
+        assert block.z == pytest.approx(0.14), "half way through the lift"
+        playback._apply_time(2.0)
+        assert block.z == pytest.approx(0.24)
 
-    playback.invalidate_timeline()
-    assert block.z == 0.04, "declared pose restored once the timeline is dropped"
+        playback.invalidate_timeline()
+        assert block.z == 0.04, "declared pose restored once the timeline is dropped"
+    finally:
+        active.dry_run.commanded = None
+        active.dry_run.predicted = None
+        active.dry_run.path_segments = []
+        active.dry_run.total_steps = 0
+        playback.invalidate_timeline()
 
 
 @pytest.mark.integration
@@ -303,6 +335,7 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
     TOML, and clears itself once readback shows the backend enforcing it."""
     import waldoctl
     from waldoctl import Box, ShapeWorld
+
     from waldo_commander import constants
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.services.urdf_scene.urdf_scene import SHAPE_OPACITY
@@ -437,6 +470,7 @@ async def test_shape_rerender_is_a_diff_not_a_rebuild(user: User) -> None:
     from unittest.mock import patch
 
     from waldoctl import Box, Cylinder
+
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -477,6 +511,7 @@ async def test_appearance_repaint_keeps_draft_amber(user: User) -> None:
     promoted it to the confirmed slate, displaying an un-enforced keep-out as
     controller-enforced."""
     from waldoctl import Box
+
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.state import ui_state
 
@@ -512,8 +547,9 @@ async def test_editing_highlight_and_preview_marking_via_local_checker(
     colliding segments — no controller round-trip."""
     import waldoctl
     from waldoctl import Box
+
     from waldo_commander.common.theme import SceneColors
-    from waldo_commander.services.path_visualizer import _mark_colliding_segments
+    from waldo_commander.services.path_visualizer import _mark_colliding_commands
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -554,31 +590,28 @@ async def test_editing_highlight_and_preview_marking_via_local_checker(
         scene._on_ik_solved(_GhostIkEvent())
         assert scene._editing_collision_q == tuple(scene._editing_angles)
 
-        # Dry-run preview: a segment whose trajectory passes through the box is
-        # recolored and records its first colliding waypoint. (Runs in the
-        # dry-run subprocess for real programs; the function is pure on dicts.)
-        seg = {
-            "points": [[0, 0, 0]],
-            "color": "#00ff00",
-            "is_valid": True,
-            "line_number": 1,
-            "joint_trajectory": [[0.0] * 6, [0.1] * 6],
-        }
-        untouched = {
-            "points": [[0, 0, 0]],
-            "color": "#00ff00",
-            "is_valid": True,
-            "line_number": 2,
-        }
+        # Dry-run preview: a command whose rows pass through the box is
+        # reported with its first colliding row; a command that owns no
+        # rows is never checked. (Runs in the dry-run subprocess for real
+        # programs; the function is pure on the record.)
+        q = np.array([[0.0] * 6, [0.1] * 6], dtype=np.float32)
+        record = waldoctl.TickIndex(
+            row_dt_s=0.02,
+            joints_rad=q,
+            tcp=np.zeros((2, 6), dtype=np.float32),
+            tool_closed=np.zeros(2, dtype=np.float32),
+            tool_gripping=np.zeros(2, dtype=np.bool_),
+            blocks=(
+                waldoctl.TickBlock(command=0, start_row=0, rows=2, line_number=1),
+                waldoctl.TickBlock(command=1, start_row=2, rows=0, line_number=2),
+            ),
+        )
         # The marking applies the passed world explicitly (a reused pool
         # worker's checker must never inherit a previous run's shapes).
-        _mark_colliding_segments(
-            robot, [seg, untouched], [], [], [tuple(block.to_wire())], None
+        hits = _mark_colliding_commands(
+            robot, record, [], [], [tuple(block.to_wire())], None
         )
-        assert seg["color"] == SceneColors.COLLISION_HEX
-        assert seg["collision_step"] == 0
-        assert untouched["color"] == "#00ff00"
-        assert "collision_step" not in untouched
+        assert hits == {0: 0}
     finally:
         # The checker is process-global — never leak shapes into other tests.
         waldoctl.commander.scene.shapes = []
@@ -589,13 +622,31 @@ async def test_editing_highlight_and_preview_marking_via_local_checker(
     assert "shape:block" not in scene._shape_objects
 
 
+def _one_row_record(commands: int):
+    """A record with one row per command, for replaying boundaries over."""
+    import numpy as np
+    import waldoctl
+
+    return waldoctl.TickIndex(
+        row_dt_s=0.02,
+        joints_rad=np.zeros((commands, 6), dtype=np.float32),
+        tcp=np.zeros((commands, 6), dtype=np.float32),
+        tool_closed=np.zeros(commands, dtype=np.float32),
+        tool_gripping=np.zeros(commands, dtype=np.bool_),
+        blocks=tuple(
+            waldoctl.TickBlock(command=i, start_row=i, rows=1, line_number=i + 1)
+            for i in range(commands)
+        ),
+    )
+
+
 def test_preview_marking_replays_tool_boundaries() -> None:
-    """Segments after a mid-script select_tool are checked with THAT tool, and
+    """Commands after a mid-script select_tool are checked with THAT tool, and
     the checker's tool is restored afterwards (the fallback path shares the
     live checker)."""
     from waldoctl import ToolSelection
-    from waldo_commander.common.theme import SceneColors
-    from waldo_commander.services.path_visualizer import _mark_colliding_segments
+
+    from waldo_commander.services.path_visualizer import _mark_colliding_commands
 
     class _FakeRobot:
         has_collision_checking = True
@@ -612,42 +663,38 @@ def test_preview_marking_replays_tool_boundaries() -> None:
         def check_trajectory(self, q):
             return 0 if self.tool == "SSG-48" else -1
 
-    def seg(line: int) -> dict:
-        return {
-            "color": "#00ff00",
-            "line_number": line,
-            "joint_trajectory": [[0.0] * 6],
-        }
-
-    segs = [seg(1), seg(2), seg(3)]
-    # Selection recorded after segment 0 -> applies to segments 1 and 2.
-    sels = [ToolSelection(tool_key="SSG-48", variant_key="", segment_index=0)]
+    # Selection recorded on command 0 -> applies to commands 1 and 2.
+    sels = [ToolSelection(tool_key="SSG-48", variant_key="", command=0)]
     robot = _FakeRobot()
-    _mark_colliding_segments(robot, segs, sels, [], None, ("NONE", ""))
-    assert "collision_step" not in segs[0]
-    assert segs[1]["collision_step"] == 0
-    assert segs[1]["color"] == SceneColors.COLLISION_HEX
-    assert segs[2]["collision_step"] == 0
+    assert _mark_colliding_commands(
+        robot, _one_row_record(3), sels, [], None, ("NONE", "")
+    ) == {
+        1: 0,
+        2: 0,
+    }
     assert robot.tool == "NONE"  # restored to the initial tool
 
-    # Back-to-back selections (same segment_index) must replay chronologically
+    # Back-to-back selections (same command) must replay chronologically
     # — the LAST recorded tool wins, not the alphabetically-last.
-    segs = [seg(1), seg(2)]
     sels = [
-        ToolSelection(tool_key="SSG-48", variant_key="", segment_index=0),
-        ToolSelection(tool_key="VACUUM", variant_key="", segment_index=0),
+        ToolSelection(tool_key="SSG-48", variant_key="", command=0),
+        ToolSelection(tool_key="VACUUM", variant_key="", command=0),
     ]
-    _mark_colliding_segments(_FakeRobot(), segs, sels, [], None, ("NONE", ""))
-    assert "collision_step" not in segs[1]  # checked with VACUUM, not SSG-48
+    assert (
+        _mark_colliding_commands(
+            _FakeRobot(), _one_row_record(2), sels, [], None, ("NONE", "")
+        )
+        == {}
+    ), "checked with VACUUM, not SSG-48"
 
 
 def test_preview_marking_replays_shape_boundaries() -> None:
-    """Segments after a mid-script set_shapes are checked against THAT world,
+    """Commands after a mid-script set_shapes are checked against THAT world,
     and the submit-time world is restored afterwards (the fallback path shares
     the live checker)."""
     from waldoctl import Box, ShapeChange
-    from waldo_commander.common.theme import SceneColors
-    from waldo_commander.services.path_visualizer import _mark_colliding_segments
+
+    from waldo_commander.services.path_visualizer import _mark_colliding_commands
 
     class _FakeRobot:
         has_collision_checking = True
@@ -664,22 +711,12 @@ def test_preview_marking_replays_shape_boundaries() -> None:
         def check_trajectory(self, q):
             return 0 if "bar" in self.world else -1
 
-    def seg(line: int) -> dict:
-        return {
-            "color": "#00ff00",
-            "line_number": line,
-            "joint_trajectory": [[0.0] * 6],
-        }
-
-    segs = [seg(1), seg(2), seg(3)]
-    changes = [
-        ShapeChange(shapes=(Box(name="bar", x=0.1, y=0.1, z=0.1),), segment_index=0)
-    ]
+    changes = [ShapeChange(shapes=(Box(name="bar", x=0.1, y=0.1, z=0.1),), command=0)]
     robot = _FakeRobot()
-    _mark_colliding_segments(robot, segs, [], changes, None, ("NONE", ""))
-    assert "collision_step" not in segs[0]  # world was empty for segment 0
-    assert segs[1]["color"] == SceneColors.COLLISION_HEX
-    assert segs[2]["collision_step"] == 0
+    hits = _mark_colliding_commands(
+        robot, _one_row_record(3), [], changes, None, ("NONE", "")
+    )
+    assert hits == {1: 0, 2: 0}, "the world was empty for command 0"
     assert robot.world == ()  # restored to the submit-time world
 
 
@@ -687,8 +724,8 @@ def test_shape_render_pose_matches_enforced_geometry() -> None:
     """Cylinders stand along coal's Z axis — the drawn shape must match the
     blocked volume, not three.js's Y-up default."""
     import numpy as np
-
     from waldoctl import Box, Cylinder
+
     from waldo_commander.services.urdf_scene.urdf_scene import _shape_render_pose
 
     # Identity pose: the render rotation is the Y->Z-up correction, not identity.
@@ -709,6 +746,7 @@ async def test_engaged_repaint_keeps_collision_highlight(user: User) -> None:
     """Gripper engage/disengage repaints tool meshes — an active red tint must
     re-apply from the new base instead of being silently cleared."""
     import waldoctl
+
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.state import ui_state
 
@@ -748,6 +786,7 @@ async def test_shape_push_honors_ack_contract(monkeypatch, caplog) -> None:
 
     import waldoctl
     from waldoctl import Box, ShapeWorld
+
     from waldo_commander.services.urdf_scene import scene_handle as sh
 
     box = Box(name="A", x=0.1, y=0.1, z=0.1)
@@ -796,6 +835,7 @@ async def test_stale_shape_push_never_overwrites_a_newer_one(monkeypatch) -> Non
 
     import waldoctl
     from waldoctl import Box, ShapeWorld
+
     from waldo_commander.services.urdf_scene import scene_handle as sh
 
     old = Box(name="old", x=0.1, y=0.1, z=0.1)
@@ -837,10 +877,9 @@ async def test_preview_script_set_shapes_real_dispatch_no_stale_world(
     must not see run 1's world — the pre-fix worker leaked it into the next
     run's planning guard as phantom collisions."""
     import numpy as np
-
     import parol6
     import parol6.client
-    from waldo_commander.common.theme import SceneColors
+
     from waldo_commander.services.path_visualizer import _run_simulation_isolated
     from waldo_commander.state import ui_state
 
@@ -848,9 +887,6 @@ async def test_preview_script_set_shapes_real_dispatch_no_stale_world(
     await wait_for_urdf_ready()
 
     robot = ui_state.active_robot
-    dr = robot.create_dry_run_client()
-    assert dr is not None
-    dr_cls = type(dr)
 
     # The runner monkeypatches these for the (normally sub-) process; running
     # it in-process for determinism means restoring them ourselves. Some may
@@ -877,24 +913,18 @@ async def test_preview_script_set_shapes_real_dispatch_no_stale_world(
     kwargs = dict(
         initial_joints_rad=np.radians(home),
         backend_package="parol6",
-        dry_run_client_cls=dr_cls,
         shapes_wire=[],
         initial_tool=("NONE", ""),
     )
     try:
         res1 = _run_simulation_isolated(prog_with_shapes, **kwargs)
         assert res1["error"] is None, res1["error"]  # C1: no TypeError crash
-        assert res1["segments"], "the move before set_shapes must plan"
-        assert all(
-            s.get("color") != SceneColors.COLLISION_HEX for s in res1["segments"]
-        )
+        assert res1["commanded"].rows > 0, "the move before set_shapes must plan"
+        assert not res1["collisions"]
 
         res2 = _run_simulation_isolated(prog_plain, **kwargs)
         assert res2["error"] is None, res2["error"]  # C3: no phantom guard hit
-        assert all(
-            s.get("color") != SceneColors.COLLISION_HEX and "collision_step" not in s
-            for s in res2["segments"]
-        )
+        assert not res2["collisions"]
     finally:
         for mod, name, val in snapshot:
             if val is _missing:
@@ -916,6 +946,7 @@ async def test_world_changed_by_program_reaches_display_via_epoch(user: User) ->
 
     import waldoctl
     from waldoctl import Box
+
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -958,6 +989,7 @@ async def test_shape_edit_is_acked_and_display_adopts_readback(user: User) -> No
 
     import waldoctl
     from waldoctl import Box
+
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.state import ui_state
 
@@ -997,6 +1029,7 @@ async def test_stale_readback_cannot_resurrect_cleared_shapes(user: User) -> Non
 
     import waldoctl
     from waldoctl import Box
+
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -1063,6 +1096,7 @@ async def test_refresh_during_unacked_clear_does_not_resurrect(user: User) -> No
 
     import waldoctl
     from waldoctl import Box
+
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -1132,6 +1166,7 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     from types import SimpleNamespace
 
     import waldoctl
+
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -1221,6 +1256,7 @@ async def _until(cond, message: str) -> None:
 @pytest.mark.integration
 async def test_delayed_shape_edit_cannot_overwrite_a_newer_clear(user: User):
     import asyncio
+
     import waldoctl
     from waldoctl import Box
 

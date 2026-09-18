@@ -8,7 +8,6 @@ import pytest
 import waldoctl
 from nicegui import run, ui
 from nicegui.testing import User
-from parol6.client.dry_run_client import DryRunRobotClient
 from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot
 
 from tests.helpers.wait import (
@@ -140,12 +139,14 @@ with RobotClient() as rbt:
             _run_simulation_isolated,
             source,
             np.radians(angles),
-            dry_run_client_cls=DryRunRobotClient,
             setup_directory=str(tmp_path),
         )
         assert result["error"] is None, result["error"]
-        assert len(result["segments"]) == 1
-        assert np.asarray(result["segments"][0]["points"][-1]) * 1000 == pytest.approx(
+        record = result["commanded"]
+        moves = [b for b in record.blocks if b.move_type is not None]
+        assert len(moves) == 1 and moves[0].error is None and moves[0].rows > 0
+        end = record.tcp[moves[0].start_row + moves[0].rows - 1]
+        assert np.asarray(end[:3]) * 1000 == pytest.approx(
             matrix[:3, 3] + 2 * matrix[:3, 2], abs=0.2
         )
 

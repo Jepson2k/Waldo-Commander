@@ -78,6 +78,8 @@ dev = [
 waldo-commander = "waldo_commander.main:main"
 
 [project.entry-points."waldoctl.skills"]
+attach_object = "waldo_commander.skills:attach_object"
+detach_object = "waldo_commander.skills:detach_object"
 replay_demonstration = "waldo_commander.skills:replay_demonstration"
 transfer = "waldo_commander.skills:transfer"
 transfer_with_signal = "waldo_commander.skills:transfer_with_signal"

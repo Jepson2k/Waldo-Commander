@@ -50,6 +50,8 @@ def _shape_to_code(s) -> str:
         parts.append(f"margin={s.margin!r}")
     if s.physics is not None:
         parts.append(f"physics={s.physics!r}")
+    if s.attachment is not None:
+        parts.append(f"attachment={s.attachment!r}")
     return f"{type(s).__name__}({', '.join(parts)})"
 
 
@@ -522,6 +524,8 @@ class MotionRecorder:
             names = {type(s).__name__ for s in shapes}
             if any(s.physics is not None for s in shapes):
                 names.add("Physical")  # _shape_to_code emits it by repr
+            if any(s.attachment is not None for s in shapes):
+                names.add("Attachment")
             missing = sorted(names - imported)
             if missing:
                 snippet = f"from waldoctl import {', '.join(missing)}\n{snippet}"

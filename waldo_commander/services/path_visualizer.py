@@ -2,16 +2,26 @@
 Path visualization service for robot program simulation.
 
 Runs dry-run simulations in isolated subprocesses for safety and non-blocking
-execution. Results are collected and applied to the originating program's
-dry-run in the main process.
+execution. A worker runs the program against the backend's dry-run client
+and brings back the program's records — the *commanded* one, what every
+command tells the arm to do, and on the predicted pass what the arm would
+do — with the host's notes on each command. The main process derives what
+the scene draws from them and applies it to the originating program.
+
+The two passes are paired by the program's revision: the frontend bumps it
+on every change that re-plans, each pass carries the revision it was
+launched for, and a predicted record lands only against the commanded one
+it answers, so a slow pass never draws over a newer plan.
 """
 
 import asyncio
 import builtins
+import inspect
 import linecache
 import logging
 import multiprocessing
 import os
+import pickle
 import sys
 import threading
 import traceback
@@ -26,22 +36,24 @@ from nicegui import run
 from nicegui import app as ng_app
 
 import waldoctl
-from waldoctl import LinearMotion, TickIndex
+from waldoctl import CommandNote, LinearMotion, TickIndex
 from waldoctl.skills import UnresolvedPreview
 
+from waldo_commander.services.preview_segments import (
+    index_boundaries,
+    segments_from_record,
+    tool_actions_from_record,
+)
 from waldo_commander.state import (
     robot_state,
     simulation_state,
-    PathSegment,
     ProgramTarget,
     ui_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
-from waldo_commander.common.theme import SceneColors
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
-MAX_PATH_SEGMENTS = 10000
 SIMULATION_TIMEOUT_S = 5.0
 
 #: Simulated seconds a physics pass may cover before it gives up and
@@ -74,64 +86,67 @@ def _warm_worker(backend_package: str = "parol6") -> bool:
     return True
 
 
-def _mark_colliding_segments(
+def _mark_colliding_commands(
     robot,
-    segment_dicts: list[dict],
+    record: TickIndex,
     tool_selections: list,
     shape_changes: list,
     shapes_wire: list[tuple] | None,
     initial_tool: tuple[str, str] | None,
-) -> None:
-    """Recolor segment dicts whose joint trajectory collides (self/tool/shape).
+) -> dict[int, int]:
+    """The commands whose rows collide (self/tool/shape), each with the
+    first colliding row of its block.
 
     Runs in the dry-run subprocess against its own checker, replaying BOTH
     boundary streams the dry run recorded — ``select_tool`` and ``set_shapes``
-    — so each segment is checked with the tool attached and the world active
-    at its point in the program (the dry run itself only validates IK). Each
-    hit records its first colliding waypoint in ``collision_step``.
+    — so each command is checked with the tool attached and the world active
+    at its point in the program (the dry run itself only validates IK).
 
     The checker's tool and program world are restored on exit: a caller that
     runs the simulation in-process rather than through the pool shares the
     live checker.
     """
+    hits: dict[int, int] = {}
     if not robot.has_collision_checking:
-        return
+        return hits
     from waldoctl import shape_from_wire
 
     # Unconditional — including the EMPTY set: a reused pool worker keeps its
     # process-global checker between runs, so a cleared world must clear it.
     submit_world = [shape_from_wire(*t) for t in shapes_wire or []]
-    robot.apply_shapes(submit_world)
     tool_key, variant = initial_tool or ("NONE", "")
     try:
+        robot.apply_shapes([])
         robot.set_active_tool(tool_key, variant_key=variant or None)
-        # A boundary recorded at segment_index i applies to segments after i.
+        robot.apply_shapes(submit_world)
+        # A boundary recorded on command i applies to the commands after it.
         # Recorded order IS chronological (indexes are non-decreasing) — a sort
         # would reorder same-index back-to-back entries and replay the wrong
         # state.
         tool_bounds = [
-            (ts.segment_index, ts.tool_key, ts.variant_key) for ts in tool_selections
+            (ts.command, ts.tool_key, ts.variant_key) for ts in tool_selections
         ]
-        shape_bounds = [(sc.segment_index, sc.shapes) for sc in shape_changes]
+        shape_bounds = [(sc.command, sc.shapes) for sc in shape_changes]
         ti = si = 0
-        for idx, d in enumerate(segment_dicts):
-            while ti < len(tool_bounds) and tool_bounds[ti][0] < idx:
+        for block in record.blocks:
+            while ti < len(tool_bounds) and tool_bounds[ti][0] < block.command:
                 _, b_tool, b_variant = tool_bounds[ti]
                 robot.set_active_tool(b_tool, variant_key=b_variant or None)
                 ti += 1
-            while si < len(shape_bounds) and shape_bounds[si][0] < idx:
+            while si < len(shape_bounds) and shape_bounds[si][0] < block.command:
                 robot.apply_shapes(list(shape_bounds[si][1]))
                 si += 1
-            jt = d.get("joint_trajectory")
-            if not jt:
+            if block.rows == 0:
                 continue
-            hit = robot.check_trajectory(np.asarray(jt, dtype=np.float64))
+            rows = record.joints_rad[block.start_row : block.start_row + block.rows]
+            hit = robot.check_trajectory(np.asarray(rows, dtype=np.float64))
             if hit >= 0:
-                d["collision_step"] = int(hit)
-                d["color"] = SceneColors.COLLISION_HEX
+                hits[block.command] = int(hit)
     finally:
+        robot.apply_shapes([])
         robot.set_active_tool(tool_key, variant_key=variant or None)
         robot.apply_shapes(submit_world)
+    return hits
 
 
 def _simulation_timeout_s() -> float:
@@ -194,56 +209,60 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
 def _run_simulation_isolated(
     program_text: str,
     initial_joints_rad: np.ndarray | None = None,
-    max_segments: int = MAX_PATH_SEGMENTS,
     backend_package: str = "parol6",
-    dry_run_client_cls: type | None = None,
+    revision: int = 0,
     tool_meta_registry: dict[str, dict] | None = None,
     shapes_wire: list[tuple] | None = None,
     initial_tool: tuple[str, str] | None = None,
     initial_homed: bool = True,
     setup_directory: str | None = None,
     simulate_seconds: float | None = None,
+    attachment_epoch: int = 0,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
 
     This function is designed to be called via run.cpu_bound() for process
-    isolation. It returns serializable results (dicts) rather than modifying
+    isolation. It returns serializable results rather than modifying
     global state.
 
-    The simulation starts with no tool attached. The script must call
-    select_tool() explicitly to configure the correct tool and variant.
+    The simulation starts with the submitted tool and world snapshot.
+    Valid held declarations are bound to the isolated preview's own context.
+    Stale declarations require reconciliation before preview.
 
     Args:
         program_text: The Python program to simulate
         initial_joints_rad: Initial joint angles in radians (robot's current position)
-        max_segments: Maximum path segments to collect (prevents memory exhaustion)
-        backend_package: Backend package name for module shimming
-        dry_run_client_cls: Concrete DryRunRobotClient class for path preview
+        backend_package: Backend package name for module shimming; its
+            ``Robot`` builds the dry-run clients the program runs against
+        revision: The program revision this pass answers, handed back so
+            the caller can pair it with the plan on screen
         tool_meta_registry: Mapping of tool_key → {motions, variants, activation_type}
         simulate_seconds: When set, the program is also RUN — the backend
             drives the same commands through its control loop against a
-            physics plant — and the result carries the tick record under
-            ``ticks``. The value bounds SIMULATED time, so a program that
-            never terminates still comes back. None plans only.
+            physics plant — and the result carries the predicted record.
+            The value bounds SIMULATED time, so a program that never
+            terminates still comes back. None plans only.
 
     Returns:
         Dict with keys:
-        - segments: List of path segment dicts
-        - targets: List of program target dicts
-        - truncated: Whether results were truncated
+        - revision: the revision handed in
+        - commanded: the commanded record, blocks labelled by line
+        - predicted: the predicted record, or None
+        - notes: one CommandNote per command
+        - targets, tool_actions, tool_selections, shape_changes: what the
+          program declared, boundaries indexed by command
+        - collisions: {command: first colliding row} from the local checker
         - error: Error message if simulation failed, else None
-        - total_steps: Number of segments generated
+        - unresolved: whether the program needs an observation fixture
+        - physics_error: why the predicted pass failed, if it did
+        - final_joints_rad: where the program leaves the arm
     """
     # Collectors local to this subprocess, not shared with the main process.
-    local_segments: list[dict] = []
     local_targets: list[dict] = []
     local_tool_actions: list = []
     local_tool_selections: list = []
     local_shape_changes: list = []
-    # Updated by the client on each motion.
-    final_state: dict[str, Any] = {"joints_rad": None}
-    truncated = False
     error_message: str | None = None
     unresolved = False
 
@@ -254,7 +273,7 @@ def _run_simulation_isolated(
         AsyncPathPreviewClient,
     )
 
-    # Lets us read final state after execution.
+    # Lets us read the records after execution.
     created_clients: list[PathPreviewClient] = []
     # (module, attribute, original) for every backend client name swapped for
     # a preview class below, so the thread fallback can put them back.
@@ -266,9 +285,44 @@ def _run_simulation_isolated(
         # function is also called directly, in-process, so the swap is undone
         # below rather than left to the worker's exit.
         backend = importlib.import_module(backend_package)
-        assert dry_run_client_cls is not None
 
-        _dr_cls: type = dry_run_client_cls
+        from waldo_commander.profiles import get_robot
+
+        # The backend the program plans against: its own dry-run clients,
+        # which carry it, so a skill's requirements are checked for real.
+        _preview_robot = get_robot(backend_package)
+
+        def _dr_cls(**kwargs: Any) -> Any:
+            return _preview_robot.create_dry_run_client(**kwargs)
+
+        def seed_world(preview: PathPreviewClient) -> None:
+            from dataclasses import replace
+            from waldoctl import shape_from_wire
+
+            if initial_tool is not None:
+                preview.select_tool(initial_tool[0], variant_key=initial_tool[1])
+            shapes = [shape_from_wire(*t) for t in shapes_wire or []]
+            if not shapes:
+                return
+            context = preview._client.shapes()
+            if context is None:
+                raise ValueError("Preview world readback is unavailable")
+            bound = []
+            for shape in shapes:
+                if shape.attachment is not None:
+                    if shape.attachment.epoch != attachment_epoch:
+                        raise ValueError(
+                            "Attachment context is stale; reconcile the scene before preview"
+                        )
+                    shape = replace(
+                        shape,
+                        attachment=replace(
+                            shape.attachment, epoch=context.attachment_epoch
+                        ),
+                    )
+                bound.append(shape)
+            if preview._client.set_shapes(bound) != 1:
+                raise ValueError("Preview world application was not confirmed")
 
         from waldo_commander.profiles import get_robot
 
@@ -277,7 +331,6 @@ def _run_simulation_isolated(
         class LocalPathPreviewClient(PathPreviewClient):
             def __init__(self, *args: Any, **kwargs: Any):
                 super().__init__(
-                    segment_collector=local_segments,
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
                     tool_selection_collector=local_tool_selections,
@@ -289,11 +342,11 @@ def _run_simulation_isolated(
                     robot=_preview_robot,
                 )
                 created_clients.append(self)
+                seed_world(self)
 
         class LocalAsyncPathPreviewClient(AsyncPathPreviewClient):
             def __init__(self, *args: Any, **kwargs: Any):
                 self._sync_client = PathPreviewClient(
-                    segment_collector=local_segments,
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
                     tool_selection_collector=local_tool_selections,
@@ -305,6 +358,7 @@ def _run_simulation_isolated(
                     robot=_preview_robot,
                 )
                 created_clients.append(self._sync_client)
+                seed_world(self._sync_client)
 
         for module in (backend, getattr(backend, "client", None)):
             if module is None:
@@ -321,12 +375,8 @@ def _run_simulation_isolated(
         # otherwise carries a previous run's shapes into this run's planning
         # guard. Empty included. Installation shapes come from robot config at
         # backend import and are untouched.
-        from waldoctl import shape_from_wire
-
         if _preview_robot.has_collision_checking:
-            _preview_robot.apply_shapes(
-                [shape_from_wire(*t) for t in shapes_wire or []]
-            )
+            _preview_robot.apply_shapes([])
 
         # Inserted into sys.modules so `import time` returns this mock. The
         # mock behavior is scoped to the simulating thread: in the thread
@@ -458,82 +508,111 @@ def _run_simulation_isolated(
             else:
                 setattr(module, name, original)
 
-    # Flush pending blend buffers, covering scripts without context managers.
+    # Close blend holds and note the last commands, covering scripts without
+    # context managers.
     for c in created_clients:
         c.close()
 
+    for c in created_clients:
+        if c.accumulated_errors:
+            errors_text = "\n".join(c.accumulated_errors)
+            if error_message:
+                error_message += "\n" + errors_text
+            else:
+                error_message = errors_text
+
+    # The program's records come off the last client the script built:
+    # what it commanded, and — on the predicted pass — what the arm would
+    # do, from the same client, so nothing is re-executed and no script
+    # runs twice. A failure of the predicted pass costs the physics, not
+    # the plan.
+    commanded: TickIndex | None = None
+    predicted: TickIndex | None = None
+    notes: list[CommandNote] = []
+    physics_error: str | None = None
+    final_joints_rad: list[float] | None = None
+    collisions: dict[int, int] = {}
     if created_clients:
-        last_client = created_clients[-1]
-        if last_client.last_joints_rad is not None:
-            final_state["joints_rad"] = last_client.last_joints_rad
-        for c in created_clients:
-            if c.accumulated_errors:
-                errors_text = "\n".join(c.accumulated_errors)
-                if error_message:
-                    error_message += "\n" + errors_text
-                else:
-                    error_message = errors_text
-
-    if len(local_segments) > max_segments:
-        del local_segments[max_segments:]
-        truncated = True
-
-    # Collision marking runs here (normally a subprocess) so 1000s of C++
-    # checks never block the UI event loop and mid-script tool selections are
-    # honored. A marking failure must not discard an otherwise-good dry run.
-    try:
-        from waldo_commander.profiles import get_robot
-
-        _mark_colliding_segments(
-            get_robot(backend_package),
-            local_segments,
-            local_tool_selections,
-            local_shape_changes,
-            shapes_wire,
-            initial_tool,
-        )
-    except Exception as e:
-        logger.warning("Preview collision marking failed: %s", e)
-
-    # The second pass, on the client that already planned the program:
-    # it kept the commands, so nothing is re-executed and no script runs
-    # twice. A failure here costs the physics, not the plan.
-    ticks = None
-    if simulate_seconds is not None and created_clients:
         client = created_clients[-1]
+        notes = list(client.notes)
         try:
-            ticks = client._client.simulate(simulate_seconds)
-            ticks = _label_blocks(ticks, client.command_lines)
+            commanded = _portable(client.plan())
         except Exception as e:
-            logger.warning("Physics simulation failed: %s", e)
+            logger.warning("Reading the commanded record failed: %s", e)
+            error_message = (error_message + "\n" if error_message else "") + (
+                f"{type(e).__name__}: {e}"
+            )
+        if commanded is not None:
+            if commanded.rows:
+                final_joints_rad = commanded.joints_rad[-1].astype(float).tolist()
+            for block in commanded.blocks:
+                if block.error is not None and block.rows == 0:
+                    line = (
+                        notes[block.command].line_number
+                        if block.command < len(notes)
+                        else 0
+                    )
+                    text = f"Line {line}: {block.error}"
+                    if not error_message or text not in error_message:
+                        error_message = (
+                            error_message + "\n" if error_message else ""
+                        ) + text
+            # Collision marking runs here (normally a subprocess) so 1000s
+            # of C++ checks never block the UI event loop and mid-script tool
+            # selections are honored. A marking failure must not discard an
+            # otherwise-good dry run.
+            try:
+                from waldo_commander.profiles import get_robot
+
+                collisions = _mark_colliding_commands(
+                    get_robot(backend_package),
+                    commanded,
+                    local_tool_selections,
+                    local_shape_changes,
+                    shapes_wire,
+                    initial_tool,
+                )
+            except Exception as e:
+                logger.warning("Preview collision marking failed: %s", e)
+        if simulate_seconds is not None and commanded is not None:
+            try:
+                predicted = _portable(client.simulate(simulate_seconds))
+            except Exception as e:
+                physics_error = f"{type(e).__name__}: {e}"
+                logger.warning("Physics simulation failed: %s", e)
 
     return {
-        "segments": local_segments,
+        "revision": revision,
+        "commanded": commanded,
+        "predicted": predicted,
+        "notes": notes,
         "targets": local_targets,
         "tool_actions": local_tool_actions,
         "tool_selections": local_tool_selections,
-        "truncated": truncated,
+        "shape_changes": local_shape_changes,
+        "collisions": collisions,
         "error": error_message,
         "unresolved": unresolved,
-        "total_steps": len(local_segments),
-        "final_joints_rad": final_state.get("joints_rad"),
-        "ticks": ticks,
+        "physics_error": physics_error,
+        "final_joints_rad": final_joints_rad,
     }
 
 
-def _label_blocks(ticks: TickIndex, lines: list[int]) -> TickIndex:
-    """Give each simulated block the editor line that produced it.
-
-    The backend numbers its blocks by command; the host is the only one
-    that knows which line each command came from, and every consumer of
-    a simulated row — the executing-line highlight, a diagnostic, a
-    drag-to-edit anchor — asks for the line.
-    """
-    ticks.blocks = tuple(
-        replace(b, line_number=lines[b.command] if b.command < len(lines) else None)
-        for b in ticks.blocks
-    )
-    return ticks
+def _portable(record: TickIndex) -> TickIndex:
+    """The record as it crosses the process boundary: a block's refusal is
+    a backend error object that may not pickle, and then its text is what
+    the host gets."""
+    blocks = []
+    for block in record.blocks:
+        error = block.error
+        if error is not None:
+            try:
+                pickle.loads(pickle.dumps(error))
+            except Exception:
+                error = str(error)
+        blocks.append(replace(block, error=error))
+    record.blocks = tuple(blocks)
+    return record
 
 
 def _run_simulation_packed(args: tuple) -> dict[str, Any]:
@@ -541,22 +620,6 @@ def _run_simulation_packed(args: tuple) -> dict[str, Any]:
     a heterogeneous *args unpack; packing also lets the pool call and the
     in-process fallback share one argument list."""
     return _run_simulation_isolated(*args)
-
-
-def _track_signature(seg: PathSegment) -> tuple:
-    """What a segment's object tracks look like: per object, how many rows,
-    where it lands, and whether that is physics or a guess."""
-    tracks = seg.object_tracks or ()
-    return tuple(
-        (
-            t["name"],
-            len(t["poses"]),
-            tuple(t["poses"][-1]) if t["poses"] else (),
-            bool(t.get("carried")),
-            bool(t.get("physics", True)),
-        )
-        for t in tracks
-    )
 
 
 class _PhysicsPool:
@@ -632,10 +695,19 @@ class PathVisualizer:
         self._simulation_lock = asyncio.Lock()
         self._simulation_count = 0
         self._physics = _PhysicsPool()
-        # The exact arguments each tab was last PLANNED with. The physics
-        # pass runs seconds later and must refine that plan, not whatever
-        # the world happens to look like by the time it starts.
-        self._planned_args: dict[str, tuple] = {}
+        # The exact arguments each tab was last PLANNED with, and the
+        # revision they answered. The predicted pass runs seconds later and
+        # must answer that plan, not whatever the world happens to look
+        # like by the time it starts.
+        self._planned_args: dict[str, tuple[tuple, int]] = {}
+        # Which tabs have a predicted pass in flight.
+        self._physics_tabs: set[str] = set()
+        # Whether a backend's predicted record has ever differed from its
+        # commanded one, per backend package, for this session. A planner
+        # with no plant hands back the same record twice; after the first
+        # time it does, its predicted pass is not run again. Observed, not
+        # asked: nothing on the wire says what a pass will carry.
+        self._predicted_diverges: dict[str, bool] = {}
 
     def reset_for_test(self) -> None:
         """Rebuild loop-bound state so the next test's event loop starts clean.
@@ -649,32 +721,15 @@ class PathVisualizer:
         self._physics.shutdown()
         type(self).__init__(self)
 
-    @staticmethod
-    def _segments_match(old: list[PathSegment], new: list[PathSegment]) -> bool:
-        """Fast check whether two segment lists are visually identical."""
-        if len(old) != len(new):
-            return False
-        for a, b in zip(old, new):
-            if (
-                len(a.points) != len(b.points)
-                or a.color != b.color
-                or a.is_valid != b.is_valid
-                or a.line_number != b.line_number
-            ):
-                return False
-            # First/last point, matching the scene fingerprint.
-            if a.points and b.points:
-                if a.points[0] != b.points[0] or a.points[-1] != b.points[-1]:
-                    return False
-            # Where the objects end up is part of the picture too.
-            if _track_signature(a) != _track_signature(b):
-                return False
-        return True
+    def physics_in_flight(self, tab_id: str | None) -> bool:
+        """Whether a predicted pass is running for *tab_id*."""
+        return tab_id is not None and tab_id in self._physics_tabs
 
     def _simulation_args(
         self,
         program_text: str,
         robot: Any,
+        revision: int = 0,
         simulate_seconds: float | None = None,
     ) -> tuple | None:
         """Everything a preview worker needs, or None when this backend
@@ -688,16 +743,14 @@ class PathVisualizer:
         # Current robot joint angles seed the simulation's initial position.
         initial_joints_rad: np.ndarray | None = None
         if len(waldoctl.commander.status.joints.angles) >= robot.joints.count:
-            initial_joints_rad = waldoctl.commander.status.joints.angles.rad
+            initial_joints_rad = waldoctl.commander.status.joints.angles.rad.copy()
             logger.debug(
                 "Using current robot joints as initial: %s deg",
                 waldoctl.commander.status.joints.angles.deg,
             )
 
         backend_pkg = robot.backend_package
-        dr_instance = robot.create_dry_run_client()
-        dr_cls = type(dr_instance) if dr_instance is not None else None
-        if dr_cls is None:
+        if robot.create_dry_run_client() is None:
             logger.warning(
                 "Backend %s does not support dry-run simulation", backend_pkg
             )
@@ -763,19 +816,19 @@ class PathVisualizer:
         return (
             program_text,
             initial_joints_rad,
-            MAX_PATH_SEGMENTS,
             backend_pkg,
-            dr_cls,
+            revision,
             tool_meta_registry or None,
             shapes_wire,
             initial_tool,
             initial_homed,
             str(SetupStore().directory),
             simulate_seconds,
+            scene_handle.attachment_epoch if scene_handle is not None else 0,
         )
 
     async def update_path_visualization(
-        self, program_text: str, tab_id: str | None = None
+        self, program_text: str, tab_id: str | None = None, revision: int = 0
     ) -> str | None:
         """
         Run the dry-run simulation for the given program text and update the
@@ -788,6 +841,8 @@ class PathVisualizer:
             program_text: The Python program to simulate
             tab_id: Optional tab ID that triggered this simulation. Results will be
                 stored in this tab. If None, uses active tab.
+            revision: The program revision this plan answers; the predicted
+                pass that follows carries the same one.
 
         Returns:
             Error message if simulation failed, None otherwise.
@@ -816,7 +871,9 @@ class PathVisualizer:
                     targets_before,
                 )
 
-            sim_args = self._simulation_args(program_text, ui_state.active_robot)
+            sim_args = self._simulation_args(
+                program_text, ui_state.active_robot, revision
+            )
             if sim_args is None:
                 simulation_state.notify_changed()
                 return None
@@ -851,17 +908,12 @@ class PathVisualizer:
                 report = logger.warning if result.get("unresolved") else logger.error
                 report("Simulation error (sim_id=%d): %s", sim_id, result["error"])
 
-            if result.get("truncated"):
-                logger.warning(
-                    "Simulation truncated to %d segments (sim_id=%d)",
-                    MAX_PATH_SEGMENTS,
-                    sim_id,
-                )
-
+            commanded: TickIndex | None = result.get("commanded")
             logger.info(
-                "Simulation complete (sim_id=%d). Generated %d path segments.",
+                "Simulation complete (sim_id=%d): %d commands, %d rows.",
                 sim_id,
-                len(result["segments"]),
+                len(commanded.blocks) if commanded is not None else 0,
+                commanded.rows if commanded is not None else 0,
             )
 
             # Store results in the originating tab, falling back to the active tab.
@@ -872,44 +924,47 @@ class PathVisualizer:
                 target_tab = waldoctl.commander.programs.active
 
             if target_tab:
-                # The physics pass refines exactly this plan, seconds later.
-                if result.get("error"):
+                previous = self._planned_args.get(target_tab.id)
+                same_inputs = previous is not None and pickle.dumps(
+                    previous[0]
+                ) == pickle.dumps(sim_args)
+                # The predicted pass answers exactly this plan, seconds
+                # later; a plan that never produced a record leaves nothing
+                # to answer.
+                if commanded is None:
                     self._planned_args.pop(target_tab.id, None)
                 else:
-                    self._planned_args[target_tab.id] = sim_args
-                new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
-                new_targets = [ProgramTarget.from_dict(d) for d in result["targets"]]
-                new_tool_actions = result.get("tool_actions", [])
-                new_tool_selections = result.get("tool_selections", [])
+                    self._planned_args[target_tab.id] = (sim_args, revision)
+                dry_run = target_tab.dry_run
 
                 # Always store final_joints_rad (used for position-change
-                # detection even when segments are unchanged).
-                target_tab.dry_run.final_joints_rad = result.get("final_joints_rad")
+                # detection even when the plan is unchanged).
+                dry_run.final_joints_rad = result.get("final_joints_rad")
 
-                # Check if results match what's already stored — skip update
-                # to avoid unnecessary scrub bar rebuilds and visual flash.
-                # Don't skip when there's an error: the caller needs the error
-                # string to apply diagnostics even if segments are the same.
-                if self._segments_match(
-                    target_tab.dry_run.path_segments, new_segments
-                ) and not result.get("error"):
+                # An identical record paints an identical picture: skip the
+                # update to avoid a scrub bar rebuild and a visual flash. Not
+                # when there's an error — the caller needs the error string
+                # to apply diagnostics even if the record is the same.
+                if (
+                    commanded is not None
+                    and dry_run.commanded is not None
+                    and commanded.digest
+                    and dry_run.commanded.digest == commanded.digest
+                    and not result.get("error")
+                    and same_inputs
+                ):
+                    # The plan on screen answers this revision too, and so
+                    # does the predicted record that answered it.
+                    if dry_run.predicted_revision == dry_run.commanded_revision:
+                        dry_run.predicted_revision = revision
+                    dry_run.commanded_revision = revision
                     logger.info(
                         "Simulation results unchanged (sim_id=%d), skipping update",
                         sim_id,
                     )
                     return UNCHANGED
 
-                # A new plan retires the physics that refined the old
-                # one: playback locks again until the next pass lands.
-                target_tab.dry_run.ticks = None
-                target_tab.dry_run.ticks_pending = (
-                    ui_state.active_robot.has_physics_simulation
-                )
-                target_tab.dry_run.path_segments = new_segments
-                target_tab.dry_run.targets = new_targets
-                target_tab.dry_run.tool_actions = new_tool_actions
-                target_tab.dry_run.tool_selections = new_tool_selections
-                target_tab.dry_run.total_steps = len(new_segments)
+                self._apply_plan(dry_run, result, revision)
 
                 # Dry-run results live on the target tab; readers go through
                 # ``commander.programs.active.dry_run`` so the WC-side change
@@ -926,26 +981,58 @@ class PathVisualizer:
 
             return result.get("error")
 
+    @staticmethod
+    def _apply_plan(dry_run: Any, result: dict[str, Any], revision: int) -> None:
+        """Put a commanded record and what the scene draws from it on the
+        program. A new plan retires the predicted record that answered the
+        old one: until the next pass lands, predicted is commanded."""
+        commanded: TickIndex | None = result.get("commanded")
+        notes = list(result.get("notes") or [])
+        tool_actions = list(result.get("tool_actions") or [])
+        tool_selections = list(result.get("tool_selections") or [])
+        shape_changes = list(result.get("shape_changes") or [])
+        targets = [ProgramTarget.from_dict(d) for d in result.get("targets") or []]
+        if commanded is None:
+            segments = []
+        else:
+            segments = segments_from_record(
+                commanded, notes, result.get("collisions") or {}
+            )
+            index_boundaries(segments, tool_selections)
+            index_boundaries(segments, shape_changes)
+            tool_actions = tool_actions_from_record(tool_actions, commanded, segments)
+        dry_run.commanded = commanded
+        dry_run.commanded_revision = revision
+        dry_run.predicted = None
+        dry_run.predicted_revision = -1
+        dry_run.commands = notes
+        dry_run.path_segments = segments
+        dry_run.targets = targets
+        dry_run.tool_actions = tool_actions
+        dry_run.tool_selections = tool_selections
+        dry_run.total_steps = len(segments)
+
     async def update_physics_simulation(self, tab_id: str | None = None) -> str | None:
-        """Run the planned program through the backend's physics.
+        """Run the planned program through the backend's simulation for the
+        predicted record.
 
         The planning pass has already returned by the time this starts,
-        so the user is looking at the ideal trajectory while this fills
-        in what the arm would actually do. Playback and scrubbing stay
-        locked until it lands, because a scrub bar over a half-built
-        record seeks into rows that do not exist.
+        so the user is looking at the commanded path while this fills in
+        what the arm would do. Nothing waits on it: playback scrubs the
+        commanded record meanwhile, and the predicted one takes over when
+        it lands.
 
         It replays the plan's OWN arguments — same program text, same
         world, same tool, same starting pose — rather than rebuilding
         them from live state seconds later. A keep-out added during the
         wait would otherwise make the record describe a different world
-        than the plan on screen, with nothing to notice it.
+        than the plan on screen, with nothing to notice it. The record
+        lands only if the plan it answers is still the one on screen.
 
-        No-ops on a backend with no plant, which is how the app behaved
-        before any backend had one.
+        A backend whose prediction has been seen to be its plan — the same
+        record twice, with nothing a plant would add — is not asked again
+        this session.
         """
-        if not ui_state.active_robot.has_physics_simulation:
-            return None
         tab = (
             waldoctl.commander.programs.get(tab_id)
             if tab_id
@@ -955,10 +1042,19 @@ class PathVisualizer:
             return None
         planned = self._planned_args.get(tab.id)
         if planned is None:
-            return None  # nothing planned to refine
-        args = (*planned[:-1], MAX_SIMULATED_SECONDS)
+            return None  # nothing planned to answer
+        args, revision = planned
+        backend = ui_state.active_robot.backend_package
+        if self._predicted_diverges.get(backend) is False:
+            return None
+        bound = inspect.signature(_run_simulation_isolated).bind(*args)
+        bound.arguments["simulate_seconds"] = MAX_SIMULATED_SECONDS
+        args = bound.args
 
-        tab.dry_run.ticks_pending = True
+        self._physics_tabs.add(tab.id)
+        # The playback bar shows a pass in flight off this set; tell it now
+        # and again when the pass is over, whichever way it ends.
+        simulation_state.notify_changed()
         try:
             result = await asyncio.wait_for(
                 self._physics.run(_run_simulation_packed, args),
@@ -967,34 +1063,48 @@ class PathVisualizer:
         except asyncio.CancelledError:
             # Not an outcome. Superseded work must unwind, not return and
             # let the caller carry on mutating state that has moved on.
-            tab.dry_run.ticks_pending = False
             raise
         except asyncio.TimeoutError:
-            tab.dry_run.ticks_pending = False
             self._physics.cancel()
             logger.warning("Physics simulation timed out; the worker was killed")
             return "Physics simulation timed out"
         except Exception as e:
-            tab.dry_run.ticks_pending = False
             logger.warning("Physics simulation failed: %s", e)
             return str(e)
+        finally:
+            self._physics_tabs.discard(tab.id)
+            simulation_state.notify_changed()
 
-        tab.dry_run.ticks_pending = False
-        ticks = (result or {}).get("ticks")
-        if ticks is None:
-            return (result or {}).get("error")
+        predicted: TickIndex | None = (result or {}).get("predicted")
+        if predicted is None:
+            return (result or {}).get("error") or (result or {}).get("physics_error")
+        dry_run = tab.dry_run
+        if dry_run.commanded_revision != (result or {}).get("revision"):
+            logger.debug("Predicted record answers a superseded plan; dropped")
+            return None
+        commanded = dry_run.commanded
+        diverges = commanded is None or (
+            predicted.digest != commanded.digest or bool(predicted.channels)
+        )
+        self._predicted_diverges[backend] = diverges
         # The backend guarantees the same program gives a bit-identical
         # record, so an equal digest means an identical picture and the
         # scene keeps what it has. This is the flash guard.
-        previous = tab.dry_run.ticks
-        if previous is not None and ticks.digest and previous.digest == ticks.digest:
+        previous = dry_run.predicted
+        if (
+            previous is not None
+            and predicted.digest
+            and previous.digest == predicted.digest
+            and dry_run.predicted_revision == dry_run.commanded_revision
+        ):
             return None
-        tab.dry_run.ticks = ticks
+        dry_run.predicted = predicted
+        dry_run.predicted_revision = dry_run.commanded_revision
         logger.info(
             "Physics simulation complete: %d rows over %.2f s (%s)",
-            ticks.rows,
-            ticks.duration_s,
-            ticks.stop,
+            predicted.rows,
+            predicted.duration_s,
+            predicted.stop,
         )
         simulation_state.notify_changed()
         return None
@@ -1010,7 +1120,7 @@ class PathVisualizer:
         self._physics.cancel()
 
     def forget_plan(self, tab_id: str) -> None:
-        """Drop a tab's stored plan arguments — there is no plan to refine."""
+        """Drop a tab's stored plan arguments — there is no plan to answer."""
         self._planned_args.pop(tab_id, None)
 
 

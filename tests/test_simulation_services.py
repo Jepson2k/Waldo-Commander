@@ -11,25 +11,26 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 import waldoctl
-
-from waldo_commander.profiles import get_robot
-from waldo_commander.state import (
-    playback_coordination,
-    simulation_state,
-    robot_state,
-    ui_state,
-)
 from parol6.client.dry_run_client import DryRunRobotClient
+from waldoctl import TickIndex, following_error
+
 from tests.helpers.programs import set_active_recording
+from waldo_commander.profiles import get_robot
+from waldo_commander.services.motion_recorder import MotionRecorder
+from waldo_commander.services.path_preview_client import PathPreviewClient
+from waldo_commander.services.path_visualizer import PathVisualizer
+from waldo_commander.services.preview_segments import segments_from_record
 from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
-from waldo_commander.services.path_preview_client import PathPreviewClient
-from waldo_commander.services.motion_recorder import MotionRecorder
-from waldo_commander.services.path_visualizer import PathVisualizer
 from waldo_commander.services.urdf_scene.envelope_renderer import WorkspaceEnvelope
-
+from waldo_commander.state import (
+    playback_coordination,
+    robot_state,
+    simulation_state,
+    ui_state,
+)
 
 # ============================================================================
 # Dry Run Client Tests
@@ -37,106 +38,52 @@ from waldo_commander.services.urdf_scene.envelope_renderer import WorkspaceEnvel
 
 
 class TestDryRunClient:
-    """Tests for dry run simulation client (PathPreviewClient).
+    """The preview client over parol6's dry-run client: every command goes
+    through the real planning pipeline and lands on the plan record."""
 
-    The client delegates to parol6's PathPreviewClient which runs commands
-    through the real command pipeline. No mocking of PAROL6_ROBOT needed.
-    """
+    @staticmethod
+    def _planned(client):
+        client.close()
+        record = client.plan()
+        return record, segments_from_record(record, client.notes)
 
-    @pytest.mark.asyncio
-    async def test_move_joints_creates_path_segment(self):
-        """move_j should create a path segment with joint data."""
-        segments: list[dict] = []
-        targets: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            target_collector=targets,
+    def test_move_joints_records_a_block_the_scene_draws_as_a_segment(self):
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
+        target = [85, -85, 135, 10, 45, 170]
+        index = client.move_j(target, speed=1.0)
+        record, segments = self._planned(client)
+
+        assert index == 0 and client.wait_command(index)
+        block = record.blocks[0]
+        assert block.move_type == "joints" and block.rows >= 2
+        assert record.joints_rad.shape == (record.rows, 6)
+        assert np.degrees(record.joints_rad[block.start_row + block.rows - 1]) == (
+            pytest.approx(target, abs=0.5)
         )
-
-        # Use angles away from singularities (J5 != 0 avoids gimbal lock)
-        client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
-
-        # Verify path segment created in collector
         assert len(segments) == 1
         segment = segments[0]
-        assert segment["is_valid"] is True
-        assert segment["joints"] is not None
-        assert len(segment["joints"]) == 6
-        assert segment["move_type"] == "joints"
-        # Verify full joint trajectory is present for smooth playback
-        assert segment["joint_trajectory"] is not None
-        assert len(segment["joint_trajectory"]) >= 2  # At least start and end
-        assert len(segment["joint_trajectory"][0]) == 6  # 6 joints per waypoint
+        assert segment.is_valid and segment.move_type == "joints"
+        assert segment.command == 0 and segment.rows == block.rows
+        assert segment.estimated_duration == pytest.approx(block.rows * record.row_dt_s)
+        assert not client.target_collector, "no literal source line, no target"
 
-    @pytest.mark.asyncio
-    async def test_move_cartesian_creates_path_segment(self):
-        """move_l should create a path segment with cartesian data."""
-        segments: list[dict] = []
-        targets: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            target_collector=targets,
-        )
+    def test_move_cartesian_records_a_cartesian_block(self):
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
+        assert client.move_l([150, 100, 250, 0, 0, 0], speed=1.0) == 0
+        record, segments = self._planned(client)
+        assert record.blocks[0].move_type == "cartesian"
+        assert segments[0].move_type == "cartesian" and segments[0].is_valid
 
-        client.move_l([150, 100, 250, 0, 0, 0], speed=1.0)
+    def test_unreachable_cartesian_is_refused_on_the_record(self):
+        """A target the planner cannot reach is a block with an error and
+        rows the scene draws red — not a crash, and not a silent gap."""
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
+        index = client.move_l([9999, 9999, 9999, 0, 0, 0], speed=1.0)
+        record, segments = self._planned(client)
 
-        # Verify segment created
-        assert len(segments) == 1
-        segment = segments[0]
-        assert segment["is_valid"] is True
-        assert segment["move_type"] == "cartesian"
-
-    @pytest.mark.asyncio
-    async def test_move_creates_segment_but_not_target_without_literal_args(self):
-        """Moves without literal list arguments should create segment but not target.
-
-        ProgramTarget objects are only created when the source line has
-        literal list arguments (not variables). When move_j is called
-        directly (not via code parsing), there's no source line to
-        inspect, so no target is created.
-        """
-        segments: list[dict] = []
-        targets: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            target_collector=targets,
-        )
-
-        # Use angles away from singularities (J5 != 0 avoids gimbal lock)
-        client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
-
-        # Verify path segment was created (always created for visualization)
-        assert len(segments) == 1
-        segment = segments[0]
-        assert segment["move_type"] == "joints"
-        assert segment["joints"] is not None
-
-        # Verify NO target was created (no TARGET marker in source)
-        assert len(targets) == 0
-
-    @pytest.mark.asyncio
-    async def test_unreachable_cartesian_creates_error_result(self):
-        """Unreachable cartesian target produces per-pose valid/invalid segments."""
-        segments: list[dict] = []
-        targets: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            target_collector=targets,
-        )
-
-        # Extremely far target — mostly unreachable
-        client.move_l([9999, 9999, 9999, 0, 0, 0], speed=1.0)
-
-        # Per-pose IK diagnostic produces green (valid) + red (invalid) segments
-        assert len(segments) >= 1
-        has_invalid = any(not s["is_valid"] for s in segments)
-        assert has_invalid, (
-            "Expected at least one invalid segment for unreachable target"
-        )
+        assert index < 0 or not client.wait_command(index)
+        assert record.blocks[0].error is not None
+        assert any(not s.is_valid for s in segments)
 
 
 # ============================================================================
@@ -644,8 +591,9 @@ class TestEditorAutoSimulation:
 
     def testschedule_debounced_simulation_creates_timer(self):
         """schedule_debounced_simulation should create a timer."""
-        from waldo_commander.components.simulation_engine import simulation
         import waldoctl
+
+        from waldo_commander.components.simulation_engine import simulation
 
         with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer = MagicMock()
@@ -663,8 +611,9 @@ class TestEditorAutoSimulation:
 
     def testschedule_debounced_simulation_cancels_previous_timer(self):
         """Calling schedule_debounced_simulation again should cancel previous timer."""
-        from waldo_commander.components.simulation_engine import simulation
         import waldoctl
+
+        from waldo_commander.components.simulation_engine import simulation
 
         with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer1 = MagicMock()
@@ -684,71 +633,77 @@ class TestEditorAutoSimulation:
     @pytest.mark.asyncio
     async def test_run_simulation_calls_path_visualizer(self):
         """run_simulation should call path_visualizer.update_path_visualization."""
-        from waldo_commander.components.simulation_engine import simulation
         import waldoctl
 
-        with patch("waldo_commander.components.simulation_engine.ui"):
-            with patch(
+        from waldo_commander.components.simulation_engine import simulation
+
+        with (
+            patch("waldo_commander.components.simulation_engine.ui"),
+            patch(
                 "waldo_commander.components.simulation_engine.path_visualizer"
-            ) as mock_visualizer:
-                update_called = False
-                update_content = None
+            ) as mock_visualizer,
+        ):
+            update_called = False
+            update_content = None
 
-                async def mock_update(content, tab_id=None):
-                    nonlocal update_called, update_content
-                    update_called = True
-                    update_content = content
+            async def mock_update(content, tab_id=None, revision=0):
+                nonlocal update_called, update_content
+                update_called = True
+                update_content = content
 
-                mock_visualizer.update_path_visualization = mock_update
+            mock_visualizer.update_path_visualization = mock_update
 
-                mock_textarea = MagicMock()
-                mock_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
-                ui_state.active_textarea = mock_textarea
-                waldoctl.commander.programs.active_id = "tab_under_test"
-                ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
+            mock_textarea = MagicMock()
+            mock_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
+            ui_state.active_textarea = mock_textarea
+            waldoctl.commander.programs.active_id = "tab_under_test"
+            ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
-                try:
-                    await simulation.run_simulation()
-                finally:
-                    ui_state.textareas_by_tab.pop("tab_under_test", None)
-                    waldoctl.commander.programs.active_id = None
-                    ui_state.active_textarea = None
+            try:
+                await simulation.run_simulation()
+            finally:
+                ui_state.textareas_by_tab.pop("tab_under_test", None)
+                waldoctl.commander.programs.active_id = None
+                ui_state.active_textarea = None
 
-                assert update_called is True
-                assert update_content == "rbt.move_j([0,0,0,0,0,0])"
+            assert update_called is True
+            assert update_content == "rbt.move_j([0,0,0,0,0,0])"
 
     @pytest.mark.asyncio
     async def test_run_simulation_empty_content_skips_visualization(self):
         """run_simulation should skip visualization when content is empty."""
-        from waldo_commander.components.simulation_engine import simulation
         import waldoctl
 
-        with patch("waldo_commander.components.simulation_engine.ui"):
-            with patch(
+        from waldo_commander.components.simulation_engine import simulation
+
+        with (
+            patch("waldo_commander.components.simulation_engine.ui"),
+            patch(
                 "waldo_commander.components.simulation_engine.path_visualizer"
-            ) as mock_visualizer:
-                update_called = False
+            ) as mock_visualizer,
+        ):
+            update_called = False
 
-                async def mock_update(content, tab_id=None):
-                    nonlocal update_called
-                    update_called = True
+            async def mock_update(content, tab_id=None, revision=0):
+                nonlocal update_called
+                update_called = True
 
-                mock_visualizer.update_path_visualization = mock_update
+            mock_visualizer.update_path_visualization = mock_update
 
-                mock_textarea = MagicMock()
-                mock_textarea.value = ""
-                ui_state.active_textarea = mock_textarea
-                waldoctl.commander.programs.active_id = "tab_under_test"
-                ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
+            mock_textarea = MagicMock()
+            mock_textarea.value = ""
+            ui_state.active_textarea = mock_textarea
+            waldoctl.commander.programs.active_id = "tab_under_test"
+            ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
 
-                try:
-                    await simulation.run_simulation()
-                finally:
-                    ui_state.textareas_by_tab.pop("tab_under_test", None)
-                    waldoctl.commander.programs.active_id = None
-                    ui_state.active_textarea = None
+            try:
+                await simulation.run_simulation()
+            finally:
+                ui_state.textareas_by_tab.pop("tab_under_test", None)
+                waldoctl.commander.programs.active_id = None
+                ui_state.active_textarea = None
 
-                assert update_called is False
+            assert update_called is False
 
 
 class TestSimulationCaching:
@@ -787,10 +742,11 @@ class TestSimulationCaching:
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):
         """Simulation results go to tab_id, not active tab (for tab switch during sim)."""
-        from waldo_commander.state import simulation_state
         import waldoctl
         from waldoctl import Program
+
         from waldo_commander.services.path_visualizer import PathVisualizer
+        from waldo_commander.state import simulation_state
 
         # Create two tabs
         tab1 = Program(
@@ -840,10 +796,7 @@ from parol6 import RobotClient
 rbt = RobotClient()
 rbt.home()
 """
-        result = _run_simulation_isolated(
-            program,
-            dry_run_client_cls=DryRunRobotClient,
-        )
+        result = _run_simulation_isolated(program)
 
         assert "final_joints_rad" in result
         if result["final_joints_rad"] is not None:
@@ -928,6 +881,40 @@ asyncio.run(main())
         assert len(self._active_dry_run().path_segments) >= 1, (
             f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
         )
+
+    @pytest.mark.asyncio
+    async def test_predicted_pass_skipped_after_first_probe_on_parol6(self):
+        """parol6 plans and does not simulate, so its first predicted pass
+        comes back as the plan: the same record, carrying nothing a plant
+        would add. That is the last predicted pass the session runs for it
+        — the next plan is not answered at all, and until a pass lands the
+        predicted record is the commanded one."""
+        from waldo_commander.components.playback import layers_available
+
+        visualizer = PathVisualizer()
+        program = """
+from parol6 import RobotClient
+with RobotClient() as rbt:
+    rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+"""
+        dry_run = self._active_dry_run()
+        assert await visualizer.update_path_visualization(program, revision=1) is None
+        assert dry_run.commanded is not None and dry_run.commanded_revision == 1
+        assert dry_run.predicted_current is None
+        assert not any(layers_available(dry_run).values())
+
+        assert await visualizer.update_physics_simulation("test-tab") is None
+        assert visualizer._predicted_diverges["parol6"] is False
+        predicted = dry_run.predicted_current
+        assert predicted is not None and predicted.digest == dry_run.commanded.digest
+        assert not any(layers_available(dry_run).values())
+
+        again = program.replace("175]", "180]")
+        assert await visualizer.update_path_visualization(again, revision=2) is None
+        assert dry_run.predicted_current is None, "a new plan retires the old answer"
+        assert await visualizer.update_physics_simulation("test-tab") is None
+        assert dry_run.predicted is None, "the probe is not repeated this session"
+        assert not visualizer.physics_in_flight("test-tab")
 
     @pytest.mark.asyncio
     async def test_visualizer_updates_total_steps(self):
@@ -1110,81 +1097,67 @@ asyncio.run(main())
 
 
 class TestHomeAndCheckpoints:
-    """Tests for home teleport and checkpoint marker creation."""
+    """home() and checkpoint() on the plan record."""
 
-    def test_home_segment_mirrors_referencing_state(self):
-        """home() is tagged checkpoint='home' and ends at the home joints —
-        a planned return move (real duration) when the preview is seeded
-        homed, an instant referencing snap when seeded unhomed."""
+    @staticmethod
+    def _planned(client):
+        client.close()
+        record = client.plan()
+        return record, segments_from_record(record, client.notes)
+
+    def test_home_moves_a_referenced_arm_and_snaps_an_unreferenced_one(self):
         from parol6.config import HOME_ANGLES_DEG
 
-        home_rad = np.radians(HOME_ANGLES_DEG)
-
-        segments: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-        )
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
         client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.home()
+        record, segments = self._planned(client)
+        assert [s.checkpoint for s in segments] == [None, "home"]
+        home = segments[1]
+        assert home.rows == record.blocks[1].rows > 0
+        assert home.estimated_duration > 0.0
+        assert np.degrees(record.joints_rad[-1]) == pytest.approx(
+            HOME_ANGLES_DEG, abs=0.6
+        )
+        assert client.angles() == pytest.approx(HOME_ANGLES_DEG, abs=0.6)
 
-        assert len(segments) == 2
-        home_seg = segments[1]
-        assert home_seg["checkpoint"] == "home"
-        assert home_seg["estimated_duration"] > 0.0
-        assert home_seg["joints"] is not None
-        assert np.allclose(home_seg["joints"], home_rad, atol=0.01)
-
-        segments.clear()
         client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            initial_homed=False,
+            dry_run_client_cls=DryRunRobotClient, initial_homed=False
         )
         client.home()
+        record, segments = self._planned(client)
+        assert record.rows <= 1, "referencing is a snap, not a move"
+        assert [(s.checkpoint, s.rows) for s in segments] == [("home", record.rows)]
+        assert segments[0].estimated_duration <= record.row_dt_s
+        assert client.angles() == pytest.approx(HOME_ANGLES_DEG, abs=0.6)
 
-        assert len(segments) == 1
-        snap_seg = segments[0]
-        assert snap_seg["checkpoint"] == "home"
-        assert snap_seg["estimated_duration"] == pytest.approx(0.0)
-        assert snap_seg["joints"] is not None
-        assert np.allclose(snap_seg["joints"], home_rad, atol=0.01)
+    def test_home_updates_the_planner_for_subsequent_moves(self):
+        from parol6.config import HOME_ANGLES_DEG
 
-    def test_home_updates_planner_for_subsequent_moves(self):
-        """After home(), subsequent move_j starts from home position."""
-        segments: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-        )
-
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
         client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.home()
         client.move_j([90, -90, 140, 15, 50, 175], speed=1.0)
-
-        assert len(segments) == 3
-        # Third segment should have a trajectory starting near home
-        third = segments[2]
-        assert third["joint_trajectory"] is not None
-        assert len(third["joint_trajectory"]) >= 2
-
-    def test_checkpoint_creates_zero_width_marker(self):
-        """checkpoint() creates a zero-width segment with the correct label."""
-        segments: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
+        record, _ = self._planned(client)
+        third = record.blocks[2]
+        assert third.rows >= 2
+        assert np.degrees(record.joints_rad[third.start_row]) == pytest.approx(
+            HOME_ANGLES_DEG, abs=1.0
         )
 
+    def test_checkpoint_is_a_zero_width_marker(self):
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
         client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.checkpoint("pick_done")
-
+        record, segments = self._planned(client)
         assert len(segments) == 2
-        cp_seg = segments[1]
-        assert cp_seg["checkpoint"] == "pick_done"
-        assert cp_seg["estimated_duration"] == pytest.approx(0.0)
-        assert cp_seg["points"] == []
-        assert cp_seg["move_type"] == "checkpoint"
+        marker = segments[1]
+        assert marker.checkpoint == "pick_done" and marker.move_type == "checkpoint"
+        assert marker.rows == 0 and marker.points == []
+        assert marker.estimated_duration == 0.0
+        assert marker.start_row == record.rows, (
+            "the marker sits where the program stood"
+        )
 
 
 # ============================================================================
@@ -1198,9 +1171,9 @@ class TestToolActionTracking:
     def test_tool_start_positions_across_calls(self):
         """close() then open() records correct start_positions for each action."""
         from dataclasses import asdict
+
         from waldoctl.tools import LinearMotion
 
-        segments: list[dict] = []
         tool_actions: list = []
         robot = get_robot("parol6")
 
@@ -1231,7 +1204,6 @@ class TestToolActionTracking:
 
         client = PathPreviewClient(
             dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
             tool_action_collector=tool_actions,
             tool_meta_registry=tool_meta,
         )
@@ -1260,14 +1232,14 @@ class TestTeleportCommand:
     """Tests for TeleportCommand as a streamable motion command."""
 
     def test_teleport_is_streamable_motion_command(self):
-        from parol6.commands.basic_commands import TeleportCommand
         from parol6.commands.base import MotionCommand
+        from parol6.commands.basic_commands import TeleportCommand
 
         assert issubclass(TeleportCommand, MotionCommand)
         assert TeleportCommand.streamable is True
 
     def test_teleport_not_in_system_cmd_types(self):
-        from parol6.ack_policy import SYSTEM_CMD_TYPES, FIRE_AND_FORGET
+        from parol6.ack_policy import FIRE_AND_FORGET, SYSTEM_CMD_TYPES
         from parol6.protocol.wire import CmdType
 
         assert CmdType.TELEPORT not in SYSTEM_CMD_TYPES
@@ -1291,8 +1263,9 @@ class TestTeleportCommand:
         """Teleport with tool_positions must clear Gripper_data_out[3]
         to prevent the write-frame JIT from re-arming the gripper ramp."""
         import os
+
         from parol6.commands.basic_commands import TeleportCommand
-        from parol6.protocol.wire import TeleportCmd, CommandCode
+        from parol6.protocol.wire import CommandCode, TeleportCmd
         from parol6.server.state import ControllerState
 
         state = ControllerState()
@@ -1398,8 +1371,8 @@ class TestScriptExecutionLifecycle:
         self, user, tmp_path, monkeypatch, caplog
     ):
         """A UI failure after launch must reap the child and clear run state."""
-        from waldo_commander.components import script_execution as se
         from tests.helpers.wait import wait_for_app_ready
+        from waldo_commander.components import script_execution as se
 
         await user.open("/")
         await wait_for_app_ready()
@@ -1448,8 +1421,8 @@ class TestScriptExecutionLifecycle:
     @pytest.mark.integration
     async def test_start_handles_subdir_filename(self, user, tmp_path):
         """A program loaded from a subdirectory can actually run to completion."""
-        from waldo_commander.components import script_execution as se
         from tests.helpers.wait import wait_for_app_ready
+        from waldo_commander.components import script_execution as se
 
         await user.open("/")
         await wait_for_app_ready()
@@ -1641,8 +1614,8 @@ def test_editor_panel_cleanup_removes_playback_listener():
     ``_on_disconnect``) must remove the per-page playback listener so a user
     reloading the browser tab doesn't leak one listener per reload.
     """
-    from waldo_commander.components.playback import playback
     from waldo_commander.components.editor import EditorPanel
+    from waldo_commander.components.playback import playback
 
     baseline = len(simulation_state._change_listeners)
     simulation_state.add_change_listener(playback._on_state_change)
@@ -1682,9 +1655,10 @@ def test_script_output_appends_to_launching_tab_only():
     output_log of the tab that started the script, regardless of which
     tab the user is currently viewing.
     """
-    from waldo_commander.components.script_execution import script_exec
     import waldoctl
     from waldoctl import Program
+
+    from waldo_commander.components.script_execution import script_exec
 
     # Set up two tabs with empty logs.
     tab_a = Program(
@@ -1764,155 +1738,62 @@ def test_notify_step_changed_only_fires_step_listeners():
         simulation_state.remove_step_listener(on_step)
 
 
-class TestObjectTrackPlumbing:
-    """Object motion reported by a preview reaches the segment dicts and the
-    change detection that decides whether to re-render."""
-
-    def test_segments_that_differ_only_in_an_object_landing_do_not_match(self):
-        from waldo_commander.state import PathSegment
-
-        def seg(landing_z: float) -> PathSegment:
-            return PathSegment(
-                points=[[0.3, 0.0, 0.3], [0.4, 0.0, 0.3]],
-                color="#00ff00",
-                is_valid=True,
-                line_number=3,
-                object_tracks=[
-                    {
-                        "name": "block",
-                        "poses": [
-                            [0.3, 0.0, 0.04, 1, 0, 0, 0],
-                            [0.4, 0.0, landing_z, 1, 0, 0, 0],
-                        ],
-                        "carried": False,
-                        "physics": True,
-                    }
-                ],
-            )
-
-        assert PathVisualizer._segments_match([seg(0.04)], [seg(0.04)])
-        assert not PathVisualizer._segments_match([seg(0.04)], [seg(0.30)]), (
-            "a program whose only change is where the block lands must re-render"
-        )
-
-    def test_tracks_ride_segments_and_tool_actions_sliced_like_the_trajectory(self):
-        from unittest.mock import MagicMock
-
-        import numpy as np
-        from waldoctl.results import DryRunResultData, ObjectTrack
-
-        from waldo_commander.services.path_preview_client import PathPreviewClient
-        from waldo_commander.state import ToolAction
-
-        n = 5
-        traj = np.zeros((n, 6))
-        poses = np.zeros((n, 3))
-        poses[:, 0] = np.linspace(0.3, 0.4, n)
-        block = ObjectTrack(
-            name="block",
-            poses=np.column_stack([poses, np.tile([1.0, 0, 0, 0], (n, 1))]),
-            carried=True,
-            physics=True,
-        )
-        stand = ObjectTrack(
-            name="stand",
-            poses=np.array([[0.3, 0, 0.005, 1, 0, 0, 0]]),
-            carried=False,
-            physics=True,
-        )
-        # The last two waypoints are invalid: the run split must slice the
-        # moving track exactly like the joint trajectory and leave the parked
-        # one whole.
-        result = DryRunResultData(
-            tcp_poses=np.column_stack([poses, np.zeros((n, 3))]),
-            end_joints_rad=np.zeros(6),
-            duration=1.0,
-            valid=np.array([True, True, True, False, False]),
-            joint_trajectory_rad=traj,
-            object_tracks=(block, stand),
-        )
-        inner = MagicMock()
-        inner.move_j.return_value = result
-        inner.tool.close.return_value = result
-        # A real client counts the commands it has recorded, and the
-        # preview reads that to map each one back to a source line; a
-        # mock that answers with a mock is not a client.
-        inner.program_length = 0
-        segments: list[dict] = []
-        actions: list[ToolAction] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=MagicMock(return_value=inner),
-            segment_collector=segments,
-            tool_action_collector=actions,
-        )
-        client.move_j([0, 0, 0, 0, 0, 0])
-
-        assert len(segments) == 2
-        for seg in segments:
-            tracks = {t["name"]: t for t in seg["object_tracks"]}
-            assert len(tracks["block"]["poses"]) == len(seg["joint_trajectory"])
-            assert len(tracks["stand"]["poses"]) == 1
-        assert segments[0]["object_tracks"][0]["carried"] is True
-
-
 class TestSimulatedRunPlumbing:
-    """The second pass: a physics record reaching the display.
-
-    parol6 has no plant, so the whole path is gated off for it — that
-    gating is half of what these check. The other half drives the record
-    through the pieces that read it, with a record shaped exactly as a
-    backend produces one.
-    """
+    """The predicted record reaching the display: what the overlay draws
+    from a commanded/predicted pair and when it leaves the scene alone."""
 
     @staticmethod
-    def _ticks(rows: int = 6, joints: int = 6) -> waldoctl.TickIndex:
-        """A record the way a backend reports one: the arm lags its
-        command, and the lag grows along the run."""
+    def _records(rows: int = 6, joints: int = 6) -> tuple[TickIndex, TickIndex]:
+        """A pair the way a backend reports them: the predicted arm lags
+        its command, and the lag grows along the run."""
         t = np.linspace(0.0, 1.0, rows, dtype=np.float32)
         commanded = np.tile(t[:, None], (1, joints))
-        achieved = commanded - np.tile(t[:, None], (1, joints)) * 0.01
+        predicted = commanded - np.tile(t[:, None], (1, joints)) * 0.01
         tcp = np.zeros((rows, 6), dtype=np.float32)
         tcp[:, 0] = 0.3 + t * 0.1
-        return waldoctl.TickIndex(
-            row_dt_s=0.02,
-            joints_rad=achieved.astype(np.float32),
-            commanded_rad=commanded.astype(np.float32),
-            tcp=tcp,
-            tool_closed=np.zeros(rows, dtype=np.float32),
-            tool_gripping=np.zeros(rows, dtype=np.bool_),
-            blocks=(
-                waldoctl.TickBlock(command=0, start_row=0, rows=rows, line_number=3),
-            ),
-            digest=b"same-run",
-        )
+        blocks = (waldoctl.TickBlock(command=0, start_row=0, rows=rows, line_number=3),)
 
-    def test_a_record_reports_its_own_geometry_and_divergence(self):
-        ticks = self._ticks(rows=6)
+        def record(q: np.ndarray, digest: bytes) -> TickIndex:
+            return waldoctl.TickIndex(
+                row_dt_s=0.02,
+                joints_rad=q.astype(np.float32),
+                tcp=tcp,
+                tool_closed=np.zeros(rows, dtype=np.float32),
+                tool_gripping=np.zeros(rows, dtype=np.bool_),
+                blocks=blocks,
+                digest=digest,
+            )
 
-        assert ticks.rows == 6
-        assert ticks.duration_s == pytest.approx(0.12)
+        return record(commanded, b"commanded"), record(predicted, b"predicted")
+
+    def test_a_record_reports_its_geometry_and_a_pair_its_following_error(self):
+        commanded, predicted = self._records(rows=6)
+
+        assert predicted.rows == 6
+        assert predicted.duration_s == pytest.approx(0.12)
         # Time maps to a row, and rows past the end clamp rather than
         # raising: a scrub bar dragged to the far right must land
         # somewhere real.
-        assert ticks.row_at(0.0) == 0
-        assert ticks.row_at(0.05) == 2
-        assert ticks.row_at(99.0) == 5
-        assert ticks.block_at(3) is ticks.blocks[0]
-        assert ticks.block_at(99) is None
+        assert predicted.row_at(0.0) == 0
+        assert predicted.row_at(0.05) == 2
+        assert predicted.row_at(99.0) == 5
+        assert predicted.block_at(3) is predicted.blocks[0]
+        assert predicted.block_at(99) is None
 
-        err = ticks.tracking_error_rad()
+        err = following_error(commanded, predicted)
         assert err.shape == (6,)
         assert err[0] == pytest.approx(0.0)
-        assert err[-1] > err[1], "the divergence must grow along the run"
+        assert err[-1] > err[1], "the following error must grow along the run"
+        assert not following_error(commanded, commanded).any()
 
-    def test_divergence_colors_run_from_on_track_to_diverged(self):
+    def test_following_error_colors_run_from_on_track_to_diverged(self):
         from waldo_commander.services.urdf_scene.physics_overlay import (
-            FULL_DIVERGENCE_RAD,
-            divergence_colors,
+            FULL_FOLLOWING_ERROR_RAD,
+            following_error_colors,
         )
 
-        colors = divergence_colors(
-            np.array([0.0, FULL_DIVERGENCE_RAD / 2, FULL_DIVERGENCE_RAD * 3])
+        colors = following_error_colors(
+            np.array([0.0, FULL_FOLLOWING_ERROR_RAD / 2, FULL_FOLLOWING_ERROR_RAD * 3])
         )
         assert len(colors) == 3
         on_track, half, diverged = colors
@@ -1921,133 +1802,67 @@ class TestSimulatedRunPlumbing:
         assert on_track[1] > on_track[0], "on-track reads green"
         assert diverged[0] > diverged[1], "diverged reads red"
         assert on_track[1] > half[1] > diverged[1]
-        assert diverged == divergence_colors(np.array([FULL_DIVERGENCE_RAD]))[0]
+        assert (
+            diverged == following_error_colors(np.array([FULL_FOLLOWING_ERROR_RAD]))[0]
+        )
 
-    def test_a_backend_without_physics_never_runs_the_second_pass(self):
-        """parol6 plans and does not simulate, so nothing here engages."""
-        robot = get_robot("parol6")
-        assert not robot.has_physics_simulation
-
-        old_robot = ui_state.robot
-        ui_state.robot = robot
-        try:
-            visualizer = PathVisualizer()
-            result = asyncio.run(visualizer.update_physics_simulation(tab_id="nope"))
-        finally:
-            ui_state.robot = old_robot
-        assert result is None
-
-    def test_an_unchanged_record_is_not_redrawn(self):
-        """The flash guard: an identical run repaints nothing.
+    def test_an_unchanged_pair_is_not_redrawn_and_a_prediction_that_is_the_plan_draws_nothing(
+        self,
+    ):
+        """The flash guard: an identical pair repaints nothing.
 
         The backend guarantees a bit-identical record for the same
-        program, so an equal digest means an equal picture — and the
-        overlay must take that as permission to leave the scene alone.
+        program, so equal digests mean an equal picture — and the overlay
+        must take that as permission to leave the scene alone. A
+        predicted record equal to the commanded one shows nothing the
+        commanded path does not already, so nothing is built for it.
         """
         from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
 
+        commanded, predicted = self._records()
         overlay = PhysicsOverlay(MagicMock(scene=None))
         # No live scene: the build is a no-op and nothing is cached, so a
         # later call with a real scene still builds.
-        overlay.render(self._ticks(), show_divergence=True)
+        overlay.render(commanded, predicted, show_predicted=True)
         assert not overlay.is_built
 
-        overlay._digest = b"same-run"
+        overlay._digest = (commanded.digest, predicted.digest)
         overlay._group = object()
-        overlay.render(self._ticks(), show_divergence=True)
-        assert overlay.is_built, "an identical digest must not tear the group down"
+        overlay.render(commanded, predicted, show_predicted=True)
+        assert overlay.is_built, "an identical pair must not tear the group down"
 
-        overlay.render(None, show_divergence=True)
-        assert not overlay.is_built, "no record, no overlay"
+        overlay.render(commanded, commanded, show_predicted=True)
+        assert not overlay.is_built, "a prediction that is the plan draws nothing"
 
-    def test_playback_over_a_record_replays_measured_poses(self):
-        """A timeline built from ticks plays what was measured.
+        overlay._group = object()
+        overlay.render(commanded, None, show_predicted=True)
+        assert not overlay.is_built, "no predicted record, no overlay"
 
-        The planned timeline interpolates between waypoints; this one has
-        the rows, so a pose at time t is the row at time t. The planned
-        segments still supply the line number, which is what keeps the
-        executing-line highlight pointing at the right place.
-        """
-        from waldo_commander.services.timeline import Timeline
-        from waldo_commander.state import PathSegment
-
-        ticks = self._ticks(rows=6)
-        planned = [
-            PathSegment(
-                points=[[0.3, 0.0, 0.2], [0.4, 0.0, 0.2]],
-                color="#00ff00",
-                is_valid=True,
-                line_number=3,
-                joint_trajectory=[[0.0] * 6, [1.0] * 6],
-                estimated_duration=99.0,
-            )
-        ]
-        tl = Timeline.from_ticks(ticks, planned)
-
-        # The run's duration, not the plan's guess at it.
-        assert tl.total_duration == pytest.approx(ticks.duration_s)
-        assert tl.cumulative_times[0] == 0.0
-        assert tl.cumulative_times[-1] == pytest.approx(ticks.duration_s)
-        assert tl._segments[0].line_number == 3
-
-        mid = tl.sample(ticks.duration_s / 2)
-        assert mid.segment_index == 0
-        assert mid.joints is not None
-        row = ticks.row_at(ticks.duration_s / 2)
-        assert mid.joints == pytest.approx(
-            [float(v) for v in ticks.joints_rad[row]], abs=1e-6
-        )
-        # Measured, so it carries the servo lag the plan cannot show.
-        assert mid.joints != pytest.approx(
-            [float(v) for v in ticks.commanded_rad[row]], abs=1e-6
-        )
-
-        end = tl.sample(999.0)
-        assert end.joints == pytest.approx(
-            [float(v) for v in ticks.joints_rad[-1]], abs=1e-6
-        )
-
-    def test_a_block_with_no_planned_segment_still_takes_a_slot(self):
-        """Index density: prev/next steps through commands, so a command
-        the planner drew nothing for cannot vanish from the sequence."""
-        from waldo_commander.services.timeline import Timeline
-
-        ticks = self._ticks(rows=6)
-        ticks.blocks = (
-            waldoctl.TickBlock(command=0, start_row=0, rows=3, line_number=3),
-            waldoctl.TickBlock(command=1, start_row=3, rows=3, line_number=9),
-        )
-        tl = Timeline.from_ticks(ticks, [])
-
-        assert len(tl._segments) == 2
-        assert [s.line_number for s in tl._segments] == [3, 9]
-        assert tl.sample(0.0).segment_index == 0
-        assert tl.sample(ticks.duration_s).segment_index == 1
-
-    def test_the_achieved_path_toggle_works_on_a_record_already_drawn(self):
+    def test_the_predicted_path_toggle_works_on_a_pair_already_drawn(self):
         """The toggle is a visibility flip, not a rebuild.
 
-        `render` short-circuits on the digest so an unchanged record is
+        `render` short-circuits on the digests so an unchanged pair is
         not redrawn — but the toggle has to be read on that path too, or
-        it does nothing at all for as long as the record stays put, while
+        it does nothing at all for as long as the records stay put, while
         the legend (reading the same flag) hides its row and contradicts
         the scene.
         """
         from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
 
+        commanded, predicted = self._records()
         overlay = PhysicsOverlay(MagicMock(scene=None))
         drawn = MagicMock()
         overlay._group = object()
-        overlay._achieved = drawn
-        overlay._digest = b"same-run"
+        overlay._predicted = drawn
+        overlay._digest = (commanded.digest, predicted.digest)
 
-        overlay.render(self._ticks(), show_divergence=False)
+        overlay.render(commanded, predicted, show_predicted=False)
         drawn.visible.assert_called_with(False)
-        overlay.render(self._ticks(), show_divergence=True)
+        overlay.render(commanded, predicted, show_predicted=True)
         drawn.visible.assert_called_with(True)
         assert overlay.is_built, "a toggle must not tear the geometry down"
 
-    def test_a_long_run_is_decimated_without_losing_a_divergence_spike(self):
+    def test_a_long_run_is_decimated_without_losing_a_following_error_spike(self):
         """A ten-minute record is 30,000 rows; every one would cross as a
         point triple and a colour triple in one scene command built on the
         event loop. Positions are sampled, but the error is taken as the
@@ -2055,7 +1870,7 @@ class TestSimulatedRunPlumbing:
         whole reason the overlay exists.
         """
         from waldo_commander.services.urdf_scene.physics_overlay import (
-            MAX_ACHIEVED_POINTS,
+            MAX_PREDICTED_POINTS,
             decimate,
         )
 
@@ -2066,7 +1881,7 @@ class TestSimulatedRunPlumbing:
         error[17_000:17_003] = 0.05  # a three-row spike
 
         points, worst = decimate(tcp, error)
-        assert len(points) == len(worst) <= MAX_ACHIEVED_POINTS
+        assert len(points) == len(worst) <= MAX_PREDICTED_POINTS
         assert points[0][0] == pytest.approx(tcp[0][0])
         assert worst.max() == pytest.approx(0.05), (
             "sampling the error would drop a spike shorter than the stride"

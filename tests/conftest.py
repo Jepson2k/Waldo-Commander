@@ -515,7 +515,7 @@ def reset_editor_singletons(
     try:
         for p in waldoctl.commander.programs.items:
             p.execution.is_running = False
-            p.dry_run.playback.executing_step_index = -1
+            p.dry_run.playback.executing_command = -1
             p.dry_run.playback.executing_step_at_end = False
     except RuntimeError:
         pass

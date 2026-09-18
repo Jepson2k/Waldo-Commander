@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections.abc import Iterator
 from dataclasses import fields
-from typing import Any
+from typing import Any, cast
 
 import waldoctl
 from nicegui import ui
 
 from waldo_commander.services.urdf_scene.config import DRAFT_PREFIX
+from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.state import ui_state
 from waldoctl.shapes import (
     SHAPE_PREFIX,
     Box,
@@ -29,6 +32,7 @@ from waldoctl.shapes import (
     Cylinder,
     Ellipsoid,
     Shape,
+    Pose6,
     Sphere,
     param_names,
 )
@@ -115,19 +119,38 @@ class ShapeEditingMixin:
         shape = self._program_shape(shape_name)
         if shape is None:
             return
-        ui.item(f"Keep-out '{shape_name}'").classes("font-bold text-sm")
+        label = "Flange attachment" if shape.attachment is not None else "Keep-out"
+        ui.item(f"{label} '{shape_name}'").classes("font-bold text-sm")
+        if shape.attachment is not None and not self._shape_handle().attachments_valid:
+            ui.item("Reconciliation required before arm motion").classes(
+                "text-warning text-xs"
+            )
         ui.separator()
         ui.menu_item(
             "Edit Keep-out...",
             on_click=lambda s=shape: self._show_shape_dialog(shape=s),
         )
+        if shape.attachment is not None:
+            ui.menu_item(
+                "Reconcile Attachment...",
+                on_click=lambda: self._show_attachment_dialog(shape_name),
+            )
+            ui.menu_item(
+                "Detach to World...",
+                on_click=lambda: self._show_attachment_dialog(shape_name, detach=True),
+            )
+        else:
+            ui.menu_item(
+                "Attach to Flange...",
+                on_click=lambda: self._show_attachment_dialog(shape_name),
+            )
         if self._shape_move_active == shape_name:
             ui.menu_item("Stop Moving", on_click=self._end_shape_move)
         else:
             ui.menu_item(
                 "Move (drag arrows)",
                 on_click=lambda n=shape_name: self._start_shape_move(n),
-            )
+            ).set_enabled(shape.attachment is None)
         ui.menu_item(
             "Delete Keep-out",
             on_click=lambda n=shape_name: self._delete_shape(n),
@@ -136,7 +159,7 @@ class ShapeEditingMixin:
         ui.menu_item(
             "Propose as Installation",
             on_click=lambda n=shape_name: self._propose_installation(n),
-        ).mark("shape-menu-propose")
+        ).mark("shape-menu-propose").set_enabled(shape.attachment is None)
 
     def _populate_draft_menu(self, shape_name: str) -> None:
         """Menu items for a right-clicked proposed-installation shape."""
@@ -315,6 +338,10 @@ class ShapeEditingMixin:
             ui.label(f"{'Edit' if editing else 'Add'} {kind} keep-out").classes(
                 "text-lg font-bold"
             )
+            if shape is not None and shape.attachment is not None:
+                ui.label("Pose relative to flange · declared model only").classes(
+                    "text-xs"
+                )
             name_in = (
                 ui.input("Name", value=name0)
                 .classes("w-full")
@@ -371,6 +398,7 @@ class ShapeEditingMixin:
                         else float(margin_v) / 1000,
                         # The dialog edits geometry; a body stays a body.
                         physics=None if shape is None else shape.physics,
+                        attachment=None if shape is None else shape.attachment,
                         **params,
                     )
                 except (TypeError, ValueError) as err:
@@ -399,6 +427,159 @@ class ShapeEditingMixin:
                     "shape-dialog-save"
                 )
         # ESC / backdrop dismissal comes back as a hide event.
+        dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
+        dialog.open()
+
+    def _show_attachment_dialog(self, name: str, *, detach: bool = False) -> None:
+        from waldo_commander.skills import attach_object, detach_object
+
+        shape = self._program_shape(name)
+        if shape is None:
+            return
+        initial = shape.pose if shape.attachment is not None and not detach else None
+        self._end_shape_move()
+        with (
+            ui.context.client.content,
+            ui.dialog() as dialog,
+            ui.card().classes("w-96"),
+        ):
+            ui.label(f"{'Detach' if detach else 'Attach / reconcile'} {name}").classes(
+                "text-lg font-bold"
+            )
+            ui.label(
+                "Declare the resting pose in the world frame."
+                if detach
+                else "Declare the object's pose relative to the flange, independent of TCP."
+            ).classes("text-sm")
+            ui.label(
+                "Model declaration only. Verify the object placement; this does not operate the gripper or confirm a grasp."
+            ).classes("text-xs opacity-70")
+            with ui.row().classes("w-full"):
+                pos = [
+                    ui.number(
+                        axis,
+                        value=None if initial is None else initial[i] * 1000,
+                        format="%.3f",
+                        suffix="mm",
+                    )
+                    .classes("flex-1")
+                    .mark(f"attachment-pos-{axis.lower()}")
+                    for i, axis in enumerate(("X", "Y", "Z"))
+                ]
+            with ui.row().classes("w-full"):
+                rot = [
+                    ui.number(
+                        axis,
+                        value=0 if initial is None else math.degrees(initial[i + 3]),
+                        format="%.3f",
+                        suffix="°",
+                    )
+                    .classes("flex-1")
+                    .mark(f"attachment-rot-{axis.lower()}")
+                    for i, axis in enumerate(("Rx", "Ry", "Rz"))
+                ]
+            contacts = None
+            if not detach:
+                contacts = (
+                    ui.textarea(
+                        "Allowed contact partners",
+                        value="\n".join(shape.attachment.allowed_contacts)
+                        if shape.attachment
+                        else "",
+                    )
+                    .props('rows=3 hint="One exact collision-report name per line"')
+                    .classes("w-full")
+                    .mark("attachment-contacts")
+                )
+                ui.label(
+                    "Exact collision-report names, e.g. tool:SSG48:moving "
+                    "(tool:KEY:role), shape:fixture, install:bench, or a link "
+                    "name like L6. All other collision checks remain active."
+                ).classes("text-xs opacity-70")
+            feedback = (
+                ui.label().classes("text-sm text-warning").mark("attachment-feedback")
+            )
+
+            async def apply() -> None:
+                button.disable()
+                started_at = time.time()
+                try:
+                    blank = [
+                        field._props.get("label", "")
+                        for field in (*pos, *rot)
+                        if field.value is None
+                    ]
+                    if blank:
+                        # float(None) would reach the feedback label as a raw
+                        # Python type error, which tells the operator nothing
+                        # about which box to fill in.
+                        raise ValueError(
+                            f"Fill in {', '.join(blank)} before declaring this "
+                            f"attachment"
+                        )
+                    pose = cast(
+                        Pose6,
+                        tuple(
+                            [float(v.value) / 1000 for v in pos]
+                            + [math.radians(float(v.value)) for v in rot]
+                        ),
+                    )
+                    client = waldoctl.commander.client
+                    if not require_browser_control(ui_state.active_client_id):
+                        return
+                    if detach:
+                        result = await detach_object.async_call(
+                            client, name=name, world_pose=pose, shape=shape
+                        )
+                        source = f"from waldo_commander.skills import detach_object\ndetach_object(rbt, name={name!r}, world_pose={pose!r})"
+                    else:
+                        names = (
+                            tuple(
+                                n.strip()
+                                for n in str(contacts.value).splitlines()
+                                if n.strip()
+                            )
+                            if contacts
+                            else ()
+                        )
+                        result = await attach_object.async_call(
+                            client,
+                            name=name,
+                            flange_pose=pose,
+                            allowed_contacts=names,
+                            shape=shape,
+                        )
+                        source = f"from waldo_commander.skills import attach_object\nattach_object(rbt, name={name!r}, flange_pose={pose!r}, allowed_contacts={names!r})"
+                    handle = self._shape_handle()
+                    if handle is not None:
+                        await handle.refresh_from_backend()
+                    from waldo_commander.services.motion_recorder import motion_recorder
+
+                    motion_recorder.record_completed_skill(
+                        source, started_at=started_at
+                    )
+                    ui.notify(
+                        f"{'Detached' if result.attachment is None else 'Attachment confirmed'}: {name}"
+                    )
+                    dismiss()
+                except Exception as error:
+                    logger.info("Attachment declaration refused: %s", error)
+                    feedback.set_text(str(error))
+                finally:
+                    if not button.is_deleted:
+                        button.enable()
+
+            def dismiss() -> None:
+                dialog.close()
+                if not dialog.is_deleted:
+                    dialog.delete()
+
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=dismiss).props("flat")
+                button = ui.button(
+                    "Declare detachment" if detach else "Declare attachment",
+                    on_click=apply,
+                ).mark("attachment-apply")
         dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
         dialog.open()
 
@@ -435,6 +616,9 @@ class ShapeEditingMixin:
     # ------------------------------------------------------------------
 
     def _start_shape_move(self, name: str) -> None:
+        shape = self._program_shape(name)
+        if shape is None or shape.attachment is not None:
+            return
         obj = self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
         if obj is None:
             return
@@ -467,7 +651,12 @@ class ShapeEditingMixin:
             return
         handle = self._shape_handle()
         shape = self._program_shape(name)
-        if handle is None or shape is None or e.x is None:
+        if (
+            handle is None
+            or shape is None
+            or shape.attachment is not None
+            or e.x is None
+        ):
             return
         moved = _KINDS[shape.kind](
             **{
