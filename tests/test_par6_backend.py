@@ -117,6 +117,33 @@ async def test_commander_runs_on_the_par6_runtime(
         assert status.simulator_active, "par6d --sim should report simulator_active"
         assert len(status.joints.angles.deg) == robot.joints.count == 6
 
+        from par6.client import AsyncRobotClient
+        from waldo_commander.components.playback import playback
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            async with AsyncRobotClient(
+                host="127.0.0.1",
+                port=_free_udp_port(),
+                timeout=0.1,
+                status_transport="unicast",
+                status_port=occupied.getsockname()[1],
+            ) as unavailable:
+                with monkeypatch.context() as patch:
+                    patch.setattr(waldoctl.commander, "client", unavailable)
+                    patch.setattr(playback, "_uses_live_speed", lambda: True)
+                    await playback._refresh_execution_speed()
+                    assert playback._execution_speed is None
+                    assert (
+                        playback._speed_tooltip.text
+                        == "Execution speed readback unavailable"
+                    )
+        with monkeypatch.context() as patch:
+            patch.setattr(playback, "_uses_live_speed", lambda: True)
+            await playback._refresh_execution_speed()
+            assert playback._execution_speed is not None
+            assert "selected" in playback._speed_tooltip.text
+
         # The app sizes its IO buffer from the backend's pin counts and then
         # writes decoded frames straight in, so agreement here is what keeps
         # the status pipeline from throwing on every frame.
@@ -348,16 +375,20 @@ async def test_commander_runs_on_the_par6_runtime(
         assert await client.wait_command(index, timeout=15)
         await gripper_close.async_call(client)
         assert await client.wait_status(
-            lambda s: s.tool_status is not None
-            and bool(s.tool_status.positions)
-            and s.tool_status.positions[0] > 0.9,
+            lambda s: (
+                s.tool_status is not None
+                and bool(s.tool_status.positions)
+                and s.tool_status.positions[0] > 0.9
+            ),
             timeout=5,
         )
         await gripper_open.async_call(client)
         assert await client.wait_status(
-            lambda s: s.tool_status is not None
-            and bool(s.tool_status.positions)
-            and s.tool_status.positions[0] < 0.1,
+            lambda s: (
+                s.tool_status is not None
+                and bool(s.tool_status.positions)
+                and s.tool_status.positions[0] < 0.1
+            ),
             timeout=5,
         )
         from nicegui import ui
@@ -469,16 +500,19 @@ async def test_commander_runs_on_the_par6_runtime(
         # The preview workflow separately checks the exact planned clearance.
         await poll_until(
             client.angles,
-            lambda angles: angles is not None
-            and np.allclose(
-                np.radians(angles), expected_joints.q, atol=tolerance, rtol=0
+            lambda angles: (
+                angles is not None
+                and np.allclose(
+                    np.radians(angles), expected_joints.q, atol=tolerance, rtol=0
+                )
             ),
             timeout_s=5,
             what=f"the final transfer joints to settle within {tolerance} rad of {expected_joints.q}",
         )
         assert await client.wait_status(
-            lambda s: bool(s.tool_status.positions)
-            and s.tool_status.positions[0] < 0.1,
+            lambda s: (
+                bool(s.tool_status.positions) and s.tool_status.positions[0] < 0.1
+            ),
             timeout=3,
         )
         progress = progress.mark(1)
@@ -503,8 +537,10 @@ async def test_commander_runs_on_the_par6_runtime(
                 client.queue_state,
                 lambda q: q is not None and q.executing_index >= 0,
                 timeout_s=25,
-                what=lambda: "native program start; log="
-                + "\n".join(entry.text for entry in program.log.entries),
+                what=lambda: (
+                    "native program start; log="
+                    + "\n".join(entry.text for entry in program.log.entries)
+                ),
             )
             # The command lasts longer than one wait_command polling window.
             # A timeout must not emit a completed step or advance the program.
@@ -527,9 +563,86 @@ async def test_commander_runs_on_the_par6_runtime(
         finally:
             if script_exec.script_handle is not None:
                 await script_exec.stop()
+
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)
         if robot is not None:
             with contextlib.suppress(Exception):
                 robot.stop()
+
+
+@requires_par6
+@pytest.mark.integration
+@pytest.mark.parametrize("asynchronous", [True, False])
+async def test_native_managed_timeout_cancels_the_accepted_move(
+    par6_env, user, asynchronous
+):
+    import asyncio
+    from uuid import uuid4
+    import numpy as np
+    import waldoctl
+    from par6 import RobotClient
+    from waldo_commander.constants import config
+    from waldo_commander.services.stepping_client import (
+        AsyncSteppingClientWrapper,
+        SteppingClientWrapper,
+        GUIStepController,
+        StepIO,
+    )
+    from waldo_commander.state import ui_state
+
+    controller = GUIStepController(uuid4().hex)
+    controller.initialize()
+    controller.signal_play()
+    task = None
+    try:
+        await user.open("/")
+        await wait_for_app_ready(timeout_s=60)
+        client = waldoctl.commander.client
+        park = [0, -120, 150, 0, 0, 180]
+        await client.reset()
+        async with asyncio.timeout(10):
+            while True:
+                await client.teleport(park)
+                if await client.wait_status(
+                    lambda s: s.homed and np.allclose(s.angles, park, atol=0.5),
+                    timeout=0.5,
+                ):
+                    break
+        target = list(park)
+        target[0] += 4
+
+        def sync_move():
+            with RobotClient(
+                host=config.controller_host, port=config.controller_port
+            ) as native:
+                wrapped = SteppingClientWrapper(native, StepIO(controller.session_id))
+                wrapped.move_j(target, duration=5, timeout=0.75)
+
+        if asynchronous:
+            managed = AsyncSteppingClientWrapper(client, StepIO(controller.session_id))
+            task = asyncio.create_task(managed.move_j(target, duration=5, timeout=0.75))
+        else:
+            task = asyncio.create_task(asyncio.to_thread(sync_move))
+        await poll_until(
+            client.queue_state,
+            lambda q: q.executing_index >= 0,
+            timeout_s=3,
+            what="accepted native move",
+        )
+        with pytest.raises(TimeoutError):
+            await task
+        queue = await client.queue_state()
+        assert queue.executing_index < 0 and not queue.queue, (
+            "timed-out managed move kept executing"
+        )
+        followup = await client.delay(0.01)
+        assert await client.wait_command(followup, timeout=3)
+    finally:
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        controller.cleanup()
+        robot = getattr(ui_state, "robot", None)
+        if robot is not None:
+            robot.stop()

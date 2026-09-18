@@ -60,7 +60,7 @@ async def pause_active() -> None:
     """Pause the active program. Requires it to be running."""
     require_control()
     with _page_client():
-        playback.set_script_playing(False)
+        await playback.set_script_playing(False)
 
 
 @mcp.tool(name="execution.resume_active")
@@ -71,7 +71,7 @@ async def resume_active() -> None:
     """
     require_actuation("resume the active program")
     with _page_client():
-        playback.set_script_playing(True)
+        await playback.set_script_playing(True)
 
 
 @mcp.tool(name="execution.is_running")
