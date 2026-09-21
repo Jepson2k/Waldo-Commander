@@ -1837,6 +1837,7 @@ async def _status_consumer() -> None:
     torques_shadow: np.ndarray | None = None
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
+    error_shadow: waldoctl.RobotError | None = None
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1999,6 +2000,31 @@ async def _status_consumer() -> None:
                                     remedy=e.remedy,
                                 )
                         st.warnings.entries = list(entries)
+
+                    # The standing error is the other half of the condition
+                    # surface: waldoctl routes self-clearing conditions to
+                    # `warnings` and hard latches here, and a backend is free to
+                    # use only one of the two. parol6 never fills `warnings`, so
+                    # reading only that channel dropped its entire error
+                    # vocabulary -- unreachable targets, queue overflow, gripper
+                    # timeouts, self-collision -- before it reached the log.
+                    # Edge-triggered: a standing error repeats every tick, and
+                    # clearing then recurring is a genuine second occurrence.
+                    standing = getattr(status, "error", None)
+                    if standing is not None and not isinstance(
+                        standing, waldoctl.RobotError
+                    ):
+                        standing = waldoctl.RobotError.from_wire(standing)
+                    if standing != error_shadow:
+                        error_shadow = standing
+                        if standing is not None:
+                            robot_events.add(
+                                code=standing.code,
+                                title=standing.title,
+                                cause=standing.cause,
+                                effect=standing.effect,
+                                remedy=standing.remedy,
+                            )
 
                     drives = getattr(status, "drive_health", None)
                     if drives:

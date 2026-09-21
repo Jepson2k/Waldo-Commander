@@ -142,3 +142,43 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
     await asyncio.sleep(0)
     assert not robot_events.entries
     await user.should_not_see("CAN stale")
+
+
+@pytest.mark.integration
+async def test_a_condition_this_backend_reports_reaches_the_log(
+    user: User, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log has to cover both channels the status surface splits across.
+
+    waldoctl routes self-clearing conditions to ``warnings`` and hard
+    latches to the standing error, and a backend is free to use only one of
+    them. This one only ever sets the standing error, so a log wired to
+    ``warnings`` alone stays empty however badly the move goes — which reads
+    as a healthy machine rather than an unasked question.
+    """
+    await user.open("/")
+    await wait_for_app_ready()
+
+    robot_events.clear()
+    # Metres out, against a reach of about half a metre: the controller
+    # cannot plan it and answers with a standing error.
+    await ui_state.control_panel.client.move_l(
+        [5000.0, 5000.0, 5000.0, 180.0, 0.0, 0.0], speed=0.5
+    )
+
+    assert await wait_until(lambda: bool(robot_events.entries), timeout_s=8.0), (
+        "the backend reported a condition and the log never heard about it"
+    )
+    _, code, title, _cause, _effect, remedy = robot_events.entries[0]
+    assert code, "an entry with no code cannot be traced back to the backend"
+    assert title, "an entry with no title says nothing to the operator"
+    assert remedy, "the remedy is the half that says what to do about it"
+
+    # The refused move is the point of the test, and the controller logs it at
+    # ERROR. Drop just that record so the fixture's blanket ERROR check still
+    # guards everything else.
+    caplog.get_records("call")[:] = [
+        r
+        for r in caplog.get_records("call")
+        if "IK: partial path" not in r.getMessage()
+    ]
