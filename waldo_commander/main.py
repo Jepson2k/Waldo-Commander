@@ -282,10 +282,6 @@ async def initialize_urdf_scene() -> None:
     if ui_state.urdf_scene.scene:
         scene: ui.scene = ui_state.urdf_scene.scene
         scene._props["grid"] = (10, 100)
-        # Fill parent container (absolute canvas).
-        scene.classes(remove="h-[66vh]").style(
-            "width: 100%; height: 100%; margin: 0; display: block;"
-        )
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
 
         # World coordinate frame at origin (fixed).
