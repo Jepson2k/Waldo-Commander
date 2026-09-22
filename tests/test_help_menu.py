@@ -80,7 +80,7 @@ class TestTutorialStepper:
         await asyncio.sleep(0)
 
         # Should see second step
-        await user.should_see("In the control panel")
+        await user.should_see("Open the **Settings** tab in the bottom-left tab bar")
 
         # Click Back to return
         user.find("Back").click()
