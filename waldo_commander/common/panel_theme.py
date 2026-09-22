@@ -73,6 +73,15 @@ def inject_panel_css() -> None:
 .diag-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--color-neutral-400); transition: width .2s linear; }
 .diag-bar-fill.over { background: var(--sem-warning); }
 .diagnostics-view > .panel-body { flex-basis: auto; }
+/* Skills are drawn rather than listed: the diagram is the label. */
+.skill-group-heading { font-size: 13px; font-weight: 600; color: var(--ctk-muted); margin-top: 4px; }
+.skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; width: 100%; }
+.skill-tile { min-height: 80px; padding: 6px 4px; border: 1px solid var(--color-neutral-700); border-radius: 6px; background: var(--color-neutral-900); color: var(--color-neutral-200); }
+.skill-tile:hover, .skill-tile.skill-tile-selected { border-color: #7dd3fc; }
+.skill-tile .q-icon { width: 56px; height: 40px; font-size: 40px; margin-bottom: 4px; }
+.skill-tile .q-btn__content .block { font-size: 12px; line-height: 1.25; white-space: normal; }
+.skill-tile-unavailable { opacity: .45; }
+.skill-detail-icon { width: 42px; height: 30px; font-size: 30px; flex-shrink: 0; }
 .editor-toolbar-menu { min-width: 190px; }
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }
