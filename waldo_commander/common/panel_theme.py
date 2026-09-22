@@ -63,6 +63,13 @@ def inject_panel_css() -> None:
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }
 .event-detail-grid > * { overflow-wrap: anywhere; }
+/* The I/O strip is the readout's widest row on a backend that takes its line
+   count from config. Bounded so it wraps instead of widening the panel, and
+   given the header's full width on its own line once there are many lines. */
+.readout-panel { max-width: 480px; }
+.readout-header { flex-wrap: wrap; }
+.io-chips { flex-wrap: wrap; row-gap: 2px; max-width: 240px; }
+.io-chips-wide { flex: 1 0 100%; max-width: none; justify-content: flex-start; }
 @media (min-width: 641px) and (max-width: 1200px) {
   .readout-panel { width: 450px; }
   .readout-panel > .nicegui-column { width: 100%; }
