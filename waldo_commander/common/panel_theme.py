@@ -40,6 +40,8 @@ def inject_panel_css() -> None:
 .task-panel .q-table th, .task-dialog .q-table th { color: var(--color-neutral-300); text-align: left; }
 .task-panel .q-table td, .task-dialog .q-table td { text-align: left; }
 .settings-content { height: 100%; min-height: 0; width: 100%; gap: 4px; flex-wrap: nowrap; }
+.settings-group-heading { font-size: 13px; font-weight: 600; color: var(--ctk-muted); letter-spacing: .01em; }
+.settings-panel { width: 520px; max-width: calc(100vw - 80px); }
 .settings-category { flex-shrink: 0; width: 100%; }
 .settings-category .q-field__control, .settings-category .q-field__marginal { height: 32px; min-height: 32px; }
 .settings-category .q-field__native { min-height: 32px; padding: 0; }
@@ -58,11 +60,30 @@ def inject_panel_css() -> None:
 .settings-content .q-item__section--avatar { min-width: 24px; }
 .settings-content .q-separator { background: var(--color-neutral-600); }
 .diagnostics-view { width: 560px; max-width: calc(100vw - 80px); max-height: calc(100dvh - 24px); flex-wrap: nowrap; }
+/* Normal is colourless, so anything with colour in it is asking for attention.
+   The verdict is the one thing sized to be read from across the room. */
+.diag-verdict { font-size: 17px; font-weight: 600; color: var(--ctk-text); }
+.diag-ok { color: var(--ctk-text); }
+.diag-warn { color: var(--sem-warning); }
+.diag-fault { color: var(--sem-danger); }
+.diag-verdict.diag-ok { color: var(--ctk-text); }
+/* The period budget drawn as its full width, so how close the loop runs to
+   its deadline is a position rather than a number to be compared from memory. */
+.diag-bar { flex: 0 0 auto; width: 180px; height: 4px; margin: 3px 0 5px; border-radius: 2px; background: rgba(163,163,163,0.18); overflow: hidden; }
+.diag-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--color-neutral-400); transition: width .2s linear; }
+.diag-bar-fill.over { background: var(--sem-warning); }
 .diagnostics-view > .panel-body { flex-basis: auto; }
 .editor-toolbar-menu { min-width: 190px; }
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }
 .event-detail-grid > * { overflow-wrap: anywhere; }
+/* The I/O strip is the readout's widest row on a backend that takes its line
+   count from config. Bounded so it wraps instead of widening the panel, and
+   given the header's full width on its own line once there are many lines. */
+.readout-panel { max-width: 480px; }
+.readout-header { flex-wrap: wrap; }
+.io-chips { flex-wrap: wrap; row-gap: 2px; max-width: 240px; }
+.io-chips-wide { flex: 1 0 100%; max-width: none; justify-content: flex-start; }
 @media (min-width: 641px) and (max-width: 1200px) {
   .readout-panel { width: 450px; }
   .readout-panel > .nicegui-column { width: 100%; }

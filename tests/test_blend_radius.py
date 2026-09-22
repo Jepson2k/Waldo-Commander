@@ -56,7 +56,7 @@ async def test_blend_radius_setting_controls_r_in_generated_code(user: User) -> 
     assert "wait=" not in textarea.value
 
     # Raise the setting through the real settings row
-    user.find(kind=ui.tab, content="Settings").click()
+    user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
     await _set_blend_radius(user, 5)
 
