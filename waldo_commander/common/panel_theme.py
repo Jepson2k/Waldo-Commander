@@ -40,6 +40,8 @@ def inject_panel_css() -> None:
 .task-panel .q-table th, .task-dialog .q-table th { color: var(--color-neutral-300); text-align: left; }
 .task-panel .q-table td, .task-dialog .q-table td { text-align: left; }
 .settings-content { height: 100%; min-height: 0; width: 100%; gap: 4px; flex-wrap: nowrap; }
+.settings-group-heading { font-size: 13px; font-weight: 600; color: var(--ctk-muted); letter-spacing: .01em; }
+.settings-panel { width: 520px; max-width: calc(100vw - 80px); }
 .settings-category { flex-shrink: 0; width: 100%; }
 .settings-category .q-field__control, .settings-category .q-field__marginal { height: 32px; min-height: 32px; }
 .settings-category .q-field__native { min-height: 32px; padding: 0; }

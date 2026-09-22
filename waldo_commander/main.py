@@ -52,6 +52,7 @@ from waldo_commander.components.io import IoPage
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
+from waldo_commander.components.settings import SettingsContent
 from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
 from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.numba_pipelines import (
@@ -896,6 +897,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         resp_tab = ui.tab(name="response", label="", icon="article")
         resp_tab.tooltip("Log")
         resp_tab.mark("tab-log")
+        settings_tab = ui.tab(name="settings", label="", icon="tune")
+        settings_tab.tooltip("Settings")
+        settings_tab.mark("tab-settings")
         help_tab = ui.tab(name="help", label="", icon="help_outline")
         help_tab.tooltip("Help")
         help_tab.mark("tab-help")
@@ -932,6 +936,24 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                     "min-height: 200px !important; width: 100% !important; background: rgba(0, 0, 0, 0.65); border-radius: 10px;"
                 )
             )
+            ui.element("div").classes("resize-handle-top")
+            ui.element("div").classes("resize-handle-right")
+            ui.element("div").classes("resize-handle-corner")
+
+        with ui.tab_panel("settings").classes(
+            "overlay-card settings-panel resizable-panel"
+        ):
+            with ui.row().classes("w-full"):
+                ui.label("Settings").classes("text-lg font-medium")
+                ui.space()
+                ui.button(icon="close", on_click=close_bottom_panels).props(
+                    "flat round dense color=white"
+                )
+            with ui.scroll_area().classes("w-full h-full p-0"):
+                ui_state.settings_content = SettingsContent(client)
+                ui_state.settings_content.build_embedded(
+                    ai_control_section=control_panel._build_control_mode_selector
+                )
             ui.element("div").classes("resize-handle-top")
             ui.element("div").classes("resize-handle-right")
             ui.element("div").classes("resize-handle-corner")
@@ -1015,7 +1037,7 @@ def _setup_panel_persistence(refs: dict) -> None:
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_TOP_TAB
                     }
-                    bottom_valid = {"response", "help"} | {
+                    bottom_valid = {"response", "settings", "help"} | {
                         p.id
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_BOTTOM_TAB
@@ -1395,6 +1417,8 @@ def _register_handlers() -> None:
 
         if control_panel is not None:
             control_panel.cleanup()
+        if ui_state.settings_content is not None:
+            ui_state.settings_content.cleanup()
         if ui_state.gripper_page is not None:
             ui_state.gripper_page.cleanup()
         if editor_panel is not None:

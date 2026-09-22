@@ -146,7 +146,7 @@ async def test_handeye_panel_workflow(
         # The camera rides the MSG gripper's built-in mount. Select MSG
         # through the settings UI so the TCP switch and per-tool camera
         # plumbing both engage.
-        user.find(kind=ui.tab, content="Settings").click()
+        user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         tool_select = next(iter(user.find(marker="select-tool").elements))
         assert isinstance(tool_select, ui.select)
@@ -366,7 +366,7 @@ async def test_handeye_auto_calibration(
         await user.open("/")
         await wait_for_app_ready()
 
-        user.find(kind=ui.tab, content="Settings").click()
+        user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         tool_select = next(iter(user.find(marker="select-tool").elements))
         assert isinstance(tool_select, ui.select)

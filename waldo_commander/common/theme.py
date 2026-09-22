@@ -494,6 +494,14 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "minHeight": 100,
             "group": "bottom",
         },
+        "settings": {
+            "selector": ".bottom-panels-container .settings-panel",
+            "minWidth": 420,
+            "minHeight": 320,
+            "defaultWidth": 520,
+            "defaultHeight": 560,
+            "group": "bottom",
+        },
         "gripper": {
             "selector": ".top-panels-container .gripper-panel",
             "minWidth": 378,
