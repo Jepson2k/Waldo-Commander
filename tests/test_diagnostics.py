@@ -182,3 +182,37 @@ async def test_a_condition_this_backend_reports_reaches_the_log(
         for r in caplog.get_records("call")
         if "IK: partial path" not in r.getMessage()
     ]
+
+
+@pytest.mark.integration
+async def test_the_verdict_names_what_is_wrong(user: User) -> None:
+    """A busy operator reads one line, not a column of numbers.
+
+    Every reading looked the same before: one size, one colour, and no
+    indication of the range it was supposed to sit in. So the panel now
+    answers "is anything wrong" first, and only what is outside its normal
+    range takes any colour.
+    """
+    await _open_diagnostics(user)
+    page = ui_state.diagnostics_page
+
+    await _settle(user, "diag-verdict", lambda t: t.startswith("Running"))
+    assert _text(user, "diag-estop") == "clear"
+    estop = next(iter(user.find(marker="diag-estop").elements))
+    assert "diag-fault" not in estop.classes, "a healthy reading carries no colour"
+
+    # estop == 0 is the chain broken, matching the controller wire format.
+    waldoctl.commander.status.io.estop = 0
+    page.update()
+    await asyncio.sleep(0)
+
+    assert _text(user, "diag-verdict") == "Stopped — e-stop pressed", (
+        "the headline has to say what is wrong, not just that something is"
+    )
+    assert _text(user, "diag-estop") == "pressed"
+    assert "diag-fault" in estop.classes, "and the row that caused it is the one lit"
+
+    waldoctl.commander.status.io.estop = 1
+    page.update()
+    await asyncio.sleep(0)
+    assert _text(user, "diag-verdict").startswith("Running"), "and it clears again"

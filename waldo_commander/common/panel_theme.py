@@ -60,6 +60,18 @@ def inject_panel_css() -> None:
 .settings-content .q-item__section--avatar { min-width: 24px; }
 .settings-content .q-separator { background: var(--color-neutral-600); }
 .diagnostics-view { width: 560px; max-width: calc(100vw - 80px); max-height: calc(100dvh - 24px); flex-wrap: nowrap; }
+/* Normal is colourless, so anything with colour in it is asking for attention.
+   The verdict is the one thing sized to be read from across the room. */
+.diag-verdict { font-size: 17px; font-weight: 600; color: var(--ctk-text); }
+.diag-ok { color: var(--ctk-text); }
+.diag-warn { color: var(--sem-warning); }
+.diag-fault { color: var(--sem-danger); }
+.diag-verdict.diag-ok { color: var(--ctk-text); }
+/* The period budget drawn as its full width, so how close the loop runs to
+   its deadline is a position rather than a number to be compared from memory. */
+.diag-bar { flex: 0 0 auto; width: 180px; height: 4px; margin: 3px 0 5px; border-radius: 2px; background: rgba(163,163,163,0.18); overflow: hidden; }
+.diag-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--color-neutral-400); transition: width .2s linear; }
+.diag-bar-fill.over { background: var(--sem-warning); }
 .diagnostics-view > .panel-body { flex-basis: auto; }
 .editor-toolbar-menu { min-width: 190px; }
 .editor-toolbar-menu .q-item { min-height: 36px; }
