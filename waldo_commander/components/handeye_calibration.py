@@ -118,13 +118,12 @@ class HandEyeCalibrationPanel(Panel):
     tab_icon = "center_focus_strong"
     tab_tooltip = "Hand-eye calibration"
     order = 50
-    # Drag-resizable pane: opens at the default size, chosen size persists.
-    # The live view scales to the pane, so a high-resolution tool camera
-    # can't balloon the layout.
+    # Drag-resizable pane: as tall as its content until dragged, and the
+    # chosen size persists. The live view scales to the pane, so a
+    # high-resolution tool camera can't balloon the layout.
     min_width = 440
     min_height = 320
     default_width = 600
-    default_height = 640
     resizable = True
 
     def __init__(self) -> None:
