@@ -63,19 +63,9 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         )
 
     def settings():
-        def select():
-            client = Client.instances[ui_state.active_client_id]
-            with client:
-                from nicegui import ui
-
-                tab = next(
-                    e
-                    for e in client.elements.values()
-                    if isinstance(e, ui.tab) and e._props.get("label") == "Settings"
-                )
-                tab.parent_slot.parent.set_value(tab._props["name"])
-
-        run_in_app(select)
+        # Settings is a tab in the bottom-left group, opened by a click like
+        # any other panel there.
+        click("tab-settings")
 
     results = []
     for width, height, zoom in [
@@ -95,18 +85,21 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         )
         settings()
         WebDriverWait(screen.selenium, 10).until(
-            lambda _: element("settings-category").is_displayed()
+            lambda _: element("settings-backend-select").is_displayed()
         )
+        # The grouped panel scrolls vertically by design; what must hold is
+        # that nothing runs off its right edge or below the viewport.
         dimensions = screen.selenium.execute_script("""
-            const e = document.querySelector('.settings-content');
-            const b = e.querySelector('.panel-body');
-            return {width:e.clientWidth, content:e.scrollWidth, height:b.clientHeight, body:b.scrollHeight};
+            const panel = document.querySelector('.settings-panel');
+            const e = panel.querySelector('.q-scrollarea__container');
+            const r = panel.getBoundingClientRect();
+            return {width:e.clientWidth, content:e.scrollWidth, bottom:r.bottom, viewport:innerHeight};
         """)
         screen.selenium.save_screenshot(
             str(tmp_path / f"{backend}-settings-{width}-{height}-{zoom}.png")
         )
         assert dimensions["content"] <= dimensions["width"] + 1, dimensions
-        assert dimensions["body"] <= dimensions["height"] + 1, dimensions
+        assert dimensions["bottom"] <= dimensions["viewport"] + 1, dimensions
         assert run_in_app(lambda: marked("settings-backend-select").value) == backend
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(
@@ -120,6 +113,11 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         )
 
         click("tab-skills")
+        # The grid is the panel's first view; a tile opens the form the
+        # Run button belongs to.
+        if not element("skill-tile-waldo.retract").is_displayed():
+            click("skill-back")
+        click("skill-tile-waldo.retract")
         WebDriverWait(screen.selenium, 10).until(
             lambda _: element("skill-run").is_displayed()
         )

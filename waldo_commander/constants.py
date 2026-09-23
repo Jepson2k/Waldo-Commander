@@ -138,7 +138,7 @@ CHART_PUSH_INTERVAL_S: float = 0.1
 # component re-executes it under screen tests (main runs via runpy there) and
 # re-registers "/" with a handler whose panel globals were never initialized.
 RESERVED_TAB_IDS = frozenset(
-    {"program", "io", "gripper", "diagnostics", "response", "log", "help"}
+    {"program", "io", "gripper", "diagnostics", "response", "log", "settings", "help"}
 )
 
 config = _Config()

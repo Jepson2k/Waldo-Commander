@@ -192,6 +192,25 @@ class HandEyeSample:
     T_base_gripper: np.ndarray  # (4, 4) float64, translation mm; TCP pose from status
     detection: Detection
     timestamp: float
+    thumbnail: bytes | None = None  # small JPEG of the captured frame
+
+
+THUMBNAIL_WIDTH_PX = 160
+
+
+def thumbnail_jpeg(frame: np.ndarray) -> bytes:
+    """A view's picture at a size a panel can hold fifteen of."""
+    height, width = frame.shape[:2]
+    scale = THUMBNAIL_WIDTH_PX / max(width, 1)
+    small = cv2.resize(
+        frame,
+        (THUMBNAIL_WIDTH_PX, max(int(height * scale), 1)),
+        interpolation=cv2.INTER_AREA,
+    )
+    ok, encoded = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+    if not ok:
+        raise CalibrationError("Could not encode the view thumbnail")
+    return encoded.tobytes()
 
 
 @dataclass
