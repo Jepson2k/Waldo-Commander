@@ -43,6 +43,7 @@ class CaptureReview:
         self._on_keep: Callable[[], None] | None = None
         self._trim_task: asyncio.Task | None = None
         self._syncing = False
+        self._chart_open = False
 
     @property
     def visible(self) -> bool:
@@ -56,12 +57,22 @@ class CaptureReview:
                 ui.icon("timeline").classes("text-warning")
                 self._summary = ui.label().classes("text-sm").mark("capture-summary")
                 ui.space()
+                ui.button(icon="show_chart", on_click=self._toggle_chart).props(
+                    "flat dense round"
+                ).tooltip("Recorded joint angles").mark("capture-chart-toggle")
                 ui.button("Keep", on_click=self._keep).props("flat dense no-caps").mark(
                     "capture-keep"
                 )
                 ui.button("Undo", on_click=self._undo).props("flat dense no-caps").mark(
                     "capture-undo"
                 )
+            self._trim = (
+                ui.range(min=0.0, max=1.0, step=0.05, value={"min": 0.0, "max": 1.0})
+                .props("dense label")
+                .classes("w-full px-2")
+                .mark("capture-trim")
+            )
+            self._trim.on_value_change(self._trim_changed)
             self._chart = (
                 ui.echart(
                     chart_options(
@@ -73,13 +84,9 @@ class CaptureReview:
                 .style("height: 150px")
                 .mark("capture-chart")
             )
-            self._trim = (
-                ui.range(min=0.0, max=1.0, step=0.05, value={"min": 0.0, "max": 1.0})
-                .props("dense label")
-                .classes("w-full px-2")
-                .mark("capture-trim")
-            )
-            self._trim.on_value_change(self._trim_changed)
+            # The editor is short by default; the chart is there when asked
+            # for, and the summary and trim range are what the strip costs.
+            self._chart.set_visibility(self._chart_open)
         self._container.set_visibility(False)
 
     def show(
@@ -168,6 +175,11 @@ class CaptureReview:
         if self._trim is None or self._on_trim is None or not self._trim.value:
             return
         await self._on_trim(self._trim.value["min"], self._trim.value["max"])
+
+    def _toggle_chart(self) -> None:
+        self._chart_open = not self._chart_open
+        if self._chart is not None:
+            self._chart.set_visibility(self._chart_open)
 
     def hide(self) -> None:
         if self._trim_task is not None and not self._trim_task.done():
