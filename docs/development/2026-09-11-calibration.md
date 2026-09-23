@@ -2,8 +2,9 @@
 
 The calibration implementation lives in `par6/python/par6/calibration`, with
 native gravity model/configuration bindings and an opt-in native telemetry
-recorder. `examples/calibration/run.py` runs the protocols against Commander's
-managed runtime. See `par6/docs/calibration.md` for operation and acceptance rules.
+recorder. The former `examples/calibration/run.py` ran the protocols against Commander's
+managed runtime; that entry point has since been removed in favor of Rust
+`par6-selfcal`. See `par6/docs/calibration.md` for operation and acceptance rules.
 
 ## Homing
 
