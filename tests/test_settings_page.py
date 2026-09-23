@@ -29,19 +29,20 @@ async def test_settings_tab_accessible(user: User) -> None:
     await user.open("/")
     await wait_for_app_ready()
 
-    # Settings is embedded in the control panel (bottom-left HUD)
-    # The control panel has tabs: "Joint Jog", "Cartesian Jog", "Settings"
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
-    # Verify the Settings tab panel is now showing by checking for expected content
-    # The Serial Port section should be visible
+    # Rows from the first group and the last, so the whole panel is present
+    # rather than just the part above a fold.
     await user.should_see("Serial Port")
     await user.should_see("Show Route")
-    await user.should_see("Theme")
     await user.should_see("Tool")
     await user.should_see("Select end effector tool")
+    # Grouped, most-reached-for first: the port an operator sets before
+    # anything else works leads, and the restart-scoped settings come last.
+    await user.should_see(marker="settings-group-connection")
+    await user.should_see(marker="settings-group-advanced")
 
 
 @pytest.mark.integration
@@ -55,7 +56,7 @@ async def test_serial_port_select_exists(user: User) -> None:
     await wait_for_app_ready()
 
     # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -73,7 +74,7 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
     await wait_for_app_ready()
 
     # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -99,7 +100,7 @@ async def test_workspace_envelope_mode_changes(user: User) -> None:
     await wait_for_app_ready()
 
     # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -142,7 +143,7 @@ async def test_tool_selection_changes_tool(user: User) -> None:
     await wait_for_app_ready()
 
     # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -178,7 +179,7 @@ async def test_variant_selector_appears_for_tools_with_variants(user: User) -> N
     await user.open("/")
     await wait_for_app_ready()
 
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -209,7 +210,7 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     await user.open("/")
     await wait_for_app_ready()
 
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -253,7 +254,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
     await wait_for_app_ready()
     client = ui_state.control_panel.client
 
-    user.find(kind=ui.tab, content="Settings").click()
+    user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
     tool_select = user.find(marker="select-tool")
 
@@ -306,7 +307,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         ui_state.active_client_id = None
         await user.open("/")
         await wait_for_app_ready()
-        user.find(kind=ui.tab, content="Settings").click()
+        user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         await user.should_see("TCP Offset")
         await poll_until(
@@ -322,18 +323,3 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         # would move their robot too.
         await client.set_tcp_offset(0.0, 0.0, 0.0)
         await client.select_tool("NONE")
-
-
-@pytest.mark.integration
-async def test_theme_selection_exists(user: User) -> None:
-    """Test that theme toggle exists and has expected options."""
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
-    settings_tab.click()
-    await asyncio.sleep(0)
-
-    # The theme toggle should exist
-    await user.should_see("Theme")

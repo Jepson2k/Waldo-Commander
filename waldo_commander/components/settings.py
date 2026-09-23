@@ -1,4 +1,4 @@
-"""Settings component for serial port, theme, and visualization preferences."""
+"""Settings panel: connection, tool, jogging, view, automation and advanced."""
 
 import asyncio
 import logging
@@ -67,7 +67,7 @@ def _setting_row(title: str, description: str):
 
 
 class SettingsContent:
-    """Settings content that can be embedded in the control panel."""
+    """The settings rows, grouped and built into whichever panel hosts them."""
 
     def __init__(self, client: RobotClient) -> None:
         self.client = client
@@ -96,7 +96,6 @@ class SettingsContent:
             "envelope_mode": EnvelopeMode(
                 ng_app.storage.general.get("envelope_mode", "auto")
             ),
-            "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
             "motion_profile": stored_profile,
             "jog_blend_r": jog_blend_r(),
             "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
@@ -698,16 +697,6 @@ class SettingsContent:
                 on_change=_on_motion_profile_change,
             ).classes("w-32").props("dense").mark("select-motion-profile")
 
-    def _build_theme(self, prefs: dict) -> None:
-        with _setting_row("Theme", "Application color scheme"):
-            with ui.element("span").tooltip(
-                "Light mode will be available in a future update"
-            ):
-                ui.select(
-                    options={"dark": "Dark"},
-                    value="dark",
-                ).classes("w-24").props("dense disable")
-
     def _build_backend_selector(self) -> None:
         """Backend (robot driver) selection dropdown.
 
@@ -1030,36 +1019,66 @@ class SettingsContent:
     def build_embedded(
         self, ai_control_section: Callable[[], None] | None = None
     ) -> None:
-        """Build the settings content for embedding in control panel.
+        """Build the settings content.
 
-        ``ai_control_section`` is the control panel's AI mode row, slotted in
-        with the other AI/MCP settings so hardware settings stay on top.
+        ``ai_control_section`` is the control panel's AI mode row, grouped
+        with the other autonomy settings.
+
+        Groups run from the control an operator reaches for first to the one
+        they touch least. The port leads because on some backends nothing
+        works until it is set, and it is the first place to look when the arm
+        is not answering; the restart-scoped settings are penned together at
+        the bottom so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
 
-        sections = [
-            lambda: self._build_serial_port(prefs),
-            lambda: self._build_show_route(prefs),
-            lambda: self._build_envelope(prefs),
-            lambda: self._build_physics_overlays(prefs),
-            self._build_tool_section,
-            self._build_camera,
-            lambda: self._build_motion_profile(prefs),
-            lambda: self._build_theme(prefs),
-            lambda: self._build_reference_frames(prefs),
-            lambda: self._build_jog_inversion(prefs),
-            lambda: self._build_blend_radius(prefs),
-            self._build_backend_selector,
-            self._build_plugin_panels,
-            *([ai_control_section] if ai_control_section else []),
-            self._build_mcp_server,
-            self._build_automation,
+        groups: list[tuple[str, list[Callable[[], None]]]] = [
+            ("Connection", [lambda: self._build_serial_port(prefs)]),
+            ("Tool", [self._build_tool_section, self._build_camera]),
+            (
+                "Jogging",
+                [
+                    lambda: self._build_reference_frames(prefs),
+                    lambda: self._build_jog_inversion(prefs),
+                    lambda: self._build_blend_radius(prefs),
+                    lambda: self._build_motion_profile(prefs),
+                ],
+            ),
+            (
+                "View",
+                [
+                    lambda: self._build_show_route(prefs),
+                    lambda: self._build_envelope(prefs),
+                    lambda: self._build_physics_overlays(prefs),
+                ],
+            ),
+            (
+                "Automation",
+                [
+                    self._build_automation,
+                    *([ai_control_section] if ai_control_section else []),
+                ],
+            ),
+            (
+                "Advanced — restart required",
+                [
+                    self._build_backend_selector,
+                    self._build_plugin_panels,
+                    self._build_mcp_server,
+                ],
+            ),
         ]
 
-        for i, section in enumerate(sections):
-            section()
-            if i < len(sections) - 1:
-                ui.separator().classes("my-1")
+        for gi, (heading, sections) in enumerate(groups):
+            if gi:
+                ui.separator().classes("my-2")
+            ui.label(heading).classes("settings-group-heading").mark(
+                f"settings-group-{heading.split()[0].lower()}"
+            )
+            for i, section in enumerate(sections):
+                section()
+                if i < len(sections) - 1:
+                    ui.separator().classes("my-1")
 
         self._build_plugin_settings()
 
