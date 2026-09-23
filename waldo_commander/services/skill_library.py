@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from waldoctl import Robot
+from waldoctl import PathSegment, Robot, ToolAction
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.camera import CameraCalibration
 from waldoctl.skills import Skill, discover_skills
@@ -129,3 +129,42 @@ def call_source(
     call = f"{callable_name}{'.async_call' if async_call else ''}(rbt{', ' if kwargs else ''}{kwargs})"
     prelude = "\n".join(sorted(imports))
     return f"from {module} import {parts[0]} as {alias}\n{prelude}\n{'await ' if async_call else ''}{call}"
+
+
+def plan_preview(
+    entry: SkillEntry,
+    arguments: dict[str, Any],
+    robot: Robot,
+    joints_rad: Any,
+    tool: tuple[str, str],
+) -> tuple[list[PathSegment], list[ToolAction]]:
+    """Plan the call this panel would insert, from *joints_rad*, without the robot.
+
+    The plan runs the generated source itself, so what is drawn is exactly
+    what Insert would put in the program.
+    """
+    from waldo_commander.services.path_preview_client import PathPreviewClient
+    from waldo_commander.services.path_visualizer import _tool_metadata
+    from waldo_commander.services.preview_segments import (
+        segments_from_record,
+        tool_actions_from_record,
+    )
+
+    client = PathPreviewClient(
+        dry_run_client_cls=lambda **kw: robot.create_dry_run_client(**kw),
+        initial_joints=joints_rad,
+        tool_meta_registry=_tool_metadata(robot),
+        robot=robot,
+    )
+    key, variant = tool
+    if key not in ("", "NONE") and client.select_tool(key, variant_key=variant) < 0:
+        raise RuntimeError(f"The preview refused tool {key}")
+    exec(call_source(entry, arguments), {"rbt": client})
+    client.close()
+    if client.accumulated_errors:
+        raise RuntimeError("; ".join(client.accumulated_errors))
+    record = client.plan()
+    segments = segments_from_record(record, client.notes)
+    return segments, tool_actions_from_record(
+        client.tool_action_collector, record, segments
+    )
