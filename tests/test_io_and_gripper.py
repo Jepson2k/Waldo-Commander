@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from nicegui import Client
 from nicegui.testing import User
 
 from tests.helpers.wait import wait_for_app_ready, wait_for_tool_key
@@ -100,7 +101,7 @@ async def test_the_readout_io_strip_absorbs_a_large_line_count(user: User) -> No
     io.outputs = [0] * 12
     # The status consumer calls this on the page; a face change in between
     # restarts its animation there, which needs the page.
-    with ui_state.control_panel.client:
+    with Client.instances[ui_state.active_client_id]:
         readout.update_conn_io()
 
     assert len(readout._io_chips) == 24, "a chip per line the backend reports"
