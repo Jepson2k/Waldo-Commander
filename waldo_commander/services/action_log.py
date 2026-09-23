@@ -60,7 +60,9 @@ class ActionLogService:
             executing_index > self._last_executing_index
             and action_state == ActionState.EXECUTING
         ):
-            name = action_current.removesuffix("Command")
+            # Both backends report the waldoctl method's name ("move_j",
+            # "home"), which is the entry's name as well.
+            name = action_current
             latest = entries[-1] if entries else None
             if (
                 latest

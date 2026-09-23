@@ -1234,57 +1234,61 @@ class TestToolActionTracking:
 
 
 class TestTeleportCommand:
-    """Tests for TeleportCommand as a streamable motion command."""
+    """The teleport the playback scrubber sends: an acked system command on
+    the simulator that applies the pose and the tool position in one tick."""
 
-    def test_teleport_is_streamable_motion_command(self):
-        from parol6.commands.basic_commands import TeleportCommand
-        from parol6.commands.base import MotionCommand
-
-        assert issubclass(TeleportCommand, MotionCommand)
-        assert TeleportCommand.streamable is True
-
-    def test_teleport_not_in_system_cmd_types(self):
-        from parol6.ack_policy import SYSTEM_CMD_TYPES, FIRE_AND_FORGET
+    def test_teleport_is_acked(self):
+        """Playback awaits the teleport's reply, so it must be a command the
+        controller answers rather than a fire-and-forget stream."""
+        from parol6.ack_policy import FIRE_AND_FORGET, SYSTEM_CMD_TYPES
         from parol6.protocol.wire import CmdType
 
-        assert CmdType.TELEPORT not in SYSTEM_CMD_TYPES
-        assert CmdType.TELEPORT in FIRE_AND_FORGET
+        assert CmdType.TELEPORT in SYSTEM_CMD_TYPES
+        assert CmdType.TELEPORT not in FIRE_AND_FORGET
 
-    def test_teleport_converts_degrees_to_steps(self):
+    def test_teleport_applies_the_pose_and_the_tool_in_one_tick(self):
+        """The pose lands as steps in the same tick, the arm reads referenced
+        there, and a tool position clears Gripper_data_out[3] so the
+        write-frame JIT does not re-arm the gripper ramp."""
+        import os
+        from parol6.commands.basic_commands import TeleportCommand
+        from parol6.protocol.wire import CommandCode, TeleportCmd
+        from parol6.server.state import ControllerState
+
+        state = ControllerState()
+        state.set_tool("SSG-48")
+        state.Gripper_data_out[3] = 1  # simulate in-flight gripper command
+
+        angles_deg = [90.0, -45.0, 180.0, 0.0, 60.0, 180.0]
+        cmd = TeleportCommand(TeleportCmd(angles=angles_deg, tool_positions=[0.5]))
+        with patch.dict(os.environ, {"PAROL6_FAKE_SERIAL": "1"}):
+            cmd.do_setup(state)
+            cmd.execute_step(state)
+
+        assert state.Command_out == CommandCode.TELEPORT
+        assert state.Position_out[0] != 0  # 90 deg
+        assert state.Position_out[3] == 0  # 0 deg
+        assert all(state.Homed_in[:6])
+        assert state.Gripper_data_out[3] == 0
+        assert state.tool_teleport_pos == pytest.approx(127.5)
+
+    def test_teleport_refuses_what_the_simulator_cannot_apply(self):
+        """A pose past the hard limits never reaches the wire, and a tool
+        position for a tool that is not fitted is refused in setup."""
         from parol6.commands.basic_commands import TeleportCommand
         from parol6.protocol.wire import TeleportCmd
         from parol6.server.state import ControllerState
 
-        angles_deg = [90.0, -45.0, 30.0, 0.0, 60.0, 180.0]
-        cmd = TeleportCommand(TeleportCmd(angles=angles_deg))
+        with pytest.raises(ValueError):
+            TeleportCmd(angles=[90.0, -45.0, 30.0, 0.0, 60.0, 180.0])
         state = ControllerState()
-        cmd.do_setup(state)
-
-        # Steps should be non-zero for non-zero angles
-        assert cmd._target_steps[0] != 0  # 90 deg
-        assert cmd._target_steps[3] == 0  # 0 deg
-
-    def test_teleport_clears_gripper_command_bits(self):
-        """Teleport with tool_positions must clear Gripper_data_out[3]
-        to prevent the write-frame JIT from re-arming the gripper ramp."""
-        import os
-        from parol6.commands.basic_commands import TeleportCommand
-        from parol6.protocol.wire import TeleportCmd, CommandCode
-        from parol6.server.state import ControllerState
-
-        state = ControllerState()
-        state.Gripper_data_out[3] = 1  # simulate in-flight gripper command
-
-        angles = [0.0] * 6
-        cmd = TeleportCommand(TeleportCmd(angles=angles, tool_positions=[0.5]))
-        cmd.do_setup(state)
-
-        with patch.dict(os.environ, {"PAROL6_FAKE_SERIAL": "1"}):
-            cmd.execute_step(state)
-
-        assert state.Command_out == CommandCode.TELEPORT
-        assert state.Gripper_data_out[3] == 0
-        assert state.tool_teleport_pos == pytest.approx(127.5)
+        cmd = TeleportCommand(
+            TeleportCmd(
+                angles=[90.0, -45.0, 180.0, 0.0, 60.0, 180.0], tool_positions=[0.5]
+            )
+        )
+        with pytest.raises(ValueError):
+            cmd.do_setup(state)
 
 
 # ============================================================================

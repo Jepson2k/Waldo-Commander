@@ -25,7 +25,6 @@ from waldoctl.errors import MOTN_CANCELLED, RobotError
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.testing import User
-from parol6.protocol.wire import StatusResultStruct
 from scipy.spatial.transform import Rotation
 
 from tests.helpers.charuco_render import board_center, render_board_view
@@ -124,7 +123,7 @@ async def _wait_for(condition, timeout: float = 5.0, message: str = "") -> None:
 
 async def _current_pose() -> np.ndarray:
     st = await waldoctl.commander.client.status()
-    assert isinstance(st, StatusResultStruct)
+    assert st is not None
     return np.asarray(st.pose, dtype=np.float64).reshape(4, 4)
 
 
