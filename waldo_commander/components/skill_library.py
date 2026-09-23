@@ -531,7 +531,7 @@ class SkillLibraryPanel(Panel):
                         readers[name] = CommanderCameraSource
                     elif annotation is Demonstration:
                         ui.label(
-                            "Select and save an uninterrupted span in the Demonstrations panel, then use its Insert replay call button. In Python, pass load_demonstration(path)."
+                            "Replays come from recording: press Record and move the arm by hand or from another client, and the captured motion is written into the program, replayed where it cannot be planned. In Python, pass load_demonstration(path)."
                         ).classes("text-caption")
                         insert_button.disable()
                         run_button.disable()

@@ -1798,7 +1798,9 @@ class ControlPanel:
             pose[joint_index] = tgt
             spd = _norm_speed()
 
+            motion_recorder.on_jog_start("joint", f"J{joint_index + 1}")
             await self.client.move_j(pose, speed=spd)
+            self._schedule_jog_end_wait()
         except Exception as e:
             logger.error("Go to joint angle failed: %s", e)
 
@@ -1819,7 +1821,9 @@ class ControlPanel:
             target[joint_index] = float(lo if which == "min" else hi)
             spd = _norm_speed()
 
+            motion_recorder.on_jog_start("joint", f"J{joint_index + 1}{which}")
             await self.client.move_j(target, speed=spd)
+            self._schedule_jog_end_wait()
         except Exception as e:
             logger.error("Go to joint limit failed: %s", e)
             ui.notify(f"Failed joint move: {e}", color="negative")

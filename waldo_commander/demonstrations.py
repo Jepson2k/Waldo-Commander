@@ -8,7 +8,7 @@ import math
 import os
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -29,6 +29,18 @@ from waldoctl.recordings import (
 from waldoctl.status import StatusBuffer
 
 MAX_RECORDING_BYTES = 64 * 1024 * 1024
+
+
+def recordings_dir() -> Path:
+    """Where recordings are kept: ``WALDO_RECORDING_DIR`` or the user's own."""
+    return (
+        Path(
+            os.environ.get("WALDO_RECORDING_DIR")
+            or Path.home() / ".waldo-commander" / "recordings"
+        )
+        .expanduser()
+        .resolve()
+    )
 
 
 def _sample(status: StatusBuffer) -> RecordedSample:
@@ -562,31 +574,7 @@ def _probe(
     return np.degrees(np.array(rows, dtype=float)), planned, ""
 
 
-def to_program(
-    recording: Demonstration,
-    robot: Robot,
-    *,
-    name: str = "demonstration",
-    source_path: str | Path | None = None,
-    dwell_s: float = 0.3,
-    tolerance_mm: float = 5.0,
-    tolerance_deg: float = 2.0,
-) -> Conversion:
-    """Convert an uninterrupted demonstration into an ordinary Python program.
-
-    The arm holding still separates the recording into moves: each still span
-    of at least *dwell_s* becomes a ``delay``, a gripper position it changed
-    in becomes a ``tool.set_position``, and the motion between them becomes
-    one ``move_l`` where the tool travelled in a straight line, or the joint
-    waypoints that hold its path otherwise.
-
-    Every motion span is planned in the backend's preview and compared with
-    the path it was recorded at. A span the planner cannot reproduce within
-    *tolerance_mm* and *tolerance_deg* keeps its observations instead: it
-    becomes a ``replay_demonstration`` call over that sample range, which
-    needs *source_path* — the saved recording the program will load.
-    """
-    recording.require_continuous()
+def _validated(dwell_s: float, tolerance_mm: float, tolerance_deg: float) -> None:
     for value, label in (
         (dwell_s, "Dwell"),
         (tolerance_mm, "Position tolerance"),
@@ -599,11 +587,25 @@ def to_program(
             or value <= 0
         ):
             raise ValueError(f"{label} must be a positive finite number")
-    validate_name(name)
-    samples = recording.samples
-    if len(samples) < 2:
-        raise ValueError("A conversion needs at least two observations")
 
+
+def _convert_spans(
+    recording: Demonstration,
+    robot: Robot,
+    *,
+    dwell_s: float,
+    tolerance_mm: float,
+    tolerance_deg: float,
+    replay_lines: Callable[[int, int], tuple[str, ...]] | None,
+) -> tuple[list[ConvertedSpan], float, float, float, bool]:
+    """The recording as statement groups, each motion checked in the preview.
+
+    Returns the spans, the worst position and orientation deviation, the
+    planned duration, and whether a tool position was written. A motion the
+    planner cannot reproduce becomes *replay_lines* over its sample range, or
+    a ``ValueError`` when there is nothing to replay it from.
+    """
+    samples = recording.samples
     held = _dwells(recording, dwell_s)
     spans: list[ConvertedSpan] = []
     position_error = 0.0
@@ -611,20 +613,6 @@ def to_program(
     planned_total = 0.0
     tool_position = _tool_position(samples[0])
     needs_tool = False
-
-    first = samples[0].joints_deg
-    spans.append(
-        ConvertedSpan(
-            kind="approach",
-            start=0,
-            stop=0,
-            seconds=0.0,
-            lines=(
-                "# The demonstration starts here; this approach is not part of it.",
-                f"rbt.move_j([{_numbers(first)}], speed=0.1)",
-            ),
-        )
-    )
 
     def motion(start: int, stop: int) -> None:
         nonlocal position_error, orientation_error, planned_total
@@ -675,7 +663,7 @@ def to_program(
             )
             return
         reason = "; ".join(reasons)
-        if source_path is None:
+        if replay_lines is None:
             raise ValueError(
                 f"Samples {start}–{stop} cannot be expressed as moves "
                 f"({reason}); save the recording so the program can replay them"
@@ -686,9 +674,7 @@ def to_program(
                 start=start,
                 stop=stop,
                 seconds=_seconds(recording, start, stop),
-                lines=(
-                    f"replay_demonstration(rbt, recording.select({start}, {stop + 1}))",
-                ),
+                lines=replay_lines(start, stop),
                 reason=reason,
             )
         )
@@ -742,7 +728,67 @@ def to_program(
             planned_total += seconds
         cursor = stop
     motion(cursor, len(samples) - 1)
+    return spans, position_error, orientation_error, planned_total, needs_tool
 
+
+def to_program(
+    recording: Demonstration,
+    robot: Robot,
+    *,
+    name: str = "demonstration",
+    source_path: str | Path | None = None,
+    dwell_s: float = 0.3,
+    tolerance_mm: float = 5.0,
+    tolerance_deg: float = 2.0,
+) -> Conversion:
+    """Convert an uninterrupted demonstration into an ordinary Python program.
+
+    The arm holding still separates the recording into moves: each still span
+    of at least *dwell_s* becomes a ``delay``, a gripper position it changed
+    in becomes a ``tool.set_position``, and the motion between them becomes
+    one ``move_l`` where the tool travelled in a straight line, or the joint
+    waypoints that hold its path otherwise.
+
+    Every motion span is planned in the backend's preview and compared with
+    the path it was recorded at. A span the planner cannot reproduce within
+    *tolerance_mm* and *tolerance_deg* keeps its observations instead: it
+    becomes a ``replay_demonstration`` call over that sample range, which
+    needs *source_path* — the saved recording the program will load.
+    """
+    recording.require_continuous()
+    _validated(dwell_s, tolerance_mm, tolerance_deg)
+    validate_name(name)
+    if len(recording.samples) < 2:
+        raise ValueError("A conversion needs at least two observations")
+
+    first = recording.samples[0].joints_deg
+    approach = ConvertedSpan(
+        kind="approach",
+        start=0,
+        stop=0,
+        seconds=0.0,
+        lines=(
+            "# The demonstration starts here; this approach is not part of it.",
+            f"rbt.move_j([{_numbers(first)}], speed=0.1)",
+        ),
+    )
+    spans, position_error, orientation_error, planned_total, needs_tool = (
+        _convert_spans(
+            recording,
+            robot,
+            dwell_s=dwell_s,
+            tolerance_mm=tolerance_mm,
+            tolerance_deg=tolerance_deg,
+            replay_lines=(
+                None
+                if source_path is None
+                else lambda a, b: (
+                    f"replay_demonstration(rbt, recording.select({a}, {b + 1}))",
+                )
+            ),
+        )
+    )
+    spans.insert(0, approach)
     source = _program_source(
         recording,
         spans,
@@ -751,6 +797,101 @@ def to_program(
         needs_tool=needs_tool,
     )
     compile(source, f"{name}.py", "exec")
+    return Conversion(
+        source=source,
+        spans=tuple(spans),
+        position_error_mm=position_error,
+        orientation_error_deg=orientation_error,
+        recorded_duration_s=recording.duration_s,
+        planned_duration_s=planned_total,
+    )
+
+
+def _continuous_pieces(recording: Demonstration) -> Iterator[Demonstration]:
+    """The recording split where publications went missing."""
+    boundaries = [
+        0,
+        *(gap.sample_index for gap in recording.gaps),
+        len(recording.samples),
+    ]
+    for begin, end in zip(boundaries, boundaries[1:]):
+        if end - begin >= 2:
+            yield recording.select(begin, end)
+
+
+def span_to_lines(
+    recording: Demonstration,
+    robot: Robot,
+    *,
+    program: str,
+    directory: Path,
+    dwell_s: float = 0.3,
+    tolerance_mm: float = 5.0,
+    tolerance_deg: float = 2.0,
+) -> Conversion:
+    """Motion captured while recording, as lines for the program being recorded.
+
+    The same rules as :func:`to_program`, without the program around them:
+    the lines assume ``rbt`` and the recording's tool are already in scope.
+    A piece the planner cannot reproduce is replayed from a copy of the
+    recording saved under *directory*, named after *program*; the file is
+    written only when something needs it. Missing publications split the
+    recording, and each continuous piece is converted on its own.
+    """
+    _validated(dwell_s, tolerance_mm, tolerance_deg)
+    if len(recording.samples) < 2:
+        raise ValueError("A conversion needs at least two observations")
+    saved: dict[str, Path] = {}
+
+    def replay(piece: Demonstration, offset: int):
+        def lines(a: int, b: int) -> tuple[str, ...]:
+            if "path" not in saved:
+                directory.mkdir(parents=True, exist_ok=True)
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                saved["path"] = directory / f"{program}-{stamp}.json"
+                save_demonstration(saved["path"], recording)
+            return (
+                "from waldo_commander.demonstrations import load_demonstration",
+                "from waldo_commander.skills import replay_demonstration",
+                "replay_demonstration(rbt, load_demonstration("
+                f"{str(saved['path'])!r}).select({offset + a}, {offset + b + 1}))",
+            )
+
+        return lines
+
+    spans: list[ConvertedSpan] = []
+    position_error = orientation_error = planned_total = 0.0
+    offset = 0
+    for piece in _continuous_pieces(recording):
+        offset = recording.samples.index(piece.samples[0])
+        converted, pos, ori, planned, _ = _convert_spans(
+            piece,
+            robot,
+            dwell_s=dwell_s,
+            tolerance_mm=tolerance_mm,
+            tolerance_deg=tolerance_deg,
+            replay_lines=replay(piece, offset),
+        )
+        spans.extend(
+            ConvertedSpan(
+                kind=span.kind,
+                start=span.start + offset,
+                stop=span.stop + offset,
+                seconds=span.seconds,
+                lines=span.lines,
+                waypoints=span.waypoints,
+                position_error_mm=span.position_error_mm,
+                orientation_error_deg=span.orientation_error_deg,
+                reason=span.reason,
+            )
+            for span in converted
+        )
+        position_error = max(position_error, pos)
+        orientation_error = max(orientation_error, ori)
+        planned_total += planned
+    lines = [line for span in spans for line in span.lines]
+    source = "\n".join(lines)
+    compile(source, f"{program}.py", "exec")
     return Conversion(
         source=source,
         spans=tuple(spans),

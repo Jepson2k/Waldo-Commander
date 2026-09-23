@@ -30,6 +30,7 @@ from waldo_commander.services.camera_calibration import (
     CaptureBinding,
     calibration_from_result,
 )
+from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
@@ -999,6 +1000,10 @@ class HandEyeCalibrationPanel(Panel):
         each pose, return to the start pose, and solve. Runs as a background
         task; Stop sets ``_auto_cancel`` and halts the in-flight move, and the
         run aborts if the page that started it disconnects."""
+        with motion_recorder.owned():
+            await self._auto_run_owned(commander, page_client)
+
+    async def _auto_run_owned(self, commander: Commander, page_client: Client) -> None:
         n = len(AUTO_VIEW_DELTAS_DEG)
         captured = 0
         skipped = 0
