@@ -14,6 +14,7 @@ and the solved transform is camera→MSG-TCP, saved in a named setup.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import contextlib
 from typing import ClassVar
 
@@ -38,6 +39,7 @@ from tests.helpers.wait import (
 )
 from waldo_commander.components.handeye_calibration import (
     AUTO_VIEW_DELTAS_DEG,
+    TARGET_VIEWS,
     STATIONARY_SPEED_DEG_S,
     HandEyeCalibrationPanel,
 )
@@ -155,7 +157,7 @@ async def test_handeye_panel_workflow(
         # The camera rides the MSG gripper's built-in mount. Select MSG
         # through the settings UI so the TCP switch and per-tool camera
         # plumbing both engage.
-        user.find(kind=ui.tab, content="Settings").click()
+        user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         tool_select = next(iter(user.find(marker="select-tool").elements))
         assert isinstance(tool_select, ui.select)
@@ -287,14 +289,53 @@ async def test_handeye_panel_workflow(
                 message=f"capture {i + 1} did not register",
             )
         n_views = len(VIEW_DELTAS_DEG)
-        await user.should_see(f"{n_views} samples")
-        # Enough samples to solve — the solve stage is revealed.
+        await user.should_see(f"{n_views} of {TARGET_VIEWS} views")
+        # Enough views to solve: the Solve step opens when asked for.
+        user.find(marker="handeye-step-3").click()
+        await asyncio.sleep(0)
         assert panel._solve_section.visible
 
         user.find(marker="handeye-solve").click()
         await _wait_for(lambda: panel._result is not None, timeout=30.0)
         await user.should_see(
             "Camera → WRF transform" if mount == "fixed" else "Camera → TCP transform"
+        )
+
+        # A view the fit cannot explain is pointed out after the solve, so
+        # the operator knows which one to recapture rather than which number
+        # got worse.
+        first_result = panel._result
+        bad = panel._samples[2]
+        noise = np.random.default_rng(0).uniform(
+            -15.0, 15.0, bad.detection.corners.shape
+        )
+        panel._samples[2] = replace(
+            bad,
+            detection=replace(
+                bad.detection,
+                corners=(bad.detection.corners + noise).astype(np.float32),
+            ),
+        )
+        user.find(marker="handeye-solve").click()
+        await _wait_for(lambda: panel._result is not first_result, timeout=30.0)
+        flagged = panel._view_flags()
+        assert flagged.get(2, ("", ""))[0] == "error", flagged
+        # The flagged view is on the Views step, where it can be deleted.
+        user.find(marker="handeye-step-2").click()
+        await asyncio.sleep(0)
+        tile = next(iter(user.find(marker="handeye-sample-del-2").elements)).parent_slot
+        assert "handeye-view-error" in tile.parent.classes
+        user.find(marker="handeye-sample-del-2").click()
+        await _wait_for(lambda: len(panel._samples) == n_views - 1)
+        n_views -= 1
+        assert "error" not in {kind for kind, _ in panel._view_flags().values()}
+        user.find(marker="handeye-step-3").click()
+        await asyncio.sleep(0)
+        user.find(marker="handeye-solve").click()
+        await _wait_for(
+            lambda: panel._result is not None
+            and len(panel._result.intrinsics.per_view_errors) == n_views,
+            timeout=30.0,
         )
 
         result = panel._result
@@ -318,6 +359,8 @@ async def test_handeye_panel_workflow(
         assert trans_err < 30.0, f"translation off by {trans_err:.1f} mm"
         assert rot_err < 3.0, f"rotation off by {rot_err:.2f} deg"
 
+        user.find(marker="handeye-step-4").click()
+        await asyncio.sleep(0)
         user.find(marker="handeye-save").click()
         await user.should_see("Saved bench/camera", retries=50)
         saved = SetupStore(tmp_path).load("bench")
@@ -471,7 +514,7 @@ async def test_handeye_auto_calibration(
         await user.open("/")
         await wait_for_app_ready()
 
-        user.find(kind=ui.tab, content="Settings").click()
+        user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         tool_select = next(iter(user.find(marker="select-tool").elements))
         assert isinstance(tool_select, ui.select)
@@ -588,6 +631,9 @@ async def test_handeye_auto_calibration(
         # previous solve is left alone, and the progress line clears.
         n_before = len(panel._samples)
         await wait_board_detected()
+        # The run left the panel on its solve; the next one starts from Views.
+        user.find(marker="handeye-step-2").click()
+        await asyncio.sleep(0)
         user.find(marker="handeye-auto").click()
         await user.should_see(marker="handeye-auto-confirm")
         user.find(marker="handeye-auto-confirm").click()

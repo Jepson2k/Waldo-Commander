@@ -27,6 +27,7 @@ from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
+    wait_until,
 )
 from waldo_commander.services.path_preview_client import PathPreviewClient
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
@@ -150,9 +151,19 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
     original = waldoctl.commander.programs.active
     assert original is not None
     user.find(marker="tab-skills").click()
-    element("skill-choice").set_value("waldo.approach")
+    user.find(marker="skill-tile-waldo.approach").click()
     await asyncio.sleep(0)
+    # A clearance far outside the workspace is refused by the planner, and the
+    # panel says so before the call is inserted or run, rather than drawing
+    # nothing and leaving the refusal for the robot to deliver.
+    element("skill-arg-clearance_mm").set_value(5000)
+    await user.should_see(content="Cannot plan this from the current pose", retries=100)
     element("skill-arg-clearance_mm").set_value(2)
+    # The configured call is drawn in the scene before it is inserted anywhere.
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    assert await wait_until(lambda: bool(scene._skill_preview_objects), timeout_s=10)
+    await user.should_not_see(content="Cannot plan this from the current pose")
     user.find(marker="skill-insert").click()
     await user.should_see(content="Inserted Python skill call")
     ast.parse(original.source)
@@ -194,7 +205,11 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
     )
     motion_recorder.toggle_recording()
 
-    element("skill-choice").set_value("waldo.retract")
+    element("skill-arg-clearance_mm").set_value(3)
+    assert await wait_until(lambda: bool(scene._skill_preview_objects), timeout_s=10)
+    user.find(marker="skill-back").click()
+    assert not scene._skill_preview_objects, "leaving a skill takes its path away"
+    user.find(marker="skill-tile-waldo.retract").click()
     await asyncio.sleep(0)
     element("skill-arg-distance_mm").set_value(2)
     motion_recorder.toggle_recording()
@@ -304,7 +319,8 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
     assert opened is not None and closed is not None
     assert opened[2] != closed[2], "gripper skills must actuate the simulated valve"
     user.find(marker="tab-skills").click()
-    element("skill-choice").set_value("waldo.gripper_open")
+    user.find(marker="skill-back").click()
+    user.find(marker="skill-tile-waldo.gripper_open").click()
     await asyncio.sleep(0)
     previous = waldoctl.commander.programs.active
     user.find(marker="skill-run").click()

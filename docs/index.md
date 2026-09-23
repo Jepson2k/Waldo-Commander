@@ -39,7 +39,7 @@ Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[/]** to adjust
 
 ### Connecting Your Robot
 
-In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
+Open the **Settings** tab in the bottom-left tab bar and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
 
 - <span style="color: #4caf50">&#9632;</span> Connected to robot hardware
 - <span style="color: #f44336">&#9632;</span> Robot mode but disconnected
@@ -51,7 +51,7 @@ In the control panel, switch to the **Settings** tab and select your hardware co
 
 ### Programming, Recording, and Path Visualization
 
-Write robot programs in Python using the built-in editor with auto-complete for all robot commands. Or jog the robot into position and let the recorder generate `move_j` / `move_l` calls for you — I/O and tool actions are captured too. Right-click in the 3D view to place targets, press **T** to add one at the current pose, or drag existing targets with the gizmo to reposition them.
+Write robot programs in Python using the built-in editor with auto-complete for all robot commands. Or jog the robot into position and let the recorder generate `move_j` / `move_l` calls for you — I/O and tool actions are captured too, and so is motion you guide by hand or send from another client; see [Recording](guides/recording.md). Right-click in the 3D view to place targets, press **T** to add one at the current pose, or drag existing targets with the gizmo to reposition them.
 
 Run programs against the simulator to preview the motion path in 3D. The path traces the TCP position through each move, color-coded by reachability. Execute on hardware when you're ready.
 
@@ -71,9 +71,9 @@ Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, sli
 
 An MJPEG camera stream can be displayed in the gripper panel — useful for monitoring pick-and-place or running ML inference on the end-effector view. On Linux, frames pass straight from the kernel to the browser via v4l2 with zero re-encoding. Virtual camera devices work too — pipe a CV pipeline through `pyvirtualcam` and display the annotated feed.
 
-### Hand-Eye Calibration
+### Camera calibration
 
-For a camera mounted on the tool, the **Hand-Eye Calibration** tab solves the camera→TCP transform (eye-in-hand) so camera observations can be mapped into robot coordinates. Download the generated ChArUco board, print it at 100% scale, and fix it in the workspace — tilted roughly 30-45° toward the camera rather than square-on, which conditions the solve much better. Then jog the robot so the camera sees the board from 10–15 poses with varied wrist orientation, capturing a sample at each; detected corners are overlaid on the live feed and a capture is only accepted while the board is detected and the robot is stationary. Solving estimates the camera intrinsics from the same captures and runs `cv2.calibrateHandEye`, reporting reprojection error, AX=XB residuals, and target spread. Saved calibrations are stored per tool and can be visualized as a camera frustum in the 3D scene.
+The **Camera calibration** tab solves where a camera sits, on the tool (camera→TCP) or fixed in the workspace (camera→WRF), so camera observations can be mapped into robot coordinates. It is a four-step procedure and the panel shows one step at a time: **Board** (choose the placement, download the ChArUco board, print it at 100% scale and fix it, tilted roughly 30–45° toward the camera rather than square-on), **Views** (capture the board from 15 poses with varied wrist orientation, by jogging or with **Auto-capture**; the live view shows the detected corners, a capture is accepted only while the board is seen and the robot is still, and each captured view appears as a thumbnail, flagged when it nearly repeats an earlier orientation), **Solve** (estimates the intrinsics from the same views and runs `cv2.calibrateHandEye`, reporting a verdict with reprojection error and target spread, then the transform and residuals; views the fit does not explain are flagged), and **Save** (writes the calibration into a named setup, from where programs read it).
 
 ---
 
@@ -114,7 +114,7 @@ waldo-commander [options]
 
 ### Settings Panel
 
-The **Settings** tab in the control panel provides:
+The **Settings** tab in the bottom-left tab bar provides:
 
 - **Hardware connection** — auto-detects available ports, or enter a path manually. Refreshes every 10 seconds. Persisted in browser local storage.
 - **Theme** — currently dark only. Light mode is planned for a future update.

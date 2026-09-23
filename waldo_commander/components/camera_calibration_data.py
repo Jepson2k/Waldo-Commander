@@ -21,13 +21,13 @@ class CameraCalibrationData:
         self,
         commander: Commander,
         measurement: Callable[[SetupSnapshot, str], Awaitable[CameraCalibration]],
+        on_save: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.commander = commander
         self.measurement = measurement
         self.store = SetupStore()
-        with ui.expansion("Saved camera data", icon="save").classes(
-            "w-full"
-        ) as self.container:
+        self.save_button: ui.button | None = None
+        with ui.column().classes("w-full gap-2") as self.container:
             with ui.row().classes("items-center w-full"):
                 self.setup_name = (
                     ui.select(
@@ -53,13 +53,20 @@ class CameraCalibrationData:
                     .classes("w-full")
                     .mark("camera-reference")
                 )
-            ui.label("Save keeps the result in this setup.").classes("text-caption")
-            with ui.row():
-                ui.button("Load / check", on_click=self.load).props(
-                    "dense outline"
-                ).mark("camera-load")
+            ui.label("Saved into this setup, where programs read it.").classes(
+                "text-caption"
+            )
+            with ui.row().classes("items-center gap-2"):
+                if on_save is not None:
+                    self.save_button = ui.button(
+                        "Save calibration", icon="save", on_click=on_save
+                    ).mark("handeye-save")
+                    self.save_button.set_enabled(False)
+                ui.button("Load / check", on_click=self.load).props("dense flat").mark(
+                    "camera-load"
+                )
                 ui.button("Export snapshot", on_click=self.export).props(
-                    "dense outline"
+                    "dense flat"
                 ).mark("camera-export")
             self.message = (
                 ui.label().classes("text-caption").mark("camera-data-message")
@@ -83,22 +90,22 @@ class CameraCalibrationData:
 
     def describe(self, calibration: CameraCalibration) -> str:
         width, height = calibration.intrinsics.image_size
-        return f"{calibration.mount} camera · {width}×{height} · {calibration.quality.sample_count} views · RMS {calibration.quality.reproj_rms_px:.2f} px · {calibration.calibrated_at}"
+        return f"{calibration.mount} camera, {width}×{height}, {calibration.quality.sample_count} views, {calibration.quality.reproj_rms_px:.2f} px, {calibration.calibrated_at}"
 
-    async def save(self) -> None:
+    async def save(self) -> bool:
         try:
             setup = self.snapshot()
             calibration = await self.measurement(setup, self.reference.value)
             self.store.save(
                 self.setup_name.value, setup.with_camera(self.name.value, calibration)
             )
-            self.container.set_value(True)
             self.message.set_text(
                 f"Saved {self.setup_name.value}/{self.name.value}: {self.describe(calibration)}"
             )
+            return True
         except (ValueError, OSError, TimeoutError, CameraUnavailable) as error:
             self.message.set_text(str(error))
-            self.container.set_value(True)
+            return False
 
     async def load(self) -> None:
         try:
