@@ -98,7 +98,10 @@ async def test_the_readout_io_strip_absorbs_a_large_line_count(user: User) -> No
     io = _wctl.commander.status.io
     io.inputs = [0] * 12
     io.outputs = [0] * 12
-    readout.update_conn_io()
+    # The status consumer calls this on the page; a face change in between
+    # restarts its animation there, which needs the page.
+    with ui_state.control_panel.client:
+        readout.update_conn_io()
 
     assert len(readout._io_chips) == 24, "a chip per line the backend reports"
     assert readout._io_chips[0].text == "I1", "and terser labels once there are many"
