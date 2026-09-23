@@ -95,7 +95,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         )
         settings()
         WebDriverWait(screen.selenium, 10).until(
-            lambda _: element("settings-category").is_displayed()
+            lambda _: element("settings-backend-select").is_displayed()
         )
         dimensions = screen.selenium.execute_script("""
             const e = document.querySelector('.settings-content');
@@ -120,6 +120,11 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         )
 
         click("tab-skills")
+        # The grid is the panel's first view; a tile opens the form the
+        # Run button belongs to.
+        if not element("skill-tile-waldo.retract").is_displayed():
+            click("skill-back")
+        click("skill-tile-waldo.retract")
         WebDriverWait(screen.selenium, 10).until(
             lambda _: element("skill-run").is_displayed()
         )
