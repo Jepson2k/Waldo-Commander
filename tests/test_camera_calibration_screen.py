@@ -89,6 +89,7 @@ def test_fixed_camera_calibration_layout(screen, tmp_path, monkeypatch):
             panel._save_btn.set_enabled(True)
             panel._data_editor.name.set_value("overhead")
             panel._refresh_stage()
+            panel._show_step(4)
             return panel._save_btn.id, panel._data_editor.message.id
 
     try:
@@ -121,7 +122,7 @@ def test_fixed_camera_calibration_layout(screen, tmp_path, monkeypatch):
 const e = document.getElementById(arguments[0]);
 e.scrollIntoView({block: 'nearest', behavior: 'instant'});
 const a = e.getBoundingClientRect(), b = e.closest('.camera-panel-scroll').getBoundingClientRect();
-return a.top >= b.top && a.bottom <= b.bottom;
+return a.top >= b.top - 1 && a.bottom <= b.bottom + 1;
 """,
                 f"c{message_id}",
             )

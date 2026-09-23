@@ -317,6 +317,7 @@ class UiState:
     io_page: Any = None
     gripper_page: Any = None
     diagnostics_page: Any = None
+    settings_content: Any = None
     # Kept so the editor addresses its tab directly instead of hunting the
     # DOM for a matching icon glyph.
     _program_tab: Any = None
