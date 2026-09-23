@@ -29,7 +29,9 @@ def inject_panel_css() -> None:
 .task-dialog .q-expansion-item > .q-expansion-item__container > .q-item {
   min-height: 36px; padding: 4px 8px; background: transparent;
 }
-.plugin-panel-content { height: 100%; min-height: 0; min-width: 0; overflow: auto; overflow-x: hidden; }
+/* The tab panel is a flex column that starts its children, so without a
+   width a plugin's content shrinks to its widest line. */
+.plugin-panel-content { width: 100%; height: 100%; min-height: 0; min-width: 0; overflow: auto; overflow-x: hidden; }
 .panel-body { flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; overflow-y: auto; overflow-x: hidden; }
 .panel-heading { font-size: 16px; font-weight: 600; line-height: 24px; }
 .panel-actions { flex-shrink: 0; width: 100%; align-items: center; gap: 8px; padding-top: 8px; }

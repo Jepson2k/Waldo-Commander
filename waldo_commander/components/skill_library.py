@@ -393,9 +393,9 @@ class SkillLibraryPanel(Panel):
                         "panel-note"
                     )
                 else:
-                    ui.label(
-                        "Point at a skill to see its motion; click to set it up."
-                    ).classes("panel-note")
+                    ui.label("Point at a skill to see its motion.").classes(
+                        "panel-note"
+                    )
                 for group, keys in _tile_groups(entries):
                     ui.label(group).classes("skill-group-heading")
                     with ui.element("div").classes("skill-grid"):
