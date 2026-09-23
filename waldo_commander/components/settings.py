@@ -1,4 +1,4 @@
-"""Settings component for serial port, theme, and visualization preferences."""
+"""Settings panel: connection, tool, jogging, view, automation and advanced."""
 
 import asyncio
 import logging
@@ -106,7 +106,7 @@ _settings_views: weakref.WeakSet["SettingsContent"] = weakref.WeakSet()
 
 
 class SettingsContent:
-    """Settings content that can be embedded in the control panel."""
+    """The settings rows, grouped and built into whichever panel hosts them."""
 
     def __init__(self, client: RobotClient) -> None:
         self.client = client
@@ -138,7 +138,6 @@ class SettingsContent:
             "envelope_mode": EnvelopeMode(
                 ng_app.storage.general.get("envelope_mode", "auto")
             ),
-            "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
             "motion_profile": stored_profile,
             "jog_blend_r": jog_blend_r(),
             "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
@@ -562,6 +561,16 @@ class SettingsContent:
 
         waldoctl.commander.settings.view.paths_visible = prefs["show_route"]
 
+    def _build_physics_overlays_section(self) -> None:
+        with ui.expansion("Physics overlays").classes("w-full"):
+            if not ui_state.active_robot.has_physics_simulation:
+                ui.label("Unavailable on this backend.").classes("panel-note")
+            self._build_physics_overlays(self._load_preferences())
+
+    def _build_camera_section(self) -> None:
+        with ui.expansion("Camera").classes("w-full"):
+            self._build_camera()
+
     def _build_physics_overlays(self, prefs: dict) -> None:
         """What the simulated run measured, drawn over the scene.
 
@@ -861,16 +870,6 @@ class SettingsContent:
                 value=prefs["motion_profile"],
                 on_change=_on_motion_profile_change,
             ).classes("w-32").props("dense").mark("select-motion-profile")
-
-    def _build_theme(self, prefs: dict) -> None:
-        with _setting_row("Theme", "Application color scheme"):
-            with ui.element("span").tooltip(
-                "Light mode will be available in a future update"
-            ):
-                ui.select(
-                    options={"dark": "Dark"},
-                    value="dark",
-                ).classes("w-24").props("dense disable")
 
     def _build_backend_selector(self) -> None:
         """Backend (robot driver) selection dropdown.
@@ -1204,96 +1203,69 @@ class SettingsContent:
     def build_embedded(
         self, ai_control_section: Callable[[], None] | None = None
     ) -> None:
-        """Build the settings content for embedding in control panel.
+        """Build the settings content.
 
-        ``ai_control_section`` is the control panel's AI mode row, slotted in
-        with the other AI/MCP settings so hardware settings stay on top.
+        ``ai_control_section`` is the control panel's AI mode row, grouped
+        with the other autonomy settings.
+
+        Groups run from the control an operator reaches for first to the one
+        they touch least. The port leads because on some backends nothing
+        works until it is set, and it is the first place to look when the arm
+        is not answering; the restart-scoped settings are penned together at
+        the bottom so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
 
-        with ui.column().classes("settings-content"):
-            category = (
-                ui.select(
-                    ["Robot", "Jog", "View", "Panels", "AI & Automation"], value="Robot"
-                )
-                .props('dense outlined aria-label="Settings category"')
-                .classes("settings-category")
-                .mark("settings-category")
+        groups: list[tuple[str, list[Callable[[], None]]]] = []
+        if ui_state.active_robot.name.lower() == "parol6":
+            groups.append(("Connection", [lambda: self._build_serial_port(prefs)]))
+        groups += [
+            ("Tool", [self._build_tool_section, self._build_camera_section]),
+            (
+                "Jogging",
+                [
+                    lambda: self._build_reference_frames(prefs),
+                    lambda: self._build_jog_inversion(prefs),
+                    lambda: self._build_blend_radius(prefs),
+                    lambda: self._build_motion_profile(prefs),
+                ],
+            ),
+            (
+                "View",
+                [
+                    lambda: self._build_show_route(prefs),
+                    lambda: self._build_envelope(prefs),
+                    self._build_physics_overlays_section,
+                ],
+            ),
+            (
+                "Automation",
+                [
+                    self._build_automation,
+                    *([ai_control_section] if ai_control_section else []),
+                ],
+            ),
+            (
+                "Advanced — restart required",
+                [
+                    self._build_backend_selector,
+                    self._build_plugin_panels,
+                    self._build_mcp_server,
+                ],
+            ),
+        ]
+
+        for gi, (heading, sections) in enumerate(groups):
+            if gi:
+                ui.separator().classes("my-2")
+            ui.label(heading).classes("settings-group-heading").mark(
+                f"settings-group-{heading.split()[0].lower()}"
             )
-            with ui.column().classes("panel-body gap-1"):
-                with (
-                    ui.column()
-                    .classes("settings-group")
-                    .bind_visibility_from(category, "value", value="Robot")
-                ):
-                    self._build_backend_selector()
-                    if ui_state.active_robot.name.lower() == "parol6":
-                        self._build_serial_port(prefs)
-                    self._build_tool_section()
-                    with ui.expansion("Camera", icon="videocam").classes("w-full"):
-                        self._build_camera()
-                with (
-                    ui.column()
-                    .classes("settings-group")
-                    .bind_visibility_from(category, "value", value="Jog")
-                ):
-                    self._build_reference_frames(prefs)
-                    self._build_motion_profile(prefs)
-                    with (
-                        ui.expansion("Advanced", icon="tune")
-                        .classes("w-full")
-                        .mark("settings-jog-advanced")
-                    ):
-                        self._build_jog_inversion(prefs)
-                        self._build_blend_radius(prefs)
-                with (
-                    ui.column()
-                    .classes("settings-group")
-                    .bind_visibility_from(category, "value", value="View")
-                ):
-                    self._build_show_route(prefs)
-                    self._build_envelope(prefs)
-                    with ui.expansion("Physics overlays", icon="layers").classes(
-                        "w-full"
-                    ):
-                        if not ui_state.active_robot.has_physics_simulation:
-                            ui.label("Unavailable on this backend.").classes(
-                                "panel-note"
-                            )
-                        self._build_physics_overlays(prefs)
-                    with (
-                        ui.expansion("Appearance", icon="palette")
-                        .classes("w-full")
-                        .mark("settings-appearance")
-                    ):
-                        self._build_theme(prefs)
-                with (
-                    ui.column()
-                    .classes("settings-group")
-                    .bind_visibility_from(category, "value", value="Panels")
-                ):
-                    ui.label("Panel changes apply after restart.").classes("panel-note")
-                    self._build_plugin_panels()
-                    self._build_plugin_settings()
-                with (
-                    ui.column()
-                    .classes("settings-group")
-                    .bind_visibility_from(category, "value", value="AI & Automation")
-                ):
-                    if ai_control_section:
-                        ai_control_section()
-                    with ui.expansion("MCP server", icon="lan").classes("w-full"):
-                        ui.label("Connection changes apply after restart.").classes(
-                            "panel-note"
-                        )
-                        self._build_mcp_server()
-                    with (
-                        ui.expansion(
-                            "Hardware automation", icon="settings_input_component"
-                        )
-                        .classes("w-full")
-                        .mark("settings-automation")
-                    ):
-                        self._build_automation()
+            for i, section in enumerate(sections):
+                section()
+                if i < len(sections) - 1:
+                    ui.separator().classes("my-1")
+
+        self._build_plugin_settings()
 
         simulation_state.notify_changed()

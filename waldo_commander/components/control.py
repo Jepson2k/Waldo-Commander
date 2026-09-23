@@ -17,7 +17,7 @@ from waldoctl.types import Axis
 
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.settings import SettingsContent, _setting_row
+from waldo_commander.components.settings import _setting_row
 from waldo_commander.constants import (
     CLICK_HOLD_THRESHOLD_S,
     DEFAULT_CAMERA,
@@ -657,7 +657,6 @@ class ControlPanel:
         self._cart_click_hold: _ClickHoldHandler | None = None
 
         # Settings content for cleanup
-        self._settings_content: "SettingsContent | None" = None
 
         # Tool quick-actions (initialized in build())
         self.tool_actions: _ToolQuickActions | None = None
@@ -2101,11 +2100,10 @@ class ControlPanel:
             self.estop.show(is_physical=False)
 
     def render_jog_content(self) -> None:
-        """Render jog controls (tabs + grids) and settings."""
+        """Render the jog controls."""
         with ui.tabs().props("dense").classes("cp-jog-tabs") as jog_mode_tabs:
             joint_tab = ui.tab("Joint Jog").mark("tab-joint")
             cart_tab = ui.tab("Cartesian Jog").mark("tab-cartesian")
-            settings_tab = ui.tab("Settings").mark("tab-settings")
         jog_mode_tabs.value = joint_tab
         self._jog_mode_tabs = jog_mode_tabs
 
@@ -2425,13 +2423,6 @@ class ControlPanel:
                 # Initialize axis->element mapping and ensure visuals reflect current assignment
                 self._refresh_cartesian_icons()
 
-            # Settings panel
-            with ui.tab_panel(settings_tab).classes("gap-0 p-0 task-panel"):
-                self._settings_content = SettingsContent(self.client)
-                self._settings_content.build_embedded(
-                    ai_control_section=self._build_control_mode_selector
-                )
-
     _PREF_TARGETS = {
         "jog_speed": ("jog", "speed"),
         "jog_accel": ("jog", "accel"),
@@ -2525,7 +2516,7 @@ class ControlPanel:
         self._set_rating_step(ui_attr, step)
 
     def build(self, anchor: str = "bl") -> None:
-        """Render the bottom-left control panel (overlay-bl).
+        """Render the control panel.
 
         Args:
             anchor: Position anchor for the panel (e.g., "bl" for bottom-left)
@@ -2766,8 +2757,6 @@ class ControlPanel:
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""
-        if self._settings_content is not None:
-            self._settings_content.cleanup()
         if self._joint_click_hold:
             self._joint_click_hold.cleanup()
         if self._cart_click_hold:
