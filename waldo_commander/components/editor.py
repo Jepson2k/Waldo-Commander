@@ -10,6 +10,7 @@ from nicegui import Client, context, ui
 from waldoctl import EditId, Program, ProgramTarget
 
 from waldo_commander.common.theme import get_theme
+from waldo_commander.components.capture_review import capture_review
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.file_operations import FileOperationsMixin
 from waldo_commander.components.log_panel import (
@@ -1209,12 +1210,16 @@ class EditorPanel(FileOperationsMixin):
 
                 # ---- Tab Panels Area (CodeMirror) in splitter.before ----
                 with splitter.before:
-                    self.tab_panels_container = (
-                        ui.tab_panels(self.tabs_container)
-                        .classes("w-full h-full")
-                        .props("animated")
-                        .style("padding: 0; overflow: hidden;")
-                    )
+                    with ui.column().classes("w-full h-full gap-0 flex-nowrap"):
+                        self.tab_panels_container = (
+                            ui.tab_panels(self.tabs_container)
+                            .classes("w-full flex-1 min-h-0")
+                            .props("animated")
+                            .style("padding: 0; overflow: hidden;")
+                        )
+                        # Motion the recorder captured on its own docks here,
+                        # under the code it was written into.
+                        capture_review.build()
 
                 # ---- Playbar in splitter.separator (acts as handle) ----
                 with splitter.separator:

@@ -8,7 +8,7 @@ launch.
 
 ## Enable the server
 
-The server is **off by default**. Turn it on in the control panel's **Settings**
+The server is **off by default**. Turn it on in the bottom-left **Settings** tab
 tab under **MCP server**:
 
 - **Enabled** — start the server on the next app launch.
@@ -60,7 +60,7 @@ the program-side motion API instead of guessing it.
 ## Control modes
 
 You decide how much the LLM can do on its own, from the **AI control mode**
-selector in the control panel's Settings tab, by clicking the mode chip at the
+selector in the Settings tab, by clicking the mode chip at the
 top of the screen, or by cycling with **Alt+M**. A perimeter glow appears
 whenever an MCP client is connected — faint while you hold control, breathing
 at full strength while the AI is driving — and its color tracks the mode

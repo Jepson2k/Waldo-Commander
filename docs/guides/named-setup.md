@@ -174,14 +174,18 @@ fixture means an unresolved preview. Live clients refuse fixtures.
 
 ## Camera calibration
 
-The **Hand-Eye Calibration** panel supports **Camera on tool** and **Fixed
-camera** placement. For a tool camera, keep the printed ChArUco board fixed in
-the workspace. For a fixed camera, attach the board rigidly to the tool and
-leave the camera stationary. The fixed-camera controls can list and start a
-video device independently of a tool's camera assignment.
+The **Camera calibration** panel walks through four steps: Board, Views, Solve
+and Save. In **Board**, choose **Camera on tool** or **Fixed camera**. For a
+tool camera, keep the printed ChArUco board fixed in the workspace. For a fixed
+camera, attach the board rigidly to the tool and leave the camera stationary.
+The fixed-camera controls can list and start a video device independently of a
+tool's camera assignment.
 
-Reference the arm, hold it stationary, and capture at least four views with
-rotation about multiple wrist axes; 10–15 diverse views are preferable. Capture
+In **Views**, reference the arm, hold it stationary, and capture views with
+rotation about multiple wrist axes: four can solve, and the panel counts toward
+fifteen, which give a good fit. **Auto-capture** moves the arm through fifteen
+poses itself. Each view appears as a thumbnail; one that nearly repeats an
+earlier orientation is flagged. **Capture view**
 waits for a subsequent camera frame and reads the controller's tool/TCP binding.
 Changing the camera session, tool, TCP transform or image dimensions requires
 clearing the sample set. The timestamp is host receipt time, not hardware
@@ -189,13 +193,15 @@ exposure time: this acquisition workflow requires stationary observations.
 
 **Solve** estimates pinhole intrinsics and the camera transform. A tool camera
 is expressed relative to the current TCP; a fixed camera is expressed in WRF.
-Both report reprojection error, rotational/translational residuals and board
-position spread. Review those measurements against the accuracy your task needs.
+The result leads with a verdict (good, usable or poor fit) from the reprojection
+error and board position spread, then the transform and the rotational and
+translational residuals; views the fit does not explain are flagged in the
+thumbnails. Review those measurements against the accuracy your task needs.
 The fixed-camera case uses inverse robot poses with OpenCV's
 [hand-eye calibration solver](https://docs.opencv.org/4.8.0/d9/d0c/group__calib3d.html).
 
-In **Saved camera data**, select the setup and camera name before pressing
-**Save**. A fixed camera can be expressed in a static named frame already in
+In **Save**, select the setup and camera name before pressing
+**Save calibration**. A fixed camera can be expressed in a static named frame already in
 that setup; saving records the frame's WRF transform as its reference.
 **Load / check** reads the saved measurement and checks it against the current
 camera and controller. **Export snapshot** downloads ordinary Python containing

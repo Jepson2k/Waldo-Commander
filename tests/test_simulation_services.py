@@ -123,8 +123,13 @@ def mock_textarea():
     ui_state.editor_panel = MagicMock()
     old_robot = ui_state.robot
     ui_state.robot = get_robot()
+    # An app test earlier in the session may have left the program tab
+    # selected; with no page here, an inserted line has no editor to flash in.
+    panel_visible = ui_state.program_panel_visible
+    ui_state.program_panel_visible = False
     ensure_active_program()
     yield mock_textarea
+    ui_state.program_panel_visible = panel_visible
     ui_state.editor_panel = None
     ui_state.active_textarea = None
     ui_state.robot = old_robot

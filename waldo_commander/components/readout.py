@@ -129,6 +129,7 @@ class ReadoutPanel:
         self._tool_label: ui.label | None = None
         self._tool_separator: ui.label | None = None
         self._io_chips: list[ui.chip] = []
+        self._io_container: ui.row | None = None
 
         # Action log elements
         self._action_scroll_area: ui.scroll_area | None = None
@@ -140,6 +141,42 @@ class ReadoutPanel:
         self._last_tool_key: str | None = None
         self._last_io_inputs: list[int] | None = None
         self._last_io_outputs: list[int] | None = None
+
+    def _build_io_chips(self) -> None:
+        """Fill the I/O strip with one chip per digital line.
+
+        The strip wraps and tightens as the count grows: parol6 has four
+        lines, but a backend that takes its I/O from config can report many
+        more, and a single unwrapped row of those pushes the panel wider
+        than its own width.
+        """
+        if self._io_container is None:
+            return
+        self._io_container.clear()
+        self._io_chips = []
+        io = waldoctl.commander.status.io
+        lines = [("DI", "Digital Input", i) for i in range(len(io.inputs))]
+        lines += [("DO", "Digital Output", i) for i in range(len(io.outputs))]
+        # Past a handful, the strip takes the header's whole width on a line
+        # of its own and drops the prefix, rather than sharing the line with
+        # the name chips and widening the panel to fit. Tooltips keep the
+        # full name either way.
+        terse = len(lines) > 8
+        size = "xs" if terse else "sm"
+        self._io_container.classes(
+            add="io-chips-wide" if terse else "",
+            remove="" if terse else "io-chips-wide",
+        )
+        with self._io_container:
+            for prefix, description, i in lines:
+                label = f"{prefix[-1] if terse else prefix}{i + 1}"
+                self._io_chips.append(
+                    ui.chip(label, color=IO_COLOR_OFF)
+                    .props(f"dense size={size}")
+                    .classes("text-xs")
+                    .style("box-shadow: none;")
+                    .tooltip(f"{description} {i + 1}")
+                )
 
     def update_conn_io(self) -> None:
         """Update connection face and IO status. Called from status consumer."""
@@ -202,10 +239,17 @@ class ReadoutPanel:
                     if self._tool_separator is not None:
                         self._tool_separator.set_visibility(False)
 
-        if self._io_chips:
+        if self._io_container is not None:
             io = waldoctl.commander.status.io
             inputs = io.inputs
             outputs = io.outputs
+            # A backend can report a different line count than the one the
+            # chips were built for — par6 takes both from its config, so the
+            # first frame may not match what was on screen a moment ago.
+            if len(inputs) + len(outputs) != len(self._io_chips):
+                self._build_io_chips()
+                self._last_io_inputs = None
+                self._last_io_outputs = None
             if inputs != self._last_io_inputs or outputs != self._last_io_outputs:
                 self._last_io_inputs = list(inputs)
                 self._last_io_outputs = list(outputs)
@@ -312,27 +356,8 @@ class ReadoutPanel:
                             "text-sm font-medium truncate"
                         )
                     ui.space()
-                    with ui.row().classes("gap-0 no-wrap"):
-                        self._io_chips = []
-                        _io_init = waldoctl.commander.status.io
-                        for i in range(len(_io_init.inputs)):
-                            chip = (
-                                ui.chip(f"DI{i + 1}", color=IO_COLOR_OFF)
-                                .props("dense size=sm")
-                                .classes("text-xs")
-                                .style("box-shadow: none;")
-                                .tooltip(f"Digital Input {i + 1}")
-                            )
-                            self._io_chips.append(chip)
-                        for i in range(len(_io_init.outputs)):
-                            chip = (
-                                ui.chip(f"DO{i + 1}", color=IO_COLOR_OFF)
-                                .props("dense size=sm")
-                                .classes("text-xs")
-                                .style("box-shadow: none;")
-                                .tooltip(f"Digital Output {i + 1}")
-                            )
-                            self._io_chips.append(chip)
+                    self._io_container = ui.row().classes("gap-0 justify-end io-chips")
+                    self._build_io_chips()
 
                 with ui.row().classes("items-center justify-between w-full no-wrap"):
                     with ui.row().classes("items-center gap-1 no-wrap"):

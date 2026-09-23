@@ -355,6 +355,10 @@ class PlaybackController:
 
     def _toggle_recording(self) -> None:
         """Toggle motion recording on/off and update the record button visual."""
+        try:
+            motion_recorder.ui_client = self._ui_client or context.client
+        except RuntimeError:
+            motion_recorder.ui_client = self._ui_client
         motion_recorder.toggle_recording()
         if is_any_program_recording():
             if self.record_btn:

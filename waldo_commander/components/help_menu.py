@@ -201,7 +201,7 @@ class HelpMenu:
             {
                 "title": "Connecting Your Robot",
                 "description": """
-                    In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
+                    Open the **Settings** tab in the bottom-left tab bar and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
 
                     - <span style="color: #4caf50">■</span> Connected to robot hardware
                     - <span style="color: #f44336">■</span> Robot mode but disconnected

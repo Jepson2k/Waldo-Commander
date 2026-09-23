@@ -128,7 +128,7 @@ async def test_camera_localization_program_preview_and_session_lifetime(
             "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    pass\n"
         )
         user.find(marker="tab-skills").click()
-        element("skill-choice").set_value("waldo.locate_board")
+        user.find(marker="skill-tile-waldo.locate_board").click()
         user.find(marker="skill-insert").click()
         await user.should_see("Inserted Python skill call")
         program = waldoctl.commander.programs.active

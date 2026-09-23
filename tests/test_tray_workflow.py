@@ -127,7 +127,7 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
         "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    pass\n"
     )
     user.find(marker="tab-skills").click()
-    element("skill-choice").set_value("waldo.transfer_with_signal")
+    user.find(marker="skill-tile-waldo.transfer_with_signal").click()
     element("skill-place-pose").set_value("place")
     element("skill-arg-clearance_mm").set_value(2)
     user.find(marker="skill-insert").click()
