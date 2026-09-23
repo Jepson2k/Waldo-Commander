@@ -220,6 +220,35 @@
         return panelSizes[panelId] || null;
     }
 
+    // ========== Fit to Content ==========
+    // A panel configured with `fit` has no height of its own until the user
+    // drags one: its container carries no inline height, so it is as tall as
+    // its content (CSS caps it at the viewport). A dragged height is saved and
+    // pins it from then on.
+
+    function isFitPanel(panelId) {
+        const cfg = panelId && config.panels[panelId];
+        if (!cfg || !cfg.fit) return false;
+        const saved = panelSizes[panelId];
+        return !(saved && saved.height);
+    }
+
+    function getContainer(group) {
+        const selector = group === 'top'
+            ? config.selectors.topContainer
+            : config.selectors.bottomContainer;
+        return selector ? document.querySelector(selector) : null;
+    }
+
+    // Coupling may have pinned a fit panel to make room; let it fit again.
+    function releaseFitHeight(group) {
+        const panel = getVisibleResizablePanel(group);
+        const container = getContainer(group);
+        if (panel && container && isFitPanel(getPanelId(panel))) {
+            container.style.removeProperty('height');
+        }
+    }
+
     // ========== Configuration Helpers ==========
 
     function getPanelConfig(panel) {
@@ -352,13 +381,20 @@
     function onMouseUp() {
         if (!isResizing) return;
 
-        // Save active panel size
+        // Save only what was dragged: a width drag is not a choice of height.
         if (activePanel) {
-            savePanelSize(activePanel, activePanel.offsetWidth, activePanel.offsetHeight);
+            const dragsWidth = resizeType === 'width' || resizeType === 'both';
+            const dragsHeight = resizeType === 'height' || resizeType === 'both';
+            savePanelSize(
+                activePanel,
+                dragsWidth ? activePanel.offsetWidth : null,
+                dragsHeight ? activePanel.offsetHeight : null
+            );
         }
 
-        // Save pushed panel size (the panel that was pushed during resize)
-        if (lastPushedPanel) {
+        // A pushed fixed panel keeps the height it was pushed to; a pushed fit
+        // panel gives the room back once coupling ends.
+        if (lastPushedPanel && !isFitPanel(getPanelId(lastPushedPanel))) {
             savePanelSize(lastPushedPanel, null, lastPushedPanel.offsetHeight);
         }
 
@@ -559,9 +595,10 @@
         const isResizableTab = !isClosing && config.panels[toTab] !== undefined;
 
         if (isClosing) {
-            // Save current size before closing
+            // Save current size before closing. A fit panel's height is its
+            // content's, not a choice to remember.
             const panel = getVisibleResizablePanel(group);
-            if (panel && container) {
+            if (panel && container && !isFitPanel(getPanelId(panel))) {
                 const currentHeight = container.offsetHeight;
                 if (currentHeight > 0) {
                     savePanelSize(panel, null, currentHeight);
@@ -591,27 +628,22 @@
             // Resizable tab - set container size BEFORE panel animates in
             // Panel ID matches tab name (e.g., "program", "response")
             const panelId = toTab;
-            const savedSize = getSavedPanelSize(panelId);
+            const savedSize = getSavedPanelSize(panelId) || {};
             const panelConfig = config.panels[panelId] || {};
 
-            if (savedSize && container) {
-                if (savedSize.width) {
-                    container.style.width = Math.min(savedSize.width, getMaxWidth()) + 'px';
+            if (container) {
+                const width = savedSize.width || panelConfig.defaultWidth || panelConfig.minWidth;
+                if (width) {
+                    container.style.width = Math.min(width, getMaxWidth()) + 'px';
                 }
-                if (savedSize.height) {
-                    container.style.height = Math.min(savedSize.height, getMaxHeight()) + 'px';
+                if (isFitPanel(panelId)) {
+                    container.style.removeProperty('height');
+                } else {
+                    const height = savedSize.height || panelConfig.defaultHeight || panelConfig.minHeight
+                        || Math.min(Math.floor(window.innerHeight * 0.5), 500);
+                    container.style.height = Math.min(height, getMaxHeight()) + 'px';
                 }
-                console.log('[PanelResize] Pre-set container size:', savedSize.width, 'x', savedSize.height);
-            } else if (container) {
-                // No saved size - use panel's declared defaults or minima
-                const viewportHeight = window.innerHeight;
-                const defaultHeight = panelConfig.defaultHeight || panelConfig.minHeight || Math.min(Math.floor(viewportHeight * 0.5), 500);
-                container.style.height = Math.min(defaultHeight, getMaxHeight()) + 'px';
-                const defaultWidth = panelConfig.defaultWidth || panelConfig.minWidth;
-                if (defaultWidth) {
-                    container.style.width = Math.min(defaultWidth, getMaxWidth()) + 'px';
-                }
-                console.log('[PanelResize] Pre-set default container size:', defaultWidth, 'x', defaultHeight);
+                console.log('[PanelResize] Pre-set container size:', container.style.width, 'x', container.style.height || 'content');
             }
         }
 
@@ -640,6 +672,8 @@
             }
         } else {
             wrap.classList.remove(config.stateClasses.coupled);
+            releaseFitHeight('top');
+            releaseFitHeight('bottom');
         }
     }
 
@@ -672,26 +706,49 @@
 
         let newTopHeight = topHeight;
         let newBottomHeight = bottomHeight;
+        const topFits = topPanel && isFitPanel(getPanelId(topPanel));
+        const bottomFits = bottomPanel && isFitPanel(getPanelId(bottomPanel));
 
-        // First: ensure both panels meet their minimums
-        if (topHeight < topMinHeight) {
-            newTopHeight = topMinHeight;
-            newBottomHeight = usableHeight - newTopHeight;
-        }
-        if (bottomHeight < bottomMinHeight) {
-            newBottomHeight = bottomMinHeight;
-            newTopHeight = usableHeight - newBottomHeight;
+        if (topFits || bottomFits) {
+            // A panel sized by its content gives way before one the user sized,
+            // and of two such panels the taller gives way. Neither is raised to
+            // its minimum: content shorter than that is already small enough.
+            const topGives = topFits && bottomFits ? topHeight >= bottomHeight : topFits;
+            if (topGives) {
+                const floor = Math.min(topMinHeight, topHeight);
+                newTopHeight = Math.max(floor, usableHeight - bottomHeight);
+                newBottomHeight = Math.min(bottomHeight, usableHeight - newTopHeight);
+            } else {
+                const floor = Math.min(bottomMinHeight, bottomHeight);
+                newBottomHeight = Math.max(floor, usableHeight - topHeight);
+                newTopHeight = Math.min(topHeight, usableHeight - newBottomHeight);
+            }
+        } else {
+            // First: ensure both panels meet their minimums
+            if (topHeight < topMinHeight) {
+                newTopHeight = topMinHeight;
+                newBottomHeight = usableHeight - newTopHeight;
+            }
+            if (bottomHeight < bottomMinHeight) {
+                newBottomHeight = bottomMinHeight;
+                newTopHeight = usableHeight - newBottomHeight;
+            }
+
+            // If both are above minimums but still overlapping, split 50/50
+            if (newTopHeight + newBottomHeight > usableHeight) {
+                newTopHeight = Math.floor(usableHeight / 2);
+                newBottomHeight = usableHeight - newTopHeight;
+            }
         }
 
-        // If both are above minimums but still overlapping, split 50/50
-        if (newTopHeight + newBottomHeight > usableHeight) {
-            newTopHeight = Math.floor(usableHeight / 2);
-            newBottomHeight = usableHeight - newTopHeight;
+        // Apply heights to containers only - panels fill via CSS. A container
+        // left as it was keeps fitting its content.
+        if (newTopHeight !== topHeight) {
+            topContainer.style.setProperty('height', newTopHeight + 'px', 'important');
         }
-
-        // Apply heights to containers only - panels fill via CSS
-        topContainer.style.setProperty('height', newTopHeight + 'px', 'important');
-        bottomContainer.style.setProperty('height', newBottomHeight + 'px', 'important');
+        if (newBottomHeight !== bottomHeight) {
+            bottomContainer.style.setProperty('height', newBottomHeight + 'px', 'important');
+        }
 
         console.log('[PanelResize] Adjusted heights to prevent overlap:', { newTopHeight, newBottomHeight });
     }
@@ -702,6 +759,22 @@
         console.log('[PanelResize] App ready signal received');
         appReady = true;
         initAllPanels();
+        observeContainers();
+    }
+
+    // A fit panel changes height with its content (a form opening, a section
+    // expanding) after coupling was settled, so re-check for overlap then.
+    let containerObserver = null;
+    function observeContainers() {
+        if (containerObserver || !('ResizeObserver' in window)) return;
+        containerObserver = new ResizeObserver(function() {
+            if (isResizing || !appReady) return;
+            if (shouldCouple()) ensureNoOverlap();
+        });
+        ['top', 'bottom'].forEach(function(group) {
+            const container = getContainer(group);
+            if (container) containerObserver.observe(container);
+        });
     }
 
     // ========== Viewport Resize Handler ==========
@@ -710,22 +783,16 @@
         const maxW = getMaxWidth();
         const maxH = getMaxHeight();
 
-        for (const [panelId, panelConfig] of Object.entries(config.panels)) {
-            if (!panelConfig.selector) continue;
-
-            const containerSelector = panelConfig.group === 'top'
-                ? config.selectors.topContainer
-                : config.selectors.bottomContainer;
-            if (!containerSelector) continue;
-
-            const container = document.querySelector(containerSelector);
+        for (const group of ['top', 'bottom']) {
+            const container = getContainer(group);
             if (!container) continue;
-
-            const currentWidth = container.offsetWidth;
-            if (currentWidth > maxW) {
+            if (container.offsetWidth > maxW) {
                 container.style.setProperty('width', maxW + 'px', 'important');
             }
-            if (container.offsetHeight > maxH) {
+            // CSS caps a fit panel; pinning it here would stick after the window grows back.
+            const panel = getVisibleResizablePanel(group);
+            const fits = panel && isFitPanel(getPanelId(panel));
+            if (!fits && container.offsetHeight > maxH) {
                 container.style.setProperty('height', maxH + 'px', 'important');
             }
         }
@@ -780,7 +847,34 @@
         console.log('[PanelResize] Configured:', config);
 
         loadPanelSizes();
+        forgetDefaultHeightsOfFitPanels();
         loadActiveTabs();
+    }
+
+    // Older builds saved a height for every panel on close, so the heights
+    // stored for panels that now fit their content were defaults, not
+    // choices. Drop them once.
+    function forgetDefaultHeightsOfFitPanels() {
+        const doneKey = config.storageKey + '_fit';
+        try {
+            if (localStorage.getItem(doneKey)) return;
+        } catch (e) {
+            return;
+        }
+        let changed = false;
+        for (const [panelId, cfg] of Object.entries(config.panels)) {
+            if (cfg.fit && panelSizes[panelId] && panelSizes[panelId].height) {
+                delete panelSizes[panelId].height;
+                document.documentElement.style.removeProperty(`--panel-height-${panelId}`);
+                changed = true;
+            }
+        }
+        if (changed) savePanelSizes();
+        try {
+            localStorage.setItem(doneKey, '1');
+        } catch (e) {
+            console.warn('[PanelResize] Could not record the fit migration:', e);
+        }
     }
 
     // ========== Setup ==========
