@@ -618,7 +618,7 @@ class HandEyeCalibrationPanel(Panel):
         if self._camera_hint is not None:
             self._camera_hint.set_visibility(not active)
         if self._status_label is not None:
-            self._status_label.set_visibility(active)
+            self._status_label.set_visibility(active and self._step <= 2)
         if not active and self._camera_hint_label is not None:
             hint = self._camera_hint_text()
             if hint != self._last_hint_text:
