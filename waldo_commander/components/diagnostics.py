@@ -50,6 +50,20 @@ _BAND_STYLE: tuple[tuple[int, int, str, str], ...] = (
 )
 _DEFAULT_STYLE = ("warning", "text-amber-400")
 
+#: Normal is quiet. A reading only takes colour once it is outside the range
+#: its backend treats as healthy, so a panel with no colour in it is a panel
+#: with nothing to say, and the operator scans for the exception instead of
+#: reading every number.
+OK, WARN, FAULT = 0, 1, 2
+_SEVERITY_CLASS = {OK: "diag-ok", WARN: "diag-warn", FAULT: "diag-fault"}
+
+#: Loop tail as a multiple of the period budget, past which the loop counts as
+#: degraded. Matches the rule parol6 applies to itself before it logs
+#: "loop overbudget" (server/controller.py). It lives here because no backend
+#: puts its own bands on the wire; the right home is waldoctl, so that each
+#: declares the thresholds it is actually judged against.
+LOOP_WARN_RATIO = 1.25
+
 
 def _band(code: int) -> tuple[str, str]:
     for lo, hi, icon, colour in _BAND_STYLE:
@@ -87,8 +101,10 @@ class DiagnosticsPage:
         self._joint_count = ui_state.active_robot.joints.count
         self._values: dict[str, ui.label] = {}
         self._sections: dict[str, ui.column] = {}
-        self._rt_fifo: ui.chip | None = None
-        self._rt_pinned: ui.chip | None = None
+        self._verdict: ui.label | None = None
+        self._verdict_meta: ui.label | None = None
+        self._loop_bar: ui.element | None = None
+        self._started_at = time.monotonic()
         self._drive_rows: list[tuple[ui.label, list[ui.label]]] = []
         self._drive_heads: dict[str, ui.label] = {}
         self._drives_grid: ui.grid | None = None
@@ -129,6 +145,8 @@ class DiagnosticsPage:
 
     def build(self) -> None:
         with ui.column().classes("w-full gap-2").mark("diagnostics-panel"):
+            self._build_verdict()
+            self._build_safety_section()
             self._build_loop_section()
             self._build_link_section()
             self._build_drives_section()
@@ -157,23 +175,64 @@ class DiagnosticsPage:
         self._values[marker] = value
         return value
 
+    def _build_verdict(self) -> None:
+        """One line that answers "is anything wrong" before any number does.
+
+        An operator crossing the shop floor reads this and nothing else; the
+        rows below exist for whoever then wants to know why.
+        """
+        with ui.row().classes("w-full items-baseline no-wrap gap-2"):
+            self._verdict = (
+                ui.label("Waiting for the robot")
+                .classes("diag-verdict")
+                .mark("diag-verdict")
+            )
+            ui.space()
+            self._verdict_meta = (
+                ui.label("")
+                .classes("text-xs text-[var(--ctk-muted)] font-mono")
+                .mark("diag-verdict-meta")
+            )
+
+    def _build_safety_section(self) -> None:
+        """The three bits that decide whether the arm will move at all.
+
+        All on the wire already, none of it previously shown here — which is
+        the wrong way round, since they are the first things an operator
+        checks when nothing happens.
+        """
+        with self._section("safety", "Robot", visible=True):
+            self._row("E-stop", "diag-estop")
+            self._row("Controller", "diag-controller")
+            self._row("Homed", "diag-homed")
+
+    def _severity(self, marker: str, level: int) -> None:
+        """Colour a value by how far outside normal it is."""
+        label = self._values.get(marker)
+        if label is None:
+            return
+        keep = _SEVERITY_CLASS[level]
+        label.classes(
+            add=keep, remove=" ".join(c for c in _SEVERITY_CLASS.values() if c != keep)
+        )
+
     def _build_loop_section(self) -> None:
         with self._section("loop", "Control loop"):
             self._row("Rate", "diag-loop-rate")
             self._row("p99 period", "diag-loop-p99")
-            self._row("Overruns", "diag-loop-overruns")
+            # The bar is what makes "normal" legible without being told: the
+            # budget is the full width, so how close the tail runs to its
+            # deadline is a position rather than a number to be compared
+            # against one an operator has to already know.
             with ui.row().classes("w-full items-center no-wrap"):
-                ui.label("Scheduling").classes("text-xs text-[var(--ctk-muted)] w-28")
-                self._rt_fifo = (
-                    ui.chip("real-time", color="grey-7")
-                    .props("dense")
-                    .mark("diag-rt-fifo")
-                )
-                self._rt_pinned = (
-                    ui.chip("pinned", color="grey-7")
-                    .props("dense")
-                    .mark("diag-rt-pinned")
-                )
+                ui.label("").classes("w-28")
+                with ui.element("div").classes("diag-bar").mark("diag-loop-bar"):
+                    self._loop_bar = ui.element("div").classes("diag-bar-fill")
+            self._row("Overruns", "diag-loop-overruns")
+            # Scheduling is how the loop was set up, not how it is running, so
+            # it reads as a quiet footnote rather than as two status chips that
+            # look like faults whenever a backend does not use SCHED_FIFO.
+            self._row("Scheduling", "diag-loop-sched")
 
     def _build_link_section(self) -> None:
         lh = waldoctl.commander.status.link_health
@@ -353,6 +412,14 @@ class DiagnosticsPage:
             self._events_html = (
                 ui.html("", sanitize=False).classes("w-full").mark("diag-events-log")
             )
+            # An empty log is a claim, not a blank: it says the backend has
+            # reported nothing since this session started, which is different
+            # from the panel having nowhere to put it.
+            self._events_empty = (
+                ui.label("Nothing reported since start.")
+                .classes("text-xs text-[var(--ctk-muted)]")
+                .mark("diag-events-empty")
+            )
 
     # ---- visibility ----
 
@@ -372,8 +439,9 @@ class DiagnosticsPage:
             section = self._sections[key]
             if not section.visible and available():
                 section.set_visibility(True)
+        always_on = ("events", "safety")
         reported = any(
-            col.visible for key, col in self._sections.items() if key != "events"
+            col.visible for key, col in self._sections.items() if key not in always_on
         )
         self._nothing.set_visibility(not reported and not robot_events.entries)
 
@@ -399,9 +467,14 @@ class DiagnosticsPage:
             self._constants_asked = True
             background_tasks.create(self._ask_constants(), name="diagnostics-constants")
         self._apply_visibility()
-        self._update_loop()
-        self._update_drives()
+        worst = OK
+        reasons: list[str] = []
+        worst, reasons = self._update_safety(worst, reasons)
+        worst, reasons = self._update_loop(worst, reasons)
+        worst, reasons = self._update_link(worst, reasons)
+        worst, reasons = self._update_drives(worst, reasons)
         self._update_homing()
+        self._update_verdict(worst, reasons)
         self.update_chart()
 
     async def _ask_constants(self) -> None:
@@ -419,21 +492,49 @@ class DiagnosticsPage:
             self._constants_asked = False
             return
         self._target_hz = stats.target_hz
-        fifo = stats.rt_fifo
-        pinned = stats.rt_pinned
-        if self._rt_fifo is not None:
-            self._rt_fifo.text = "real-time" if fifo else "not real-time"
-            self._rt_fifo.props(f"color={'green-7' if fifo else 'grey-7'}")
-        if self._rt_pinned is not None:
-            self._rt_pinned.text = "pinned" if pinned else "not pinned"
-            self._rt_pinned.props(f"color={'green-7' if pinned else 'grey-7'}")
+        traits = [
+            name
+            for name, on in (("real-time", stats.rt_fifo), ("pinned", stats.rt_pinned))
+            if on
+        ]
+        self._set("diag-loop-sched", ", ".join(traits) if traits else "standard")
 
     def _set(self, marker: str, text: str) -> None:
         label = self._values.get(marker)
         if label is not None and label.text != text:
             label.text = text
 
-    def _update_loop(self) -> None:
+    def _update_safety(self, worst: int, reasons: list[str]) -> tuple[int, list[str]]:
+        """E-stop, controller and homed: whether the arm will move at all."""
+        status = waldoctl.commander.status
+        # estop == 1 is the chain intact, matching the controller wire format.
+        pressed = status.io.estop == 0
+        self._set("diag-estop", "pressed" if pressed else "clear")
+        self._severity("diag-estop", FAULT if pressed else OK)
+        if pressed:
+            worst, reasons = max(worst, FAULT), [*reasons, "e-stop pressed"]
+
+        ctrl = status.controller
+        if ctrl.mode:
+            mode = ctrl.mode.lower()
+            self._set(
+                "diag-controller",
+                mode if ctrl.enabled else f"{mode} · disabled",
+            )
+            self._severity("diag-controller", OK if ctrl.enabled else FAULT)
+            if not ctrl.enabled:
+                worst, reasons = max(worst, FAULT), [*reasons, "controller disabled"]
+        else:
+            self._set("diag-controller", "—")
+
+        homed = bool(robot_state.homed)
+        self._set("diag-homed", "homed" if homed else "not homed")
+        self._severity("diag-homed", OK if homed else WARN)
+        if not homed:
+            worst, reasons = max(worst, WARN), [*reasons, "not homed"]
+        return worst, reasons
+
+    def _update_loop(self, worst: int, reasons: list[str]) -> tuple[int, list[str]]:
         health = waldoctl.commander.status.loop_health
         self._set(
             "diag-loop-rate",
@@ -442,7 +543,7 @@ class DiagnosticsPage:
         if not health.measured:
             self._set("diag-loop-p99", "not reported by this backend")
             self._set("diag-loop-overruns", "—")
-            return
+            return worst, reasons
         budget = 1.0 / self._target_hz if self._target_hz else 0.0
         self._set(
             "diag-loop-p99",
@@ -450,14 +551,74 @@ class DiagnosticsPage:
             if budget
             else _ms(health.p99_period_s),
         )
-        self._set("diag-loop-overruns", str(health.overruns))
+        if budget:
+            ratio = health.p99_period_s / budget
+            over = ratio >= LOOP_WARN_RATIO
+            self._severity("diag-loop-p99", WARN if over else OK)
+            if self._loop_bar is not None:
+                # Capped at the full width: past the budget the bar is already
+                # saying everything it can, and the number carries the rest.
+                self._loop_bar.style(f"width: {min(ratio, 1.0) * 100:.0f}%")
+                self._loop_bar.classes(
+                    add="over" if over else "", remove="" if over else "over"
+                )
+            if over:
+                worst = max(worst, WARN)
+                reasons = [*reasons, f"loop tail {ratio:.0%} of budget"]
+        # A bare count since boot says nothing without a time base: nine
+        # overruns in a minute and nine in a day are different machines.
+        elapsed_min = max((time.monotonic() - self._started_at) / 60.0, 1e-9)
+        self._set(
+            "diag-loop-overruns",
+            f"{health.overruns} since start · {health.overruns / elapsed_min:.1f}/min",
+        )
+        return worst, reasons
 
-    def _update_drives(self) -> None:
+    def _update_link(self, worst: int, reasons: list[str]) -> tuple[int, list[str]]:
+        """Bus state, where anything but Up is the whole story."""
+        state = waldoctl.commander.status.link_health.state
+        if not state:
+            return worst, reasons
+        level = OK if state.lower() in ("up", "unknown") else FAULT
+        if state.lower() == "errorpassive":
+            level = WARN
+        self._severity("diag-link-state", level)
+        if level:
+            worst = max(worst, level)
+            reasons = [*reasons, f"motor bus {state}"]
+        return worst, reasons
+
+    def _update_verdict(self, worst: int, reasons: list[str]) -> None:
+        """The headline, and the two constants worth carrying beside it."""
+        if self._verdict is None:
+            return
+        text = {
+            OK: "Running normally",
+            WARN: "Running degraded",
+            FAULT: "Stopped",
+        }[worst]
+        if reasons:
+            text = f"{text} — {reasons[0]}" if worst else text
+        if self._verdict.text != text:
+            self._verdict.text = text
+        keep = _SEVERITY_CLASS[worst]
+        self._verdict.classes(
+            add=keep, remove=" ".join(c for c in _SEVERITY_CLASS.values() if c != keep)
+        )
+        if self._verdict_meta is not None:
+            up = time.monotonic() - self._started_at
+            rate = f"{self._target_hz:.0f} Hz · " if self._target_hz else ""
+            meta = f"{rate}up {int(up) // 60}m{int(up) % 60:02d}s"
+            if self._verdict_meta.text != meta:
+                self._verdict_meta.text = meta
+
+    def _update_drives(self, worst: int, reasons: list[str]) -> tuple[int, list[str]]:
         health = waldoctl.commander.status.drive_health
         temps = health.temperatures_c
         currents = health.currents_ma
         faults = _faults(health)
         reported = max(len(temps), len(currents), len(faults))
+        faulted: list[str] = []
         if reported:
             if temps:
                 self._show_column("temp")
@@ -476,9 +637,11 @@ class DiagnosticsPage:
                 if cells[2].text != fault_text:
                     cells[2].text = fault_text
                     if labels:
-                        cells[2].classes(add="text-amber-400")
+                        cells[2].classes(add="diag-warn")
                     else:
-                        cells[2].classes(remove="text-amber-400")
+                        cells[2].classes(remove="diag-warn")
+                if labels:
+                    faulted.append(self._drive_rows[j][0].text)
         volts = health.bus_voltage_v
         if volts is not None:
             if self._supply_box is not None and not self._supply_box.visible:
@@ -486,6 +649,10 @@ class DiagnosticsPage:
             self._set("diag-drive-supply", f"{volts:.1f} V")
         elif self._supply_box is not None and self._supply_box.visible:
             self._set("diag-drive-supply", "—")
+        if faulted:
+            worst = max(worst, WARN)
+            reasons = [*reasons, f"drive fault on {', '.join(faulted)}"]
+        return worst, reasons
 
     def _update_homing(self) -> None:
         homing = waldoctl.commander.status.homing
@@ -527,6 +694,7 @@ class DiagnosticsPage:
                 + "</div>"
             )
         self._events_html.set_content("".join(parts))
+        self._events_empty.set_visibility(not parts)
 
     def update_chart(self) -> None:
         if self._chart is None or not self._sections["torques"].visible:

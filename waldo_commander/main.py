@@ -57,6 +57,8 @@ from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import adopt_applied_tcp
 from waldo_commander.constants import DEFAULT_CAMERA, RESERVED_TAB_IDS, config
 from waldo_commander.mcp import start_mcp_server, stop_mcp_server
+from waldo_commander.services.tcp_calibration import read_applied_tcp
+from waldo_commander.components.settings import SettingsContent
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
     warmup_pipelines,
@@ -76,7 +78,6 @@ from waldo_commander.services.control_lease import (
 )
 from waldo_commander.services.path_visualizer import warm_process_pool
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
-from waldo_commander.services.tcp_calibration import read_applied_tcp
 from waldo_commander.services.urdf_scene import (
     ToolPose,
     UrdfScene,
@@ -287,10 +288,6 @@ async def initialize_urdf_scene() -> None:
     if ui_state.urdf_scene.scene:
         scene: ui.scene = ui_state.urdf_scene.scene
         scene._props["grid"] = (10, 100)
-        # Fill parent container (absolute canvas).
-        scene.classes(remove="h-[66vh]").style(
-            "width: 100%; height: 100%; margin: 0; display: block;"
-        )
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
 
         # World coordinate frame at origin (fixed).
@@ -913,6 +910,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         resp_tab = ui.tab(name="response", label="", icon="article")
         resp_tab.tooltip("Log")
         resp_tab.mark("tab-log")
+        settings_tab = ui.tab(name="settings", label="", icon="tune")
+        settings_tab.tooltip("Settings")
+        settings_tab.mark("tab-settings")
         help_tab = ui.tab(name="help", label="", icon="help_outline")
         help_tab.tooltip("Help")
         help_tab.mark("tab-help")
@@ -950,6 +950,24 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                 )
             )
             _add_resize_handles(PanelSlot.LEFT_BOTTOM_TAB)
+
+        with ui.tab_panel("settings").classes(
+            "overlay-card settings-panel resizable-panel"
+        ):
+            with ui.row().classes("w-full"):
+                ui.label("Settings").classes("text-lg font-medium")
+                ui.space()
+                ui.button(icon="close", on_click=close_bottom_panels).props(
+                    "flat round dense color=white"
+                )
+            with ui.scroll_area().classes("w-full h-full p-0"):
+                ui_state.settings_content = SettingsContent(client)
+                ui_state.settings_content.build_embedded(
+                    ai_control_section=control_panel._build_control_mode_selector
+                )
+            ui.element("div").classes("resize-handle-top")
+            ui.element("div").classes("resize-handle-right")
+            ui.element("div").classes("resize-handle-corner")
 
         _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
@@ -1030,7 +1048,7 @@ def _setup_panel_persistence(refs: dict) -> None:
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_TOP_TAB
                     }
-                    bottom_valid = {"response", "help"} | {
+                    bottom_valid = {"response", "settings", "help"} | {
                         p.id
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_BOTTOM_TAB
@@ -1412,6 +1430,8 @@ def _register_handlers() -> None:
 
         if control_panel is not None:
             control_panel.cleanup()
+        if ui_state.settings_content is not None:
+            ui_state.settings_content.cleanup()
         if ui_state.gripper_page is not None:
             ui_state.gripper_page.cleanup()
         if editor_panel is not None:
@@ -1854,6 +1874,7 @@ async def _status_consumer() -> None:
     torques_shadow: np.ndarray | None = None
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
+    error_shadow: waldoctl.RobotError | None = None
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -2016,6 +2037,31 @@ async def _status_consumer() -> None:
                                     remedy=e.remedy,
                                 )
                         st.warnings.entries = list(entries)
+
+                    # The standing error is the other half of the condition
+                    # surface: waldoctl routes self-clearing conditions to
+                    # `warnings` and hard latches here, and a backend is free to
+                    # use only one of the two. parol6 never fills `warnings`, so
+                    # reading only that channel dropped its entire error
+                    # vocabulary -- unreachable targets, queue overflow, gripper
+                    # timeouts, self-collision -- before it reached the log.
+                    # Edge-triggered: a standing error repeats every tick, and
+                    # clearing then recurring is a genuine second occurrence.
+                    standing = getattr(status, "error", None)
+                    if standing is not None and not isinstance(
+                        standing, waldoctl.RobotError
+                    ):
+                        standing = waldoctl.RobotError.from_wire(standing)
+                    if standing != error_shadow:
+                        error_shadow = standing
+                        if standing is not None:
+                            robot_events.add(
+                                code=standing.code,
+                                title=standing.title,
+                                cause=standing.cause,
+                                effect=standing.effect,
+                                remedy=standing.remedy,
+                            )
 
                     drives = getattr(status, "drive_health", None)
                     if drives:
