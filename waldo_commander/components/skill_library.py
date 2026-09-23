@@ -5,11 +5,12 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import logging
 import textwrap
 import time
 from typing import Any, ClassVar, Literal, get_args, get_origin, get_type_hints
 
-from nicegui import ui
+from nicegui import background_tasks, run, ui
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.camera import CameraCalibration
 from waldoctl.recordings import Demonstration
@@ -18,9 +19,34 @@ from waldoctl.signals import DigitalSignal
 from waldoctl.tools import ToolStatus
 
 from waldo_commander.camera_sources import CommanderCameraSource, FrameSource
-from waldo_commander.services.skill_library import SkillEntry, call_source, library
+from waldo_commander.services.skill_library import (
+    SkillEntry,
+    call_source,
+    library,
+    plan_preview,
+)
 from waldo_commander.setup import SetupStore
 from waldo_commander.vision import LocalizationLimits
+
+logger = logging.getLogger(__name__)
+
+# Grouped by what the arm does rather than by module, in the order an
+# operator reaches for them. A skill WC does not know is shown under Plugins.
+SKILL_TILES: dict[str, tuple[str, str]] = {
+    "waldo.retract": ("Move", "retract"),
+    "waldo.approach": ("Move", "approach"),
+    "waldo.park": ("Move", "park"),
+    "waldo.align_tool_axis": ("Move", "align_tool_axis"),
+    "waldo.gripper_open": ("Hold", "gripper_open"),
+    "waldo.gripper_close": ("Hold", "gripper_close"),
+    "waldo.read_signal": ("Carry and sense", "read_signal"),
+    "waldo.wait_signal": ("Carry and sense", "wait_signal"),
+    "waldo.write_signal": ("Carry and sense", "write_signal"),
+    "waldo.transfer": ("Carry and sense", "transfer"),
+    "waldo.transfer_with_signal": ("Carry and sense", "transfer_with_signal"),
+    "waldo.locate_board": ("Carry and sense", "locate_board"),
+}
+_PLUGINS = "Plugins"
 
 
 def _label(name: str) -> str:
@@ -45,6 +71,28 @@ def _skill_labels(ids) -> dict[str, str]:
                 f"{label} ({namespace})" if len(keys) > 1 and namespace else label
             )
     return labels
+
+
+def _tile_groups(ids) -> list[tuple[str, list[str]]]:
+    order = list(SKILL_TILES)
+    groups: dict[str, list[str]] = {}
+    for group, _ in SKILL_TILES.values():
+        groups.setdefault(group, [])
+    groups[_PLUGINS] = []
+    for key in ids:
+        groups[SKILL_TILES.get(key, (_PLUGINS, ""))[0]].append(key)
+    for group, keys in groups.items():
+        keys.sort(key=lambda k: order.index(k) if k in order else len(order))
+    return [(group, keys) for group, keys in groups.items() if keys]
+
+
+def _tile_icon(key: str) -> str:
+    known = SKILL_TILES.get(key)
+    return f"img:/static/icons/skills/{known[1]}.svg" if known else "extension"
+
+
+def _summary(entry: SkillEntry) -> str:
+    return entry.description.split("\n\n", 1)[0].replace("\n", " ")
 
 
 def _loaded(store, name: str | None) -> SetupSnapshot:
@@ -97,8 +145,12 @@ class SkillLibraryPanel(Panel):
 
     def build(self, commander: Commander) -> None:
         entries, diagnostics = library(commander.robot)
+        labels = _skill_labels(entries)
         readers: dict[str, Any] = {}
+        tiles: dict[str, ui.button] = {}
         running = False
+        selected: str | None = None
+        preview_generation = 0
 
         def field_label(name: str) -> str:
             for suffix, unit in (("_mm", "mm"), ("_deg", "°"), ("_s", "s")):
@@ -113,7 +165,56 @@ class SkillLibraryPanel(Panel):
             return _label(name)
 
         def entry() -> SkillEntry:
-            return entries[choice.value]
+            assert selected is not None
+            return entries[selected]
+
+        async def preview(
+            key: str, arguments: dict[str, Any], *, explain: bool = False
+        ) -> None:
+            """Draw what *key* would do from here, once the pointer has settled.
+
+            With *explain*, a call the planner refuses says why: the same
+            refusal awaits it on the robot.
+            """
+            nonlocal preview_generation
+            preview_generation += 1
+            generation = preview_generation
+            await asyncio.sleep(0.25)
+            from waldo_commander.state import ui_state
+
+            scene = ui_state.urdf_scene
+            if generation != preview_generation or scene is None:
+                return
+            tool = commander.status.tool
+            try:
+                planned = await run.io_bound(
+                    plan_preview,
+                    entries[key],
+                    arguments,
+                    commander.robot,
+                    list(commander.status.joints.angles.rad),
+                    (tool.key, tool.variant_key),
+                )
+            except Exception as error:
+                # A skill with nothing to draw is the ordinary case on hover,
+                # not a fault: most need arguments before they have a motion.
+                logger.debug("No preview for %s: %s", key, error)
+                if explain and generation == preview_generation:
+                    preview_note.set_text(
+                        f"Cannot plan this from the current pose: {error}"
+                    )
+                return
+            if planned is not None and generation == preview_generation:
+                preview_note.set_text("")
+                scene.show_skill_preview(*planned)
+
+        def clear_preview() -> None:
+            nonlocal preview_generation
+            preview_generation += 1
+            from waldo_commander.state import ui_state
+
+            if ui_state.urdf_scene is not None:
+                ui_state.urdf_scene.clear_skill_preview()
 
         def source(*, synchronous: bool = False) -> str:
             arguments = {name: read() for name, read in readers.items()}
@@ -125,9 +226,15 @@ class SkillLibraryPanel(Panel):
             try:
                 code.content = source()
                 message.set_text(entry().unavailable)
+                arguments = {name: read() for name, read in readers.items()}
             except (ValueError, TypeError, KeyError, OSError, SyntaxError) as error:
                 code.content = ""
                 message.set_text(str(error))
+                preview_note.set_text("")
+                clear_preview()
+                return
+            assert selected is not None
+            background_tasks.create(preview(selected, arguments, explain=True))
 
         def insert() -> None:
             from waldo_commander.services.motion_recorder import motion_recorder
@@ -145,6 +252,7 @@ class SkillLibraryPanel(Panel):
                 message.set_text(str(error))
                 return
             motion_recorder.insert_skill_call(snippet)
+            clear_preview()
             message.set_text("Inserted Python skill call")
 
         async def run_once() -> None:
@@ -171,6 +279,7 @@ class SkillLibraryPanel(Panel):
                 return
             running = True
             run_button.disable()
+            clear_preview()
             try:
                 recording = next(
                     (p for p in commander.programs.items if p.recording.is_recording),
@@ -232,73 +341,138 @@ class SkillLibraryPanel(Panel):
                 message.set_text("Skill completed")
             finally:
                 running = False
-                run_button.set_enabled(bool(choice.value) and not entry().unavailable)
+                run_button.set_enabled(selected is not None and not entry().unavailable)
+
+        def select(key: str) -> None:
+            nonlocal selected
+            selected = key
+            for other, tile in tiles.items():
+                if other == key:
+                    tile.classes(add="skill-tile-selected")
+                else:
+                    tile.classes(remove="skill-tile-selected")
+            grid_view.set_visibility(False)
+            detail_view.set_visibility(True)
+            rebuild()
+
+        def show_grid() -> None:
+            clear_preview()
+            detail_view.set_visibility(False)
+            grid_view.set_visibility(True)
+
+        def end_hover() -> None:
+            # Clicking a tile hides the grid under the pointer, and the leave
+            # that follows must not take away the path the detail view drew.
+            if not detail_view.visible:
+                clear_preview()
+
+        def make_tile(key: str) -> ui.button:
+            candidate = entries[key]
+            tile = (
+                ui.button(
+                    labels[key],
+                    icon=_tile_icon(key),
+                    color=None,
+                    on_click=lambda: select(key),
+                )
+                .props("flat no-caps stack")
+                .classes("skill-tile")
+                .mark(f"skill-tile-{key}")
+            )
+            tile.tooltip(candidate.unavailable or _summary(candidate))
+            if candidate.unavailable:
+                tile.classes("skill-tile-unavailable")
+            tile.on("mouseenter", lambda: preview(key, {}))
+            tile.on("mouseleave", end_hover)
+            return tile
 
         with ui.column().classes("w-full h-full min-h-0 flex-nowrap gap-2"):
-            ui.label("Skills").classes("panel-heading")
-            choice = (
-                ui.select(
-                    _skill_labels(entries),
-                    value=next(iter(entries), None),
-                    label="Installed skill",
+            with (
+                ui.column()
+                .classes(
+                    "w-full flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex-nowrap gap-2"
                 )
-                .props("dense")
-                .classes("w-full")
-                .mark("skill-choice")
-            )
-            with ui.column().classes(
-                "skill-library-form-scroll w-full flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex-nowrap gap-2"
+                .mark("skill-grid") as grid_view
             ):
+                ui.label("Skills").classes("panel-heading")
                 for diagnostic in diagnostics:
                     ui.label(diagnostic).classes("text-warning text-caption").mark(
                         "skill-diagnostic"
                     )
-                description = ui.label().classes("text-caption whitespace-pre-line")
-                message = ui.label().classes("text-caption").mark("skill-message")
-                form = ui.element("div").classes(
-                    "w-full shrink-0 grid grid-cols-2 gap-x-3 gap-y-2"
-                )
-                with (
-                    ui.expansion("Python call", icon="code")
-                    .classes("w-full")
-                    .mark("skill-python-details")
-                ):
-                    asynchronous = ui.checkbox(
-                        "Insert async call", value=False, on_change=refresh_source
-                    ).mark("skill-async")
-                    code = (
-                        ui.code("", language="python")
-                        .classes("w-full shrink-0 overflow-x-auto")
-                        .mark("skill-call-preview")
+                if not entries:
+                    ui.label("No compatible skill plugins are installed").classes(
+                        "panel-note"
                     )
-                    api_details = ui.label().classes("panel-note")
-            with ui.row().classes("panel-actions"):
-                insert_button = (
-                    ui.button("Insert call", on_click=insert)
-                    .props("dense")
-                    .mark("skill-insert")
-                )
-                run_button = (
-                    ui.button("Run once", on_click=run_once)
-                    .props("dense flat")
-                    .mark("skill-run")
-                )
-            ui.label(
-                "Run once opens the Program tab with pause and stop controls."
-            ).classes("text-caption")
+                else:
+                    ui.label("Point at a skill to see its motion.").classes(
+                        "panel-note"
+                    )
+                for group, keys in _tile_groups(entries):
+                    ui.label(group).classes("skill-group-heading")
+                    with ui.element("div").classes("skill-grid"):
+                        for key in keys:
+                            tiles[key] = make_tile(key)
+            with (
+                ui.column()
+                .classes("w-full flex-1 min-h-0 flex-nowrap gap-2")
+                .mark("skill-detail") as detail_view
+            ):
+                with ui.row().classes("w-full items-center no-wrap gap-1"):
+                    ui.button(icon="arrow_back", on_click=show_grid).props(
+                        "flat dense round"
+                    ).tooltip("All skills").mark("skill-back")
+                    detail_icon = ui.icon("extension").classes("skill-detail-icon")
+                    title = ui.label().classes("panel-heading").mark("skill-title")
+                # Sized to its content so the actions follow a short form, and
+                # shrinking to scroll so they stay in view under a long one.
+                with ui.column().classes(
+                    "skill-library-form-scroll w-full flex-initial min-h-0 overflow-y-auto overflow-x-hidden flex-nowrap gap-2"
+                ):
+                    description = ui.label().classes("text-caption whitespace-pre-line")
+                    message = ui.label().classes("text-caption").mark("skill-message")
+                    preview_note = (
+                        ui.label().classes("panel-note").mark("skill-preview-note")
+                    )
+                    form = ui.element("div").classes(
+                        "w-full shrink-0 grid grid-cols-2 gap-x-3 gap-y-2"
+                    )
+                    with (
+                        ui.expansion("Python call", icon="code")
+                        .classes("w-full")
+                        .mark("skill-python-details")
+                    ):
+                        asynchronous = ui.checkbox(
+                            "Insert async call", value=False, on_change=refresh_source
+                        ).mark("skill-async")
+                        code = (
+                            ui.code("", language="python")
+                            .classes("w-full shrink-0 overflow-x-auto")
+                            .mark("skill-call-preview")
+                        )
+                        api_details = ui.label().classes("panel-note")
+                with ui.row().classes("panel-actions"):
+                    insert_button = (
+                        ui.button("Insert call", on_click=insert)
+                        .props("dense")
+                        .mark("skill-insert")
+                    )
+                    run_button = (
+                        ui.button("Run once", on_click=run_once)
+                        .props("dense flat")
+                        .mark("skill-run")
+                    )
+                ui.label(
+                    "Run once opens the Program tab with pause and stop controls."
+                ).classes("text-caption")
 
         def rebuild() -> None:
             form.clear()
             readers.clear()
-            if not choice.value:
-                description.set_text("No compatible skill plugins are installed")
-                insert_button.disable()
-                run_button.disable()
-                return
+            preview_note.set_text("")
             candidate = entry()
-            description.set_text(
-                candidate.description.split("\n\n", 1)[0].replace("\n", " ")
-            )
+            title.set_text(labels[candidate.skill.spec.id])
+            detail_icon.set_name(_tile_icon(candidate.skill.spec.id))
+            description.set_text(_summary(candidate))
             api_details.set_text(
                 f"{candidate.skill.spec.id} · v{candidate.skill.spec.version} · API {candidate.skill.spec.api_version}"
             )
@@ -519,5 +693,4 @@ class SkillLibraryPanel(Panel):
                         )
             refresh_source()
 
-        choice.on_value_change(rebuild)
-        rebuild()
+        detail_view.set_visibility(False)
