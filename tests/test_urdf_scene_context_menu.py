@@ -125,9 +125,9 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
         """
         const labels = document.querySelectorAll('*');
         for (const label of labels) {
-            if (label.textContent.includes('Workspace Envelope') &&
+            if (label.textContent.includes('Workspace envelope') &&
                 !label.textContent.includes('Show reachable')) {
-                const row = label.closest('.row');
+                const row = label.closest('.settings-row');
                 if (row) {
                     const select = row.querySelector('.q-select');
                     if (select) select.click();

@@ -145,10 +145,11 @@ class ReadoutPanel:
     def _build_io_chips(self) -> None:
         """Fill the I/O strip with one chip per digital line.
 
-        The strip wraps and tightens as the count grows: parol6 has four
-        lines, but a backend that takes its I/O from config can report many
-        more, and a single unwrapped row of those pushes the panel wider
-        than its own width.
+        The strip is a bounded block at the header's right edge: parol6 has
+        four lines, but a backend that takes its I/O from config can report
+        many more, so the chips wrap into rows inside the block and get
+        smaller as the count grows rather than widening the panel or taking
+        a line of their own.
         """
         if self._io_container is None:
             return
@@ -157,23 +158,20 @@ class ReadoutPanel:
         io = waldoctl.commander.status.io
         lines = [("DI", "Digital Input", i) for i in range(len(io.inputs))]
         lines += [("DO", "Digital Output", i) for i in range(len(io.outputs))]
-        # Past a handful, the strip takes the header's whole width on a line
-        # of its own and drops the prefix, rather than sharing the line with
-        # the name chips and widening the panel to fit. Tooltips keep the
+        # Past a handful the prefix drops to one letter; tooltips keep the
         # full name either way.
         terse = len(lines) > 8
         size = "xs" if terse else "sm"
-        self._io_container.classes(
-            add="io-chips-wide" if terse else "",
-            remove="" if terse else "io-chips-wide",
-        )
+        if len(lines) > 16:
+            self._io_container.classes(add="io-chips-dense")
+        else:
+            self._io_container.classes(remove="io-chips-dense")
         with self._io_container:
             for prefix, description, i in lines:
                 label = f"{prefix[-1] if terse else prefix}{i + 1}"
                 self._io_chips.append(
                     ui.chip(label, color=IO_COLOR_OFF)
                     .props(f"dense size={size}")
-                    .classes("text-xs")
                     .style("box-shadow: none;")
                     .tooltip(f"{description} {i + 1}")
                 )
@@ -334,7 +332,7 @@ class ReadoutPanel:
                             )
                         self._backend_label = (
                             ui.label(ui_state.active_robot.name)
-                            .classes("text-lg font-medium ml-2")
+                            .classes("text-lg font-medium ml-2 readout-robot-name")
                             .style("text-shadow: 0 1px 1px rgba(0,0,0,0.4);")
                         )
                     self._tool_separator = (
@@ -356,7 +354,7 @@ class ReadoutPanel:
                             "text-sm font-medium truncate"
                         )
                     ui.space()
-                    self._io_container = ui.row().classes("gap-0 justify-end io-chips")
+                    self._io_container = ui.row().classes("io-chips")
                     self._build_io_chips()
 
                 with ui.row().classes("items-center justify-between w-full no-wrap"):

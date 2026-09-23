@@ -56,13 +56,11 @@ def get_available_serial_ports() -> list[str]:
 
 @contextmanager
 def _setting_row(title: str, description: str):
-    """Standard layout for a settings row: label column + yielded control widget."""
-    with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-        with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-            ui.label(title).classes("text-sm font-medium truncate")
-            ui.label(description).classes(
-                "text-xs text-gray-500 dark:text-gray-400 truncate"
-            )
+    """A label beside its control; what the setting does is on hover or focus."""
+    with ui.element("div").classes("settings-row"):
+        ui.label(title).classes("settings-label").props("tabindex=0").tooltip(
+            description
+        )
         yield
 
 
@@ -239,9 +237,9 @@ class SettingsContent:
 
         def _axis_input(axis: str) -> ui.number:
             return (
-                ui.number(label=axis.upper(), value=offset.get(axis, 0), step=0.5)
-                .style("width: 48px;")
-                .props("dense borderless" + (" disable" if is_none else ""))
+                ui.number(value=offset.get(axis, 0), step=0.5, prefix=axis.upper())
+                .classes("settings-axis")
+                .props("dense" + (" disable" if is_none else ""))
                 # Trailing edge only: typing "125" is three edits, and each
                 # one on its own would reach the controller.
                 .on(
@@ -254,8 +252,8 @@ class SettingsContent:
             )
 
         with self._tcp_offset_container:
-            with _setting_row("TCP Offset", "Offset from default TCP (mm)"):
-                with ui.row().classes("gap-1"):
+            with _setting_row("TCP offset", "Offset from the tool's default TCP (mm)"):
+                with ui.row().classes("gap-1 no-wrap"):
                     x_input = _axis_input("x")
                     y_input = _axis_input("y")
                     z_input = _axis_input("z")
@@ -412,17 +410,17 @@ class SettingsContent:
         available_ports = get_available_serial_ports()
         stored_port = prefs["com_port"]
 
-        with _setting_row("Serial Port", "Select robot communication port"):
+        with _setting_row("Serial port", "Robot communication port"):
             self._port_select = (
                 ui.select(
                     options=available_ports,
                     value=stored_port if stored_port in available_ports else None,
-                    label="Port",
                     new_value_mode="add-unique",
                     clearable=True,
                 )
-                .classes("w-32")
+                .classes("w-40")
                 .props("dense")
+                .mark("select-serial-port")
             )
 
         if stored_port and stored_port not in available_ports:
@@ -451,7 +449,7 @@ class SettingsContent:
             ng_app.storage.general["show_route"] = val
             simulation_state.notify_changed()
 
-        with _setting_row("Show Route", "Display path visualization in 3D view"):
+        with _setting_row("Show route", "Draw the program's path in the 3D view"):
             ui.switch(
                 value=prefs["show_route"],
                 on_change=_on_show_route_change,
@@ -512,7 +510,9 @@ class SettingsContent:
             ng_app.storage.general["envelope_mode"] = mode.value
             simulation_state.notify_changed()
 
-        with _setting_row("Workspace Envelope", "Show reachable workspace boundary"):
+        with _setting_row(
+            "Workspace envelope", "Show the reachable workspace boundary"
+        ):
             ui.select(
                 options={m.value: m.value.capitalize() for m in EnvelopeMode},
                 value=prefs["envelope_mode"].value,
@@ -553,17 +553,17 @@ class SettingsContent:
         if stored_tool not in tool_options:
             stored_tool = default_tool
 
-        with _setting_row("Tool", "Select end effector tool"):
+        with _setting_row("Selected", "Select end effector tool"):
             ui.select(
                 options=tool_options,
                 value=stored_tool,
                 on_change=_on_tool_change,
             ).classes("w-32").props("dense").mark("select-tool")
 
-        self._variant_container = ui.column().classes("w-full gap-1")
+        self._variant_container = ui.column().classes("w-full gap-0")
         self._rebuild_variant_selector(stored_tool)
 
-        self._tcp_offset_container = ui.column().classes("w-full gap-1")
+        self._tcp_offset_container = ui.column().classes("w-full gap-0")
         self._rebuild_tcp_offset(stored_tool)
 
         vk_initial = self._get_variant_key(stored_tool)
@@ -635,7 +635,12 @@ class SettingsContent:
             else:
                 camera_service.start(val)
 
-        with _setting_row("Camera", "Video device for the active tool"):
+        with _setting_row(
+            "Camera",
+            "Video device for the active tool. For AI annotations: webcam → your "
+            "script → pyvirtualcam → select the virtual device (Linux: sudo apt "
+            "install v4l2loopback-dkms).",
+        ):
             self._cam_select = (
                 ui.select(
                     options=cam_options,
@@ -647,14 +652,6 @@ class SettingsContent:
                 .classes("w-32")
                 .props("dense")
                 .mark("select-camera")
-            )
-
-        with ui.column().classes("w-full gap-0 px-2"):
-            ui.label(
-                "AI annotations: webcam \u2192 your script \u2192 pyvirtualcam \u2192 select virtual device"
-            ).classes("text-xs text-gray-500 dark:text-gray-400")
-            ui.label("Linux: sudo apt install v4l2loopback-dkms").classes(
-                "text-xs text-gray-500 dark:text-gray-400"
             )
 
         def _refresh_camera_devices() -> None:
@@ -690,7 +687,7 @@ class SettingsContent:
         for p in ui_state.active_robot.motion_profiles:
             motion_profile_options[p] = p.replace("_", " ").title()
 
-        with _setting_row("Motion Profile", "Trajectory generation algorithm"):
+        with _setting_row("Motion profile", "Trajectory generation algorithm"):
             ui.select(
                 options=motion_profile_options,
                 value=prefs["motion_profile"],
@@ -805,8 +802,7 @@ class SettingsContent:
             if type(p).build_settings is not Panel.build_settings
         ]
         for panel in contributors:
-            ui.separator().classes("my-1")
-            ui.label(panel.display_name).classes("text-sm font-medium").mark(
+            ui.label(panel.display_name).classes("settings-group-heading").mark(
                 f"settings-plugin-{panel.id}-header"
             )
             # A plugin's build_settings() must not break the whole settings page.
@@ -863,13 +859,13 @@ class SettingsContent:
             ).mark("settings-mcp-enabled")
 
         with _setting_row(
-            "MCP host", "Bind address — 127.0.0.1 (local) or a LAN address / 0.0.0.0"
+            "Host", "MCP bind address — 127.0.0.1 (local) or a LAN address / 0.0.0.0"
         ):
             ui.input(value=mcp.host).classes("w-40").props("dense").on(
                 "change", _on_host_change
             ).mark("settings-mcp-host")
 
-        with _setting_row("MCP port", "Listening port for streamable HTTP"):
+        with _setting_row("Port", "MCP listening port for streamable HTTP"):
             ui.number(value=mcp.port, min=1, max=65535).classes("w-24").props(
                 "dense"
             ).on("change", _on_port_change).mark("settings-mcp-port")
@@ -883,7 +879,7 @@ class SettingsContent:
             ng_app.storage.general["automation/cycle_start"] = val
 
         with _setting_row(
-            "Start program on Input 1",
+            "Start on input 1",
             "Rising edge runs the active program (robot homed, e-stop clear, "
             "nothing already running)",
         ):
@@ -898,7 +894,7 @@ class SettingsContent:
             ng_app.storage.general["automation/home_output"] = val
 
         with _setting_row(
-            "Home position output",
+            "Home output",
             "Output 2 turns on while all joints are within tolerance of the "
             "home/standby pose",
         ):
@@ -918,13 +914,14 @@ class SettingsContent:
             ng_app.storage.general["automation/home_tolerance_deg"] = tol
 
         with _setting_row(
-            "Home tolerance (deg)", "Joint distance from home treated as at-home"
+            "Home tolerance", "Joint distance from home treated as at-home"
         ):
             ui.number(
                 value=automation_state.home_tolerance_deg,
                 min=0.1,
                 max=45,
                 step=0.1,
+                suffix="°",
                 on_change=_on_tolerance_change,
             ).classes("w-24").props("dense").mark("input-home-tolerance")
 
@@ -944,7 +941,7 @@ class SettingsContent:
             cp.set_translation_frame(e.value)
             ng_app.storage.general["translation_frame"] = e.value
 
-        with _setting_row("Translation RF", "Reference frame for translation moves"):
+        with _setting_row("Translation frame", "Reference frame for translation moves"):
             sel = (
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
@@ -960,9 +957,7 @@ class SettingsContent:
                     "Tool-frame jogging is unavailable for this robot"
                 )
 
-        ui.separator().classes("my-1")
-
-        with _setting_row("Rotation RF", "Reference frame for rotation moves"):
+        with _setting_row("Rotation frame", "Reference frame for rotation moves"):
             with ui.element("span").tooltip("Rotation always jogs in the tool frame"):
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
@@ -978,7 +973,7 @@ class SettingsContent:
             )
 
         with _setting_row(
-            "Blend Radius", "Corner smoothing for generated moves (0 = exact stop)"
+            "Blend radius", "Corner smoothing for generated moves (0 = exact stop)"
         ):
             ui.number(
                 value=prefs["jog_blend_r"],
@@ -1002,14 +997,12 @@ class SettingsContent:
             cp.set_jog_inversion(invert_y=val)
             ng_app.storage.general["jog_invert_y"] = val
 
-        with _setting_row("Invert X Jog", "Flip the X jog direction (arrows and A/D)"):
+        with _setting_row("Invert X", "Flip the X jog direction (arrows and A/D)"):
             ui.switch(value=prefs["jog_invert_x"], on_change=_on_invert_x).props(
                 "dense"
             ).mark("switch-invert-x")
 
-        ui.separator().classes("my-1")
-
-        with _setting_row("Invert Y Jog", "Flip the Y jog direction (arrows and W/S)"):
+        with _setting_row("Invert Y", "Flip the Y jog direction (arrows and W/S)"):
             ui.switch(value=prefs["jog_invert_y"], on_change=_on_invert_y).props(
                 "dense"
             ).mark("switch-invert-y")
@@ -1036,7 +1029,7 @@ class SettingsContent:
             ("Connection", [lambda: self._build_serial_port(prefs)]),
             ("Tool", [self._build_tool_section, self._build_camera]),
             (
-                "Jogging",
+                "Jog",
                 [
                     lambda: self._build_reference_frames(prefs),
                     lambda: self._build_jog_inversion(prefs),
@@ -1069,16 +1062,12 @@ class SettingsContent:
             ),
         ]
 
-        for gi, (heading, sections) in enumerate(groups):
-            if gi:
-                ui.separator().classes("my-2")
+        for heading, sections in groups:
             ui.label(heading).classes("settings-group-heading").mark(
                 f"settings-group-{heading.split()[0].lower()}"
             )
-            for i, section in enumerate(sections):
+            for section in sections:
                 section()
-                if i < len(sections) - 1:
-                    ui.separator().classes("my-1")
 
         self._build_plugin_settings()
 
