@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 import pytest
 import waldoctl
+from waldoctl.errors import MOTN_CANCELLED, RobotError
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.testing import User
@@ -526,11 +527,11 @@ async def test_handeye_auto_calibration(
 async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
     """A Stop from anywhere else aborts auto-calibration.
 
-    The controller cancels the command without completing it and without
-    an error, so `wait_command` resolves neither True nor raises — and it
-    stays enabled through a Stop. A run that read the halt as success
-    would capture a view at the halted pose and then drive the arm to the
-    next one, seconds after a human deliberately stopped it.
+    The controller completes the command as cancelled, so `wait_command`
+    raises a RobotError with `cancelled` set — and it stays enabled
+    through a Stop. A run that read the halt as anything but a halt would
+    capture a view at the halted pose and then drive the arm to the next
+    one, seconds after a human deliberately stopped it.
     """
     from waldo_commander.components.handeye_calibration import (
         HandEyeCalibrationPanel,
@@ -541,7 +542,7 @@ async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
 
     class _HaltingClient:
         """Answers as the controller does through a Stop: the move starts,
-        then the action goes idle with no completion and no error."""
+        then it completes as cancelled and the action goes idle."""
 
         def __init__(self) -> None:
             self.moves = 0
@@ -559,6 +560,14 @@ async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
             self.waits += 1
             if self.waits >= 2:
                 commander.status.action.state = waldoctl.ActionState.IDLE
+                raise RobotError(
+                    index,
+                    MOTN_CANCELLED,
+                    "Command cancelled",
+                    "A stop discarded the command.",
+                    "The command did not complete.",
+                    "Resend it.",
+                )
             return False
 
     client = _HaltingClient()

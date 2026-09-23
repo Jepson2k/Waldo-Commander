@@ -25,6 +25,7 @@ from nicegui import Client, app as ng_app
 from nicegui import background_tasks, context, run, ui
 from scipy.spatial.transform import Rotation
 import waldoctl
+from waldoctl.errors import RobotError
 from waldoctl import Commander, Panel, PanelSlot
 
 from waldo_commander.services import handeye
@@ -866,9 +867,9 @@ class HandEyeCalibrationPanel(Panel):
         the move.
 
         A Stop from anywhere else — the control panel, an MCP halt, another
-        client — cancels the command without completing it and without an
-        error, so ``wait_command`` resolves neither True nor raises. The
-        action going idle after it ran is the only signal, and it has to end
+        client — completes the command as cancelled, which ``wait_command``
+        raises as a :class:`RobotError` with ``cancelled`` set; the action
+        going idle after it ran is the fallback signal. Either has to end
         this run: the controller stays enabled through a Stop, so a caller
         that treated the halt as success would capture a view at the halted
         pose and then drive the arm to the next one, seconds after a human
@@ -901,6 +902,13 @@ class HandEyeCalibrationPanel(Panel):
                     logger.warning("Auto-calibration move did not complete in time")
                     return -1
             return index
+        except RobotError as e:
+            if e.cancelled:
+                logger.info("Auto-calibration halted: the move was cancelled")
+                self._auto_cancel = True
+            else:
+                logger.warning("Auto-calibration move failed: %s", e)
+            return -1
         except Exception as e:
             logger.warning("Auto-calibration move failed: %s", e)
             return -1

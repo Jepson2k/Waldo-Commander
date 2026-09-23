@@ -733,7 +733,8 @@ class PlaybackController:
 
     @staticmethod
     async def _teleport(joints_deg: list[float], tool_pos: list[float] | None) -> None:
-        """Send a fire-and-forget teleport to the backend."""
+        """Teleport the backend's arm to one playback sample; the sample
+        after it cancels this one while its acknowledgement is in flight."""
         try:
             await ui_state.control_panel.client.teleport(
                 joints_deg,

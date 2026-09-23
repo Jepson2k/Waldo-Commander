@@ -13,6 +13,7 @@ import numpy as np
 
 from nicegui import ui, app, Client
 import waldoctl
+from waldoctl.errors import RobotError
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
@@ -1897,14 +1898,20 @@ class ControlPanel:
             self._home_progress_stop()
 
     async def _wait_home(self, index: int) -> None:
-        # wait_command only resolves on completion or a pipeline error; a plain
-        # Stop cancels the command without either, so the action going idle
-        # after it ran also ends the wait.
+        # A Stop completes the command as cancelled, which wait_command
+        # raises; the action going idle after it ran also ends the wait,
+        # for a backend that answers the halt with silence instead.
         started = False
         deadline = time.monotonic() + 120.0
         while time.monotonic() < deadline:
-            if await self.client.wait_command(index, timeout=0.5):
-                return
+            try:
+                if await self.client.wait_command(index, timeout=0.5):
+                    return
+            except RobotError as e:
+                if e.cancelled:
+                    logger.info("HOME stopped")
+                    return
+                raise
             await asyncio.sleep(0.1)
             act_state = waldoctl.commander.status.action.state
             if act_state == waldoctl.ActionState.EXECUTING:
