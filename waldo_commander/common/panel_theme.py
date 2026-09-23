@@ -14,6 +14,9 @@ def inject_panel_css() -> None:
 @layer quasar {
   .q-btn--flat.text-primary:not(.text-white),
   .q-btn--outline.text-primary:not(.text-white) { color: #7dd3fc !important; }
+  /* A skill's form opens where the side panels do, clear of the scene, the
+     readout and the E-stop. */
+  .skill-dialog-host > .q-dialog__inner--left { align-items: flex-start !important; padding: 12px 0 12px 58px !important; }
 }
 .task-panel, .overlay-card.task-panel, .task-dialog {
   color: var(--color-neutral-100);
@@ -71,15 +74,10 @@ def inject_panel_css() -> None:
 .diag-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--color-neutral-400); transition: width .2s linear; }
 .diag-bar-fill.over { background: var(--sem-warning); }
 .diagnostics-view > .panel-body { flex-basis: auto; }
-/* Skills are drawn rather than listed: the diagram is the label. */
-.skill-group-heading { font-size: 13px; font-weight: 600; color: var(--ctk-muted); margin-top: 4px; }
-.skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; width: 100%; }
-.skill-tile { min-height: 80px; padding: 6px 4px; border: 1px solid var(--color-neutral-700); border-radius: 6px; background: var(--color-neutral-900); color: var(--color-neutral-200); }
-.skill-tile:hover, .skill-tile.skill-tile-selected { border-color: #7dd3fc; }
-.skill-tile .q-icon { width: 56px; height: 40px; font-size: 40px; margin-bottom: 4px; }
-.skill-tile .q-btn__content .block { font-size: 12px; line-height: 1.25; white-space: normal; }
-.skill-tile-unavailable { opacity: .45; }
+/* A skill is inserted from a dialog beside the 3D view, labelled by its diagram. */
+.skill-dialog { width: 450px; max-width: calc(100vw - 80px); margin: 0; max-height: calc(100vh - 24px) !important; }
 .skill-detail-icon { width: 42px; height: 30px; font-size: 30px; flex-shrink: 0; }
+.skill-menu-icon { width: 34px; height: 24px; font-size: 24px; }
 .editor-toolbar-menu { min-width: 190px; }
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }

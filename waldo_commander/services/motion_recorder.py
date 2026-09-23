@@ -630,6 +630,11 @@ class MotionRecorder:
         self._insert_snippet(self.current_pose_snippet(move_type))
         self._last_action_wall_time = time.time()
 
+    def stamp_action_clock(self) -> None:
+        """Count now as the end of the last recorded action, so the next one
+        does not wait out time the program already spends on its own."""
+        self._last_action_wall_time = time.time()
+
     def insert_skill_call(self, source: str) -> None:
         """Insert an explicitly requested Python call at the editor cursor.
 
