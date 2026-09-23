@@ -29,7 +29,9 @@ def inject_panel_css() -> None:
 .task-dialog .q-expansion-item > .q-expansion-item__container > .q-item {
   min-height: 36px; padding: 4px 8px; background: transparent;
 }
-.plugin-panel-content { height: 100%; min-height: 0; min-width: 0; overflow: auto; overflow-x: hidden; }
+/* A flex column, so a panel capped at the viewport shrinks its plugin's own
+   scroller rather than scrolling the plugin whole, heading and all. */
+.plugin-panel-content { display: flex; flex-direction: column; flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; min-width: 0; overflow: auto; overflow-x: hidden; }
 .panel-body { flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; overflow-y: auto; overflow-x: hidden; }
 .panel-heading { font-size: 16px; font-weight: 600; line-height: 24px; }
 .panel-actions { flex-shrink: 0; width: 100%; align-items: center; gap: 8px; padding-top: 8px; }
@@ -39,7 +41,7 @@ def inject_panel_css() -> None:
 .task-dialog > .panel-body { flex-basis: auto; }
 .task-panel .q-table th, .task-dialog .q-table th { color: var(--color-neutral-300); text-align: left; }
 .task-panel .q-table td, .task-dialog .q-table td { text-align: left; }
-.settings-content { height: 100%; min-height: 0; width: 100%; gap: 4px; flex-wrap: nowrap; }
+.settings-content { flex: 1 1 auto; min-height: 0; width: 100%; gap: 0; flex-wrap: nowrap; overflow-y: auto; overflow-x: hidden; }
 .settings-group-heading { font-size: 13px; font-weight: 600; color: var(--ctk-muted); letter-spacing: .01em; }
 .settings-panel { width: 520px; max-width: calc(100vw - 80px); }
 .settings-category { flex-shrink: 0; width: 100%; }
