@@ -73,16 +73,19 @@ def inject_panel_css() -> None:
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }
 .event-detail-grid > * { overflow-wrap: anywhere; }
-/* The I/O strip is the readout's widest row on a backend that takes its line
-   count from config. Bounded so it wraps instead of widening the panel, and
-   given the header's full width on its own line once there are many lines. */
+/* The I/O strip is a bounded block at the header's right edge: chips wrap
+   into rows inside it and tighten as the count grows, and the name chips give
+   way (shrink, truncate) before the strip ever drops under them. */
 .readout-panel { max-width: 480px; }
-.readout-header { flex-wrap: wrap; }
-.io-chips { flex-wrap: wrap; row-gap: 2px; max-width: 240px; }
-.io-chips-wide { flex: 1 0 100%; max-width: none; justify-content: flex-start; }
+.readout-header > .q-chip { flex: 0 1 auto; min-width: 0; }
+.readout-header .q-chip__content { min-width: 0; flex-wrap: nowrap; }
+.readout-header .robot-face { flex-shrink: 0; }
+.readout-robot-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.io-chips { flex: 0 0 auto; max-width: 200px; display: flex; flex-wrap: wrap; justify-content: flex-end; align-content: center; gap: 2px 1px; }
+.io-chips .q-chip { margin: 0; }
+.io-chips-dense .q-chip { padding: 0 3px; height: 1.4em; }
 @media (min-width: 641px) and (max-width: 1200px) {
   .readout-panel { width: 450px; }
   .readout-panel > .nicegui-column { width: 100%; }
-  .readout-header { flex-wrap: wrap !important; row-gap: 0; }
 }
 """)
