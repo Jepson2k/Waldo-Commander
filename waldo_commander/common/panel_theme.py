@@ -75,6 +75,21 @@ def inject_panel_css() -> None:
 .diag-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--color-neutral-400); transition: width .2s linear; }
 .diag-bar-fill.over { background: var(--sem-warning); }
 .diagnostics-view > .panel-body { flex-basis: auto; }
+/* Calibration is four steps: the ribbon is where the operator is, the
+   thumbnails are what they have, and a view's border is the only colour. */
+.handeye-steps { gap: 0; border-bottom: 1px solid var(--color-neutral-700); }
+.handeye-step { flex: 1 1 0; border-radius: 0; border-bottom: 2px solid transparent; color: var(--ctk-muted) !important; }
+.handeye-step.handeye-step-done { color: var(--ctk-text) !important; }
+.handeye-step.handeye-step-active { color: var(--ctk-text) !important; border-bottom-color: #7dd3fc; }
+.handeye-views { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; }
+.handeye-view { position: relative; aspect-ratio: 4 / 3; border: 1px solid var(--color-neutral-700); border-radius: 4px; overflow: hidden; background: var(--color-neutral-900); }
+.handeye-view img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.handeye-view-index { position: absolute; left: 5px; top: 2px; font-size: 11px; color: var(--ctk-text); text-shadow: 0 0 3px #000; }
+.handeye-view .q-btn { position: absolute; right: 0; top: 0; }
+.handeye-view-similar { border-color: var(--sem-warning); }
+.handeye-view-error { border-color: var(--sem-danger); }
+.handeye-verdict { font-size: 17px; font-weight: 600; }
+.handeye-camera-card { width: 100%; max-width: 360px; margin: 0 auto; }
 /* Skills are drawn rather than listed: the diagram is the label. */
 .skill-group-heading { font-size: 13px; font-weight: 600; color: var(--ctk-muted); margin-top: 4px; }
 .skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; width: 100%; }
