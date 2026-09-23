@@ -42,25 +42,19 @@ def inject_panel_css() -> None:
 .task-panel .q-table th, .task-dialog .q-table th { color: var(--color-neutral-300); text-align: left; }
 .task-panel .q-table td, .task-dialog .q-table td { text-align: left; }
 .settings-content { flex: 1 1 auto; min-height: 0; width: 100%; gap: 0; flex-wrap: nowrap; overflow-y: auto; overflow-x: hidden; }
-.settings-group-heading { font-size: 13px; font-weight: 600; color: var(--ctk-muted); letter-spacing: .01em; }
-.settings-panel { width: 520px; max-width: calc(100vw - 80px); }
-.settings-category { flex-shrink: 0; width: 100%; }
-.settings-category .q-field__control, .settings-category .q-field__marginal { height: 32px; min-height: 32px; }
-.settings-category .q-field__native { min-height: 32px; padding: 0; }
-.settings-group { width: 100%; gap: 4px; flex-wrap: nowrap; }
-.settings-row { display: flex; flex-wrap: nowrap; gap: 8px; min-height: 32px; width: 100%; align-items: center; }
-.settings-row > .settings-label { flex: 1 1 0; min-width: 0; font-size: 14px; }
-.settings-row > :not(.settings-label) { flex-shrink: 0; max-width: 60%; }
-.settings-row .q-field__control, .settings-row .q-field__marginal { min-height: 32px; height: 32px; }
-.settings-row .q-field__native { min-height: 32px; padding-top: 0; padding-bottom: 0; }
-.settings-row .q-field__label { top: 7px; }
-.settings-row .q-field--float .q-field__label { transform: translateY(-35%) scale(.75); }
-.settings-row .q-field--float .q-field__native { padding-top: 12px; }
-.settings-row .q-toggle__inner { font-size: 32px; }
-.settings-content .q-expansion-item { width: 100%; }
-.settings-content .q-item { min-height: 32px; padding: 4px 0; background: transparent; }
-.settings-content .q-item__section--avatar { min-width: 24px; }
-.settings-content .q-separator { background: var(--color-neutral-600); }
+.settings-panel { max-width: calc(100vw - 80px); }
+/* The rule under each heading is the only divider; a row is its label beside
+   its control, and what the setting does is the label's tooltip. */
+.settings-group-heading { width: 100%; margin-top: 12px; padding-bottom: 3px; border-bottom: 1px solid var(--color-neutral-700); font-size: 12px; font-weight: 600; color: var(--ctk-muted); }
+.settings-content > .settings-group-heading:first-child { margin-top: 0; }
+.settings-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); column-gap: 8px; align-items: center; min-height: 29px; width: 100%; }
+.settings-row > .settings-label { font-size: 13px; line-height: 1.25; min-width: 0; color: var(--color-neutral-200); }
+.settings-row > :not(.settings-label) { justify-self: start; min-width: 0; max-width: 100%; }
+.settings-row .q-field__control, .settings-row .q-field__marginal { min-height: 28px; height: 28px; }
+.settings-row .q-field__native, .settings-row .q-field__prefix, .settings-row .q-field__suffix { min-height: 28px; padding-top: 0; padding-bottom: 0; }
+.settings-row .q-toggle__inner { font-size: 28px; }
+.settings-axis { width: 68px; }
+.settings-axis .q-field__prefix { color: var(--ctk-muted); padding-right: 4px; }
 .diagnostics-view { width: 560px; max-width: calc(100vw - 80px); max-height: calc(100dvh - 24px); flex-wrap: nowrap; }
 /* Normal is colourless, so anything with colour in it is asking for attention.
    The verdict is the one thing sized to be read from across the room. */

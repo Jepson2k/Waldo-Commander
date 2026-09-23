@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 from nicegui.testing import User
-from nicegui import ui, app as ng_app
+from nicegui import app as ng_app
 from typing import Any
 
 from waldo_commander.state import ui_state
@@ -35,8 +35,8 @@ async def test_settings_tab_accessible(user: User) -> None:
 
     # Rows from the first group and the last, so the whole panel is present
     # rather than just the part above a fold.
-    await user.should_see("Serial Port")
-    await user.should_see("Show Route")
+    await user.should_see("Serial port")
+    await user.should_see("Show route")
     await user.should_see("Tool")
     await user.should_see("Select end effector tool")
     # Grouped, most-reached-for first: the port an operator sets before
@@ -60,8 +60,7 @@ async def test_serial_port_select_exists(user: User) -> None:
     settings_tab.click()
     await asyncio.sleep(0)
 
-    # Find the serial port select - it has label="Port"
-    port_select = user.find(kind=ui.select, content="Port")
+    port_select = user.find(marker="select-serial-port")
     assert port_select is not None, "Serial port select should exist in Settings"
 
 
@@ -225,7 +224,7 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     # PNEUMATIC — offset inputs should appear with X/Y/Z fields
     select_el.set_value("PNEUMATIC")
     await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
-    await user.should_see("TCP Offset")
+    await user.should_see("TCP offset")
     assert await wait_until(lambda: not offset_x_disabled()), (
         "a fitted tool's offset is editable"
     )
@@ -286,7 +285,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
 
     try:
         await select_tool("PNEUMATIC")
-        await user.should_see("TCP Offset")
+        await user.should_see("TCP offset")
         # The client-side edit event, as NiceGUI names it: the element's own
         # listener adopts the value, the page's listener pushes it.
         user.find(marker="tcp-offset-x").trigger("update:modelValue", 12.5)
@@ -309,7 +308,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         await wait_for_app_ready()
         user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
-        await user.should_see("TCP Offset")
+        await user.should_see("TCP offset")
         await poll_until(
             lambda: offset_x().value,
             lambda shown: shown == 1.0,
