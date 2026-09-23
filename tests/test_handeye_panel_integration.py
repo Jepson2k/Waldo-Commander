@@ -14,6 +14,7 @@ and the solved transform is camera→MSG-TCP, saved in a named setup.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import contextlib
 from typing import ClassVar
 
@@ -298,6 +299,43 @@ async def test_handeye_panel_workflow(
         await _wait_for(lambda: panel._result is not None, timeout=30.0)
         await user.should_see(
             "Camera → WRF transform" if mount == "fixed" else "Camera → TCP transform"
+        )
+
+        # A view the fit cannot explain is pointed out after the solve, so
+        # the operator knows which one to recapture rather than which number
+        # got worse.
+        first_result = panel._result
+        bad = panel._samples[2]
+        noise = np.random.default_rng(0).uniform(
+            -15.0, 15.0, bad.detection.corners.shape
+        )
+        panel._samples[2] = replace(
+            bad,
+            detection=replace(
+                bad.detection,
+                corners=(bad.detection.corners + noise).astype(np.float32),
+            ),
+        )
+        user.find(marker="handeye-solve").click()
+        await _wait_for(lambda: panel._result is not first_result, timeout=30.0)
+        flagged = panel._view_flags()
+        assert flagged.get(2, ("", ""))[0] == "error", flagged
+        # The flagged view is on the Views step, where it can be deleted.
+        user.find(marker="handeye-step-2").click()
+        await asyncio.sleep(0)
+        tile = next(iter(user.find(marker="handeye-sample-del-2").elements)).parent_slot
+        assert "handeye-view-error" in tile.parent.classes
+        user.find(marker="handeye-sample-del-2").click()
+        await _wait_for(lambda: len(panel._samples) == n_views - 1)
+        n_views -= 1
+        assert "error" not in {kind for kind, _ in panel._view_flags().values()}
+        user.find(marker="handeye-step-3").click()
+        await asyncio.sleep(0)
+        user.find(marker="handeye-solve").click()
+        await _wait_for(
+            lambda: panel._result is not None
+            and len(panel._result.intrinsics.per_view_errors) == n_views,
+            timeout=30.0,
         )
 
         result = panel._result
