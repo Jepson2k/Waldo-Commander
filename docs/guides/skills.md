@@ -4,7 +4,7 @@ For pose grids, transfer helpers, and editable completion notes, see
 [Tray patterns](tray-patterns.md).
 
 For observed motion capture and native waypoint replay, see
-[Demonstration recording](demonstration-recording.md).
+[Recording](recording.md).
 
 For attachment declarations and scoped collision contacts, see
 [Held-object geometry](held-objects.md).
@@ -32,8 +32,12 @@ an async client. Start an async program explicitly with `asyncio.run(main())`,
 just as when running its Python file directly. A function definition by itself
 does not execute, including in preview.
 
-The **Skills** panel lists installed skills, their Python parameters and backend
-requirements. **Insert call** inserts an import and a call into the active program.
+The **Skills** panel shows installed skills as a grid of diagrams, grouped by what
+the arm does: moving, holding, and carrying or sensing. Skills from other packages
+appear under **Plugins**. Pointing at a skill that needs no arguments draws its
+motion in the 3D view as a dashed path, from where the arm is now; the robot does
+not move. Clicking a skill opens its parameters, and the path follows the values
+as they are filled in. **Insert call** inserts an import and a call into the active program.
 Saved poses and setups are inserted as fixed snapshots; saving different setup
 data later does not change that call. To follow saved data on the next run, edit
 the Python to load it explicitly with `load_setup`.

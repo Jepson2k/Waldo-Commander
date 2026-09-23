@@ -22,6 +22,7 @@ from waldo_commander.demonstrations import (
     load_demonstration,
     record_demonstration,
     save_demonstration,
+    span_to_lines,
     to_program,
 )
 from waldo_commander.skills import replay_demonstration
@@ -139,27 +140,6 @@ async def test_observed_motion_records_cadence_gaps_and_controller_loss(
         assert await client.angles() == pytest.approx(
             recording.samples[-1].joints_deg, abs=0.5
         )
-
-        def element(marker):
-            return next(iter(user.find(marker=marker).elements))
-
-        user.find(marker="tab-demonstrations").click()
-        element("demo-name").set_value("demonstration")
-        user.find(marker="demo-load").click()
-        await user.should_see("Loaded observations")
-        assert element("demo-chart").options["series"][0]["data"]
-        user.find(marker="demo-insert").click()
-        await user.should_see("Inserted replay")
-        assert (
-            "replay_demonstration(rbt, recording"
-            in waldoctl.commander.programs.active.source
-        )
-        element("demo-duration").set_value(30)
-        user.find(marker="demo-capture").click()
-        await user.should_see("Capturing controller observations")
-        await user.should_see("observations", retries=30)
-        user.find(marker="demo-stop").click()
-        await user.should_see("Capture ended", retries=50)
 
         first.clear()
         task = asyncio.create_task(
@@ -411,23 +391,29 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
     with pytest.raises(ValueError, match="save the recording"):
         to_program(recording, robot, name="converted", tolerance_mm=1e-6)
 
-    def element(marker):
-        return next(iter(user.find(marker=marker).elements))
-
-    user.find(marker="tab-demonstrations").click()
-    element("demo-name").set_value("demonstration")
-    user.find(marker="demo-load").click()
-    await user.should_see("Loaded observations")
-    user.find(marker="demo-convert").click()
-    await user.should_see("Converted:", retries=50)
-    program = waldoctl.commander.programs.active
-    assert program is not None and program.filename == "demonstration.py"
+    # The same span as lines for a program being recorded: no program around
+    # them, and a piece the planner cannot follow replayed from a copy the
+    # converter saves itself.
+    captures = tmp_path / "captures"
+    lines = span_to_lines(recording, robot, program="bench", directory=captures)
+    assert not lines.replayed and lines.source.startswith("rbt.")
     assert all(
-        line in program.source
-        for span in conversion.spans
+        line in lines.source
+        for span in conversion.spans[1:]
         for line in span.lines
         if line.startswith("rbt.")
-    ), "the panel converted a different program than the same span converts to"
+    ), "the lines differ from what the same span converts to as a program"
+    assert not captures.exists(), "nothing needed the recording saved"
+    strict_lines = span_to_lines(
+        recording, robot, program="bench", directory=captures, tolerance_mm=1e-6
+    )
+    assert strict_lines.replayed
+    saved = list(captures.glob("bench-*.json"))
+    assert len(saved) == 1 and load_demonstration(saved[0]) == recording
+    assert (
+        f"replay_demonstration(rbt, load_demonstration({str(saved[0])!r}).select("
+        in strict_lines.source
+    )
 
 
 @pytest.mark.integration

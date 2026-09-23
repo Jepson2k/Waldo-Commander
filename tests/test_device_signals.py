@@ -133,7 +133,7 @@ async def test_saved_named_output_readback_wait_cancellation_and_disconnection(
             "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    pass\n"
         )
         user.find(marker="tab-skills").click()
-        element("skill-choice").set_value("waldo.write_signal")
+        user.find(marker="skill-tile-waldo.write_signal").click()
         user.find(marker="skill-insert").click()
         await user.should_see("Inserted Python skill call")
         program = waldoctl.commander.programs.active
