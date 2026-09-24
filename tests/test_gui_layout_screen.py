@@ -1,10 +1,11 @@
 """Compact panels remain usable at laptop sizes and enlarged browser text."""
 
+import asyncio
 import json
 
 import pytest
 import waldoctl
-from nicegui import Client
+from nicegui import Client, core
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -67,6 +68,16 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         # any other panel there.
         click("tab-settings")
 
+    def select_tool(key):
+        async def select():
+            client = waldoctl.commander.client
+            assert await client.wait_command(await client.select_tool(key), timeout=10)
+
+        asyncio.run_coroutine_threadsafe(select(), core.loop).result(20)
+        WebDriverWait(screen.selenium, 20).until(
+            lambda _: run_in_app(lambda: marked("select-tool").value == key)
+        )
+
     results = []
     # 941 is the viewport a maximised browser leaves on a 1080p screen.
     for width, height, zoom in [
@@ -115,6 +126,20 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "Settings scrolls on a 1080p screen",
                 dimensions,
             )
+            # A tool with variants adds its Variant row, and the form still fits.
+            select_tool("SSG-48")
+            WebDriverWait(screen.selenium, 20).until(
+                lambda _: element("select-tool-variant").is_displayed()
+            )
+            grown = screen.selenium.execute_script("""
+                const e = document.querySelector('.settings-panel .settings-content');
+                return {rows: e.scrollHeight, shown: e.clientHeight};
+            """)
+            assert grown["rows"] <= grown["shown"] + 1, (
+                "Settings scrolls on a 1080p screen with a gripper selected",
+                grown,
+            )
+            select_tool("NONE")
         assert run_in_app(lambda: marked("settings-backend-select").value) == backend
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(
