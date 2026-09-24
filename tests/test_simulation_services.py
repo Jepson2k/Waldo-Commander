@@ -1058,6 +1058,32 @@ asyncio.run(main())
             f"Expected estimated_duration > requested 0.01s, got {seg.estimated_duration}"
         )
 
+        # Blended moves plan as one segment, which takes the time of every
+        # move in the blend, not only the first one's.
+        def blended(first_s: float, second_s: float) -> str:
+            return f"""
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], duration={first_s}, r=5, wait=False)
+        await rbt.move_j([95, -95, 185, -5, -5, 185], duration={second_s})
+
+import asyncio
+asyncio.run(main())
+"""
+
+        await visualizer.update_path_visualization(blended(1.0, 1.0))
+        segments = self._active_dry_run().path_segments
+        assert segments and all(s.timing_feasible for s in segments), [
+            (s.line_number, s.estimated_duration, s.requested_duration)
+            for s in segments
+        ]
+        await visualizer.update_path_visualization(blended(0.01, 0.01))
+        assert not all(
+            s.timing_feasible for s in self._active_dry_run().path_segments
+        ), "a blend too short for its moves is still flagged"
+
     @pytest.mark.asyncio
     async def test_move_with_variables_no_target_created(self):
         """Moves with variable arguments should visualize but NOT create targets.
