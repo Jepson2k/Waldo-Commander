@@ -874,7 +874,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui_state._build_gripper_content = _build_gripper_content
 
         with ui.tab_panel("diagnostics").classes(
-            "gap-2 overlay-card task-panel diagnostics-view overflow-hidden"
+            "gap-2 overlay-card task-panel diagnostics-view diagnostics-panel "
+            "resizable-panel overflow-hidden"
         ):
             with ui.row().classes("w-full items-center"):
                 ui.label("Diagnostics").classes("text-lg font-medium")
@@ -889,6 +890,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             )
             with ui.column().classes("panel-body gap-0"):
                 ui_state.diagnostics_page.build()
+            _add_resize_handles(PanelSlot.LEFT_TOP_TAB)
 
         _add_plugin_tab_panels(PanelSlot.LEFT_TOP_TAB, commander)
 
