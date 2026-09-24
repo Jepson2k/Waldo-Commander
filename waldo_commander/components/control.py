@@ -13,8 +13,14 @@ import numpy as np
 
 from nicegui import ui, app, Client
 import waldoctl
-from waldoctl.errors import RobotError
-from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
+from waldoctl import (
+    ElectricGripperTool,
+    GripperTool,
+    RobotClient,
+    RobotError,
+    ToggleMode,
+    ToolSpec,
+)
 from waldoctl.types import Axis
 
 from waldo_commander.constants import (

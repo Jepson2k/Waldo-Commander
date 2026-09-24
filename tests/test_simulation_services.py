@@ -20,7 +20,10 @@ from waldo_commander.state import (
     ui_state,
 )
 from parol6.client.dry_run_client import DryRunRobotClient
+from nicegui.testing import User
+
 from tests.helpers.programs import set_active_recording
+from tests.helpers.wait import wait_for_app_ready
 from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
@@ -1233,62 +1236,134 @@ class TestToolActionTracking:
 # ============================================================================
 
 
-class TestTeleportCommand:
-    """The teleport the playback scrubber sends: an acked system command on
-    the simulator that applies the pose and the tool position in one tick."""
+@pytest.mark.integration
+async def test_a_teleport_lands_pose_and_tool_together_and_motion_follows(
+    user: User,
+) -> None:
+    """The teleport the playback scrubber sends, through the client to the
+    fake-serial controller: the pose and the tool position land together,
+    planned motion follows from there, and what the simulator cannot apply
+    is refused with the arm left where it stands."""
+    await user.open("/")
+    await wait_for_app_ready()
+    client = waldoctl.commander.client
+    status = waldoctl.commander.status
+    start = [float(a) for a in status.joints.angles.deg]
+    pose = [90.0, -45.0, 180.0, 0.0, 60.0, 180.0]
 
-    def test_teleport_is_acked(self):
-        """Playback awaits the teleport's reply, so it must be a command the
-        controller answers rather than a fire-and-forget stream."""
-        from parol6.ack_policy import FIRE_AND_FORGET, SYSTEM_CMD_TYPES
-        from parol6.protocol.wire import CmdType
+    async def landed(target: list[float]) -> bool:
+        for _ in range(100):
+            if all(
+                abs(float(a) - t) < 0.1
+                for a, t in zip(status.joints.angles.deg, target, strict=True)
+            ):
+                return True
+            await asyncio.sleep(0.05)
+        return False
 
-        assert CmdType.TELEPORT in SYSTEM_CMD_TYPES
-        assert CmdType.TELEPORT not in FIRE_AND_FORGET
-
-    def test_teleport_applies_the_pose_and_the_tool_in_one_tick(self):
-        """The pose lands as steps in the same tick, the arm reads referenced
-        there, and a tool position clears Gripper_data_out[3] so the
-        write-frame JIT does not re-arm the gripper ramp."""
-        import os
-        from parol6.commands.basic_commands import TeleportCommand
-        from parol6.protocol.wire import CommandCode, TeleportCmd
-        from parol6.server.state import ControllerState
-
-        state = ControllerState()
-        state.set_tool("SSG-48")
-        state.Gripper_data_out[3] = 1  # simulate in-flight gripper command
-
-        angles_deg = [90.0, -45.0, 180.0, 0.0, 60.0, 180.0]
-        cmd = TeleportCommand(TeleportCmd(angles=angles_deg, tool_positions=[0.5]))
-        with patch.dict(os.environ, {"PAROL6_FAKE_SERIAL": "1"}):
-            cmd.do_setup(state)
-            cmd.execute_step(state)
-
-        assert state.Command_out == CommandCode.TELEPORT
-        assert state.Position_out[0] != 0  # 90 deg
-        assert state.Position_out[3] == 0  # 0 deg
-        assert all(state.Homed_in[:6])
-        assert state.Gripper_data_out[3] == 0
-        assert state.tool_teleport_pos == pytest.approx(127.5)
-
-    def test_teleport_refuses_what_the_simulator_cannot_apply(self):
-        """A pose past the hard limits never reaches the wire, and a tool
-        position for a tool that is not fitted is refused in setup."""
-        from parol6.commands.basic_commands import TeleportCommand
-        from parol6.protocol.wire import TeleportCmd
-        from parol6.server.state import ControllerState
-
-        with pytest.raises(ValueError):
-            TeleportCmd(angles=[90.0, -45.0, 30.0, 0.0, 60.0, 180.0])
-        state = ControllerState()
-        cmd = TeleportCommand(
-            TeleportCmd(
-                angles=[90.0, -45.0, 180.0, 0.0, 60.0, 180.0], tool_positions=[0.5]
-            )
+    try:
+        selected = await client.select_tool("SSG-48")
+        assert selected >= 0 and await client.wait_command(selected, timeout=5.0)
+        assert await client.teleport(pose, tool_positions=[0.5]) == 1
+        assert await landed(pose), (
+            f"the teleport did not land: {status.joints.angles.deg}"
         )
+        assert status.tool.positions and abs(status.tool.positions[0] - 0.5) < 0.02
+
+        moved = list(pose)
+        moved[0] -= 20.0
+        index = await client.move_j(moved, speed=0.5)
+        assert index >= 0 and await client.wait_command(index, timeout=10.0)
+        assert await landed(moved)
+
         with pytest.raises(ValueError):
-            cmd.do_setup(state)
+            await client.teleport([90.0, -45.0, 30.0, 0.0, 60.0, 180.0])
+        selected = await client.select_tool("NONE")
+        assert selected >= 0 and await client.wait_command(selected, timeout=5.0)
+        with pytest.raises(waldoctl.RobotError):
+            await client.teleport(pose, tool_positions=[0.5])
+        await asyncio.sleep(0.2)
+        assert await landed(moved), "a refused teleport moved the arm"
+    finally:
+        await client.select_tool("NONE")
+        await client.teleport(start)
+
+
+@pytest.mark.integration
+async def test_scrubbing_across_a_tool_change_fits_the_tool_before_teleporting(
+    user: User,
+) -> None:
+    """Scrubbing to an instant after a ``select_tool`` fits that tool and
+    teleports the arm with the tool's jaw position. A teleport discards
+    whatever is queued and is judged against the tool selected, so it has
+    to follow the selection: sent first, it is refused for carrying a tool
+    position no fitted tool has, and the arm stays where it was."""
+    from waldoctl.dry_run_state import ToolAction, ToolSelection
+
+    from waldo_commander.components.playback import playback
+    from waldo_commander.state import PathSegment
+
+    await user.open("/")
+    await wait_for_app_ready()
+    client = waldoctl.commander.client
+    assert waldoctl.commander.status.simulator_active
+    selected = await client.select_tool("NONE")
+    assert selected >= 0 and await client.wait_command(selected, timeout=5.0)
+    start_deg = await client.angles()
+    assert start_deg is not None
+    start = np.radians(start_deg)
+    end = start.copy()
+    end[0] -= np.radians(30.0)
+
+    active = waldoctl.commander.programs.active
+    assert active is not None
+    active.dry_run.path_segments = [
+        PathSegment(
+            points=[[0.2, 0.0, 0.3], [0.2, 0.1, 0.3]],
+            color="#00ff00",
+            is_valid=True,
+            line_number=2,
+            joints=end.tolist(),
+            estimated_duration=2.0,
+            joint_trajectory=[start.tolist(), end.tolist()],
+        )
+    ]
+    active.dry_run.tool_selections = [ToolSelection(tool_key="SSG-48")]
+    active.dry_run.tool_actions = [
+        ToolAction(
+            tcp_pose=None,
+            motions=[],
+            target_positions=(1.0,),
+            activation_type="move",
+            line_number=3,
+            method="close",
+            start_positions=(0.0,),
+            estimated_duration=0.5,
+            segment_index=0,
+        )
+    ]
+    try:
+        playback.invalidate_timeline()
+        assert playback._ensure_timeline() is not None
+        playback._apply_time(1.0)
+        halfway = np.degrees((start + end) / 2.0)
+        landed = None
+        for _ in range(100):
+            landed = await client.angles()
+            if landed is not None and np.allclose(landed, halfway, atol=0.1):
+                break
+            await asyncio.sleep(0.05)
+        assert landed is not None and np.allclose(landed, halfway, atol=0.1), (
+            f"the scrubbed pose never landed: {landed} for {halfway.tolist()}"
+        )
+        assert waldoctl.commander.status.tool.key == "SSG-48"
+    finally:
+        active.dry_run.path_segments = []
+        active.dry_run.tool_selections = []
+        active.dry_run.tool_actions = []
+        playback.invalidate_timeline()
+        await client.select_tool("NONE")
+        await client.teleport(start_deg)
 
 
 # ============================================================================

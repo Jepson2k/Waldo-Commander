@@ -98,8 +98,7 @@ class GripperPage:
                     spd_kwargs["speed"] = (
                         waldoctl.commander.settings.gripper.speed / 100.0
                     )
-                if self._cur_slider:
-                    spd_kwargs["current"] = int(self._cur_slider.value)
+                spd_kwargs["current"] = waldoctl.commander.settings.gripper.current
             await tool.set_position(position, **spd_kwargs)
             motion_recorder.record_action("gripper", position=position, **spd_kwargs)
         except Exception as e:

@@ -64,6 +64,7 @@ class PlaybackController:
         self._exec_start_time: float = 0.0
         self._exec_step_index: int = -1
         self._teleport_task: asyncio.Task | None = None
+        self._select_task: asyncio.Task | None = None
         self._last_highlighted_index: int = -1
         self._last_slider_update: float = 0.0  # throttle slider visual updates
         self._last_tool_selection: tuple[str, str] | None = None
@@ -304,9 +305,11 @@ class PlaybackController:
         """Remove listeners and cancel any async tasks owned by this controller."""
         simulation_state.remove_change_listener(self._on_state_change)
         simulation_state.remove_step_listener(self._on_step_change)
-        if self._teleport_task and not self._teleport_task.done():
-            self._teleport_task.cancel()
-            self._teleport_task = None
+        for task in (self._teleport_task, self._select_task):
+            if task and not task.done():
+                task.cancel()
+        self._teleport_task = None
+        self._select_task = None
 
     def on_simulation_complete(self) -> None:
         """Called by SimulationEngine after a successful run. Owns timeline +
@@ -626,6 +629,22 @@ class PlaybackController:
             # Sample tool position once (used for both teleport and URDF animation)
             tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
 
+            # Swap tool mesh when crossing a select_tool boundary
+            if tl.tool_selection_keyframes and ui_state.urdf_scene:
+                sel = tl.sample_tool_selection(t)
+                if sel is not None:
+                    sel_pair = (sel.tool_key, sel.variant_key)
+                    if sel_pair != self._last_tool_selection:
+                        self._last_tool_selection = sel_pair
+                        ui_state.urdf_scene.apply_tool_everywhere(
+                            sel.tool_key, variant_key=sel.variant_key or None
+                        )
+                        # Sync to controller so readout reflects tool TCP
+                        if ui_state.control_panel and ui_state.control_panel.client:
+                            self._select_task = asyncio.create_task(
+                                self._select_tool(sel.tool_key, sel.variant_key or "")
+                            )
+
             if (
                 sample.joints
                 and ui_state.urdf_scene
@@ -644,6 +663,7 @@ class PlaybackController:
                         self._teleport(
                             waldoctl.commander.status.joints.angles.deg.tolist(),
                             list(tool_pos) if tool_pos else None,
+                            self._select_task,
                         )
                     )
 
@@ -687,25 +707,6 @@ class PlaybackController:
                 if ui_state.urdf_scene:
                     ui_state.urdf_scene.update_playback_opacity()
 
-            # Swap tool mesh when crossing a select_tool boundary
-            if tl.tool_selection_keyframes and ui_state.urdf_scene:
-                sel = tl.sample_tool_selection(t)
-                if sel is not None:
-                    sel_pair = (sel.tool_key, sel.variant_key)
-                    if sel_pair != self._last_tool_selection:
-                        self._last_tool_selection = sel_pair
-                        ui_state.urdf_scene.apply_tool_everywhere(
-                            sel.tool_key, variant_key=sel.variant_key or None
-                        )
-                        # Sync to controller so readout reflects tool TCP
-                        if ui_state.control_panel and ui_state.control_panel.client:
-                            asyncio.create_task(
-                                ui_state.control_panel.client.select_tool(
-                                    sel.tool_key,
-                                    variant_key=sel.variant_key or "",
-                                )
-                            )
-
             # Drive tool animation from timeline keyframes
             if (
                 tool_pos
@@ -732,10 +733,32 @@ class PlaybackController:
                 self._scrub_slider.props(f'label-value="{text}"')
 
     @staticmethod
-    async def _teleport(joints_deg: list[float], tool_pos: list[float] | None) -> None:
-        """Teleport the backend's arm to one playback sample; the sample
-        after it cancels this one while its acknowledgement is in flight."""
+    async def _select_tool(tool_key: str, variant_key: str) -> None:
+        """Fit the tool the timeline has selected at this instant, and wait
+        until it is fitted: select_tool queues behind the arm's work."""
+        client = ui_state.control_panel.client
         try:
+            index = await client.select_tool(tool_key, variant_key=variant_key)
+            if index >= 0:
+                await client.wait_command(index, timeout=5.0)
+        except Exception as exc:
+            logger.warning("select_tool failed: %s", exc)
+
+    @staticmethod
+    async def _teleport(
+        joints_deg: list[float],
+        tool_pos: list[float] | None,
+        selecting: asyncio.Task | None,
+    ) -> None:
+        """Teleport the backend's arm to one playback sample; the sample
+        after it cancels this one while its acknowledgement is in flight.
+
+        A teleport discards whatever is queued, so a tool selection still
+        on its way is waited for first — shielded, since the next sample
+        cancelling this teleport must not cancel the selection with it."""
+        try:
+            if selecting is not None and not selecting.done():
+                await asyncio.shield(selecting)
             await ui_state.control_panel.client.teleport(
                 joints_deg,
                 tool_positions=tool_pos,

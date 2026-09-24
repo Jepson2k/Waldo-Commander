@@ -21,7 +21,6 @@ import cv2
 import numpy as np
 import pytest
 import waldoctl
-from waldoctl.errors import MOTN_CANCELLED, RobotError
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.testing import User
@@ -124,7 +123,7 @@ async def _wait_for(condition, timeout: float = 5.0, message: str = "") -> None:
 async def _current_pose() -> np.ndarray:
     st = await waldoctl.commander.client.status()
     assert st is not None
-    return np.asarray(st.pose, dtype=np.float64).reshape(4, 4)
+    return np.asarray(getattr(st, "pose"), dtype=np.float64).reshape(4, 4)
 
 
 @pytest.mark.integration
@@ -536,52 +535,34 @@ async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
         HandEyeCalibrationPanel,
     )
 
-    panel = HandEyeCalibrationPanel()
+    await user.open("/")
+    await wait_for_app_ready()
     commander = waldoctl.commander
+    angles = commander.status.joints.angles
+    start = [float(a) for a in angles.deg]
+    target = list(start)
+    target[0] -= 40.0
 
-    class _HaltingClient:
-        """Answers as the controller does through a Stop: the move starts,
-        then it completes as cancelled and the action goes idle."""
-
-        def __init__(self) -> None:
-            self.moves = 0
-            self.waits = 0
-
-        async def angles(self):
-            return [0.0] * 6
-
-        async def move_j(self, target, duration=None, **kw):
-            self.moves += 1
-            commander.status.action.state = waldoctl.ActionState.EXECUTING
-            return 7
-
-        async def wait_command(self, index, timeout=0.0):
-            self.waits += 1
-            if self.waits >= 2:
-                commander.status.action.state = waldoctl.ActionState.IDLE
-                raise RobotError(
-                    index,
-                    MOTN_CANCELLED,
-                    "Command cancelled",
-                    "A stop discarded the command.",
-                    "The command did not complete.",
-                    "Resend it.",
-                )
-            return False
-
-    client = _HaltingClient()
-    before = commander.status.action.state
+    panel = HandEyeCalibrationPanel()
+    moving = asyncio.create_task(panel._auto_move(commander, target))
     try:
-        index = await panel._auto_move(
-            type("C", (), {"client": client, "status": commander.status})(),
-            [10.0] * 6,
+        await _wait_for(
+            lambda: abs(float(angles.deg[0]) - start[0]) > 2.0,
+            timeout=10.0,
+            message="the auto-run move never got under way",
         )
+        assert await commander.client.stop() == 1
+        index = await asyncio.wait_for(moving, timeout=5.0)
     finally:
-        commander.status.action.state = before
+        if not moving.done():
+            moving.cancel()
 
     assert index < 0, "a halted move must not report the index of a finished one"
     assert panel._auto_cancel, "the run must stop, not roll on to the next view"
-    assert client.moves == 1, "no further motion may be commanded after a Stop"
+    halted = float(angles.deg[0])
+    assert abs(halted - target[0]) > 2.0, "the move ran on to its target"
+    await asyncio.sleep(0.3)
+    assert abs(float(angles.deg[0]) - halted) < 0.1, "the arm moved on after the Stop"
 
 
 @pytest.mark.integration

@@ -60,13 +60,12 @@ class ActionLogService:
             executing_index > self._last_executing_index
             and action_state == ActionState.EXECUTING
         ):
-            # Both backends report the waldoctl method's name ("move_j",
+            # The backends report the waldoctl method's name ("move_j",
             # "home"), which is the entry's name as well.
-            name = action_current
             latest = entries[-1] if entries else None
             if (
                 latest
-                and latest.command_name == name
+                and latest.command_name == action_current
                 and latest.params == action_params
                 and latest.status == ActionStatus.COMPLETED
             ):
@@ -77,7 +76,7 @@ class ActionLogService:
             else:
                 entries.append(
                     ActionLogEntry(
-                        command_name=name,
+                        command_name=action_current,
                         params=action_params,
                         command_index=executing_index,
                         timestamp=time.time(),

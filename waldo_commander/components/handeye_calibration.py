@@ -25,8 +25,7 @@ from nicegui import Client, app as ng_app
 from nicegui import background_tasks, context, run, ui
 from scipy.spatial.transform import Rotation
 import waldoctl
-from waldoctl.errors import RobotError
-from waldoctl import Commander, Panel, PanelSlot
+from waldoctl import Commander, Panel, PanelSlot, RobotError
 
 from waldo_commander.services import handeye
 from waldo_commander.services.camera_service import camera_service
@@ -902,15 +901,12 @@ class HandEyeCalibrationPanel(Panel):
                     logger.warning("Auto-calibration move did not complete in time")
                     return -1
             return index
-        except RobotError as e:
-            if e.cancelled:
+        except Exception as e:
+            if isinstance(e, RobotError) and e.cancelled:
                 logger.info("Auto-calibration halted: the move was cancelled")
                 self._auto_cancel = True
             else:
                 logger.warning("Auto-calibration move failed: %s", e)
-            return -1
-        except Exception as e:
-            logger.warning("Auto-calibration move failed: %s", e)
             return -1
 
     async def _wait_stationary(self) -> None:
