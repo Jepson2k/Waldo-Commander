@@ -101,6 +101,7 @@ class DiagnosticsPage:
         self._joint_count = ui_state.active_robot.joints.count
         self._values: dict[str, ui.label] = {}
         self._sections: dict[str, ui.column] = {}
+        self._section_heads: dict[str, ui.row] = {}
         self._verdict: ui.label | None = None
         self._verdict_meta: ui.label | None = None
         self._loop_bar: ui.element | None = None
@@ -163,8 +164,10 @@ class DiagnosticsPage:
     def _section(self, key: str, title: str, visible: bool = False) -> ui.column:
         col = ui.column().classes("w-full gap-0").mark(f"diag-section-{key}")
         with col:
-            ui.label(title).classes("text-sm font-medium")
+            with ui.row().classes("w-full items-center no-wrap") as head:
+                ui.label(title).classes("text-sm font-medium")
         self._sections[key] = col
+        self._section_heads[key] = head
         col.set_visibility(visible)
         return col
 
@@ -258,7 +261,7 @@ class DiagnosticsPage:
         """
         with self._section("drives", "Drives"):
             self._drives_grid = (
-                ui.grid(columns=1).classes("w-full gap-x-3 gap-y-0").mark("diag-drives")
+                ui.grid(columns=1).classes("w-full gap-x-4 gap-y-0").mark("diag-drives")
             )
             with self._drives_grid:
                 ui.label("Drive").classes("text-xs text-[var(--ctk-muted)]").mark(
@@ -307,9 +310,11 @@ class DiagnosticsPage:
         for label, cells in self._drive_rows:
             cells[col].set_visibility(label.visible)
         if self._drives_grid is not None:
-            n = 1 + sum(h.visible for h in self._drive_heads.values())
+            # The name column is as wide as every section's labels, so the
+            # values start where the rows above put theirs.
+            n = sum(h.visible for h in self._drive_heads.values())
             self._drives_grid.style(
-                f"grid-template-columns: repeat({n}, minmax(0, 1fr))"
+                f"grid-template-columns: 7rem repeat({n}, max-content)"
             )
 
     def _build_torque_section(self) -> None:
@@ -404,10 +409,10 @@ class DiagnosticsPage:
         what to do about it.
         """
         with self._section("events", "Events", visible=True):
-            with ui.row().classes("w-full items-center no-wrap"):
+            with self._section_heads["events"]:
                 ui.space()
                 ui.button(icon="clear_all", on_click=self._clear_events).props(
-                    "flat dense round size=sm"
+                    "flat dense round size=xs"
                 ).tooltip("Clear the log").mark("diag-clear-events")
             self._events_html = (
                 ui.html("", sanitize=False).classes("w-full").mark("diag-events-log")
