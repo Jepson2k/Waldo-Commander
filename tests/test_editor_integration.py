@@ -1477,10 +1477,14 @@ async def test_recording_cursor_tracks_user_edits(user: User) -> None:
     assert is_any_program_recording()
     tracked = textarea._props["line-anchors"].get(_RECORD_ANCHOR_ID)
     assert tracked, "session cursor must be declared as a line anchor"
+    # The browser applies a declaration and reports it back (replayed here —
+    # the user fixture runs no JS).
+    _fire_editor_event(
+        textarea, "anchor-positions", {"anchors": dict(textarea._props["line-anchors"])}
+    )
 
     # The user types two lines at the top mid-session; the browser remaps the
-    # anchor and echoes the shifted position (replayed here — the user
-    # fixture runs no JS).
+    # anchor and echoes the shifted position.
     textarea.value = "# note 1\n# note 2\n" + str(textarea.value)
     _fire_editor_event(
         textarea,
@@ -1663,3 +1667,43 @@ async def test_live_run_highlight_follows_program_command(user: User) -> None:
             while is_any_program_running():
                 await asyncio.sleep(0.1)
     assert waldoctl.commander.programs.active is tab
+
+
+@pytest.mark.integration
+async def test_a_selection_belongs_to_the_tab_it_was_made_in(user: User) -> None:
+    """Lines selected in one program must not be what an action on another
+    program replaces: switching tabs leaves the new tab with no selection."""
+    import waldoctl
+
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    editor = ui_state.editor_panel
+    assert editor is not None
+
+    first = waldoctl.commander.programs.active
+    assert first is not None
+    textarea = ui_state.active_textarea
+    textarea.value = "a = 1\nb = 2\nc = 3\n"
+    _set_selection(textarea, 2, 3)
+
+    user.find(marker="editor-new-tab-btn").click()
+    await asyncio.sleep(0.1)
+    second = waldoctl.commander.programs.active
+    assert second is not None and second is not first
+    other = ui_state.active_textarea
+    other.value = "x = 1\ny = 2\nz = 3\n"
+    await asyncio.sleep(0)
+
+    user.find(marker="editor-capture-pose").click()
+    await asyncio.sleep(0.1)
+    lines = str(other.value).split("\n")
+    assert lines[:3] == ["x = 1", "y = 2", "z = 3"], (
+        f"the other tab's selection replaced this tab's lines: {other.value!r}"
+    )
+    assert any(line.startswith("rbt.move_") for line in lines), other.value

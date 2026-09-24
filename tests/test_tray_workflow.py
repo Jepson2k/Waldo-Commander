@@ -13,6 +13,7 @@ from tests.helpers.wait import (
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
 )
+from tests.test_editor_integration import _set_selection
 from tests.test_skill_library import START
 from waldo_commander.patterns import (
     PatternProgress,
@@ -126,31 +127,35 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
     ui_state.active_textarea.value = (
         "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    pass\n"
     )
-    user.find(marker="tab-skills").click()
-    user.find(marker="skill-tile-waldo.transfer_with_signal").click()
+    user.find(marker="editor-commands-btn").click()
+    user.find(marker="editor-skill-waldo.transfer_with_signal").click()
+    await asyncio.sleep(0)
     element("skill-place-pose").set_value("place")
     element("skill-arg-clearance_mm").set_value(2)
     user.find(marker="skill-insert").click()
-    await user.should_see("Inserted Python skill call")
+    await asyncio.sleep(0)
     assert (
         "_skill_waldo_transfer_with_signal("
         in waldoctl.commander.programs.active.source
     )
-    previous = waldoctl.commander.programs.active
-    user.find(marker="skill-run").click()
+    textarea = ui_state.active_textarea
+    call = next(
+        number
+        for number, line in enumerate(str(textarea.value).split("\n"), start=1)
+        if "_skill_waldo_transfer_with_signal(" in line
+    )
+    _set_selection(textarea, call, call)
+    await asyncio.sleep(0)
+    user.find(marker="editor-run-selection").click()
+    editor = ui_state.editor_panel
     try:
         async with asyncio.timeout(60):
-            while (
-                waldoctl.commander.programs.active is previous
-                or is_any_program_running()
-            ):
+            await asyncio.sleep(0.1)
+            while editor._running_selection or is_any_program_running():
                 await asyncio.sleep(0.05)
-        launched = waldoctl.commander.programs.active
-        assert launched is not None
         assert script_exec.last_exit_code == 0, "\n".join(
-            entry.text for entry in launched.log.entries
+            entry.text for entry in waldoctl.commander.programs.active.log.entries
         )
-        await user.should_see("Skill completed", retries=300)
         assert (await rbt.io())[2] == 0
     finally:
         if is_any_program_running():
