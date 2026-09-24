@@ -83,6 +83,7 @@ def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
         "log": "article",
         "settings": "tune",
         "help": "help",
+        "diagnostics": "monitor_heart",
     }
     icon_name = tab_icons.get(tab_name)
     if not icon_name:
