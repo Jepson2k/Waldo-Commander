@@ -802,12 +802,18 @@
         for (const group of ['top', 'bottom']) {
             const container = getContainer(group);
             if (!container) continue;
-            if (container.offsetWidth > maxW) {
+            const panel = getVisibleResizablePanel(group);
+            const panelId = panel && getPanelId(panel);
+            const saved = panelId ? getSavedPanelSize(panelId) : null;
+            if (panelId && config.panels[panelId] && !(saved && saved.width)) {
+                // A width nobody dragged follows the window, as it did on opening.
+                const width = defaultWidth(container, config.panels[panelId]);
+                container.style.setProperty('width', Math.min(width, maxW) + 'px');
+            } else if (container.offsetWidth > maxW) {
                 container.style.setProperty('width', maxW + 'px', 'important');
             }
             // CSS caps a fit panel; pinning it here would stick after the window grows back.
-            const panel = getVisibleResizablePanel(group);
-            const fits = panel && isFitPanel(getPanelId(panel));
+            const fits = panel && isFitPanel(panelId);
             if (!fits && container.offsetHeight > maxH) {
                 container.style.setProperty('height', maxH + 'px', 'important');
             }
