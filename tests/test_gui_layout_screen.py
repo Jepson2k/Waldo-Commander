@@ -68,8 +68,9 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         click("tab-settings")
 
     results = []
+    # 941 is the viewport a maximised browser leaves on a 1080p screen.
     for width, height, zoom in [
-        (1920, 1080, 1),
+        (1920, 941, 1),
         (1366, 900, 1),
         (1366, 768, 1),
         (1366, 768, 1.25),
@@ -109,6 +110,11 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         assert dimensions["bottom"] <= dimensions["viewport"] + 1, dimensions
         assert dimensions["separators"] == 0, dimensions
         assert not dimensions["tall"], dimensions
+        if height >= 941:
+            assert dimensions["rows"] <= dimensions["shown"] + 1, (
+                "Settings scrolls on a 1080p screen",
+                dimensions,
+            )
         assert run_in_app(lambda: marked("settings-backend-select").value) == backend
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(
