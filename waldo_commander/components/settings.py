@@ -1047,16 +1047,16 @@ class SettingsContent:
             ).mark("settings-mcp-enabled")
 
         with _setting_row(
-            "Host", "MCP bind address — 127.0.0.1 (local) or a LAN address / 0.0.0.0"
+            "Address",
+            "MCP bind address and port — 127.0.0.1 (local) or a LAN address / 0.0.0.0",
         ):
-            ui.input(value=mcp.host).classes("w-40").props("dense").on(
-                "change", _on_host_change
-            ).mark("settings-mcp-host")
-
-        with _setting_row("Port", "MCP listening port for streamable HTTP"):
-            ui.number(value=mcp.port, min=1, max=65535).classes("w-24").props(
-                "dense"
-            ).on("change", _on_port_change).mark("settings-mcp-port")
+            with ui.element("div").classes("settings-address"):
+                ui.input(value=mcp.host).props("dense").on(
+                    "change", _on_host_change
+                ).mark("settings-mcp-host")
+                ui.number(value=mcp.port, min=1, max=65535).props("dense").on(
+                    "change", _on_port_change
+                ).mark("settings-mcp-port")
 
     def _build_automation(self) -> None:
         """Hardware I/O automation: cycle-start input and at-home output."""
@@ -1185,15 +1185,16 @@ class SettingsContent:
             cp.set_jog_inversion(invert_y=val)
             ng_app.storage.general["jog_invert_y"] = val
 
-        with _setting_row("Invert X", "Flip the X jog direction (arrows and A/D)"):
-            ui.switch(value=prefs["jog_invert_x"], on_change=_on_invert_x).props(
-                "dense"
-            ).mark("switch-invert-x")
-
-        with _setting_row("Invert Y", "Flip the Y jog direction (arrows and W/S)"):
-            ui.switch(value=prefs["jog_invert_y"], on_change=_on_invert_y).props(
-                "dense"
-            ).mark("switch-invert-y")
+        with _setting_row(
+            "Invert", "Flip a jog direction: X for the arrows and A/D, Y for W/S"
+        ):
+            with ui.row().classes("items-center gap-4 no-wrap"):
+                ui.switch(
+                    "X", value=prefs["jog_invert_x"], on_change=_on_invert_x
+                ).props("dense").mark("switch-invert-x")
+                ui.switch(
+                    "Y", value=prefs["jog_invert_y"], on_change=_on_invert_y
+                ).props("dense").mark("switch-invert-y")
 
     # ── Main entry point ─────────────────────────────────────────────
 
