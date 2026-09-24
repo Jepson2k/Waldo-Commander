@@ -56,7 +56,8 @@ def inject_panel_css() -> None:
 .settings-row > .settings-label { font-size: 13px; line-height: 1.25; min-width: 0; color: var(--color-neutral-200); }
 .settings-row > :not(.settings-label) { justify-self: start; min-width: 0; max-width: 100%; }
 /* Fields fill the control column so every row ends at the same edge. */
-.settings-row > .q-field, .settings-row > .nicegui-grid { justify-self: stretch; width: auto; }
+.settings-row > .q-field, .settings-row > .nicegui-grid, .settings-row > :has(> .q-field) { justify-self: stretch; width: auto; }
+.settings-row > :not(.settings-label) > .q-field { width: auto; }
 .settings-row .q-field__control, .settings-row .q-field__marginal { min-height: 28px; height: 28px; }
 .settings-row .q-field__native, .settings-row .q-field__prefix, .settings-row .q-field__suffix { min-height: 28px; padding-top: 0; padding-bottom: 0; }
 .settings-row .q-toggle__inner { font-size: 28px; }
