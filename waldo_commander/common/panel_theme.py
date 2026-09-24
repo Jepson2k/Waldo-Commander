@@ -52,7 +52,7 @@ def inject_panel_css() -> None:
    its control, and what the setting does is the label's tooltip. */
 .settings-group-heading { width: 100%; margin-top: 12px; padding-bottom: 3px; border-bottom: 1px solid var(--color-neutral-700); font-size: 12px; font-weight: 600; color: var(--ctk-muted); }
 .settings-content > .settings-group-heading:first-child { margin-top: 0; }
-.settings-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); column-gap: 8px; align-items: center; min-height: 29px; width: 100%; }
+.settings-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); column-gap: 8px; align-items: center; min-height: 28px; width: 100%; }
 .settings-row > .settings-label { font-size: 13px; line-height: 1.25; min-width: 0; color: var(--color-neutral-200); }
 .settings-row > :not(.settings-label) { justify-self: start; min-width: 0; max-width: 100%; }
 .settings-row .q-field__control, .settings-row .q-field__marginal { min-height: 28px; height: 28px; }
