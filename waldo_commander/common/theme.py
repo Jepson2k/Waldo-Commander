@@ -476,7 +476,7 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
     },
     "constraints": {
         "viewportMarginX": 80,
-        "viewportMarginY": 20,
+        "viewportMarginY": 24,
         "containerPadding": 20,
         "bottomOffset": 12,
         "totalMargin": 36,
@@ -502,7 +502,7 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "minWidth": 420,
             "minHeight": 320,
             "defaultWidth": 520,
-            "defaultHeight": 560,
+            "fit": True,
             "group": "bottom",
         },
         "gripper": {
@@ -928,6 +928,11 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 .resizable-panel { overflow: hidden !important; }
 
+/* A panel whose container carries no inline height (no dragged size yet) is as
+   tall as its content. This keeps it inside the viewport; the flex chain under
+   it (min-height: 0, overflow: auto) scrolls at the cap. */
+.left-panels-container > .q-panel > .resizable-panel { max-height: calc(100vh - 24px); }
+
 /* Panel content is interactive when visible */
 .left-panels-container .overlay-card { pointer-events: auto; }
 
@@ -1150,12 +1155,31 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   white-space: pre;
 }
 
+/* Lines a recording session wrote that nobody has kept yet, in the Record
+   button's amber, and a badge on each captured span. */
+.cm-line.cm-line-staged {
+  background-color: color-mix(in srgb, var(--q-warning) 12%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--q-warning) 70%, transparent);
+}
+.cm-staged-badge {
+  margin-left: 10px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  font-size: 11px;
+  color: var(--q-warning);
+  background-color: color-mix(in srgb, var(--q-warning) 15%, transparent);
+}
+
 /* Pending-edit review cluster — swaps in for the editor toolbar buttons. */
 .pending-edits-banner {
   background-color: rgba(76, 175, 80, 0.08);
   border: 1px solid rgba(76, 175, 80, 0.25);
   border-radius: 6px;
   padding: 0 2px 0 10px;
+}
+.pending-edits-banner.staged-take {
+  background-color: color-mix(in srgb, var(--q-warning) 8%, transparent);
+  border-color: color-mix(in srgb, var(--q-warning) 30%, transparent);
 }
 
 

@@ -87,19 +87,28 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         WebDriverWait(screen.selenium, 10).until(
             lambda _: element("settings-backend-select").is_displayed()
         )
-        # The grouped panel scrolls vertically by design; what must hold is
-        # that nothing runs off its right edge or below the viewport.
+        # The panel is as tall as its rows up to the viewport and scrolls past
+        # that; nothing may run off its right edge or below the viewport, and
+        # a row is its label beside its control, not a card with a divider.
         dimensions = screen.selenium.execute_script("""
             const panel = document.querySelector('.settings-panel');
-            const e = panel.querySelector('.q-scrollarea__container');
+            const e = panel.querySelector('.settings-content');
             const r = panel.getBoundingClientRect();
-            return {width:e.clientWidth, content:e.scrollWidth, bottom:r.bottom, viewport:innerHeight};
+            const tall = [...panel.querySelectorAll('.settings-row')]
+                .filter(row => row.offsetParent !== null && !row.querySelector('.settings-axis'))
+                .map(row => row.getBoundingClientRect().height)
+                .filter(h => h > 32);
+            return {width:e.clientWidth, content:e.scrollWidth, bottom:r.bottom, viewport:innerHeight,
+                    separators: panel.querySelectorAll('.q-separator').length, tall,
+                    rows: e.scrollHeight, shown: e.clientHeight};
         """)
         screen.selenium.save_screenshot(
             str(tmp_path / f"{backend}-settings-{width}-{height}-{zoom}.png")
         )
         assert dimensions["content"] <= dimensions["width"] + 1, dimensions
         assert dimensions["bottom"] <= dimensions["viewport"] + 1, dimensions
+        assert dimensions["separators"] == 0, dimensions
+        assert not dimensions["tall"], dimensions
         assert run_in_app(lambda: marked("settings-backend-select").value) == backend
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(
@@ -112,14 +121,14 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             str(tmp_path / f"{backend}-settings-{width}-{height}-{zoom}.png")
         )
 
-        click("tab-skills")
-        # The grid is the panel's first view; a tile opens the form the
-        # Run button belongs to.
-        if not element("skill-tile-waldo.retract").is_displayed():
-            click("skill-back")
-        click("skill-tile-waldo.retract")
+        # A skill's form opens from the editor's Insert menu, and Insert stays
+        # on screen however small the window.
+        click("tab-program")
+        click("editor-commands-btn")
+        click("editor-skills-menu")
+        click("editor-skill-waldo.retract")
         WebDriverWait(screen.selenium, 10).until(
-            lambda _: element("skill-run").is_displayed()
+            lambda _: element("skill-insert").is_displayed()
         )
         WebDriverWait(screen.selenium, 10).until(
             lambda d: d.execute_script(
@@ -127,7 +136,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 const e=document.getElementById(arguments[0]); const r=e.getBoundingClientRect();
                 return e.contains(document.elementFromPoint(r.x+5,r.y+5));
                 """,
-                element("skill-run").get_attribute("id"),
+                element("skill-insert").get_attribute("id"),
             )
         )
         bounds = screen.selenium.execute_script(
@@ -135,26 +144,21 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             const e=document.getElementById(arguments[0]); const r=e.getBoundingClientRect();
             return {bottom:r.bottom, height:innerHeight, visible:e.contains(document.elementFromPoint(r.x+5,r.y+5))};
         """,
-            element("skill-run").get_attribute("id"),
+            element("skill-insert").get_attribute("id"),
         )
-        appearance = screen.selenium.execute_script(
-            "const e=document.getElementById(arguments[0]); return {color:getComputedStyle(e).color, classes:e.className};",
-            element("skill-run").get_attribute("id"),
-        )
-        assert appearance["color"] == "rgb(125, 211, 252)", appearance
         assert bounds["bottom"] <= bounds["height"], bounds
         assert bounds["visible"], bounds
+        screen.selenium.save_screenshot(
+            str(tmp_path / f"{backend}-skills-{width}-{height}-{zoom}.png")
+        )
+        click("skill-close")
         separation = screen.selenium.execute_script("""
             const a=document.querySelector('.readout-panel').getBoundingClientRect();
             const b=document.querySelector('.top-panels-container').getBoundingClientRect();
             return {readout:a.left, panel:b.right};
         """)
         assert separation["readout"] >= separation["panel"], separation
-        screen.selenium.save_screenshot(
-            str(tmp_path / f"{backend}-skills-{width}-{height}-{zoom}.png")
-        )
 
-        click("tab-program")
         WebDriverWait(screen.selenium, 10).until(
             lambda d: d.execute_script(
                 "return (document.querySelector('.editor-tabs-scroll')?.clientWidth || 0) > 0"
