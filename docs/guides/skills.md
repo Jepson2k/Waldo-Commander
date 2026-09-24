@@ -23,21 +23,25 @@ an async client. Start an async program explicitly with `asyncio.run(main())`,
 just as when running its Python file directly. A function definition by itself
 does not execute, including in preview.
 
-The **Skills** panel shows installed skills as a grid of diagrams, grouped by what
-the arm does: moving, holding, and carrying or sensing. Skills from other packages
-appear under **Plugins**. Pointing at a skill that needs no arguments draws its
-motion in the 3D view as a dashed path, from where the arm is now; the robot does
-not move. Clicking a skill opens its parameters, and the path follows the values
-as they are filled in. **Insert call** inserts an import and a call into the active program.
-Saved poses and setups are inserted as fixed snapshots; saving different setup
-data later does not change that call. To follow saved data on the next run, edit
-the Python to load it explicitly with `load_setup`.
+The editor's **Insert Command** menu lists the skills that take a form under
+**Skills**, with their diagrams: approach, retract, park and align tool axis,
+then skills from other packages. Gripper skills are not listed there; the
+Gripper tab drives the gripper live and `rbt.tool` commands are in the same
+menu. Choosing a skill opens its parameters where the side panels open, and
+the 3D view draws its motion as a dashed path from where the arm is now,
+following the values as they are filled in; the robot does not move.
+**Insert** puts an import and a call at the editor's cursor, or at the
+recording cursor while recording. Saved poses and setups are inserted as fixed
+snapshots; saving different setup data later does not change that call. To
+follow saved data on the next run, edit the Python to load it explicitly with
+`load_setup`. The form does not read edited Python back into its fields.
 
-**Run once** opens the generated call in a program tab and runs it with the usual
-pause and stop controls. During motion recording, a successfully completed run
-adds one skill call with its fixed arguments to the recording program. Failed or
-cancelled runs do not add a successful call. Edit the generated Python normally;
-the panel does not read edited Python back into its fields.
+To try a call on the robot, select its lines and choose **Run selection** from
+the editor's **⋮** menu. The selection runs as its own small program with the
+program's imports and the tool the arm carries, with the usual pause and stop
+controls, then the editor returns to the program; after a failed run it stays
+on the run's tab so its log is in view. While recording, the lines are already
+in the program, so the run adds nothing to it.
 
 | Skill | Behavior |
 |---|---|
