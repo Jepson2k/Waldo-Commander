@@ -235,3 +235,34 @@ async def test_a_report_of_anchors_from_before_a_write_does_not_move_the_cursor(
     finally:
         if is_any_program_recording():
             motion_recorder.toggle_recording()
+
+
+@pytest.mark.integration
+async def test_anchors_moved_by_the_write_they_were_declared_with_do_not_move_the_take(
+    user: User,
+):
+    """The browser can place the anchors declared with a write on the text
+    from before it, report them there, then move them when the write lands.
+    Taking the moved positions put the next recorded line a line too low,
+    appended below the with block without its indentation."""
+    from tests.test_editor_integration import _fire_editor_event
+
+    textarea = await _open_program(user, PROGRAM)
+    _set_cursor_line(textarea, 4)
+    waldoctl.commander.programs.active.dry_run.final_joints_rad = None
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0.1)
+    try:
+        lines = str(textarea.value).split("\n")
+        assert "Recording start position" in lines[4], textarea.value
+        declared = dict(textarea._props["line-anchors"])
+        _fire_editor_event(textarea, "anchor-positions", {"anchors": declared})
+        moved = {k: v + 1 if k.startswith("__") else v for k, v in declared.items()}
+        _fire_editor_event(textarea, "anchor-positions", {"anchors": moved})
+        motion_recorder.record_action("io", port=0, state=1)
+        lines = str(textarea.value).split("\n")
+        assert lines[5] == "    rbt.write_io(0, 1)", textarea.value
+        assert staged_lines(textarea) == {5, 6}, textarea.value
+    finally:
+        if is_any_program_recording():
+            motion_recorder.toggle_recording()
