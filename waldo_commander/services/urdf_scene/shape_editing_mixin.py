@@ -241,7 +241,9 @@ class ShapeEditingMixin:
         with (
             ui.context.client.content,
             ui.dialog() as dialog,
-            ui.card().classes("w-[36rem] max-w-full").mark("installation-toml-dialog"),
+            ui.card()
+            .classes("task-dialog w-[36rem] max-w-full")
+            .mark("installation-toml-dialog"),
         ):
             ui.label("Installation TOML").classes("text-lg font-bold")
             ui.label(
