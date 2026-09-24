@@ -26,7 +26,8 @@
             viewportMarginY: 100,
             containerPadding: 20,
             bottomOffset: 12,
-            totalMargin: 36
+            totalMargin: 36,
+            defaultsClearOf: []
         },
         stateClasses: {
             coupled: 'coupled'
@@ -282,6 +283,21 @@
 
     function getMaxHeight() {
         return window.innerHeight - config.constraints.viewportMarginY;
+    }
+
+    // A default width is a suggestion: it stops short of the overlays to its
+    // right, such as the readout. A width the operator dragged is kept.
+    function defaultWidth(container, panelConfig) {
+        let width = panelConfig.defaultWidth || panelConfig.minWidth;
+        if (!width) return width;
+        const left = container.getBoundingClientRect().left;
+        for (const selector of config.constraints.defaultsClearOf || []) {
+            const overlay = document.querySelector(selector);
+            if (!overlay || overlay.offsetParent === null) continue;
+            const overlayLeft = overlay.getBoundingClientRect().left;
+            if (overlayLeft > left) width = Math.min(width, overlayLeft - left - 12);
+        }
+        return Math.max(width, panelConfig.minWidth || 0);
     }
 
     // ========== Resize State ==========
@@ -632,7 +648,7 @@
             const panelConfig = config.panels[panelId] || {};
 
             if (container) {
-                const width = savedSize.width || panelConfig.defaultWidth || panelConfig.minWidth;
+                const width = savedSize.width || defaultWidth(container, panelConfig);
                 if (width) {
                     container.style.width = Math.min(width, getMaxWidth()) + 'px';
                 }
