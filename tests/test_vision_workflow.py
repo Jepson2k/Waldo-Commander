@@ -15,6 +15,7 @@ from tests.helpers.wait import (
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
 )
+from tests.test_editor_integration import _set_selection
 from tests.test_handeye_panel_integration import _FrameBackend, _jpeg
 from tests.test_vision import localization_scene
 from waldo_commander.camera import CameraUnavailable
@@ -119,18 +120,16 @@ async def test_camera_localization_program_preview_and_session_lifetime(
                 setup,
             )
 
-        def element(marker):
-            return next(iter(user.find(marker=marker).elements))
-
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
         ui_state.active_textarea.value = (
             "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    pass\n"
         )
-        user.find(marker="tab-skills").click()
-        user.find(marker="skill-tile-waldo.locate_board").click()
+        user.find(marker="editor-commands-btn").click()
+        user.find(marker="editor-skill-waldo.locate_board").click()
+        await asyncio.sleep(0)
         user.find(marker="skill-insert").click()
-        await user.should_see("Inserted Python skill call")
+        await asyncio.sleep(0)
         program = waldoctl.commander.programs.active
         assert "CameraCalibration.from_dict(" in program.source
         assert "CommanderCameraSource()" in program.source
@@ -151,9 +150,23 @@ async def test_camera_localization_program_preview_and_session_lifetime(
         assert await path_visualizer.update_path_visualization(
             preview_source, tab_id=program.id
         ) in (None, UNCHANGED)
-        user.find(marker="skill-run").click()
-        await user.should_see("Skill completed", retries=300)
-        assert script_exec.last_exit_code == 0
+        textarea = ui_state.active_textarea
+        call = next(
+            number
+            for number, line in enumerate(str(textarea.value).split("\n"), start=1)
+            if "_skill_waldo_locate_board(" in line
+        )
+        _set_selection(textarea, call, call)
+        await asyncio.sleep(0)
+        user.find(marker="editor-run-selection").click()
+        editor = ui_state.editor_panel
+        async with asyncio.timeout(60):
+            await asyncio.sleep(0.1)
+            while editor._running_selection or script_exec.script_handle is not None:
+                await asyncio.sleep(0.05)
+        assert script_exec.last_exit_code == 0, "\n".join(
+            entry.text for entry in waldoctl.commander.programs.active.log.entries
+        )
 
         script = tmp_path / "camera_program.py"
         script.write_text(

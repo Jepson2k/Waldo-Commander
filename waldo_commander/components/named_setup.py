@@ -24,7 +24,6 @@ class NamedSetupPanel(Panel):
     tab_tooltip: ClassVar[str] = "Named frames, poses and parameters"
     order: ClassVar[int] = 20
     default_width: ClassVar[int] = 440
-    default_height: ClassVar[int] = 650
     min_width: ClassVar[int] = 360
     min_height: ClassVar[int] = 420
     resizable: ClassVar[bool] = True

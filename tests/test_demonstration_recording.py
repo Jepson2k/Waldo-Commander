@@ -415,6 +415,21 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         in strict_lines.source
     )
 
+    # Kept as recorded, every motion replays from the copy already saved;
+    # holds are still waits.
+    raw = span_to_lines(
+        recording,
+        robot,
+        program="bench",
+        directory=captures,
+        as_recorded=True,
+        recording_path=strict_lines.recording_path,
+    )
+    kinds = {span.kind for span in raw.spans}
+    assert "replay" in kinds and not kinds & {"move_l", "move_j"}, kinds
+    assert raw.recording_path == saved[0]
+    assert list(captures.glob("bench-*.json")) == saved, "no second copy is saved"
+
 
 @pytest.mark.integration
 async def test_a_stall_near_the_end_of_a_capture_is_a_disconnect(
