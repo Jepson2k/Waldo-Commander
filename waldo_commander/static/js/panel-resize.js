@@ -848,7 +848,39 @@
 
         loadPanelSizes();
         forgetDefaultHeightsOfFitPanels();
+        forgetOldDefaultSizes();
         loadActiveTabs();
+    }
+
+    // The editor had no default size and opened at its minimum, which closing
+    // then saved as if chosen. A size equal to that minimum was not a choice.
+    const OLD_DEFAULT_SIZES = { program: { width: 450, height: 300 } };
+
+    function forgetOldDefaultSizes() {
+        const doneKey = config.storageKey + '_defaults';
+        try {
+            if (localStorage.getItem(doneKey)) return;
+        } catch (e) {
+            return;
+        }
+        let changed = false;
+        for (const [panelId, old] of Object.entries(OLD_DEFAULT_SIZES)) {
+            const saved = panelSizes[panelId];
+            if (!saved) continue;
+            for (const dim of ['width', 'height']) {
+                if (saved[dim] === old[dim]) {
+                    delete saved[dim];
+                    document.documentElement.style.removeProperty(`--panel-${dim}-${panelId}`);
+                    changed = true;
+                }
+            }
+        }
+        if (changed) savePanelSizes();
+        try {
+            localStorage.setItem(doneKey, '1');
+        } catch (e) {
+            console.warn('[PanelResize] Could not record the default-size migration:', e);
+        }
     }
 
     // Older builds saved a height for every panel on close, so the heights
