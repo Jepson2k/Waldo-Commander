@@ -266,6 +266,20 @@ class TestPanelResize:
         """
         fit = js(class_screen, measure)
         assert fit["inline"] == "", fit
+        # Every field ends at the panel's content edge: no empty strip on the right.
+        edges = js(
+            class_screen,
+            """
+            const c = document.querySelector('.settings-panel .settings-content');
+            const inner = c.getBoundingClientRect().left + c.clientLeft + c.clientWidth;
+            const rights = [...c.querySelectorAll('.settings-row > .q-field')]
+                .filter(e => e.offsetParent !== null)
+                .map(e => e.getBoundingClientRect().right);
+            return {inner, rights};
+        """,
+        )
+        assert edges["rights"], edges
+        assert all(edges["inner"] - right <= 2 for right in edges["rights"]), edges
         assert not fit["clipped"], fit
         assert fit["bottom"] <= fit["viewport"], fit
         capped = fit["height"] >= fit["viewport"] - 30
@@ -299,3 +313,35 @@ class TestPanelResize:
         )
         assert "height" not in get_storage(class_screen, STORAGE_KEY)["settings"]
         close_panel(class_screen, "settings-panel")
+
+    def test_the_editor_opens_at_its_default_size(self, class_screen: "Screen") -> None:
+        """The editor opens at its default size, not its minimum. The minimum
+        an older build saved when the editor closed was not a choice."""
+        wait_ready(class_screen)
+        if js(
+            class_screen,
+            "return !!document.querySelector('.program-panel')?.offsetParent",
+        ):
+            close_panel(class_screen, "program-panel")
+            time.sleep(0.3)
+        js(
+            class_screen,
+            """
+            localStorage.removeItem(arguments[0] + '_defaults');
+            localStorage.setItem(arguments[0],
+                JSON.stringify({program: {height: 300, group: 'top'}}));
+            PanelResize.configure(PanelResize.getConfig());
+            """,
+            STORAGE_KEY,
+        )
+        assert "height" not in get_storage(class_screen, STORAGE_KEY)["program"]
+        click_tab(class_screen, "program")
+        time.sleep(0.5)
+        size = js(
+            class_screen,
+            """
+            const c = document.querySelector('.top-panels-container');
+            return {width: c.offsetWidth, height: c.offsetHeight, viewport: innerHeight};
+            """,
+        )
+        assert size["width"] >= 670 and size["height"] >= 470, size
