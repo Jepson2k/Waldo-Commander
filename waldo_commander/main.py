@@ -656,7 +656,10 @@ def _plugin_panel_size(p) -> dict:
     """PanelResize entry for a plugin panel that opts into drag-resizing
     (waldoctl ``Panel.resizable``), or {} otherwise. The JS module supplies
     floor minima, so the size attributes are optional refinements. getattr
-    keeps this working against waldoctl versions predating the attributes."""
+    keeps this working against waldoctl versions predating the attributes.
+
+    A resizable plugin panel is as tall as its content until the user drags
+    its height."""
     if not getattr(p, "resizable", False):
         return {}
     entry = {
@@ -675,6 +678,7 @@ def _plugin_panel_size(p) -> dict:
     )
     entry["selector"] = f"{container} .{p.id}-panel"
     entry["group"] = group
+    entry["fit"] = True
     return entry
 
 
@@ -960,7 +964,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                 ui.button(icon="close", on_click=close_bottom_panels).props(
                     "flat round dense color=white"
                 )
-            with ui.scroll_area().classes("w-full h-full p-0"):
+            with ui.column().classes("settings-content"):
                 ui_state.settings_content = SettingsContent(client)
                 ui_state.settings_content.build_embedded(
                     ai_control_section=control_panel._build_control_mode_selector

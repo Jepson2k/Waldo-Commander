@@ -1625,3 +1625,42 @@ async def test_a_record_and_a_plan_of_different_lengths_still_build_a_scrub_bar(
     program.dry_run.path_segments = []
     program.dry_run.total_steps = 0
     playback.invalidate_timeline()
+
+
+async def test_a_selection_belongs_to_the_tab_it_was_made_in(user: User) -> None:
+    """Lines selected in one program must not be what an action on another
+    program replaces: switching tabs leaves the new tab with no selection."""
+    import waldoctl
+
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    editor = ui_state.editor_panel
+    assert editor is not None
+
+    first = waldoctl.commander.programs.active
+    assert first is not None
+    textarea = ui_state.active_textarea
+    textarea.value = "a = 1\nb = 2\nc = 3\n"
+    _set_selection(textarea, 2, 3)
+
+    user.find(marker="editor-new-tab-btn").click()
+    await asyncio.sleep(0.1)
+    second = waldoctl.commander.programs.active
+    assert second is not None and second is not first
+    other = ui_state.active_textarea
+    other.value = "x = 1\ny = 2\nz = 3\n"
+    await asyncio.sleep(0)
+
+    user.find(marker="editor-capture-pose").click()
+    await asyncio.sleep(0.1)
+    lines = str(other.value).split("\n")
+    assert lines[:3] == ["x = 1", "y = 2", "z = 3"], (
+        f"the other tab's selection replaced this tab's lines: {other.value!r}"
+    )
+    assert any(line.startswith("rbt.move_") for line in lines), other.value
