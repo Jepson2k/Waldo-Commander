@@ -22,6 +22,7 @@ from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot
 from waldoctl.skills import MissingCapability
 
 from tests.helpers.mcp import payload
+from tests.test_editor_integration import _set_selection
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
@@ -108,7 +109,7 @@ def test_starter_skills_plan_fixed_setup_alignment_and_gripper_actions():
 
 
 @pytest.mark.integration
-async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
+async def test_skill_form_inserts_fixed_calls_and_the_selection_runs_live(
     user: User, tmp_path, monkeypatch
 ):
     from waldo_commander.components.script_execution import script_exec
@@ -150,12 +151,35 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
     )
     original = waldoctl.commander.programs.active
     assert original is not None
-    user.find(marker="tab-skills").click()
-    user.find(marker="skill-tile-waldo.approach").click()
+
+    def open_skill(key: str) -> None:
+        user.find(marker="editor-commands-btn").click()
+        user.find(marker=f"editor-skill-{key}").click()
+
+    def line_of(text: str) -> int:
+        return next(
+            number
+            for number, line in enumerate(str(textarea.value).split("\n"), start=1)
+            if text in line
+        )
+
+    async def run_selected(first: int, last: int) -> None:
+        _set_selection(textarea, first, last)
+        await asyncio.sleep(0)
+        user.find(marker="editor-run-selection").click()
+
+    async def run_finished() -> None:
+        async with asyncio.timeout(30):
+            while editor._running_selection or is_any_program_running():
+                await asyncio.sleep(0.05)
+
+    editor = ui_state.editor_panel
+    assert editor is not None
+    open_skill("waldo.approach")
     await asyncio.sleep(0)
     # A clearance far outside the workspace is refused by the planner, and the
-    # panel says so before the call is inserted or run, rather than drawing
-    # nothing and leaving the refusal for the robot to deliver.
+    # form says so before the call is inserted, rather than drawing nothing and
+    # leaving the refusal for the robot to deliver.
     element("skill-arg-clearance_mm").set_value(5000)
     await user.should_see(content="Cannot plan this from the current pose", retries=100)
     element("skill-arg-clearance_mm").set_value(2)
@@ -165,7 +189,9 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
     assert await wait_until(lambda: bool(scene._skill_preview_objects), timeout_s=10)
     await user.should_not_see(content="Cannot plan this from the current pose")
     user.find(marker="skill-insert").click()
-    await user.should_see(content="Inserted Python skill call")
+    await asyncio.sleep(0)
+    assert not scene._skill_preview_objects, "inserting closes the form and its path"
+    await user.should_not_see(marker="skill-dialog")
     ast.parse(original.source)
     assert "_skill_waldo_approach(rbt, target=Pose(" in original.source
     assert "clearance_mm=2.0" in original.source
@@ -184,13 +210,15 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
 
     # Inserting a call is an action in the recording: the delay before the next
     # recorded action measures from the insert, not from whatever the operator
-    # last did before opening the panel and composing the call.
+    # last did before opening the form and composing the call.
     motion_recorder.toggle_recording()
     motion_recorder.record_action("io", port=0, state=1)
     await asyncio.sleep(0.8)
     mark = len(original.source)
+    open_skill("waldo.approach")
+    await asyncio.sleep(0)
+    element("skill-arg-clearance_mm").set_value(2)
     user.find(marker="skill-insert").click()
-    await user.should_see(content="Inserted Python skill call")
     await asyncio.sleep(0.1)
     motion_recorder.record_action("io", port=0, state=0)
     composed = original.source[mark:]
@@ -203,36 +231,53 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
     )
     motion_recorder.toggle_recording()
 
+    # Closing the form takes its path away.
+    open_skill("waldo.approach")
+    await asyncio.sleep(0)
     element("skill-arg-clearance_mm").set_value(3)
     assert await wait_until(lambda: bool(scene._skill_preview_objects), timeout_s=10)
-    user.find(marker="skill-back").click()
-    assert not scene._skill_preview_objects, "leaving a skill takes its path away"
-    user.find(marker="skill-tile-waldo.retract").click()
+    user.find(marker="skill-close").click()
+    await asyncio.sleep(0)
+    assert not scene._skill_preview_objects, "closing the form takes its path away"
+
+    # Live use of a skill is running its line: insert it while recording, then
+    # run the selection. The program holds the call once, and the run's own
+    # motion is not recorded a second time.
+    motion_recorder.toggle_recording()
+    open_skill("waldo.retract")
     await asyncio.sleep(0)
     element("skill-arg-distance_mm").set_value(2)
-    motion_recorder.toggle_recording()
+    user.find(marker="skill-insert").click()
+    await asyncio.sleep(0)
     before_source = original.source
     before_pose = await client.pose()
     assert before_pose is not None
-    # Two queued clicks must produce one native run and one recorded call.
-    user.find(marker="skill-run").click()
-    user.find(marker="skill-run").click()
+    call = line_of("_skill_waldo_retract(rbt,")
     try:
-        await user.should_see(content="Skill completed", retries=300)
+        # Two quick clicks are one run.
+        await run_selected(call, call)
+        user.find(marker="editor-run-selection").click()
+        await asyncio.sleep(0.1)
+        await run_finished()
         assert waldoctl.commander.programs.active is original
+        assert script_exec.last_exit_code == 0
         actual = await client.pose()
         assert actual is not None
         assert np.linalg.norm(np.array(actual[:3]) - before_pose[:3]) == pytest.approx(
             2, abs=0.15
         )
-        recorded = original.source[len(before_source) :]
-        assert recorded.count("_skill_waldo_retract(rbt,") == 1
-        assert "rbt.move_l(" not in recorded
+        assert original.source == before_source, "a run adds nothing to the program"
+        assert original.source.count("_skill_waldo_retract(rbt,") == 1
         ast.parse(original.source)
-        before_cancel = original.source
+
+        open_skill("waldo.retract")
+        await asyncio.sleep(0)
         element("skill-arg-distance_mm").set_value(20)
         element("skill-arg-speed").set_value(0.001)
-        user.find(marker="skill-run").click()
+        user.find(marker="skill-insert").click()
+        await asyncio.sleep(0)
+        slow = line_of("distance_mm=20.0")
+        await run_selected(slow, slow)
         async with asyncio.timeout(10):
             while not is_any_program_running():
                 await asyncio.sleep(0.05)
@@ -248,19 +293,15 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
             lambda s: s.action_state == waldoctl.ActionState.IDLE,
             timeout=2,
         ), "stopping a program must cancel its active native motion"
-        await user.should_see(
-            content="Skill did not complete; see the program log", retries=50
-        )
-        assert original.source == before_cancel, (
-            "a cancelled run is not recorded as success"
-        )
+        await run_finished()
         assert waldoctl.commander.programs.active is original, (
             "the recording program is active again after a failed run"
         )
+        before_move = original.source
         motion_recorder.record_action("move_j", angles=list(START))
         await asyncio.sleep(0)
-        assert "rbt.move_j(" in original.source[len(before_cancel) :], (
-            "recorded actions land in the recording program, not the skill program"
+        assert "rbt.move_j(" in original.source[len(before_move) :], (
+            "recorded actions land in the recording program, not the run's"
         )
     finally:
         if is_any_program_running():
@@ -316,25 +357,25 @@ async def test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp(
     closed = await client.io()
     assert opened is not None and closed is not None
     assert opened[2] != closed[2], "gripper skills must actuate the simulated valve"
-    user.find(marker="tab-skills").click()
-    user.find(marker="skill-back").click()
-    user.find(marker="skill-tile-waldo.gripper_open").click()
+    # A run selects the tool the arm carries, so a line that reads rbt.tool
+    # runs on its own.
+    waldoctl.commander.programs.switch(original.id)
     await asyncio.sleep(0)
-    previous = waldoctl.commander.programs.active
-    user.find(marker="skill-run").click()
-    async with asyncio.timeout(30):
-        while (
-            waldoctl.commander.programs.active is previous or is_any_program_running()
-        ):
-            await asyncio.sleep(0.05)
-    launched = waldoctl.commander.programs.active
-    assert launched is not None
-    assert script_exec.last_exit_code == 0, "\n".join(
-        entry.text for entry in launched.log.entries
+    textarea.value = (
+        "from parol6 import RobotClient\n"
+        "from waldo_commander.skills import gripper_open\n"
+        "with RobotClient() as rbt:\n"
+        "    gripper_open(rbt)\n"
     )
-    await user.should_see(content="Skill completed")
-    after_run_once = await client.io()
-    assert after_run_once is not None and after_run_once[2] == opened[2]
+    await asyncio.sleep(0)
+    await run_selected(4, 4)
+    await asyncio.sleep(0.1)
+    await run_finished()
+    assert script_exec.last_exit_code == 0, "\n".join(
+        entry.text for entry in waldoctl.commander.programs.active.log.entries
+    )
+    after_run = await client.io()
+    assert after_run is not None and after_run[2] == opened[2]
 
 
 def test_a_skill_without_a_saved_setup_or_a_pose_says_what_to_do():
