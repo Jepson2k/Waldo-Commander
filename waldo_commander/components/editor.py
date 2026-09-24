@@ -1410,9 +1410,11 @@ class EditorPanel(FileOperationsMixin):
                             icon="bug_report",
                             on_click=show_run_records,
                         )
-                        .props("flat dense color=white")
-                        .classes("w-full justify-start")
-                        .tooltip("Run records")
+                        .props("flat dense no-caps align=left color=white")
+                        .classes("w-full")
+                        .tooltip(
+                            "What recent runs did, and exporting it for a bug report"
+                        )
                     )
                     records_btn.mark("editor-records-btn")
                 self._toolbar_btns = [
