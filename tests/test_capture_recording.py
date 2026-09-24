@@ -66,10 +66,11 @@ async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
         start = await client.angles()
         assert start is not None
         target = list(start)
-        target[0] += 8.0
+        target[0] += 12.0
+        target[2] -= 8.0
         # A move no UI hook sees: what another client, MCP or a hand on the
         # arm looks like to the recorder.
-        index = await client.move_j(target, duration=1.0)
+        index = await client.move_j(target, duration=1.2)
         assert await client.wait_command(index, timeout=10)
         assert await wait_until(
             lambda: _capture(motion_recorder.session) is not None, timeout_s=20
@@ -83,7 +84,11 @@ async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
             for spec in textarea.decorations
             if spec.get("class") == "cm-staged-badge"
         ]
-        assert badges and badges[0].startswith("captured · "), badges
+        moves = captured.count("rbt.move_")
+        # The badge counts the move lines it sits on.
+        assert badges and badges[0].startswith(
+            f"captured · {moves} move{'s' if moves != 1 else ''}"
+        ), (badges, captured)
         ast.parse(str(textarea.value))
 
         # The lines plan to where the arm actually ended up.
