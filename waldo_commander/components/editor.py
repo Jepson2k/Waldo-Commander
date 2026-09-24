@@ -1228,8 +1228,6 @@ class EditorPanel(FileOperationsMixin):
                 .classes("w-full items-center gap-2 px-2 no-wrap")
                 .style("height: 42px;")
             ):
-                ui.label("Program").classes("text-lg font-medium whitespace-nowrap")
-
                 # Tabs area (horizontal scroll)
                 with (
                     ui.scroll_area()
