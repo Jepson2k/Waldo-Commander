@@ -193,7 +193,11 @@ class StagedBlock:
         source = "hand-guided" if self.guided else "captured"
         if self.mode == "raw" or self.conversion is None:
             return f"{source} · raw"
-        moves = sum(1 for s in self.conversion.spans if s.kind in ("move_l", "move_j"))
+        moves = sum(
+            len(s.lines)
+            for s in self.conversion.spans
+            if s.kind in ("move_l", "move_j")
+        )
         text = f"{source} · {moves} move{'s' if moves != 1 else ''}"
         if replayed := len(self.conversion.replayed):
             text += f", {replayed} replayed"
@@ -248,11 +252,14 @@ class MotionRecorder:
         self._observer_generation = 0
         self._session: RecordingSession | None = None
         self._session_listeners: list[Callable[[], None]] = []
-        # What the recorder last declared as line anchors, and whether the
-        # browser has reported exactly that back yet.
+        # What the recorder last declared as line anchors, whether the
+        # browser has reported exactly that back yet, and whether anyone
+        # else has changed the text since.
         self._declared: dict[str, int] = {}
         self._confirmed = False
         self._redeclared = 0
+        self._writing = False
+        self._edited_since_declared = False
         self._watched: set[int] = set()
         # Where a span still open when recording stopped goes.
         self._flush_after: int | None = None
@@ -391,7 +398,11 @@ class MotionRecorder:
     def _write(self, textarea, text: str) -> None:
         """Set the editor text. Every anchor the browser reported is from
         before this change, so none is current until it reports again."""
-        textarea.value = text
+        self._writing = True
+        try:
+            textarea.value = text
+        finally:
+            self._writing = False
         self._confirmed = False
 
     def _watch(self, textarea) -> None:
@@ -399,21 +410,29 @@ class MotionRecorder:
             return
         self._watched.add(id(textarea))
         textarea.on_anchor_change(self._on_anchor_report)
+        textarea.on_value_change(self._on_text_change)
+
+    def _on_text_change(self, _event) -> None:
+        if not self._writing:
+            self._edited_since_declared = True
 
     def _on_anchor_report(self, event) -> None:
         """The browser reports anchor lines after every change to the text.
 
-        The report that follows the recorder rewriting lines is of the anchors
-        as they were, moved by that rewrite; it can reach the server before
-        the declaration made with the rewrite leaves it, and it then replaces
-        that declaration. Only a report of what was declared confirms it.
+        A report of what the recorder declared confirms it. Until someone else
+        changes the text, a report that differs is of a misplaced declaration:
+        sent before the write it came with reached the browser, or placed on
+        the text from before that write and then moved by it. The recorder's
+        own lines stand, and the declaration goes out again.
         """
-        if self._confirmed:
-            return
         reported = {k: v for k, v in event.anchors.items() if k.startswith("__")}
         if all(reported.get(k) == v for k, v in self._declared.items()):
             self._confirmed = True
-        elif self._redeclared < 2:
+            return
+        if self._confirmed and self._edited_since_declared:
+            return
+        self._confirmed = False
+        if self._redeclared < 2:
             self._redeclared += 1
             self._push_anchors(redeclare=True)
 
@@ -492,6 +511,7 @@ class MotionRecorder:
                 anchors[_RETAKE_FIRST_ID], anchors[_RETAKE_LAST_ID] = session.retake
         self._declared = dict(anchors)
         self._confirmed = False
+        self._edited_since_declared = False
         return anchors
 
     def _push_anchors(
