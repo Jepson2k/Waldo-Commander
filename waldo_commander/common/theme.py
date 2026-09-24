@@ -476,7 +476,7 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
     },
     "constraints": {
         "viewportMarginX": 80,
-        "viewportMarginY": 20,
+        "viewportMarginY": 24,
         "containerPadding": 20,
         "bottomOffset": 12,
         "totalMargin": 36,
@@ -502,7 +502,7 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "minWidth": 420,
             "minHeight": 320,
             "defaultWidth": 520,
-            "defaultHeight": 560,
+            "fit": True,
             "group": "bottom",
         },
         "gripper": {
@@ -927,6 +927,11 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 .bottom-panels-container { bottom: 12px; }
 
 .resizable-panel { overflow: hidden !important; }
+
+/* A panel whose container carries no inline height (no dragged size yet) is as
+   tall as its content. This keeps it inside the viewport; the flex chain under
+   it (min-height: 0, overflow: auto) scrolls at the cap. */
+.left-panels-container > .q-panel > .resizable-panel { max-height: calc(100vh - 24px); }
 
 /* Panel content is interactive when visible */
 .left-panels-container .overlay-card { pointer-events: auto; }

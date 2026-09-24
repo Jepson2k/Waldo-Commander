@@ -73,7 +73,7 @@ def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
 
     Args:
         screen: Selenium screen fixture
-        tab_name: One of 'program', 'io', 'gripper', 'log', 'help'
+        tab_name: One of 'program', 'io', 'log', 'settings', 'help'
         timeout: Max seconds to wait for tab to become active (default 10s for CI)
     """
     # Map tab names to their icon names
@@ -81,6 +81,7 @@ def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
         "program": "code",
         "io": "settings_input_component",
         "log": "article",
+        "settings": "tune",
         "help": "help",
     }
     icon_name = tab_icons.get(tab_name)
