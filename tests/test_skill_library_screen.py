@@ -78,14 +78,16 @@ def test_a_skill_form_opens_beside_the_scene_and_keeps_insert_in_reach(
         "const r=e.getBoundingClientRect();"
         "const form=document.querySelector('.skill-library-form-scroll');"
         "const canvas=document.querySelector('canvas').getBoundingClientRect();"
-        "const hit=document.elementFromPoint(canvas.x+canvas.width/2, canvas.y+canvas.height/2);"
+        "const hit=document.elementFromPoint(canvas.x+canvas.width*0.6, canvas.y+canvas.height/2);"
         "return {insert:r.bottom < innerHeight && e.contains(document.elementFromPoint(r.x+5,r.y+5)),"
-        "width:form.clientWidth, content:form.scrollWidth, scene: hit && hit.tagName};",
+        "width:form.clientWidth, content:form.scrollWidth, scene: hit && hit.tagName,"
+        "hit: hit && hit.className};",
         f"c{insert_id}",
     )
     assert layout["insert"], layout
     assert layout["content"] <= layout["width"] + 1, layout
-    # No backdrop: the middle of the scene is still the scene.
+    # No backdrop: the scene is still the scene where no panel covers it (the
+    # editor's default width reaches past the centre of a 1366-wide window).
     assert layout["scene"] == "CANVAS", layout
     driver.save_screenshot(str(tmp_path / "skill-form.png"))
 
