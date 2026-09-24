@@ -486,6 +486,8 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "selector": ".top-panels-container .program-panel",
             "minWidth": 450,
             "minHeight": 300,
+            "defaultWidth": 680,
+            "defaultHeight": 480,
             "group": "top",
         },
         "response": {
@@ -496,9 +498,9 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
         },
         "settings": {
             "selector": ".bottom-panels-container .settings-panel",
-            "minWidth": 420,
+            "minWidth": 400,
             "minHeight": 320,
-            "defaultWidth": 520,
+            "defaultWidth": 440,
             "fit": True,
             "group": "bottom",
         },
