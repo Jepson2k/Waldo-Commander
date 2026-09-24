@@ -80,7 +80,7 @@ def segments_from_record(
     collisions = collisions or {}
     dt = record.row_dt_s
     out: list[PathSegment] = []
-    for block in record.blocks:
+    for index, block in enumerate(record.blocks):
         note = note_for(notes, block.command)
         line = note.line_number or block.line_number or 0
         move_type = block.move_type or note.method or "unknown"
@@ -110,7 +110,7 @@ def segments_from_record(
 
         first, last = block.start_row, block.start_row + block.rows
         duration = block.rows * dt
-        requested = note.requested_duration
+        requested = _blend_requested(record, notes, index)
         feasible = requested is None or duration <= requested * 1.05
         collision = collisions.get(block.command)
         valid = record.valid[first:last] if record.valid is not None else None
@@ -158,6 +158,33 @@ def segments_from_record(
                 )
             )
     return out
+
+
+def _blend_requested(
+    record: TickIndex, notes: Sequence[CommandNote], index: int
+) -> float | None:
+    """The time asked of the block at *index* and of the motion commands
+    folded into its blend, which own no rows of their own; None when any
+    of them asks for none."""
+    blocks = record.blocks
+    requested = note_for(notes, blocks[index].command).requested_duration
+    later = index + 1
+    while requested is not None and later < len(blocks):
+        block = blocks[later]
+        if block.rows or block.error is not None or block.move_type is None:
+            break
+        if record.stop != "completed" and not any(b.rows for b in blocks[later:]):
+            break
+        folded = note_for(notes, block.command)
+        if folded.checkpoint is not None:
+            break
+        requested = (
+            None
+            if folded.requested_duration is None
+            else requested + folded.requested_duration
+        )
+        later += 1
+    return requested
 
 
 def command_segments(segments: Sequence[PathSegment]) -> dict[int, int]:
