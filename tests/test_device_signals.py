@@ -2,6 +2,7 @@
 
 import asyncio
 import socket
+import textwrap
 
 import pytest
 import waldoctl
@@ -19,7 +20,10 @@ from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
 )
+from tests.test_editor_integration import _set_selection
 from waldo_commander.services.path_preview_client import PathPreviewClient
+from waldo_commander.services.programs import is_any_program_running
+from waldo_commander.services.skill_library import call_source, library
 from waldo_commander.setup import SetupStore, export_snapshot
 from waldo_commander.skills.signals import (
     SignalFixture,
@@ -128,14 +132,23 @@ async def test_saved_named_output_readback_wait_cancellation_and_disconnection(
         from waldo_commander.services.path_visualizer import path_visualizer
 
         user.find(marker="tab-program").click()
-        assert ui_state.active_textarea is not None
-        ui_state.active_textarea.value = (
-            "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    pass\n"
+        textarea = ui_state.active_textarea
+        assert textarea is not None
+        # The call the editor generates for a saved mapping, run as a selection.
+        entries, _ = library(ui_state.active_robot)
+        snippet = call_source(
+            entries["waldo.write_signal"],
+            {
+                "signal": SetupStore(tmp_path).load("cell").signals["valve"],
+                "value": True,
+            },
         )
-        user.find(marker="tab-skills").click()
-        user.find(marker="skill-tile-waldo.write_signal").click()
-        user.find(marker="skill-insert").click()
-        await user.should_see("Inserted Python skill call")
+        textarea.value = (
+            "from parol6 import RobotClient\nwith RobotClient() as rbt:\n"
+            + textwrap.indent(snippet, "    ")
+            + "\n"
+        )
+        await asyncio.sleep(0)
         program = waldoctl.commander.programs.active
         assert program is not None and "DigitalSignal(**" in program.source
         error = await path_visualizer.update_path_visualization(
@@ -145,8 +158,24 @@ async def test_saved_named_output_readback_wait_cancellation_and_disconnection(
             error is not None
             and "Named signals need an explicit SignalFixture" in error
         )
-        user.find(marker="skill-run").click()
-        await user.should_see("Skill completed", retries=300)
+        call = next(
+            number
+            for number, line in enumerate(str(textarea.value).split("\n"), start=1)
+            if "_skill_waldo_write_signal(" in line
+        )
+        _set_selection(textarea, call, call)
+        await asyncio.sleep(0)
+        user.find(marker="editor-run-selection").click()
+        editor = ui_state.editor_panel
+        async with asyncio.timeout(30):
+            await asyncio.sleep(0.1)
+            while editor._running_selection or is_any_program_running():
+                await asyncio.sleep(0.05)
+        from waldo_commander.components.script_execution import script_exec
+
+        assert script_exec.last_exit_code == 0, "\n".join(
+            entry.text for entry in waldoctl.commander.programs.active.log.entries
+        )
         assert (await client.io())[2] == 1, (
             "generated Python did not write the selected mapping"
         )

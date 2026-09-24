@@ -123,7 +123,7 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
         EC.element_to_be_clickable(
             (
                 By.XPATH,
-                "//*[contains(@class, 'settings-row')][.//*[text()='Workspace Envelope']]//*[contains(@class, 'q-select')]",
+                "//*[contains(@class, 'settings-row')][.//*[text()='Workspace envelope']]//*[contains(@class, 'q-select')]",
             )
         )
     ).click()

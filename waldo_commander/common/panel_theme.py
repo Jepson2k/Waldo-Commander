@@ -14,6 +14,9 @@ def inject_panel_css() -> None:
 @layer quasar {
   .q-btn--flat.text-primary:not(.text-white),
   .q-btn--outline.text-primary:not(.text-white) { color: #7dd3fc !important; }
+  /* A skill's form opens where the side panels do, clear of the scene, the
+     readout and the E-stop. */
+  .skill-dialog-host > .q-dialog__inner--left { align-items: flex-start !important; padding: 12px 0 12px 58px !important; }
 }
 .task-panel, .overlay-card.task-panel, .task-dialog {
   color: var(--color-neutral-100);
@@ -29,9 +32,11 @@ def inject_panel_css() -> None:
 .task-dialog .q-expansion-item > .q-expansion-item__container > .q-item {
   min-height: 36px; padding: 4px 8px; background: transparent;
 }
-/* The tab panel is a flex column that starts its children, so without a
-   width a plugin's content shrinks to its widest line. */
-.plugin-panel-content { width: 100%; height: 100%; min-height: 0; min-width: 0; overflow: auto; overflow-x: hidden; }
+/* A flex column with the tab panel's full width (the tab panel starts its
+   children, so without a width a plugin's content shrinks to its widest
+   line), so a panel capped at the viewport shrinks its plugin's own scroller
+   rather than scrolling the plugin whole, heading and all. */
+.plugin-panel-content { display: flex; flex-direction: column; flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; min-width: 0; overflow: auto; overflow-x: hidden; }
 .panel-body { flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; overflow-y: auto; overflow-x: hidden; }
 .panel-heading { font-size: 16px; font-weight: 600; line-height: 24px; }
 .panel-actions { flex-shrink: 0; width: 100%; align-items: center; gap: 8px; padding-top: 8px; }
@@ -41,26 +46,20 @@ def inject_panel_css() -> None:
 .task-dialog > .panel-body { flex-basis: auto; }
 .task-panel .q-table th, .task-dialog .q-table th { color: var(--color-neutral-300); text-align: left; }
 .task-panel .q-table td, .task-dialog .q-table td { text-align: left; }
-.settings-content { height: 100%; min-height: 0; width: 100%; gap: 4px; flex-wrap: nowrap; }
-.settings-group-heading { font-size: 13px; font-weight: 600; color: var(--ctk-muted); letter-spacing: .01em; }
-.settings-panel { width: 520px; max-width: calc(100vw - 80px); }
-.settings-category { flex-shrink: 0; width: 100%; }
-.settings-category .q-field__control, .settings-category .q-field__marginal { height: 32px; min-height: 32px; }
-.settings-category .q-field__native { min-height: 32px; padding: 0; }
-.settings-group { width: 100%; gap: 4px; flex-wrap: nowrap; }
-.settings-row { display: flex; flex-wrap: nowrap; gap: 8px; min-height: 32px; width: 100%; align-items: center; }
-.settings-row > .settings-label { flex: 1 1 0; min-width: 0; font-size: 14px; }
-.settings-row > :not(.settings-label) { flex-shrink: 0; max-width: 60%; }
-.settings-row .q-field__control, .settings-row .q-field__marginal { min-height: 32px; height: 32px; }
-.settings-row .q-field__native { min-height: 32px; padding-top: 0; padding-bottom: 0; }
-.settings-row .q-field__label { top: 7px; }
-.settings-row .q-field--float .q-field__label { transform: translateY(-35%) scale(.75); }
-.settings-row .q-field--float .q-field__native { padding-top: 12px; }
-.settings-row .q-toggle__inner { font-size: 32px; }
-.settings-content .q-expansion-item { width: 100%; }
-.settings-content .q-item { min-height: 32px; padding: 4px 0; background: transparent; }
-.settings-content .q-item__section--avatar { min-width: 24px; }
-.settings-content .q-separator { background: var(--color-neutral-600); }
+.settings-content { flex: 1 1 auto; min-height: 0; width: 100%; gap: 0; flex-wrap: nowrap; overflow-y: auto; overflow-x: hidden; }
+.settings-panel { max-width: calc(100vw - 80px); }
+/* The rule under each heading is the only divider; a row is its label beside
+   its control, and what the setting does is the label's tooltip. */
+.settings-group-heading { width: 100%; margin-top: 12px; padding-bottom: 3px; border-bottom: 1px solid var(--color-neutral-700); font-size: 12px; font-weight: 600; color: var(--ctk-muted); }
+.settings-content > .settings-group-heading:first-child { margin-top: 0; }
+.settings-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); column-gap: 8px; align-items: center; min-height: 29px; width: 100%; }
+.settings-row > .settings-label { font-size: 13px; line-height: 1.25; min-width: 0; color: var(--color-neutral-200); }
+.settings-row > :not(.settings-label) { justify-self: start; min-width: 0; max-width: 100%; }
+.settings-row .q-field__control, .settings-row .q-field__marginal { min-height: 28px; height: 28px; }
+.settings-row .q-field__native, .settings-row .q-field__prefix, .settings-row .q-field__suffix { min-height: 28px; padding-top: 0; padding-bottom: 0; }
+.settings-row .q-toggle__inner { font-size: 28px; }
+.settings-axis { width: 76px; }
+.settings-axis .q-field__prefix { color: var(--ctk-muted); padding-right: 4px; }
 .diagnostics-view { width: 560px; max-width: calc(100vw - 80px); max-height: calc(100dvh - 24px); flex-wrap: nowrap; }
 /* Normal is colourless, so anything with colour in it is asking for attention.
    The verdict is the one thing sized to be read from across the room. */
@@ -96,30 +95,28 @@ def inject_panel_css() -> None:
 .handeye-camera-chip { position: absolute; left: 8px; top: 8px; font-size: 11px; line-height: 1.4; padding: 2px 7px; border-radius: 3px; background: rgba(0, 0, 0, .65); color: var(--ctk-muted); }
 .handeye-camera-chip-found { color: #86efac; }
 .handeye-count { font-size: 15px; font-weight: 600; color: var(--ctk-text); }
-/* Skills are drawn rather than listed: the diagram is the label. */
-.skill-group-heading { font-size: 13px; font-weight: 600; color: var(--ctk-muted); margin-top: 4px; }
-.skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; width: 100%; }
-.skill-tile { min-height: 80px; padding: 6px 4px; border: 1px solid var(--color-neutral-700); border-radius: 6px; background: var(--color-neutral-900); color: var(--color-neutral-200); }
-.skill-tile:hover, .skill-tile.skill-tile-selected { border-color: #7dd3fc; }
-.skill-tile .q-icon { width: 56px; height: 40px; font-size: 40px; margin-bottom: 4px; }
-.skill-tile .q-btn__content .block { font-size: 12px; line-height: 1.25; white-space: normal; }
-.skill-tile-unavailable { opacity: .45; }
+/* A skill is inserted from a dialog beside the 3D view, labelled by its diagram. */
+.skill-dialog { width: 450px; max-width: calc(100vw - 80px); margin: 0; max-height: calc(100vh - 24px) !important; }
 .skill-detail-icon { width: 42px; height: 30px; font-size: 30px; flex-shrink: 0; }
+.skill-menu-icon { width: 34px; height: 24px; font-size: 24px; }
 .capture-review { flex-shrink: 0; max-height: 70%; overflow: hidden; padding: 4px 8px 2px; border-top: 1px solid var(--color-neutral-700); background: var(--color-neutral-900); }
 .editor-toolbar-menu { min-width: 190px; }
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }
 .event-detail-grid > * { overflow-wrap: anywhere; }
-/* The I/O strip is the readout's widest row on a backend that takes its line
-   count from config. Bounded so it wraps instead of widening the panel, and
-   given the header's full width on its own line once there are many lines. */
+/* The I/O strip is a bounded block at the header's right edge: chips wrap
+   into rows inside it and tighten as the count grows, and the name chips give
+   way (shrink, truncate) before the strip ever drops under them. */
 .readout-panel { max-width: 480px; }
-.readout-header { flex-wrap: wrap; }
-.io-chips { flex-wrap: wrap; row-gap: 2px; max-width: 240px; }
-.io-chips-wide { flex: 1 0 100%; max-width: none; justify-content: flex-start; }
+.readout-header > .q-chip { flex: 0 1 auto; min-width: 0; }
+.readout-header .q-chip__content { min-width: 0; flex-wrap: nowrap; }
+.readout-header .robot-face { flex-shrink: 0; }
+.readout-robot-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.io-chips { flex: 0 0 auto; max-width: 200px; display: flex; flex-wrap: wrap; justify-content: flex-end; align-content: center; gap: 2px 1px; }
+.io-chips .q-chip { margin: 0; }
+.io-chips-dense .q-chip { padding: 0 3px; height: 1.4em; }
 @media (min-width: 641px) and (max-width: 1200px) {
   .readout-panel { width: 450px; }
   .readout-panel > .nicegui-column { width: 100%; }
-  .readout-header { flex-wrap: wrap !important; row-gap: 0; }
 }
 """)

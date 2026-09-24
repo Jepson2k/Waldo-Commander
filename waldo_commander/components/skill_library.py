@@ -1,4 +1,4 @@
-"""Installed Python skill discovery, explicit call insertion and one-shot runs."""
+"""A skill's typed form, opened from the editor's Insert menu, that inserts a fixed call."""
 
 from __future__ import annotations
 
@@ -6,12 +6,10 @@ import ast
 import asyncio
 import inspect
 import logging
-import textwrap
-import time
-from typing import Any, ClassVar, Literal, get_args, get_origin, get_type_hints
+from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from nicegui import background_tasks, run, ui
-from waldoctl import Commander, Panel, PanelSlot
+from waldoctl import Commander
 from waldoctl.camera import CameraCalibration
 from waldoctl.recordings import Demonstration
 from waldoctl.setup import Pose, SetupSnapshot
@@ -30,23 +28,19 @@ from waldo_commander.vision import LocalizationLimits
 
 logger = logging.getLogger(__name__)
 
-# Grouped by what the arm does rather than by module, in the order an
-# operator reaches for them. A skill WC does not know is shown under Plugins.
-SKILL_TILES: dict[str, tuple[str, str]] = {
-    "waldo.retract": ("Move", "retract"),
-    "waldo.approach": ("Move", "approach"),
-    "waldo.park": ("Move", "park"),
-    "waldo.align_tool_axis": ("Move", "align_tool_axis"),
-    "waldo.gripper_open": ("Hold", "gripper_open"),
-    "waldo.gripper_close": ("Hold", "gripper_close"),
-    "waldo.read_signal": ("Carry and sense", "read_signal"),
-    "waldo.wait_signal": ("Carry and sense", "wait_signal"),
-    "waldo.write_signal": ("Carry and sense", "write_signal"),
-    "waldo.transfer": ("Carry and sense", "transfer"),
-    "waldo.transfer_with_signal": ("Carry and sense", "transfer_with_signal"),
-    "waldo.locate_board": ("Carry and sense", "locate_board"),
+# The skills the editor offers, in the order an operator reaches for them,
+# with their diagrams. Gripper and signal skills are left out: the Gripper and
+# I/O tabs do those live, and their one-line rbt commands are already in the
+# menu. A skill from another package is offered after these.
+SKILL_ICONS: dict[str, str] = {
+    "waldo.approach": "approach",
+    "waldo.retract": "retract",
+    "waldo.park": "park",
+    "waldo.align_tool_axis": "align_tool_axis",
+    "waldo.transfer": "transfer",
+    "waldo.transfer_with_signal": "transfer_with_signal",
+    "waldo.locate_board": "locate_board",
 }
-_PLUGINS = "Plugins"
 
 
 def _label(name: str) -> str:
@@ -73,22 +67,16 @@ def _skill_labels(ids) -> dict[str, str]:
     return labels
 
 
-def _tile_groups(ids) -> list[tuple[str, list[str]]]:
-    order = list(SKILL_TILES)
-    groups: dict[str, list[str]] = {}
-    for group, _ in SKILL_TILES.values():
-        groups.setdefault(group, [])
-    groups[_PLUGINS] = []
-    for key in ids:
-        groups[SKILL_TILES.get(key, (_PLUGINS, ""))[0]].append(key)
-    for group, keys in groups.items():
-        keys.sort(key=lambda k: order.index(k) if k in order else len(order))
-    return [(group, keys) for group, keys in groups.items() if keys]
+def menu_skills(ids) -> list[str]:
+    """The skills the editor offers, known ones first in their order."""
+    known = [key for key in SKILL_ICONS if key in ids]
+    others = sorted(key for key in ids if not key.startswith("waldo."))
+    return known + others
 
 
-def _tile_icon(key: str) -> str:
-    known = SKILL_TILES.get(key)
-    return f"img:/static/icons/skills/{known[1]}.svg" if known else "extension"
+def skill_icon(key: str) -> str:
+    known = SKILL_ICONS.get(key)
+    return f"img:/static/icons/skills/{known}.svg" if known else "extension"
 
 
 def _summary(entry: SkillEntry) -> str:
@@ -113,8 +101,8 @@ def _pose(snapshot: SetupSnapshot, name: str | None):
     return snapshot.resolve(name)
 
 
-def _selected_tool_preamble(tool: ToolStatus) -> str:
-    """Bind the tool the arm carries in the program the panel runs.
+def selected_tool_preamble(tool: ToolStatus) -> str:
+    """Bind the tool the arm carries in a program run from the editor.
 
     That program opens a fresh client, and a client knows no tool until it
     selects one — so a skill that reads ``rbt.tool`` would refuse even with
@@ -130,26 +118,20 @@ def _selected_tool_preamble(tool: ToolStatus) -> str:
     )
 
 
-class SkillLibraryPanel(Panel):
-    id: ClassVar[str] = "skills"
-    display_name: ClassVar[str] = "Skills"
-    slot: ClassVar[PanelSlot] = PanelSlot.LEFT_TOP_TAB
-    tab_icon: ClassVar[str] = "extension"
-    tab_tooltip: ClassVar[str] = "Reusable Python skills"
-    order: ClassVar[int] = 25
-    default_width: ClassVar[int] = 460
-    default_height: ClassVar[int] = 580
-    min_width: ClassVar[int] = 380
-    min_height: ClassVar[int] = 380
-    resizable: ClassVar[bool] = True
+class SkillDialog:
+    """A skill's typed form, where the side panels open.
 
-    def build(self, commander: Commander) -> None:
-        entries, diagnostics = library(commander.robot)
+    Seamless, so the path the form describes stays in sight and the scene,
+    the readout and the E-stop stay usable while it is open. Insert puts a
+    call with fixed arguments at the editor's cursor, or at the recording
+    cursor while recording.
+    """
+
+    def open(self, commander: Commander, key: str) -> None:
+        entries, _ = library(commander.robot)
         labels = _skill_labels(entries)
         readers: dict[str, Any] = {}
-        tiles: dict[str, ui.button] = {}
-        running = False
-        selected: str | None = None
+        selected: str | None = key
         preview_generation = 0
 
         def field_label(name: str) -> str:
@@ -183,7 +165,7 @@ class SkillLibraryPanel(Panel):
             from waldo_commander.state import ui_state
 
             scene = ui_state.urdf_scene
-            if generation != preview_generation or scene is None:
+            if generation != preview_generation or scene is None or dialog.is_deleted:
                 return
             tool = commander.status.tool
             try:
@@ -196,8 +178,6 @@ class SkillLibraryPanel(Panel):
                     (tool.key, tool.variant_key),
                 )
             except Exception as error:
-                # A skill with nothing to draw is the ordinary case on hover,
-                # not a fault: most need arguments before they have a motion.
                 logger.debug("No preview for %s: %s", key, error)
                 if explain and generation == preview_generation:
                     preview_note.set_text(
@@ -252,218 +232,62 @@ class SkillLibraryPanel(Panel):
                 message.set_text(str(error))
                 return
             motion_recorder.insert_skill_call(snippet)
-            clear_preview()
-            message.set_text("Inserted Python skill call")
+            dialog.close()
 
-        async def run_once() -> None:
-            nonlocal running
-            from waldo_commander.components.script_execution import script_exec
-            from waldo_commander.services.control_lease import require_browser_control
-            from waldo_commander.services.motion_recorder import motion_recorder
-            from waldo_commander.services.programs import is_any_program_running
-            from waldo_commander.state import ui_state
-
-            if running or is_any_program_running():
-                message.set_text("Wait for the running program to finish")
-                return
-            if not require_browser_control(ui_state.active_client_id):
-                message.set_text("Take browser control before running a skill")
-                return
-            if not (commander.status.connected or commander.status.simulator_active):
-                message.set_text("Connect the robot or enable the simulator first")
-                return
-            try:
-                snippet = source(synchronous=True)
-            except (ValueError, TypeError, KeyError, OSError, SyntaxError) as error:
-                message.set_text(str(error))
-                return
-            running = True
-            run_button.disable()
-            clear_preview()
-            try:
-                recording = next(
-                    (p for p in commander.programs.items if p.recording.is_recording),
-                    None,
-                )
-                text = (
-                    f"from {commander.robot.backend_package} import RobotClient\n\nwith RobotClient() as rbt:\n"
-                    + textwrap.indent(
-                        _selected_tool_preamble(commander.status.tool) + snippet, "    "
-                    )
-                    + "\n"
-                )
-                program = commander.programs.new(
-                    source=text, filename=f"{entry().skill.spec.id}.py"
-                )
-                commander.programs.switch(program.id)
-                if ui_state._program_tab is not None:
-                    ui_state._program_tab.parent_slot.parent.set_value("program")
-                started_at = time.time()
-
-                def still_recording() -> bool:
-                    return (
-                        recording is not None
-                        and recording in commander.programs.items
-                        and recording.recording.is_recording
-                    )
-
-                completed = False
-                try:
-                    await script_exec.start()
-                    handle = script_exec.script_handle
-                    if handle is None or not script_exec.is_launching_tab(program.id):
-                        message.set_text("Skill could not start; see the program log")
-                        return
-                    message.set_text(
-                        "Running in the program editor; use its pause/stop controls"
-                    )
-                    while program.execution.is_running:
-                        await asyncio.sleep(0.1)
-                    completed = (
-                        handle["proc"].returncode == 0
-                        and script_exec.last_exit_code == 0
-                    )
-                finally:
-                    # The recorder writes into the active program's textarea and
-                    # the editor blocks tab switches while recording, so the
-                    # recording program must be active again however the run
-                    # ended.
-                    if still_recording():
-                        assert recording is not None
-                        commander.programs.switch(recording.id)
-                if not completed:
-                    message.set_text("Skill did not complete; see the program log")
-                    return
-                if still_recording():
-                    motion_recorder.record_completed_skill(
-                        snippet, started_at=started_at
-                    )
-                message.set_text("Skill completed")
-            finally:
-                running = False
-                run_button.set_enabled(selected is not None and not entry().unavailable)
-
-        def select(key: str) -> None:
-            nonlocal selected
-            selected = key
-            for other, tile in tiles.items():
-                if other == key:
-                    tile.classes(add="skill-tile-selected")
-                else:
-                    tile.classes(remove="skill-tile-selected")
-            grid_view.set_visibility(False)
-            detail_view.set_visibility(True)
-            rebuild()
-
-        def show_grid() -> None:
-            clear_preview()
-            detail_view.set_visibility(False)
-            grid_view.set_visibility(True)
-
-        def end_hover() -> None:
-            # Clicking a tile hides the grid under the pointer, and the leave
-            # that follows must not take away the path the detail view drew.
-            if not detail_view.visible:
-                clear_preview()
-
-        def make_tile(key: str) -> ui.button:
-            candidate = entries[key]
-            tile = (
-                ui.button(
-                    labels[key],
-                    icon=_tile_icon(key),
-                    color=None,
-                    on_click=lambda: select(key),
-                )
-                .props("flat no-caps stack")
-                .classes("skill-tile")
-                .mark(f"skill-tile-{key}")
-            )
-            tile.tooltip(candidate.unavailable or _summary(candidate))
-            if candidate.unavailable:
-                tile.classes("skill-tile-unavailable")
-            tile.on("mouseenter", lambda: preview(key, {}))
-            tile.on("mouseleave", end_hover)
-            return tile
-
-        with ui.column().classes("w-full h-full min-h-0 flex-nowrap gap-2"):
-            with (
-                ui.column()
-                .classes(
-                    "w-full flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex-nowrap gap-2"
-                )
-                .mark("skill-grid") as grid_view
+        with (
+            ui.dialog()
+            .props("seamless position=left")
+            .classes("skill-dialog-host")
+            .mark("skill-dialog") as dialog,
+            ui.card().classes("task-dialog skill-dialog"),
+        ):
+            with ui.row().classes("w-full items-center no-wrap gap-2"):
+                detail_icon = ui.icon("extension").classes("skill-detail-icon")
+                title = ui.label().classes("panel-heading").mark("skill-title")
+                ui.space()
+                ui.button(icon="close", on_click=dialog.close).props(
+                    "flat dense round"
+                ).tooltip("Close").mark("skill-close")
+            # Sized to its content so Insert follows a short form, and
+            # shrinking to scroll so it stays in view under a long one.
+            with ui.column().classes(
+                "panel-body skill-library-form-scroll flex-nowrap gap-2"
             ):
-                ui.label("Skills").classes("panel-heading")
-                for diagnostic in diagnostics:
-                    ui.label(diagnostic).classes("text-warning text-caption").mark(
-                        "skill-diagnostic"
-                    )
-                if not entries:
-                    ui.label("No compatible skill plugins are installed").classes(
-                        "panel-note"
-                    )
-                else:
-                    ui.label("Point at a skill to see its motion.").classes(
-                        "panel-note"
-                    )
-                for group, keys in _tile_groups(entries):
-                    ui.label(group).classes("skill-group-heading")
-                    with ui.element("div").classes("skill-grid"):
-                        for key in keys:
-                            tiles[key] = make_tile(key)
-            with (
-                ui.column()
-                .classes("w-full flex-1 min-h-0 flex-nowrap gap-2")
-                .mark("skill-detail") as detail_view
-            ):
-                with ui.row().classes("w-full items-center no-wrap gap-1"):
-                    ui.button(icon="arrow_back", on_click=show_grid).props(
-                        "flat dense round"
-                    ).tooltip("All skills").mark("skill-back")
-                    detail_icon = ui.icon("extension").classes("skill-detail-icon")
-                    title = ui.label().classes("panel-heading").mark("skill-title")
-                # Sized to its content so the actions follow a short form, and
-                # shrinking to scroll so they stay in view under a long one.
-                with ui.column().classes(
-                    "skill-library-form-scroll w-full flex-initial min-h-0 overflow-y-auto overflow-x-hidden flex-nowrap gap-2"
+                description = ui.label().classes("text-caption whitespace-pre-line")
+                message = ui.label().classes("text-caption").mark("skill-message")
+                preview_note = (
+                    ui.label().classes("panel-note").mark("skill-preview-note")
+                )
+                form = ui.element("div").classes(
+                    "w-full shrink-0 grid grid-cols-2 gap-x-3 gap-y-2"
+                )
+                with (
+                    ui.expansion("Python call")
+                    .classes("w-full")
+                    .mark("skill-python-details")
                 ):
-                    description = ui.label().classes("text-caption whitespace-pre-line")
-                    message = ui.label().classes("text-caption").mark("skill-message")
-                    preview_note = (
-                        ui.label().classes("panel-note").mark("skill-preview-note")
+                    asynchronous = ui.checkbox(
+                        "Insert async call", value=False, on_change=refresh_source
+                    ).mark("skill-async")
+                    code = (
+                        ui.code("", language="python")
+                        .classes("w-full shrink-0 overflow-x-auto")
+                        .mark("skill-call-preview")
                     )
-                    form = ui.element("div").classes(
-                        "w-full shrink-0 grid grid-cols-2 gap-x-3 gap-y-2"
-                    )
-                    with (
-                        ui.expansion("Python call", icon="code")
-                        .classes("w-full")
-                        .mark("skill-python-details")
-                    ):
-                        asynchronous = ui.checkbox(
-                            "Insert async call", value=False, on_change=refresh_source
-                        ).mark("skill-async")
-                        code = (
-                            ui.code("", language="python")
-                            .classes("w-full shrink-0 overflow-x-auto")
-                            .mark("skill-call-preview")
-                        )
-                        api_details = ui.label().classes("panel-note")
-                with ui.row().classes("panel-actions"):
-                    insert_button = (
-                        ui.button("Insert call", on_click=insert)
-                        .props("dense")
-                        .mark("skill-insert")
-                    )
-                    run_button = (
-                        ui.button("Run once", on_click=run_once)
-                        .props("dense flat")
-                        .mark("skill-run")
-                    )
-                ui.label(
-                    "Run once opens the Program tab with pause and stop controls."
-                ).classes("text-caption")
+                    api_details = ui.label().classes("panel-note")
+            with ui.row().classes("panel-actions"):
+                insert_button = (
+                    ui.button("Insert", on_click=insert)
+                    .props("dense")
+                    .mark("skill-insert")
+                )
+
+        def closed(event) -> None:
+            if not event.value:
+                clear_preview()
+                dialog.delete()
+
+        dialog.on_value_change(closed)
 
         def rebuild() -> None:
             form.clear()
@@ -471,7 +295,7 @@ class SkillLibraryPanel(Panel):
             preview_note.set_text("")
             candidate = entry()
             title.set_text(labels[candidate.skill.spec.id])
-            detail_icon.set_name(_tile_icon(candidate.skill.spec.id))
+            detail_icon.set_name(skill_icon(candidate.skill.spec.id))
             description.set_text(_summary(candidate))
             api_details.set_text(
                 f"{candidate.skill.spec.id} · v{candidate.skill.spec.version} · API {candidate.skill.spec.api_version}"
@@ -483,10 +307,8 @@ class SkillLibraryPanel(Panel):
                     f"Cannot read skill annotations: {error}. Use the callable directly in Python."
                 )
                 insert_button.disable()
-                run_button.disable()
                 return
             insert_button.set_enabled(not candidate.unavailable)
-            run_button.set_enabled(not candidate.unavailable and not running)
             with form:
                 store = SetupStore()
                 names = store.names()
@@ -531,13 +353,11 @@ class SkillLibraryPanel(Panel):
                         readers[name] = CommanderCameraSource
                     elif annotation is Demonstration:
                         ui.label(
-                            "Replays come from recording: press Record and move the arm by hand or from another client, and the captured motion is written into the program, replayed where it cannot be planned. In Python, pass load_demonstration(path)."
+                            "Replays come from recording: press Record, move the arm by hand or from another client, and keep the captured lines As recorded. In Python, pass load_demonstration(path)."
                         ).classes("text-caption")
                         insert_button.disable()
-                        run_button.disable()
                         # Falls through to refresh_source: it is the only writer
-                        # of the snippet and the message, so returning here left
-                        # the previously selected skill's call on screen.
+                        # of the snippet and the message.
                         break
                     elif annotation == LocalizationLimits | None:
                         readers[name] = lambda: None
@@ -693,4 +513,8 @@ class SkillLibraryPanel(Panel):
                         )
             refresh_source()
 
-        detail_view.set_visibility(False)
+        rebuild()
+        dialog.open()
+
+
+skill_dialog = SkillDialog()

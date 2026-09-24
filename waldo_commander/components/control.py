@@ -1347,7 +1347,7 @@ class ControlPanel:
     def _build_control_mode_selector(self) -> None:
         """AI control-mode row for the control panel's Settings tab — mirrors
         the mode chip, the perimeter glow, and the Alt+M shortcut."""
-        with _setting_row("AI Control Mode", "AI autonomy level · Alt+M cycles"):
+        with _setting_row("AI control mode", "AI autonomy level · Alt+M cycles"):
             self._mode_toggle = (
                 ui.select(
                     {m.value: m.label for m in ControlMode},
