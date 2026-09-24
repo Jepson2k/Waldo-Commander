@@ -1428,9 +1428,9 @@ class EditorPanel(FileOperationsMixin):
                             icon="restart_alt",
                             on_click=show_supervised_restart,
                         )
-                        .props("flat dense color=white")
-                        .classes("w-full justify-start")
-                        .tooltip("Supervised restart")
+                        .props("flat dense no-caps align=left color=white")
+                        .classes("w-full")
+                        .tooltip("Restart a stopped program from a chosen entry")
                         .mark("editor-restart-btn")
                     )
                 self._toolbar_btns = [
