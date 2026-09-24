@@ -48,6 +48,9 @@ from waldo_commander.components.file_operations import FileOperationsMixin
 logger = logging.getLogger(__name__)
 
 
+MENU_TOOLTIP = 'anchor="center left" self="center right"'
+
+
 class EditorPanel(FileOperationsMixin):
     """Program editor panel with script execution and command palette."""
 
@@ -1277,23 +1280,26 @@ class EditorPanel(FileOperationsMixin):
                 )
                 save_btn.mark("editor-save-btn")
 
+                # A button that opens a menu below it shows its tooltip to the
+                # left, so the tooltip does not cover the menu's first item.
                 commands_btn = (
                     ui.button(icon="library_add")
                     .props("flat dense color=white")
                     .classes("editor-toolbar-btn")
-                    .tooltip("Insert Command")
                 )
                 commands_btn.mark("editor-commands-btn")
                 with commands_btn:
+                    ui.tooltip("Insert Command").props(MENU_TOOLTIP)
                     self._build_command_menu()
 
                 more_btn = (
                     ui.button(icon="more_vert")
                     .props("flat dense color=white")
                     .classes("editor-toolbar-btn")
-                    .tooltip("More program actions")
                     .mark("editor-more-btn")
                 )
+                with more_btn:
+                    ui.tooltip("More program actions").props(MENU_TOOLTIP)
                 with (
                     more_btn,
                     ui.menu().props("auto-close").classes("editor-toolbar-menu"),
