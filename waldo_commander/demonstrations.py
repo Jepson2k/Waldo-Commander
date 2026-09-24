@@ -307,6 +307,8 @@ class Conversion:
     orientation_error_deg: float
     recorded_duration_s: float
     planned_duration_s: float
+    # The saved recording the replayed spans load, when any are replayed.
+    recording_path: Path | None = None
 
     @property
     def replayed(self) -> tuple[ConvertedSpan, ...]:
@@ -591,13 +593,16 @@ def _convert_spans(
     tolerance_mm: float,
     tolerance_deg: float,
     replay_lines: Callable[[int, int], tuple[str, ...]] | None,
+    plan: bool = True,
 ) -> tuple[list[ConvertedSpan], float, float, float, bool]:
     """The recording as statement groups, each motion checked in the preview.
 
     Returns the spans, the worst position and orientation deviation, the
     planned duration, and whether a tool position was written. A motion the
     planner cannot reproduce becomes *replay_lines* over its sample range, or
-    a ``ValueError`` when there is nothing to replay it from.
+    a ``ValueError`` when there is nothing to replay it from. Without *plan*
+    every motion is replayed as recorded; holds and tool positions are still
+    written as statements.
     """
     samples = recording.samples
     held = _dwells(recording, dwell_s)
@@ -617,8 +622,9 @@ def _convert_spans(
         )
         recorded = _decimate(_poses(robot, recorded_joints))
         recorded_decimated = _decimate(recorded_joints)
-        reasons = []
-        for kind, lines, waypoints in _candidates(recording, robot, start, stop):
+        reasons = [] if plan else ["kept as recorded"]
+        candidates = _candidates(recording, robot, start, stop) if plan else []
+        for kind, lines, waypoints in candidates:
             path, planned, failure = _probe(robot, lines, samples[start].joints_deg)
             if failure or not len(path):
                 reasons.append(f"{kind}: {failure or 'planned no motion'}")
@@ -822,6 +828,8 @@ def span_to_lines(
     dwell_s: float = 0.3,
     tolerance_mm: float = 5.0,
     tolerance_deg: float = 2.0,
+    as_recorded: bool = False,
+    recording_path: Path | None = None,
 ) -> Conversion:
     """Motion captured while recording, as lines for the program being recorded.
 
@@ -829,13 +837,15 @@ def span_to_lines(
     the lines assume ``rbt`` and the recording's tool are already in scope.
     A piece the planner cannot reproduce is replayed from a copy of the
     recording saved under *directory*, named after *program*; the file is
-    written only when something needs it. Missing publications split the
-    recording, and each continuous piece is converted on its own.
+    written only when something needs it, unless *recording_path* names the
+    copy already saved. With *as_recorded*, every motion is replayed rather
+    than planned. Missing publications split the recording, and each
+    continuous piece is converted on its own.
     """
     _validated(dwell_s, tolerance_mm, tolerance_deg)
     if len(recording.samples) < 2:
         raise ValueError("A conversion needs at least two observations")
-    saved: dict[str, Path] = {}
+    saved: dict[str, Path] = {"path": recording_path} if recording_path else {}
 
     def replay(piece: Demonstration, offset: int):
         def lines(a: int, b: int) -> tuple[str, ...]:
@@ -844,9 +854,13 @@ def span_to_lines(
                 stamp = time.strftime("%Y%m%d-%H%M%S")
                 saved["path"] = directory / f"{program}-{stamp}.json"
                 save_demonstration(saved["path"], recording)
+            # A replay refuses to start more than half a degree from its first
+            # sample, and the lines before it are only held to the planner's
+            # tolerance, so each replay first goes to where it begins.
             return (
                 "from waldo_commander.demonstrations import load_demonstration",
                 "from waldo_commander.skills import replay_demonstration",
+                f"rbt.move_j([{_numbers(piece.samples[a].joints_deg)}], speed=0.2)",
                 "replay_demonstration(rbt, load_demonstration("
                 f"{str(saved['path'])!r}).select({offset + a}, {offset + b + 1}))",
             )
@@ -865,6 +879,7 @@ def span_to_lines(
             tolerance_mm=tolerance_mm,
             tolerance_deg=tolerance_deg,
             replay_lines=replay(piece, offset),
+            plan=not as_recorded,
         )
         spans.extend(
             ConvertedSpan(
@@ -893,6 +908,7 @@ def span_to_lines(
         orientation_error_deg=orientation_error,
         recorded_duration_s=recording.duration_s,
         planned_duration_s=planned_total,
+        recording_path=saved.get("path"),
     )
 
 
