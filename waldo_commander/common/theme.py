@@ -480,6 +480,7 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
         "containerPadding": 20,
         "bottomOffset": 12,
         "totalMargin": 36,
+        "defaultsClearOf": [".readout-panel"],
     },
     "stateClasses": {
         "coupled": "coupled",
