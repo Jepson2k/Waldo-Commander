@@ -1393,8 +1393,8 @@ class EditorPanel(FileOperationsMixin):
                             icon="play_arrow",
                             on_click=self.run_selection,
                         )
-                        .props("flat dense no-caps color=white")
-                        .classes("w-full justify-start")
+                        .props("flat dense no-caps align=left color=white")
+                        .classes("w-full")
                         .tooltip("Run the selected lines on the robot")
                         .mark("editor-run-selection")
                     )
