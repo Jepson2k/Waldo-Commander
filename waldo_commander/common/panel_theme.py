@@ -53,6 +53,7 @@ def inject_panel_css() -> None:
 /* Fields fill the control column so every row ends at the same edge. */
 .settings-row > .q-field, .settings-row > .nicegui-grid, .settings-row > :has(> .q-field) { justify-self: stretch; width: auto; }
 .settings-row > :not(.settings-label) > .q-field { width: auto; }
+.settings-address { display: grid; grid-template-columns: minmax(0, 1fr) 72px; column-gap: 8px; justify-self: stretch; }
 .settings-row .q-field__control, .settings-row .q-field__marginal { min-height: 28px; height: 28px; }
 .settings-row .q-field__native, .settings-row .q-field__prefix, .settings-row .q-field__suffix { min-height: 28px; padding-top: 0; padding-bottom: 0; }
 .settings-row .q-toggle__inner { font-size: 28px; }
