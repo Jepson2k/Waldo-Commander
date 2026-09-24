@@ -348,3 +348,29 @@ class TestPanelResize:
             """,
         )
         assert size["width"] >= 670 and size["height"] >= 470, size
+
+    def test_diagnostics_and_settings_share_the_column(
+        self, class_screen: "Screen"
+    ) -> None:
+        """Diagnostics sits above Settings in the left column. With both open,
+        the taller content-sized panel gives way; neither is drawn over the
+        other."""
+        wait_ready(class_screen)
+        clear_storage(class_screen, STORAGE_KEY)
+        click_tab(class_screen, "diagnostics")
+        time.sleep(0.5)
+        click_tab(class_screen, "settings")
+        time.sleep(1.0)
+        rects = js(
+            class_screen,
+            """
+            const r = s => document.querySelector(s).getBoundingClientRect();
+            const d = r('.diagnostics-view'), s = r('.settings-panel');
+            return {diagnosticsBottom: d.bottom, settingsTop: s.top,
+                    diagnostics: d.height, settings: s.height, viewport: innerHeight};
+        """,
+        )
+        assert rects["diagnosticsBottom"] <= rects["settingsTop"], rects
+        close_panel(class_screen, "settings-panel")
+        close_panel(class_screen, "diagnostics-view")
+        time.sleep(0.3)
