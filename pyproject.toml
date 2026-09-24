@@ -88,7 +88,6 @@ gripper_close = "waldo_commander.skills:gripper_close"
 [project.entry-points."waldoctl.panels"]
 handeye = "waldo_commander.components.handeye_calibration:HandEyeCalibrationPanel"
 setup = "waldo_commander.components.named_setup:NamedSetupPanel"
-skills = "waldo_commander.components.skill_library:SkillLibraryPanel"
 
 [tool.setuptools.packages.find]
 where = ["."]

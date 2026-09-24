@@ -239,3 +239,63 @@ class TestPanelResize:
 
         final_height = bottom.rect["height"]
         assert abs(final_height - after_switch_height) < 30
+
+    def test_a_fit_panel_is_as_tall_as_its_content_until_dragged(
+        self, class_screen: "Screen"
+    ) -> None:
+        """Settings opens at its content's height, capped at the viewport, and a
+        height the operator drags is the one it keeps."""
+        wait_ready(class_screen)
+        clear_storage(class_screen, STORAGE_KEY)
+        click_tab(class_screen, "settings")
+        time.sleep(0.5)
+
+        measure = """
+            const c = document.querySelector('.bottom-panels-container');
+            const p = document.querySelector('.settings-panel');
+            const body = p.querySelector('.settings-content')
+                || p.querySelector('.q-scrollarea__container');
+            const r = p.getBoundingClientRect();
+            const lowest = Math.max(...[...body.children]
+                .filter(e => e.offsetParent !== null)
+                .map(e => e.getBoundingClientRect().bottom));
+            return {inline: c.style.height, height: r.height, bottom: r.bottom,
+                    viewport: innerHeight, slack: r.bottom - lowest,
+                    scrolls: body.scrollHeight > body.clientHeight + 1,
+                    clipped: p.scrollHeight > p.clientHeight + 1};
+        """
+        fit = js(class_screen, measure)
+        assert fit["inline"] == "", fit
+        assert not fit["clipped"], fit
+        assert fit["bottom"] <= fit["viewport"], fit
+        capped = fit["height"] >= fit["viewport"] - 30
+        # Content-sized means no room left over under the last row; at the cap
+        # the rows scroll instead.
+        assert fit["scrolls"] if capped else fit["slack"] <= 24, fit
+
+        drag(class_screen, ".settings-panel .resize-handle-top", dy=60)
+        saved = get_storage(class_screen, STORAGE_KEY)
+        assert saved and saved["settings"]["height"], saved
+        dragged = js(class_screen, measure)
+        assert dragged["inline"] != "", dragged
+
+        close_panel(class_screen, "settings-panel")
+        time.sleep(0.3)
+        click_tab(class_screen, "settings")
+        time.sleep(0.5)
+        reopened = js(class_screen, measure)
+        assert abs(reopened["height"] - saved["settings"]["height"]) < 3, reopened
+
+        # A height an older build saved on close was a default, not a choice.
+        js(
+            class_screen,
+            """
+            localStorage.removeItem(arguments[0] + '_fit');
+            localStorage.setItem(arguments[0],
+                JSON.stringify({settings: {height: 560, group: 'bottom'}}));
+            PanelResize.configure(PanelResize.getConfig());
+            """,
+            STORAGE_KEY,
+        )
+        assert "height" not in get_storage(class_screen, STORAGE_KEY)["settings"]
+        close_panel(class_screen, "settings-panel")
