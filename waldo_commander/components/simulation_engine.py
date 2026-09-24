@@ -234,7 +234,7 @@ class SimulationEngine:
 
         decorations.apply_diagnostics(error, tab_id)
         decorations.push_line_metadata(tab_id)
-        decorations.push_target_positions(tab_id)
+        decorations.push_line_anchors(tab_id, sim_targets=True)
 
         return error
 

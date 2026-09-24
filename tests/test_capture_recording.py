@@ -1,4 +1,4 @@
-"""While recording, motion nobody in WC commanded is written into the program."""
+"""While recording, motion nobody in WC commanded is staged in the program."""
 
 import ast
 import asyncio
@@ -16,18 +16,30 @@ from tests.helpers.wait import (
     wait_for_app_ready,
     wait_until,
 )
-from waldo_commander.components.capture_review import capture_review
+from tests.test_editor_integration import _set_selection
+from waldo_commander.components.script_execution import script_exec
 from waldo_commander.demonstrations import span_to_lines
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
-from waldo_commander.services.programs import is_any_program_recording
+from waldo_commander.services.programs import (
+    is_any_program_recording,
+    is_any_program_running,
+)
 from waldo_commander.state import ui_state
 
 PROGRAM = "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.home()\n"
 
 
+def _capture(session):
+    return (
+        next((b for b in session.blocks if b.kind == "capture"), None)
+        if session
+        else None
+    )
+
+
 @pytest.mark.integration
-async def test_uncommanded_motion_is_captured_and_a_skill_run_is_recorded_once(
+async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
     user: User, tmp_path, monkeypatch
 ):
     monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
@@ -51,7 +63,6 @@ async def test_uncommanded_motion_is_captured_and_a_skill_run_is_recorded_once(
     await asyncio.sleep(0.1)
     assert is_any_program_recording()
     try:
-        before = str(textarea.value)
         start = await client.angles()
         assert start is not None
         target = list(start)
@@ -60,18 +71,25 @@ async def test_uncommanded_motion_is_captured_and_a_skill_run_is_recorded_once(
         # arm looks like to the recorder.
         index = await client.move_j(target, duration=1.0)
         assert await client.wait_command(index, timeout=10)
-        assert await wait_until(lambda: capture_review.visible, timeout_s=20), (
-            "the captured span never reached the program"
-        )
-        captured = str(textarea.value)[len(before) :]
+        assert await wait_until(
+            lambda: _capture(motion_recorder.session) is not None, timeout_s=20
+        ), "the captured span never reached the program"
+        block = _capture(motion_recorder.session)
+        lines = str(textarea.value).split("\n")
+        captured = "\n".join(lines[block.first_line - 1 : block.last_line])
         assert "rbt.move_" in captured, captured
-        assert element("capture-summary").text.startswith("Captured · ")
+        badges = [
+            spec["text"]
+            for spec in textarea.decorations
+            if spec.get("class") == "cm-staged-badge"
+        ]
+        assert badges and badges[0].startswith("captured · "), badges
         ast.parse(str(textarea.value))
 
         # The lines plan to where the arm actually ended up.
         preview = await run.cpu_bound(
             _run_simulation_isolated,
-            PROGRAM.rsplit("    rbt.home()", 1)[0] + captured,
+            PROGRAM.rsplit("    rbt.home()", 1)[0] + captured + "\n",
             np.radians(start),
             dry_run_client_cls=DryRunRobotClient,
         )
@@ -79,48 +97,73 @@ async def test_uncommanded_motion_is_captured_and_a_skill_run_is_recorded_once(
         final = np.degrees(preview["segments"][-1]["joints"])
         assert final == pytest.approx(target, abs=0.5)
 
-        # Trimming rewrites the same lines for the shorter span.
-        capture = motion_recorder.capture
-        assert capture is not None
-        duration = capture.recording.duration_s
-        element("capture-trim").set_value({"min": 0.0, "max": round(duration / 2, 2)})
+        # Raw, the same lines replay the recorded points instead.
+        element("staged-capture-mode").set_value("raw")
         assert await wait_until(
-            lambda: motion_recorder.capture is not None
-            and motion_recorder.capture.conversion.recorded_duration_s < duration,
+            lambda: block.mode == "raw"
+            and "replay_demonstration(rbt, load_demonstration(" in str(textarea.value),
             timeout_s=20,
-        )
-        trimmed = str(textarea.value)[len(before) :]
-        assert trimmed != captured
+        ), textarea.value
+        saved = list(tmp_path.glob("*.json"))
+        assert len(saved) == 1, saved
         ast.parse(str(textarea.value))
+        element("staged-capture-mode").set_value("moves")
+        assert await wait_until(
+            lambda: block.mode == "moves"
+            and "replay_demonstration" not in str(textarea.value),
+            timeout_s=20,
+        ), textarea.value
+        assert list(tmp_path.glob("*.json")) == saved, "switching saves nothing new"
 
-        # Undo takes the lines out again.
-        user.find(marker="capture-undo").click()
-        await asyncio.sleep(0)
-        assert str(textarea.value) == before
-        assert not capture_review.visible and motion_recorder.capture is None
+        # Undo takes the whole take out again.
+        user.find(marker="staged-undo").click()
+        await asyncio.sleep(0.1)
+        assert str(textarea.value) == PROGRAM
+        assert motion_recorder.session is None and not is_any_program_recording()
 
-        # A second span, then a skill run while it is under review: the skill's
-        # own motion is WC's, recorded as its call and nothing else, and the
-        # recorded call settles the review.
+        # A new take: a span, then a skill inserted and run live while the
+        # span is staged. The skill's motion is WC's own: the program gets its
+        # call once and no captured moves, and the span stays staged.
+        program.dry_run.playback.active_cursor_line = 3
+        user.find(marker="editor-record-btn").click()
+        await asyncio.sleep(0.1)
         target[1] -= 6.0
         index = await client.move_j(target, duration=1.0)
         assert await client.wait_command(index, timeout=10)
-        assert await wait_until(lambda: capture_review.visible, timeout_s=20)
-        assert motion_recorder.capture is not None
-        recording = motion_recorder.capture.recording
-        mark = len(str(textarea.value))
-        user.find(marker="tab-skills").click()
-        user.find(marker="skill-tile-waldo.retract").click()
+        assert await wait_until(
+            lambda: _capture(motion_recorder.session) is not None, timeout_s=20
+        )
+        recording = _capture(motion_recorder.session).recording
+        mark = len(str(textarea.value).rstrip("\n"))
+        user.find(marker="editor-commands-btn").click()
+        user.find(marker="editor-skill-waldo.retract").click()
         await asyncio.sleep(0)
         element("skill-arg-distance_mm").set_value(2)
-        user.find(marker="skill-run").click()
-        await user.should_see(content="Skill completed", retries=300)
+        user.find(marker="skill-insert").click()
+        await asyncio.sleep(0)
+        call = next(
+            number
+            for number, line in enumerate(str(textarea.value).split("\n"), start=1)
+            if "_skill_waldo_retract(rbt," in line
+        )
+        _set_selection(textarea, call, call)
+        await asyncio.sleep(0)
+        user.find(marker="editor-run-selection").click()
+        editor = ui_state.editor_panel
+        async with asyncio.timeout(30):
+            await asyncio.sleep(0.1)
+            while editor._running_selection or is_any_program_running():
+                await asyncio.sleep(0.05)
         assert waldoctl.commander.programs.active is program
         await asyncio.sleep(1.0)
         tail = str(textarea.value)[mark:]
         assert tail.count("_skill_waldo_retract(rbt,") == 1, tail
         assert "rbt.move_l(" not in tail and "rbt.move_j(" not in tail, tail
-        assert not capture_review.visible
+        kinds = [b.kind for b in motion_recorder.session.blocks]
+        assert "capture" in kinds and "action" in kinds, kinds
+        user.find(marker="staged-keep").click()
+        await asyncio.sleep(0.1)
+        assert motion_recorder.session is None
 
         # A span the planner cannot follow is replayed from a saved copy.
         fallback = span_to_lines(
@@ -134,9 +177,8 @@ async def test_uncommanded_motion_is_captured_and_a_skill_run_is_recorded_once(
         assert list((tmp_path / "fallback").glob("test-*.json"))
         assert "replay_demonstration(rbt, load_demonstration(" in fallback.source
     finally:
+        if is_any_program_running():
+            await script_exec.stop()
         if is_any_program_recording():
-            user.find(marker="tab-program").click()
-            await asyncio.sleep(0)
-            user.find(marker="editor-record-btn").click()
-            await asyncio.sleep(0.1)
+            motion_recorder.toggle_recording()
     assert not is_any_program_recording()

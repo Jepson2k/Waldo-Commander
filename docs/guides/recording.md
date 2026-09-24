@@ -3,9 +3,10 @@
 The editor's **Record** button turns what you do with the arm into Python in
 the open program. While it is on, every action taken through Commander is
 written below the recording cursor as it happens: jogs become `move_j` and
-`move_l` calls, gripper and I/O actions become their commands, a skill run
-once becomes its call, and the time you wait between actions becomes a
-delay.
+`move_l` calls, gripper and I/O actions become their commands, a skill
+inserted from the **Insert Command** menu becomes its call, and the time you
+wait between actions becomes a delay. Selecting that call and choosing **Run
+selection** runs it live without writing it again.
 
 Motion that Commander did not command is recorded too. On an arm that can be
 hand-guided, put it in freedrive and move it; on any backend, moves sent by
@@ -15,13 +16,24 @@ Commander action is under way open a span; the arm standing still for half a
 second closes it. The span is converted to ordinary moves and written into the
 program like any other recorded action.
 
-## Reviewing a captured span
+## Keeping a take
 
-A captured span docks a strip under the code: what was captured and how many
-moves it became, a chart of the recorded joint angles, and a range to trim it
-with. Dragging the range rewrites the same lines for the shorter span.
-**Keep** leaves the lines where they are; **Undo** takes them out. The strip
-also closes when the next action is recorded, or when recording stops.
+The lines a recording writes stay marked in the editor, tinted in the Record
+button's amber, until you decide. The editor's header shows how many lines the
+take wrote with **Keep** and **Undo** where Open and Save usually are. Stopping
+the recording does not decide: stop, play the program to watch the arm do it,
+then keep the lines or undo them all. Keep or Undo while still recording also
+stops it, and starting a new recording keeps the last take.
+
+To record part of a program again, select its lines and press **Record**. The
+take starts where the arm is, in place of the selected lines, and Undo puts
+them back as they were. Selecting the lines you just recorded and pressing
+Record again is a retake.
+
+A captured span carries a badge on its first line saying what it became. With
+the cursor in it, the header also offers **Moves** or **Raw**: moves are the
+planned conversion below, and raw replays the recorded points from the saved
+recording, with its waits and gripper positions kept as statements.
 
 ## How captured motion becomes code
 
@@ -40,7 +52,7 @@ the path, because a Cartesian move can trace the same line through a flipped
 wrist and sweep the cell differently. A span that fails both forms is replayed
 instead: the recording is saved under the recordings directory, named after
 the program, and the lines call `replay_demonstration` over that sample range.
-The review strip says how many moves were replayed.
+The span's badge says how many moves were replayed.
 
 Recordings default to `~/.waldo-commander/recordings`; `WALDO_RECORDING_DIR`
 selects another directory.

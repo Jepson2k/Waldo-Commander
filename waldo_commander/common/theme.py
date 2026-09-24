@@ -1155,12 +1155,31 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   white-space: pre;
 }
 
+/* Lines a recording session wrote that nobody has kept yet, in the Record
+   button's amber, and a badge on each captured span. */
+.cm-line.cm-line-staged {
+  background-color: color-mix(in srgb, var(--q-warning) 12%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--q-warning) 70%, transparent);
+}
+.cm-staged-badge {
+  margin-left: 10px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  font-size: 11px;
+  color: var(--q-warning);
+  background-color: color-mix(in srgb, var(--q-warning) 15%, transparent);
+}
+
 /* Pending-edit review cluster — swaps in for the editor toolbar buttons. */
 .pending-edits-banner {
   background-color: rgba(76, 175, 80, 0.08);
   border: 1px solid rgba(76, 175, 80, 0.25);
   border-radius: 6px;
   padding: 0 2px 0 10px;
+}
+.pending-edits-banner.staged-take {
+  background-color: color-mix(in srgb, var(--q-warning) 8%, transparent);
+  border-color: color-mix(in srgb, var(--q-warning) 30%, transparent);
 }
 
 

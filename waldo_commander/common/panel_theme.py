@@ -99,7 +99,6 @@ def inject_panel_css() -> None:
 .skill-dialog { width: 450px; max-width: calc(100vw - 80px); margin: 0; max-height: calc(100vh - 24px) !important; }
 .skill-detail-icon { width: 42px; height: 30px; font-size: 30px; flex-shrink: 0; }
 .skill-menu-icon { width: 34px; height: 24px; font-size: 24px; }
-.capture-review { flex-shrink: 0; max-height: 70%; overflow: hidden; padding: 4px 8px 2px; border-top: 1px solid var(--color-neutral-700); background: var(--color-neutral-900); }
 .editor-toolbar-menu { min-width: 190px; }
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }

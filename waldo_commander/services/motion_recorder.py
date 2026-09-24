@@ -6,10 +6,10 @@ import logging
 import math
 import re
 import time
-from collections.abc import Iterator, Sequence
-from typing import Any
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Literal
 
 import numpy as np
 
@@ -50,10 +50,9 @@ _SELECT_TOOL_RE = re.compile(r"^\s*rbt\.\s*select_tool\s*\(")
 # Line-anchor id for the recording insertion cursor: the browser remaps it
 # across user edits so recorded snippets follow the code, not a line number.
 _RECORD_ANCHOR_ID = "__recording_insert__"
-# The lines the last captured span was written as, so a trim or an undo can
-# find them after the operator has edited around them.
-_CAPTURE_FIRST_ID = "__capture_first__"
-_CAPTURE_LAST_ID = "__capture_last__"
+# The lines a re-recording replaces, tracked until its first write.
+_RETAKE_FIRST_ID = "__retake_first__"
+_RETAKE_LAST_ID = "__retake_last__"
 
 #: Standing still this long ends a captured span.
 CAPTURE_STILL_S = 0.5
@@ -160,18 +159,61 @@ class ActiveJog:
     axis_info: str  # e.g., "J1+", "X+", "RZ-"
 
 
-@dataclass
-class Capture:
-    """Motion nobody in WC commanded, and the lines it was written as."""
+BlockKind = Literal["action", "capture"]
+CaptureMode = Literal["moves", "raw"]
 
-    recording: Demonstration
-    conversion: Conversion
+
+@dataclass
+class StagedBlock:
+    """Lines a recording session wrote, tracked by a pair of line anchors."""
+
+    id: str
+    kind: BlockKind
     first_line: int
     last_line: int
-    guided: bool
-    # The editor the lines went into: a trim or an undo must find them there
-    # even after the operator has switched tabs.
-    textarea: Any = None
+    # A captured span: what was observed, what it was written as, and how.
+    recording: Demonstration | None = None
+    conversion: Conversion | None = None
+    guided: bool = False
+    mode: CaptureMode = "moves"
+    busy: bool = False
+
+    @property
+    def first_id(self) -> str:
+        return f"__staged_{self.id}_first__"
+
+    @property
+    def last_id(self) -> str:
+        return f"__staged_{self.id}_last__"
+
+    def summary(self) -> str:
+        """What a captured block is, as its badge in the editor says it."""
+        source = "hand-guided" if self.guided else "captured"
+        if self.mode == "raw" or self.conversion is None:
+            return f"{source} · raw"
+        moves = sum(1 for s in self.conversion.spans if s.kind in ("move_l", "move_j"))
+        text = f"{source} · {moves} move{'s' if moves != 1 else ''}"
+        if replayed := len(self.conversion.replayed):
+            text += f", {replayed} replayed"
+        return text
+
+
+@dataclass
+class RecordingSession:
+    """What recording wrote into one program, staged until kept or undone.
+
+    Recording can stop while a session goes on, so the operator can play the
+    program back before deciding. A re-recording replaces the lines that
+    were selected when it started, and Undo puts them back.
+    """
+
+    tab_id: str
+    textarea: Any
+    blocks: list[StagedBlock] = field(default_factory=list)
+    retake: tuple[int, int] | None = None
+    retake_text: str = ""
+    restores: str | None = None
+    serial: int = 0
 
 
 class MotionRecorder:
@@ -202,11 +244,25 @@ class MotionRecorder:
         self._owned = 0
         self._observer: asyncio.Task | None = None
         self._observer_generation = 0
-        self._capture: Capture | None = None
+        self._session: RecordingSession | None = None
+        self._session_listeners: list[Callable[[], None]] = []
+        # What the recorder last declared as line anchors, and whether the
+        # browser has reported exactly that back yet.
+        self._declared: dict[str, int] = {}
+        self._confirmed = False
+        self._redeclared = 0
+        self._watched: set[int] = set()
         # Where a span still open when recording stopped goes.
         self._flush_after: int | None = None
         # The page the recorder writes into from its own tasks.
         self.ui_client = None
+
+    def reset_for_test(self) -> None:
+        """Drop any session and in-flight state between tests. The observer
+        generation keeps counting, so an observer from before cannot match."""
+        generation = self._observer_generation + 1
+        type(self).__init__(self)
+        self._observer_generation = generation
 
     def _get_wrf_pose(self) -> list[float]:
         """Get current TCP pose in World Reference Frame (always WRF).
@@ -276,7 +332,7 @@ class MotionRecorder:
         for i, line in enumerate(lines):
             if _SELECT_TOOL_RE.match(line):
                 lines[i] = set_tool_line
-                textarea.value = "\n".join(lines)
+                self._write(textarea, "\n".join(lines))
                 logger.info("Updated existing select_tool to %s", tool_key)
                 return None
 
@@ -288,7 +344,10 @@ class MotionRecorder:
         for i, line in enumerate(lines):
             if motion_re.match(line):
                 lines.insert(i, set_tool_line)
-                textarea.value = "\n".join(lines)
+                self._write(textarea, "\n".join(lines))
+                if self._session is not None:
+                    self._shift(i, 1)
+                    self._stage(i + 1, 1, "action")
                 logger.info(
                     "Inserted select_tool before first motion at line %d", i + 1
                 )
@@ -298,29 +357,273 @@ class MotionRecorder:
         self._insert_snippet(set_tool_line)
         return None
 
-    def _declare_insert_anchor(self, textarea) -> None:
-        if self._insert_line:
-            textarea.line_anchors = {
-                **textarea.line_anchors,
-                _RECORD_ANCHOR_ID: self._insert_line,
-            }
+    # ------------------------------------------------------ staged session
 
-    def _retract_insert_anchor(self, textarea) -> None:
-        declared = textarea.line_anchors
-        if declared.pop(_RECORD_ANCHOR_ID, None) is not None:
-            textarea.line_anchors = declared
+    @property
+    def session(self) -> RecordingSession | None:
+        return self._session
 
-    def insertion_anchor(self) -> dict[str, int]:
-        """Declared position for the recording insertion cursor: the live
-        mirror when the browser has echoed one, else the tracked line.
-        Empty outside a session or in append mode."""
-        if not self._insert_line or not is_any_program_recording():
+    def add_session_listener(self, callback: Callable[[], None]) -> None:
+        if callback not in self._session_listeners:
+            self._session_listeners.append(callback)
+
+    def remove_session_listener(self, callback: Callable[[], None]) -> None:
+        if callback in self._session_listeners:
+            self._session_listeners.remove(callback)
+
+    def _notify_session(self) -> None:
+        for callback in list(self._session_listeners):
+            try:
+                callback()
+            except Exception:
+                logger.exception("Recording session listener failed")
+
+    def _mirror(self, textarea) -> dict[str, int]:
+        """Anchor lines as the browser last reported them, once it has
+        reported back what the recorder last declared. Until then the tracked
+        lines are newer: they include the recorder's own last write."""
+        if textarea is None or not self._confirmed:
             return {}
-        textarea = ui_state.active_textarea
-        line = self._insert_line
-        if textarea is not None:
-            line = textarea.line_anchors.get(_RECORD_ANCHOR_ID, line)
-        return {_RECORD_ANCHOR_ID: line}
+        return dict(textarea.line_anchors)
+
+    def _write(self, textarea, text: str) -> None:
+        """Set the editor text. Every anchor the browser reported is from
+        before this change, so none is current until it reports again."""
+        textarea.value = text
+        self._confirmed = False
+
+    def _watch(self, textarea) -> None:
+        if textarea is None or id(textarea) in self._watched:
+            return
+        self._watched.add(id(textarea))
+        textarea.on_anchor_change(self._on_anchor_report)
+
+    def _on_anchor_report(self, event) -> None:
+        """The browser reports anchor lines after every change to the text.
+
+        The report that follows the recorder rewriting lines is of the anchors
+        as they were, moved by that rewrite; it can reach the server before
+        the declaration made with the rewrite leaves it, and it then replaces
+        that declaration. Only a report of what was declared confirms it.
+        """
+        if self._confirmed:
+            return
+        reported = {k: v for k, v in event.anchors.items() if k.startswith("__")}
+        if all(reported.get(k) == v for k, v in self._declared.items()):
+            self._confirmed = True
+        elif self._redeclared < 2:
+            self._redeclared += 1
+            self._push_anchors(redeclare=True)
+
+    def _sync_from_mirror(self) -> None:
+        """Take where the operator's edits have moved the tracked lines."""
+        session = self._session
+        textarea = session.textarea if session is not None else ui_state.active_textarea
+        mirror = self._mirror(textarea)
+        if not mirror:
+            return
+        if self._insert_line:
+            self._insert_line = mirror.get(_RECORD_ANCHOR_ID, self._insert_line)
+        if session is None:
+            return
+        for block in session.blocks:
+            block.first_line = mirror.get(block.first_id, block.first_line)
+            block.last_line = mirror.get(block.last_id, block.last_line)
+        if session.retake is not None:
+            first, last = session.retake
+            session.retake = (
+                mirror.get(_RETAKE_FIRST_ID, first),
+                mirror.get(_RETAKE_LAST_ID, last),
+            )
+
+    def _shift(self, after_line: int, delta: int, *, exclude=None) -> None:
+        """Move every tracked line below *after_line* by *delta*."""
+        session = self._session
+        if session is None or not delta:
+            return
+        for block in session.blocks:
+            if block is exclude:
+                continue
+            if block.first_line > after_line:
+                block.first_line += delta
+            if block.last_line > after_line:
+                block.last_line += delta
+        if session.retake is not None:
+            first, last = session.retake
+            session.retake = (
+                first + delta if first > after_line else first,
+                last + delta if last > after_line else last,
+            )
+
+    def _stage(
+        self, first: int, count: int, kind: BlockKind, *, merge: bool = True
+    ) -> StagedBlock:
+        session = self._session
+        assert session is not None
+        last = first + count - 1
+        if merge and kind == "action" and session.blocks:
+            previous = session.blocks[-1]
+            if previous.kind == "action" and previous.last_line + 1 == first:
+                previous.last_line = last
+                return previous
+        session.serial += 1
+        block = StagedBlock(f"s{session.serial}", kind, first, last)
+        session.blocks.append(block)
+        return block
+
+    def line_anchors(self, tab_id: str) -> dict[str, int]:
+        """The anchors the recorder tracks in *tab_id*'s editor: the
+        recording cursor, each staged block's first and last line, and a
+        selection waiting to be re-recorded."""
+        session = self._session
+        if session is not None and session.tab_id != tab_id:
+            return {}
+        self._sync_from_mirror()
+        anchors: dict[str, int] = {}
+        if self._insert_line and is_any_program_recording():
+            anchors[_RECORD_ANCHOR_ID] = self._insert_line
+        if session is not None:
+            for block in session.blocks:
+                anchors[block.first_id] = block.first_line
+                anchors[block.last_id] = block.last_line
+            if session.retake is not None:
+                anchors[_RETAKE_FIRST_ID], anchors[_RETAKE_LAST_ID] = session.retake
+        self._declared = dict(anchors)
+        self._confirmed = False
+        return anchors
+
+    def _push_anchors(
+        self, session: RecordingSession | None = None, *, redeclare: bool = False
+    ) -> None:
+        session = session or self._session
+        from waldo_commander.components.editor_decorations import decorations
+
+        if not redeclare:
+            self._redeclared = 0
+        if session is not None:
+            self._watch(session.textarea)
+            decorations.push_line_anchors(session.tab_id, textarea=session.textarea)
+            return
+        active = waldoctl.commander.programs.active
+        if active is not None:
+            self._watch(ui_state.active_textarea)
+            decorations.push_line_anchors(active.id, textarea=ui_state.active_textarea)
+
+    def keep(self) -> None:
+        """Keep what the session wrote; stops recording if it is on."""
+        if is_any_program_recording():
+            self._stop_recording()
+        session, self._session = self._session, None
+        if session is not None:
+            self._push_anchors(session)
+        self._notify_session()
+
+    def undo(self) -> None:
+        """Take out every line the session wrote and put back the lines it
+        re-recorded; stops recording if it is on."""
+        if is_any_program_recording():
+            self._stop_recording()
+        session = self._session
+        if session is None:
+            return
+        self._sync_from_mirror()
+        textarea = session.textarea
+        lines = str(textarea.value or "").split("\n")
+        # Bottom up, so the lines above each block keep their numbers; a
+        # block the operator edited into overlapping another is taken once.
+        floor = len(lines) + 1
+        for block in sorted(session.blocks, key=lambda b: b.first_line, reverse=True):
+            first = max(1, block.first_line)
+            last = min(block.last_line, floor - 1, len(lines))
+            if first > last:
+                continue
+            lines[first - 1 : last] = (
+                session.retake_text.split("\n") if block.id == session.restores else []
+            )
+            floor = first
+        self._session = None
+        self._write(textarea, "\n".join(lines))
+        self._push_anchors(session)
+        self._notify_session()
+
+    def forget_session(self) -> None:
+        """Drop the session without writing: its program went away."""
+        if self._session is not None:
+            self._session = None
+            self._notify_session()
+
+    async def set_capture_mode(self, block_id: str, mode: CaptureMode) -> None:
+        """Rewrite a captured block as planned moves or as the recording."""
+        session = self._session
+        if session is None:
+            return
+        block = next((b for b in session.blocks if b.id == block_id), None)
+        if (
+            block is None
+            or block.busy
+            or block.mode == mode
+            or block.recording is None
+            or block.conversion is None
+        ):
+            return
+        block.busy = True
+        self._notify_session()
+        program = waldoctl.commander.programs.get(session.tab_id)
+        name = Path(program.filename).stem if program is not None else "program"
+        try:
+            conversion = await run.io_bound(
+                span_to_lines,
+                block.recording,
+                ui_state.active_robot,
+                program=name or "program",
+                directory=recordings_dir(),
+                as_recorded=mode == "raw",
+                recording_path=block.conversion.recording_path,
+            )
+        except (ValueError, OSError) as error:
+            logger.warning("Captured motion could not be rewritten: %s", error)
+            conversion = None
+        finally:
+            block.busy = False
+        if (
+            conversion is None
+            or self._session is not session
+            or block not in session.blocks
+        ):
+            self._notify_session()
+            return
+        if self.ui_client is not None:
+            with self.ui_client:
+                self._replace_block(block, conversion.source)
+        else:
+            self._replace_block(block, conversion.source)
+        block.conversion, block.mode = conversion, mode
+        self._notify_session()
+
+    def _replace_block(self, block: StagedBlock, snippet: str) -> None:
+        """Rewrite a staged block's lines as *snippet*."""
+        session = self._session
+        assert session is not None
+        textarea = session.textarea
+        self._sync_from_mirror()
+        first, last = block.first_line, block.last_line
+        new_value, first, count = replace_lines(
+            str(textarea.value or ""), first, last, snippet
+        )
+        self._write(textarea, new_value)
+        delta = count - (last - first + 1)
+        self._shift(last, delta, exclude=block)
+        if self._insert_line and self._insert_line >= last:
+            self._insert_line += delta
+        if count:
+            block.first_line, block.last_line = first, first + count - 1
+        else:
+            session.blocks.remove(block)
+        self._push_anchors(session)
+        if count:
+            from waldo_commander.components.editor_decorations import decorations
+
+            decorations.flash_editor_lines(list(range(first, first + count)))
 
     def _clamp_below_select_tool(self, text: str) -> None:
         """Recorded motions must play back after the tool selection, so the
@@ -332,24 +635,39 @@ class MotionRecorder:
                 self._insert_line = max(self._insert_line, i + 1)
                 return
 
-    def toggle_recording(self) -> None:
-        """Toggle recording state on/off."""
+    def toggle_recording(self, *, replace: tuple[int, int] | None = None) -> None:
+        """Toggle recording on or off. Started with *replace*, the lines in
+        that range are what the session re-records."""
         if is_any_program_recording():
             self._stop_recording()
         else:
-            self._start_recording()
+            self._start_recording(replace)
 
-    def _start_recording(self) -> None:
+    def _start_recording(self, replace: tuple[int, int] | None = None) -> None:
         """Start a new recording session on the active program."""
         active = waldoctl.commander.programs.active
         if active is None:
             logger.warning("Cannot start recording: no active program")
             return
+        if self._session is not None:
+            # A new take keeps the last one.
+            self.keep()
+        textarea = ui_state.active_textarea
+        session = RecordingSession(tab_id=active.id, textarea=textarea)
+        if replace is not None and textarea is not None:
+            lines = str(textarea.value or "").split("\n")
+            first, last = replace
+            if 1 <= first <= last <= len(lines):
+                session.retake = (first, last)
+                session.retake_text = "\n".join(lines[first - 1 : last])
+        self._session = session
         active.recording.is_recording = True
         self._active_jog = None
         self._last_action_wall_time = 0.0
         self._blend_terminator_pending = False
-        self._insert_line = active_cursor_line()
+        self._insert_line = (
+            session.retake[0] - 1 if session.retake else active_cursor_line()
+        )
 
         if (
             len(waldoctl.commander.status.joints.angles)
@@ -382,7 +700,7 @@ class MotionRecorder:
             ):
                 self._insert_line += 1
             textarea = ui_state.active_textarea
-            if textarea:
+            if textarea and session.retake is None:
                 self._clamp_below_select_tool(str(textarea.value or ""))
 
         # Insert anchor move_j to establish recording start position — but only
@@ -394,7 +712,9 @@ class MotionRecorder:
             >= ui_state.active_robot.joints.count
         ):
             angles = self._get_current_angles()
-            if not self._matches_sim_end(angles):
+            # A re-recording starts where the arm is, not where the program
+            # would be after the lines it replaces.
+            if session.retake is not None or not self._matches_sim_end(angles):
                 spd = waldoctl.commander.settings.jog.speed / 100.0
                 acc = waldoctl.commander.settings.jog.accel / 100.0
                 anchor_snippet = move_snippet(
@@ -417,17 +737,15 @@ class MotionRecorder:
 
         # One declaration at the settled cursor: _start_recording is
         # synchronous, so no user edit can interleave before this point.
-        textarea = ui_state.active_textarea
-        if textarea is not None:
-            self._declare_insert_anchor(textarea)
+        self._push_anchors()
         self._start_observer()
+        self._notify_session()
 
     def _stop_recording(self) -> None:
         """Stop recording session."""
         # If there's an active jog, end it first
         if self._active_jog:
             self.on_jog_end()
-        self._keep_capture()
         self._flush_after = self._insert_line
 
         if self._blend_terminator_pending:
@@ -436,16 +754,15 @@ class MotionRecorder:
             self._insert_snippet("rbt.wait_motion()")
             self._blend_terminator_pending = False
 
-        textarea = ui_state.active_textarea
-        if textarea is not None:
-            self._retract_insert_anchor(textarea)
-
         # Clear is_recording on every program — the invariant says only one
         # could have been True, but the sweep makes the stop idempotent.
         for p in waldoctl.commander.programs.items:
             p.recording.is_recording = False
         self._insert_line = None
+        # The cursor anchor goes; the staged lines stay until kept or undone.
+        self._push_anchors()
         logger.info("Recording stopped")
+        self._notify_session()
 
     def record_completed_skill(self, source: str, *, started_at: float) -> None:
         """Keep a successful skill once, without adding its duration as idle time."""
@@ -699,47 +1016,67 @@ class MotionRecorder:
         self._last_action_wall_time = time.time()
 
     def _insert_snippet(
-        self, snippet: str, *, after: int | None = None
+        self,
+        snippet: str,
+        *,
+        after: int | None = None,
+        kind: BlockKind = "action",
     ) -> tuple[int, int]:
         """Insert code below the recording session's insertion cursor (or the
         user's cursor line outside a session, or *after*) and flash the
-        inserted lines. Returns the first line written and how many."""
+        inserted lines. What recording writes into the session's editor is
+        staged (a span that closes after recording stopped too), and the first
+        write of a re-recording replaces the selected lines instead. Returns
+        the first line written and how many."""
         textarea = ui_state.active_textarea
         if not textarea:
             logger.error("Editor textarea not ready - open Program tab first")
             return 0, 0
-        # A recorded action after a captured span settles the span.
-        self._keep_capture()
 
         # A session can end without _stop_recording (e.g. the recording
         # program was closed); drop the stale session cursor then.
         if self._insert_line is not None and not is_any_program_recording():
             self._insert_line = None
 
+        session = self._session
+        staging = (
+            session is not None
+            and session.textarea is textarea
+            and (is_any_program_recording() or kind == "capture")
+        )
+        if staging or self._insert_line:
+            self._sync_from_mirror()
         val = str(textarea.value or "")
-        if after is None:
-            after = (
-                self._insert_line
-                if self._insert_line is not None
-                else active_cursor_line()
-            )
-            if self._insert_line:
-                # The browser remaps the anchor across user edits; the tracked
-                # int is the fallback until an echo arrives (or when a deletion
-                # swallowed the anchor line).
-                after = textarea.line_anchors.get(_RECORD_ANCHOR_ID, self._insert_line)
-        new_value, first_line, count = insert_below_line(val, snippet, after)
-        # Assigning value triggers the editor's on_change -> debounced simulation.
-        textarea.value = new_value
+        if staging and session is not None and session.retake is not None:
+            first, last = session.retake
+            new_value, first_line, count = replace_lines(val, first, last, snippet)
+            self._write(textarea, new_value)
+            session.retake = None
+            self._shift(last, count - (last - first + 1))
+            session.restores = self._stage(first_line, count, kind, merge=False).id
+        else:
+            if after is None:
+                after = (
+                    self._insert_line
+                    if self._insert_line is not None
+                    else active_cursor_line()
+                )
+            new_value, first_line, count = insert_below_line(val, snippet, after)
+            # Assigning value triggers the editor's on_change -> debounced simulation.
+            self._write(textarea, new_value)
+            if staging:
+                self._shift(first_line - 1, count)
+                self._stage(first_line, count, kind)
 
         last_line = first_line + count - 1
         if self._insert_line is None:
             advance_active_cursor(last_line)
-        elif self._insert_line:
+        elif self._insert_line or staging:
             # The session cursor advances past each insert so recorded steps
             # stay chronological while the user's cursor stays put.
             self._insert_line = last_line
-            self._declare_insert_anchor(textarea)
+        if staging or self._insert_line:
+            self._push_anchors()
 
         # Local import: motion_recorder is in services/ and decorations
         # is in components/, so a top-level import would invert the
@@ -747,6 +1084,8 @@ class MotionRecorder:
         from waldo_commander.components.editor_decorations import decorations
 
         decorations.flash_editor_lines(list(range(first_line, last_line + 1)))
+        if staging:
+            self._notify_session()
         return first_line, count
 
     # ------------------------------------------------------ captured motion
@@ -765,10 +1104,6 @@ class MotionRecorder:
         return (
             self._owned > 0 or self._active_jog is not None or is_any_program_running()
         )
-
-    @property
-    def capture(self) -> Capture | None:
-        return self._capture
 
     def _start_observer(self) -> None:
         self._observer_generation += 1
@@ -937,9 +1272,9 @@ class MotionRecorder:
             self._show_capture(recording, conversion, guided, after)
 
     async def _recording_program(self):
-        """The program being recorded, once it is the active one again: a
-        skill's Run once switches tabs while it runs, and the lines belong
-        to the recording, not to the skill's program."""
+        """The program being recorded, once it is the active one again: Run
+        selection switches tabs while it runs, and the lines belong to the
+        recording, not to the selection's program."""
         programs = waldoctl.commander.programs
         recording = next((p for p in programs.items if p.recording.is_recording), None)
         if recording is None:
@@ -957,141 +1292,27 @@ class MotionRecorder:
         guided: bool,
         after: int | None,
     ) -> None:
-        first, count = self._insert_snippet(conversion.source, after=after)
+        if self._session is None:
+            # A span that closes after the last take was kept is a new take.
+            program = waldoctl.commander.programs.active
+            if program is None:
+                return
+            self._session = RecordingSession(
+                tab_id=program.id, textarea=ui_state.active_textarea
+            )
+        first, count = self._insert_snippet(
+            conversion.source, after=after, kind="capture"
+        )
         if not count:
             return
         self._last_action_wall_time = time.time()
-        self._capture = Capture(
-            recording,
-            conversion,
-            first,
-            first + count - 1,
-            guided,
-            textarea=ui_state.active_textarea,
+        block = next(
+            b
+            for b in self._session.blocks
+            if b.first_line == first and b.kind == "capture"
         )
-        self._declare_capture_anchors()
-        from waldo_commander.components.capture_review import capture_review
-
-        capture_review.show(
-            recording,
-            conversion,
-            guided=guided,
-            on_trim=self._trim_capture,
-            on_undo=self._undo_capture,
-            on_keep=self._keep_capture,
-        )
-
-    def _declare_capture_anchors(self) -> None:
-        capture = self._capture
-        textarea = capture.textarea if capture is not None else None
-        if textarea is None or capture is None:
-            return
-        textarea.line_anchors = {
-            **textarea.line_anchors,
-            _CAPTURE_FIRST_ID: capture.first_line,
-            _CAPTURE_LAST_ID: capture.last_line,
-        }
-
-    def _capture_lines(self) -> tuple[int, int]:
-        capture = self._capture
-        assert capture is not None
-        textarea = capture.textarea
-        anchors = textarea.line_anchors if textarea is not None else {}
-        return (
-            anchors.get(_CAPTURE_FIRST_ID, capture.first_line),
-            anchors.get(_CAPTURE_LAST_ID, capture.last_line),
-        )
-
-    async def _trim_capture(self, start_s: float, end_s: float) -> None:
-        capture = self._capture
-        if capture is None:
-            return
-        from waldo_commander.components.capture_review import capture_review
-
-        selection = capture_review.selection()
-        recording = (
-            capture.recording
-            if selection is None
-            else capture.recording.select(*selection)
-        )
-        if len(recording.samples) < 2:
-            return
-        program = waldoctl.commander.programs.active
-        name = Path(program.filename).stem if program is not None else "program"
-        try:
-            conversion = await run.io_bound(
-                span_to_lines,
-                recording,
-                ui_state.active_robot,
-                program=name or "program",
-                directory=recordings_dir(),
-            )
-        except (ValueError, OSError) as error:
-            logger.warning("Trimmed motion could not be written as code: %s", error)
-            return
-        if conversion is None or self._capture is not capture:
-            return
-        if self.ui_client is not None:
-            with self.ui_client:
-                self._replace_capture(conversion.source)
-        else:
-            self._replace_capture(conversion.source)
-        capture.conversion = conversion
-        capture_review.retrimmed(recording, conversion)
-
-    def _replace_capture(self, snippet: str) -> None:
-        """Rewrite the captured lines as *snippet*, or take them out."""
-        capture = self._capture
-        textarea = capture.textarea if capture is not None else None
-        if capture is None or textarea is None:
-            return
-        first, last = self._capture_lines()
-        new_value, first, count = replace_lines(
-            str(textarea.value or ""), first, last, snippet
-        )
-        textarea.value = new_value
-        if self._insert_line:
-            # The session cursor stays on the last captured line, or moves
-            # back above where the lines were.
-            self._insert_line = first + count - 1 if count else max(first - 1, 1)
-            self._declare_insert_anchor(textarea)
-        if count:
-            capture.first_line, capture.last_line = first, first + count - 1
-            self._declare_capture_anchors()
-            from waldo_commander.components.editor_decorations import decorations
-
-            decorations.flash_editor_lines(list(range(first, first + count)))
-        else:
-            self._forget_capture_anchors(textarea)
-            self._capture = None
-
-    def _forget_capture_anchors(self, textarea) -> None:
-        anchors = dict(textarea.line_anchors)
-        if any(
-            anchors.pop(k, None) is not None
-            for k in (_CAPTURE_FIRST_ID, _CAPTURE_LAST_ID)
-        ):
-            textarea.line_anchors = anchors
-
-    def _undo_capture(self) -> None:
-        if self._capture is None:
-            return
-        self._replace_capture("")
-        self._capture = None
-        from waldo_commander.components.capture_review import capture_review
-
-        capture_review.hide()
-
-    def _keep_capture(self) -> None:
-        if self._capture is None:
-            return
-        textarea = self._capture.textarea
-        if textarea is not None:
-            self._forget_capture_anchors(textarea)
-        self._capture = None
-        from waldo_commander.components.capture_review import capture_review
-
-        capture_review.hide()
+        block.recording, block.conversion, block.guided = recording, conversion, guided
+        self._notify_session()
 
 
 def _moved(before: RecordedSample, after: RecordedSample) -> bool:

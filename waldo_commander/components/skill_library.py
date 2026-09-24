@@ -353,7 +353,7 @@ class SkillDialog:
                         readers[name] = CommanderCameraSource
                     elif annotation is Demonstration:
                         ui.label(
-                            "Replays come from recording: press Record, move the arm by hand or from another client, and keep the captured lines As recorded. In Python, pass load_demonstration(path)."
+                            "Replays come from recording: press Record, move the arm by hand or from another client, and keep the captured lines Raw. In Python, pass load_demonstration(path)."
                         ).classes("text-caption")
                         insert_button.disable()
                         # Falls through to refresh_source: it is the only writer

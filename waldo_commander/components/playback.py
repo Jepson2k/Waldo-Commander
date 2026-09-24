@@ -248,18 +248,34 @@ class PlaybackController:
     # ---- Recording lifecycle ----
 
     def _toggle_recording(self) -> None:
-        """Toggle motion recording on/off and update the record button visual."""
+        """Start or stop recording. Started with lines selected, the take
+        re-records them."""
         try:
             motion_recorder.ui_client = self._ui_client or context.client
         except RuntimeError:
             motion_recorder.ui_client = self._ui_client
-        motion_recorder.toggle_recording()
-        if is_any_program_recording():
-            if self.record_btn:
-                self.record_btn.props("color=warning")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Stop Recording"
-            self.set_enabled(False)
+        editor = ui_state.editor_panel
+        selection = (
+            editor.take_selection()
+            if editor is not None and not is_any_program_recording()
+            else None
+        )
+        motion_recorder.toggle_recording(replace=selection)
+        self._sync_recording_ui()
+
+    def _sync_recording_ui(self) -> None:
+        """The Record button, the play controls and the Recording notice
+        follow whether anything is recording, however it started or stopped
+        (Keep and Undo stop it too)."""
+        recording = is_any_program_recording()
+        if self.record_btn:
+            self.record_btn.props("color=warning" if recording else "color=negative")
+        if self._record_btn_tooltip:
+            self._record_btn_tooltip.text = (
+                "Stop Recording" if recording else "Start Recording"
+            )
+        self.set_enabled(not recording)
+        if recording and self._recording_notification is None:
             try:
                 ui_client = self._ui_client or context.client
                 with ui_client:
@@ -274,20 +290,14 @@ class PlaybackController:
                     )
             except RuntimeError:
                 pass
-        else:
-            if self.record_btn:
-                self.record_btn.props("color=negative")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Start Recording"
-            self.set_enabled(True)
-            if self._recording_notification is not None:
-                try:
-                    client = self._ui_client or context.client
-                    with client:
-                        self._recording_notification.dismiss()
-                except RuntimeError:
-                    pass
-                self._recording_notification = None
+        elif not recording and self._recording_notification is not None:
+            try:
+                client = self._ui_client or context.client
+                with client:
+                    self._recording_notification.dismiss()
+            except RuntimeError:
+                pass
+            self._recording_notification = None
         # Recording toggles don't fire the state channel; reconcile the
         # step buttons' recording lockout here.
         self.update_play_button()
@@ -312,11 +322,13 @@ class PlaybackController:
         simulation_state.add_change_listener(self._on_state_change)
         simulation_state.add_step_listener(self._on_step_change)
         self._sim_timer = ui.timer(1.0 / 50, self._sim_playback_tick, active=False)
+        motion_recorder.add_session_listener(self._sync_recording_ui)
 
     def cleanup(self) -> None:
         """Remove listeners and cancel any async tasks owned by this controller."""
         simulation_state.remove_change_listener(self._on_state_change)
         simulation_state.remove_step_listener(self._on_step_change)
+        motion_recorder.remove_session_listener(self._sync_recording_ui)
         if self._teleport_task and not self._teleport_task.done():
             self._teleport_task.cancel()
             self._teleport_task = None
