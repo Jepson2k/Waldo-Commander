@@ -266,15 +266,18 @@ class TestPanelResize:
         """
         fit = js(class_screen, measure)
         assert fit["inline"] == "", fit
-        # Every field ends at the panel's content edge: no empty strip on the right.
+        # Every row's fields end at the panel's content edge: no empty strip on the right.
         edges = js(
             class_screen,
             """
             const c = document.querySelector('.settings-panel .settings-content');
             const inner = c.getBoundingClientRect().left + c.clientLeft + c.clientWidth;
-            const rights = [...c.querySelectorAll('.settings-row > .q-field')]
-                .filter(e => e.offsetParent !== null)
-                .map(e => e.getBoundingClientRect().right);
+            const rights = [...c.querySelectorAll('.settings-row')]
+                .map(row => [...row.querySelectorAll('.q-field')]
+                    .filter(e => e.offsetParent !== null)
+                    .map(e => e.getBoundingClientRect().right))
+                .filter(r => r.length)
+                .map(r => Math.max(...r));
             return {inner, rights};
         """,
         )
