@@ -430,6 +430,25 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
     assert raw.recording_path == saved[0]
     assert list(captures.glob("bench-*.json")) == saved, "no second copy is saved"
 
+    # Two captures converted within the same second are two files: the
+    # second must not take the first one's, which replay lines already name.
+    import time
+
+    captures2 = tmp_path / "captures2"
+    with monkeypatch.context() as patched:
+        patched.setattr(time, "strftime", lambda fmt, *args: "20260924-120000")
+        first = span_to_lines(
+            recording, robot, program="bench", directory=captures2, tolerance_mm=1e-6
+        )
+        second = span_to_lines(
+            recording, robot, program="bench", directory=captures2, tolerance_mm=1e-6
+        )
+    assert first.recording_path != second.recording_path, (
+        "a second capture in the same second took the first one's file"
+    )
+    assert load_demonstration(first.recording_path) == recording
+    assert load_demonstration(second.recording_path) == recording
+
 
 @pytest.mark.integration
 async def test_a_stall_near_the_end_of_a_capture_is_a_disconnect(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import math
 import os
@@ -825,6 +826,22 @@ def _continuous_pieces(recording: Demonstration) -> Iterator[Demonstration]:
             yield recording.select(begin, end)
 
 
+def _new_recording_path(directory: Path, program: str) -> Path:
+    """A file of its own for a capture, created empty so a second capture
+    converted within the same second cannot take the same name."""
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for n in itertools.count(1):
+        suffix = "" if n == 1 else f"-{n}"
+        path = directory / f"{program}-{stamp}{suffix}.json"
+        try:
+            path.touch(exist_ok=False)
+        except FileExistsError:
+            continue
+        return path
+    raise AssertionError("unreachable")
+
+
 def span_to_lines(
     recording: Demonstration,
     robot: Robot,
@@ -856,9 +873,7 @@ def span_to_lines(
     def replay(piece: Demonstration, offset: int):
         def lines(a: int, b: int) -> tuple[str, ...]:
             if "path" not in saved:
-                directory.mkdir(parents=True, exist_ok=True)
-                stamp = time.strftime("%Y%m%d-%H%M%S")
-                saved["path"] = directory / f"{program}-{stamp}.json"
+                saved["path"] = _new_recording_path(directory, program)
                 save_demonstration(saved["path"], recording)
             # A replay refuses to start more than half a degree from its first
             # sample, and the lines before it are only held to the planner's
