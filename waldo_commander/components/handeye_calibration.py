@@ -35,6 +35,11 @@ from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    control_lease,
+    require_browser_control,
+)
 from waldo_commander.services.tcp_calibration import observe_tcp, read_applied_tcp
 from waldo_commander.state import robot_state
 
@@ -989,16 +994,20 @@ class HandEyeCalibrationPanel(Panel):
             dialog.delete()
         if not confirmed:
             return
+        page_client = context.client
+        if not require_browser_control(page_client.id):
+            return
         self._auto_cancel = False
         self._auto_task = background_tasks.create(
-            self._auto_run(commander, context.client), name="handeye-auto-calibration"
+            self._auto_run(commander, page_client), name="handeye-auto-calibration"
         )
 
     async def _auto_run(self, commander: Commander, page_client: Client) -> None:
         """Drive the robot through :data:`AUTO_VIEW_DELTAS_DEG`, capture at
         each pose, return to the start pose, and solve. Runs as a background
         task; Stop sets ``_auto_cancel`` and halts the in-flight move, and the
-        run aborts if the page that started it disconnects."""
+        run aborts if the page that started it disconnects or another client
+        takes control."""
         with motion_recorder.owned():
             await self._auto_run_owned(commander, page_client)
 
@@ -1008,6 +1017,7 @@ class HandEyeCalibrationPanel(Panel):
         skipped = 0
         error: str | None = None
         moved = False
+        lost_control = False
         try:
             angles = await commander.client.angles()
             start_angles = list(angles) if angles is not None else None
@@ -1017,6 +1027,10 @@ class HandEyeCalibrationPanel(Panel):
                 rejects = 0
                 for i, deltas in enumerate(AUTO_VIEW_DELTAS_DEG):
                     if self._auto_cancel or not page_client.has_socket_connection:
+                        break
+                    if not control_lease.held_by(BROWSER, page_client.id):
+                        lost_control = True
+                        error = "another client took control"
                         break
                     progress = f"Pose {i + 1}/{n} — {captured} captured"
                     if skipped:
@@ -1051,7 +1065,12 @@ class HandEyeCalibrationPanel(Panel):
                         error = str(e)
                         break
             parked = True
-            if moved and start_angles is not None and not self._auto_cancel:
+            if (
+                moved
+                and start_angles is not None
+                and not self._auto_cancel
+                and not lost_control
+            ):
                 parked = await self._auto_return(commander, start_angles)
             if page_client.has_socket_connection:
                 with page_client:
