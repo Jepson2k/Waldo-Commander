@@ -27,7 +27,7 @@ from nicegui import ui
 from nicegui.testing import User
 from parol6.protocol.wire import StatusResultStruct
 from scipy.spatial.transform import Rotation
-from waldoctl.setup import Frame, SetupSnapshot
+from waldoctl.setup import Frame, Pose, SetupSnapshot
 from waldo_commander.setup import SetupStore, export_snapshot
 from waldo_commander.camera import CameraUnavailable
 
@@ -362,9 +362,27 @@ async def test_handeye_panel_workflow(
 
         user.find(marker="handeye-step-4").click()
         await asyncio.sleep(0)
+        # A Setup save that lands while the camera is being measured must
+        # survive: the calibration joins the setup as it is by then.
+        editor = panel._data_editor
+        measure = editor.measurement
+        store = SetupStore(tmp_path)
+
+        async def measure_while_setup_changes(setup, reference):
+            calibration = await measure(setup, reference)
+            store.save(
+                "bench",
+                store.load("bench").with_pose("taught", Pose((1, 2, 3, 0, 0, 0))),
+            )
+            return calibration
+
+        editor.measurement = measure_while_setup_changes
         user.find(marker="handeye-save").click()
         await user.should_see("Saved bench/camera", retries=50)
         saved = SetupStore(tmp_path).load("bench")
+        assert "taught" in saved.poses, (
+            "the camera save wrote over a pose taught while it measured"
+        )
         calibration = saved.cameras["camera"]
         actual = (
             saved.frame_matrix("stand") @ calibration.pose.matrix()

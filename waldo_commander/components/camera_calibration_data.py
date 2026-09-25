@@ -95,9 +95,18 @@ class CameraCalibrationData:
     async def save(self) -> bool:
         try:
             setup = self.snapshot()
-            calibration = await self.measurement(setup, self.reference.value)
+            reference = self.reference.value
+            calibration = await self.measurement(setup, reference)
+            # Measuring takes time: the calibration joins the setup as it is
+            # now, so anything saved into it meanwhile survives, unless the
+            # frame it was measured against is no longer what was measured.
+            latest = self.snapshot()
+            if latest.frames.get(reference) != setup.frames.get(reference):
+                raise ValueError(
+                    f"Frame {reference} changed while measuring; measure again"
+                )
             self.store.save(
-                self.setup_name.value, setup.with_camera(self.name.value, calibration)
+                self.setup_name.value, latest.with_camera(self.name.value, calibration)
             )
             self.message.set_text(
                 f"Saved {self.setup_name.value}/{self.name.value}: {self.describe(calibration)}"
