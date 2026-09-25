@@ -36,6 +36,7 @@ from waldo_commander.components.handeye_calibration import (
 )
 from waldo_commander.services import handeye
 from waldo_commander.services.camera_service import camera_service
+from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
 from waldo_commander.state import robot_state, ui_state
 
 IMAGE_SIZE = (1280, 960)
@@ -420,10 +421,14 @@ async def test_handeye_auto_calibration(
             )
 
         await wait_board_detected()
+        control_lease.seize(MCP, "auto-review", "Review MCP")
         user.find(marker="handeye-auto").click()
         await user.should_see(marker="handeye-auto-confirm")
         user.find(marker="handeye-auto-confirm").click()
         await _wait_for(lambda: panel._auto_running, message="auto run did not start")
+        # Confirming the run takes control for the browser, so an AI session
+        # holding the lease cannot interleave its own moves with the sweep.
+        assert control_lease.held_by(BROWSER, ui_state.active_client_id)
 
         n_views = len(AUTO_VIEW_DELTAS_DEG)
         await _wait_for(
@@ -485,6 +490,23 @@ async def test_handeye_auto_calibration(
         assert len(panel._samples) >= n_before
         assert panel._result is result
         assert panel._auto_progress_text is None
+
+        # Losing control mid-run ends it: the lease going to another client
+        # stops the sweep before the next move instead of driving on.
+        await wait_board_detected()
+        user.find(marker="handeye-auto").click()
+        await user.should_see(marker="handeye-auto-confirm")
+        user.find(marker="handeye-auto-confirm").click()
+        await _wait_for(
+            lambda: panel._auto_running, timeout=30.0, message="third run did not start"
+        )
+        control_lease.seize(MCP, "auto-takeover", "AI")
+        await _wait_for(
+            lambda: panel._auto_task is not None and panel._auto_task.done(),
+            timeout=60.0,
+            message="losing control did not end the run",
+        )
+        await user.should_see("Auto-calibration aborted: another client took control")
 
         # A refused move is a planner verdict the routine is built to absorb,
         # not a defect — but the controller logs each one at ERROR. Drop just
