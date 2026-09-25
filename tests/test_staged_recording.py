@@ -266,3 +266,64 @@ async def test_anchors_moved_by_the_write_they_were_declared_with_do_not_move_th
     finally:
         if is_any_program_recording():
             motion_recorder.toggle_recording()
+
+
+@pytest.mark.integration
+async def test_a_capture_that_finishes_converting_after_its_take_ended_is_dropped(
+    user: User, tmp_path, monkeypatch
+):
+    """Converting a captured span runs in a thread, so Keep, Undo or a tab
+    switch can land before it returns. A result arriving then went into
+    whatever program was in front, as a new take."""
+    import threading
+
+    from waldo_commander.services import motion_recorder as recorder_module
+
+    entered, release = threading.Event(), threading.Event()
+    real = recorder_module.span_to_lines
+
+    def gated(*args, **kwargs):
+        entered.set()
+        assert release.wait(30), "the test never released the conversion"
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(recorder_module, "span_to_lines", gated)
+    monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
+    textarea = await _open_program(user, PROGRAM)
+    program = waldoctl.commander.programs.active
+    assert program is not None
+    program.dry_run.playback.active_cursor_line = 4
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0.1)
+    assert is_any_program_recording()
+    try:
+        client = waldoctl.commander.client
+        start = await client.angles()
+        assert start is not None
+        target = list(start)
+        target[0] += 8.0
+        index = await client.move_j(target, duration=1.0)
+        assert await client.wait_command(index, timeout=10)
+        assert await wait_until(entered.is_set, timeout_s=20), (
+            "the span never started converting"
+        )
+        user.find(marker="staged-keep").click()
+        await asyncio.sleep(0.1)
+        assert not is_any_program_recording()
+        kept = str(textarea.value)
+        other = waldoctl.commander.programs.new(
+            source="print('other')\n", filename="other.py"
+        )
+        waldoctl.commander.programs.switch(other.id)
+        await asyncio.sleep(0.1)
+        in_front = ui_state.active_textarea
+        in_front_text = str(in_front.value)
+        release.set()
+        await asyncio.sleep(1.5)
+        assert other.source == "print('other')\n", other.source
+        assert str(in_front.value) == in_front_text
+        assert str(textarea.value) == kept
+    finally:
+        release.set()
+        if is_any_program_recording():
+            motion_recorder.toggle_recording()

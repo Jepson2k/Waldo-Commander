@@ -1248,6 +1248,10 @@ class MotionRecorder:
         meta: tuple[str, float, tuple[float, ...]],
         after: int | None = None,
     ) -> None:
+        take = self._session
+        if take is None:
+            logger.debug("Captured motion closed with no take open; dropped")
+            return
         # The arm coming to rest is not part of the motion: keep one still
         # sample after the last move so the span ends where it stopped.
         last_moving = 0
@@ -1273,7 +1277,8 @@ class MotionRecorder:
             logger.warning("Captured motion was not a recording: %s", error)
             return
         program = await self._recording_program()
-        if program is None:
+        if program is None or program.id != take.tab_id:
+            logger.debug("Captured motion outlived its take's program; dropped")
             return
         name = Path(program.filename).stem or "program"
         try:
@@ -1288,6 +1293,14 @@ class MotionRecorder:
             logger.warning("Captured motion could not be written as code: %s", error)
             return
         if conversion is None:
+            return
+        if (
+            self._session is not take
+            or waldoctl.commander.programs.active_id != take.tab_id
+        ):
+            # Kept, undone, forgotten or switched away while converting: a
+            # take that ended does not grow, and no other program gets it.
+            logger.info("A captured span converted after its take ended; dropped")
             return
         if self.ui_client is not None:
             with self.ui_client:
@@ -1317,13 +1330,7 @@ class MotionRecorder:
         after: int | None,
     ) -> None:
         if self._session is None:
-            # A span that closes after the last take was kept is a new take.
-            program = waldoctl.commander.programs.active
-            if program is None:
-                return
-            self._session = RecordingSession(
-                tab_id=program.id, textarea=ui_state.active_textarea
-            )
+            return
         first, count = self._insert_snippet(
             conversion.source, after=after, kind="capture"
         )
