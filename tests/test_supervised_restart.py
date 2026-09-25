@@ -230,3 +230,72 @@ if __name__ == '__main__':
     assert await script_exec.start()
     await finished()
     assert script_exec.last_exit_code == 0
+
+
+@pytest.mark.integration
+async def test_a_restart_in_preflight_is_one_launch_and_stop_cancels_it(
+    user: User, tmp_path, monkeypatch
+):
+    """Between Start and the subprocess a restart reads the controller's
+    state. Nothing was marked running then, so a second Start launched a
+    second program and Stop answered that nothing was running."""
+    from tests.helpers.wait import (
+        enable_sim,
+        ensure_robot_ready_for_motion,
+        wait_for_app_ready,
+    )
+    from waldo_commander.components import script_execution as launching
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.services.supervised_restart import fresh_state, source_digest
+    from waldo_commander.state import ui_state
+
+    monkeypatch.setenv("WALDO_RUN_RECORD_DIR", str(tmp_path / "runs"))
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    source = (
+        "from parol6 import RobotClient\n\n"
+        "def before_restart():\n    pass\n\n"
+        "def after_pick():\n"
+        "    with RobotClient() as rbt:\n        rbt.delay(0.1)\n\n"
+        "if __name__ == '__main__':\n    after_pick()\n"
+    )
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = source
+    reference = await fresh_state(client)
+    gate = asyncio.Event()
+    read_state = launching.fresh_state
+
+    async def held_fresh_state(c):
+        await gate.wait()
+        return await read_state(c)
+
+    monkeypatch.setattr(launching, "fresh_state", held_fresh_state)
+
+    def restart():
+        return script_exec.start(
+            restart_entry="after_pick",
+            restart_reference=reference,
+            reviewed_source_digest=source_digest(source),
+        )
+
+    launch = asyncio.create_task(restart())
+    try:
+        await asyncio.sleep(0.2)
+        assert not launch.done()
+        assert not await script_exec.start(), "a second Start launched in preflight"
+        assert not await restart(), "a second restart launched in preflight"
+        await script_exec.stop()
+        gate.set()
+        assert not await launch, "Stop did not cancel the launch in preflight"
+        assert not is_any_program_running()
+        assert script_exec.script_handle is None
+    finally:
+        gate.set()
+        if not launch.done():
+            launch.cancel()
+        if is_any_program_running():
+            await script_exec.stop()

@@ -181,7 +181,7 @@ class ScriptExecutionController:
 
     async def toggle(self) -> None:
         """Toggle start/stop based on current state."""
-        if is_any_program_running():
+        if is_any_program_running() or self._launch_task is not None:
             await self.stop()
         else:
             await self.start()
@@ -203,6 +203,12 @@ class ScriptExecutionController:
         """
         if is_any_program_running():
             ui.notify("Script already running", color="warning")
+            return False
+        # A restart reads the controller's state before anything is marked
+        # running; the launch is reserved here so nothing else starts, and
+        # Stop can cancel it, in the meantime.
+        if self._launch_task is not None:
+            ui.notify("Script already starting", color="warning")
             return False
 
         self._launch_task = asyncio.current_task()
@@ -368,10 +374,9 @@ class ScriptExecutionController:
 
     async def stop(self) -> None:
         """Terminate the program, then cancel its native motion and queue."""
-        if not is_any_program_running() or (
-            self.script_handle is None
-            and self._launch_task is None
-            and not self._stop_unconfirmed
+        if self._launch_task is None and (
+            not is_any_program_running()
+            or (self.script_handle is None and not self._stop_unconfirmed)
         ):
             ui.notify("No script running", color="warning")
             return
