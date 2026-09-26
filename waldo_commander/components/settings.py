@@ -1,4 +1,5 @@
-"""Settings panel: connection, tool, jogging, view, automation and advanced."""
+"""Settings dialog: connection, tool, jog, view, automation, shortcuts,
+getting started and advanced, one category per tab."""
 
 import asyncio
 import logging
@@ -6,7 +7,7 @@ import math
 import weakref
 from collections.abc import Callable
 from contextlib import contextmanager
-from typing import cast
+from typing import Any, cast
 
 import waldoctl
 from nicegui import Client, background_tasks, context, ui
@@ -105,11 +106,11 @@ def get_available_serial_ports() -> list[str]:
 
 @contextmanager
 def _setting_row(title: str, description: str):
-    """A label beside its control; what the setting does is on hover or focus."""
+    """The setting's name over a one-line description, its control at the right."""
     with ui.element("div").classes("settings-row"):
-        ui.label(title).classes("settings-label").props("tabindex=0").tooltip(
-            description
-        )
+        with ui.element("div").classes("settings-text"):
+            ui.label(title).classes("settings-label")
+            ui.label(description).classes("settings-desc")
         yield
 
 
@@ -119,10 +120,12 @@ _settings_views: weakref.WeakSet["SettingsContent"] = weakref.WeakSet()
 
 
 class SettingsContent:
-    """The settings rows, grouped and built into whichever panel hosts them."""
+    """The settings rows, one category per tab of the Settings dialog."""
 
     def __init__(self, client: RobotClient) -> None:
         self.client = client
+        self.dialog: ui.dialog | None = None
+        self._shortcuts_box: ui.column | None = None
         self._tcp_inputs: tuple[str, OffsetInputs, Client] | None = None
         _settings_views.add(self)
         self._port_select: ui.select | None = None
@@ -947,24 +950,21 @@ class SettingsContent:
                     on_change=_on_toggle(panel_id),
                 ).props("dense").mark(f"settings-plugin-{panel_id}")
 
-    def _build_plugin_settings(self) -> None:
-        """Render settings for each enabled panel plugin that contributes any.
-        Owns its leading separator so nothing dangles when no plugin does."""
-        commander = waldoctl.commander
-        contributors = [
+    @staticmethod
+    def _plugin_contributors() -> list[Panel]:
+        return [
             p
             for p in ui_state.plugin_panels
             if type(p).build_settings is not Panel.build_settings
         ]
-        for panel in contributors:
-            ui.label(panel.display_name).classes("settings-group-heading").mark(
-                f"settings-plugin-{panel.id}-header"
-            )
-            # A plugin's build_settings() must not break the whole settings page.
-            try:
-                panel.build_settings(commander)
-            except Exception as e:
-                logger.warning("Plugin %s build_settings failed: %s", panel.id, e)
+
+    @staticmethod
+    def _build_plugin_settings(panel: Panel) -> None:
+        # A plugin's build_settings() must not break the whole settings dialog.
+        try:
+            panel.build_settings(waldoctl.commander)
+        except Exception as e:
+            logger.warning("Plugin %s build_settings failed: %s", panel.id, e)
 
     def _build_mcp_server(self) -> None:
         """MCP server controls.
@@ -1165,29 +1165,44 @@ class SettingsContent:
 
     # ── Main entry point ─────────────────────────────────────────────
 
-    def build_embedded(
-        self, ai_control_section: Callable[[], None] | None = None
-    ) -> None:
-        """Build the settings content.
+    def build_dialog(
+        self,
+        ai_control_section: Callable[[], None] | None = None,
+        help_menu: Any = None,
+    ) -> ui.dialog:
+        """Build the Settings dialog, closed, with every category's rows in place.
 
         ``ai_control_section`` is the control panel's AI mode row, grouped
-        with the other autonomy settings.
+        with the other autonomy settings; ``help_menu`` supplies the
+        Shortcuts table and the Getting started tour.
 
-        Groups run from the control an operator reaches for first to the one
-        they touch least. The port leads because on some backends nothing
-        works until it is set, and it is the first place to look when the arm
-        is not answering; the restart-scoped settings are penned together at
-        the bottom so none of them sits beside a live one.
+        Categories run from the control an operator reaches for first to the
+        one they touch least; the restart-scoped settings are penned together
+        at the end so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
 
-        groups: list[tuple[str, list[Callable[[], None]]]] = []
+        categories: list[tuple[str, str, str, list[Callable[[], None]]]] = []
         if ui_state.active_robot.name.lower() == "parol6":
-            groups.append(("Connection", [lambda: self._build_serial_port(prefs)]))
-        groups += [
-            ("Tool", [self._build_tool_section, self._build_camera]),
+            categories.append(
+                (
+                    "connection",
+                    "Connection",
+                    "usb",
+                    [lambda: self._build_serial_port(prefs)],
+                )
+            )
+        categories += [
             (
+                "tool",
+                "Tool",
+                "handyman",
+                [self._build_tool_section, self._build_camera],
+            ),
+            (
+                "jog",
                 "Jog",
+                "open_with",
                 [
                     lambda: self._build_reference_frames(prefs),
                     lambda: self._build_jog_inversion(prefs),
@@ -1196,7 +1211,9 @@ class SettingsContent:
                 ],
             ),
             (
+                "view",
                 "View",
+                "visibility",
                 [
                     lambda: self._build_show_route(prefs),
                     lambda: self._build_envelope(prefs),
@@ -1204,29 +1221,137 @@ class SettingsContent:
                 ],
             ),
             (
+                "automation",
                 "Automation",
+                "smart_toy",
                 [
                     self._build_automation,
                     *([ai_control_section] if ai_control_section else []),
                 ],
             ),
+        ]
+        if help_menu is not None:
+            categories += [
+                (
+                    "shortcuts",
+                    "Shortcuts",
+                    "keyboard",
+                    [lambda: self._build_shortcuts(help_menu)],
+                ),
+                (
+                    "getting-started",
+                    "Getting started",
+                    "school",
+                    [lambda: self._build_getting_started(help_menu)],
+                ),
+            ]
+        categories.append(
             (
+                "advanced",
                 "Advanced — restart required",
+                "tune",
                 [
                     self._build_backend_selector,
                     self._build_plugin_panels,
                     self._build_mcp_server,
                 ],
-            ),
-        ]
-
-        for heading, sections in groups:
-            ui.label(heading).classes("settings-group-heading").mark(
-                f"settings-group-{heading.split()[0].lower()}"
             )
-            for section in sections:
-                section()
+        )
+        for panel in self._plugin_contributors():
+            categories.append(
+                (
+                    f"plugin-{panel.id}",
+                    panel.display_name,
+                    panel.tab_icon or "extension",
+                    [lambda panel=panel: self._build_plugin_settings(panel)],
+                )
+            )
 
-        self._build_plugin_settings()
+        self.dialog = ui.dialog().classes("settings-dialog").mark("settings-dialog")
+        with self.dialog:
+            with ui.card().classes("settings-dialog-card p-0"):
+                with (
+                    ui.tabs(value=categories[0][0])
+                    .props("vertical dense no-caps")
+                    .classes("settings-cats") as tabs
+                ):
+                    for key, title, icon, _ in categories:
+                        ui.tab(key, label=title.split(" — ")[0], icon=icon).mark(
+                            f"settings-cat-{key}"
+                        )
+                with ui.element("div").classes("settings-body"):
+                    with (
+                        ui.row()
+                        .classes("w-full items-center px-4 py-2 no-wrap shrink-0")
+                        .style("border-bottom: 1px solid var(--wc-glass-border);")
+                    ):
+                        ui.label("Settings").classes("wc-title")
+                        ui.space()
+                        ui.button(icon="close", on_click=self.dialog.close).props(
+                            "flat round dense color=wc-text"
+                        ).mark("settings-close")
+                    if help_menu is not None:
+                        # Bindings register after the page is built and the jog
+                        # keys' descriptions follow the inversion switches, so
+                        # the table is redrawn each time the category opens.
+                        tabs.on_value_change(
+                            lambda e: (
+                                self._refresh_shortcuts(help_menu)
+                                if e.value == "shortcuts"
+                                else None
+                            )
+                        )
+                    with ui.tab_panels(tabs, value=categories[0][0]).props("animated"):
+                        for key, title, _, sections in categories:
+                            with ui.tab_panel(key):
+                                with ui.column().classes("settings-content"):
+                                    heading = ui.label(title).classes(
+                                        "settings-group-heading"
+                                    )
+                                    if key.startswith("plugin-"):
+                                        heading.mark(
+                                            f"settings-plugin-{key[7:]}-header"
+                                        )
+                                    else:
+                                        heading.mark(
+                                            f"settings-group-{title.split()[0].lower()}"
+                                        )
+                                    for section in sections:
+                                        section()
 
         simulation_state.notify_changed()
+        return self.dialog
+
+    def _build_shortcuts(self, help_menu: Any) -> None:
+        self._shortcuts_box = ui.column().classes("w-full")
+        self._refresh_shortcuts(help_menu)
+
+    def _refresh_shortcuts(self, help_menu: Any) -> None:
+        if self._shortcuts_box is None:
+            return
+        self._shortcuts_box.clear()
+        with self._shortcuts_box:
+            help_menu._build_keybindings_content()
+
+    def _build_getting_started(self, help_menu: Any) -> None:
+        with ui.row().classes("w-full items-center no-wrap gap-2"):
+            ui.label("A tour of the interface, one step at a time.").classes(
+                "wc-caption text-wc-text-muted"
+            )
+            ui.space()
+            with (
+                ui.link("", "https://jepson2k.github.io/Waldo-Commander/", new_tab=True)
+                .classes("text-wc-text-muted")
+                .tooltip("Read the guides online")
+                .mark("settings-docs-link")
+            ):
+                ui.icon("open_in_new", size="xs")
+        help_menu._build_quickstart_stepper(on_finish=self.close)
+
+    def open(self) -> None:
+        if self.dialog is not None:
+            self.dialog.open()
+
+    def close(self) -> None:
+        if self.dialog is not None:
+            self.dialog.close()

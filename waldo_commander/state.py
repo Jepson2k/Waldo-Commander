@@ -215,12 +215,16 @@ class RobotEventLog:
     wrong.
     """
 
-    entries: list[tuple[str, int, str, str, str, str]] = field(default_factory=list)
-    """(wall-clock time, code, title, cause, effect, remedy), oldest first."""
+    entries: list[tuple[str, int, str, str, str, str, str]] = field(
+        default_factory=list
+    )
+    """(wall-clock time, code, title, cause, effect, remedy, severity), oldest first."""
     version: int = 0
     unread: int = 0
-    """Entries added since the log was last looked at. Drives the tab badge;
-    cleared by :meth:`mark_read` when the Diagnostics tab renders them."""
+    """Entries added since the log was last looked at. Drives the footer's
+    unread tint; cleared by :meth:`mark_read` when Diagnostics renders them."""
+    warnings: int = 0
+    errors: int = 0
     _MAX = 200
 
     def add(
@@ -230,15 +234,21 @@ class RobotEventLog:
         cause: str = "",
         effect: str = "",
         remedy: str = "",
+        severity: str = "warning",
     ) -> None:
-        entry = (code, title, cause, effect, remedy)
+        entry = (code, title, cause, effect, remedy, severity)
         if self.entries and self.entries[-1][1:] == entry:
             return
         self.entries.append((time.strftime("%H:%M:%S"), *entry))
         if len(self.entries) > self._MAX:
             del self.entries[: -self._MAX]
+        self._recount()
         self.version += 1
         self.unread += 1
+
+    def _recount(self) -> None:
+        self.errors = sum(1 for e in self.entries if e[6] == "error")
+        self.warnings = len(self.entries) - self.errors
 
     def mark_read(self) -> None:
         # No version bump: the log rendering keys a full rebuild on it, and
@@ -249,6 +259,8 @@ class RobotEventLog:
         if self.entries or self.unread:
             self.entries.clear()
             self.unread = 0
+            self.warnings = 0
+            self.errors = 0
             self.version += 1
 
 
@@ -318,6 +330,7 @@ class UiState:
     gripper_page: Any = None
     diagnostics_page: Any = None
     settings_content: Any = None
+    bottom_panel: Any = None
     # Kept so the editor addresses its tab directly instead of hunting the
     # DOM for a matching icon glyph.
     _program_tab: Any = None

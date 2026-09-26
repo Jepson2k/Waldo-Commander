@@ -11,7 +11,7 @@ import waldoctl
 from waldoctl import EnvelopeMode
 
 from waldo_commander.mcp.server import get_mcp
-from waldo_commander.state import simulation_state
+from waldo_commander.state import simulation_state, ui_state
 
 mcp = get_mcp()
 
@@ -35,7 +35,8 @@ async def set_jog(
     incremental: bool | None = None,
     joint_step_deg: float | None = None,
 ) -> None:
-    """Update one or more jog preferences. ``None`` leaves a field unchanged."""
+    """Update one or more jog preferences. ``None`` leaves a field unchanged.
+    A ``joint_step_deg`` pins the step until the user clears it in the GUI."""
     j = waldoctl.commander.settings.jog
     if speed is not None:
         j.speed = speed
@@ -44,7 +45,7 @@ async def set_jog(
     if incremental is not None:
         j.incremental = incremental
     if joint_step_deg is not None:
-        j.joint_step_deg = joint_step_deg
+        ui_state.control_panel.step.set_override(joint_step_deg)
 
 
 @mcp.tool(name="settings.get_gripper")

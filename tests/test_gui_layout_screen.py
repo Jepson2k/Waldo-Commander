@@ -64,9 +64,21 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         )
 
     def settings():
-        # Settings is a tab in the bottom-left group, opened by a click like
-        # any other panel there.
+        # The gear in the bottom-left rail opens the Settings dialog.
         click("tab-settings")
+        WebDriverWait(screen.selenium, 10).until(
+            lambda _: run_in_app(lambda: ui_state.settings_content.dialog.value)
+        )
+
+    # Every category the dialog offers, by its tab marker.
+    categories = run_in_app(
+        lambda: [
+            m[13:]
+            for e in Client.instances[ui_state.active_client_id].elements.values()
+            for m in e._markers
+            if m.startswith("settings-cat-")
+        ]
+    )
 
     def select_tool(key):
         async def select():
@@ -95,52 +107,79 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "mobile": False,
             },
         )
+        # The footer is one row inside the viewport, and the control panel
+        # sits clear of it.
+        clearance = screen.selenium.execute_script("""
+            const f = document.querySelector('.status-footer').getBoundingClientRect();
+            const c = document.querySelector('.overlay-br').getBoundingClientRect();
+            const rail = document.querySelector('.side-tab-bar.bottom-0').getBoundingClientRect();
+            return {footerTop: f.top, footerBottom: f.bottom, footerHeight: f.height,
+                    controlBottom: c.bottom, railBottom: rail.bottom, viewport: innerHeight};
+        """)
+        assert clearance["footerHeight"] <= 29, clearance
+        assert clearance["footerBottom"] <= clearance["viewport"], clearance
+        assert clearance["controlBottom"] <= clearance["footerTop"], clearance
+        assert clearance["railBottom"] <= clearance["footerTop"], clearance
+
         settings()
-        WebDriverWait(screen.selenium, 10).until(
-            lambda _: element("settings-backend-select").is_displayed()
-        )
-        # The panel is as tall as its rows up to the viewport and scrolls past
-        # that; nothing may run off its right edge or below the viewport, and
-        # a row is its label beside its control, not a card with a divider.
-        dimensions = screen.selenium.execute_script("""
-            const panel = document.querySelector('.settings-panel');
-            const e = panel.querySelector('.settings-content');
-            const r = panel.getBoundingClientRect();
-            const tall = [...panel.querySelectorAll('.settings-row')]
+        # Every category fits its panel: nothing runs off the right edge, the
+        # dialog stays inside the viewport, and a row is its name and
+        # description beside its control, not a card with a divider.
+        measure_category = """
+            const card = document.querySelector('.settings-dialog-card');
+            const e = card.querySelector('.q-tab-panel:not(.q-tab-panel--inactive) .settings-content')
+                || card.querySelector('.q-tab-panel .settings-content');
+            const r = card.getBoundingClientRect();
+            const tall = [...e.querySelectorAll('.settings-row')]
                 .filter(row => row.offsetParent !== null && !row.querySelector('.settings-axis'))
                 .map(row => row.getBoundingClientRect().height)
-                .filter(h => h > 32);
-            return {width:e.clientWidth, content:e.scrollWidth, bottom:r.bottom, viewport:innerHeight,
-                    separators: panel.querySelectorAll('.q-separator').length, tall,
+                .filter(h => h > 48);
+            return {width:e.clientWidth, content:e.scrollWidth, bottom:r.bottom, right:r.right,
+                    viewport:innerHeight, viewportWidth:innerWidth,
+                    separators: card.querySelectorAll('.q-separator').length, tall,
                     rows: e.scrollHeight, shown: e.clientHeight};
-        """)
-        screen.selenium.save_screenshot(
-            str(tmp_path / f"{backend}-settings-{width}-{height}-{zoom}.png")
-        )
-        assert dimensions["content"] <= dimensions["width"] + 1, dimensions
-        assert dimensions["bottom"] <= dimensions["viewport"] + 1, dimensions
-        assert dimensions["separators"] == 0, dimensions
-        assert not dimensions["tall"], dimensions
-        if height >= 941:
-            assert dimensions["rows"] <= dimensions["shown"] + 1, (
-                "Settings scrolls on a 1080p screen",
+        """
+        for key in categories:
+            click(f"settings-cat-{key}")
+            WebDriverWait(screen.selenium, 10).until(
+                lambda d: d.execute_script(
+                    "return !!document.querySelector('.settings-dialog-card .q-tab-panel:not(.q-tab-panel--inactive) .settings-content')"
+                )
+            )
+            dimensions = screen.selenium.execute_script(measure_category)
+            if zoom > 1:
+                # Only the tightest window is worth a picture of every category.
+                screen.selenium.save_screenshot(
+                    str(
+                        tmp_path
+                        / f"{backend}-settings-{key}-{width}-{height}-{zoom}.png"
+                    )
+                )
+            assert dimensions["shown"] > 100, ("the category's rows are on screen", key)
+            assert dimensions["content"] <= dimensions["width"] + 1, (key, dimensions)
+            assert dimensions["bottom"] <= dimensions["viewport"] + 1, (key, dimensions)
+            assert dimensions["right"] <= dimensions["viewportWidth"] + 1, (
+                key,
                 dimensions,
             )
+            assert dimensions["separators"] == 0, (key, dimensions)
+            assert not dimensions["tall"], (key, dimensions)
+        click("settings-cat-tool")
+        WebDriverWait(screen.selenium, 10).until(
+            lambda _: element("select-tool").is_displayed()
+        )
+        if height >= 941:
             # A tool with variants adds its Variant row, and the form still fits.
             select_tool("SSG-48")
             WebDriverWait(screen.selenium, 20).until(
                 lambda _: element("select-tool-variant").is_displayed()
             )
-            grown = screen.selenium.execute_script("""
-                const e = document.querySelector('.settings-panel .settings-content');
-                return {rows: e.scrollHeight, shown: e.clientHeight};
-            """)
+            grown = screen.selenium.execute_script(measure_category)
             assert grown["rows"] <= grown["shown"] + 1, (
-                "Settings scrolls on a 1080p screen with a gripper selected",
+                "Settings → Tool scrolls on a 1080p screen with a gripper selected",
                 grown,
             )
             select_tool("NONE")
-        assert run_in_app(lambda: marked("settings-backend-select").value) == backend
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(
                 lambda: (
@@ -148,8 +187,14 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 )
             )
         )
-        screen.selenium.save_screenshot(
-            str(tmp_path / f"{backend}-settings-{width}-{height}-{zoom}.png")
+        click("settings-cat-advanced")
+        WebDriverWait(screen.selenium, 10).until(
+            lambda _: element("settings-backend-select").is_displayed()
+        )
+        assert run_in_app(lambda: marked("settings-backend-select").value) == backend
+        click("settings-close")
+        WebDriverWait(screen.selenium, 10).until(
+            lambda _: not run_in_app(lambda: ui_state.settings_content.dialog.value)
         )
 
         # A skill's form opens from the editor's Insert menu, and Insert stays
@@ -183,12 +228,6 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             str(tmp_path / f"{backend}-skills-{width}-{height}-{zoom}.png")
         )
         click("skill-close")
-        separation = screen.selenium.execute_script("""
-            const a=document.querySelector('.readout-panel').getBoundingClientRect();
-            const b=document.querySelector('.top-panels-container').getBoundingClientRect();
-            return {readout:a.left, panel:b.right};
-        """)
-        assert separation["readout"] >= separation["panel"], separation
 
         WebDriverWait(screen.selenium, 10).until(
             lambda d: d.execute_script(
@@ -250,6 +289,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "return !Array.from(document.querySelectorAll('.q-dialog')).some(e => e.getClientRects().length)"
             )
         )
+        click("bottom-panel-close")
 
         click("tab-par6-drives")
 
@@ -286,6 +326,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
 
 
 @pytest.mark.browser
+@pytest.mark.timeout(120)
 def test_compact_layout_parol6(layout_screen, tmp_path, monkeypatch):
     review_layout(layout_screen, tmp_path, monkeypatch, "parol6")
 

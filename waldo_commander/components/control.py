@@ -39,13 +39,13 @@ from waldo_commander.services.control_lease import (
     require_browser_control,
     set_control_mode,
 )
+from waldo_commander.services.jog_step import JogStep
 from waldo_commander.services.keybindings import refresh_jog_key_descriptions
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.startup_mode import set_startup_mode
 from waldo_commander.state import (
     global_phase_timer,
-    robot_state,
     ui_state,
 )
 
@@ -67,6 +67,85 @@ _AXIS_ORDER = (
     "RZ-",
 )
 _AXIS_MAP = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
+
+#: Joint dial drawing box (viewBox side), ring radius and knob radius, in SVG units.
+DIAL_SIZE = 64.0
+DIAL_RADIUS = 26.0
+DIAL_KNOB_RADIUS = 4.0
+#: A joint has to move this far before its dial is redrawn.
+DIAL_REDRAW_DEG = 0.5
+
+
+@dataclasses.dataclass(frozen=True)
+class DialGeometry:
+    """SVG path data for one joint dial: ``track`` spans the limits, ``fill``
+    runs from the joint's zero (clamped into the limits) to the angle, ``ticks``
+    marks the limits and ``knob`` sits on the angle."""
+
+    track: str
+    fill: str
+    ticks: str
+    knob: tuple[float, float]
+
+
+def _dial_point(deg: float, r: float) -> tuple[float, float]:
+    """Point on the ring at ``deg``: zero at the top, clockwise positive."""
+    rad = math.radians(deg)
+    c = DIAL_SIZE / 2
+    return c + r * math.sin(rad), c - r * math.cos(rad)
+
+
+def _dial_arc(start_deg: float, end_deg: float, r: float) -> str:
+    span = end_deg - start_deg
+    if abs(span) >= 360.0:
+        x0, y0 = _dial_point(start_deg, r)
+        x1, y1 = _dial_point(start_deg + 180.0, r)
+        return (
+            f"M{x0:.2f} {y0:.2f} A{r:g} {r:g} 0 1 1 {x1:.2f} {y1:.2f}"
+            f" A{r:g} {r:g} 0 1 1 {x0:.2f} {y0:.2f}"
+        )
+    if abs(span) < 1e-6:
+        return ""
+    x0, y0 = _dial_point(start_deg, r)
+    x1, y1 = _dial_point(end_deg, r)
+    large = 1 if abs(span) > 180.0 else 0
+    sweep = 1 if span > 0 else 0
+    return f"M{x0:.2f} {y0:.2f} A{r:g} {r:g} 0 {large} {sweep} {x1:.2f} {y1:.2f}"
+
+
+def dial_geometry(lo: float, hi: float, angle: float, r: float) -> DialGeometry:
+    """Geometry of a joint dial with limits ``lo..hi`` (degrees) at ``angle``.
+
+    A span of a full turn or more draws the track as a whole circle and
+    drops the limit ticks; a non-finite angle sits at the fill's origin."""
+    origin = min(max(0.0, lo), hi)
+    a = min(max(angle, lo), hi) if math.isfinite(angle) else origin
+    if hi - lo >= 360.0:
+        ticks = ""
+    else:
+        tick_parts = []
+        for limit in (lo, hi):
+            x0, y0 = _dial_point(limit, r - 5.0)
+            x1, y1 = _dial_point(limit, r + 5.0)
+            tick_parts.append(f"M{x0:.2f} {y0:.2f} L{x1:.2f} {y1:.2f}")
+        ticks = " ".join(tick_parts)
+    return DialGeometry(
+        track=_dial_arc(lo, hi, r),
+        fill=_dial_arc(origin, a, r),
+        ticks=ticks,
+        knob=_dial_point(a, r),
+    )
+
+
+@dataclasses.dataclass
+class _JointDial:
+    """The SVG parts of one joint dial that move with the joint."""
+
+    lo: float
+    hi: float
+    fill: ui.element
+    knob: ui.element
+    last_deg: float = math.nan
 
 
 @dataclasses.dataclass
@@ -228,70 +307,71 @@ class _ToolQuickActions:
         except (RuntimeError, KeyError, NotImplementedError):
             return None
 
+    def _channel_text(self, channels: tuple[float, ...]) -> str:
+        tool = self._get_active_tool()
+        if not channels or tool is None or not tool.channel_descriptors:
+            return ""
+        return f"{channels[0]:.0f} {tool.channel_descriptors[0].unit}"
+
     def build(self) -> None:
-        """Build the tool quick-action box (L/R action + adjust)."""
+        """Build the tool box: name, position and process readout, L/R action and adjust."""
+        tool_status = waldoctl.commander.status.tool
         with (
-            ui.column()
-            .classes("rounded-lg shadow-sm p-2 gap-1")
-            .style("border: 1px solid var(--wc-glass-border);")
-            .bind_visibility_from(
-                waldoctl.commander.status.tool,
-                "key",
-                backward=lambda k: k != "NONE",
-            )
+            ui.row()
+            .classes("tool-box items-center no-wrap gap-1 flex-grow")
+            .bind_visibility_from(tool_status, "key", backward=lambda k: k != "NONE")
             .mark("tool-quick-actions")
         ):
-            ui.label().bind_text_from(
-                waldoctl.commander.status.tool,
-                "key",
-                backward=lambda key: (
-                    ui_state.active_robot.tools[key].display_name.replace("_", " ")
-                    if key in {t.key for t in ui_state.active_robot.tools.available}
-                    else key.replace("_", " ")
-                ),
-            ).classes("text-xs text-center w-full truncate text-wc-text-muted").style(
-                "max-width: 180px"
-            )
+            with ui.column().classes("tool-box-readout gap-0 flex-grow"):
+                ui.label().bind_text_from(
+                    tool_status,
+                    "key",
+                    backward=lambda key: (
+                        ui_state.active_robot.tools[key].display_name.replace("_", " ")
+                        if key in {t.key for t in ui_state.active_robot.tools.available}
+                        else key.replace("_", " ")
+                    ),
+                ).classes("text-xs truncate text-wc-text-muted")
+                with ui.row().classes("gap-1 no-wrap text-xs tabular-nums"):
+                    ui.label().bind_text_from(
+                        tool_status,
+                        "positions",
+                        backward=lambda p: f"{p[0] * 100:.0f}%" if p else "",
+                    ).mark("tool-position")
+                    ui.label().bind_text_from(
+                        tool_status, "channels", backward=self._channel_text
+                    ).classes("text-wc-text-muted").mark("tool-current")
 
-            with ui.row().classes("items-center gap-2 justify-center"):
-                self._action_l_btn = (
-                    ui.button(icon="close_fullscreen", on_click=self._on_action_l)
-                    .props(
-                        "round dense unelevated size=md color=wc-control text-color=wc-text"
-                    )
-                    .mark("btn-tool-action-l")
+            self._action_l_btn = (
+                ui.button(icon="close_fullscreen", on_click=self._on_action_l)
+                .props("round dense unelevated color=wc-control text-color=wc-text")
+                .mark("btn-tool-action-l")
+            )
+            self._action_r_btn = (
+                ui.button(
+                    icon="build",
+                    on_click=lambda: _safe_task(self._on_action_r()),
                 )
-                self._action_r_btn = (
+                .props("round dense unelevated color=wc-control text-color=wc-text")
+                .classes("cp-disabled-strong")
+                .mark("btn-tool-action-r")
+            )
+            with ui.button_group().props("rounded unelevated dense"):
+                self._adjust_minus_btn = (
                     ui.button(
-                        icon="build",
-                        on_click=lambda: _safe_task(self._on_action_r()),
+                        icon="remove",
+                        on_click=lambda: _safe_task(self._on_adjust(-1)),
                     )
-                    .props(
-                        "round dense unelevated size=md color=wc-control text-color=wc-text"
-                    )
-                    .classes("cp-disabled-strong")
-                    .mark("btn-tool-action-r")
+                    .props("round dense unelevated color=wc-control text-color=wc-text")
+                    .mark("btn-tool-adjust-minus")
                 )
-                with ui.button_group().props("rounded unelevated dense"):
-                    self._adjust_minus_btn = (
-                        ui.button(
-                            icon="remove",
-                            on_click=lambda: _safe_task(self._on_adjust(-1)),
-                        )
-                        .props(
-                            "round dense unelevated size=md color=wc-control text-color=wc-text"
-                        )
-                        .mark("btn-tool-adjust-minus")
+                self._adjust_plus_btn = (
+                    ui.button(
+                        icon="add", on_click=lambda: _safe_task(self._on_adjust(1))
                     )
-                    self._adjust_plus_btn = (
-                        ui.button(
-                            icon="add", on_click=lambda: _safe_task(self._on_adjust(1))
-                        )
-                        .props(
-                            "round dense unelevated size=md color=wc-control text-color=wc-text"
-                        )
-                        .mark("btn-tool-adjust-plus")
-                    )
+                    .props("round dense unelevated color=wc-control text-color=wc-text")
+                    .mark("btn-tool-adjust-plus")
+                )
 
     def update_visual(self) -> None:
         """Update action button icons and colors from current tool state."""
@@ -623,7 +703,16 @@ class ControlPanel:
         self._joint_limit_btns: dict[
             tuple[int, str], ui.button
         ] = {}  # (joint_idx, "min"/"max") -> button
+        self._dials: list[_JointDial] = []
         self._cart_axis_imgs: dict[str, ui.element] = {}
+
+        # The jog step follows the camera unless overridden; its effective value
+        # is mirrored into commander.settings.jog.joint_step_deg, which every
+        # jog reader uses, in the unit of the active jog tab.
+        self.step = JogStep()
+        self.step.add_listener(self._sync_step_setting)
+        self._cartesian_active = False
+        self._mirrored_step: float = math.nan
 
         # Jog state tracking
         self._n_joints = ui_state.active_robot.joints.count
@@ -699,10 +788,9 @@ class ControlPanel:
         self._step_input_tooltip: ui.tooltip | None = None
         self._jog_mode_tabs: Any = None
 
-        # Rating-row widget refs (populated by _build_rating_row).
-        # Keyed by ui_attr ("jog_speed", "jog_accel"). Lets keybindings
-        # adjust the underlying value AND keep the visible rating, icon
-        # color, and tooltip in sync.
+        # Level-chip widget refs (populated by _build_level_chip), keyed by
+        # ui_attr ("jog_speed", "jog_accel"): keybindings adjust the value
+        # and keep the chip text, rating and tooltip in sync.
         self._rating_widgets: dict[str, dict[str, Any]] = {}
 
         # Dirty checking caches for button enablement (avoid redundant CSS
@@ -978,6 +1066,55 @@ class ControlPanel:
         for j in range(n_joints):
             self._set_strong_disabled(self._joint_right_btns.get(j), not pos[j])
             self._set_strong_disabled(self._joint_left_btns.get(j), not neg[j])
+
+    def refresh_joint_dials(self) -> None:
+        """Redraw the fill and knob of every dial whose joint moved ≥ DIAL_REDRAW_DEG."""
+        angles = waldoctl.commander.status.joints.angles.deg
+        for i, dial in enumerate(self._dials):
+            if i >= len(angles):
+                return
+            a = float(angles[i])
+            if not math.isfinite(a) or abs(a - dial.last_deg) < DIAL_REDRAW_DEG:
+                continue
+            dial.last_deg = a
+            g = dial_geometry(dial.lo, dial.hi, a, DIAL_RADIUS)
+            dial.fill._props["d"] = g.fill
+            dial.fill.update()
+            dial.knob._props["cx"] = f"{g.knob[0]:.2f}"
+            dial.knob._props["cy"] = f"{g.knob[1]:.2f}"
+            dial.knob.update()
+
+    # ---- Jog step ----
+
+    def _sync_step_setting(self) -> None:
+        """Mirror the effective step, in the active tab's unit, into the jog settings."""
+        value = float(
+            self.step.cart_mm if self._cartesian_active else self.step.joint_deg
+        )
+        self._mirrored_step = value
+        waldoctl.commander.settings.jog.joint_step_deg = value
+        if self._step_input is not None:
+            if self.step.is_auto:
+                self._step_input.props(remove="clearable")
+            else:
+                self._step_input.props(add="clearable")
+
+    def on_camera_distance(self, distance_m: float) -> None:
+        """Scene report of the camera-to-target distance; moves the auto step between bands."""
+        self.step.set_camera_distance(float(distance_m))
+
+    def _on_step_edited(self, e: Any) -> None:
+        """A value typed into the step field pins it; clearing the field returns to auto.
+        The mirror's own writes arrive here too and are recognised by value."""
+        value = e.value
+        if value is None:
+            self.step.set_override(None)
+            return
+        value = float(value)
+        if value == self._mirrored_step:
+            return
+        if math.isfinite(value) and value > 0.0:
+            self.step.set_override(value)
 
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
@@ -2109,35 +2246,155 @@ class ControlPanel:
             self.estop._digital_active = True
             self.estop.show(is_physical=False)
 
-    def render_jog_content(self) -> None:
-        """Render the jog controls."""
-        with ui.tabs().props("dense").classes("cp-jog-tabs") as jog_mode_tabs:
-            joint_tab = ui.tab("Joint Jog").mark("tab-joint")
-            cart_tab = ui.tab("Cartesian Jog").mark("tab-cartesian")
-        jog_mode_tabs.value = joint_tab
-        self._jog_mode_tabs = jog_mode_tabs
-
-        # Tab change handler to update step input suffix/tooltip
-        _joint_tab_ref = joint_tab
-        _cart_tab_ref = cart_tab
-
-        def _on_tab_change(e):
-            if self._step_input is None:
-                return
-            v = e.value if hasattr(e, "value") else e.args
-            if v is _joint_tab_ref or v == "Joint Jog":
-                self._step_input.props('suffix="°"')
-                self._step_input.classes(remove="step-suffix-small")
-                if self._step_input_tooltip:
-                    self._step_input_tooltip.text = "Step size in degrees"
-            elif v is _cart_tab_ref or v == "Cartesian Jog":
+    def _on_jog_tab_change(self, e: Any) -> None:
+        """Switch the step field's unit with the tab and re-mirror the step in that unit."""
+        self._cartesian_active = e.value == "Cartesian Jog"
+        if self._step_input is not None:
+            if self._cartesian_active:
                 self._step_input.props('suffix="mm"')
                 self._step_input.classes(add="step-suffix-small")
                 if self._step_input_tooltip:
                     self._step_input_tooltip.text = "Step size in mm"
+            else:
+                self._step_input.props('suffix="°"')
+                self._step_input.classes(remove="step-suffix-small")
+                if self._step_input_tooltip:
+                    self._step_input_tooltip.text = "Step size in degrees"
             self._step_input.update()
+        self._sync_step_setting()
 
-        jog_mode_tabs.on("update:model-value", _on_tab_change)
+    def _make_joint_dial(self, idx: int, name: str) -> None:
+        """One joint: minus cap, dial ring with the readout in its centre, plus cap,
+        the name, and a limits row revealed with the caps on hover."""
+        lo, hi = self._get_joint_limits(idx)
+        g = dial_geometry(lo, hi, math.nan, DIAL_RADIUS)
+        joints = waldoctl.commander.status.joints
+
+        def _cap(icon: str, side: str) -> ui.button:
+            return (
+                ui.button(icon=icon)
+                .props("round flat dense no-caps color=wc-text")
+                .classes(f"joint-cap joint-cap-{side}")
+            )
+
+        with (
+            ui.column()
+            .classes("joint-dial-cell items-center gap-0")
+            .mark(f"joint-dial-{idx}")
+        ):
+            with ui.element("div").classes("joint-dial"):
+                left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
+
+                with (
+                    ui.element("svg")
+                    .props(f'viewBox="0 0 {DIAL_SIZE:g} {DIAL_SIZE:g}"')
+                    .classes("joint-dial-svg")
+                ):
+                    track = ui.element("path").classes("dial-track")
+                    track._props["d"] = g.track
+                    fill = ui.element("path").classes("dial-fill")
+                    fill._props["d"] = g.fill
+                    ticks = ui.element("path").classes("dial-tick")
+                    ticks._props["d"] = g.ticks
+                    knob = ui.element("circle").classes("dial-knob")
+                    knob._props["cx"] = f"{g.knob[0]:.2f}"
+                    knob._props["cy"] = f"{g.knob[1]:.2f}"
+                    knob._props["r"] = f"{DIAL_KNOB_RADIUS:g}"
+                self._dials.append(_JointDial(lo=lo, hi=hi, fill=fill, knob=knob))
+
+                num = (
+                    ui.number(
+                        value=0.0, min=lo, max=hi, step=0.1, format="%.1f", suffix="°"
+                    )
+                    .props('dense borderless input-style="text-align:center"')
+                    .classes("joint-readout-input")
+                    .mark(f"joint-readout-{idx}")
+                )
+                _num_ref: dict[str, Any] = {"focused": False, "el": num}
+
+                def _num_backward(a, i=idx, r=_num_ref) -> float | None:
+                    if r["focused"]:
+                        return r["el"].value  # Keep current value while editing
+                    if len(a) <= i or not math.isfinite(a[i]):
+                        return None
+                    return float(a[i])
+
+                num.on("focus", lambda _e, r=_num_ref: r.__setitem__("focused", True))
+                num.on("blur", lambda _e, r=_num_ref: r.__setitem__("focused", False))
+                num.bind_value_from(joints, "angles", backward=_num_backward)
+
+                def _submit_exact(e=None, i=idx, n=num):
+                    try:
+                        val = float(n.value) if n.value is not None else None
+                    except (ValueError, TypeError):
+                        val = None
+                    if val is not None:
+                        _safe_task(self.move_joint_to_angle(i, val))
+
+                num.on("blur", _submit_exact)
+                num.on("keydown.enter", _submit_exact)
+
+                right_btn = _cap("add", "plus").mark(f"btn-j{idx + 1}-plus")
+
+            ui.label(name).classes("joint-dial-name")
+
+            with ui.row().classes("joint-dial-limits no-wrap gap-0"):
+                min_btn = (
+                    ui.button(
+                        icon="first_page",
+                        on_click=lambda e, i=idx: _safe_task(
+                            self.go_to_joint_limit(i, "min")
+                        ),
+                    )
+                    .props("round flat dense size=sm color=wc-text-muted")
+                    .tooltip("Move to minimum joint limit")
+                    .mark(f"btn-j{idx + 1}-min-limit")
+                )
+                max_btn = (
+                    ui.button(
+                        icon="last_page",
+                        on_click=lambda e, i=idx: _safe_task(
+                            self.go_to_joint_limit(i, "max")
+                        ),
+                    )
+                    .props("round flat dense size=sm color=wc-text-muted")
+                    .tooltip("Move to maximum joint limit")
+                    .mark(f"btn-j{idx + 1}-max-limit")
+                )
+                self._joint_limit_btns[(idx, "min")] = min_btn
+                self._joint_limit_btns[(idx, "max")] = max_btn
+
+        def check_lower_limit(a, i=idx, lo=lo):
+            if len(a) <= i:
+                return False
+            return a[i] - waldoctl.commander.settings.jog.joint_step_deg >= lo
+
+        def check_upper_limit(a, i=idx, hi=hi):
+            if len(a) <= i:
+                return False
+            return a[i] + waldoctl.commander.settings.jog.joint_step_deg <= hi
+
+        left_btn.bind_enabled_from(joints, "angles", backward=check_lower_limit)
+        right_btn.bind_enabled_from(joints, "angles", backward=check_upper_limit)
+        for btn, direction in ((left_btn, "neg"), (right_btn, "pos")):
+            btn.on("mousedown", partial(self.set_joint_pressed, idx, direction, True))
+            btn.on("mouseup", partial(self.set_joint_pressed, idx, direction, False))
+            btn.on("mouseleave", partial(self.set_joint_pressed, idx, direction, False))
+        self._joint_left_btns[idx] = left_btn
+        self._joint_right_btns[idx] = right_btn
+
+    def render_jog_content(self) -> None:
+        """Render the jog controls."""
+        with (
+            ui.tabs(on_change=self._on_jog_tab_change)
+            .props("dense")
+            .classes("cp-jog-tabs") as jog_mode_tabs
+        ):
+            joint_tab = ui.tab("Joint Jog").mark("tab-joint")
+            cart_tab = ui.tab("Cartesian Jog").mark("tab-cartesian")
+        jog_mode_tabs.value = joint_tab
+        self._jog_mode_tabs = jog_mode_tabs
+        self._dials = []
 
         with (
             ui.tab_panels(jog_mode_tabs, value=joint_tab)
@@ -2145,216 +2402,12 @@ class ControlPanel:
             .style("width: 400px; height: 225px")
         ):
             # Joint jog panel
-            with ui.tab_panel(joint_tab).classes("gap-1"):
-                joint_names = list(ui_state.active_robot.joints.names)
-
-                def make_joint_row(idx: int, name: str):
-                    with ui.grid(rows="auto", columns="60px auto 80px").classes(
-                        "items-center gap-3 w-full"
-                    ):
-                        ui.label(name).classes("text-right")
-                        with ui.row().classes("w-full relative-position"):
-                            lo, hi = self._get_joint_limits(idx)
-                            bar = (
-                                ui.linear_progress(value=0, show_value=False)
-                                .props(
-                                    "rounded instant-feedback color=wc-progress"
-                                    " track-color=wc-control"
-                                )
-                                .classes("w-full joint-bar")
-                            )
-
-                            def _bar_backward(a, i=idx, lo=lo, hi=hi) -> float:
-                                if hi <= lo or len(a) <= i or not math.isfinite(a[i]):
-                                    return 0.0
-                                return max(0.0, min(1.0, (a[i] - lo) / (hi - lo)))
-
-                            bar.bind_value_from(
-                                waldoctl.commander.status.joints,
-                                "angles",
-                                backward=_bar_backward,
-                            )
-
-                            # Centered position + speed overlay
-                            with (
-                                ui.row()
-                                .classes("items-center gap-1 no-wrap joint-value-pill")
-                                .style(
-                                    "position:absolute; left:50%; top:50%;"
-                                    " transform:translate(-50%,-50%);"
-                                )
-                            ):
-                                num = (
-                                    ui.number(
-                                        value=0.0,
-                                        min=lo,
-                                        max=hi,
-                                        step=0.1,
-                                        format="%.1f",
-                                        suffix="°",
-                                    )
-                                    .props(
-                                        'dense borderless input-style="text-align:right"'
-                                    )
-                                    .classes("joint-readout-input")
-                                    .style("width:55px;")
-                                    .mark(f"joint-readout-{idx}")
-                                )
-                                spd_lbl = (
-                                    ui.label("0°/s")
-                                    .classes("text-xs text-wc-text-muted")
-                                    .style("min-width: 3rem; text-align: right;")
-                                )
-
-                            _num_ref: dict[str, Any] = {"focused": False, "el": num}
-
-                            def _num_backward(a, i=idx, r=_num_ref) -> float | None:
-                                if r["focused"]:
-                                    return r[
-                                        "el"
-                                    ].value  # Keep current value while editing
-                                if len(a) <= i or not math.isfinite(a[i]):
-                                    return None
-                                return float(a[i])
-
-                            num.on(
-                                "focus",
-                                lambda _e, r=_num_ref: r.__setitem__("focused", True),
-                            )
-                            num.on(
-                                "blur",
-                                lambda _e, r=_num_ref: r.__setitem__("focused", False),
-                            )
-
-                            num.bind_value_from(
-                                waldoctl.commander.status.joints,
-                                "angles",
-                                backward=_num_backward,
-                            )
-
-                            def _spd_backward(s, i=idx) -> str:
-                                if len(s) <= i:
-                                    return "0°/s"
-                                v = abs(s[i])
-                                return f"{v:.0f}°/s"
-
-                            spd_lbl.bind_text_from(
-                                robot_state,
-                                "speeds",
-                                backward=_spd_backward,
-                            )
-
-                            def _submit_exact(e=None, i=idx, n=num):
-                                try:
-                                    val = (
-                                        float(n.value) if n.value is not None else None
-                                    )
-                                except (ValueError, TypeError):
-                                    val = None
-                                if val is not None:
-                                    _safe_task(self.move_joint_to_angle(i, val))
-
-                            num.on("blur", _submit_exact)
-                            num.on("keydown.enter", _submit_exact)
-
-                            # Left minus pill
-                            left_btn = (
-                                ui.button(icon="remove")
-                                .props("round flat dense no-caps color=wc-text")
-                                .classes("absolute left-1 joint-cap")
-                            )
-                            left_btn.mark(f"btn-j{idx + 1}-minus")
-
-                            def check_lower_limit(a, i=idx, lo=lo):
-                                if len(a) <= i:
-                                    return False
-                                step = waldoctl.commander.settings.jog.joint_step_deg
-                                return a[i] - step >= lo
-
-                            left_btn.bind_enabled_from(
-                                waldoctl.commander.status.joints,
-                                "angles",
-                                backward=check_lower_limit,
-                            )
-                            left_btn.on(
-                                "mousedown",
-                                partial(self.set_joint_pressed, idx, "neg", True),
-                            )
-                            left_btn.on(
-                                "mouseup",
-                                partial(self.set_joint_pressed, idx, "neg", False),
-                            )
-                            left_btn.on(
-                                "mouseleave",
-                                partial(self.set_joint_pressed, idx, "neg", False),
-                            )
-
-                            # Right plus pill
-                            right_btn = (
-                                ui.button(icon="add")
-                                .props("round flat dense no-caps color=wc-text")
-                                .classes("absolute right-1 joint-cap")
-                            )
-                            right_btn.mark(f"btn-j{idx + 1}-plus")
-
-                            def check_upper_limit(a, i=idx, hi=hi):
-                                if len(a) <= i:
-                                    return False
-                                step = waldoctl.commander.settings.jog.joint_step_deg
-                                return a[i] + step <= hi
-
-                            right_btn.bind_enabled_from(
-                                waldoctl.commander.status.joints,
-                                "angles",
-                                backward=check_upper_limit,
-                            )
-                            right_btn.on(
-                                "mousedown",
-                                partial(self.set_joint_pressed, idx, "pos", True),
-                            )
-                            right_btn.on(
-                                "mouseup",
-                                partial(self.set_joint_pressed, idx, "pos", False),
-                            )
-                            right_btn.on(
-                                "mouseleave",
-                                partial(self.set_joint_pressed, idx, "pos", False),
-                            )
-
-                            self._joint_left_btns[idx] = left_btn
-                            self._joint_right_btns[idx] = right_btn
-                        with ui.row().classes("justify-end gap-1"):
-                            min_btn = (
-                                ui.button(
-                                    icon="first_page",
-                                    on_click=lambda e, i=idx: _safe_task(
-                                        self.go_to_joint_limit(i, "min")
-                                    ),
-                                )
-                                .props(
-                                    "round dense unelevated color=wc-control text-color=wc-text"
-                                )
-                                .tooltip("Move to minimum joint limit")
-                                .mark(f"btn-j{idx + 1}-min-limit")
-                            )
-                            max_btn = (
-                                ui.button(
-                                    icon="last_page",
-                                    on_click=lambda e, i=idx: _safe_task(
-                                        self.go_to_joint_limit(i, "max")
-                                    ),
-                                )
-                                .props(
-                                    "round dense unelevated color=wc-control text-color=wc-text"
-                                )
-                                .tooltip("Move to maximum joint limit")
-                                .mark(f"btn-j{idx + 1}-max-limit")
-                            )
-                            self._joint_limit_btns[(idx, "min")] = min_btn
-                            self._joint_limit_btns[(idx, "max")] = max_btn
-
-                for i, n in enumerate(joint_names):
-                    make_joint_row(i, n)
+            with ui.tab_panel(joint_tab):
+                with ui.row().classes(
+                    "joint-dials w-full h-full items-center justify-around no-wrap gap-0"
+                ):
+                    for i, n in enumerate(ui_state.active_robot.joints.names):
+                        self._make_joint_dial(i, n)
 
             # Cartesian jog panel
             with ui.tab_panel(cart_tab).classes("flex items-center justify-center"):
@@ -2453,7 +2506,7 @@ class ControlPanel:
         group, attr = cls._PREF_TARGETS[ui_attr]
         return getattr(waldoctl.commander.settings, group), attr
 
-    def _build_rating_row(
+    def _build_level_chip(
         self,
         *,
         icon_name: str,
@@ -2461,53 +2514,61 @@ class ControlPanel:
         ui_attr: str,
         format_tooltip: Callable[[float], str],
     ) -> None:
-        """Build a 10-step rating row (speed or acceleration) with persistence."""
+        """A flat chip showing the level (speed or acceleration) as a percentage,
+        with the 10-step rating in a popover menu; persisted under ``storage_key``."""
         target_obj, target_attr = self._resolve_pref(ui_attr)
-        with ui.row().classes("items-center gap-2 w-full"):
-            icon = ui.icon(icon_name, size="md").props("color=wc-text-muted")
-            with icon:
-                tooltip = ui.tooltip(storage_key.replace("_", " ").title())
-            stored = app.storage.general.get(
-                storage_key, getattr(target_obj, target_attr)
-            )
-            setattr(target_obj, target_attr, stored)
-            v_init = max(1, min(10, round(int(stored) / self._RATING_UNIT)))
+        stored = app.storage.general.get(storage_key, getattr(target_obj, target_attr))
+        setattr(target_obj, target_attr, stored)
+        v_init = max(1, min(10, round(int(stored) / self._RATING_UNIT)))
+        marker = ui_attr.replace("_", "-")
 
-            # color=None keeps Quasar's layered text-primary off the dots, so the
-            # ramp in theme.py can colour them.
-            rating = ui.rating(
-                max=10, icon="circle", size="16px", value=v_init, color=None
-            ).classes("level-speed" if ui_attr == "jog_speed" else "level-accel")
-            self._rating_widgets[ui_attr] = {
-                "rating": rating,
-                "icon": icon,
-                "tooltip": tooltip,
-                "format_tooltip": format_tooltip,
-                "storage_key": storage_key,
-                "target_obj": target_obj,
-                "target_attr": target_attr,
-            }
+        chip = (
+            ui.button(f"{v_init * self._RATING_UNIT}%", icon=icon_name, color=None)
+            .props("flat dense no-caps color=wc-text")
+            .classes("level-chip")
+            .mark(f"chip-{marker}")
+        )
+        with chip:
+            tooltip = ui.tooltip(storage_key.replace("_", " ").title())
+            with ui.menu().classes("level-menu").mark(f"menu-{marker}"):
+                # color=None keeps Quasar's layered text-primary off the dots, so
+                # the ramp in theme.py can colour them.
+                rating = (
+                    ui.rating(
+                        max=10, icon="circle", size="16px", value=v_init, color=None
+                    )
+                    .classes("level-speed" if ui_attr == "jog_speed" else "level-accel")
+                    .mark(f"rating-{marker}")
+                )
+        self._rating_widgets[ui_attr] = {
+            "rating": rating,
+            "label": chip,
+            "tooltip": tooltip,
+            "format_tooltip": format_tooltip,
+            "storage_key": storage_key,
+            "target_obj": target_obj,
+            "target_attr": target_attr,
+        }
 
-            # Click on the rating dispatches the new step value (1..10) as
-            # e.args; route both UI clicks and keybindings through the same
-            # _set_rating_step path so dependent visuals stay in sync.
-            rating.on(
-                "update:model-value",
-                lambda e, _attr=ui_attr: self._set_rating_step(
-                    _attr, int(e.args) if e.args else 1, sync_widget=False
-                ),
-            )
-            if v_init > 0:
-                self._set_rating_step(ui_attr, v_init, sync_widget=False)
+        # Click on the rating dispatches the new step value (1..10) as
+        # e.args; route both UI clicks and keybindings through the same
+        # _set_rating_step path so dependent visuals stay in sync.
+        rating.on(
+            "update:model-value",
+            lambda e, _attr=ui_attr: self._set_rating_step(
+                _attr, int(e.args) if e.args else 1, sync_widget=False
+            ),
+        )
+        self._set_rating_step(ui_attr, v_init, sync_widget=False)
 
     _RATING_UNIT = 10
 
     def _set_rating_step(
         self, ui_attr: str, step: int, *, sync_widget: bool = True
     ) -> None:
-        """Apply a 1..10 rating step to the row's value, storage and tooltip
-        text. Set sync_widget=False when invoked from the rating's own change
-        event (the widget already holds the new value)."""
+        """Apply a 1..10 rating step to the chip's value, storage, text and
+        tooltip. Set sync_widget=False when invoked from the rating's own
+        change event (the widget already holds the new value)."""
         refs = self._rating_widgets.get(ui_attr)
         if refs is None:
             return
@@ -2517,12 +2578,13 @@ class ControlPanel:
         app.storage.general[refs["storage_key"]] = new_value
         if sync_widget:
             refs["rating"].value = step
+        refs["label"].set_text(f"{new_value}%")
         refs["tooltip"].text = refs["format_tooltip"](step / 10.0)
 
     def adjust_rating(self, ui_attr: str, delta: int) -> None:
-        """Adjust a rating-row backed value (jog_speed/jog_accel) by delta
-        and sync the widget. Used by the [/] keybindings so keyboard
-        adjustments behave the same as clicking the rating."""
+        """Adjust a level-chip value (jog_speed/jog_accel) by delta and sync
+        the widget. Used by the [/] keybindings so keyboard adjustments behave
+        the same as clicking the rating."""
         refs = self._rating_widgets.get(ui_attr)
         if refs is None:
             return
@@ -2550,13 +2612,16 @@ class ControlPanel:
             self.CLICK_HOLD_THRESHOLD_S, ui_client_fn
         )
 
+        ui.on(
+            "wc_camera_distance",
+            lambda e: self.on_camera_distance(float(e.args["distance"])),
+        )
+        self._sync_step_setting()
+
         with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor} gap-1"):
             with ui.column().classes("gap-2 w-full"):
-                with ui.row().classes("items-center w-full"):
-                    with ui.column().classes("gap-1 flex-grow"):
-                        self._build_speed_accel_rows()
-
-                    # Tool quick-action box
+                with ui.row().classes("items-center w-full no-wrap gap-1"):
+                    self._build_level_chips()
                     self.tool_actions = _ToolQuickActions(
                         self.client, self._movement_allowed
                     )
@@ -2568,8 +2633,8 @@ class ControlPanel:
             # Jog controls (tabs + grids)
             self.render_jog_content()
 
-    def _build_speed_accel_rows(self) -> None:
-        """Build speed and acceleration rating rows."""
+    def _build_level_chips(self) -> None:
+        """Speed and acceleration level chips."""
 
         def _format_speed_tooltip(fraction: float) -> str:
             pct = int(fraction * 100)
@@ -2609,13 +2674,13 @@ class ControlPanel:
             except (AttributeError, TypeError):
                 return f"Jog Accel: {pct}%"
 
-        self._build_rating_row(
+        self._build_level_chip(
             icon_name="speed",
             storage_key="jog_speed",
             ui_attr="jog_speed",
             format_tooltip=_format_speed_tooltip,
         )
-        self._build_rating_row(
+        self._build_level_chip(
             icon_name="bolt",
             storage_key="jog_accel",
             ui_attr="jog_accel",
@@ -2723,24 +2788,29 @@ class ControlPanel:
             ui.button(icon="view_in_ar", on_click=_reset_cam).props(
                 "round unelevated dense color=wc-control text-color=wc-text"
             ).tooltip("Reset camera")
-            with ui.row(align_items="center").classes("gap-1"):
+            with ui.row(align_items="center").classes("gap-0 no-wrap"):
                 self._step_input = (
                     ui.number(
                         value=waldoctl.commander.settings.jog.joint_step_deg,
-                        min=1,
+                        min=0.1,
                         max=100.0,
-                        step=1,
+                        step=0.1,
                         format="%.1f",
                         suffix="°",
+                        on_change=self._on_step_edited,
                     )
                     .props(
                         'dense borderless hide-bottom-space input-style="text-align:right"'
                     )
                     .classes("step-input")
-                    .bind_value(waldoctl.commander.settings.jog, "joint_step_deg")
+                    .mark("step-input")
+                    .bind_value_from(waldoctl.commander.settings.jog, "joint_step_deg")
                 )
                 with self._step_input:
                     self._step_input_tooltip = ui.tooltip("Step size in degrees")
+                ui.badge("auto").props("outline color=wc-text-muted").classes(
+                    "step-auto"
+                ).mark("step-auto").bind_visibility_from(self.step, "is_auto")
 
             ui.button(icon="dangerous", on_click=self.on_estop_click).props(
                 "round unelevated color=wc-estop text-color=wc-on-fill"

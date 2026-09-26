@@ -68,26 +68,60 @@ def ensure_robot_homed(timeout: float = 15.0) -> None:
         _time.sleep(0.1)
 
 
+def marked_element(screen: "Screen", marker: str) -> WebElement:
+    """The DOM element of the active page's element carrying ``marker``.
+
+    Markers live server-side only, so the id is looked up on the app loop.
+    """
+    from nicegui import Client
+
+    from waldo_commander.state import ui_state
+
+    def lookup() -> int:
+        client = Client.instances[ui_state.active_client_id]
+        return next(e for e in client.elements.values() if marker in e._markers).id
+
+    return screen.selenium.find_element(By.ID, f"c{run_in_app(lookup)}")
+
+
+# Footer buttons and the gear that replaced the rail tabs: marker, and the
+# selector that is on screen once the click has landed.
+_SHELL_BUTTONS = {
+    "log": ("footer-log", ".bottom-panel"),
+    "diagnostics": ("footer-events", ".bottom-panel"),
+    "settings": ("tab-settings", ".settings-dialog-card"),
+}
+
+
 def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
-    """Click a tab by finding it via CSS selector, wait for it to become active.
+    """Open a panel by name and wait for it to be on screen.
 
     Args:
         screen: Selenium screen fixture
-        tab_name: One of 'program', 'io', 'log', 'settings', 'help'
-        timeout: Max seconds to wait for tab to become active (default 10s for CI)
+        tab_name: 'program', 'io' or 'gripper' (rail tabs), 'log' or
+            'diagnostics' (footer buttons, open the bottom panel), or
+            'settings' (the gear, opens the Settings dialog)
+        timeout: Max seconds to wait (default 10s for CI)
     """
-    # Map tab names to their icon names
+    if tab_name in _SHELL_BUTTONS:
+        marker, shown = _SHELL_BUTTONS[tab_name]
+        marked_element(screen, marker).click()
+        WebDriverWait(screen.selenium, timeout).until(
+            lambda d: any(
+                e.is_displayed() for e in d.find_elements(By.CSS_SELECTOR, shown)
+            )
+        )
+        return
+
     tab_icons = {
         "program": "code",
         "io": "settings_input_component",
-        "log": "article",
-        "settings": "tune",
-        "help": "help",
-        "diagnostics": "monitor_heart",
     }
     icon_name = tab_icons.get(tab_name)
     if not icon_name:
-        raise ValueError(f"Unknown tab: {tab_name}. Valid: {list(tab_icons.keys())}")
+        raise ValueError(
+            f"Unknown tab: {tab_name}. Valid: {list(tab_icons) + list(_SHELL_BUTTONS)}"
+        )
 
     # Find tab by looking for the icon within a q-tab
     tabs = screen.selenium.find_elements(By.CSS_SELECTOR, ".q-tab")
@@ -169,7 +203,7 @@ def close_panel(screen: "Screen", panel_class: str) -> None:
 
     Args:
         screen: Selenium screen fixture
-        panel_class: CSS class of the panel (e.g., 'program-panel', 'response-panel')
+        panel_class: CSS class of the panel (e.g., 'program-panel', 'bottom-panel')
     """
     panel = screen.selenium.find_element(By.CSS_SELECTOR, f".{panel_class}")
     # Find all close buttons and click the last one (panel close, not tab close)

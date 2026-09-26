@@ -53,25 +53,34 @@ def inject_panel_css() -> None:
 .task-dialog > .panel-body { flex-basis: auto; }
 .task-panel .q-table th, .task-dialog .q-table th { color: var(--wc-text-muted); text-align: left; }
 .task-panel .q-table td, .task-dialog .q-table td { text-align: left; }
-.settings-content { flex: 1 1 auto; min-height: 0; width: 100%; gap: 0; flex-wrap: nowrap; overflow-y: auto; overflow-x: hidden; }
-.settings-panel { max-width: calc(100vw - 80px); }
-/* The rule under each heading is the only divider; a row is its label beside
-   its control, and what the setting does is the label's tooltip. */
-.settings-group-heading { width: 100%; margin-top: 12px; padding-bottom: 3px; border-bottom: 1px solid var(--wc-glass-border); font-size: 12px; font-weight: 600; color: var(--wc-text-muted); }
-.settings-content > .settings-group-heading:first-child { margin-top: 0; }
-.settings-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); column-gap: 8px; align-items: center; min-height: 28px; width: 100%; }
-.settings-row > .settings-label { font-size: 13px; line-height: 1.25; min-width: 0; color: var(--wc-text); }
-.settings-row > :not(.settings-label) { justify-self: start; min-width: 0; max-width: 100%; }
-/* Fields fill the control column so every row ends at the same edge. */
-.settings-row > .q-field, .settings-row > .nicegui-grid, .settings-row > :has(> .q-field) { justify-self: stretch; width: auto; }
-.settings-row > :not(.settings-label) > .q-field { width: auto; }
-.settings-address { display: grid; grid-template-columns: minmax(0, 1fr) 72px; column-gap: 8px; justify-self: stretch; }
+/* Settings is one dialog: categories down the left, one category's rows on
+   the right. A row is its name over a one-line description, control at the
+   right edge. */
+.settings-dialog-card { width: 760px; max-width: calc(100vw - 32px); height: 560px; max-height: calc(100dvh - 32px); display: flex; flex-direction: row; align-items: stretch; gap: 0; overflow: hidden; }
+.settings-cats { flex: 0 0 168px; padding: 8px 0; border-right: 1px solid var(--wc-glass-border); }
+.settings-cats .q-tab { justify-content: flex-start; min-height: 36px; padding: 0 14px; }
+.settings-cats .q-tab__content { flex-direction: row; gap: 10px; align-items: center; }
+.settings-cats .q-tab__label { font-size: 13px; }
+.settings-cats .q-tab__indicator { width: 2px; left: 0; right: auto; }
+.settings-body { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+.settings-body .q-tab-panels { flex: 1 1 0; min-height: 0; }
+.settings-body .q-tab-panel { height: 100%; padding: 0; }
+.settings-content { display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%; gap: 0; flex-wrap: nowrap; overflow-y: auto; overflow-x: hidden; padding: 12px 20px 16px; }
+.settings-group-heading { width: 100%; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--wc-glass-border); font-size: 15px; font-weight: 600; color: var(--wc-text); }
+.settings-content > .settings-group-heading:not(:first-child) { margin-top: 16px; }
+.settings-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; align-items: center; min-height: 40px; width: 100%; padding: 4px 0; }
+.settings-row > .settings-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.settings-row .settings-label { font-size: 13px; line-height: 1.3; font-weight: 600; color: var(--wc-text); }
+.settings-row .settings-desc { font-size: 12px; line-height: 1.3; color: var(--wc-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-row > :not(.settings-text) { justify-self: end; min-width: 0; max-width: 100%; }
+.settings-address { display: grid; grid-template-columns: 160px 80px; column-gap: 8px; }
 .settings-row .q-field__control, .settings-row .q-field__marginal { min-height: 28px; height: 28px; }
 .settings-row .q-field__native, .settings-row .q-field__prefix, .settings-row .q-field__suffix { min-height: 28px; padding-top: 0; padding-bottom: 0; }
 .settings-row .q-toggle__inner { font-size: 28px; }
-.settings-axis { width: auto; }
+.settings-axis { width: 84px; }
 .settings-axis .q-field__prefix { color: var(--wc-text-muted); padding-right: 4px; }
-.diagnostics-view { width: 560px; max-width: calc(100vw - 80px); max-height: calc(100dvh - 24px); flex-wrap: nowrap; }
+.settings-content .keybindings-table { width: 100%; }
+.settings-content .tutorial-scroll { width: 100%; flex: 1 1 0; min-height: 0; height: auto; }
 /* Normal is colourless, so anything with colour in it is asking for attention.
    The verdict is the one thing sized to be read from across the room. */
 .diag-verdict { font-size: 17px; font-weight: 600; color: var(--wc-text); }
@@ -84,7 +93,7 @@ def inject_panel_css() -> None:
 .diag-bar { flex: 0 0 auto; width: 180px; height: 4px; margin: 3px 0 5px; border-radius: 2px; background: var(--wc-control); overflow: hidden; }
 .diag-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--wc-text-muted); transition: width .2s linear; }
 .diag-bar-fill.over { background: var(--wc-warning); }
-.diagnostics-view > .panel-body { flex-basis: auto; }
+.diag-drives-summary { font-size: 12px; color: var(--wc-text-muted); }
 /* Calibration is one flow of three steps: the open step shows its body, the
    others are a header line carrying their summary. */
 .handeye-step { width: 100%; padding: 0 6px; }
@@ -130,19 +139,4 @@ def inject_panel_css() -> None:
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }
 .event-detail-grid > * { overflow-wrap: anywhere; }
-/* The I/O strip is a bounded block at the header's right edge: chips wrap
-   into rows inside it and tighten as the count grows, and the name chips give
-   way (shrink, truncate) before the strip ever drops under them. */
-.readout-panel { max-width: 480px; }
-.readout-header > .q-chip { flex: 0 1 auto; min-width: 0; }
-.readout-header .q-chip__content { min-width: 0; flex-wrap: nowrap; }
-.readout-header .robot-face { flex-shrink: 0; }
-.readout-robot-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.io-chips { flex: 0 0 auto; max-width: 200px; display: flex; flex-wrap: wrap; justify-content: flex-end; align-content: center; gap: 2px 1px; }
-.io-chips .q-chip { margin: 0; }
-.io-chips-dense .q-chip { padding: 0 3px; height: 1.4em; }
-@media (min-width: 641px) and (max-width: 1200px) {
-  .readout-panel { width: 450px; }
-  .readout-panel > .nicegui-column { width: 100%; }
-}
 """)

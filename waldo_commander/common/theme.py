@@ -266,9 +266,10 @@ RADIUS: dict[str, str] = {
 SIZE: dict[str, str] = {
     "size-control": "32px",
     "size-control-sm": "24px",
-    "size-joint-bar": "33px",
+    "size-joint-dial": "64px",
     "size-jog-slot": "72px",
     "size-rail": "52px",
+    "size-footer": "28px",
 }
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
 OPACITY: dict[str, str] = {"opacity-disabled": "0.6", "opacity-locked": "0.15"}
@@ -619,6 +620,9 @@ def _scalar_block() -> str:
     for group in (SPACE, RADIUS, SIZE, EFFECT, OPACITY, Z_INDEX, DURATION, EASING):
         lines.extend(f"  --wc-{n}: {v};" for n, v in group.items())
     lines.extend(f"  --wc-font-{n}: {v};" for n, v in FONT_FAMILY.items())
+    lines.append(
+        "  --wc-footer-clearance: calc(var(--wc-size-footer) + 2 * var(--wc-space-3));"
+    )
     return "\n".join(lines)
 
 
@@ -647,7 +651,8 @@ def _inject_tokens_css() -> None:
 
 _GLASS_SELECTORS = (
     ".glass, .overlay-card, .side-tab-bar, .ai-cluster, .ai-approval-card,"
-    " .tutorial-dialog-card, .bottom-playback-bar, .q-dialog__inner > .q-card, .q-menu"
+    " .tutorial-dialog-card, .bottom-playback-bar, .q-dialog__inner > .q-card, .q-menu,"
+    " .status-footer, .bottom-panel"
 )
 
 
@@ -715,7 +720,6 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
   border-radius: var(--wc-radius-sm);
 }}
 .q-field--error .q-field__bottom, .q-field--error .q-field__messages {{ color: var(--wc-error) !important; }}
-.joint-readout-input .q-field__native {{ padding-top: 12px !important; padding-bottom: 4px !important; }}
 .step-input .q-field__suffix {{ display: inline-block; width: 14px; text-align: center; }}
 .step-suffix-small .q-field__suffix {{ font-size: 0.7em; }}
 
@@ -775,11 +779,10 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
     },
     "constraints": {
         "viewportMarginX": 80,
-        "viewportMarginY": 24,
+        "viewportMarginY": 64,
         "containerPadding": 20,
-        "bottomOffset": 12,
-        "totalMargin": 36,
-        "defaultsClearOf": [".readout-panel"],
+        "bottomOffset": 52,
+        "totalMargin": 76,
     },
     "stateClasses": {
         "coupled": "coupled",
@@ -788,31 +791,8 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
         "program": {
             "selector": ".top-panels-container .program-panel",
             "minWidth": 450,
-            "minHeight": 300,
             "defaultWidth": 680,
-            "defaultHeight": 480,
-            "group": "top",
-        },
-        "response": {
-            "selector": ".bottom-panels-container .response-panel",
-            "minWidth": 300,
-            "minHeight": 100,
-            "group": "bottom",
-        },
-        "settings": {
-            "selector": ".bottom-panels-container .settings-panel",
-            "minWidth": 400,
-            "minHeight": 320,
-            "defaultWidth": 440,
-            "fit": True,
-            "group": "bottom",
-        },
-        "diagnostics": {
-            "selector": ".top-panels-container .diagnostics-panel",
-            "minWidth": 420,
-            "minHeight": 300,
-            "defaultWidth": 560,
-            "fit": True,
+            "fullHeight": True,
             "group": "top",
         },
         "gripper": {
@@ -920,17 +900,19 @@ html, body {
 /* Main app container should also clip */
 .q-layout, .q-page-container { overflow: hidden !important; }
 
-/* Joint readout input — compact field styling */
+/* Joint readout: a compact number field centred in its dial */
 .joint-readout-input .q-field__control {
   max-height: 3em !important;
+  padding: 0 !important;
 }
-
 .joint-readout-input .q-field__native {
-   padding: 0 !important;
+  padding: 0 !important;
+  font-size: 10px;
+  line-height: 1;
 }
-
-.joint-readout-input .q-field__label {
-    top: 12px !important;
+.joint-readout-input .q-field__suffix {
+  font-size: 9px;
+  padding-left: 0;
 }
 
 /* Axis colours: fills (glyphs, markers) and their text variants (readout) */
@@ -997,43 +979,98 @@ html, body {
   transition: transform var(--wc-duration-instant) linear, filter var(--wc-duration-instant) linear, outline-color var(--wc-duration-instant) linear;
 }
 
-/* Joint control bars: control track, progress travel, the value crossing both under a scrim halo */
-.joint-bar {
-  border-radius: var(--wc-radius-pill) !important;
-  height: var(--wc-size-joint-bar);
-}
-.joint-bar .q-linear-progress__track { opacity: 1; }
-
 /* Settings rows fill the panel, never the widest child */
 .settings-scroll .q-scrollarea__content { width: 100%; min-width: 0; }
-.joint-value-pill {
-  padding: 0 var(--wc-space-2);
+
+/* Joint dials: a ring per joint on a control track with the travelled arc in
+   progress; the jog caps and limit buttons appear when the dial is hovered or
+   holds focus */
+.joint-dial-cell {
+  width: var(--wc-size-joint-dial);
+  position: relative;
+}
+.joint-dial {
+  position: relative;
+  width: var(--wc-size-joint-dial);
+  height: var(--wc-size-joint-dial);
+}
+.joint-dial-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.dial-track, .dial-fill {
+  fill: none;
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+.dial-track { stroke: var(--wc-control); }
+.dial-fill { stroke: var(--wc-progress); }
+.dial-tick { stroke: var(--wc-text-muted); stroke-width: 1.5; }
+.dial-knob { fill: var(--wc-text); }
+.joint-dial .joint-readout-input {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
   color: var(--wc-text);
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 3px var(--wc-scrim), 0 0 3px var(--wc-scrim);
 }
-
 .joint-cap {
-  height: calc(var(--wc-size-joint-bar) - 1px);
-  width: var(--wc-size-joint-bar);
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
   min-height: 0;
   padding: 0;
-  border-radius: var(--wc-radius-pill);
   color: var(--wc-text) !important;
-  font-size: 19px;
+  background: var(--wc-glass);
+  opacity: 0;
+  transition: opacity var(--wc-duration-fast);
+  z-index: 1;
 }
-
-.joint-cap:hover {
-  opacity: 0.8;
-}
-
+.joint-cap-minus { left: -6px; }
+.joint-cap-plus { right: -6px; }
 .joint-cap.q-btn--disabled {
   color: var(--wc-text-disabled) !important;
   pointer-events: none;
 }
+.joint-dial-name {
+  max-width: 100%;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--wc-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.joint-dial-limits {
+  opacity: 0;
+  transition: opacity var(--wc-duration-fast);
+}
+.joint-dial-cell:hover .joint-cap,
+.joint-dial-cell:focus-within .joint-cap,
+.joint-dial-cell:hover .joint-dial-limits,
+.joint-dial-cell:focus-within .joint-dial-limits {
+  opacity: 1;
+}
+/* Outranks the locked-state opacity so a disabled cap stays hidden until the dial is hovered */
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap { opacity: 0 !important; }
 
-/* Level indicators: the dots take the progress token; Quasar dims the unselected ones */
+/* Level chips: percentage beside the icon, the rating in the popover; its dots
+   take the progress token and Quasar dims the unselected ones */
+.level-chip { min-height: 0; padding: 0 var(--wc-space-2); font-variant-numeric: tabular-nums; }
+.level-chip .q-icon { color: var(--wc-text-muted); }
+.level-menu { padding: var(--wc-space-1) var(--wc-space-2); }
 .level-speed .q-icon, .level-accel .q-icon { color: var(--wc-progress) !important; }
+
+/* Tool box: name over its readout, the actions to the right */
+.tool-box-readout { min-width: 0; line-height: 1.1; }
+.step-auto { font-size: 9px; }
 
 /* Control panel jog tabs: compact padding */
 .cp-jog-tabs .q-tab {
@@ -1158,7 +1195,7 @@ html, body {
 .overlay-tl { top: var(--wc-space-3); left: var(--wc-space-3); }
 .overlay-tr { top: var(--wc-space-3); right: var(--wc-space-3); }
 .overlay-bl { bottom: var(--wc-space-3); left: var(--wc-space-3); }
-.overlay-br { bottom: var(--wc-space-3); right: var(--wc-space-3); }
+.overlay-br { bottom: var(--wc-footer-clearance); right: var(--wc-space-3); }
 .overlay-right {
   position: absolute;
   top: 50%;
@@ -1193,7 +1230,16 @@ html, body {
   min-height: 0 !important;
   z-index: var(--wc-z-rail);
 }
-.side-tab-bar.absolute.bottom-0 { z-index: var(--wc-z-rail-bottom); }
+.side-tab-bar.absolute.bottom-0 { z-index: var(--wc-z-rail-bottom); margin-bottom: var(--wc-footer-clearance); }
+/* The bottom rail is the gear alone unless a plugin adds a tab above it. */
+.bottom-rail { display: flex; flex-direction: column; align-items: stretch; width: var(--wc-size-rail); }
+.bottom-rail .q-tabs--vertical { width: 100% !important; }
+.bottom-rail .rail-gear {
+  width: 100%;
+  min-height: 44px !important;
+  border-radius: 0 !important;
+  padding: 8px 12px !important;
+}
 
 /* Ensure tabs inside the bar have proper sizing */
 .side-tab-bar .q-tab {
@@ -1225,7 +1271,7 @@ html, body {
 
 .top-panels-container { top: var(--wc-space-3); }
 
-.bottom-panels-container { bottom: var(--wc-space-3); }
+.bottom-panels-container { bottom: var(--wc-footer-clearance); }
 
 .resizable-panel { overflow: hidden !important; }
 
@@ -1233,6 +1279,18 @@ html, body {
    tall as its content. This keeps it inside the viewport; the flex chain under
    it (min-height: 0, overflow: auto) scrolls at the cap. */
 .left-panels-container > .q-panel > .resizable-panel { max-height: calc(100vh - 24px); }
+.bottom-panels-container > .q-panel > .resizable-panel {
+  max-height: calc(100vh - var(--wc-space-3) - var(--wc-footer-clearance));
+}
+
+/* The program column: full height between the top margin and the footer,
+   width from PanelResize; only the right edge is a handle. */
+.panels-wrap.column-open .top-panels-container {
+  top: var(--wc-space-3);
+  bottom: var(--wc-footer-clearance);
+  height: auto !important;
+}
+.panels-wrap.column-open .top-panels-container > .q-panel > .program-panel { max-height: none; }
 
 /* Panel content is interactive when visible */
 .left-panels-container .overlay-card { pointer-events: auto; }
@@ -1656,12 +1714,6 @@ html, body {
   background: transparent !important;
 }
 
-/* Help dialog - expand to fit content */
-.help-dialog-card {
-  max-width: 95vw;
-  max-height: 95vh;
-}
-
 /* ========== Keyboard Key Styling ========== */
 .kbd-key {
   display: inline-block;
@@ -1695,11 +1747,6 @@ html, body {
 
 .keybindings-table tbody td { border: none !important; }
 .keybindings-table { background: transparent !important; }
-
-.help-dialog-card .q-stepper,
-.help-dialog-card .q-stepper__content {
-  background: transparent !important;
-}
 
 
 /* ========== File Dialogs ========== */
@@ -1748,11 +1795,6 @@ html, body {
 .robot-face-neutral svg { animation: breathe-neutral 7s ease-in-out infinite; animation-delay: -2s; }
 .robot-face-sad svg { animation: breathe-sad 8s ease-in-out infinite; animation-delay: -4s; }
 
-/* Help tab has no panel — hide its indicator to prevent stale marker at startup */
-.side-tab-bar.absolute.bottom-0 .q-tab:last-child .q-tab__indicator {
-    display: none !important;
-}
-
 
 /* ========== Takeover Overlay ========== */
 
@@ -1770,33 +1812,97 @@ html, body {
 }
 
 
-/* ========== Action Log ========== */
+/* ========== Status footer ========== */
 
-.action-log {
-  max-height: 20px;
-  transition: max-height var(--wc-duration-fast) var(--wc-ease-enter);
-  width: 0;
-  min-width: 100%;
-  cursor: pointer;
-}
-/* Collapsed: no padding, no scrollbars, no user scroll */
-.action-log:not(.action-log-expanded) .q-scrollarea__content { padding: 0 !important; }
-.action-log:not(.action-log-expanded) .q-scrollarea__container { overflow: hidden !important; }
-.action-log:not(.action-log-expanded) .q-scrollarea__thumb,
-.action-log:not(.action-log-expanded) .q-scrollarea__bar {
-  opacity: 0 !important;
-  pointer-events: none !important;
-}
-/* Expanded: Quasar handles scrollbars natively, just override padding */
-.action-log.action-log-expanded {
-  max-height: 200px;
-}
-.action-log.action-log-expanded .q-scrollarea__content { padding: 2px 0 !important; }
-.action-log-entry {
+.status-footer {
+  position: absolute;
+  left: var(--wc-space-3);
+  right: var(--wc-space-3);
+  bottom: var(--wc-space-3);
+  height: var(--wc-size-footer);
+  z-index: var(--wc-z-rail-bottom);
+  display: flex;
+  align-items: center;
+  gap: var(--wc-space-2);
+  padding: 0 var(--wc-space-1) 0 0;
+  border-radius: var(--wc-radius-pill) !important;
+  pointer-events: auto;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
+.status-footer .q-chip {
+  margin: 0;
+  height: calc(var(--wc-size-footer) - 4px);
+  box-shadow: none;
+}
+.status-footer .footer-mode { border-radius: var(--wc-radius-pill); padding: 0 8px 0 4px; }
+.status-footer .footer-mode .robot-face { width: 20px; height: 20px; flex-shrink: 0; }
+.status-footer .footer-mode .robot-face svg { width: 20px; height: 20px; display: block; }
+.status-footer .footer-mode .q-chip__content { gap: 4px; flex-wrap: nowrap; }
+.status-footer .readout-robot-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.status-footer .footer-tool { max-width: 160px; }
+.status-footer .footer-tool .q-chip__content { min-width: 0; }
+.status-footer .footer-sep { width: 1px; height: 14px; background: var(--wc-glass-border); flex-shrink: 0; }
+.status-footer .io-dots { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.io-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--wc-control);
+  transition: background var(--wc-duration-fast) var(--wc-ease-enter);
+}
+.io-dot.io-dot-on { background: var(--wc-action); }
+.status-footer .pose-well {
+  display: flex; align-items: baseline; gap: 6px;
+  height: calc(var(--wc-size-footer) - 6px);
+  padding: 0 10px;
+  border-radius: var(--wc-radius-pill);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.status-footer .pose-well .wc-caption { line-height: 1; }
+.status-footer .pose-value { display: inline-block; text-align: right; }
+.status-footer .footer-action {
+  flex: 1 1 0; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+}
+.status-footer .footer-action .action-icon { font-size: 13px; vertical-align: -2px; margin-right: 3px; }
+.footer-history { min-width: 240px; max-width: 420px; padding: 4px 0; }
+.footer-history .action-log-entry { padding: 2px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status-footer .footer-btn {
+  min-height: calc(var(--wc-size-footer) - 6px) !important;
+  min-width: 0 !important;
+  padding: 0 8px !important;
+  border-radius: var(--wc-radius-pill);
+  font-variant-numeric: tabular-nums;
+}
+.status-footer .footer-btn .q-icon { font-size: 15px; }
+.status-footer .footer-btn .footer-count { margin: 0 6px 0 2px; }
+.status-footer .footer-btn.has-unread.unread-warning { background: var(--wc-warning-soft) !important; color: var(--wc-warning) !important; }
+.status-footer .footer-btn.has-unread.unread-error { background: var(--wc-error-soft) !important; color: var(--wc-error) !important; }
+
+/* ========== Bottom panel ========== */
+
+.bottom-panel {
+  position: absolute;
+  right: var(--wc-space-3);
+  bottom: var(--wc-footer-clearance);
+  left: calc(var(--wc-column-right, 0px) + var(--wc-space-3));
+  height: 340px;
+  max-height: calc(100vh - var(--wc-footer-clearance) - var(--wc-space-3));
+  z-index: var(--wc-z-panels);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  pointer-events: auto;
+}
+.bottom-panel .bottom-panel-tabs { flex-shrink: 0; }
+.bottom-panel .bottom-panel-tabs .q-tab { min-height: 36px; padding: 0 14px; }
+.bottom-panel .q-tab-panels { flex: 1 1 0; min-height: 0; }
+.bottom-panel .q-tab-panel { height: 100%; padding: var(--wc-space-2) var(--wc-space-3); overflow: auto; }
+.bottom-panel .nicegui-log { height: 100%; }
+.diag-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--wc-space-4); width: 100%; }
+.diag-grid > .diag-col { min-width: 0; }
+.diag-grid > .diag-wide { grid-column: 1 / -1; min-width: 0; }
 
 /* Diagnostics event log. Unlike the one-line action log these entries wrap:
    the cause, effect and remedy are the parts worth reading, so they get the

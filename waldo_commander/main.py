@@ -44,15 +44,15 @@ from waldo_commander.common.theme import (
     PANEL_RESIZE_CONFIG,
     SceneColors,
 )
+from waldo_commander.components.bottom_panel import BottomPanel
 from waldo_commander.components.control import ControlPanel
-from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.components.editor import EditorPanel
 from waldo_commander.components.gripper import GripperPage
 from waldo_commander.components.help_menu import help_menu
 from waldo_commander.components.io import IoPage
 from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
-from waldo_commander.components.readout import ReadoutPanel
+from waldo_commander.components.readout import StatusFooter
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import adopt_applied_tcp
 from waldo_commander.constants import DEFAULT_CAMERA, RESERVED_TAB_IDS, config
@@ -114,7 +114,7 @@ _shutting_down: bool = False
 
 # Assigned in main(), None until then.
 control_panel: ControlPanel = None  # ty: ignore[invalid-assignment]
-readout_panel: ReadoutPanel = None  # ty: ignore[invalid-assignment]
+readout_panel: StatusFooter = None  # ty: ignore[invalid-assignment]
 editor_panel: EditorPanel = None  # ty: ignore[invalid-assignment]
 
 
@@ -299,6 +299,11 @@ async def initialize_urdf_scene() -> None:
 
     ui_state.urdf_joint_names = list(ui_state.urdf_scene.get_joint_names())
 
+    if ui_state.urdf_scene.scene:
+        background_tasks.create(
+            _attach_scene_framing(ui_state.urdf_scene.scene), name="scene-framing"
+        )
+
     logger.debug("URDF scene initialized with joints: %s", ui_state.urdf_joint_names)
 
     readiness_state.signal_urdf_scene_ready()
@@ -324,6 +329,12 @@ async def initialize_urdf_scene() -> None:
     # Scene wasn't ready earlier, so apply simulator appearance now.
     if waldoctl.commander.status.simulator_active:
         ui_state.urdf_scene.set_simulator_appearance(True)
+
+
+async def _attach_scene_framing(scene: ui.scene) -> None:
+    """Frame the camera on the part of the view the column and footer leave clear."""
+    await scene.initialized()
+    scene.client.run_javascript(f"SceneFraming.attach({scene.id})")
 
 
 async def start_controller(com_port: str | None) -> None:
@@ -736,7 +747,8 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
 
 
 def _build_left_panels(panels_wrap: ui.element) -> dict:
-    """Build top (program/io/gripper) and bottom (log/help) panel groups.
+    """Build the top rail (program/io/gripper + plugins), the bottom rail (gear
+    + plugin tabs) and the Settings dialog the gear opens.
 
     Returns a dict of references needed by _setup_panel_persistence().
     """
@@ -761,17 +773,6 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         gripper_tab.props("disable")
         gripper_tab.mark("tab-gripper")
         ui_state._gripper_tab = gripper_tab
-        diagnostics_tab = ui.tab(name="diagnostics", label="", icon="monitor_heart")
-        diagnostics_tab.tooltip("Diagnostics")
-        diagnostics_tab.mark("tab-diagnostics")
-        with diagnostics_tab:
-            # Quasar floats the badge over the tab's corner, so an unread
-            # count needs no layout of its own.
-            ui.badge().props("floating").bind_text_from(
-                robot_events, "unread", backward=str
-            ).bind_visibility_from(robot_events, "unread", backward=bool).mark(
-                "diag-unread-badge"
-            )
 
         _add_plugin_tabs(PanelSlot.LEFT_TOP_TAB)
 
@@ -787,7 +788,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         def close_top_panels():
             side_tabs.value = None
             top_panels.value = None
-            panels_wrap.classes(remove="coupled")
+            panels_wrap.classes(remove="coupled column-open")
             ui_state.program_panel_visible = False
             ui.run_javascript("PanelResize.onTabChange('top', '')")
 
@@ -795,7 +796,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             "overlay-card program-panel resizable-panel p-0"
         ):
             editor_panel.build(close_callback=close_top_panels)
-            _add_resize_handles(PanelSlot.LEFT_TOP_TAB)
+            # The column is full height; only its right edge is dragged.
+            ui.element("div").classes("resize-handle-right")
 
         with ui.tab_panel("io").classes("gap-2 overlay-card overflow-hidden"):
             with ui.row().classes("w-full"):
@@ -868,30 +870,15 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
 
             ui_state._build_gripper_content = _build_gripper_content
 
-        with ui.tab_panel("diagnostics").classes(
-            "gap-2 overlay-card task-panel diagnostics-view diagnostics-panel "
-            "resizable-panel overflow-hidden"
-        ):
-            with ui.row().classes("w-full items-center"):
-                ui.label("Diagnostics").classes("text-lg font-medium")
-                ui.space()
-                ui.button(icon="close", on_click=close_top_panels).props(
-                    "flat round dense color=wc-text"
-                )
-            ui_state.diagnostics_page = DiagnosticsPage(
-                client,
-                is_open=lambda: side_tabs.value == "diagnostics",
-                tab=diagnostics_tab,
-            )
-            with ui.column().classes("panel-body gap-0"):
-                ui_state.diagnostics_page.build()
-            _add_resize_handles(PanelSlot.LEFT_TOP_TAB)
-
         _add_plugin_tab_panels(PanelSlot.LEFT_TOP_TAB, commander)
 
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
             ui_state.program_panel_visible = new_tab == "program"
+            if new_tab == "program":
+                panels_wrap.classes(add="column-open")
+            else:
+                panels_wrap.classes(remove="column-open")
 
         side_tabs.on("update:model-value", update_top_layout)
 
@@ -902,71 +889,35 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         side_tabs.on("update:model-value", handle_tab_change)
         ui_state.program_panel_visible = side_tabs.value == "program"
 
-    # ---- Bottom tab bar ----
-    with (
-        ui.tabs(value=None)
-        .props("vertical")
-        .classes("side-tab-bar absolute bottom-0 left-0") as bottom_tabs
-    ):
-        resp_tab = ui.tab(name="response", label="", icon="article")
-        resp_tab.tooltip("Log")
-        resp_tab.mark("tab-log")
-        settings_tab = ui.tab(name="settings", label="", icon="tune")
-        settings_tab.tooltip("Settings")
-        settings_tab.mark("tab-settings")
-        help_tab = ui.tab(name="help", label="", icon="help_outline")
-        help_tab.tooltip("Help")
-        help_tab.mark("tab-help")
+    # ---- Settings dialog, opened from the gear ----
+    ui_state.settings_content = SettingsContent(client)
+    ui_state.settings_content.build_dialog(
+        ai_control_section=control_panel._build_control_mode_selector,
+        help_menu=help_menu,
+    )
 
-        _add_plugin_tabs(PanelSlot.LEFT_BOTTOM_TAB)
+    # ---- Bottom rail: plugin tabs (if any) over the gear ----
+    has_bottom_plugins = any(
+        p.slot is PanelSlot.LEFT_BOTTOM_TAB for p in ui_state.plugin_panels
+    )
+    with ui.element("div").classes("side-tab-bar bottom-rail absolute bottom-0 left-0"):
+        with ui.tabs(value=None).props("vertical") as bottom_tabs:
+            _add_plugin_tabs(PanelSlot.LEFT_BOTTOM_TAB)
+        bottom_tabs.set_visibility(has_bottom_plugins)
+        (
+            ui.button(icon="tune", on_click=ui_state.settings_content.open)
+            .props("flat dense color=wc-text")
+            .classes("rail-gear")
+            .tooltip("Settings")
+            .mark("tab-settings")
+        )
 
-    # ---- Bottom panels container ----
+    # ---- Bottom panels container (plugins only) ----
     with (
         ui.tab_panels(bottom_tabs, value=None)
         .props("vertical animated transition-prev=slide-up transition-next=slide-down")
         .classes("left-panels-container bottom-panels-container") as bottom_panels
     ):
-
-        def close_bottom_panels():
-            bottom_tabs.value = None
-            bottom_panels.value = None
-            panels_wrap.classes(remove="coupled")
-            ui.run_javascript("PanelResize.onTabChange('bottom', '')")
-
-        with ui.tab_panel("response").classes(
-            "overlay-card response-panel resizable-panel"
-        ):
-            with ui.row().classes("w-full"):
-                ui.label("Log").classes("text-lg font-medium")
-                ui.space()
-                ui.button(icon="close", on_click=close_bottom_panels).props(
-                    "flat round dense color=wc-text"
-                )
-            ui_state.response_log = (
-                ui.log(max_lines=1000)
-                .classes("w-full h-full no-x-scroll well")
-                .style("min-height: 200px !important; width: 100% !important;")
-            )
-            _add_resize_handles(PanelSlot.LEFT_BOTTOM_TAB)
-
-        with ui.tab_panel("settings").classes(
-            "overlay-card settings-panel resizable-panel"
-        ):
-            with ui.row().classes("w-full"):
-                ui.label("Settings").classes("text-lg font-medium")
-                ui.space()
-                ui.button(icon="close", on_click=close_bottom_panels).props(
-                    "flat round dense color=wc-text"
-                )
-            with ui.column().classes("settings-content"):
-                ui_state.settings_content = SettingsContent(client)
-                ui_state.settings_content.build_embedded(
-                    ai_control_section=control_panel._build_control_mode_selector
-                )
-            ui.element("div").classes("resize-handle-top")
-            ui.element("div").classes("resize-handle-right")
-            ui.element("div").classes("resize-handle-corner")
-
         _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
         def update_bottom_layout():
@@ -984,16 +935,6 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui.run_javascript(f"PanelResize.onTabChange('bottom', '{to_tab}')")
 
         bottom_tabs.on("update:model-value", handle_bottom_tab_change)
-
-        help_tab.on("click", lambda: help_menu.show_help_dialog())
-
-        def _on_bottom_value_change(e):
-            if e.args == "help":
-                bottom_tabs.value = (
-                    "response" if bottom_panels.value == "response" else None
-                )
-
-        bottom_tabs.on("update:model-value", _on_bottom_value_change)
         update_bottom_layout()
 
     return {
@@ -1046,7 +987,7 @@ def _setup_panel_persistence(refs: dict) -> None:
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_TOP_TAB
                     }
-                    bottom_valid = {"response", "settings", "help"} | {
+                    bottom_valid = {
                         p.id
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_BOTTOM_TAB
@@ -1092,6 +1033,7 @@ def build_page_content() -> None:
     )
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
     ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
+    ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
 
     with ui.column().classes("relative w-screen h-screen overflow-hidden gap-0"):
         with ui.column().classes("absolute inset-0 z-0"):
@@ -1173,7 +1115,8 @@ def build_page_content() -> None:
             ):
                 panel_refs = _build_left_panels(panels_wrap)
 
-        readout_panel.build("tr")
+        readout_panel.build()
+        BottomPanel(client, attention=readout_panel.events_button).build()
         control_panel.build("br")
 
         _setup_panel_persistence(panel_refs)
@@ -2057,6 +2000,7 @@ async def _status_consumer() -> None:
                                 cause=standing.cause,
                                 effect=standing.effect,
                                 remedy=standing.remedy,
+                                severity="error",
                             )
 
                     drives = getattr(status, "drive_health", None)
@@ -2185,6 +2129,7 @@ async def _status_consumer() -> None:
                                 robot_state.completed_index,
                             )
                             control_panel.refresh_joint_enablement()
+                            control_panel.refresh_joint_dials()
                             control_panel.sync_cartesian_button_states()
                             control_panel.sync_gizmo_for_jog_state()
                             if ui_state.gripper_page is not None:
@@ -2310,7 +2255,7 @@ def main():
         host=config.controller_host, port=config.controller_port, timeout=5.0
     )
     control_panel = ControlPanel(client)
-    readout_panel = ReadoutPanel()
+    readout_panel = StatusFooter()
     editor_panel = EditorPanel()
     # Store panels in ui_state for cross-module access
     ui_state.control_panel = control_panel
