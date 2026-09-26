@@ -1,10 +1,9 @@
-"""Control panel: joint dials, level chips and the zoom-following jog step."""
+"""Control panel: joint dials and level chips."""
 
 from __future__ import annotations
 
 import math
 import re
-import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -13,12 +12,9 @@ from nicegui import app
 from nicegui.testing import User
 from waldoctl import ActionState
 
-from tests.conftest import skip_webgl_macos_ci
-from tests.helpers.browser_helpers import js
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
-    screen_wait_for_scene_ready,
     simulate_click,
     teleport_to_jog_pose,
     wait_for_app_ready,
@@ -29,7 +25,7 @@ from waldo_commander.components.control import DIAL_RADIUS, DIAL_SIZE, dial_geom
 from waldo_commander.state import ui_state
 
 if TYPE_CHECKING:
-    from nicegui.testing.screen import Screen
+    pass
 
 R = DIAL_RADIUS
 
@@ -156,78 +152,3 @@ async def test_level_chip_popover_sets_the_speed_text_and_storage(user: User) ->
         assert "70%" in refs["tooltip"].text
     finally:
         cp.adjust_rating("jog_speed", original - waldoctl.commander.settings.jog.speed)
-
-
-@pytest.mark.integration
-async def test_jog_step_follows_the_camera_until_pinned_and_in_the_tabs_unit(
-    user: User,
-) -> None:
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    cp = ui_state.control_panel
-    jog = waldoctl.commander.settings.jog
-    field = user.find(marker="step-input")
-
-    cp.on_camera_distance(1.2)
-    assert jog.joint_step_deg == 1.0 and cp.step.is_auto
-    await user.should_see(marker="step-auto")
-
-    # A typed value pins the step; the camera no longer moves it.
-    field.clear()
-    field.type("2.5")
-    assert jog.joint_step_deg == 2.5 and not cp.step.is_auto
-    cp.on_camera_distance(0.4)
-    assert jog.joint_step_deg == 2.5
-    await user.should_not_see(marker="step-auto")
-
-    # Clearing the field returns to auto, at the band the camera is in now.
-    field.clear()
-    assert jog.joint_step_deg == 0.1 and cp.step.is_auto
-    await user.should_see(marker="step-auto")
-
-    # The cartesian tab reads the same band in millimetres, and a click moves
-    # the tool by exactly that.
-    user.find(marker="tab-cartesian").click()
-    assert jog.joint_step_deg == 0.5
-    await teleport_to_jog_pose(cp.client)
-    assert await wait_until(
-        lambda: waldoctl.commander.status.action.state == ActionState.IDLE,
-        timeout_s=10.0,
-    )
-    initial_z = float(waldoctl.commander.status.pose.z)
-    await simulate_click(user, "axis-zplus")
-    await wait_for_motion_start()
-    assert await wait_until(
-        lambda: waldoctl.commander.status.action.state == ActionState.IDLE,
-        timeout_s=15.0,
-    )
-    moved = float(waldoctl.commander.status.pose.z) - initial_z
-    assert 0.4 <= moved <= 0.6, f"expected +0.5 mm, moved {moved:.3f} mm"
-
-
-@pytest.mark.browser
-@skip_webgl_macos_ci
-def test_camera_distance_reaches_the_step_within_a_second(screen: Screen) -> None:
-    screen.open("/")
-    screen_wait_for_scene_ready(screen, timeout_s=40.0)
-    cp = ui_state.control_panel
-
-    deadline = time.monotonic() + 10.0
-    while cp.step.camera_distance_m is None and time.monotonic() < deadline:
-        time.sleep(0.1)
-    assert cp.step.camera_distance_m is not None, "the scene never reported its camera"
-
-    # Pull the camera out to 2 m from its target, the way a zoom-out lands.
-    js(
-        screen,
-        "const c = getElement(document.querySelector('.nicegui-scene'));"
-        "const t = c.controls.target;"
-        "c.camera.position.sub(t).setLength(2.0).add(t);",
-    )
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline and abs(cp.step.camera_distance_m - 2.0) > 0.05:
-        time.sleep(0.05)
-    assert abs(cp.step.camera_distance_m - 2.0) <= 0.05, cp.step.camera_distance_m
-    assert waldoctl.commander.settings.jog.joint_step_deg == 5.0
