@@ -40,12 +40,10 @@ def get_available_serial_ports() -> list[str]:
 @contextmanager
 def _setting_row(title: str, description: str):
     """Standard layout for a settings row: label column + yielded control widget."""
-    with ui.row().classes("items-center justify-between w-full overflow-hidden"):
+    with ui.row().classes("items-center justify-between w-full"):
         with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-            ui.label(title).classes("text-sm font-medium truncate")
-            ui.label(description).classes(
-                "text-xs text-gray-500 dark:text-gray-400 truncate"
-            )
+            ui.label(title).classes("wc-label truncate")
+            ui.label(description).classes("wc-caption text-wc-text-muted truncate")
         yield
 
 
@@ -475,9 +473,9 @@ class SettingsContent:
         with ui.column().classes("w-full gap-0 px-2"):
             ui.label(
                 "AI annotations: webcam \u2192 your script \u2192 pyvirtualcam \u2192 select virtual device"
-            ).classes("text-xs text-gray-500 dark:text-gray-400")
+            ).classes("wc-caption text-wc-text-muted")
             ui.label("Linux: sudo apt install v4l2loopback-dkms").classes(
-                "text-xs text-gray-500 dark:text-gray-400"
+                "wc-caption text-wc-text-muted"
             )
 
         def _refresh_camera_devices() -> None:
@@ -596,7 +594,7 @@ class SettingsContent:
         if not discovered:
             with _setting_row("Panel plugins", "Show / hide installed panel plugins"):
                 ui.label("No plugins installed").classes(
-                    "text-xs text-[var(--ctk-muted)]"
+                    "wc-caption text-wc-text-muted"
                 ).mark("settings-plugins-summary")
             return
 

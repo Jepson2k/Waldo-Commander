@@ -16,7 +16,7 @@ import numpy as np
 
 from waldoctl import DryRunResult
 
-from waldo_commander.common.theme import get_color_for_move_type
+from waldo_commander.common.theme import get_color_for_move_type, hex_of
 from waldo_commander.state import ShapeChange, ToolAction, ToolSelection
 
 logger = logging.getLogger(__name__)
@@ -448,7 +448,7 @@ class PathPreviewClient:
             points = result.tcp_poses[:, :3].tolist()
             segment = {
                 "points": points,
-                "color": get_color_for_move_type(move_type, is_valid),
+                "color": get_color_for_move_type(move_type, is_valid, timing_feasible),
                 "is_valid": is_valid,
                 "line_number": line_no,
                 "joints": end_joints,
@@ -569,7 +569,9 @@ class PathPreviewClient:
             if len(run_poses) >= 2:
                 segment = {
                     "points": run_poses,
-                    "color": get_color_for_move_type(move_type, run_valid),
+                    "color": get_color_for_move_type(
+                        move_type, run_valid, timing_feasible
+                    ),
                     "is_valid": run_valid,
                     "line_number": line_no,
                     "joints": end_joints if j >= n else [],
@@ -615,7 +617,7 @@ class PathPreviewClient:
         self._attribute_commands(line_no)
         segment = {
             "points": [],
-            "color": "#00000000",
+            "color": hex_of("path-checkpoint"),
             "is_valid": True,
             "line_number": line_no,
             "joints": self.last_joints_rad or [],

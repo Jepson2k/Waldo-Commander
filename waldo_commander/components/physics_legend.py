@@ -17,6 +17,7 @@ import math
 import waldoctl
 from nicegui import ui
 
+from waldo_commander.common.theme import hex_of
 from waldo_commander.services.urdf_scene.physics_overlay import (
     FORCE_SCALE_M_PER_N,
     FULL_DIVERGENCE_RAD,
@@ -50,7 +51,7 @@ class PhysicsLegend:
                     self._swatch_row(
                         "Achieved path",
                         f"green on target, red at {_TRACKING_DEG:.1f}° of error",
-                        ("#59d973", "#f25940"),
+                        (hex_of("physics-on-track"), hex_of("physics-diverged")),
                     ),
                     "divergence_visible",
                 ),
@@ -58,7 +59,7 @@ class PhysicsLegend:
                     self._swatch_row(
                         "Contact force",
                         f"arrow length {_ARROW_CM_PER_N:.1f} cm per newton",
-                        ("#ff5d5d", "#ff5d5d"),
+                        (hex_of("physics-contact"), hex_of("physics-contact")),
                     ),
                     "contacts_visible",
                 ),
@@ -66,7 +67,7 @@ class PhysicsLegend:
                     self._swatch_row(
                         "Centre of mass",
                         "of the whole simulated scene",
-                        ("#ffd166", "#ffd166"),
+                        (hex_of("physics-com"), hex_of("physics-com")),
                     ),
                     "com_visible",
                 ),
@@ -83,8 +84,8 @@ class PhysicsLegend:
                 f" background: linear-gradient(90deg, {colors[0]}, {colors[1]});"
             )
             with ui.column().classes("gap-0"):
-                ui.label(title).classes("text-xs font-medium leading-none")
-                ui.label(detail).classes("text-[10px] opacity-70 leading-none")
+                ui.label(title).classes("wc-label leading-none")
+                ui.label(detail).classes("wc-micro text-wc-text-muted leading-none")
         return row
 
     def refresh(self) -> None:

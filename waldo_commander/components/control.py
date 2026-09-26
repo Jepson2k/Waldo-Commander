@@ -146,7 +146,7 @@ class _EStopManager:
 
                 if is_physical:
                     ui.label("Physical E-STOP Active").classes(
-                        "text-xl font-bold text-negative text-center"
+                        "text-xl font-bold text-wc-error text-center"
                     )
                     ui.label("The physical E-STOP button was pressed.").classes(
                         "text-center"
@@ -156,7 +156,7 @@ class _EStopManager:
                     )
                 else:
                     ui.label("Digital E-STOP Active").classes(
-                        "text-xl font-bold text-warning text-center"
+                        "text-xl font-bold text-wc-warning text-center"
                     )
                     ui.label("Robot motion has been stopped.").classes("text-center")
 
@@ -172,7 +172,7 @@ class _EStopManager:
 
                     with ui.row().classes("gap-2 justify-center w-full mt-4"):
                         ui.button("Reset", on_click=reset).props(
-                            "color=positive size=lg"
+                            "color=wc-action size=lg text-color=wc-on-bright"
                         ).mark("btn-estop-resume")
 
             self._dialog.open()
@@ -234,7 +234,7 @@ class _ToolQuickActions:
         with (
             ui.column()
             .classes("rounded-lg shadow-sm p-2 gap-1")
-            .style("border: 1px solid rgba(255,255,255,0.1);")
+            .style("border: 1px solid var(--wc-glass-border);")
             .bind_visibility_from(
                 waldoctl.commander.status.tool,
                 "key",
@@ -243,13 +243,15 @@ class _ToolQuickActions:
             .mark("tool-quick-actions")
         ):
             ui.label().bind_text_from(waldoctl.commander.status.tool, "key").classes(
-                "text-xs text-center w-full opacity-60"
+                "text-xs text-center w-full text-wc-text-muted"
             )
 
             with ui.row().classes("items-center gap-2 justify-center"):
                 self._action_l_btn = (
                     ui.button(icon="close_fullscreen", on_click=self._on_action_l)
-                    .props("round dense unelevated size=md color=grey-7")
+                    .props(
+                        "round dense unelevated size=md color=wc-control text-color=wc-text"
+                    )
                     .mark("btn-tool-action-l")
                 )
                 self._action_r_btn = (
@@ -257,7 +259,9 @@ class _ToolQuickActions:
                         icon="build",
                         on_click=lambda: _safe_task(self._on_action_r()),
                     )
-                    .props("round dense unelevated size=md color=grey-7")
+                    .props(
+                        "round dense unelevated size=md color=wc-control text-color=wc-text"
+                    )
                     .classes("cp-disabled-strong")
                     .mark("btn-tool-action-r")
                 )
@@ -267,14 +271,18 @@ class _ToolQuickActions:
                             icon="remove",
                             on_click=lambda: _safe_task(self._on_adjust(-1)),
                         )
-                        .props("round dense unelevated size=md color=grey-7")
+                        .props(
+                            "round dense unelevated size=md color=wc-control text-color=wc-text"
+                        )
                         .mark("btn-tool-adjust-minus")
                     )
                     self._adjust_plus_btn = (
                         ui.button(
                             icon="add", on_click=lambda: _safe_task(self._on_adjust(1))
                         )
-                        .props("round dense unelevated size=md color=grey-7")
+                        .props(
+                            "round dense unelevated size=md color=wc-control text-color=wc-text"
+                        )
                         .mark("btn-tool-adjust-plus")
                     )
 
@@ -305,7 +313,7 @@ class _ToolQuickActions:
                 off_icon, on_icon = tool.action_l_icons
                 off_label, on_label = tool.action_l_labels or ("Close", "Open")
                 icon = off_icon if is_open else on_icon
-                color = "light-blue-7" if is_open else "teal-7"
+                color = "wc-control" if is_open else "wc-action"
                 tooltip_text = off_label if is_open else on_label
             else:
                 off_icon, on_icon = tool.action_l_icons
@@ -313,11 +321,11 @@ class _ToolQuickActions:
                 engaged = waldoctl.commander.status.tool.engaged
                 if tool.action_l_mode == ToggleMode.TRIGGER:
                     icon = off_icon
-                    color = "cyan-8"
+                    color = "wc-control"
                     tooltip_text = off_label
                 else:
                     icon = off_icon if engaged else on_icon
-                    color = "teal-7" if engaged else "light-blue-7"
+                    color = "wc-action" if engaged else "wc-control"
                     tooltip_text = off_label if engaged else on_label
 
             self._action_l_btn._props["icon"] = icon
@@ -339,7 +347,7 @@ class _ToolQuickActions:
                 off_label_r, on_label_r = tool.action_r_labels
                 if tool.action_r_mode == ToggleMode.TRIGGER:
                     self._action_r_btn._props["icon"] = off_icon_r
-                    self._action_r_btn.props("color=cyan-8")
+                    self._action_r_btn.props("color=wc-control text-color=wc-text")
                     r_tooltip = off_label_r
                 else:
                     engaged_r = waldoctl.commander.status.tool.engaged
@@ -347,7 +355,7 @@ class _ToolQuickActions:
                         off_icon_r if engaged_r else on_icon_r
                     )
                     self._action_r_btn.props(
-                        f"color={'teal-7' if engaged_r else 'light-blue-7'}"
+                        f"color={'wc-action' if engaged_r else 'wc-control'}"
                     )
                     r_tooltip = off_label_r if engaged_r else on_label_r
                 if self._action_r_tooltip is None:
@@ -1172,7 +1180,7 @@ class ControlPanel:
             self._approval_label = ui.label("").classes(
                 "text-sm font-medium ai-approval-desc w-full"
             )
-            self._approval_hint = ui.label("").classes("text-xs opacity-80")
+            self._approval_hint = ui.label("").classes("text-xs text-wc-text-muted")
             with ui.row().classes("justify-end w-full gap-2"):
                 # Real DOM classes (mark() is server-side only) so the
                 # .ai-approval-card button styling in theme.py applies.
@@ -2020,20 +2028,18 @@ class ControlPanel:
         if btn is None:
             return
         if waldoctl.commander.status.controller.freedrive:
-            btn.props("color=amber-7 icon=lock_open")
+            btn.props("color=wc-warning-fill icon=lock_open text-color=wc-on-bright")
         else:
-            btn.props("color=grey-7 icon=lock")
+            btn.props("color=wc-control icon=lock text-color=wc-text")
 
     def update_robot_btn_visual(self) -> None:
         """Update Robot/Simulator toggle button appearance."""
         if self._robot_btn is None:
             return
         if waldoctl.commander.status.simulator_active:
-            self._robot_btn.props("color=amber-8")
-            self._robot_btn.classes(add="glass-btn glass-amber")
+            self._robot_btn.props("color=wc-mode-sim text-color=wc-on-bright")
         else:
-            self._robot_btn.props("color=grey-7")
-            self._robot_btn.classes(add="glass-btn", remove="glass-amber")
+            self._robot_btn.props("color=wc-control text-color=wc-text")
 
     def sync_sim_mode_visuals(self) -> None:
         """Reflect the current simulator/robot mode across the GUI: URDF
@@ -2142,7 +2148,10 @@ class ControlPanel:
                             lo, hi = self._get_joint_limits(idx)
                             bar = (
                                 ui.linear_progress(value=0, show_value=False)
-                                .props("rounded instant-feedback")
+                                .props(
+                                    "rounded instant-feedback color=wc-progress"
+                                    " track-color=wc-control"
+                                )
                                 .classes("w-full joint-bar")
                             )
 
@@ -2160,7 +2169,7 @@ class ControlPanel:
                             # Centered position + speed overlay
                             with (
                                 ui.row()
-                                .classes("items-center gap-1 no-wrap")
+                                .classes("items-center gap-1 no-wrap joint-value-pill")
                                 .style(
                                     "position:absolute; left:50%; top:50%;"
                                     " transform:translate(-50%,-50%);"
@@ -2176,7 +2185,7 @@ class ControlPanel:
                                         suffix="°",
                                     )
                                     .props(
-                                        'dense borderless input-style="text-align:right;font-weight:bold"'
+                                        'dense borderless input-style="text-align:right"'
                                     )
                                     .classes("joint-readout-input")
                                     .style("width:55px;")
@@ -2184,7 +2193,7 @@ class ControlPanel:
                                 )
                                 spd_lbl = (
                                     ui.label("0°/s")
-                                    .classes("text-xs opacity-60")
+                                    .classes("text-xs text-wc-text-muted")
                                     .style("min-width: 3rem; text-align: right;")
                                 )
 
@@ -2242,7 +2251,7 @@ class ControlPanel:
                             # Left minus pill
                             left_btn = (
                                 ui.button(icon="remove")
-                                .props("round flat dense no-caps text-color=white")
+                                .props("round flat dense no-caps color=wc-text")
                                 .classes("absolute left-1 joint-cap")
                             )
                             left_btn.mark(f"btn-j{idx + 1}-minus")
@@ -2274,7 +2283,7 @@ class ControlPanel:
                             # Right plus pill
                             right_btn = (
                                 ui.button(icon="add")
-                                .props("round flat dense no-caps text-color=white")
+                                .props("round flat dense no-caps color=wc-text")
                                 .classes("absolute right-1 joint-cap")
                             )
                             right_btn.mark(f"btn-j{idx + 1}-plus")
@@ -2313,7 +2322,9 @@ class ControlPanel:
                                         self.go_to_joint_limit(i, "min")
                                     ),
                                 )
-                                .props("round dense unelevated")
+                                .props(
+                                    "round dense unelevated color=wc-control text-color=wc-text"
+                                )
                                 .tooltip("Move to minimum joint limit")
                                 .mark(f"btn-j{idx + 1}-min-limit")
                             )
@@ -2324,7 +2335,9 @@ class ControlPanel:
                                         self.go_to_joint_limit(i, "max")
                                     ),
                                 )
-                                .props("round dense unelevated")
+                                .props(
+                                    "round dense unelevated color=wc-control text-color=wc-text"
+                                )
                                 .tooltip("Move to maximum joint limit")
                                 .mark(f"btn-j{idx + 1}-max-limit")
                             )
@@ -2420,7 +2433,7 @@ class ControlPanel:
 
             # Settings panel
             with ui.tab_panel(settings_tab).classes("gap-0 p-0"):
-                with ui.scroll_area().classes("w-full h-full p-0"):
+                with ui.scroll_area().classes("w-full h-full p-0 settings-scroll"):
                     self._settings_content = SettingsContent(self.client)
                     self._settings_content.build_embedded(
                         ai_control_section=self._build_control_mode_selector
@@ -2445,14 +2458,12 @@ class ControlPanel:
         icon_name: str,
         storage_key: str,
         ui_attr: str,
-        default_color: str,
-        colors: list[str],
         format_tooltip: Callable[[float], str],
     ) -> None:
         """Build a 10-step rating row (speed or acceleration) with persistence."""
         target_obj, target_attr = self._resolve_pref(ui_attr)
         with ui.row().classes("items-center gap-2 w-full"):
-            icon = ui.icon(icon_name, size="md", color=default_color)
+            icon = ui.icon(icon_name, size="md").props("color=wc-text-muted")
             with icon:
                 tooltip = ui.tooltip(storage_key.replace("_", " ").title())
             stored = app.storage.general.get(
@@ -2461,14 +2472,15 @@ class ControlPanel:
             setattr(target_obj, target_attr, stored)
             v_init = max(1, min(10, round(int(stored) / self._RATING_UNIT)))
 
-            rating = ui.rating(max=10, icon="circle", size="16px", value=v_init).props(
-                f':color="{colors}"'
-            )
+            # color=None keeps Quasar's layered text-primary off the dots, so the
+            # ramp in theme.py can colour them.
+            rating = ui.rating(
+                max=10, icon="circle", size="16px", value=v_init, color=None
+            ).classes("level-speed" if ui_attr == "jog_speed" else "level-accel")
             self._rating_widgets[ui_attr] = {
                 "rating": rating,
                 "icon": icon,
                 "tooltip": tooltip,
-                "colors": colors,
                 "format_tooltip": format_tooltip,
                 "storage_key": storage_key,
                 "target_obj": target_obj,
@@ -2492,9 +2504,9 @@ class ControlPanel:
     def _set_rating_step(
         self, ui_attr: str, step: int, *, sync_widget: bool = True
     ) -> None:
-        """Apply a 1..10 rating step to the row's value, storage, icon color
-        and tooltip text. Set sync_widget=False when invoked from the rating's
-        own change event (the widget already holds the new value)."""
+        """Apply a 1..10 rating step to the row's value, storage and tooltip
+        text. Set sync_widget=False when invoked from the rating's own change
+        event (the widget already holds the new value)."""
         refs = self._rating_widgets.get(ui_attr)
         if refs is None:
             return
@@ -2504,7 +2516,6 @@ class ControlPanel:
         app.storage.general[refs["storage_key"]] = new_value
         if sync_widget:
             refs["rating"].value = step
-        refs["icon"].props(f"color={refs['colors'][step - 1]}")
         refs["tooltip"].text = refs["format_tooltip"](step / 10.0)
 
     def adjust_rating(self, ui_attr: str, delta: int) -> None:
@@ -2601,38 +2612,12 @@ class ControlPanel:
             icon_name="speed",
             storage_key="jog_speed",
             ui_attr="jog_speed",
-            default_color="amber-6",
-            colors=[
-                "yellow-3",
-                "yellow-6",
-                "amber-4",
-                "amber-7",
-                "orange-5",
-                "orange-8",
-                "deep-orange-5",
-                "deep-orange-8",
-                "red-7",
-                "red-9",
-            ],
             format_tooltip=_format_speed_tooltip,
         )
         self._build_rating_row(
             icon_name="bolt",
             storage_key="jog_accel",
             ui_attr="jog_accel",
-            default_color="cyan-6",
-            colors=[
-                "lime-3",
-                "lime-6",
-                "light-green-4",
-                "light-green-7",
-                "green-5",
-                "green-8",
-                "teal-6",
-                "teal-8",
-                "cyan-7",
-                "cyan-9",
-            ],
             format_tooltip=_format_accel_tooltip,
         )
 
@@ -2644,7 +2629,7 @@ class ControlPanel:
         with ui.row().classes("gap-1 items-center relative w-full pr-20"):
             self._home_btn = (
                 ui.button(icon="home", on_click=self._on_home_click)
-                .props("dense round unelevated color=teal-6")
+                .props("dense round unelevated color=wc-control text-color=wc-text")
                 .mark("btn-home")
             )
             with self._home_btn:
@@ -2669,7 +2654,7 @@ class ControlPanel:
             supported = ui_state.active_robot.has_freedrive
             self._freedrive_btn = (
                 ui.button(icon="lock", on_click=self.on_freedrive_click)
-                .props("dense round unelevated color=grey-7")
+                .props("dense round unelevated color=wc-control text-color=wc-text")
                 .tooltip(
                     "Freedrive — unlock the arm to move it by hand"
                     if supported
@@ -2690,7 +2675,11 @@ class ControlPanel:
                     self.on_gizmo_mode_changed(mode)
                 selected["value"] = mode
                 for m, btn in buttons.items():
-                    btn.props("color=primary" if m == mode else "color=grey-7")
+                    btn.props(
+                        "color=wc-action text-color=wc-on-bright"
+                        if m == mode
+                        else "color=wc-control text-color=wc-text"
+                    )
 
             with ui.button_group().props("rounded unelevated dense"):
                 buttons["Move"] = (
@@ -2717,9 +2706,9 @@ class ControlPanel:
                     .props("round unelevated dense")
                     .tooltip("Hide gizmo")
                 )
-                buttons["Move"].props("color=primary")
-                buttons["Rotate"].props("color=grey-7")
-                buttons["Hidden"].props("color=grey-7")
+                buttons["Move"].props("color=wc-action text-color=wc-on-bright")
+                buttons["Rotate"].props("color=wc-control text-color=wc-text")
+                buttons["Hidden"].props("color=wc-control text-color=wc-text")
 
             def _reset_cam():
                 try:
@@ -2731,7 +2720,7 @@ class ControlPanel:
                     logger.error("Reset camera failed: %s", e)
 
             ui.button(icon="view_in_ar", on_click=_reset_cam).props(
-                "round unelevated dense color=light-blue-6"
+                "round unelevated dense color=wc-control text-color=wc-text"
             ).tooltip("Reset camera")
             with ui.row(align_items="center").classes("gap-1"):
                 self._step_input = (
@@ -2752,9 +2741,9 @@ class ControlPanel:
                 with self._step_input:
                     self._step_input_tooltip = ui.tooltip("Step size in degrees")
 
-            ui.button(
-                icon="dangerous", color="negative", on_click=self.on_estop_click
-            ).props("round unelevated").classes("glass-btn text-2xl").style(
+            ui.button(icon="dangerous", on_click=self.on_estop_click).props(
+                "round unelevated color=wc-estop text-color=wc-on-fill"
+            ).classes("text-2xl").style(
                 "position: absolute; right: 0; top: 50%; transform: translateY(-50%);"
             ).tooltip("E-Stop (Esc)").mark("btn-estop")
 

@@ -226,15 +226,11 @@ async def test_commands_button_clickable(user: User) -> None:
 
 @pytest.mark.integration
 async def test_record_button_toggles(user: User) -> None:
-    """Test that the record button toggles recording and changes appearance.
+    """Test that the record button toggles recording and its pulsing state.
 
-    When recording starts:
-    - is_any_program_recording() becomes True
-    - Button color changes from negative (red) to warning (amber)
-
-    When recording stops:
-    - is_any_program_recording() becomes False
-    - Button color changes back to negative (red)
+    While recording, is_any_program_recording() is True and the button
+    carries the ``recording`` class (which pulses its icon); when stopped,
+    neither holds.
     """
     from waldo_commander.state import ui_state
 
@@ -248,13 +244,11 @@ async def test_record_button_toggles(user: User) -> None:
     editor = ui_state.editor_panel
     assert editor is not None, "Editor panel should exist"
 
-    # Initially not recording with red color
     assert not is_any_program_recording()
     record_btn_ref = editor.playback.record_btn
     assert record_btn_ref is not None, "Record button reference should exist"
-    initial_color = record_btn_ref._props.get("color", "")
-    assert initial_color == "negative", (
-        f"Initial color should be negative (red), got {initial_color}"
+    assert "recording" not in record_btn_ref.classes, (
+        f"Idle button should not pulse, got classes {record_btn_ref.classes}"
     )
 
     # Click record to start
@@ -263,9 +257,8 @@ async def test_record_button_toggles(user: User) -> None:
     await asyncio.sleep(0.1)
 
     assert is_any_program_recording(), "Expected recording to start"
-    recording_color = record_btn_ref._props.get("color", "")
-    assert recording_color == "warning", (
-        f"Recording color should be warning (amber), got {recording_color}"
+    assert "recording" in record_btn_ref.classes, (
+        f"Recording button should pulse, got classes {record_btn_ref.classes}"
     )
 
     # Click again to stop
@@ -273,9 +266,8 @@ async def test_record_button_toggles(user: User) -> None:
     await asyncio.sleep(0.1)
 
     assert not is_any_program_recording(), "Expected recording to stop"
-    stopped_color = record_btn_ref._props.get("color", "")
-    assert stopped_color == "negative", (
-        f"Stopped color should be negative (red), got {stopped_color}"
+    assert "recording" not in record_btn_ref.classes, (
+        f"Stopped button should not pulse, got classes {record_btn_ref.classes}"
     )
 
 

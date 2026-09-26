@@ -35,9 +35,10 @@ from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, TOOL_PREFIX, pose_matr
 
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
 from waldo_commander.common.theme import (
-    PathColors,
     SceneColors,
     get_color_for_move_type,
+    hex_of,
+    rgb01,
 )
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
 from waldo_commander.services.programs import active_cursor_line
@@ -47,6 +48,7 @@ from waldo_commander.services.urdf_scene.scene_batch import batch_scene
 from waldo_commander.state import simulation_state, robot_state, ui_state
 
 from .config import DRAFT_PREFIX, RobotAppearanceMode, ToolPose, UrdfSceneConfig
+from .objects import Floor, Stl, StudioLights
 from .loader import (
     load_urdf,
     resolve_meshes_dir,
@@ -138,6 +140,12 @@ def _lerp_hex(c1: tuple[int, int, int], c2: tuple[int, int, int], factor: float)
     g = int(c1[1] + (c2[1] - c1[1]) * factor + 0.5)
     b = int(c1[2] + (c2[2] - c1[2]) * factor + 0.5)
     return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _invalid_rgb() -> tuple[int, int, int]:
+    """``path-invalid`` as 0-255 ints for :func:`_lerp_hex`."""
+    r, g, b = rgb01("path-invalid")
+    return (int(r * 255 + 0.5), int(g * 255 + 0.5), int(b * 255 + 0.5))
 
 
 class RenderedSegment(NamedTuple):
@@ -360,7 +368,7 @@ class UrdfScene(
         # geometry (arm links, tool meshes, user shapes) can be tinted red.
         self._link_to_meshes: dict[str, list[Any]] = {}
         self._shape_objects: dict[str, Any] = {}
-        self._ground_disc: Object3D | None = None
+        self._floor: Object3D | None = None
         self._drawn: dict[str, _Drawn] = {}
         self._shapes_group: Any | None = None
         self._colliding_meshes: set[Any] = set()  # objects currently tinted red
@@ -413,17 +421,15 @@ class UrdfScene(
             self.context_menu = ui.context_menu()
             # Clear on hide so it doesn't auto-show with stale content.
             self.context_menu.on("hide", lambda: self.context_menu.clear())
-            # Polar grid sized to robot's approximate workspace (~536mm reach).
-            default_radius = 0.55  # meters
+            reach = self._chain_reach()
             with (
                 ui.scene(
                     grid=False,
-                    polar_grid=(default_radius, 12, 6),  # (radius, sectors, rings)
                     raycaster_threshold=0.005,
                     background_color=background_color,
                     # White ~0.2-opacity halo at 1.5x footprint, matching the
                     # original feature-branch hoverable() visuals.
-                    hover_color="#ffffff",
+                    hover_color=SceneColors.HOVER_HEX,
                     hover_opacity=0.2,
                     hover_scale=1.5,
                     on_click=self._handle_scene_click,
@@ -434,18 +440,18 @@ class UrdfScene(
                         "contextmenu",
                     ],
                 )
-                .classes("w-full h-[66vh]")
+                .classes("w-full h-full")
+                .style("margin: 0; display: block;")
                 .on_transform_end(self._handle_transform_event) as self.scene
             ):
-                # Placeholder ground for contrast with the background, shown
-                # until a backend reports where its installation floor is.
-                self._ground_disc = (
-                    ui.scene.cylinder(
-                        default_radius, default_radius, 0.001, radial_segments=64
-                    )
-                    .material(self.config.ground_color, opacity=0.5)
-                    .rotate(math.pi / 2, 0, 0)
+                # The floor stands in until a backend describes where its
+                # installation floor is. The lights replace the fork's flat
+                # defaults, which _configure_renderer removes at init.
+                self._floor = Floor(
+                    reach, 12, 6, self.config.ground_color, self.config.grid_color
                 )
+                StudioLights(reach * 1.6)
+                self.scene.on("init", self._configure_renderer)
 
                 self._plot_stls(
                     self.urdf_model.base_link, scale=self._stl_scale, material=material
@@ -627,7 +633,7 @@ class UrdfScene(
                     if target.is_valid != is_valid:
                         target.is_valid = is_valid
                         new_color = (
-                            PathColors.INVALID
+                            hex_of("path-invalid")
                             if not is_valid
                             else get_color_for_move_type(target.move_type)
                         )
@@ -1052,14 +1058,14 @@ class UrdfScene(
             if seg.points:
                 first_line = seg.line_number
                 first_pos = seg.points[-1]
-                first_color = get_color_for_move_type(seg.move_type)
+                first_color = seg.color
                 first_seg_idx = first_cmd_idx
         if last_cmd_idx >= 0 and last_cmd_idx < len(segments):
             seg = segments[last_cmd_idx]
             if seg.points:
                 last_line = seg.line_number
                 last_pos = seg.points[-1]
-                last_color = get_color_for_move_type(seg.move_type)
+                last_color = seg.color
                 last_seg_idx = last_cmd_idx
 
         target_by_line: dict[int, Any] = {}
@@ -1151,7 +1157,7 @@ class UrdfScene(
             active_ids.add(target.id)
             shape = shape_for_line(target.line_number)
             color = (
-                PathColors.INVALID
+                hex_of("path-invalid")
                 if not target.is_valid
                 else get_color_for_move_type(target.move_type)
             )
@@ -1262,11 +1268,6 @@ class UrdfScene(
         b = int(b + (255 - b) * factor)
         return f"#{r:02x}{g:02x}{b:02x}"
 
-    _INVALID_RGB = (
-        int(PathColors.INVALID.lstrip("#")[0:2], 16),
-        int(PathColors.INVALID.lstrip("#")[2:4], 16),
-        int(PathColors.INVALID.lstrip("#")[4:6], 16),
-    )
     _BLEND_RANGE = 1.0  # number of segments over which to fade toward red
 
     def _gradient_colors(self, segments, seg_index) -> list[str] | None:
@@ -1302,6 +1303,7 @@ class UrdfScene(
 
         h = seg.color.lstrip("#")
         rgb1 = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+        invalid_rgb = _invalid_rgb()
 
         colors = []
         for j in range(n_pairs):
@@ -1315,7 +1317,7 @@ class UrdfScene(
             factor = factor**3.0  # steep ramp — stays green, only red near boundary
 
             if factor > 0.001:
-                colors.append(_lerp_hex(rgb1, self._INVALID_RGB, factor))
+                colors.append(_lerp_hex(rgb1, invalid_rgb, factor))
             else:
                 colors.append(seg.color)
 
@@ -1465,6 +1467,7 @@ class UrdfScene(
             else:
                 lo, hi = 0, n_rendered  # first update — touch all items
 
+            tool_hex = hex_of("path-tool-action")
             for ri in self._rendered_tool_actions:
                 if ri is None or not ri.objects or ri.segment_index < 0:
                     continue
@@ -1472,7 +1475,7 @@ class UrdfScene(
                     continue
                 opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
                 for obj in ri.objects:
-                    obj.material(PathColors.TOOL_ACTION, opacity)
+                    obj.material(tool_hex, opacity)
 
             for ri in self._rendered_waypoints:
                 if ri is None or not ri.objects or ri.segment_index < 0:
@@ -1637,16 +1640,13 @@ class UrdfScene(
                 desired[f"{prefix}{s.name}"] = (s, color, SHAPE_OPACITY)
         changed = False
         with batch_scene(self.scene):
-            # The disc is a placeholder for a backend that describes no
+            # The floor is a placeholder for a backend that describes no
             # ground. A declared floor replaces it — but an installation
-            # of a table and nothing else does not, and hiding the disc
+            # of a table and nothing else does not, and hiding the floor
             # for that leaves the table floating in the void.
-            show_disc = not any(_is_ground(s) for s in installation)
-            if (
-                self._ground_disc is not None
-                and self._ground_disc.visible_ != show_disc
-            ):
-                self._ground_disc.visible(show_disc)
+            show_floor = not any(_is_ground(s) for s in installation)
+            if self._floor is not None and self._floor.visible_ != show_floor:
+                self._floor.visible(show_floor)
             with self.scene:
                 for key in [k for k in self._shape_objects if k not in desired]:
                     self._forget_shape_object(key)
@@ -2025,12 +2025,7 @@ class UrdfScene(
                     role = mesh_spec.role
 
                     url = self._stl_to_url(filename)
-                    obj = (
-                        ui.scene.stl(url)
-                        .scale(self._stl_scale)
-                        .move(*origin)
-                        .rotate(*rpy)
-                    )
+                    obj = Stl(url).scale(self._stl_scale).move(*origin).rotate(*rpy)
                     is_moving = role in motion_roles
                     color = moving_color if is_moving else body_color
                     if color is not None:
@@ -2302,9 +2297,7 @@ class UrdfScene(
     def _plot_stls(self, link, scale: float = 1, material=None):
         """Add all visual STLs from a link to the scene."""
         for visual in link.visuals:
-            obj = ui.scene.stl(
-                self._stl_to_url(visual.geometry.geometry.filename)
-            ).scale(scale)
+            obj = Stl(self._stl_to_url(visual.geometry.geometry.filename)).scale(scale)
             if visual.origin is not None:
                 t, r = get_transl_and_rpy(visual.origin)
                 if any(v != 0 for v in t):
@@ -2318,8 +2311,51 @@ class UrdfScene(
             # Tracked by link name so reported colliding links can be tinted red.
             self._link_to_meshes.setdefault(link.name, []).append(obj)
 
+    def _chain_reach(self) -> float:
+        """Reach of the fully stretched joint chain from the base link, in metres."""
+        by_parent: dict[str, list[Any]] = {}
+        for j in self.urdf_model.joints:
+            by_parent.setdefault(j.parent, []).append(j)
+
+        def walk(link_name: str) -> float:
+            best = 0.0
+            for j in by_parent.get(link_name, []):
+                t, _ = get_transl_and_rpy(j.origin)
+                best = max(best, math.hypot(*map(float, t)) + walk(j.child))
+            return best
+
+        return walk(self.urdf_model.base_link.name)
+
+    def _configure_renderer(self) -> None:
+        """Swap the fork's flat default lights for ours; tone-map, cast shadows and fog the distance.
+
+        Runs on every scene init, so a remount after WebGL context loss gets it again.
+        """
+        if self.scene is None:
+            return
+        bg = int(self.config.background_color.lstrip("#"), 16)
+        reach = self._chain_reach()
+        ui.run_javascript(
+            f"""
+            import("nicegui-scene").then(({{ THREE }}) => {{
+              const view = getElement({self.scene.id});
+              view.scene.children.filter((o) => o.isLight).forEach((o) => view.scene.remove(o));
+              view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+              view.renderer.toneMappingExposure = 1.0;
+              view.renderer.shadowMap.enabled = true;
+              view.renderer.shadowMap.type = THREE.PCFShadowMap;
+              view.scene.fog = new THREE.Fog({bg}, {reach * 2:.3f}, {reach * 5:.3f});
+              view.resize();
+            }});
+            """
+        )
+
     def _stl_to_url(self, stl_path: str) -> str:
-        """Convert STL file path to URL, preferring _simplified variants if they exist."""
+        """Convert an STL path from the URDF to its static URL, preferring a _simplified variant.
+
+        The simplified meshes load in a fraction of the time and, with the
+        crease-aware normals the loader computes, shade the same as the full ones.
+        """
         if stl_path.startswith("file://"):
             parsed = urlparse(stl_path)
             stl_path = url2pathname(parsed.path)
@@ -2334,16 +2370,10 @@ class UrdfScene(
         else:
             rel_path = stl_full
 
-        # Prefer a _simplified variant (e.g. part.STL -> part_simplified.stl),
-        # trying both the original extension case and lowercase .stl.
         for ext in [rel_path.suffix, ".stl"]:
-            simplified_name = rel_path.stem + "_simplified" + ext
-            simplified_path = rel_path.with_name(simplified_name)
-            full_simplified = self.meshes_dir / simplified_path
-
-            if full_simplified.exists():
+            simplified_path = rel_path.with_name(rel_path.stem + "_simplified" + ext)
+            if (self.meshes_dir / simplified_path).exists():
                 rel_path = simplified_path
-                logger.debug("Using simplified mesh: %s", simplified_path)
                 break
 
         return os.path.join(self.meshes_url, str(rel_path).replace("\\", "/"))

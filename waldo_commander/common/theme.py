@@ -1,426 +1,317 @@
-import logging
-from typing import Any, Literal, cast, get_args
+"""Theme: turns the design tokens into CSS variables, Quasar colour names and
+hex values, and holds the app's component and layout CSS.
 
-from nicegui import app, ui
+Every colour in the app resolves through a token in ``tokens.py``:
+
+- CSS reads ``var(--wc-<name>)`` (dark values on ``:root``, light on ``body.body--light``).
+- Quasar ``color=`` / ``text-color=`` props use the registered name ``wc-<name>``.
+- Three.js and ECharts read hex from :func:`hex_of`; vertex colours use :func:`rgb01`.
+"""
+
+import logging
+from typing import Any, Literal
+
+from nicegui import ui
+
+from waldo_commander.common import tokens as T
 
 logger = logging.getLogger(__name__)
 
 ThemeMode = Literal["light", "dark", "system"]
+ThemeKey = Literal["dark", "light"]
 
 
-# Centralized color constants. Browser CSS uses Tailwind v4 CSS variables;
-# Three.js/scene colors use hex values (Three.js can't read CSS variables).
+# ── Token adapters ───────────────────────────────────────────────────
 
 
-# Semantic status colors (for notifications, badges, status indicators)
-class StatusColors:
-    """Status indicator colors using Tailwind variables."""
-
-    POSITIVE = "var(--color-emerald-500)"  # Success, connected, enabled
-    NEGATIVE = "var(--color-red-500)"  # Error, disconnected, danger
-    WARNING = "var(--color-yellow-500)"  # Warning, caution
-    INFO = "var(--color-sky-500)"  # Information, neutral action
-    ACCENT = "var(--color-sky-500)"  # Brand accent (same as info)
-    MUTED = "var(--color-neutral-400)"  # Disabled, inactive
+def css(name: str) -> str:
+    """CSS value for a token, for classes and inline styles."""
+    return f"var(--wc-{name})"
 
 
-# I/O indicator colors (Quasar color names for q-badge/q-icon)
-IO_COLOR_ON = "green-8"
-IO_COLOR_OFF = "grey-7"
+def quasar(name: str) -> str:
+    """Quasar colour name for a token, for ``color=`` and ``text-color=`` props."""
+    return f"wc-{name}"
 
 
-# 3D Scene / visualization colors (hex for Three.js)
+def hex_of(name: str, theme: ThemeKey | None = None) -> str:
+    """Opaque hex for a token in the effective (or given) theme, for Three.js and charts."""
+    return T.COLOR_HEX[name][theme or effective_theme()]
+
+
+def rgb01(name: str, theme: ThemeKey | None = None) -> list[float]:
+    """A token as an RGB triple in 0–1, for Three.js vertex colours."""
+    h = hex_of(name, theme).lstrip("#")
+    return [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+
+
 class SceneColors:
-    """Colors for 3D scene elements and visualizations.
+    """Hex colours for the 3D scene, read from the dark tokens.
 
-    Axis colors are CVD-aware (colorblind-friendly) and follow robotics convention.
+    Theme-dependent surfaces (background, ground, arm) should go through
+    :func:`hex_of` at the point of use; these constants serve code and tests
+    that need a fixed value.
     """
 
-    # Axis colors (X=red, Y=green, Z=blue) - CVD-aware values
-    AXIS_X_HEX = "#d94c3f"
-    AXIS_Y_HEX = "#2faf7a"
-    AXIS_Z_HEX = "#4a63e0"
-    # Lighter variants for rotational axes
-    AXIS_RX_HEX = "#f1a79f"
-    AXIS_RY_HEX = "#aee5cf"
-    AXIS_RZ_HEX = "#aeb9f3"
+    AXIS_X_HEX = T.COLOR_HEX["axis-x"]["dark"]
+    AXIS_Y_HEX = T.COLOR_HEX["axis-y"]["dark"]
+    AXIS_Z_HEX = T.COLOR_HEX["axis-z"]["dark"]
+    AXIS_RX_HEX = T.COLOR_HEX["axis-rx"]["dark"]
+    AXIS_RY_HEX = T.COLOR_HEX["axis-ry"]["dark"]
+    AXIS_RZ_HEX = T.COLOR_HEX["axis-rz"]["dark"]
 
-    # Background colors
-    BACKGROUND_DARK_HEX = "#151515"
-    BACKGROUND_LIGHT_HEX = "#e0e0e0"
+    BACKGROUND_DARK_HEX = T.COLOR_HEX["scene-bg"]["dark"]
+    BACKGROUND_LIGHT_HEX = T.COLOR_HEX["scene-bg"]["light"]
+    GROUND_DARK_HEX = T.COLOR_HEX["scene-ground"]["dark"]
+    GROUND_LIGHT_HEX = T.COLOR_HEX["scene-ground"]["light"]
+    GRID_DARK_HEX = T.COLOR_HEX["scene-grid"]["dark"]
+    GRID_LIGHT_HEX = T.COLOR_HEX["scene-grid"]["light"]
+    MATERIAL_DARK_HEX = T.COLOR_HEX["scene-arm"]["dark"]
+    MATERIAL_LIGHT_HEX = T.COLOR_HEX["scene-arm"]["light"]
 
-    # Ground plane color (contrasts with background)
-    GROUND_DARK_HEX = "#202020"
-    GROUND_LIGHT_HEX = "#d4d4d4"
+    SIM_AMBER_HEX = T.COLOR_HEX["scene-arm-sim"]["dark"]
+    EDIT_GRAY_HEX = T.COLOR_HEX["scene-arm-edit"]["dark"]
+    COLLISION_HEX = T.COLOR_HEX["scene-collision"]["dark"]
 
-    # Material colors (robot mesh)
-    MATERIAL_DARK_HEX = "#a3a3a3"
-    MATERIAL_LIGHT_HEX = "#737373"
+    SHAPE_HEX = T.COLOR_HEX["scene-shape"]["dark"]
+    SHAPE_DRAFT_HEX = T.COLOR_HEX["scene-shape-draft"]["dark"]
+    SHAPE_INSTALL_HEX = T.COLOR_HEX["scene-shape-install"]["dark"]
+    SHAPE_PROPOSED_HEX = T.COLOR_HEX["scene-shape-proposed"]["dark"]
 
-    # Simulator mode amber
-    SIM_AMBER_HEX = "#c77d28"
+    TOOL_BODY_HEX = T.COLOR_HEX["scene-tool"]["dark"]
+    TOOL_BODY_SIM_HEX = T.COLOR_HEX["scene-tool"]["dark"]
+    TOOL_BODY_EDIT_HEX = T.COLOR_HEX["scene-tool-edit"]["dark"]
+    TOOL_MOVING_HEX = T.COLOR_HEX["scene-tool-moving"]["dark"]
+    TOOL_MOVING_SIM_HEX = T.COLOR_HEX["scene-tool-moving"]["dark"]
+    TOOL_MOVING_EDIT_HEX = T.COLOR_HEX["scene-tool-moving-edit"]["dark"]
 
-    # Edit mode / inactive gray
-    EDIT_GRAY_HEX = "#525252"
-
-    # Predicted-collision highlight (theme-independent deep alarm red)
-    COLLISION_HEX = "#b00020"
-
-    # Keep-out shape / barrier (translucent slate — red highlight stands out)
-    SHAPE_HEX = "#6d8ea0"
-    # Program shape awaiting backend readback confirmation (amber = unconfirmed)
-    SHAPE_DRAFT_HEX = "#d9a05b"
-    # Installation-layer shape (robot config; not editable from the GUI)
-    SHAPE_INSTALL_HEX = "#55606a"
-    # Proposed installation shape: drafted here, enforced only once it is in
-    # the robot config (violet — neither program slate nor installation grey)
-    SHAPE_PROPOSED_HEX = "#8a7bb5"
-
-    # Tool body colors (teal family — distinct from arm in every mode)
-    TOOL_BODY_HEX = "#2a9d8f"
-    TOOL_BODY_SIM_HEX: str = TOOL_BODY_HEX
-    TOOL_BODY_EDIT_HEX = "#3d6b65"
-
-    # Tool moving part colors (lighter/brighter teal variant)
-    TOOL_MOVING_HEX = "#4ecdc4"
-    TOOL_MOVING_SIM_HEX: str = TOOL_MOVING_HEX
-    TOOL_MOVING_EDIT_HEX = "#4d7e77"
-
-    # Derived colors (reference base colors)
+    HOVER_HEX = T.COLOR_HEX["scene-hover"]["dark"]
     ENVELOPE_HEX = AXIS_Z_HEX
     TCP_ACTIVE_HEX = AXIS_Z_HEX
     TCP_INACTIVE_HEX = EDIT_GRAY_HEX
 
 
-# Path visualization colors
-class PathColors:
-    """Colors for path/trajectory visualization."""
-
-    CARTESIAN = "#10b981"  # emerald-500 - cartesian/linear moves
-    JOINTS = "#2563eb"  # blue-600 - joint space moves
-    SMOOTH = "#a855f7"  # purple-500 - smooth moves (move_c, move_s)
-    INVALID = "#ef4444"  # red-500 - IK failure / unreachable
-    TIMING_WARNING = "#f59e0b"  # amber-500 - needs more time than requested
-    CHECKPOINT = "#94a3b8"  # slate-400 - checkpoint markers on scrubber
-    TOOL_ACTION = "#FF9800"  # orange - tool action bars on scrubber
-
-
-# Move type to color mapping (for path_visualizer and path_preview_client)
-MOVE_TYPE_COLORS: dict[str, str] = {
-    "cartesian": PathColors.CARTESIAN,
-    "joints": PathColors.JOINTS,
-    "smooth": PathColors.SMOOTH,
-    "smooth_arc": PathColors.SMOOTH,
-    "smooth_spline": PathColors.SMOOTH,
-    "jog": PathColors.CARTESIAN,
-    "invalid": PathColors.INVALID,
-    "timing_warning": PathColors.TIMING_WARNING,
-    "unknown": PathColors.CARTESIAN,
+_MOVE_TYPE_TOKENS: dict[str, str] = {
+    "cartesian": "path-cartesian",
+    "joints": "path-joints",
+    "smooth": "path-smooth",
+    "smooth_arc": "path-smooth",
+    "smooth_spline": "path-smooth",
+    "jog": "path-cartesian",
+    "unknown": "path-cartesian",
 }
 
 
-def get_color_for_move_type(move_type: str, is_valid: bool = True) -> str:
-    """Get the visualization color for a move type."""
-    if not is_valid:
-        return MOVE_TYPE_COLORS["invalid"]
+def get_color_for_move_type(
+    move_type: str, is_valid: bool = True, timing_feasible: bool = True
+) -> str:
+    """Segment colour for a move type in the effective theme.
 
-    move_type_lower = move_type.lower() if move_type else "unknown"
-
-    if move_type_lower in MOVE_TYPE_COLORS:
-        return MOVE_TYPE_COLORS[move_type_lower]
-
-    if "smooth" in move_type_lower:
-        return MOVE_TYPE_COLORS["smooth"]
-    if "joint" in move_type_lower:
-        return MOVE_TYPE_COLORS["joints"]
-    if "cartesian" in move_type_lower or "pose" in move_type_lower:
-        return MOVE_TYPE_COLORS["cartesian"]
-
-    return MOVE_TYPE_COLORS["unknown"]
-
-
-def get_palette(mode: ThemeMode) -> dict[str, str]:
-    """Return CTk-mapped palette tokens for the given mode."""
-    # Semantic colors are identical across light/dark.
-    semantic = {
-        "accent": StatusColors.ACCENT,
-        "positive": StatusColors.POSITIVE,
-        "negative": StatusColors.NEGATIVE,
-        "info": StatusColors.INFO,
-        "warning": StatusColors.WARNING,
-    }
-
-    if mode == "dark":
-        return {
-            "primary": "var(--color-sky-700)",
-            "primary_hover": "var(--color-sky-800)",
-            "background": "var(--color-neutral-900)",
-            "surface": "var(--color-neutral-800)",
-            "surface_top": "var(--color-neutral-700)",
-            "text": "var(--color-neutral-300)",
-            "muted": "var(--color-neutral-400)",
-            "seg_unselected": "var(--color-neutral-600)",
-            "on_primary": "var(--color-slate-100)",
-            **semantic,
-        }
-    return {
-        "primary": "var(--color-sky-700)",
-        "primary_hover": "var(--color-sky-800)",
-        "background": "var(--color-neutral-200)",
-        "surface": "var(--color-neutral-300)",
-        "surface_top": "var(--color-neutral-400)",
-        "text": "var(--color-neutral-900)",
-        "muted": "var(--color-neutral-500)",
-        "seg_unselected": "var(--color-neutral-400)",
-        "on_primary": "var(--color-slate-100)",
-        **semantic,
-    }
-
-
-def _inject_tailwind_colors() -> None:
-    """Inject hidden element with Tailwind classes to force JIT to generate color vars.
-
-    Tailwind JIT only emits CSS for classes it sees used, so referencing every
-    --color-* swatch here keeps them available to the rest of the app.
+    An unreachable segment wins over one that only overruns its requested
+    duration.
     """
-    colors = [
-        "slate",
-        "gray",
-        "zinc",
-        "neutral",
-        "stone",
-        "red",
-        "orange",
-        "amber",
-        "yellow",
-        "lime",
-        "green",
-        "emerald",
-        "teal",
-        "cyan",
-        "sky",
-        "blue",
-        "indigo",
-        "violet",
-        "purple",
-        "fuchsia",
-        "pink",
-        "rose",
-    ]
-    shades = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950]
-    classes = ["bg-white", "bg-black"]
-    classes.extend(f"bg-{color}-{shade}" for color in colors for shade in shades)
-    ui.add_head_html(f'<div style="display:none" class="{" ".join(classes)}"></div>')
+    if not is_valid:
+        return hex_of("path-invalid")
+    if not timing_feasible:
+        return hex_of("path-timing-warning")
+
+    key = move_type.lower() if move_type else "unknown"
+    if key not in _MOVE_TYPE_TOKENS:
+        if "smooth" in key:
+            key = "smooth"
+        elif "joint" in key:
+            key = "joints"
+        elif "cartesian" in key or "pose" in key:
+            key = "cartesian"
+        else:
+            key = "unknown"
+    return hex_of(_MOVE_TYPE_TOKENS[key])
 
 
-def _inject_css_vars(p: dict[str, str]) -> None:
-    """Inject global CSS variables and basic background/text mappings."""
+# ── CSS generation ───────────────────────────────────────────────────
+
+
+def _color_value(name: str, theme: ThemeKey) -> str:
+    v = T.COLOR[name][theme]
+    return f"var(--wc-{v[1:-1]})" if v.startswith("{") else v
+
+
+def _token_block(theme: ThemeKey) -> str:
+    lines = [f"  --wc-{n}: {_color_value(n, theme)};" for n in T.COLOR]
+    lines.append(f"  --wc-shadow-glass: {T.SHADOW['shadow-glass'][theme]};")
+    return "\n".join(lines)
+
+
+def _scalar_block() -> str:
+    lines = []
+    for group in (
+        T.SPACE,
+        T.RADIUS,
+        T.SIZE,
+        T.EFFECT,
+        T.OPACITY,
+        T.Z_INDEX,
+        T.DURATION,
+        T.EASING,
+    ):
+        lines.extend(f"  --wc-{n}: {v};" for n, v in group.items())
+    lines.extend(f"  --wc-font-{n}: {v};" for n, v in T.FONT_FAMILY.items())
+    return "\n".join(lines)
+
+
+def _type_classes() -> str:
+    rules = []
+    for name, (size, lh, weight, spacing) in T.TYPE_STYLE.items():
+        family = "var(--wc-font-mono)" if name == "code" else "var(--wc-font-sans)"
+        extra = f" letter-spacing: {spacing};" if spacing else ""
+        if name.startswith("readout"):
+            extra += " font-variant-numeric: tabular-nums;"
+        rules.append(
+            f".wc-{name} {{ font-family: {family}; font-size: {size}; line-height: {lh};"
+            f" font-weight: {weight};{extra} }}"
+        )
+    return "\n".join(rules)
+
+
+def _inject_tokens_css() -> None:
+    """Emit every token as ``--wc-*``: dark on ``:root``, light on ``body.body--light``."""
     ui.add_css(
         f"""
 :root {{
-  --ctk-primary: {p["primary"]};
-  --ctk-primary-hover: {p["primary_hover"]};
-  --ctk-bg: {p["background"]};
-  --ctk-surface: {p["surface"]};
-  --ctk-surface-top: {p["surface_top"]};
-  --ctk-text: {p["text"]};
-  --ctk-muted: {p["muted"]};
-  --ctk-on-primary: {p["on_primary"]};
-  --ctk-seg-unselected: {p["seg_unselected"]};
-
-  /* Axis/TCP colors - CVD-aware (from SceneColors) */
-  --axis-x: {SceneColors.AXIS_X_HEX};
-  --axis-rx: {SceneColors.AXIS_RX_HEX};
-  --axis-y: {SceneColors.AXIS_Y_HEX};
-  --axis-ry: {SceneColors.AXIS_RY_HEX};
-  --axis-z: {SceneColors.AXIS_Z_HEX};
-  --axis-rz: {SceneColors.AXIS_RZ_HEX};
-
-  /* Glass tint colors (swapped in light mode) */
-  --glass-tint: var(--color-neutral-100);
-  --glass-shadow-tint: var(--color-neutral-900);
-
-  /* Glass defaults (computed from tint) */
-  --glass-blur: 36px;
-  --glass-bg-1: color-mix(in srgb, var(--glass-tint) 16%, transparent);
-  --glass-bg-2: color-mix(in srgb, var(--glass-tint) 8%, transparent);
-  --glass-border: color-mix(in srgb, var(--glass-tint) 18%, transparent);
-  --glass-shadow: color-mix(in srgb, var(--glass-shadow-tint) 35%, transparent);
-  --glass-fg: var(--ctk-text);
-  --glass-hover: color-mix(in srgb, var(--glass-tint) 8%, transparent);
-
-  /* Unified overlay variables (computed from tint) */
-  --overlay-bg-1: color-mix(in srgb, var(--glass-tint) 20%, transparent);
-  --overlay-bg-2: color-mix(in srgb, var(--glass-tint) 10%, transparent);
-  --overlay-stroke-light: var(--color-white);
-  --overlay-stroke-dark: var(--color-black);
-  --overlay-reflex-light: 1;
-  --overlay-reflex-dark: 0.6;
-  --overlay-saturation: 150%;
-
-  /* Shared glass box-shadow (liquid-glass reflex effect) */
-  --glass-box-shadow:
-    inset -0.3px -1px 4px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 12%), transparent),
-    inset -1.5px 2.5px 0 -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    inset 0 3px 4px -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    0 6px 16px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 8%), transparent);
-
-  /* Shared backdrop-filter for glass elements */
-  --glass-backdrop: blur(var(--glass-blur)) saturate(var(--overlay-saturation));
-
-  /* UI element colors (handles, tabs, scrollbars) - swapped in light mode */
-  --ui-tint: #fff;
-  --ui-tint-muted: #aaa;
-  --handle-bg: rgba(255, 255, 255, 0.2);
-  --handle-bg-hover: rgba(255, 255, 255, 0.45);
-  --tab-bg: rgba(255, 255, 255, 0.08);
-  --tab-bg-hover: rgba(255, 255, 255, 0.12);
-  --tab-bg-active: rgba(255, 255, 255, 0.18);
-  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
-
-  /* Flash animation color */
-  --flash-color: var(--color-emerald-500);
-
-  /* Semantic brand tokens - using Tailwind v4 CSS variables */
-  --sem-danger: var(--color-red-500);
-  --sem-warning: var(--color-amber-400);
-  --sem-success: var(--color-emerald-500);
-  --sem-info: var(--color-sky-500);
-  --brand-accent: var(--color-sky-500);
-
-  /* Simulator mode amber - used for arm ghosting and toggle button */
-  --sim-amber: var(--color-amber-600);
-
-  /* On-color defaults for legibility */
-  --on-danger: var(--color-white);
-  --on-warning: var(--color-neutral-900);
-  --on-success: var(--color-neutral-900);
-  --on-info: var(--color-neutral-900);
-  --on-accent: var(--color-neutral-900);
-
-  /* Joint bar height */
-  --joint-bar-h: 33px;
+{_token_block("dark")}
+{_scalar_block()}
 }}
 
-body, .q-page {{ background: var(--ctk-bg); color: var(--ctk-text); }}
-
-/* Flip colors in light mode */
 body.body--light {{
-  /* Glass tints */
-  --glass-tint: var(--color-neutral-900);
-  --glass-shadow-tint: var(--color-neutral-900);
-  --glass-fg: var(--color-slate-100);
-  --overlay-reflex-light: 0.6;
-  --overlay-reflex-dark: 1.2;
-  --overlay-saturation: 160%;
-
-  /* UI element colors (inverted for light mode) */
-  --ui-tint: #000;
-  --ui-tint-muted: #666;
-  --handle-bg: rgba(0, 0, 0, 0.15);
-  --handle-bg-hover: rgba(0, 0, 0, 0.35);
-  --tab-bg: rgba(0, 0, 0, 0.06);
-  --tab-bg-hover: rgba(0, 0, 0, 0.10);
-  --tab-bg-active: rgba(0, 0, 0, 0.14);
-  --scrollbar-thumb: rgba(0, 0, 0, 0.2);
-  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.35);
+{_token_block("light")}
 }}
 
-/* Ensure component-scoped dark contexts inherit glass defaults */
-.q-dark {{
-  --glass-tint: var(--color-neutral-100);
-  --glass-shadow-tint: var(--color-neutral-900);
-  --glass-fg: var(--ctk-text);
-}}
+{_type_classes()}
 """
     )
 
 
+_GLASS_SELECTORS = (
+    ".glass, .overlay-card, .side-tab-bar, .ai-cluster, .ai-approval-card,"
+    " .tutorial-dialog-card, .bottom-playback-bar, .q-dialog__inner > .q-card, .q-menu"
+)
+
+
 def _inject_component_overrides() -> None:
-    """Inject component-specific overrides to mimic CustomTkinter visual behavior."""
+    """Quasar and app component styling on top of the tokens."""
     ui.add_css(
-        """
-/* Containers and surfaces */
-.q-header, .q-footer { background: var(--ctk-surface); color: var(--ctk-text); }
-.q-field, .q-toolbar, .q-item { background: var(--ctk-surface); color: var(--ctk-text); }
-.overlay-panel > .q-card { background: var(--ctk-surface); color: var(--ctk-text); }
+        f"""
+body {{ color: var(--wc-text); font-family: var(--wc-font-sans); }}
+body.body--dark, body.body--light, .q-page {{ background: transparent !important; }}
+.q-layout, .q-page-container {{ background: transparent !important; }}
 
-/* Buttons */
-.q-btn:not(.q-btn--round) { border-radius: 6px; padding-top: 3px !important; padding-left: 6px !important; padding-bottom: 3px !important; padding-right: 6px !important; min-height: 32px !important; min-width: 32px !important; }
-.q-btn.bg-primary:hover { background: var(--ctk-primary-hover) !important; }
-.q-btn--flat, .q-btn--outline { color: var(--ctk-text); }
-.q-slider__thumb { width: 30px !important; height: 30px !important; }
-.q-slider__track { height: 8px !important; }
+/* ========== Surfaces ========== */
 
-/* Inputs */
-.q-input .q-field__native, .q-textarea .q-field__native { color: var(--ctk-text); }
-.joint-readout-input .q-field__native { padding-top: 12px !important; padding-bottom: 4px !important; }
-.q-field__control { border-radius: 6px; }
-.step-input .q-field__suffix { display: inline-block; width: 14px; text-align: center; }
-.step-suffix-small .q-field__suffix { font-size: 0.7em; }
+{_GLASS_SELECTORS} {{
+  background: linear-gradient(135deg, var(--wc-glass), var(--wc-glass-end)) !important;
+  backdrop-filter: blur(var(--wc-glass-blur)) saturate(var(--wc-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--wc-glass-blur)) saturate(var(--wc-glass-saturate));
+  border: 1px solid var(--wc-glass-border) !important;
+  border-radius: var(--wc-radius-md);
+  box-shadow: var(--wc-shadow-glass);
+  color: var(--wc-text);
+  isolation: isolate;
+}}
+.well {{ background: var(--wc-well); border-radius: var(--wc-radius-sm); }}
+.q-item, .q-toolbar, .q-field, .q-tab-panels, .q-tab-panel {{ background: transparent; }}
+.q-separator {{ background: var(--wc-glass-border); }}
+
+/* Text on a fill is set per element with text-color=: Quasar's white default
+   sits in a CSS layer that outranks app rules, so no CSS pairing is attempted. */
+.q-btn.bg-wc-action:hover {{ background: var(--wc-action-hover) !important; }}
+
+/* ========== Buttons ========== */
+
+.q-btn {{ text-transform: none; }}
+.q-btn:not(.q-btn--round) {{
+  border-radius: var(--wc-radius-sm);
+  padding: 3px 6px !important;
+  min-height: var(--wc-size-control) !important;
+  min-width: var(--wc-size-control) !important;
+}}
+.q-btn--flat, .q-btn--outline {{ color: var(--wc-text); }}
+.q-btn:focus-visible, .q-field__native:focus-visible, .q-tab:focus-visible {{
+  outline: 2px solid var(--wc-focus-ring);
+  outline-offset: 2px;
+}}
+.q-btn.disabled {{ opacity: var(--wc-opacity-disabled) !important; }}
+.q-slider__thumb {{ width: 30px !important; height: 30px !important; }}
+.q-slider__track {{ height: 8px !important; }}
 
 /* Segmented toggle */
-.q-btn-toggle .q-btn { border-radius: 6px; }
-.q-btn-toggle .q-btn.q-btn--active { background: var(--ctk-primary); color: var(--ctk-on-primary); }
-.q-btn-toggle .q-btn:not(.q-btn--active) { background: var(--ctk-seg-unselected); color: var(--ctk-on-primary); }
+.q-btn-toggle .q-btn {{ border-radius: var(--wc-radius-sm); }}
+.q-btn-toggle .q-btn.q-btn--active {{ background: var(--wc-action); color: var(--wc-on-bright); }}
+.q-btn-toggle .q-btn:not(.q-btn--active) {{ background: var(--wc-control); color: var(--wc-text); }}
 
-/* Misc */
-.q-separator { background: var(--ctk-muted); }
+/* Tabs: sentence case, action-text indicator */
+.q-tab {{ text-transform: none; }}
+.q-tab__indicator {{ background: var(--wc-action-text) !important; }}
 
-/* Transparent shell for frosted glass overlay panels */
-body.body--dark, body.body--light { background: transparent !important; }
-.q-page { background: transparent !important; }
-.q-field { background: transparent !important; }
-/* Panel container (q-tab-panels) is transparent — each tab panel provides its own glass */
-.left-panels-container { background: transparent !important; }
-/* Nested q-tab-panels inside overlay cards are transparent (the card provides the glass) */
-.overlay-card .q-tab-panels { background: transparent !important; }
+/* ========== Inputs ========== */
 
-/* Disable input steppers for numercal input */
+.q-field__native, .q-field__input, .q-field__prefix, .q-field__suffix {{ color: var(--wc-text); }}
+.q-field__label {{ color: var(--wc-text-muted); }}
+.q-field:not(.q-field--borderless) .q-field__control {{
+  background: var(--wc-well);
+  border-radius: var(--wc-radius-sm);
+}}
+.q-field--error .q-field__bottom, .q-field--error .q-field__messages {{ color: var(--wc-error) !important; }}
+.joint-readout-input .q-field__native {{ padding-top: 12px !important; padding-bottom: 4px !important; }}
+.step-input .q-field__suffix {{ display: inline-block; width: 14px; text-align: center; }}
+.step-suffix-small .q-field__suffix {{ font-size: 0.7em; }}
+
+/* Disable input steppers for numerical input */
 input::-webkit-outer-spin-button,
-input::-webkit-inner-spin-button {
+input::-webkit-inner-spin-button {{
   -webkit-appearance: none;
   margin: 0;
-}
-input[type=number] {
+}}
+input[type=number] {{
   -moz-appearance: textfield;
-}
+}}
 
-/* Strong disabled utility for controls */
-.cp-disabled-strong {
-  opacity: 0.15 !important;
+/* Locked out: the AI drives, or another tab owns the session */
+.cp-disabled-strong {{
+  opacity: var(--wc-opacity-locked) !important;
   filter: grayscale(1) contrast(0.6) brightness(0.8);
   pointer-events: none !important;
   cursor: not-allowed !important;
   box-shadow: none !important;
-}
+}}
 """
     )
 
 
+_applied_theme: ThemeKey = "dark"
+
+
 def apply_theme(mode: ThemeMode) -> None:
-    """
-    Apply the selected theme:
-    - Set NiceGUI/Quasar colors and dark mode.
-    - Inject CTk CSS variables and component overrides.
-    """
-    choice = mode
+    """Register the tokens with Quasar, set dark mode, and inject the CSS."""
+    global _applied_theme
+    choice: ThemeKey
     if mode == "system":
         choice = "dark" if ui.dark_mode().client.page.dark else "light"
         logger.debug("System theme: %s", choice)
+    else:
+        choice = mode
+    _applied_theme = choice
 
-    pal = get_palette(choice)
-
-    # Quasar color tokens (primary/secondary/accent) and feedback colors
     ui.colors(
-        primary=pal["primary"],
-        secondary=pal["primary_hover"],
-        accent=pal["accent"],
-        positive=pal["positive"],
-        negative=pal["negative"],
-        info=pal["info"],
-        warning=pal["warning"],
+        primary=css("action"),
+        secondary=css("action-hover"),
+        accent=css("action-text"),
+        dark=css("glass-end"),
+        dark_page=css("scene-bg"),
+        positive=css("fill-positive"),
+        negative=css("fill-error"),
+        info=css("action"),
+        warning=css("fill-warning"),
+        **{quasar(name): css(name) for name in T.COLOR},
     )
 
     if choice == "dark":
@@ -428,42 +319,14 @@ def apply_theme(mode: ThemeMode) -> None:
     else:
         ui.dark_mode().disable()
 
-    _inject_tailwind_colors()
-    _inject_css_vars(pal)
+    _inject_tokens_css()
     _inject_component_overrides()
 
 
-def set_theme(mode: ThemeMode) -> ThemeMode:
-    """Persist, set and apply theme mode."""
-    app.storage.general["theme_mode"] = mode
-    apply_theme(mode)
-    return mode
-
-
-def get_theme() -> ThemeMode:
-    """Return current requested mode ('light'/'dark'/'system')."""
-    mode = app.storage.general.get("theme_mode", "system")
-    if isinstance(mode, str) and mode in get_args(ThemeMode):
-        return cast("ThemeMode", mode)
-    return cast("ThemeMode", "system")
-
-
-def is_dark_theme() -> bool:
-    """Return True if the effective theme is not light."""
-    return get_theme() != "light"
-
-
-def toggle_theme() -> ThemeMode:
-    """Cycle through modes: system -> light -> dark -> system."""
-    order: list[ThemeMode] = ["system", "light", "dark"]
-    current = get_theme()
-    try:
-        idx = order.index(current)
-    except ValueError:
-        idx = 0
-    next_mode: ThemeMode = order[(idx + 1) % len(order)]
-    set_theme(next_mode)
-    return next_mode
+def effective_theme() -> ThemeKey:
+    """The theme :func:`apply_theme` last put on the page, so hex values for the
+    scene and charts always agree with the CSS variables."""
+    return _applied_theme
 
 
 # Panel resize configuration (passed to JS module)
@@ -522,6 +385,7 @@ def _generate_resize_handle_css() -> str:
         ".top-panels-container": ["right", "bottom", "corner"],
         ".bottom-panels-container": ["right", "top", "corner"],
     }
+    fast = "var(--wc-duration-fast) var(--wc-ease-enter)"
 
     css_parts = []
     for container, handles in containers.items():
@@ -542,7 +406,7 @@ def _generate_resize_handle_css() -> str:
 }}
 {container} .resizable-panel .resize-handle-{name}::after {{
   width: {i}; height: {i};
-  transition: background 0.15s ease, width 0.15s ease, height 0.15s ease;
+  transition: background {fast}, width {fast}, height {fast};
 }}"""
                 )
             else:
@@ -566,7 +430,7 @@ def _generate_resize_handle_css() -> str:
 }}
 {container} .resizable-panel .resize-handle-{name}::after {{
   {dim_prop}: {i_thick}; {len_prop}: {i_len};
-  transition: background 0.15s ease, width 0.15s ease, height 0.15s ease;
+  transition: background {fast}, width {fast}, height {fast};
 }}
 {container} .resizable-panel .resize-handle-{name}:hover::after {{
   {len_prop}: 70px;
@@ -611,13 +475,19 @@ html, body {
     top: 12px !important;
 }
 
-/* Axis/TCP colors */
-.tcp-x  { color: var(--axis-x); }
-.tcp-rx { color: var(--axis-rx); }
-.tcp-y  { color: var(--axis-y); }
-.tcp-ry { color: var(--axis-ry); }
-.tcp-z  { color: var(--axis-z); }
-.tcp-rz { color: var(--axis-rz); }
+/* Axis colours: fills (glyphs, markers) and their text variants (readout) */
+.tcp-x  { color: var(--wc-axis-x); }
+.tcp-rx { color: var(--wc-axis-rx); }
+.tcp-y  { color: var(--wc-axis-y); }
+.tcp-ry { color: var(--wc-axis-ry); }
+.tcp-z  { color: var(--wc-axis-z); }
+.tcp-rz { color: var(--wc-axis-rz); }
+.tcp-x-text  { color: var(--wc-axis-x-text); }
+.tcp-rx-text { color: var(--wc-axis-rx-text); }
+.tcp-y-text  { color: var(--wc-axis-y-text); }
+.tcp-ry-text { color: var(--wc-axis-ry-text); }
+.tcp-z-text  { color: var(--wc-axis-z-text); }
+.tcp-rz-text { color: var(--wc-axis-rz-text); }
 
 
 /* ========== Controls ========== */
@@ -626,8 +496,8 @@ html, body {
    glyph with the axis label overlaid as HTML (assets carry no text). */
 .cart-jog-slot {
   position: relative;
-  width: 72px;
-  height: 72px;
+  width: var(--wc-size-jog-slot);
+  height: var(--wc-size-jog-slot);
   cursor: pointer;
 }
 
@@ -655,8 +525,8 @@ html, body {
   white-space: nowrap;
   font-weight: 800;
   letter-spacing: 0.15em;
-  color: #000;
-  -webkit-text-stroke: 0.09em #000;
+  color: var(--wc-on-bright);
+  -webkit-text-stroke: 0.09em var(--wc-on-bright);
   pointer-events: none;
   user-select: none;
 }
@@ -665,24 +535,33 @@ html, body {
 .is-pressed {
   transform: scale(0.96);
   filter: brightness(1.2);
-  outline: 1px solid var(--q-accent);
-  transition: transform 40ms linear, filter 40ms linear, outline-color 40ms linear;
+  outline: 1px solid var(--wc-focus-ring);
+  transition: transform var(--wc-duration-instant) linear, filter var(--wc-duration-instant) linear, outline-color var(--wc-duration-instant) linear;
 }
 
-/* Joint control bars with integrated pill buttons */
+/* Joint control bars: control track, progress travel, the value crossing both under a scrim halo */
 .joint-bar {
-  border-radius: 9999px !important;
-  height: var(--joint-bar-h);
+  border-radius: var(--wc-radius-pill) !important;
+  height: var(--wc-size-joint-bar);
+}
+.joint-bar .q-linear-progress__track { opacity: 1; }
+
+/* Settings rows fill the panel, never the widest child */
+.settings-scroll .q-scrollarea__content { width: 100%; min-width: 0; }
+.joint-value-pill {
+  padding: 0 var(--wc-space-2);
+  color: var(--wc-text);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 3px var(--wc-scrim), 0 0 3px var(--wc-scrim);
 }
 
 .joint-cap {
-  height: calc(var(--joint-bar-h) - 1px);
-  width: var(--joint-bar-h);
+  height: calc(var(--wc-size-joint-bar) - 1px);
+  width: var(--wc-size-joint-bar);
   min-height: 0;
   padding: 0;
-  border-radius: 9999px;
-  background: transparent !important;
-  color: var(--ui-tint) !important;
+  border-radius: var(--wc-radius-pill);
+  color: var(--wc-text) !important;
   font-size: 19px;
 }
 
@@ -691,9 +570,31 @@ html, body {
 }
 
 .joint-cap.q-btn--disabled {
-  color: var(--ui-tint-muted) !important;
+  color: var(--wc-text-disabled) !important;
   pointer-events: none;
 }
+
+/* Level indicators: the ten dots run a hue ramp; Quasar dims unselected dots to 40% */
+.level-speed .q-rating__icon-container:nth-child(1) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 0%) !important; }
+.level-speed .q-rating__icon-container:nth-child(2) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 11%) !important; }
+.level-speed .q-rating__icon-container:nth-child(3) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 22%) !important; }
+.level-speed .q-rating__icon-container:nth-child(4) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 33%) !important; }
+.level-speed .q-rating__icon-container:nth-child(5) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 44%) !important; }
+.level-speed .q-rating__icon-container:nth-child(6) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 56%) !important; }
+.level-speed .q-rating__icon-container:nth-child(7) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 67%) !important; }
+.level-speed .q-rating__icon-container:nth-child(8) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 78%) !important; }
+.level-speed .q-rating__icon-container:nth-child(9) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 89%) !important; }
+.level-speed .q-rating__icon-container:nth-child(10) .q-icon { color: color-mix(in oklch, var(--wc-level-speed-lo), var(--wc-level-speed-hi) 100%) !important; }
+.level-accel .q-rating__icon-container:nth-child(1) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 0%) !important; }
+.level-accel .q-rating__icon-container:nth-child(2) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 11%) !important; }
+.level-accel .q-rating__icon-container:nth-child(3) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 22%) !important; }
+.level-accel .q-rating__icon-container:nth-child(4) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 33%) !important; }
+.level-accel .q-rating__icon-container:nth-child(5) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 44%) !important; }
+.level-accel .q-rating__icon-container:nth-child(6) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 56%) !important; }
+.level-accel .q-rating__icon-container:nth-child(7) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 67%) !important; }
+.level-accel .q-rating__icon-container:nth-child(8) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 78%) !important; }
+.level-accel .q-rating__icon-container:nth-child(9) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 89%) !important; }
+.level-accel .q-rating__icon-container:nth-child(10) .q-icon { color: color-mix(in oklch, var(--wc-level-accel-lo), var(--wc-level-accel-hi) 100%) !important; }
 
 /* Control panel jog tabs: compact padding */
 .cp-jog-tabs .q-tab {
@@ -706,6 +607,10 @@ html, body {
   overflow: hidden;
 }
 
+/* Record button: a control with a record dot that pulses while recording */
+.record-btn .q-icon { color: var(--wc-record); }
+.record-btn.recording .q-icon { animation: recording-pulse var(--wc-duration-ambient) var(--wc-ease-loop) infinite; }
+
 
 /* ========== Overlays ========== */
 
@@ -714,25 +619,21 @@ html, body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
-.control-glow-breathe { animation: wc-glow-breathe 2.6s ease-in-out infinite; }
+.control-glow-breathe { animation: wc-glow-breathe var(--wc-duration-ambient) var(--wc-ease-loop) infinite; }
 
 /* ---- AI control cluster ----
    One --mode-accent per control mode themes the perimeter glow and the
-   top-center capsule. No amber/orange accents here — amber is the
-   physical arm's color (see .consent-hw below). */
-.wc-mode-inspect    { --mode-accent: var(--color-emerald-400); --mode-accent-text: var(--color-emerald-300); }
-.wc-mode-auto-edits { --mode-accent: var(--color-sky-400);     --mode-accent-text: var(--color-sky-300); }
-.wc-mode-autopilot  { --mode-accent: var(--color-violet-400);  --mode-accent-text: var(--color-violet-300); }
-body.body--light .wc-mode-inspect    { --mode-accent-text: var(--color-emerald-700); }
-body.body--light .wc-mode-auto-edits { --mode-accent-text: var(--color-sky-700); }
-body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-700); }
+   top-center capsule. The accents live only here. */
+.wc-mode-inspect    { --mode-accent: var(--wc-ai-inspect);    --mode-accent-text: var(--wc-ai-inspect-text); }
+.wc-mode-auto-edits { --mode-accent: var(--wc-ai-auto-edits); --mode-accent-text: var(--wc-ai-auto-edits-text); }
+.wc-mode-autopilot  { --mode-accent: var(--wc-ai-autopilot);  --mode-accent-text: var(--wc-ai-autopilot-text); }
 
 /* CSS-variable scope over glow + capsule; generates no box, so the fixed
    children still position against the viewport. */
 .ai-mode-scope { display: contents; }
 
 .control-lease-glow {
-  position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+  position: fixed; inset: 0; pointer-events: none; z-index: var(--wc-z-glow);
   box-shadow: inset 0 0 18px 2px color-mix(in srgb, var(--mode-accent) 30%, transparent),
               inset 0 0 60px 8px color-mix(in srgb, var(--mode-accent) 12%, transparent);
 }
@@ -743,25 +644,20 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
    backdrop-filter makes it a containing block — fine while it has no
    position:fixed descendants (the glow is a sibling). */
 .ai-cluster {
-  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 9999;
-  display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 9999px;
-  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2));
-  backdrop-filter: var(--glass-backdrop);
-  -webkit-backdrop-filter: var(--glass-backdrop);
-  border: 1px solid color-mix(in srgb, var(--mode-accent) 35%, transparent);
-  box-shadow: var(--glass-box-shadow);
-  isolation: isolate;
-  color: var(--glass-fg);
-  transition: border-color 0.3s ease;
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: var(--wc-z-capsule);
+  display: flex; align-items: center; gap: var(--wc-space-1); padding: 3px 4px;
+  border-radius: var(--wc-radius-pill);
+  border-color: color-mix(in srgb, var(--mode-accent) 35%, transparent) !important;
+  transition: border-color var(--wc-duration-base) var(--wc-ease-enter);
 }
-.ai-cluster.ai-driving { border-color: color-mix(in srgb, var(--mode-accent) 65%, transparent); }
+.ai-cluster.ai-driving { border-color: color-mix(in srgb, var(--mode-accent) 65%, transparent) !important; }
 
 /* Text-only at rest so the capsule reads as one pill (no pill-in-pill);
    the hover tint is the click affordance. */
 .ai-cluster .control-mode-chip {
   background: transparent !important;
   color: var(--mode-accent-text) !important;
-  border-radius: 9999px; font-weight: 500; margin: 0;
+  border-radius: var(--wc-radius-pill); font-weight: 500; margin: 0;
 }
 .ai-cluster .control-mode-chip:hover {
   background: color-mix(in srgb, var(--mode-accent) 15%, transparent) !important;
@@ -772,12 +668,12 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
    and pulses on the glow-breathe clock. */
 .ai-cluster .btn-take-control {
   background: var(--mode-accent) !important;
-  color: var(--color-neutral-900) !important;
-  border-radius: 9999px; font-weight: 600;
+  color: var(--wc-on-bright) !important;
+  border-radius: var(--wc-radius-pill); font-weight: 600;
   /* Chip-height so the capsule doesn't grow when the button pops in. */
   font-size: 0.75rem; min-height: 0; padding: 1px 10px;
-  animation: wc-popout 0.28s cubic-bezier(0.34, 1.56, 0.64, 1),
-             wc-btn-pulse 2.6s ease-in-out infinite;
+  animation: wc-popout var(--wc-duration-base) var(--wc-ease-pop),
+             wc-btn-pulse var(--wc-duration-ambient) var(--wc-ease-loop) infinite;
 }
 .ai-cluster .btn-take-control .q-icon { font-size: 1.3em; }
 @keyframes wc-popout {
@@ -789,68 +685,50 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   50%      { box-shadow: 0 0 2px 0   color-mix(in srgb, var(--mode-accent) 20%, transparent); }
 }
 
-/* Approval dialog: a standard app glass panel — mode accents stay in the
-   top capsule. Allow is an ordinary primary button; the hardware consent
-   variant goes amber = the physical arm. */
+/* Approval dialog: a standard glass panel. Allow is the action button; the
+   hardware-consent variant is the caution treatment. */
 .ai-approval-card {
   min-width: 320px; max-width: 440px;
-  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
-  backdrop-filter: var(--glass-backdrop);
-  -webkit-backdrop-filter: var(--glass-backdrop);
-  border: 1px solid var(--glass-border);
-  border-radius: 10px; color: var(--glass-fg);
-  box-shadow: var(--glass-box-shadow);
 }
 .ai-approval-card .ai-approval-desc {
-  background: color-mix(in srgb, currentColor 7%, transparent);
-  border-left: 2px solid var(--ctk-primary);
-  border-radius: 4px; padding: 6px 10px;
+  background: var(--wc-well);
+  border-left: 2px solid var(--wc-action);
+  border-radius: var(--wc-radius-sm); padding: 6px 10px;
 }
 .ai-approval-card .btn-consent-allow {
-  background: var(--ctk-primary) !important;
-  color: var(--ctk-on-primary) !important;
+  background: var(--wc-action) !important;
+  color: var(--wc-on-bright) !important;
 }
 .ai-approval-card .btn-consent-allow:hover {
-  background: var(--ctk-primary-hover) !important;
+  background: var(--wc-action-hover) !important;
 }
-.ai-approval-card.consent-hw .ai-approval-icon { color: var(--sim-amber); }
-.ai-approval-card.consent-hw .ai-approval-desc { border-left-color: var(--sim-amber); }
+.ai-approval-card.consent-hw .ai-approval-icon { color: var(--wc-warning); }
+.ai-approval-card.consent-hw .ai-approval-desc { border-left-color: var(--wc-warning-fill); }
 .ai-approval-card.consent-hw .btn-consent-allow {
-  background: var(--sim-amber) !important;
-  color: var(--on-warning) !important;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .control-glow-breathe, .ai-cluster .btn-take-control { animation: none !important; }
+  background: var(--wc-warning-fill) !important;
+  color: var(--wc-on-bright) !important;
 }
 
 /* Overlay panels with frosted glass effect */
-.overlay-panel { position: absolute; z-index: 10; pointer-events: auto; }
+.overlay-panel { position: absolute; z-index: var(--wc-z-panels); pointer-events: auto; }
 .overlay-card {
-  padding: 10px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
-  backdrop-filter: var(--glass-backdrop);
-  -webkit-backdrop-filter: var(--glass-backdrop);
-  border: 0 !important;
-  box-shadow: var(--glass-box-shadow);
-  isolation: isolate;
+  padding: var(--wc-space-3);
 }
 
 /* Overlay anchors */
-.overlay-tl { top: 12px; left: 12px; }
-.overlay-tr { top: 12px; right: 12px; }
-.overlay-bl { bottom: 12px; left: 12px; }
-.overlay-br { bottom: 12px; right: 12px; }
+.overlay-tl { top: var(--wc-space-3); left: var(--wc-space-3); }
+.overlay-tr { top: var(--wc-space-3); right: var(--wc-space-3); }
+.overlay-bl { bottom: var(--wc-space-3); left: var(--wc-space-3); }
+.overlay-br { bottom: var(--wc-space-3); right: var(--wc-space-3); }
 .overlay-right {
   position: absolute;
   top: 50%;
-  right: 12px;
+  right: var(--wc-space-3);
   transform: translateY(-50%);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  z-index: 12;
+  gap: var(--wc-space-2);
+  z-index: var(--wc-z-panels);
 }
 
 
@@ -864,24 +742,19 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 /* Make left tab column narrower */
 .q-tabs--vertical {
-  width: 52px !important;
+  width: var(--wc-size-rail) !important;
 }
 
-/* Side tab bar with frosted glass effect - unified bar appearance */
+/* Side tab bar: glass, unified bar appearance */
 .side-tab-bar {
-  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
-  backdrop-filter: var(--glass-backdrop);
-  -webkit-backdrop-filter: var(--glass-backdrop);
-  border: 0 !important;
-  border-radius: 10px;
-  box-shadow: var(--glass-box-shadow);
-  isolation: isolate;
-  margin: 12px;
-  padding: 4px 0;
+  margin: var(--wc-space-3);
+  padding: var(--wc-space-1) 0;
   pointer-events: auto;
   height: auto !important;
   min-height: 0 !important;
+  z-index: var(--wc-z-rail);
 }
+.side-tab-bar.absolute.bottom-0 { z-index: var(--wc-z-rail-bottom); }
 
 /* Ensure tabs inside the bar have proper sizing */
 .side-tab-bar .q-tab {
@@ -891,12 +764,12 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 /* Editor tab flash animation for new content */
 @keyframes tab-flash {
-  0%, 50% { background-color: color-mix(in srgb, var(--flash-color) 40%, transparent); }
+  0%, 50% { background-color: color-mix(in srgb, var(--wc-positive) 40%, transparent); }
   25%, 75% { background-color: transparent; }
   100% { background-color: transparent; }
 }
 .tab-flash {
-  animation: tab-flash 1s ease-out 2;
+  animation: tab-flash var(--wc-duration-flash) var(--wc-ease-enter) 1;
 }
 
 /* Shared left-side panel container base styling */
@@ -911,9 +784,9 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 .left-panels-container::-webkit-scrollbar { display: none !important; }
 
-.top-panels-container { top: 12px;}
+.top-panels-container { top: var(--wc-space-3); }
 
-.bottom-panels-container { bottom: 12px; }
+.bottom-panels-container { bottom: var(--wc-space-3); }
 
 .resizable-panel { overflow: hidden !important; }
 
@@ -923,10 +796,10 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 /* Tab panels appear to come from underneath with left edge shadow */
 .top-panels-container .q-tab-panel.overlay-card {
   border-top-left-radius: 0 !important;
-  border-bottom-left-radius: 12px !important;
+  border-bottom-left-radius: var(--wc-radius-md) !important;
   box-shadow:
-    inset 4px 0 8px -4px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 25%), transparent),
-    var(--glass-box-shadow);
+    inset 4px 0 8px -4px var(--wc-scrim),
+    var(--wc-shadow-glass);
 }
 
 /* Bottom panels appear to come from underneath the tab bar */
@@ -960,8 +833,8 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 /* Apply custom animations to left panel transitions - target .q-panel.scroll */
 .left-panels-container .q-panel.scroll[class*="q-transition--slide"] {
-  animation-duration: 0.3s !important;
-  animation-timing-function: ease-out !important;
+  animation-duration: var(--wc-duration-base) !important;
+  animation-timing-function: var(--wc-ease-enter) !important;
 }
 
 /* Entering panel - slide in from left */
@@ -987,18 +860,18 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   animation-name: panel-slide-leave !important;
 }
 
- /* Log line coloring for response log */
- .nicegui-log .log-trace   { color: var(--sem-info);    opacity: 0.8; }
- .nicegui-log .log-debug   { color: var(--ctk-muted);   opacity: 0.9; }
- .nicegui-log .log-info    { color: var(--ctk-text); }
- .nicegui-log .log-warning { color: var(--sem-warning); }
- .nicegui-log .log-error   { color: var(--sem-danger); }
- .nicegui-log .log-critical {
-   color: var(--on-danger);
-   background: var(--sem-danger);
-   padding: 0 4px;
-   border-radius: 3px;
- }
+/* Log line coloring for response log */
+.nicegui-log .log-trace   { color: var(--wc-info); }
+.nicegui-log .log-debug   { color: var(--wc-text-muted); }
+.nicegui-log .log-info    { color: var(--wc-text); }
+.nicegui-log .log-warning { color: var(--wc-warning); }
+.nicegui-log .log-error   { color: var(--wc-error); }
+.nicegui-log .log-critical {
+  color: var(--wc-error);
+  background: var(--wc-error-soft);
+  padding: 0 4px;
+  border-radius: 3px;
+}
 
 /* ========== Resize Handles ========== */
 
@@ -1013,34 +886,39 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 [class*="resize-handle-"]::after {
   content: '';
-  background: var(--handle-bg);
+  background: var(--wc-state-selected);
   border-radius: 2px;
 }
 
 [class*="resize-handle-"]:hover::after,
-[class*="resize-handle-"].dragging::after { background: var(--handle-bg-hover); }
+[class*="resize-handle-"].dragging::after { background: var(--wc-text-muted); }
 
 /* ========== Editor Tabs ========== */
 
-/* Editor tabs container */
+/* The program panel is a folder: the header row is its top edge, and the active
+   tab rises out of it, joined to the editor outline below (the header overlaps
+   the editor's top border by 1px and the tab's glass covers the seam). */
+.editor-header { position: relative; z-index: 1; margin-bottom: -1px; }
 .editor-tabs .q-tab {
   padding: 4px 8px !important;
-  min-height: 36px !important;
+  min-height: 42px !important;
   text-transform: none !important;
 }
+.editor-tabs .q-tab__indicator { display: none; }
 
-/* Individual editor tab styling */
 .editor-tab {
-  background: var(--tab-bg);
-  border-radius: 6px 6px 0 0;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--wc-radius-sm) var(--wc-radius-sm) 0 0;
   margin-right: 2px;
-  transition: background 0.15s ease;
+  transition: background var(--wc-duration-fast) var(--wc-ease-enter);
 }
 
-.editor-tab:hover { background: var(--tab-bg-hover); }
+.editor-tab:hover { background: var(--wc-state-hover); }
 
 .editor-tab.q-tab--active {
-  background: var(--tab-bg-active);
+  background: var(--wc-glass);
+  border-color: var(--wc-glass-border);
 }
 /* TODO: only half works */
 /* Disable pointer events on active tab (prevent re-clicking), but allow input and close button */
@@ -1054,11 +932,11 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 .editor-tab.q-tab--active .q-btn { pointer-events: auto !important; }
 
 /* Compact filename input in tabs */
-.editor-tab .q-field { min-height: 24px !important; }
+.editor-tab .q-field { min-height: var(--wc-size-control-sm) !important; }
 
 .editor-tab .q-field__control {
-  height: 24px !important;
-  min-height: 24px !important;
+  height: var(--wc-size-control-sm) !important;
+  min-height: var(--wc-size-control-sm) !important;
 }
 
 .editor-tab .q-field__native {
@@ -1069,10 +947,10 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 /* Compact save FAB in tabs */
 .editor-tab .save-fab {
-  min-width: 24px !important;
-  min-height: 24px !important;
-  width: 24px !important;
-  height: 24px !important;
+  min-width: var(--wc-size-control-sm) !important;
+  min-height: var(--wc-size-control-sm) !important;
+  width: var(--wc-size-control-sm) !important;
+  height: var(--wc-size-control-sm) !important;
 }
 
 .editor-tab .save-fab .q-icon { font-size: 14px !important; }
@@ -1086,14 +964,13 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 /* ========== CodeMirror ========== */
 
-/* CodeMirror editor needs to fill available space */
+/* The editor is the folder body: outlined, its top edge shared with the header row */
 .program-panel .cm-editor {
-  border-radius: 12px 12px 0 0;
-  padding-bottom: 16px;
+  background: transparent !important;
+  border: 1px solid var(--wc-glass-border);
+  border-radius: 0 0 var(--wc-radius-sm) var(--wc-radius-sm);
 }
-
-/* Round the top left corner of the gutter */
-.program-panel .cm-editor .cm-gutters { border-top-left-radius: 12px; }
+.program-panel .cm-editor .cm-gutters { background: transparent !important; }
 
 /* Style CodeMirror's internal scrollbar */
 .cm-scroller::-webkit-scrollbar {
@@ -1102,54 +979,52 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 }
 
 .cm-scroller::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb);
+  background: var(--wc-state-selected);
   border-radius: 3px;
 }
 
-.cm-scroller::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+.cm-scroller::-webkit-scrollbar-thumb:hover { background: var(--wc-text-muted); }
 
 /* CodeMirror line flash animation for newly added lines */
 @keyframes cm-line-flash {
-  0% { background-color: color-mix(in srgb, var(--flash-color) 60%, transparent); }
+  0% { background-color: color-mix(in srgb, var(--wc-positive) 60%, transparent); }
   100% { background-color: transparent; }
 }
 .cm-line.cm-line-flash {
-  animation: cm-line-flash 1.5s ease-out forwards;
+  animation: cm-line-flash var(--wc-duration-flash) var(--wc-ease-enter) forwards;
 }
 
-/* Persistent highlight applied to the currently-executing script line.
-   Matches the rgba(255, 255, 0, 0.3) yellow used by the original
-   highlight_lines() built-in style. */
+/* Persistent highlight on the line the running program is executing */
 .cm-line.cm-highlighted {
-  background-color: rgba(255, 255, 0, 0.3);
+  background-color: var(--wc-editor-exec-line);
 }
 
-/* LLM-proposed edits — red strikethrough on removed lines, green
-   widget for additions. Rendered by EditorDecorations._diff_decoration_specs. */
+/* LLM-proposed edits — strikethrough on removed lines, a widget for
+   additions. Rendered by EditorDecorations._diff_decoration_specs. */
 .cm-line.cm-edit-remove {
-  background-color: rgba(244, 67, 54, 0.18);
+  background-color: var(--wc-error-soft);
   text-decoration: line-through;
-  text-decoration-color: rgba(244, 67, 54, 0.7);
+  text-decoration-color: var(--wc-error);
 }
 .cm-edit-add {
-  background-color: rgba(76, 175, 80, 0.18);
-  color: var(--ctk-text, #cbd5e1);
+  background-color: var(--wc-positive-soft);
+  color: var(--wc-text);
   padding: 0 4px;
-  border-left: 3px solid rgba(76, 175, 80, 0.7);
+  border-left: 3px solid var(--wc-positive);
   white-space: pre;
 }
 
 /* Pending-edit review cluster — swaps in for the editor toolbar buttons. */
 .pending-edits-banner {
-  background-color: rgba(76, 175, 80, 0.08);
-  border: 1px solid rgba(76, 175, 80, 0.25);
-  border-radius: 6px;
+  background-color: var(--wc-positive-soft);
+  border: 1px solid var(--wc-glass-border);
+  border-radius: var(--wc-radius-sm);
   padding: 0 2px 0 10px;
 }
 
 
-/* Fade CodeMirror content at bottom using mask - fades to transparent */
-.editor-tab-panel {
+/* Fade the code out at the bottom of the editor, inside its outline */
+.program-panel .cm-scroller {
   -webkit-mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 16px), transparent 100%);
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 16px), transparent 100%);
 }
@@ -1172,14 +1047,10 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 .editor-splitter .q-splitter__separator-area { background: transparent !important; }
 
-/* Bottom playback bar */
+/* Bottom playback bar: glass pill */
 .bottom-playback-bar {
-  background-color: var(--overlay-bg-1) !important;
-  backdrop-filter: blur(16px) saturate(var(--overlay-saturation));
-  -webkit-backdrop-filter: blur(16px) saturate(var(--overlay-saturation));
-  border-radius: 9999px;
-  box-shadow: var(--glass-box-shadow);
-  padding: 0 12px;
+  border-radius: var(--wc-radius-pill);
+  padding: 0 var(--wc-space-3);
 }
 
 /* Ensure playbar buttons remain clickable inside splitter separator */
@@ -1194,12 +1065,13 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 .timeline-slider .q-slider__focus-ring { display: none !important; }
 .timeline-slider .q-slider__thumb::after {
   content: ''; position: absolute; width: 10px; height: 34px;
-  background: #424242; border-radius: 4px; pointer-events: none;
+  background: var(--wc-text); border-radius: 4px; pointer-events: none;
   top: 50%; left: 50%; transform: translate(-50%, -50%);
-  opacity: 0; transition: opacity 0.15s ease;
+  opacity: 0; transition: opacity var(--wc-duration-fast) var(--wc-ease-enter);
 }
 .timeline-slider .q-slider__thumb:hover::after { opacity: 0.4; }
 .timeline-slider.q-slider--active .q-slider__thumb::after { opacity: 1; }
+.scrub-track { background: var(--wc-well); }
 
 
 /* ========== Editor Log Area ========== */
@@ -1209,7 +1081,7 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 }
 
 /* Log area rounded bottom corners */
-.editor-splitter .q-splitter__after .nicegui-scroll-area { border-radius: 0 0 12px 12px; }
+.editor-splitter .q-splitter__after .nicegui-scroll-area { border-radius: 0 0 var(--wc-radius-sm) var(--wc-radius-sm); }
 
 /* Fade log content at top using mask - fades in from transparent */
 .editor-splitter .q-splitter__after {
@@ -1280,7 +1152,7 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 /* Transition for overlay panels on resize */
 @media (min-width: 641px) {
   .overlay-tr, .overlay-br {
-    transition: transform 0.3s ease, left 0.3s ease, right 0.3s ease, width 0.3s ease;
+    transition: transform var(--wc-duration-base) var(--wc-ease-enter), left var(--wc-duration-base) var(--wc-ease-enter), right var(--wc-duration-base) var(--wc-ease-enter), width var(--wc-duration-base) var(--wc-ease-enter);
   }
 }
 
@@ -1288,11 +1160,11 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 /* ========== Recording Notification ========== */
 /* Override parent container z-index when it contains recording notification */
 .q-notifications__list:has(.recording-notification) {
-  z-index: 15 !important;
+  z-index: var(--wc-z-rail) !important;
 }
 
 .recording-notification .q-notification__icon {
-  animation: recording-pulse 2s ease-in-out infinite;
+  animation: recording-pulse var(--wc-duration-ambient) var(--wc-ease-loop) infinite;
 }
 
 @keyframes recording-pulse {
@@ -1303,9 +1175,6 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 /* ========== Help Menu/Tutorial ========== */
 .tutorial-dialog-card {
-  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
-  backdrop-filter: var(--glass-backdrop);
-  -webkit-backdrop-filter: var(--glass-backdrop);
   width: 800px;
   max-width: 95vw;
   height: 85vh;
@@ -1334,17 +1203,15 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 .kbd-key {
   display: inline-block;
   padding: 3px 8px;
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 0.75rem;
+  font-family: var(--wc-font-sans);
+  font-size: 11px;
   font-weight: 500;
   line-height: 1.2;
-  color: var(--ctk-text);
-  background: linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.04) 100%);
-  border: 1px solid rgba(255,255,255,0.15);
+  letter-spacing: 0.02em;
+  color: var(--wc-text);
+  background: var(--wc-state-hover);
+  border: 1px solid var(--wc-glass-border);
   border-radius: 4px;
-  box-shadow:
-    0 1px 0 rgba(0,0,0,0.3),
-    inset 0 1px 0 rgba(255,255,255,0.08);
   min-width: 20px;
   text-align: center;
   white-space: nowrap;
@@ -1352,7 +1219,7 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 .kbd-plus {
   margin: 0 4px;
-  color: var(--ctk-muted);
+  color: var(--wc-text-muted);
   font-size: 0.7rem;
 }
 
@@ -1375,24 +1242,27 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 /* ========== File Dialogs ========== */
 .file-upload .q-uploader__header,
 .file-upload .q-uploader__list {
-  border-radius: 12px;
+  border-radius: var(--wc-radius-sm);
 }
+.file-upload .q-uploader__list { background: var(--wc-well); }
 .file-upload {
-  border-radius: 12px !important;
+  border-radius: var(--wc-radius-sm) !important;
   border: none !important;
-}
-.file-upload .q-uploader__header {
-  box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.4);
 }
 
 .file-tree-scroll .q-scrollarea__content { padding: 0 !important; }
 
 /* ========== File Tree ========== */
-.file-tree .q-tree__node-header-content { color: white !important; }
-.file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { color: white !important; font-weight: bold !important; }
+.file-tree .q-tree__node-header-content { color: var(--wc-text) !important; }
+.file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { color: var(--wc-text) !important; font-weight: bold !important; }
 .file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
 /* ========== Robot Face Indicator ========== */
+
+/* The face is drawn in the chip's text colour; eyes and mouth are cut-outs
+   in the surface behind it. */
+.robot-face { --face-cut: var(--wc-glass-end); }
+.bg-wc-mode-sim .robot-face { --face-cut: var(--wc-mode-sim); }
 
 /* Robot face SVG transitions */
 .robot-face .pupil { transition: transform 0.45s ease; }
@@ -1441,7 +1311,7 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 .action-log {
   max-height: 20px;
-  transition: max-height 0.2s ease;
+  transition: max-height var(--wc-duration-fast) var(--wc-ease-enter);
   width: 0;
   min-width: 100%;
   cursor: pointer;
@@ -1463,6 +1333,14 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ========== Reduced motion ========== */
+@media (prefers-reduced-motion: reduce) {
+  .control-glow-breathe, .ai-cluster .btn-take-control, .recording-notification .q-notification__icon,
+  .record-btn.recording .q-icon, .robot-face-happy svg, .robot-face-neutral svg, .robot-face-sad svg,
+  .tab-flash, .cm-line.cm-line-flash { animation: none !important; }
+  .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
 }
 """
     )

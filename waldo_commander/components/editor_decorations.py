@@ -401,10 +401,12 @@ class EditorDecorations:
                     f"<div>Duration: {html.escape(f'{seg.estimated_duration:.2f}s')}</div>"
                 )
             if not seg.is_valid:
-                parts.append('<div style="color:#f87171">Unreachable position</div>')
+                parts.append(
+                    '<div style="color:var(--wc-error)">Unreachable position</div>'
+                )
             if not seg.timing_feasible and seg.estimated_duration is not None:
                 parts.append(
-                    f'<div style="color:#fbbf24">Duration too short (min: {html.escape(f"{seg.estimated_duration:.2f}s")})</div>'
+                    f'<div style="color:var(--wc-warning)">Duration too short (min: {html.escape(f"{seg.estimated_duration:.2f}s")})</div>'
                 )
             tooltips[seg.line_number] = "".join(parts)
 

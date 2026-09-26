@@ -132,3 +132,7 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
 ]
+
+[tool.ruff]
+# Generated from design/tokens.json by scripts/gen_tokens.py; keep byte-identical to the generator output.
+extend-exclude = ["waldo_commander/common/tokens.py"]

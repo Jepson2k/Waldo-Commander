@@ -77,6 +77,7 @@ class UrdfSceneConfig:
     """Scene background color."""
 
     ground_color: str = SceneColors.GROUND_DARK_HEX
+    grid_color: str = SceneColors.GRID_DARK_HEX
     """Ground plane color (contrasts with background)."""
 
     sim_color: str = SceneColors.SIM_AMBER_HEX

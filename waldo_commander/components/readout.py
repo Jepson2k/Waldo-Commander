@@ -11,7 +11,6 @@ from nicegui import ui
 import waldoctl
 from waldoctl import ActionStatus
 
-from waldo_commander.common.theme import IO_COLOR_OFF, IO_COLOR_ON
 from waldo_commander.state import robot_events, ui_state
 
 logger = logging.getLogger(__name__)
@@ -37,12 +36,14 @@ _FACE_TOOLTIPS = {
     RobotFace.NEUTRAL: "Simulator",
     RobotFace.SAD: "Disconnected",
 }
-# Chip background — darker hue of the face icon color
+# Chip (fill, text) per face state; simulator is the app's amber mode colour.
 _CHIP_COLORS = {
-    RobotFace.HAPPY: "var(--color-emerald-400)",
-    RobotFace.NEUTRAL: "var(--color-gray-400)",
-    RobotFace.SAD: "var(--color-red-400)",
+    RobotFace.HAPPY: ("wc-positive-soft", "wc-positive"),
+    RobotFace.NEUTRAL: ("wc-mode-sim", "wc-on-bright"),
+    RobotFace.SAD: ("wc-error-soft", "wc-error"),
 }
+# I/O chip (fill, text) by pin state.
+_IO_CHIP = {True: ("wc-action", "wc-on-bright"), False: ("wc-control", "wc-text")}
 
 
 def _fmt_1f(v: float) -> str:
@@ -56,14 +57,14 @@ def _fmt_1f(v: float) -> str:
 
 _STATUS_ICONS = {
     ActionStatus.EXECUTING: (
-        '<span style="color:var(--color-sky-500);font-size:11px" '
+        '<span style="color:var(--wc-info);font-size:11px" '
         'class="material-icons q-spinner-mat">sync</span>'
     ),
     ActionStatus.COMPLETED: (
-        '<span style="color:var(--color-emerald-500);font-size:13px">\u2713</span>'
+        '<span style="color:var(--wc-positive);font-size:13px">\u2713</span>'
     ),
     ActionStatus.FAILED: (
-        '<span style="color:var(--color-red-500);font-size:13px">\u2717</span>'
+        '<span style="color:var(--wc-error);font-size:13px">\u2717</span>'
     ),
 }
 
@@ -83,9 +84,9 @@ _TIP_TEXT = random.choice(_TIPS)
 
 
 _EVENT_ICONS = {
-    "error": '<span style="color:var(--color-red-500);font-size:13px">\u2717</span>',
+    "error": '<span style="color:var(--wc-error);font-size:13px">\u2717</span>',
     "warning": (
-        '<span style="color:var(--color-amber-400);font-size:13px"'
+        '<span style="color:var(--wc-warning);font-size:13px"'
         ' class="material-icons">warning</span>'
     ),
 }
@@ -97,13 +98,13 @@ def _build_event_log_html() -> str:
     for ts, severity, message, detail in reversed(robot_events.entries):
         icon = _EVENT_ICONS.get(severity, _EVENT_ICONS["warning"])
         tail = (
-            f' <span style="color:var(--ctk-muted)">{html_mod.escape(detail)}</span>'
+            f' <span style="color:var(--wc-text-muted)">{html_mod.escape(detail)}</span>'
             if detail
             else ""
         )
         parts.append(
             f'<div class="action-log-entry" style="font-size:12px;line-height:1.5">'
-            f'{icon} <span style="color:var(--ctk-muted)">{ts}</span> '
+            f'{icon} <span style="color:var(--wc-text-muted)">{ts}</span> '
             f"<b>{html_mod.escape(message)}</b>{tail}</div>"
         )
     return "".join(parts)
@@ -115,14 +116,14 @@ def _build_log_entries_html() -> str:
     for entry in reversed(waldoctl.commander.status.action.history):
         icon = _STATUS_ICONS.get(entry.status, "")
         count = (
-            f" <span style='color:var(--ctk-muted)'>\u00d7{entry.count}</span>"
+            f" <span style='color:var(--wc-text-muted)'>\u00d7{entry.count}</span>"
             if entry.count > 1
             else ""
         )
         params = ""
         if entry.params:
             params = (
-                f' <span style="color:var(--ctk-muted)">'
+                f' <span style="color:var(--wc-text-muted)">'
                 f"{html_mod.escape(entry.params)}</span>"
             )
         name = html_mod.escape(entry.command_name)
@@ -132,12 +133,12 @@ def _build_log_entries_html() -> str:
         )
     # Tip of the day as the oldest entry
     tip_icon = (
-        '<span style="color:var(--color-amber-400);font-size:13px"'
+        '<span style="color:var(--wc-warning);font-size:13px"'
         ' class="material-icons">tips_and_updates</span>'
     )
     parts.append(
         f'<div class="action-log-entry" style="font-size:12px;line-height:1.5">'
-        f'{tip_icon} <span style="color:var(--ctk-muted)">{_TIP_TEXT}</span></div>'
+        f'{tip_icon} <span style="color:var(--wc-text-muted)">{_TIP_TEXT}</span></div>'
     )
     return "\n".join(parts)
 
@@ -207,13 +208,8 @@ class ReadoutPanel:
                     self._robot_face_tooltip.text = _FACE_TOOLTIPS[face]
                     self._robot_face_tooltip.update()
                 if self._robot_chip:
-                    self._robot_chip.style(
-                        f"background-color: {_CHIP_COLORS[face]} !important;"
-                        " margin: 0;"
-                        " padding: 20px 12px !important;"
-                        " box-shadow: none;"
-                        " border-radius: 10px;"
-                    )
+                    fill, text = _CHIP_COLORS[face]
+                    self._robot_chip.props(f"color={fill} text-color={text}")
                     self._robot_chip.update()
 
         tool_key = waldoctl.commander.status.tool.key
@@ -240,8 +236,8 @@ class ReadoutPanel:
                 all_vals = self._last_io_inputs + self._last_io_outputs
                 for i, chip in enumerate(self._io_chips):
                     if i < len(all_vals):
-                        color = IO_COLOR_ON if all_vals[i] else IO_COLOR_OFF
-                        chip.props(f"color={color}")
+                        fill, text = _IO_CHIP[bool(all_vals[i])]
+                        chip.props(f"color={fill} text-color={text}")
 
     def update_action_log(self) -> None:
         """Rebuild the action log scroll area from ``commander.status.action``.
@@ -312,7 +308,7 @@ class ReadoutPanel:
                 with (
                     ui.row()
                     .classes("items-center w-full no-wrap gap-2")
-                    .style("margin: -10px 0 0 -10px; width: calc(100% + 12px);")
+                    .style("margin: -12px 0 0 -12px; width: calc(100% + 16px);")
                 ):
                     _init_face = (
                         RobotFace.NEUTRAL
@@ -322,22 +318,22 @@ class ReadoutPanel:
                         else RobotFace.SAD
                     )
                     self._last_face_state = _init_face
-                    self._robot_chip = ui.chip().style(
-                        f"background-color: {_CHIP_COLORS[_init_face]} !important;"
-                        " margin: 0;"
-                        " padding: 20px 12px !important;"
-                        " box-shadow: none;"
-                        " border-radius: 10px;"
+                    fill, text = _CHIP_COLORS[_init_face]
+                    self._robot_chip = (
+                        ui.chip()
+                        .props(f"color={fill} text-color={text}")
+                        .style(
+                            "margin: 0;"
+                            " padding: 20px 12px !important;"
+                            " box-shadow: none;"
+                            " border-radius: var(--wc-radius-md);"
+                        )
                     )
                     with self._robot_chip:
                         self._robot_face_container = (
                             ui.element("div")
                             .classes(f"robot-face robot-face-{_init_face.value}")
-                            .style(
-                                "width: 36px; height: 36px;"
-                                " margin-top: 4px;"
-                                " filter: drop-shadow(0 1px 1px rgba(0,0,0,0.4));"
-                            )
+                            .style("width: 36px; height: 36px; margin-top: 4px;")
                             .mark("readout-robot-face")
                         )
                         with self._robot_face_container:
@@ -347,20 +343,16 @@ class ReadoutPanel:
                             self._robot_face_tooltip = ui.tooltip(
                                 _FACE_TOOLTIPS[_init_face]
                             )
-                        self._backend_label = (
-                            ui.label(ui_state.active_robot.name)
-                            .classes("text-lg font-medium ml-2")
-                            .style("text-shadow: 0 1px 1px rgba(0,0,0,0.4);")
-                        )
-                    self._tool_separator = (
-                        ui.label("\u00b7")
-                        .classes("text-2xl font-bold")
-                        .style("color: var(--ctk-muted);")
+                        self._backend_label = ui.label(
+                            ui_state.active_robot.name
+                        ).classes("text-lg font-medium ml-2")
+                    self._tool_separator = ui.label("\u00b7").classes(
+                        "text-2xl font-bold text-wc-text-muted"
                     )
                     self._tool_separator.set_visibility(False)
                     self._tool_chip = (
                         ui.chip()
-                        .props("dense")
+                        .props("dense color=wc-control text-color=wc-text")
                         .classes("text-lg font-medium")
                         .style("box-shadow: none; margin: 0;")
                     )
@@ -374,8 +366,10 @@ class ReadoutPanel:
                         _io_init = waldoctl.commander.status.io
                         for i in range(len(_io_init.inputs)):
                             chip = (
-                                ui.chip(f"DI{i + 1}", color=IO_COLOR_OFF)
-                                .props("dense size=sm")
+                                ui.chip(f"DI{i + 1}")
+                                .props(
+                                    "dense size=sm color=wc-control text-color=wc-text"
+                                )
                                 .classes("text-xs")
                                 .style("box-shadow: none;")
                                 .tooltip(f"Digital Input {i + 1}")
@@ -383,110 +377,127 @@ class ReadoutPanel:
                             self._io_chips.append(chip)
                         for i in range(len(_io_init.outputs)):
                             chip = (
-                                ui.chip(f"DO{i + 1}", color=IO_COLOR_OFF)
-                                .props("dense size=sm")
+                                ui.chip(f"DO{i + 1}")
+                                .props(
+                                    "dense size=sm color=wc-control text-color=wc-text"
+                                )
                                 .classes("text-xs")
                                 .style("box-shadow: none;")
                                 .tooltip(f"Digital Output {i + 1}")
                             )
                             self._io_chips.append(chip)
 
-                with ui.row().classes("items-center justify-between w-full no-wrap"):
-                    with ui.row().classes("items-center gap-1 no-wrap"):
-                        ui.label("X:").classes("text-sm tcp-x")
-                        (
-                            ui.label("-")
-                            .bind_text_from(
-                                waldoctl.commander.status.pose, "x", backward=_fmt_1f
+                with ui.column().classes("gap-0 py-1 w-full"):
+                    with ui.row().classes(
+                        "items-center justify-between w-full no-wrap"
+                    ):
+                        with ui.row().classes("items-center gap-1 no-wrap"):
+                            ui.label("X:").classes("text-sm tcp-x-text")
+                            (
+                                ui.label("-")
+                                .bind_text_from(
+                                    waldoctl.commander.status.pose,
+                                    "x",
+                                    backward=_fmt_1f,
+                                )
+                                .classes("text-3xl tabular-nums tcp-x-text")
+                                .style("min-width: 5rem; text-align: right;")
+                                .mark("readout-x")
                             )
-                            .classes("text-3xl tcp-x")
-                            .style("min-width: 5rem; text-align: right;")
-                            .mark("readout-x")
-                        )
-                        ui.label("mm").classes("text-xs tcp-x")
+                            ui.label("mm").classes("text-xs tcp-x-text")
 
-                    with ui.row().classes("items-center gap-1 no-wrap"):
-                        ui.label("Y:").classes("text-sm tcp-y")
-                        (
-                            ui.label("-")
-                            .bind_text_from(
-                                waldoctl.commander.status.pose, "y", backward=_fmt_1f
+                        with ui.row().classes("items-center gap-1 no-wrap"):
+                            ui.label("Y:").classes("text-sm tcp-y-text")
+                            (
+                                ui.label("-")
+                                .bind_text_from(
+                                    waldoctl.commander.status.pose,
+                                    "y",
+                                    backward=_fmt_1f,
+                                )
+                                .classes("text-3xl tabular-nums tcp-y-text")
+                                .style("min-width: 5rem; text-align: right;")
+                                .mark("readout-y")
                             )
-                            .classes("text-3xl tcp-y")
-                            .style("min-width: 5rem; text-align: right;")
-                            .mark("readout-y")
-                        )
-                        ui.label("mm").classes("text-xs tcp-y")
+                            ui.label("mm").classes("text-xs tcp-y-text")
 
-                    with ui.row().classes("items-center gap-1 no-wrap"):
-                        ui.label("Z:").classes("text-sm tcp-z")
-                        (
-                            ui.label("-")
-                            .bind_text_from(
-                                waldoctl.commander.status.pose, "z", backward=_fmt_1f
+                        with ui.row().classes("items-center gap-1 no-wrap"):
+                            ui.label("Z:").classes("text-sm tcp-z-text")
+                            (
+                                ui.label("-")
+                                .bind_text_from(
+                                    waldoctl.commander.status.pose,
+                                    "z",
+                                    backward=_fmt_1f,
+                                )
+                                .classes("text-3xl tabular-nums tcp-z-text")
+                                .style("min-width: 5rem; text-align: right;")
+                                .mark("readout-z")
                             )
-                            .classes("text-3xl tcp-z")
-                            .style("min-width: 5rem; text-align: right;")
-                            .mark("readout-z")
-                        )
-                        ui.label("mm").classes("text-xs tcp-z")
+                            ui.label("mm").classes("text-xs tcp-z-text")
 
-                with ui.row().classes("items-center w-full no-wrap"):
-                    with ui.row().classes("items-center gap-1"):
-                        ui.label("Rx:").classes("text-xs tcp-rx")
-                        (
-                            ui.label("-")
-                            .bind_text_from(
-                                waldoctl.commander.status.pose, "rx", backward=_fmt_1f
+                    with ui.row().classes("items-center w-full no-wrap"):
+                        with ui.row().classes("items-center gap-1"):
+                            ui.label("Rx:").classes("text-xs tcp-rx-text")
+                            (
+                                ui.label("-")
+                                .bind_text_from(
+                                    waldoctl.commander.status.pose,
+                                    "rx",
+                                    backward=_fmt_1f,
+                                )
+                                .classes("text-base tabular-nums tcp-rx-text")
+                                .style("min-width: 3.5rem; text-align: right;")
+                                .mark("readout-rx")
                             )
-                            .classes("text-base tcp-rx")
-                            .style("min-width: 3.5rem; text-align: right;")
-                            .mark("readout-rx")
-                        )
-                        ui.label("°").classes("text-xs tcp-rx")
+                            ui.label("°").classes("text-xs tcp-rx-text")
 
-                    with ui.row().classes("items-center gap-1"):
-                        ui.label("Ry:").classes("text-xs tcp-ry")
-                        (
-                            ui.label("-")
-                            .bind_text_from(
-                                waldoctl.commander.status.pose, "ry", backward=_fmt_1f
+                        with ui.row().classes("items-center gap-1"):
+                            ui.label("Ry:").classes("text-xs tcp-ry-text")
+                            (
+                                ui.label("-")
+                                .bind_text_from(
+                                    waldoctl.commander.status.pose,
+                                    "ry",
+                                    backward=_fmt_1f,
+                                )
+                                .classes("text-base tabular-nums tcp-ry-text")
+                                .style("min-width: 3.5rem; text-align: right;")
+                                .mark("readout-ry")
                             )
-                            .classes("text-base tcp-ry")
-                            .style("min-width: 3.5rem; text-align: right;")
-                            .mark("readout-ry")
-                        )
-                        ui.label("°").classes("text-xs tcp-ry")
+                            ui.label("°").classes("text-xs tcp-ry-text")
 
-                    with ui.row().classes("items-center gap-1"):
-                        ui.label("Rz:").classes("text-xs tcp-rz")
-                        (
-                            ui.label("-")
-                            .bind_text_from(
-                                waldoctl.commander.status.pose, "rz", backward=_fmt_1f
+                        with ui.row().classes("items-center gap-1"):
+                            ui.label("Rz:").classes("text-xs tcp-rz-text")
+                            (
+                                ui.label("-")
+                                .bind_text_from(
+                                    waldoctl.commander.status.pose,
+                                    "rz",
+                                    backward=_fmt_1f,
+                                )
+                                .classes("text-base tabular-nums tcp-rz-text")
+                                .style("min-width: 3.5rem; text-align: right;")
+                                .mark("readout-rz")
                             )
-                            .classes("text-base tcp-rz")
-                            .style("min-width: 3.5rem; text-align: right;")
-                            .mark("readout-rz")
-                        )
-                        ui.label("°").classes("text-xs tcp-rz")
+                            ui.label("°").classes("text-xs tcp-rz-text")
 
-                    ui.space()
+                        ui.space()
 
-                    with ui.row().classes("items-center gap-1"):
-                        ui.label("v:").classes("text-xs")
-                        (
-                            ui.label("-")
-                            .bind_text_from(
-                                waldoctl.commander.status.pose,
-                                "tcp_speed",
-                                backward=lambda v: f"{v:.0f}",
+                        with ui.row().classes("items-center gap-1"):
+                            ui.label("v:").classes("text-xs")
+                            (
+                                ui.label("-")
+                                .bind_text_from(
+                                    waldoctl.commander.status.pose,
+                                    "tcp_speed",
+                                    backward=lambda v: f"{v:.0f}",
+                                )
+                                .classes("text-base")
+                                .style("min-width: 2.5rem; text-align: right;")
+                                .mark("readout-tcp-speed")
                             )
-                            .classes("text-base")
-                            .style("min-width: 2.5rem; text-align: right;")
-                            .mark("readout-tcp-speed")
-                        )
-                        ui.label("mm/s").classes("text-xs")
+                            ui.label("mm/s").classes("text-xs")
 
                 # Collapsible action log
                 with (

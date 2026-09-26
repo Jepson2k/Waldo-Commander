@@ -63,10 +63,8 @@ class LogPanelController:
         # Reset transient state for a fresh page build (new client / test).
         self._log_expanded = False
         self._last_script_running = is_any_program_running()
-        self.log_toggle_btn = (
-            ui.button(icon="expand_more", on_click=self.toggle)
-            .props("round dense flat")
-            .classes("text-white")
+        self.log_toggle_btn = ui.button(icon="expand_more", on_click=self.toggle).props(
+            "round dense flat color=wc-text"
         )
         with self.log_toggle_btn:
             self.log_toggle_btn_tooltip = ui.tooltip("Show Output")

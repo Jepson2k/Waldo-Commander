@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 from waldoctl import TickIndex
 
+from waldo_commander.common.theme import hex_of
 from waldo_commander.state import PathSegment, ToolAction, ToolSelection
 
 DEFAULT_SEGMENT_DURATION = 0.5  # seconds, for segments without timing data
@@ -353,11 +354,12 @@ class Timeline:
         durs = [b.rows * dt for b in blocks]
         # A block with no planned segment still needs a slot: the index
         # space has to stay dense or prev/next skips commands.
+        filler_hex = hex_of("path-checkpoint")
         ordered = [
             by_line.get(b.line_number or -1)
             or PathSegment(
                 points=[],
-                color="#888888",
+                color=filler_hex,
                 is_valid=True,
                 line_number=b.line_number or 0,
             )

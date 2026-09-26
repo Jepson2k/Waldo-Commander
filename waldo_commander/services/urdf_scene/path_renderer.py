@@ -14,6 +14,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation as ScipyRotation
 from nicegui import ui
 
+from waldo_commander.common.theme import hex_of
+
 if TYPE_CHECKING:
     from waldo_commander.state import PathSegment, ToolAction
 
@@ -201,7 +203,7 @@ class PathRenderer:
     def render_tool_action(
         self,
         action: ToolAction,
-        color: str = "#FF9800",
+        color: str | None = None,
     ) -> list[Any]:
         """Render a tool action as arrows at the TCP position(s).
 
@@ -213,6 +215,8 @@ class PathRenderer:
         objects: list[Any] = []
         if action.tcp_pose is None or len(action.tcp_pose) < 3:
             return objects
+        if color is None:
+            color = hex_of("path-tool-action")
 
         if action.tcp_path and len(action.tcp_path) >= 2:
             return self._render_cascading_tool_action(action, color)
