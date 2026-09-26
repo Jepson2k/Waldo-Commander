@@ -2612,7 +2612,10 @@ class ControlPanel:
             self.CLICK_HOLD_THRESHOLD_S, ui_client_fn
         )
 
-        ui.on("wc_camera_distance", lambda e: self.on_camera_distance(float(e.args)))
+        ui.on(
+            "wc_camera_distance",
+            lambda e: self.on_camera_distance(float(e.args["distance"])),
+        )
         self._sync_step_setting()
 
         with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor} gap-1"):

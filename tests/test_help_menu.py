@@ -1,4 +1,4 @@
-"""Tests for help menu, keybindings display, and tutorial."""
+"""Shortcuts and the quick-start tour live in Settings; the first visit has its own dialog."""
 
 import asyncio
 
@@ -7,44 +7,28 @@ from nicegui import app as ng_app
 from nicegui.testing import User
 
 from waldo_commander.components.help_menu import HelpMenu
+from waldo_commander.state import ui_state
+
+
+async def _open_settings(user: User, category: str) -> None:
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    assert ui_state.settings_content.dialog.value, "the gear opens Settings"
+    user.find(marker=f"settings-cat-{category}").click()
+    await asyncio.sleep(0)
 
 
 @pytest.mark.integration
 class TestHelpMenuAndKeybindings:
-    """Comprehensive tests for help menu dialog and keybindings display."""
+    """The keybindings table under Settings → Shortcuts."""
 
-    async def test_help_dialog_opens_with_tabs_and_keybindings(
-        self, user: User
-    ) -> None:
-        """Test help dialog opens, has both tabs, and keybindings display correctly.
-
-        This comprehensive test verifies:
-        1. Help dialog opens when tab-help is clicked
-        2. Both keybindings and quickstart tabs are present
-        3. Keybindings tab shows expected categories
-        4. Keybindings shows actual shortcuts with descriptions
-        """
+    async def test_shortcuts_category_lists_the_keybindings(self, user: User) -> None:
         await user.open("/")
+        await _open_settings(user, "shortcuts")
 
-        # Click help tab to open dialog
-        user.find(marker="tab-help").click()
-        await asyncio.sleep(0)  # Yield for dialog to render
-
-        # Dialog should be visible with title
-        await user.should_see("Help")
-
-        # Both tabs should be accessible via their markers
-        await user.should_see(marker="tab-keybindings")
-        await user.should_see(marker="tab-quickstart")
-
-        # Click keybindings tab to ensure that panel is active
-        user.find(marker="tab-keybindings").click()
-        await asyncio.sleep(0)
-
-        # Keybindings content container should be visible
+        await user.should_see(marker="settings-cat-shortcuts")
+        await user.should_see(marker="settings-cat-getting-started")
         await user.should_see(marker="keybindings-content")
-
-        # Keybindings content should show categories (these are ui.label, visible to user fixture)
         await user.should_see("Robot Control")
         await user.should_see("Playback")
 
@@ -54,59 +38,34 @@ class TestTutorialStepper:
     """Tests for tutorial/quickstart stepper functionality."""
 
     async def test_tutorial_shows_steps_and_navigates(self, user: User) -> None:
-        """Test tutorial stepper displays steps and navigation works.
-
-        This comprehensive test verifies:
-        1. Tutorial tab shows first step content
-        2. Next button advances to next step
-        3. Back button returns to previous step
-        4. All expected steps are present
-        """
+        """Settings → Getting started walks the tour; Next and Back move through it."""
         await user.open("/")
+        await _open_settings(user, "getting-started")
 
-        # Open help dialog
-        user.find(marker="tab-help").click()
-        await asyncio.sleep(0)
-
-        # Click quickstart tab (tutorial is default but be explicit)
-        user.find(marker="tab-quickstart").click()
-        await asyncio.sleep(0)
-
-        # Should see first step (description text, since step titles are Quasar props)
+        # Step text, since step titles are Quasar props.
         await user.should_see("Jog in joint space")
 
-        # Click Next to advance
         user.find("Next").click()
         await asyncio.sleep(0)
+        await user.should_see("Open **Settings** from the gear in the bottom-left rail")
 
-        # Should see second step
-        await user.should_see("Open the **Settings** tab in the bottom-left tab bar")
-
-        # Click Back to return
         user.find("Back").click()
         await asyncio.sleep(0)
-
-        # Should see first step again
         await user.should_see("Jog in joint space")
 
     async def test_tutorial_can_reach_final_step(self, user: User) -> None:
-        """Test that tutorial can navigate to the final step with Finish button."""
+        """Finish on the last step closes Settings."""
         await user.open("/")
+        await _open_settings(user, "getting-started")
 
-        # Open help dialog and go to tutorial
-        user.find(marker="tab-help").click()
-        await asyncio.sleep(0)
-        user.find(marker="tab-quickstart").click()
-        await asyncio.sleep(0)
-
-        # Navigate through all steps to reach Finish button
         for _ in range(3):  # 4 steps total, need 3 Next clicks
             user.find("Next").click()
             await asyncio.sleep(0)
 
-        # Should see last step with Finish button
         await user.should_see("Toggle digital outputs")
-        await user.should_see("Finish")
+        user.find("Finish").click()
+        await asyncio.sleep(0)
+        assert not ui_state.settings_content.dialog.value
 
 
 @pytest.mark.integration

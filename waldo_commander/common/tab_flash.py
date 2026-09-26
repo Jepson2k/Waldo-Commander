@@ -1,7 +1,7 @@
-"""Flash a tab to say something landed in a panel nobody is looking at.
+"""Flash a tab or button to say something landed where nobody is looking.
 
-Driven off the tab element itself, so a tab is addressed by identity rather
-than by whatever glyph its icon happens to render.
+Driven off the element itself, so it is addressed by identity rather than by
+whatever glyph its icon happens to render.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from nicegui import ui
 _FLASH_S = 2.0
 
 
-def flash_tab(tab: ui.tab | None) -> None:
+def flash_tab(tab: ui.element | None) -> None:
     """Pulse *tab* once, unless it is already pulsing.
 
     Re-adding the class mid-animation does not restart it, so a second call

@@ -26,8 +26,7 @@
             viewportMarginY: 100,
             containerPadding: 20,
             bottomOffset: 12,
-            totalMargin: 36,
-            defaultsClearOf: []
+            totalMargin: 36
         },
         stateClasses: {
             coupled: 'coupled'
@@ -178,6 +177,7 @@
     function shouldCouple() {
         const topResizable = getVisibleResizablePanel('top');
         const bottomResizable = getVisibleResizablePanel('bottom');
+        if (topResizable && isFullHeightPanel(getPanelId(topResizable))) return false;
         return topResizable !== null && bottomResizable !== null;
     }
 
@@ -234,6 +234,35 @@
         return !(saved && saved.height);
     }
 
+    // A full-height panel is a column: CSS pins it between the top margin and
+    // the footer, so its height is never dragged, saved or pushed.
+    function isFullHeightPanel(panelId) {
+        const cfg = panelId && config.panels[panelId];
+        return !!(cfg && cfg.fullHeight);
+    }
+
+    // ========== Column geometry ==========
+    // The scene and the bottom panel keep clear of the column: its right edge
+    // is published on the wrap, and a layout event says it moved.
+
+    function publishLayout() {
+        const wrap = config.selectors.wrap ? document.querySelector(config.selectors.wrap) : null;
+        if (!wrap) return;
+        let right = 0;
+        if (wrap.classList.contains('column-open')) {
+            const container = getContainer('top');
+            if (container) {
+                const rect = container.getBoundingClientRect();
+                right = Math.round(rect.left + container.offsetWidth);
+            }
+        }
+        // On the wrap for its own children, on :root for the bottom panel and
+        // the scene, which sit outside it.
+        wrap.style.setProperty('--wc-column-right', right + 'px');
+        document.documentElement.style.setProperty('--wc-column-right', right + 'px');
+        window.dispatchEvent(new CustomEvent('wc:layout', { detail: { columnRight: right } }));
+    }
+
     function getContainer(group) {
         const selector = group === 'top'
             ? config.selectors.topContainer
@@ -285,19 +314,10 @@
         return window.innerHeight - config.constraints.viewportMarginY;
     }
 
-    // A default width is a suggestion: it stops short of the overlays to its
-    // right, such as the readout. A width the operator dragged is kept.
+    // A default width is a suggestion; a width the operator dragged is kept.
     function defaultWidth(container, panelConfig) {
-        let width = panelConfig.defaultWidth || panelConfig.minWidth;
-        if (!width) return width;
-        const left = container.getBoundingClientRect().left;
-        for (const selector of config.constraints.defaultsClearOf || []) {
-            const overlay = document.querySelector(selector);
-            if (!overlay || overlay.offsetParent === null) continue;
-            const overlayLeft = overlay.getBoundingClientRect().left;
-            if (overlayLeft > left) width = Math.min(width, overlayLeft - left - 12);
-        }
-        return Math.max(width, panelConfig.minWidth || 0);
+        const width = panelConfig.defaultWidth || panelConfig.minWidth;
+        return width ? Math.max(width, panelConfig.minWidth || 0) : width;
     }
 
     // ========== Resize State ==========
@@ -340,6 +360,7 @@
                     container.style.setProperty('width', newWidth + 'px', 'important');
                 }
             }
+            if (isFullHeightPanel(panelId)) publishLayout();
         }
 
         // Handle height resize - only set containers, panels fill via CSS
@@ -423,6 +444,7 @@
         document.body.style.cursor = '';
         activePanel = null;
         activeHandle = null;
+        publishLayout();
     }
 
     // ========== Handle Attachment ==========
@@ -612,9 +634,11 @@
 
         if (isClosing) {
             // Save current size before closing. A fit panel's height is its
-            // content's, not a choice to remember.
+            // content's, and a column's is the viewport's: neither is a choice
+            // to remember.
             const panel = getVisibleResizablePanel(group);
-            if (panel && container && !isFitPanel(getPanelId(panel))) {
+            const panelId = panel && getPanelId(panel);
+            if (panel && container && !isFitPanel(panelId) && !isFullHeightPanel(panelId)) {
                 const currentHeight = container.offsetHeight;
                 if (currentHeight > 0) {
                     savePanelSize(panel, null, currentHeight);
@@ -629,6 +653,7 @@
 
             if (wrap) {
                 wrap.classList.remove(config.stateClasses.coupled);
+                if (group === 'top') wrap.classList.remove('column-open');
             }
         } else if (!isResizableTab) {
             // Non-resizable tab - clear container constraints
@@ -639,20 +664,23 @@
 
             if (wrap) {
                 wrap.classList.remove(config.stateClasses.coupled);
+                if (group === 'top') wrap.classList.remove('column-open');
             }
         } else {
             // Resizable tab - set container size BEFORE panel animates in
-            // Panel ID matches tab name (e.g., "program", "response")
+            // Panel ID matches tab name (e.g., "program", "gripper")
             const panelId = toTab;
             const savedSize = getSavedPanelSize(panelId) || {};
             const panelConfig = config.panels[panelId] || {};
+            const column = isFullHeightPanel(panelId);
 
+            if (wrap && group === 'top') wrap.classList.toggle('column-open', column);
             if (container) {
                 const width = savedSize.width || defaultWidth(container, panelConfig);
                 if (width) {
                     container.style.width = Math.min(width, getMaxWidth()) + 'px';
                 }
-                if (isFitPanel(panelId)) {
+                if (column || isFitPanel(panelId)) {
                     container.style.removeProperty('height');
                 } else {
                     const height = savedSize.height || panelConfig.defaultHeight || panelConfig.minHeight
@@ -663,6 +691,7 @@
             }
         }
 
+        publishLayout();
         // Update coupling state after Quasar finishes animating the panel
         setTimeout(updateCouplingState, 350);
     }
@@ -812,13 +841,15 @@
             } else if (container.offsetWidth > maxW) {
                 container.style.setProperty('width', maxW + 'px', 'important');
             }
-            // CSS caps a fit panel; pinning it here would stick after the window grows back.
-            const fits = panel && isFitPanel(panelId);
+            // CSS caps a fit panel and pins a column; pinning either here would
+            // stick after the window grows back.
+            const fits = panel && (isFitPanel(panelId) || isFullHeightPanel(panelId));
             if (!fits && container.offsetHeight > maxH) {
                 container.style.setProperty('height', maxH + 'px', 'important');
             }
         }
         updateCouplingState();
+        publishLayout();
     }
 
     // ========== Global Event Listeners ==========
@@ -870,8 +901,34 @@
 
         loadPanelSizes();
         forgetDefaultHeightsOfFitPanels();
+        forgetHeightsOfColumns();
         forgetOldDefaultSizes();
         loadActiveTabs();
+    }
+
+    // A panel that became a column keeps only its width; the height an older
+    // build saved for it would be restored to nothing.
+    function forgetHeightsOfColumns() {
+        const doneKey = config.storageKey + '_column';
+        try {
+            if (localStorage.getItem(doneKey)) return;
+        } catch (e) {
+            return;
+        }
+        let changed = false;
+        for (const [panelId, cfg] of Object.entries(config.panels)) {
+            if (cfg.fullHeight && panelSizes[panelId] && panelSizes[panelId].height) {
+                delete panelSizes[panelId].height;
+                document.documentElement.style.removeProperty(`--panel-height-${panelId}`);
+                changed = true;
+            }
+        }
+        if (changed) savePanelSizes();
+        try {
+            localStorage.setItem(doneKey, '1');
+        } catch (e) {
+            console.warn('[PanelResize] Could not record the column migration:', e);
+        }
     }
 
     // The editor had no default size and opened at its minimum, which closing
@@ -1061,6 +1118,7 @@
         },
         getConfig: function() { return config; },
         getSizes: function() { return panelSizes; },
+        publishLayout: publishLayout,
         isConfigured: function() { return configured; },
         isAppReady: function() { return appReady; }
     };
