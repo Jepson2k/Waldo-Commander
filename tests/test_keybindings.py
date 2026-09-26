@@ -37,7 +37,7 @@ from tests.helpers.wait import (
 @pytest.mark.integration
 async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
     """`]` and `[` must update the rating widget, commander.settings.jog.speed,
-    storage, icon color, and tooltip in lockstep.
+    storage, and tooltip in lockstep.
 
     Regression for the bug where the keybinding only mutated
     ``waldoctl.commander.settings.jog.speed`` so the underlying jog actions used the new
@@ -48,7 +48,7 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
 
     Verifies the bug at two layers:
     1. The keybinding for `]` / `[` is registered with the right action
-    2. Invoking that action updates all five dependent visuals
+    2. Invoking that action updates all four dependent visuals
     """
     from waldo_commander.services.keybindings import keybindings_manager
     from waldo_commander.state import ui_state
@@ -59,9 +59,7 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
     cp = ui_state.control_panel
     refs = cp._rating_widgets["jog_speed"]
     rating = refs["rating"]
-    icon = refs["icon"]
     tooltip = refs["tooltip"]
-    colors = refs["colors"]
 
     # Both keybindings must be registered. If anyone removes the entries
     # in services/keybindings.py, this lookup raises KeyError.
@@ -75,7 +73,6 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
         assert waldoctl.commander.settings.jog.speed == 50
         assert rating.value == 5
         assert app.storage.general["jog_speed"] == 50
-        assert icon.props.get("color") == colors[4]
         assert "50%" in tooltip.text
 
         # `]` action — should advance by one step.
@@ -85,9 +82,6 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
         )
         assert rating.value == 6, "rating widget should reflect new step"
         assert app.storage.general["jog_speed"] == 60, "storage should persist"
-        assert icon.props.get("color") == colors[5], (
-            "icon color should advance to the 6th palette entry"
-        )
         assert "60%" in tooltip.text, (
             f"tooltip should reflect 60%, got {tooltip.text!r}"
         )
@@ -97,7 +91,6 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
         assert waldoctl.commander.settings.jog.speed == 50
         assert rating.value == 5
         assert app.storage.general["jog_speed"] == 50
-        assert icon.props.get("color") == colors[4]
         assert "50%" in tooltip.text
 
         # Lower-bound clamp: pressing `[` repeatedly must not go below
@@ -106,7 +99,6 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
             dec_binding.action()
         assert waldoctl.commander.settings.jog.speed == 10
         assert rating.value == 1
-        assert icon.props.get("color") == colors[0]
 
         # Upper-bound clamp: pressing `]` repeatedly must not exceed
         # rating step 10 (= 100%).
@@ -114,7 +106,6 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
             inc_binding.action()
         assert waldoctl.commander.settings.jog.speed == 100
         assert rating.value == 10
-        assert icon.props.get("color") == colors[9]
     finally:
         cp.adjust_rating("jog_speed", 50 - waldoctl.commander.settings.jog.speed)
 

@@ -30,7 +30,7 @@ import waldoctl
 from nicegui import background_tasks, ui
 
 from waldo_commander.common.charts import chart_options, expand_chart_button
-from waldo_commander.common.panel_theme import JOINT_COLORS as _JOINT_COLORS
+from waldo_commander.common.panel_theme import joint_colors
 from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S
 from waldo_commander.state import robot_events, robot_state, ui_state
@@ -43,12 +43,12 @@ logger = logging.getLogger(__name__)
 #: Icons are bare Material Symbols ligatures — the font reads the span's text,
 #: so Quasar's ``sym_o_`` spelling would render as the word itself.
 _BAND_STYLE: tuple[tuple[int, int, str, str], ...] = (
-    (10, 29, "route", "text-purple-400"),  # IK / trajectory
-    (30, 39, "open_with", "text-sky-400"),  # motion
-    (40, 49, "lan", "text-amber-400"),  # comms
-    (50, 64, "memory", "text-orange-400"),  # system / safety
+    (10, 29, "route", "text-wc-ai-autopilot"),  # IK / trajectory
+    (30, 39, "open_with", "text-wc-info"),  # motion
+    (40, 49, "lan", "text-wc-warning"),  # comms
+    (50, 64, "memory", "text-wc-warning-fill"),  # system / safety
 )
-_DEFAULT_STYLE = ("warning", "text-amber-400")
+_DEFAULT_STYLE = ("warning", "text-wc-warning")
 
 #: Normal is quiet. A reading only takes colour once it is outside the range
 #: its backend treats as healthy, so a panel with no colour in it is a panel
@@ -156,7 +156,7 @@ class DiagnosticsPage:
             self._build_events_section()
             self._nothing = (
                 ui.label("This backend reports no diagnostics.")
-                .classes("text-xs text-[var(--ctk-muted)]")
+                .classes("text-xs text-wc-text-muted")
                 .mark("diag-nothing")
             )
         self._apply_visibility()
@@ -173,7 +173,7 @@ class DiagnosticsPage:
 
     def _row(self, name: str, marker: str) -> ui.label:
         with ui.row().classes("w-full items-center no-wrap"):
-            ui.label(name).classes("text-xs text-[var(--ctk-muted)] w-28")
+            ui.label(name).classes("text-xs text-wc-text-muted w-28")
             value = ui.label("—").classes("text-xs font-mono").mark(marker)
         self._values[marker] = value
         return value
@@ -193,7 +193,7 @@ class DiagnosticsPage:
             ui.space()
             self._verdict_meta = (
                 ui.label("")
-                .classes("text-xs text-[var(--ctk-muted)] font-mono")
+                .classes("text-xs text-wc-text-muted font-mono")
                 .mark("diag-verdict-meta")
             )
 
@@ -264,7 +264,7 @@ class DiagnosticsPage:
                 ui.grid(columns=1).classes("w-full gap-x-4 gap-y-0").mark("diag-drives")
             )
             with self._drives_grid:
-                ui.label("Drive").classes("text-xs text-[var(--ctk-muted)]").mark(
+                ui.label("Drive").classes("text-xs text-wc-text-muted").mark(
                     "diag-drives-head-drive"
                 )
                 for head, kind in (
@@ -274,7 +274,7 @@ class DiagnosticsPage:
                 ):
                     self._drive_heads[kind] = (
                         ui.label(head)
-                        .classes("text-xs text-[var(--ctk-muted)]")
+                        .classes("text-xs text-wc-text-muted")
                         .mark(f"diag-drives-head-{kind}")
                     )
                     self._drive_heads[kind].set_visibility(False)
@@ -322,7 +322,8 @@ class DiagnosticsPage:
         series: list[dict[str, Any]] = []
         for measured in (True, False):
             for j in range(n):
-                color = _JOINT_COLORS[j % len(_JOINT_COLORS)]
+                palette = joint_colors()
+                color = palette[j % len(palette)]
                 series.append(
                     {
                         "name": f"J{j + 1}" if measured else f"J{j + 1} external",
@@ -422,7 +423,7 @@ class DiagnosticsPage:
             # from the panel having nowhere to put it.
             self._events_empty = (
                 ui.label("Nothing reported since start.")
-                .classes("text-xs text-[var(--ctk-muted)]")
+                .classes("text-xs text-wc-text-muted")
                 .mark("diag-events-empty")
             )
 

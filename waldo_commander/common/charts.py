@@ -2,7 +2,8 @@
 
 from nicegui import json, ui
 
-from waldo_commander.common.panel_theme import CHART_GRID, CHART_TEXT, JOINT_COLORS
+from waldo_commander.common.panel_theme import chart_grid, chart_text, joint_colors
+from waldo_commander.common.theme import hex_of
 
 
 def chart_options(
@@ -10,32 +11,32 @@ def chart_options(
 ) -> dict:
     return {
         "animation": False,
-        "color": JOINT_COLORS,
+        "color": joint_colors(),
         "tooltip": {
             "trigger": "axis",
             "confine": True,
-            "backgroundColor": "#262626",
-            "textStyle": {"color": "#f5f5f5"},
-            "borderColor": "#737373",
+            "backgroundColor": hex_of("surface"),
+            "textStyle": {"color": hex_of("text")},
+            "borderColor": hex_of("control"),
         },
-        "legend": {"top": 0, "textStyle": {"color": CHART_TEXT, "fontSize": 12}},
+        "legend": {"top": 0, "textStyle": {"color": chart_text(), "fontSize": 12}},
         "grid": {"left": 54, "right": 20, "top": 46, "bottom": 48},
         "xAxis": {
             "type": x_type,
             "name": x_name,
             "nameLocation": "middle",
             "nameGap": 28,
-            "axisLabel": {"color": CHART_TEXT, "fontSize": 12},
-            "nameTextStyle": {"color": CHART_TEXT, "fontSize": 12},
+            "axisLabel": {"color": chart_text(), "fontSize": 12},
+            "nameTextStyle": {"color": chart_text(), "fontSize": 12},
             "splitLine": {"show": False},
         },
         "yAxis": {
             "type": "value",
             "name": y_name,
             "scale": True,
-            "axisLabel": {"color": CHART_TEXT, "fontSize": 12},
-            "nameTextStyle": {"color": CHART_TEXT, "fontSize": 12},
-            "splitLine": {"lineStyle": {"color": CHART_GRID}},
+            "axisLabel": {"color": chart_text(), "fontSize": 12},
+            "nameTextStyle": {"color": chart_text(), "fontSize": 12},
+            "splitLine": {"lineStyle": {"color": chart_grid()}},
         },
         "series": [],
     }

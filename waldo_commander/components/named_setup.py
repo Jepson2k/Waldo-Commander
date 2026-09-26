@@ -254,7 +254,7 @@ class NamedSetupPanel(Panel):
                 ui.label("Setup").classes("panel-heading")
                 dirty = (
                     ui.label("Unsaved changes")
-                    .classes("text-amber-300 text-caption")
+                    .classes("text-wc-warning text-caption")
                     .mark("setup-dirty")
                 )
                 dirty.set_visibility(False)

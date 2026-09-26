@@ -2,7 +2,7 @@ import logging
 from functools import partial
 
 import waldoctl
-from nicegui import ui
+from nicegui import binding, ui
 from waldoctl import RobotClient
 
 from waldo_commander.services.control_lease import require_browser_control
@@ -10,6 +10,28 @@ from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.state import ui_state
 
 logger = logging.getLogger(__name__)
+
+
+class _OutputStateButton(ui.button):
+    """One half of a LOW/HIGH pair: the action fill while it is the live state.
+
+    A fill and its text colour change together, and only the background has a
+    bindable property on ``ui.button``, so both props are set from one setter.
+    """
+
+    _active: bool = False
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    @active.setter
+    def active(self, value: bool) -> None:
+        self._active = value
+        fill, text = (
+            ("wc-action", "wc-on-bright") if value else ("wc-control", "wc-text")
+        )
+        self.props(f"color={fill} text-color={text}")
 
 
 class IoPage:
@@ -75,9 +97,16 @@ class IoPage:
                         )
                         .classes("text-sm")
                     )
-                    ui.button("LOW", on_click=partial(self.set_output, i, 0)).props(
-                        "unelevated"
-                    )
-                    ui.button("HIGH", on_click=partial(self.set_output, i, 1)).props(
-                        "unelevated"
-                    )
+                    for label, state in (("LOW", 0), ("HIGH", 1)):
+                        btn = _OutputStateButton(
+                            label, on_click=partial(self.set_output, i, state)
+                        ).props("unelevated color=wc-control text-color=wc-text")
+                        binding.bind_from(
+                            btn,
+                            "active",
+                            io,
+                            "outputs",
+                            backward=lambda v, j=i, s=state: (
+                                len(v) > j and bool(v[j]) == bool(s)
+                            ),
+                        )

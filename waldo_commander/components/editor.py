@@ -9,7 +9,7 @@ import waldoctl
 from nicegui import Client, context, ui
 from waldoctl import EditId, Program, ProgramTarget
 
-from waldo_commander.common.theme import get_theme
+from waldo_commander.common.theme import effective_theme
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.file_operations import FileOperationsMixin
 from waldo_commander.components.log_panel import (
@@ -697,17 +697,17 @@ class EditorPanel(FileOperationsMixin):
                 "text-lg font-medium mb-2"
             )
             ui.label("Your changes will be lost if you don't save.").classes(
-                "text-sm text-gray-500 mb-4"
+                "text-sm text-wc-text-muted mb-4"
             )
             with ui.row().classes("gap-2 justify-end w-full"):
                 ui.button(
                     "Don't Save",
                     on_click=dont_save,
-                ).props("flat color=negative")
-                ui.button("Cancel", on_click=dlg.close).props("flat")
+                ).props("color=wc-control text-color=wc-error")
+                ui.button("Cancel", on_click=dlg.close).props("flat color=wc-text")
                 ui.button(
                     "Save", on_click=lambda: self._save_tab_and_close(tab, dlg)
-                ).props("color=primary")
+                ).props("color=wc-action text-color=wc-on-bright")
         dlg.open()
 
     def _do_close_tab(self, tab: Program) -> None:
@@ -880,7 +880,7 @@ class EditorPanel(FileOperationsMixin):
                     # Dirty indicator (orange dot).
                     dirty_dot = (
                         ui.icon("fiber_manual_record", size="xs")
-                        .classes("text-amber-500")
+                        .classes("text-wc-warning")
                         .style("font-size: 8px;")
                     )
                     dirty_dot.bind_visibility_from(tab, "is_dirty", lambda d: d)
@@ -897,8 +897,7 @@ class EditorPanel(FileOperationsMixin):
                         ui.button(
                             icon="close", on_click=lambda _e, t=tab: self._close_tab(t)
                         )
-                        .props("flat round dense size=xs")
-                        .classes("text-white")
+                        .props("flat round dense size=xs color=wc-text")
                         .tooltip("Close tab")
                     )
                     close_btn.mark(f"editor-tab-close-{tab.id}")
@@ -944,12 +943,9 @@ class EditorPanel(FileOperationsMixin):
                     line_tooltip_html=True,
                 ).classes("w-full flex-1 min-h-0")
 
-                try:
-                    mode = get_theme()
-                    effective = "light" if mode == "light" else "dark"
-                    textarea.theme = "basicLight" if effective == "light" else "oneDark"
-                except (KeyError, ValueError):
-                    textarea.theme = "oneDark"
+                textarea.theme = (
+                    "basicLight" if effective_theme() == "light" else "oneDark"
+                )
 
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
@@ -1093,20 +1089,22 @@ class EditorPanel(FileOperationsMixin):
             ).tooltip(label).mark(f"edit-label-{edit.id.value}")
             if len(pending) > 1:
                 ui.label(f"+{len(pending) - 1}").classes(
-                    "text-xs text-grey-6 whitespace-nowrap"
+                    "text-xs text-wc-text-muted whitespace-nowrap"
                 ).tooltip(f"{len(pending) - 1} more edit(s) queued")
             ui.button(
                 icon="check",
                 on_click=lambda _e, eid=edit.id, tid=tab_id: self._approve_edit(
                     tid, eid
                 ),
-            ).props("dense flat color=positive").mark(f"approve-edit-{edit.id.value}")
+            ).props("dense flat color=wc-positive").mark(
+                f"approve-edit-{edit.id.value}"
+            )
             ui.button(
                 icon="close",
                 on_click=lambda _e, eid=edit.id, tid=tab_id: self._reject_edit(
                     tid, eid
                 ),
-            ).props("dense flat color=negative").mark(f"reject-edit-{edit.id.value}")
+            ).props("dense flat color=wc-error").mark(f"reject-edit-{edit.id.value}")
 
     def _build_staged_cluster(self, session) -> None:
         """How much a take wrote, a captured span's form, Keep and Undo."""
@@ -1127,7 +1125,9 @@ class EditorPanel(FileOperationsMixin):
                         b.id, e.value
                     ),
                 )
-                .props("dense no-caps unelevated size=sm toggle-color=warning")
+                .props(
+                    "dense no-caps unelevated size=sm toggle-color=wc-warning-fill toggle-text-color=wc-on-bright"
+                )
                 .classes("staged-capture-mode")
                 .tooltip(
                     "Keep the captured motion as planned moves, or as the raw "
@@ -1137,10 +1137,10 @@ class EditorPanel(FileOperationsMixin):
             )
             mode.set_enabled(not block.busy)
         ui.button("Keep", on_click=motion_recorder.keep).props(
-            "dense flat no-caps color=positive"
+            "dense flat no-caps color=wc-positive"
         ).tooltip("Keep the recorded lines").mark("staged-keep")
         ui.button("Undo", on_click=motion_recorder.undo).props(
-            "dense flat no-caps color=negative"
+            "dense flat no-caps color=wc-error"
         ).tooltip("Take the recorded lines out").mark("staged-undo")
 
     def _staged_capture_at_cursor(self, session):
@@ -1317,7 +1317,7 @@ class EditorPanel(FileOperationsMixin):
             # instead of forcing a wrap.
             with (
                 ui.row()
-                .classes("w-full items-center gap-2 px-2 no-wrap")
+                .classes("w-full items-center gap-2 px-2 no-wrap editor-header")
                 .style("height: 42px;")
             ):
                 # Tabs area (horizontal scroll)
@@ -1340,7 +1340,7 @@ class EditorPanel(FileOperationsMixin):
                         # New tab button (last element in scrollable area)
                         new_tab_btn = (
                             ui.button(icon="add", on_click=lambda: self._new_tab())
-                            .props("flat dense color=white")
+                            .props("flat dense color=wc-text")
                             .classes("ml-2")
                             .tooltip("New Tab")
                         )
@@ -1355,7 +1355,7 @@ class EditorPanel(FileOperationsMixin):
 
                 open_btn = (
                     ui.button(icon="folder", on_click=self._show_open_dialog)
-                    .props("flat dense color=white")
+                    .props("flat dense color=wc-text")
                     .classes("editor-toolbar-btn")
                     .tooltip("Open")
                 )
@@ -1363,7 +1363,7 @@ class EditorPanel(FileOperationsMixin):
 
                 save_btn = (
                     ui.button(icon="save", on_click=self._show_save_dialog)
-                    .props("flat dense color=white")
+                    .props("flat dense color=wc-text")
                     .classes("editor-toolbar-btn")
                     .tooltip("Save")
                 )
@@ -1373,7 +1373,7 @@ class EditorPanel(FileOperationsMixin):
                 # left, so the tooltip does not cover the menu's first item.
                 commands_btn = (
                     ui.button(icon="library_add")
-                    .props("flat dense color=white")
+                    .props("flat dense color=wc-text")
                     .classes("editor-toolbar-btn")
                 )
                 commands_btn.mark("editor-commands-btn")
@@ -1383,7 +1383,7 @@ class EditorPanel(FileOperationsMixin):
 
                 more_btn = (
                     ui.button(icon="more_vert")
-                    .props("flat dense color=white")
+                    .props("flat dense color=wc-text")
                     .classes("editor-toolbar-btn")
                     .mark("editor-more-btn")
                 )
@@ -1399,7 +1399,7 @@ class EditorPanel(FileOperationsMixin):
                             icon="play_arrow",
                             on_click=self.run_selection,
                         )
-                        .props("flat dense no-caps align=left color=white")
+                        .props("flat dense no-caps align=left color=wc-text")
                         .classes("w-full")
                         .tooltip("Run the selected lines on the robot")
                         .mark("editor-run-selection")
@@ -1416,7 +1416,7 @@ class EditorPanel(FileOperationsMixin):
                             icon="bug_report",
                             on_click=show_run_records,
                         )
-                        .props("flat dense no-caps align=left color=white")
+                        .props("flat dense no-caps align=left color=wc-text")
                         .classes("w-full")
                         .tooltip(
                             "What recent runs did, and exporting it for a bug report"
@@ -1434,7 +1434,7 @@ class EditorPanel(FileOperationsMixin):
                             icon="restart_alt",
                             on_click=show_supervised_restart,
                         )
-                        .props("flat dense no-caps align=left color=white")
+                        .props("flat dense no-caps align=left color=wc-text")
                         .classes("w-full")
                         .tooltip("Restart a stopped program from a chosen entry")
                         .mark("editor-restart-btn")
@@ -1451,7 +1451,7 @@ class EditorPanel(FileOperationsMixin):
 
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(
-                        "flat round dense color=white"
+                        "flat round dense color=wc-text"
                     )
 
             # ---- Splitter: Editor (before) | Playbar (separator) | Log (after) ----

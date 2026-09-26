@@ -38,11 +38,11 @@ from waldo_commander.common.logging_config import (
 )
 from waldo_commander.common.loop_timer import LoopMetrics, format_hz_summary
 from waldo_commander.common.theme import (
+    apply_theme,
+    hex_of,
+    inject_layout_css,
     PANEL_RESIZE_CONFIG,
     SceneColors,
-    apply_theme,
-    inject_layout_css,
-    is_dark_theme,
 )
 from waldo_commander.components.control import ControlPanel
 from waldo_commander.components.diagnostics import DiagnosticsPage
@@ -221,6 +221,7 @@ def _update_warning_notification() -> None:
             type="warning",
             close_button=True,
             timeout=0,
+            textColor="wc-on-fill",
         )
     else:
         banner.message = msg
@@ -232,13 +233,8 @@ async def initialize_urdf_scene() -> None:
     urdf_path = Path(robot.urdf_path)
     mesh_dir = Path(robot.mesh_dir)
 
-    is_dark = is_dark_theme()
-    bg_color = (
-        SceneColors.BACKGROUND_DARK_HEX if is_dark else SceneColors.BACKGROUND_LIGHT_HEX
-    )
-    material_color = (
-        SceneColors.MATERIAL_DARK_HEX if is_dark else SceneColors.MATERIAL_LIGHT_HEX
-    )
+    bg_color = hex_of("scene-bg")
+    material_color = hex_of("scene-arm")
 
     # Create tool pose resolver from robot tools
     def tool_pose_resolver(
@@ -287,7 +283,6 @@ async def initialize_urdf_scene() -> None:
 
     if ui_state.urdf_scene.scene:
         scene: ui.scene = ui_state.urdf_scene.scene
-        scene._props["grid"] = (10, 100)
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
 
         # World coordinate frame at origin (fixed).
@@ -751,7 +746,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
     with (
         ui.tabs()
         .props("vertical")
-        .classes("side-tab-bar absolute left-0 top-0 z-40") as side_tabs
+        .classes("side-tab-bar absolute left-0 top-0") as side_tabs
     ):
         program_tab = ui.tab(name="program", label="", icon="code")
         program_tab.mark("tab-program")
@@ -772,7 +767,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         with diagnostics_tab:
             # Quasar floats the badge over the tab's corner, so an unread
             # count needs no layout of its own.
-            ui.badge(color="amber-7").props("floating").bind_text_from(
+            ui.badge().props("floating").bind_text_from(
                 robot_events, "unread", backward=str
             ).bind_visibility_from(robot_events, "unread", backward=bool).mark(
                 "diag-unread-badge"
@@ -807,7 +802,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                 ui.label("I/O").classes("text-lg font-medium")
                 ui.space()
                 ui.button(icon="close", on_click=close_top_panels).props(
-                    "flat round dense color=white"
+                    "flat round dense color=wc-text"
                 )
             ui_state.io_page = IoPage(client)
             ui_state.io_page.build()
@@ -836,7 +831,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                             .classes("text-lg font-medium")
                         )
                         gripper_features_label = ui.label("").classes(
-                            "text-xs text-[var(--ctk-muted)]"
+                            "wc-caption text-wc-text-muted"
                         )
 
                         def _update_features(k: str) -> str:
@@ -866,7 +861,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                         )
                         ui.space()
                         ui.button(icon="close", on_click=close_top_panels).props(
-                            "flat round dense color=white"
+                            "flat round dense color=wc-text"
                         )
                     ui_state.gripper_page = GripperPage(client)
                     ui_state.gripper_page.build()
@@ -881,7 +876,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                 ui.label("Diagnostics").classes("text-lg font-medium")
                 ui.space()
                 ui.button(icon="close", on_click=close_top_panels).props(
-                    "flat round dense color=white"
+                    "flat round dense color=wc-text"
                 )
             ui_state.diagnostics_page = DiagnosticsPage(
                 client,
@@ -911,7 +906,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
     with (
         ui.tabs(value=None)
         .props("vertical")
-        .classes("side-tab-bar absolute bottom-0 left-0 z-50") as bottom_tabs
+        .classes("side-tab-bar absolute bottom-0 left-0") as bottom_tabs
     ):
         resp_tab = ui.tab(name="response", label="", icon="article")
         resp_tab.tooltip("Log")
@@ -945,15 +940,12 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                 ui.label("Log").classes("text-lg font-medium")
                 ui.space()
                 ui.button(icon="close", on_click=close_bottom_panels).props(
-                    "flat round dense color=white"
+                    "flat round dense color=wc-text"
                 )
             ui_state.response_log = (
                 ui.log(max_lines=1000)
-                .classes("w-full h-full")
-                .classes("no-x-scroll")
-                .style(
-                    "min-height: 200px !important; width: 100% !important; background: rgba(0, 0, 0, 0.65); border-radius: 10px;"
-                )
+                .classes("w-full h-full no-x-scroll well")
+                .style("min-height: 200px !important; width: 100% !important;")
             )
             _add_resize_handles(PanelSlot.LEFT_BOTTOM_TAB)
 
@@ -964,7 +956,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                 ui.label("Settings").classes("text-lg font-medium")
                 ui.space()
                 ui.button(icon="close", on_click=close_bottom_panels).props(
-                    "flat round dense color=white"
+                    "flat round dense color=wc-text"
                 )
             with ui.column().classes("settings-content"):
                 ui_state.settings_content = SettingsContent(client)
@@ -1131,8 +1123,9 @@ def build_page_content() -> None:
                     hw_now = False
                 waldoctl.commander.status.connected = hw_now
 
-                control_panel.update_robot_btn_visual()
-                readout_panel.update_conn_io()
+                # Paint the arm for the mode the backend reports, not just the
+                # button: a page that boots straight into the simulator gets amber.
+                control_panel.sync_sim_mode_visuals()
 
                 # Enable gripper tab if a tool is already active
                 if (
@@ -1155,22 +1148,17 @@ def build_page_content() -> None:
             ui.timer(0.05, _init, once=True)
 
         # Loading overlay — matches scene background, visible until backend is ready
-        is_dark = is_dark_theme()
-        bg = (
-            SceneColors.BACKGROUND_DARK_HEX
-            if is_dark
-            else SceneColors.BACKGROUND_LIGHT_HEX
-        )
         with (
             ui.column()
-            .classes("absolute inset-0 z-10 items-center justify-center gap-4")
+            .classes("absolute inset-0 items-center justify-center gap-4")
             .style(
-                f"background: {bg}; transition: opacity 0.4s ease;"
+                f"background: {hex_of('scene-bg')}; z-index: var(--wc-z-loading);"
+                " transition: opacity 0.4s ease;"
             ) as scene_loading_overlay
         ):
-            loading_spinner = ui.spinner("dots", size="xl", color="grey")
-            loading_status = ui.label("Connecting to controller...").style(
-                "color: grey; font-size: 0.9rem;"
+            loading_spinner = ui.spinner("dots", size="xl").props("color=wc-text-muted")
+            loading_status = ui.label("Connecting to controller...").classes(
+                "wc-body text-wc-text-muted"
             )
 
         # Overlay panels and HUD elements.
@@ -1554,8 +1542,10 @@ def _build_takeover_overlay(message: str) -> None:
     # are defined when the run_javascript bootstrap fires below.
     ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
 
-    with ui.column().classes(
-        "fixed inset-0 z-[9999] items-center justify-center bg-black/60"
+    with (
+        ui.column()
+        .classes("fixed inset-0 items-center justify-center")
+        .style("z-index: var(--wc-z-capsule); background: var(--wc-scrim);")
     ):
         # Wandering sad robot — sibling of the card. JS sets transform to
         # mope around the viewport, avoiding the centered card's footprint.
@@ -1566,14 +1556,14 @@ def _build_takeover_overlay(message: str) -> None:
 
         with ui.column().classes("overlay-card items-center max-w-sm p-8"):
             ui.label("Waldo Commander").classes("text-xl font-semibold")
-            ui.label(message).classes("text-sm text-center opacity-90")
+            ui.label(message).classes("text-sm text-center")
 
             def _take_over() -> None:
                 ui_state.active_client_id = None
                 ui.navigate.reload()
 
             ui.button("Take over", on_click=_take_over).props(
-                "color=primary unelevated rounded"
+                "color=wc-action unelevated rounded text-color=wc-on-bright"
             ).classes("mt-2")
 
     # Bootstrap face animations + wandering. The robot-faces.js script tag
@@ -1647,13 +1637,13 @@ async def index_page():
         # active tab eventually closes.
         # Theme + layout CSS must be applied here too so the .takeover-*
         # classes (defined in theme.py) actually exist on shadow pages.
-        apply_theme("dark")
+        apply_theme()
         inject_layout_css()
         _build_takeover_overlay("Session active in another tab")
         ui.timer(interval=1.0, callback=check_ping, active=True)
         return
 
-    apply_theme("dark")
+    apply_theme()
     ui.query(".nicegui-content").classes("p-0")
     inject_layout_css()
 

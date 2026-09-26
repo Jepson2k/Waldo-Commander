@@ -28,6 +28,8 @@ from waldoctl import EnvelopeMode
 from waldo_commander.common.theme import SceneColors
 from waldo_commander.state import simulation_state
 
+from .objects import Stl
+
 
 logger = logging.getLogger(__name__)
 
@@ -599,7 +601,7 @@ class EnvelopeRenderer:
             return False
         try:
             with self.simulation_group:
-                self.envelope_object = ui.scene.stl(
+                self.envelope_object = Stl(
                     workspace_envelope.stl_url, wireframe=True
                 ).with_name("envelope:hull")
                 self.envelope_object.material(SceneColors.ENVELOPE_HEX, 0.8)

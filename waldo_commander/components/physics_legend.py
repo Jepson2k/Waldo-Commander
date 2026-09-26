@@ -17,6 +17,7 @@ import math
 import waldoctl
 from nicegui import ui
 
+from waldo_commander.common.theme import hex_of
 from waldo_commander.components.playback import layers_available
 from waldo_commander.services.urdf_scene.physics_overlay import (
     FORCE_SCALE_M_PER_N,
@@ -42,9 +43,7 @@ class PhysicsLegend:
             # Bottom-left, clear of the icon rail: the right half of the
             # scene belongs to the control panel, and a key painted
             # underneath it is worse than no key at all.
-            .classes(
-                "absolute bottom-24 left-24 z-30 rounded-lg px-3 py-2 gap-2 bg-neutral-800 text-neutral-100 border border-neutral-600"
-            )
+            .classes("absolute bottom-24 left-24 z-30 rounded-lg px-3 py-2 gap-2 glass")
             .style("pointer-events: none;") as root
         ):
             self._root = root
@@ -53,7 +52,7 @@ class PhysicsLegend:
                     self._swatch_row(
                         "Predicted path",
                         f"green on its command, red at {_TRACKING_DEG:.1f}° of error",
-                        ("#59d973", "#f25940"),
+                        (hex_of("physics-on-track"), hex_of("physics-diverged")),
                     ),
                     "predicted_visible",
                 ),
@@ -61,7 +60,7 @@ class PhysicsLegend:
                     self._swatch_row(
                         "Contact force",
                         f"arrow length {_ARROW_CM_PER_N:.1f} cm per newton",
-                        ("#ff5d5d", "#ff5d5d"),
+                        (hex_of("physics-contact"), hex_of("physics-contact")),
                     ),
                     "contacts_visible",
                 ),
@@ -69,7 +68,7 @@ class PhysicsLegend:
                     self._swatch_row(
                         "Centre of mass",
                         "of the whole simulated scene",
-                        ("#ffd166", "#ffd166"),
+                        (hex_of("physics-com"), hex_of("physics-com")),
                     ),
                     "com_visible",
                 ),
@@ -86,8 +85,8 @@ class PhysicsLegend:
                 f" background: linear-gradient(90deg, {colors[0]}, {colors[1]});"
             )
             with ui.column().classes("gap-0"):
-                ui.label(title).classes("text-xs font-medium leading-tight")
-                ui.label(detail).classes("text-xs text-neutral-300 leading-tight")
+                ui.label(title).classes("wc-label leading-none")
+                ui.label(detail).classes("wc-micro text-wc-text-muted leading-none")
         return row
 
     def refresh(self) -> None:

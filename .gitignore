@@ -29,3 +29,5 @@ nicegui/
 pinokin/
 /tools/
 waldoctl/
+# embedded checkout, not part of this repo
+recap/

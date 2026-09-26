@@ -128,7 +128,7 @@ async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
     await wait_for_urdf_ready()
     scene = ui_state.urdf_scene
     assert scene is not None
-    assert scene._ground_disc is not None and scene._ground_disc.visible_
+    assert scene._floor is not None and scene._floor.visible_
 
     # What the shipped robot config declares: a wide static box whose top
     # face is the plane the robot stands on.
@@ -146,7 +146,7 @@ async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
     )
     floor = scene._shape_objects["install:floor"]
     assert floor.color == SceneColors.SHAPE_INSTALL_HEX
-    assert not scene._ground_disc.visible_, (
+    assert not scene._floor.visible_, (
         "a described installation displaces the placeholder disc"
     )
     # A program keep-out is drawn at the size it declares.
@@ -171,7 +171,7 @@ async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
     # A backend describing no installation gets the placeholder back.
     scene.render_shapes([])
     assert "install:floor" not in scene._shape_objects
-    assert scene._ground_disc.visible_
+    assert scene._floor.visible_
 
 
 @pytest.mark.integration
