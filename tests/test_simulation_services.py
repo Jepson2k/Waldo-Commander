@@ -294,9 +294,9 @@ class TestMotionRecorder:
 
         # Part 2: Move command with params (partial position → set_position)
         mock_textarea.value = ""
-        recorder.record_action("gripper", position=0.5, speed=50, current=200)
+        recorder.record_action("gripper", position=0.5, speed=0.5, current=0.3)
         inserted_code = mock_textarea.value
-        assert "rbt.tool.set_position(0.5, speed=50, current=200)" in inserted_code
+        assert "rbt.tool.set_position(0.5, speed=0.5, current=0.3)" in inserted_code
 
         # Part 3: Full open (position=0.0) — always uses set_position
         mock_textarea.value = ""

@@ -44,7 +44,7 @@ def _dispatched(index: int, verb: str) -> int:
 async def move_j(
     angles: list[float],
     speed: float = 0.5,
-    accel: float = 1.0,
+    accel: float = 0.5,
     wait: bool = False,
 ) -> int:
     """Joint-space move to ``angles`` (degrees). Returns the command index."""
@@ -62,7 +62,7 @@ async def move_l(
     pose: list[float],
     frame: Frame = "WRF",
     speed: float = 0.5,
-    accel: float = 1.0,
+    accel: float = 0.5,
     wait: bool = False,
 ) -> int:
     """Linear Cartesian move to ``pose = [x,y,z,rx,ry,rz]`` (mm, deg)."""

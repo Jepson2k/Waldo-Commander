@@ -8,6 +8,7 @@ takes the ``FastMCP`` instance directly — no real socket is opened).
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 from fastmcp import Client
@@ -15,7 +16,11 @@ from nicegui.testing import User
 
 import waldoctl
 from tests.helpers.mcp import payload as _payload
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import (
+    JOG_SAFE_POSE_DEG,
+    teleport_to_jog_pose,
+    wait_for_app_ready,
+)
 from waldo_commander.mcp.server import get_mcp
 
 
@@ -54,6 +59,31 @@ async def test_status_tools_roundtrip(user: User) -> None:
 
         connected = _payload(await client.call_tool("status.get_connected"))
         assert set(connected) == {"connected", "simulator_active"}
+
+
+@pytest.mark.integration
+async def test_joint_speeds_are_live_and_in_deg_per_s(user: User) -> None:
+    """``status.get_joints`` reports live joint speeds in deg/s: J1 swept
+    20° in 2 s peaks at no less than its 10°/s average, and no profile
+    peaks at more than a few times its average."""
+    await user.open("/")
+    await wait_for_app_ready()
+    rbt = waldoctl.commander.client
+    await teleport_to_jog_pose(rbt)
+    target = list(JOG_SAFE_POSE_DEG)
+    target[0] -= 20.0
+    assert await rbt.move_j(target, duration=2.0) >= 0
+
+    peak = 0.0
+    async with Client(get_mcp()) as client:
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            joints = _payload(await client.call_tool("status.get_joints"))
+            peak = max(peak, abs(joints["speeds_deg_s"][0]))
+            if abs(joints["angles_deg"][0] - target[0]) < 0.1:
+                break
+            await asyncio.sleep(0.02)
+    assert 10.0 <= peak <= 40.0, f"J1 peaked at {peak}, not a deg/s reading"
 
 
 @pytest.mark.integration

@@ -375,9 +375,8 @@ class _ToolQuickActions:
                 step = tool.adjust_step
                 # Disable at limits
                 if isinstance(tool, ElectricGripperTool):
-                    lo, hi = tool.current_range
-                    at_lo = cur <= lo
-                    at_hi = cur >= hi
+                    at_lo = cur <= 0
+                    at_hi = cur >= 100
                 else:
                     at_lo = at_hi = False
                 if at_lo:
@@ -397,10 +396,8 @@ class _ToolQuickActions:
                         self._adjust_plus_tooltip = ui.tooltip("")
                 assert self._adjust_minus_tooltip is not None
                 assert self._adjust_plus_tooltip is not None
-                self._adjust_minus_tooltip.text = (
-                    f"{dec_label}: {cur} mA (\u2212{step})"
-                )
-                self._adjust_plus_tooltip.text = f"{inc_label}: {cur} mA (+{step})"
+                self._adjust_minus_tooltip.text = f"{dec_label}: {cur}% (\u2212{step})"
+                self._adjust_plus_tooltip.text = f"{inc_label}: {cur}% (+{step})"
 
     async def _on_action_l(self) -> None:
         if not self._movement_allowed():
@@ -413,7 +410,9 @@ class _ToolQuickActions:
                 spd_kwargs: dict = {}
                 if isinstance(tool, ElectricGripperTool):
                     spd_kwargs["speed"] = waldoctl.commander.settings.jog.speed / 100.0
-                    spd_kwargs["current"] = waldoctl.commander.settings.gripper.current
+                    spd_kwargs["current"] = (
+                        waldoctl.commander.settings.gripper.current / 100.0
+                    )
                 _cur_pos = waldoctl.commander.status.tool.position
                 if tool.is_open(_cur_pos):
                     target = 1.0  # close
@@ -452,16 +451,16 @@ class _ToolQuickActions:
         if not isinstance(tool, ElectricGripperTool):
             return
         step = tool.adjust_step * direction
-        lo, hi = tool.current_range
-        new_cur = max(lo, min(hi, waldoctl.commander.settings.gripper.current + step))
+        new_cur = max(0, min(100, waldoctl.commander.settings.gripper.current + step))
         if ui_state.gripper_page is not None:
             ui_state.gripper_page.set_target_current(new_cur)
         else:
             waldoctl.commander.settings.gripper.current = new_cur
         try:
             pos = waldoctl.commander.settings.gripper.target_position
-            await tool.set_position(pos, current=new_cur)
-            motion_recorder.record_action("gripper", position=pos, current=new_cur)
+            current = new_cur / 100.0
+            await tool.set_position(pos, current=current)
+            motion_recorder.record_action("gripper", position=pos, current=current)
         except Exception as e:
             logger.error("Adjust failed: %s", e)
             ui.notify(f"Adjust failed: {e}", color="negative")

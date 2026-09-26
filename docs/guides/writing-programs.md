@@ -40,7 +40,7 @@ rbt.move_j(pose=[100, 340, 334, 90, 0, 90], speed=0.5)
 rbt.move_l([-50, 340, 334, 90, 0, 90], speed=0.5)
 ```
 
-`speed` is normalized 0.0–1.0. You can also use `duration` (seconds) or `accel` (0.0–1.0). Relative moves offset from the current position with `rel=True`, and `frame="TRF"` switches to the Tool Reference Frame for Cartesian moves.
+`speed` and `accel` are fractions of the robot's limits, greater than 0 and at most 1, and both default to 0.5. A `duration` (seconds) times the move instead of `speed`. Relative moves offset from the current position with `rel=True`, and `frame="TRF"` switches to the Tool Reference Frame for Cartesian moves.
 
 <video controls width="100%">
   <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/move_j_vs_move_l.mp4" type="video/mp4">
@@ -151,7 +151,7 @@ rbt.tool.close(speed=1.0)
 rbt.tool.open(speed=1.0)
 ```
 
-Electric grippers accept `speed` and `current` keyword arguments for finer control.
+Electric grippers accept `speed` and `current` keyword arguments for finer control, each a fraction from 0 to 1 (default 0.5); `current` spans the gripper's current range.
 
 ### Pencil pickup
 

@@ -50,6 +50,7 @@ class GripperPage:
         self.client = client
         self._last_current_tool_key: str | None = None
         self._current_range_listener: Callable | None = None
+        self._current_range: tuple[int, int] = (0, 0)
         self._slider_drag_ts: float = 0.0
         self._last_slider_send: float = 0.0
         self._last_lease_block_notify: float = 0.0
@@ -98,7 +99,9 @@ class GripperPage:
                     spd_kwargs["speed"] = (
                         waldoctl.commander.settings.gripper.speed / 100.0
                     )
-                spd_kwargs["current"] = waldoctl.commander.settings.gripper.current
+                spd_kwargs["current"] = (
+                    waldoctl.commander.settings.gripper.current / 100.0
+                )
             await tool.set_position(position, **spd_kwargs)
             motion_recorder.record_action("gripper", position=position, **spd_kwargs)
         except Exception as e:
@@ -268,7 +271,11 @@ class GripperPage:
         target_pos_pct = round(
             waldoctl.commander.settings.gripper.target_position * 100, 1
         )
-        current_limit = waldoctl.commander.settings.gripper.current
+        # The chart plots measured mA; the setting is a percent of the range.
+        lo, hi = self._current_range
+        current_limit = lo + waldoctl.commander.settings.gripper.current / 100.0 * (
+            hi - lo
+        )
 
         if result is not None:
             timestamps, positions, currents = result
@@ -317,7 +324,8 @@ class GripperPage:
         self._update_mark_lines()
 
     def set_target_current(self, current: int) -> None:
-        """Set target current and update the slider. Called by control panel adjust."""
+        """Set the target current (percent) and update the slider. Called by
+        control panel adjust."""
         waldoctl.commander.settings.gripper.current = current
         if self._cur_slider is not None:
             self._cur_slider.set_value(current)
@@ -366,7 +374,7 @@ class GripperPage:
             try:
                 await tool.set_position(
                     waldoctl.commander.settings.gripper.target_position,
-                    current=int(value),
+                    current=int(value) / 100.0,
                 )
             except Exception as exc:
                 logger.debug("Current limit update failed: %s", exc)
@@ -518,13 +526,16 @@ class GripperPage:
         def _electric_visible(k: str) -> bool:
             return k != "NONE" and self._is_electric()
 
-        ui.label("mA").classes("text-xs text-[var(--ctk-muted)]").bind_visibility_from(
+        ui.label("Current").classes(
+            "text-xs text-[var(--ctk-muted)]"
+        ).bind_visibility_from(
             waldoctl.commander.status.tool,
             "key",
             backward=_electric_visible,
         )
+        cur_pct = waldoctl.commander.settings.gripper.current
         self._cur_slider = (
-            ui.slider(min=0, max=1000, value=500, step=10)
+            ui.slider(min=0, max=100, value=cur_pct, step=1)
             .on("pan", self._on_slider_pan)
             .on_value_change(self._on_current_slider_change)
         ).bind_visibility_from(
@@ -532,7 +543,7 @@ class GripperPage:
             "key",
             backward=_electric_visible,
         )
-        cur_input = ui.number(min=0, max=1000, step=10, value=500).props(
+        cur_input = ui.number(min=0, max=100, step=1, value=cur_pct).props(
             "dense borderless"
         )
         cur_input.bind_value_from(self._cur_slider, "value")
@@ -543,20 +554,13 @@ class GripperPage:
         )
 
         def _update_current_range() -> None:
-            if self._cur_slider is None:
-                return
             if waldoctl.commander.status.tool.key == self._last_current_tool_key:
                 return
             self._last_current_tool_key = waldoctl.commander.status.tool.key
             tool = self._get_active_gripper()
             if isinstance(tool, ElectricGripperTool):
-                lo, hi = tool.current_range
-                self._cur_slider._props["min"] = lo
-                self._cur_slider._props["max"] = hi
-                cur_input._props["min"] = lo
-                cur_input._props["max"] = hi
-                self._cur_slider.value = min(lo + 80, hi)
-                self._cur_slider.update()
+                self._current_range = tool.current_range
+                self._mark_lines_dirty = True
 
         self._current_range_listener = _update_current_range
         robot_state.add_change_listener(_update_current_range)
