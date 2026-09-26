@@ -284,6 +284,7 @@ async def initialize_urdf_scene() -> None:
     if ui_state.urdf_scene.scene:
         scene: ui.scene = ui_state.urdf_scene.scene
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
+        ui.run_javascript(f"WcCameraDistance.attach({scene.id})")
 
         # World coordinate frame at origin (fixed).
         world_axes_size = 0.30
@@ -1092,6 +1093,7 @@ def build_page_content() -> None:
     )
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
     ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
+    ui.add_head_html('<script src="/static/js/camera-distance.js" defer></script>')
 
     with ui.column().classes("relative w-screen h-screen overflow-hidden gap-0"):
         with ui.column().classes("absolute inset-0 z-0"):
@@ -2185,6 +2187,7 @@ async def _status_consumer() -> None:
                                 robot_state.completed_index,
                             )
                             control_panel.refresh_joint_enablement()
+                            control_panel.refresh_joint_dials()
                             control_panel.sync_cartesian_button_states()
                             control_panel.sync_gizmo_for_jog_state()
                             if ui_state.gripper_page is not None:

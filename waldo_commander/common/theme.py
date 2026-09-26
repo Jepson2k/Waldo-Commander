@@ -266,7 +266,7 @@ RADIUS: dict[str, str] = {
 SIZE: dict[str, str] = {
     "size-control": "32px",
     "size-control-sm": "24px",
-    "size-joint-bar": "33px",
+    "size-joint-dial": "64px",
     "size-jog-slot": "72px",
     "size-rail": "52px",
 }
@@ -715,7 +715,6 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
   border-radius: var(--wc-radius-sm);
 }}
 .q-field--error .q-field__bottom, .q-field--error .q-field__messages {{ color: var(--wc-error) !important; }}
-.joint-readout-input .q-field__native {{ padding-top: 12px !important; padding-bottom: 4px !important; }}
 .step-input .q-field__suffix {{ display: inline-block; width: 14px; text-align: center; }}
 .step-suffix-small .q-field__suffix {{ font-size: 0.7em; }}
 
@@ -920,17 +919,19 @@ html, body {
 /* Main app container should also clip */
 .q-layout, .q-page-container { overflow: hidden !important; }
 
-/* Joint readout input — compact field styling */
+/* Joint readout: a compact number field centred in its dial */
 .joint-readout-input .q-field__control {
   max-height: 3em !important;
+  padding: 0 !important;
 }
-
 .joint-readout-input .q-field__native {
-   padding: 0 !important;
+  padding: 0 !important;
+  font-size: 10px;
+  line-height: 1;
 }
-
-.joint-readout-input .q-field__label {
-    top: 12px !important;
+.joint-readout-input .q-field__suffix {
+  font-size: 9px;
+  padding-left: 0;
 }
 
 /* Axis colours: fills (glyphs, markers) and their text variants (readout) */
@@ -997,43 +998,98 @@ html, body {
   transition: transform var(--wc-duration-instant) linear, filter var(--wc-duration-instant) linear, outline-color var(--wc-duration-instant) linear;
 }
 
-/* Joint control bars: control track, progress travel, the value crossing both under a scrim halo */
-.joint-bar {
-  border-radius: var(--wc-radius-pill) !important;
-  height: var(--wc-size-joint-bar);
-}
-.joint-bar .q-linear-progress__track { opacity: 1; }
-
 /* Settings rows fill the panel, never the widest child */
 .settings-scroll .q-scrollarea__content { width: 100%; min-width: 0; }
-.joint-value-pill {
-  padding: 0 var(--wc-space-2);
+
+/* Joint dials: a ring per joint on a control track with the travelled arc in
+   progress; the jog caps and limit buttons appear when the dial is hovered or
+   holds focus */
+.joint-dial-cell {
+  width: var(--wc-size-joint-dial);
+  position: relative;
+}
+.joint-dial {
+  position: relative;
+  width: var(--wc-size-joint-dial);
+  height: var(--wc-size-joint-dial);
+}
+.joint-dial-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.dial-track, .dial-fill {
+  fill: none;
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+.dial-track { stroke: var(--wc-control); }
+.dial-fill { stroke: var(--wc-progress); }
+.dial-tick { stroke: var(--wc-text-muted); stroke-width: 1.5; }
+.dial-knob { fill: var(--wc-text); }
+.joint-dial .joint-readout-input {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
   color: var(--wc-text);
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 3px var(--wc-scrim), 0 0 3px var(--wc-scrim);
 }
-
 .joint-cap {
-  height: calc(var(--wc-size-joint-bar) - 1px);
-  width: var(--wc-size-joint-bar);
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
   min-height: 0;
   padding: 0;
-  border-radius: var(--wc-radius-pill);
   color: var(--wc-text) !important;
-  font-size: 19px;
+  background: var(--wc-glass);
+  opacity: 0;
+  transition: opacity var(--wc-duration-fast);
+  z-index: 1;
 }
-
-.joint-cap:hover {
-  opacity: 0.8;
-}
-
+.joint-cap-minus { left: -6px; }
+.joint-cap-plus { right: -6px; }
 .joint-cap.q-btn--disabled {
   color: var(--wc-text-disabled) !important;
   pointer-events: none;
 }
+.joint-dial-name {
+  max-width: 100%;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--wc-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.joint-dial-limits {
+  opacity: 0;
+  transition: opacity var(--wc-duration-fast);
+}
+.joint-dial-cell:hover .joint-cap,
+.joint-dial-cell:focus-within .joint-cap,
+.joint-dial-cell:hover .joint-dial-limits,
+.joint-dial-cell:focus-within .joint-dial-limits {
+  opacity: 1;
+}
+/* Outranks the locked-state opacity so a disabled cap stays hidden until the dial is hovered */
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap { opacity: 0 !important; }
 
-/* Level indicators: the dots take the progress token; Quasar dims the unselected ones */
+/* Level chips: percentage beside the icon, the rating in the popover; its dots
+   take the progress token and Quasar dims the unselected ones */
+.level-chip { min-height: 0; padding: 0 var(--wc-space-2); font-variant-numeric: tabular-nums; }
+.level-chip .q-icon { color: var(--wc-text-muted); }
+.level-menu { padding: var(--wc-space-1) var(--wc-space-2); }
 .level-speed .q-icon, .level-accel .q-icon { color: var(--wc-progress) !important; }
+
+/* Tool box: name over its readout, the actions to the right */
+.tool-box-readout { min-width: 0; line-height: 1.1; }
+.step-auto { font-size: 9px; }
 
 /* Control panel jog tabs: compact padding */
 .cp-jog-tabs .q-tab {

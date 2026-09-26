@@ -59,6 +59,7 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
     cp = ui_state.control_panel
     refs = cp._rating_widgets["jog_speed"]
     rating = refs["rating"]
+    chip = refs["label"]
     tooltip = refs["tooltip"]
 
     # Both keybindings must be registered. If anyone removes the entries
@@ -73,6 +74,7 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
         assert waldoctl.commander.settings.jog.speed == 50
         assert rating.value == 5
         assert app.storage.general["jog_speed"] == 50
+        assert chip.text == "50%"
         assert "50%" in tooltip.text
 
         # `]` action — should advance by one step.
@@ -82,6 +84,7 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
         )
         assert rating.value == 6, "rating widget should reflect new step"
         assert app.storage.general["jog_speed"] == 60, "storage should persist"
+        assert chip.text == "60%", f"chip should read 60%, got {chip.text!r}"
         assert "60%" in tooltip.text, (
             f"tooltip should reflect 60%, got {tooltip.text!r}"
         )
@@ -91,6 +94,7 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
         assert waldoctl.commander.settings.jog.speed == 50
         assert rating.value == 5
         assert app.storage.general["jog_speed"] == 50
+        assert chip.text == "50%"
         assert "50%" in tooltip.text
 
         # Lower-bound clamp: pressing `[` repeatedly must not go below
