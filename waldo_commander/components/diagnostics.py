@@ -38,17 +38,17 @@ from waldo_commander.state import robot_events, robot_state, ui_state
 logger = logging.getLogger(__name__)
 
 #: Error-code bands (waldoctl.errors). The band says what kind of thing went
-#: wrong, which is more use in a log than a severity word: a bus-off entry
-#: and a degraded loop are both "warning" and want telling apart at a glance.
-#: Icons are bare Material Symbols ligatures — the font reads the span's text,
-#: so Quasar's ``sym_o_`` spelling would render as the word itself.
-_BAND_STYLE: tuple[tuple[int, int, str, str], ...] = (
-    (10, 29, "route", "text-wc-ai-autopilot"),  # IK / trajectory
-    (30, 39, "open_with", "text-wc-info"),  # motion
-    (40, 49, "lan", "text-wc-warning"),  # comms
-    (50, 64, "memory", "text-wc-warning-fill"),  # system / safety
+#: wrong, so the icon tells a bus-off entry from a degraded loop at a glance;
+#: the colour is the entry's severity. Icons are bare Material Symbols
+#: ligatures — the font reads the span's text, so Quasar's ``sym_o_`` spelling
+#: would render as the word itself.
+_BAND_ICON: tuple[tuple[int, int, str], ...] = (
+    (10, 29, "route"),  # IK / trajectory
+    (30, 39, "open_with"),  # motion
+    (40, 49, "lan"),  # comms
+    (50, 64, "memory"),  # system / safety
 )
-_DEFAULT_STYLE = ("warning", "text-wc-warning")
+_SEVERITY_COLOUR = {"warning": "text-wc-warning", "error": "text-wc-error"}
 
 #: Normal is quiet. A reading only takes colour once it is outside the range
 #: its backend treats as healthy, so a panel with no colour in it is a panel
@@ -65,11 +65,11 @@ _SEVERITY_CLASS = {OK: "diag-ok", WARN: "diag-warn", FAULT: "diag-fault"}
 LOOP_WARN_RATIO = 1.25
 
 
-def _band(code: int) -> tuple[str, str]:
-    for lo, hi, icon, colour in _BAND_STYLE:
+def _band_icon(code: int) -> str:
+    for lo, hi, icon in _BAND_ICON:
         if lo <= code <= hi:
-            return icon, colour
-    return _DEFAULT_STYLE
+            return icon
+    return "warning"
 
 
 def _ms(seconds: float) -> str:
@@ -92,12 +92,17 @@ def _faults(drive_health: Any) -> Sequence[Sequence[str]]:
 
 
 class DiagnosticsPage:
-    """The diagnostics tab's content."""
+    """The Diagnostics tab of the bottom panel."""
 
-    def __init__(self, client: Any, is_open: Callable[[], bool], tab: ui.tab) -> None:
+    def __init__(
+        self,
+        client: Any,
+        is_open: Callable[[], bool],
+        attention: ui.element | None = None,
+    ) -> None:
         self.client = client
         self._is_open = is_open
-        self._tab = tab
+        self._attention = attention
         self._joint_count = ui_state.active_robot.joints.count
         self._values: dict[str, ui.label] = {}
         self._sections: dict[str, ui.column] = {}
@@ -109,6 +114,8 @@ class DiagnosticsPage:
         self._drive_rows: list[tuple[ui.label, list[ui.label]]] = []
         self._drive_heads: dict[str, ui.label] = {}
         self._drives_grid: ui.grid | None = None
+        self._drives_summary: ui.label | None = None
+        self._drives_expanded = False
         self._supply_box: ui.element | None = None
         self._chart: ui.echart | None = None
         self._events_html: ui.html | None = None
@@ -147,13 +154,17 @@ class DiagnosticsPage:
     def build(self) -> None:
         with ui.column().classes("w-full gap-2").mark("diagnostics-panel"):
             self._build_verdict()
-            self._build_safety_section()
-            self._build_loop_section()
-            self._build_link_section()
-            self._build_drives_section()
-            self._build_torque_section()
-            self._build_homing_section()
-            self._build_events_section()
+            with ui.element("div").classes("diag-grid"):
+                with ui.column().classes("diag-col gap-2"):
+                    self._build_safety_section()
+                    self._build_loop_section()
+                with ui.column().classes("diag-col gap-2"):
+                    self._build_drives_section()
+                    self._build_link_section()
+                    self._build_homing_section()
+                with ui.column().classes("diag-wide gap-2"):
+                    self._build_torque_section()
+                    self._build_events_section()
             self._nothing = (
                 ui.label("This backend reports no diagnostics.")
                 .classes("text-xs text-wc-text-muted")
@@ -260,9 +271,13 @@ class DiagnosticsPage:
         Like a section, a column stays once shown.
         """
         with self._section("drives", "Drives"):
+            self._drives_summary = (
+                ui.label("").classes("diag-drives-summary").mark("diag-drives-summary")
+            )
             self._drives_grid = (
                 ui.grid(columns=1).classes("w-full gap-x-4 gap-y-0").mark("diag-drives")
             )
+            self._drives_grid.set_visibility(False)
             with self._drives_grid:
                 ui.label("Drive").classes("text-xs text-wc-text-muted").mark(
                     "diag-drives-head-drive"
@@ -626,6 +641,17 @@ class DiagnosticsPage:
         reported = max(len(temps), len(currents), len(faults))
         faulted: list[str] = []
         if reported:
+            # A fault column of dashes says nothing; the table appears once
+            # there is a reading or a fault to put in it, and then stays.
+            if not self._drives_expanded and (temps or currents or any(faults)):
+                self._drives_expanded = True
+                if self._drives_grid is not None:
+                    self._drives_grid.set_visibility(True)
+                if self._drives_summary is not None:
+                    self._drives_summary.set_visibility(False)
+            if not self._drives_expanded and self._drives_summary is not None:
+                count = min(reported, self._joint_count)
+                self._drives_summary.set_text(f"{count} drives · no faults")
             if temps:
                 self._show_column("temp")
             if currents:
@@ -679,10 +705,13 @@ class DiagnosticsPage:
             return
         self._events_version = robot_events.version
         if not self._is_open():
-            flash_tab(self._tab)
+            flash_tab(self._attention)
         parts: list[str] = []
-        for ts, code, title, cause, effect, remedy in reversed(robot_events.entries):
-            icon, colour = _band(code)
+        for ts, code, title, cause, effect, remedy, severity in reversed(
+            robot_events.entries
+        ):
+            icon = _band_icon(code)
+            colour = _SEVERITY_COLOUR.get(severity, "text-wc-warning")
             esc = html_mod.escape
             detail = " → ".join(x for x in (esc(cause), esc(effect)) if x)
             parts.append(

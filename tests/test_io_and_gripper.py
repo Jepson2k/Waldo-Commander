@@ -79,30 +79,36 @@ async def test_control_panel_tool_quick_actions(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_the_readout_io_strip_absorbs_a_large_line_count(user: User) -> None:
-    """The strip has to fit the panel whatever the backend reports.
+async def test_the_footer_io_dots_follow_the_line_count(user: User) -> None:
+    """One dot per line the backend reports, named on hover.
 
     parol6 has four fixed lines, but a backend that takes its I/O from
-    config can report many more. One unwrapped row of those widens the
-    readout past its own width and drags the rest of the panel with it, so
-    the strip wraps and its labels tighten instead.
+    config can report many more, and the first frame from it may not match
+    the count the footer was built for.
     """
     import waldoctl as _wctl
 
     await user.open("/")
     await wait_for_app_ready()
 
-    readout = ui_state.readout_panel
-    assert len(readout._io_chips) == 4, "parol6 reports two in and two out"
-    assert readout._io_chips[0].text == "DI1", "few enough lines to spell out"
+    footer = ui_state.readout_panel
+    assert len(footer._io_dots) == 4, "parol6 reports two in and two out"
+    tooltips = [next(iter(d.default_slot.children)).text for d in footer._io_dots]
+    assert tooltips == [
+        "Digital Input 1",
+        "Digital Input 2",
+        "Digital Output 1",
+        "Digital Output 2",
+    ]
 
     io = _wctl.commander.status.io
-    io.inputs = [0] * 12
+    io.inputs = [1] + [0] * 11
     io.outputs = [0] * 12
     # The status consumer calls this on the page; a face change in between
     # restarts its animation there, which needs the page.
     with Client.instances[ui_state.active_client_id]:
-        readout.update_conn_io()
+        footer.update_conn_io()
 
-    assert len(readout._io_chips) == 24, "a chip per line the backend reports"
-    assert readout._io_chips[0].text == "I1", "and terser labels once there are many"
+    assert len(footer._io_dots) == 24, "a dot per line the backend reports"
+    lit = [i for i, d in enumerate(footer._io_dots) if "io-dot-on" in d.classes]
+    assert lit == [0], "and only the high line is lit"
