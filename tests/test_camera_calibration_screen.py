@@ -89,7 +89,7 @@ def test_fixed_camera_calibration_layout(screen, tmp_path, monkeypatch):
             panel._save_btn.set_enabled(True)
             panel._data_editor.name.set_value("overhead")
             panel._refresh_stage()
-            panel._show_step(4)
+            panel._open_step("save")
             return panel._save_btn.id, panel._data_editor.message.id
 
     try:

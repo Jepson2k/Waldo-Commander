@@ -187,6 +187,81 @@ def test_solve_rejections():
 
 
 @pytest.mark.unit
+def test_view_coverage():
+    """Where a view came from — the frame cells its corners land in and the
+    side the camera saw the board from — and what a set of views still lacks."""
+    detector = handeye.make_detector(SPEC)
+
+    def rendered(tilt_deg: float, azimuth_deg: float) -> handeye.Detection:
+        image = render_board_view(
+            SPEC,
+            K_TRUE,
+            look_at_target_pose(SPEC, 450.0, tilt_deg, azimuth_deg, 0.0),
+            IMAGE_SIZE,
+        )
+        detection = handeye.detect_board(image, detector)
+        assert detection is not None
+        return detection
+
+    # At roll 0 the camera axes align with the board's, so a camera displaced
+    # toward the board's -x sees it from image-left, toward -y from above.
+    left = rendered(25.0, 180.0)
+    assert handeye.view_tilt(left, SPEC, IMAGE_SIZE) == "left"
+    assert handeye.view_tilt(rendered(25.0, 270.0), SPEC, IMAGE_SIZE) == "up"
+    assert handeye.view_tilt(rendered(25.0, 45.0), SPEC, IMAGE_SIZE) == "down-right"
+    assert handeye.view_tilt(rendered(0.0, 0.0), SPEC, IMAGE_SIZE) is None
+    assert handeye.view_tilt(rendered(3.0, 90.0), SPEC, IMAGE_SIZE) is None
+
+    def box(x0: float, y0: float, x1: float, y1: float) -> handeye.Detection:
+        xs, ys = np.meshgrid(np.linspace(x0, x1, 4), np.linspace(y0, y1, 4))
+        corners = np.stack([xs.ravel(), ys.ravel()], axis=1).reshape(-1, 1, 2)
+        return handeye.Detection(
+            corners.astype(np.float32),
+            np.arange(len(corners), dtype=np.int32).reshape(-1, 1),
+            IMAGE_SIZE,
+            0,
+        )
+
+    assert handeye.view_cells(box(10, 10, 100, 100), IMAGE_SIZE) == {0}
+    assert handeye.view_cells(box(10, 10, 630, 100), IMAGE_SIZE) == {0, 1, 2}
+    assert handeye.view_cells(box(250, 200, 400, 300), IMAGE_SIZE) == {4}
+    assert handeye.view_cells(box(639.0, 479.0, 639.9, 479.9), IMAGE_SIZE) == {8}
+
+    T = np.eye(4)
+    stored = [
+        handeye.HandEyeSample(
+            T, box(10, 10, 100, 100), 0.0, cells=frozenset({0}), tilt="left"
+        ),
+        handeye.HandEyeSample(
+            T, box(250, 200, 400, 300), 1.0, cells=frozenset({4}), tilt="up"
+        ),
+    ]
+    # A sample carrying nothing is measured from its detection: this view
+    # spans the centre column of the frame.
+    computed = handeye.HandEyeSample(T, left, 2.0)
+    cov = handeye.coverage([*stored, computed], SPEC)
+    assert cov.sectors[handeye.SECTORS.index("left")] == 2
+    assert cov.sectors[handeye.SECTORS.index("up")] == 1
+    assert sum(cov.sectors) == 3
+    assert (cov.cells[0], cov.cells[1], cov.cells[4], cov.cells[7]) == (1, 1, 2, 1)
+    # The gaps to fill first: the opposite of what is covered, and a corner
+    # of the frame before its edges.
+    assert cov.next_sector == "down"
+    assert cov.next_cell == "bottom-right"
+
+    full = handeye.coverage(
+        [
+            handeye.HandEyeSample(
+                T, box(10, 10, 100, 100), 0.0, cells=frozenset(range(9)), tilt=sector
+            )
+            for sector in handeye.SECTORS
+        ],
+        SPEC,
+    )
+    assert full.next_sector is None and full.next_cell is None
+
+
+@pytest.mark.unit
 def test_board_png_roundtrip():
     png = handeye.board_png(SPEC, dpi=150)
     image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)

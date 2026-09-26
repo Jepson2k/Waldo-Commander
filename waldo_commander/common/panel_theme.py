@@ -85,19 +85,35 @@ def inject_panel_css() -> None:
 .diag-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--wc-text-muted); transition: width .2s linear; }
 .diag-bar-fill.over { background: var(--wc-warning); }
 .diagnostics-view > .panel-body { flex-basis: auto; }
-/* Calibration is four steps: the ribbon is where the operator is, the
-   thumbnails are what they have, and a view's border is the only colour. */
-.handeye-steps { gap: 0; border-bottom: 1px solid var(--wc-glass-border); }
-.handeye-step { flex: 1 1 0; border-radius: 0; border-bottom: 2px solid transparent; color: var(--wc-text-muted) !important; }
-.handeye-step.handeye-step-done { color: var(--wc-text) !important; }
-.handeye-step.handeye-step-active { color: var(--wc-text) !important; border-bottom-color: var(--wc-action); }
-.handeye-views { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; }
+/* Calibration is one flow of three steps: the open step shows its body, the
+   others are a header line carrying their summary. */
+.handeye-step { width: 100%; padding: 0 6px; }
+.handeye-step .q-btn__content { width: 100%; flex-wrap: nowrap; justify-content: flex-start; gap: 8px; }
+.handeye-step-icon { font-size: 18px; color: var(--wc-text-muted); }
+.handeye-step-open .handeye-step-icon { color: var(--wc-action-text); }
+.handeye-step-done .handeye-step-icon { color: var(--wc-positive); }
+.handeye-step-name { font-size: 14px; font-weight: 600; color: var(--wc-text); }
+.handeye-step-summary { flex: 1 1 0; min-width: 0; text-align: left; font-size: 12px; font-weight: 400; color: var(--wc-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.handeye-step-body { padding-left: 26px; }
+/* The coverage ring: a rim filling toward the target count, eight tilt
+   sectors around a 3x3 map of the frame, and the sector to fill next glowing. */
+.handeye-coverage { position: relative; flex-shrink: 0; width: 104px; height: 104px; border-radius: 50%; background: conic-gradient(var(--wc-progress) calc(var(--wc-coverage-progress, 0) * 1turn), var(--wc-control) 0); }
+.handeye-coverage-complete { background: var(--wc-positive); }
+.handeye-coverage-sectors { position: absolute; inset: 5px; border-radius: 50%; overflow: hidden; background: var(--wc-well); }
+.handeye-coverage-sector { position: absolute; inset: 0; background: var(--wc-control); }
+.handeye-coverage-cells { position: absolute; left: 30px; top: 30px; width: 44px; height: 44px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 3px; border-radius: 5px; background: var(--wc-surface); }
+.handeye-coverage-cell { border-radius: 2px; background: var(--wc-control); }
+.handeye-coverage .cov-1 { background: var(--wc-progress); opacity: .4; }
+.handeye-coverage .cov-2 { background: var(--wc-progress); opacity: .7; }
+.handeye-coverage .cov-3 { background: var(--wc-progress); }
+.handeye-coverage .handeye-coverage-next { background: var(--wc-warning-fill); animation: handeye-glow var(--wc-duration-ambient) var(--wc-ease-loop) infinite alternate; }
+@keyframes handeye-glow { from { opacity: .35; } to { opacity: .9; } }
+.handeye-views { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; padding: 4px 0; }
 .handeye-view { position: relative; aspect-ratio: 4 / 3; border: 1px solid var(--wc-glass-border); border-radius: 3px; overflow: hidden; background: var(--wc-scene-bg); }
 .handeye-view .q-img { position: absolute; inset: 0; height: 100%; }
 .handeye-view-index { position: absolute; left: 5px; top: 2px; font-size: 11px; color: var(--wc-text); text-shadow: 0 0 3px var(--wc-scene-bg); }
 .handeye-view .q-btn { position: absolute; right: 0; top: 0; opacity: 0; }
 .handeye-view:hover .q-btn { opacity: 1; }
-.handeye-view-empty { border-style: dashed; background: transparent; }
 .handeye-view-similar { border-color: var(--wc-warning); }
 .handeye-view-error { border-color: var(--wc-error); }
 .handeye-verdict { font-size: 17px; font-weight: 600; }
