@@ -990,10 +990,11 @@ class HandEyeCalibrationPanel(Panel):
         reported as a Stop nobody pressed.
         """
         try:
-            return bool(await commander.client.queue())
+            queued = await commander.client.queue()
         except Exception as error:
             logger.debug("Queue readback during an auto move failed: %s", error)
             return True
+        return queued is None or bool(queued)
 
     async def _wait_stationary(self) -> None:
         deadline = time.monotonic() + AUTO_STATIONARY_TIMEOUT_S
