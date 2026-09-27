@@ -5,7 +5,13 @@ import waldoctl
 from nicegui import Client
 from selenium.webdriver.support.ui import WebDriverWait
 
-from tests.helpers.browser_helpers import click_tab, dismiss_dialogs, js, run_in_app
+from tests.helpers.browser_helpers import (
+    click_tab,
+    close_panel,
+    dismiss_dialogs,
+    js,
+    run_in_app,
+)
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.state import ui_state
 
@@ -81,37 +87,44 @@ def test_many_io_lines_keep_the_footer_one_row(screen):
 
 
 @pytest.mark.browser
-def test_bottom_panel_stays_clear_of_the_control_panel(screen):
+def test_bottom_panel_pushes_the_column_up_and_stays_clear_of_the_control_panel(screen):
     screen.open("/")
     screen_wait_for_scene_ready(screen, timeout_s=40)
     dismiss_dialogs(screen)
     screen.selenium.set_window_size(1366, 768)
-    # The program column narrows the panel from the left as the control panel does from the right.
     click_tab(screen, "program")
     click_tab(screen, "diagnostics")
-    rects = WebDriverWait(screen.selenium, 10).until(
-        lambda _: (
-            r := js(
-                screen,
-                """
-                const p = document.querySelector('.bottom-panel').getBoundingClientRect();
-                const c = document.querySelector('.overlay-br').getBoundingClientRect();
-                return {panelRight: p.right, panelLeft: p.left, controlLeft: c.left,
-                        panelTop: p.top, controlBottom: c.bottom};
-                """,
-            )
-        )
-        and r["panelRight"] <= r["controlLeft"] - 11
-        and r
+    geometry = """
+        const box = s => { const e = document.querySelector(s); if (!e || e.offsetParent === null) return null;
+                           const b = e.getBoundingClientRect(); return {left: b.left, right: b.right, top: b.top, bottom: b.bottom}; };
+        return {panel: box('.bottom-panel'), column: box('.program-panel'), control: box('.overlay-br'),
+                viewport: innerHeight, framedBottom: SceneFraming.getInset().bottom};
+    """
+    opened = WebDriverWait(screen.selenium, 10).until(
+        lambda _: (g := js(screen, geometry))["panel"]
+        and g["column"]["bottom"] <= g["panel"]["top"] - 11
+        and g
     )
-    assert rects["panelLeft"] < rects["panelRight"], rects
-    grid = js(
+    panel, column, control = opened["panel"], opened["column"], opened["control"]
+    assert abs(panel["left"] - column["left"]) <= 1, opened
+    assert panel["right"] <= control["left"] - 11, opened
+    assert opened["framedBottom"] == round(opened["viewport"] - panel["top"]), opened
+    wrapped = js(
         screen,
         """
-        const g = document.querySelector('.bottom-panel .diag-grid');
-        return {width: g.clientWidth,
-                columns: getComputedStyle(g).gridTemplateColumns.split(' ').length};
+        return [...document.querySelectorAll('.bottom-panel .font-mono')]
+            .filter(e => e.offsetParent !== null && e.textContent.trim())
+            .filter(e => e.getClientRects().length > 1
+                || e.offsetHeight > 1.5 * parseFloat(getComputedStyle(e).lineHeight))
+            .map(e => e.textContent);
         """,
     )
-    # Two 300 px columns and their gap do not fit, so the sections stack.
-    assert grid["width"] < 616 and grid["columns"] == 1, grid
+    assert wrapped == [], f"diagnostics values wrap: {wrapped}"
+
+    close_panel(screen, "bottom-panel")
+    closed = WebDriverWait(screen.selenium, 10).until(
+        lambda _: (g := js(screen, geometry))["panel"] is None
+        and g["column"]["bottom"] > opened["column"]["bottom"] + 300
+        and g
+    )
+    assert closed["framedBottom"] < opened["framedBottom"], closed
