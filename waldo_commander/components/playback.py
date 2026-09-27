@@ -343,23 +343,26 @@ class PlaybackController:
         — the GUI play button and the MCP ``execution.pause/resume`` tools —
         must go through here, or the play button desyncs from the subprocess."""
         prog = self._play_program()
-        if playing:
-            await script_exec.signal_play()
-            if prog is not None:
-                prog.dry_run.playback.is_playing = True
-            logger.debug("Script playing")
-        else:
-            try:
-                await script_exec.signal_pause()
-                logger.debug("Script paused")
-            finally:
-                # The subprocess is held before the controller's pause is
-                # requested, so the button has to show a held program even when
-                # that request goes unconfirmed -- otherwise it offers to pause
-                # a program that is already stopped at its next command.
+        try:
+            if playing:
+                await script_exec.signal_play()
                 if prog is not None:
-                    prog.dry_run.playback.is_playing = False
-        simulation_state.notify_changed()
+                    prog.dry_run.playback.is_playing = True
+                logger.debug("Script playing")
+            else:
+                try:
+                    await script_exec.signal_pause()
+                    logger.debug("Script paused")
+                finally:
+                    # The subprocess is held before the controller's pause is
+                    # requested, so the button has to show a held program even
+                    # when that request goes unconfirmed -- otherwise it offers
+                    # to pause a program that is already stopped at its next
+                    # command.
+                    if prog is not None:
+                        prog.dry_run.playback.is_playing = False
+        finally:
+            simulation_state.notify_changed()
 
     async def toggle_play(self, *, control_verified: bool = False) -> None:
         """Toggle play/pause for script execution or simulation playback.
