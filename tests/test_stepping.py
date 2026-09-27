@@ -36,21 +36,20 @@ class TestStepIO:
     """The program side of the stepping link.
 
     A program constructs StepIO from WALDO_STEP_SESSION and connects to the
-    GUI's listener for that session; without a GUI it is never held.
+    GUI's listener for that session. Without a session it is never held;
+    with one, it never runs on without its GUI.
     """
 
-    def test_from_env_connects_or_runs_unmanaged(self, monkeypatch):
+    def test_from_env_connects_or_refuses_to_run_unmanaged(self, monkeypatch):
         from waldo_commander.services.stepping_client import GUIStepController, StepIO
 
         monkeypatch.delenv("WALDO_STEP_SESSION", raising=False)
         assert StepIO.from_env() is None
-        # A session nobody listens on: unmanaged, so nothing pauses or holds.
+        # A session nobody listens on: the program was launched managed, and
+        # running it unmanaged would ignore every Pause and Step.
         monkeypatch.setenv("WALDO_STEP_SESSION", "nobody-listens")
-        orphan = StepIO.from_env()
-        assert isinstance(orphan, StepIO) and orphan.session_id == "nobody-listens"
-        assert orphan.check_should_pause() is False
-        assert orphan.hold_requested() is False
-        orphan.wait_for_step_or_play(poll_interval=0.01)
+        with pytest.raises(ConnectionError, match="nobody-listens"):
+            StepIO.from_env()
         controller = GUIStepController("from-env")
         controller.initialize()
         try:
@@ -92,9 +91,10 @@ class TestStepIO:
 
     def test_wait_for_step_blocks_paused_and_releases(self):
         """A paused session blocks until a step is granted; once the GUI has
-        closed the link the session is no longer managed and must not block."""
+        closed the link the wait fails rather than block or run on."""
         from waldo_commander.services.stepping_client import (
             GUIStepController,
+            SteppingLinkLost,
             StepIO,
         )
 
@@ -124,14 +124,16 @@ class TestStepIO:
 
         controller.cleanup()
         start = time.monotonic()
-        step_io.wait_for_step_or_play(poll_interval=0.01)
+        with pytest.raises(SteppingLinkLost):
+            step_io.wait_for_step_or_play(poll_interval=0.01)
         assert time.monotonic() - start < 1.0
 
     async def test_wait_for_step_async_blocks_and_releases(self):
         """The async wait mirrors the sync semantics: blocks while paused,
-        releases on a granted step, returns immediately once the GUI is gone."""
+        releases on a granted step, fails at once when the GUI is gone."""
         from waldo_commander.services.stepping_client import (
             GUIStepController,
+            SteppingLinkLost,
             StepIO,
         )
 
@@ -148,9 +150,56 @@ class TestStepIO:
         await asyncio.wait_for(task, timeout=1.0)
 
         controller.cleanup()
-        await asyncio.wait_for(
-            step_io.wait_for_step_or_play_async(poll_interval=0.01), timeout=1.0
+        with pytest.raises(SteppingLinkLost):
+            await asyncio.wait_for(
+                step_io.wait_for_step_or_play_async(poll_interval=0.01), timeout=1.0
+            )
+
+    def test_a_lost_gui_stops_the_program_instead_of_releasing_it(
+        self, session_controller
+    ):
+        """A GUI that goes away mid-run takes nothing with it: the program's
+        next command raises instead of running on unmanaged, and the arm is
+        stopped, queued motion and all."""
+        from parol6 import RobotClient
+
+        from tests.conftest import _get_test_ports
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            SteppingClientWrapper,
+            SteppingLinkLost,
+            StepIO,
         )
+
+        controller = GUIStepController("lost-gui")
+        controller.initialize()
+        controller.signal_play()
+        port, _ = _get_test_ports()
+        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+            client.simulator(True)
+            client.reset()
+            assert client.home(wait=True, timeout=10.0) >= 0
+            step_io = StepIO("lost-gui")
+            wrapper = SteppingClientWrapper(client, step_io)
+            home = client.angles()
+            assert home is not None
+            away = [a + 5.0 for a in home]
+            try:
+                # A blend group is queued and not waited on: only a Stop ends it.
+                assert wrapper.move_j(away, duration=4.0, r=15, wait=False) >= 0
+                controller.cleanup()
+                deadline = time.monotonic() + 1.0
+                while step_io._connected and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                with pytest.raises(SteppingLinkLost):
+                    wrapper.move_j(home, duration=0.5)
+                deadline = time.monotonic() + 2.0
+                while not (client.queue() == [] and client.is_robot_stopped()):
+                    assert time.monotonic() < deadline, "the arm was left moving"
+                    time.sleep(0.05)
+            finally:
+                controller.cleanup()
+                client.stop()
 
 
 # ============================================================================
@@ -195,7 +244,11 @@ class TestGUIStepController:
             controller.cleanup()
 
     def test_poll_events_and_cleanup(self):
-        from waldo_commander.services.stepping_client import GUIStepController, StepIO
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            SteppingLinkLost,
+            StepIO,
+        )
 
         controller = GUIStepController("test_poll")
         controller.initialize()
@@ -211,13 +264,21 @@ class TestGUIStepController:
         assert controller.poll_events() == []
 
         controller.cleanup()
-        # The link is closed: the program runs unmanaged and its events go nowhere.
+        # Nothing of the session outlives it: the listener's thread ends too.
+        assert not any(
+            t.name == f"step-gui-{controller.session_id}" and t.is_alive()
+            for t in threading.enumerate()
+        ), "the accept thread outlived its session"
+        # The link is closed: the program's events go nowhere, and it is held
+        # to account at its next gate rather than let run on.
         deadline = time.monotonic() + 1.0
         while step_io._connected and time.monotonic() < deadline:
             time.sleep(0.01)
         assert not step_io._connected
         step_io.emit_event("start", "move_l")
         assert controller.poll_events() == []
+        with pytest.raises(SteppingLinkLost):
+            step_io.check_should_pause()
 
 
 # ============================================================================
@@ -352,11 +413,15 @@ class TestSteppingClientWrapper:
 
         from waldo_commander.services import completion_budget
         from waldo_commander.services.stepping_client import (
+            GUIStepController,
             StepIO,
             SteppingClientWrapper,
         )
 
         monkeypatch.setattr(completion_budget, "PLAN_GRACE_S", 0.3)
+        controller = GUIStepController("test_grace")
+        controller.initialize()
+        controller.signal_play()
         client = MagicMock()
         client.wait_command = MagicMock(return_value=False)
         client.wait_status = MagicMock(return_value=False)
@@ -366,10 +431,13 @@ class TestSteppingClientWrapper:
                 queued_duration=0.0, completed_index=-1, executing_index=-1
             )
         )
-        wrapper = SteppingClientWrapper(client, StepIO("test_grace"))
-        started = time.monotonic()
-        assert wrapper.wait_command(5) is False
-        assert time.monotonic() - started < 3.0
+        try:
+            wrapper = SteppingClientWrapper(client, StepIO("test_grace"))
+            started = time.monotonic()
+            assert wrapper.wait_command(5) is False
+            assert time.monotonic() - started < 3.0
+        finally:
+            controller.cleanup()
 
     def test_stop_reaches_controller_while_a_blend_group_is_pending(
         self, tmp_path, monkeypatch, session_controller
