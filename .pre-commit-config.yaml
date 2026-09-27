@@ -22,7 +22,7 @@ repos:
         name: colours resolve through design tokens
         entry: python scripts/check_colors.py
         language: system
-        files: ^waldo_commander/.*\.py$
+        files: ^waldo_commander/.*\.(py|js|svg|css)$
 
   # Built-in hooks for file quality
   - repo: https://github.com/pre-commit/pre-commit-hooks
