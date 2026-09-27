@@ -469,6 +469,13 @@ def _run_simulation_isolated(
         except UnresolvedPreview as e:
             unresolved = True
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+
+        except SystemExit as e:
+            # A script entry point ends in sys.exit(main()); only a failure
+            # status is an error, and the exit must not reach the host.
+            if e.code not in (None, 0):
+                error_message = f"Program exited with status {e.code}"
+
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
@@ -485,9 +492,7 @@ def _run_simulation_isolated(
         # A pool worker is discarded with these swaps in place, but a direct
         # in-process call shares the app's interpreter, where a client built
         # from the backend's name after this point has to be the real one
-        # again. In a ``finally`` because a script ending in ``sys.exit()``
-        # raises SystemExit, which passes both excepts and would otherwise
-        # leave the preview class installed for the rest of the app's life.
+        # again, even after a BaseException neither except takes.
         for module, name, original in reversed(swapped_names):
             if original is None:
                 delattr(module, name)
@@ -623,7 +628,11 @@ class _PhysicsPool:
         """Run *fn*, abandoning whatever was running before it."""
         self.cancel()
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(self._ensure(), fn, args)
+        try:
+            future = loop.run_in_executor(self._ensure(), fn, args)
+        except Exception:
+            self._discard()
+            raise
         self._current = future
         try:
             return await future
@@ -632,6 +641,12 @@ class _PhysicsPool:
             # run; the worker must be terminated while we still own it.
             if self._current is future:
                 self.cancel()
+            raise
+        except Exception:
+            # A worker that died mid-job leaves its executor refusing every
+            # later submission, so the next pass needs a fresh one.
+            if self._current is future:
+                self._discard()
             raise
         finally:
             if self._current is future:
@@ -648,6 +663,10 @@ class _PhysicsPool:
         if current is None:
             return
         current.cancel()
+        self._discard()
+
+    def _discard(self) -> None:
+        """Kill the worker and drop its executor; the next run spawns both."""
         pool, self._pool = self._pool, None
         if pool is not None:
             for p in getattr(pool, "_processes", {}).values():

@@ -8,7 +8,7 @@ import inspect
 import logging
 from typing import Any, Literal, get_args, get_origin, get_type_hints
 
-from nicegui import background_tasks, run, ui
+from nicegui import background_tasks, ui
 from waldoctl import Commander
 from waldoctl.camera import CameraCalibration
 from waldoctl.recordings import Demonstration
@@ -169,8 +169,7 @@ class SkillDialog:
                 return
             tool = commander.status.tool
             try:
-                planned = await run.io_bound(
-                    plan_preview,
+                planned = await plan_preview(
                     entries[key],
                     arguments,
                     commander.robot,
@@ -179,10 +178,13 @@ class SkillDialog:
                 )
             except Exception as error:
                 logger.debug("No preview for %s: %s", key, error)
-                if explain and generation == preview_generation:
-                    preview_note.set_text(
-                        f"Cannot plan this from the current pose: {error}"
-                    )
+                if generation == preview_generation:
+                    # The last path drawn belongs to arguments no longer in the form.
+                    scene.clear_skill_preview()
+                    if explain:
+                        preview_note.set_text(
+                            f"Cannot plan this from the current pose: {error}"
+                        )
                 return
             if planned is not None and generation == preview_generation:
                 preview_note.set_text("")

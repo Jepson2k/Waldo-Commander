@@ -1685,3 +1685,58 @@ async def test_a_selection_belongs_to_the_tab_it_was_made_in(user: User) -> None
         f"the other tab's selection replaced this tab's lines: {other.value!r}"
     )
     assert any(line.startswith("rbt.move_") for line in lines), other.value
+
+
+@pytest.mark.integration
+async def test_run_selection_brings_the_imports_in_its_scope(
+    user: User,
+) -> None:
+    """A selection runs beside the imports in its scope: the program's own and
+    those of the block it sits in, where an inserted skill puts its import.
+    One in another function belongs to that function, and a guarded one keeps
+    its guard."""
+    import waldoctl
+
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    editor = ui_state.editor_panel
+    textarea = ui_state.active_textarea
+    assert editor is not None and textarea is not None
+    textarea.value = (
+        "import math\n"
+        "from typing import TYPE_CHECKING\n"
+        "from parol6 import RobotClient\n"
+        "if TYPE_CHECKING:\n"
+        "    import no_such_typing_module\n"
+        "try:\n"
+        "    import no_such_fast_json as json\n"
+        "except ImportError:\n"
+        "    import json\n"
+        "\n"
+        "\n"
+        "def optional():\n"
+        "    import no_such_module_in_a_def\n"
+        "\n"
+        "\n"
+        "with RobotClient() as rbt:\n"
+        "    from math import tau\n"
+        "    assert json.dumps(math.sqrt(4)) == '2.0' and tau > 6\n"
+    )
+    await asyncio.sleep(0)
+    _set_selection(textarea, 18, 18)
+    await asyncio.sleep(0)
+    user.find(marker="editor-run-selection").click()
+    async with asyncio.timeout(30):
+        while script_exec.last_exit_code is None:
+            await asyncio.sleep(0.05)
+    run = waldoctl.commander.programs.get(editor._selection_program_id or "")
+    assert run is not None
+    assert script_exec.last_exit_code == 0, "\n".join(
+        entry.text for entry in run.log.entries
+    )
