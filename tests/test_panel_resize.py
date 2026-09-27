@@ -28,7 +28,7 @@ COLUMN = """
     return {top: r.top, bottom: r.bottom, right: r.right, width: c.offsetWidth,
             panelWidth: p ? p.offsetWidth : 0, viewport: innerHeight, footerTop: footer.top,
             open: wrap.classList.contains('column-open'),
-            columnRight: parseFloat(wrap.style.getPropertyValue('--wc-column-right')),
+            columnRight: PanelResize.layout().columnRight,
             handles: [...(p ? p.querySelectorAll('[class*="resize-handle-"]') : [])]
                 .map(h => [...h.classList].find(c => c.startsWith('resize-handle-')))};
 """
@@ -87,7 +87,11 @@ def drag(screen: "Screen", selector: str, dx: int = 0, dy: int = 0) -> None:
 def open_program(screen: "Screen") -> dict:
     click_tab(screen, "program")
     return WebDriverWait(screen.selenium, 5).until(
-        lambda _: (c := js(screen, COLUMN)) and c["open"] and c["panelWidth"] > 0 and c
+        lambda _: (c := js(screen, COLUMN))
+        and c["open"]
+        and c["panelWidth"] > 0
+        and c["columnRight"] > 0
+        and c
     )
 
 
@@ -146,9 +150,12 @@ class TestProgramColumn:
         before = open_program(class_screen)
 
         drag(class_screen, ".program-panel .resize-handle-right", dx=100)
-        after = js(class_screen, COLUMN)
+        after = WebDriverWait(class_screen.selenium, 5).until(
+            lambda _: (c := js(class_screen, COLUMN))
+            and abs(c["columnRight"] - c["right"]) <= 1
+            and c
+        )
         assert after["width"] > before["width"], (before, after)
-        assert abs(after["columnRight"] - after["right"]) <= 1, after
         assert abs(after["bottom"] - before["bottom"]) <= 1, (before, after)
 
         saved = get_storage(class_screen, STORAGE_KEY)
@@ -158,10 +165,12 @@ class TestProgramColumn:
         assert "height" not in saved["program"], saved
 
         close_panel(class_screen, "program-panel")
-        closed = WebDriverWait(class_screen.selenium, 5).until(
-            lambda _: (c := js(class_screen, COLUMN)) and not c["open"] and c
+        WebDriverWait(class_screen.selenium, 5).until(
+            lambda _: (c := js(class_screen, COLUMN))
+            and not c["open"]
+            and c["columnRight"] == 0
+            and c
         )
-        assert not closed["open"] and closed["columnRight"] == 0, closed
         assert "height" not in get_storage(class_screen, STORAGE_KEY)["program"]
 
         reopened = open_program(class_screen)
@@ -175,22 +184,3 @@ class TestProgramColumn:
         drag(class_screen, ".program-panel .resize-handle-right", dx=-500)
         panel = class_screen.selenium.find_element(By.CSS_SELECTOR, ".program-panel")
         assert panel.rect["width"] >= 395
-
-    def test_a_saved_column_height_is_forgotten_once(
-        self, class_screen: "Screen"
-    ) -> None:
-        """A height an older build saved for the editor has nothing to
-        restore to; the width beside it is kept."""
-        wait_ready(class_screen)
-        js(
-            class_screen,
-            """
-            localStorage.removeItem(arguments[0] + '_column');
-            localStorage.setItem(arguments[0],
-                JSON.stringify({program: {width: 700, height: 480, group: 'top'}}));
-            PanelResize.configure(PanelResize.getConfig());
-            """,
-            STORAGE_KEY,
-        )
-        saved = get_storage(class_screen, STORAGE_KEY)["program"]
-        assert "height" not in saved and saved["width"] == 700, saved

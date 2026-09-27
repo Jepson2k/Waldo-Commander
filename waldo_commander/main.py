@@ -789,7 +789,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         def close_top_panels():
             side_tabs.value = None
             top_panels.value = None
-            panels_wrap.classes(remove="coupled column-open")
+            panels_wrap.classes(remove="column-open")
             ui_state.program_panel_visible = False
             ui.run_javascript("PanelResize.onTabChange('top', '')")
 
@@ -876,7 +876,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
             ui_state.program_panel_visible = new_tab == "program"
-            if new_tab == "program":
+            panel = PANEL_RESIZE_CONFIG["panels"].get(new_tab, {})
+            if panel.get("fullHeight"):
                 panels_wrap.classes(add="column-open")
             else:
                 panels_wrap.classes(remove="column-open")
@@ -921,22 +922,11 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
     ):
         _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
-        def update_bottom_layout():
-            is_open = bool(bottom_tabs.value)
-            top_is_resizable = side_tabs.value == "program"
-            if is_open and top_is_resizable:
-                panels_wrap.classes(add="coupled")
-            else:
-                panels_wrap.classes(remove="coupled")
-
-        bottom_tabs.on("update:model-value", lambda _: update_bottom_layout())
-
         def handle_bottom_tab_change(e):
             to_tab = e.args or ""
             ui.run_javascript(f"PanelResize.onTabChange('bottom', '{to_tab}')")
 
         bottom_tabs.on("update:model-value", handle_bottom_tab_change)
-        update_bottom_layout()
 
     return {
         "side_tabs": side_tabs,
@@ -944,7 +934,6 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         "bottom_tabs": bottom_tabs,
         "bottom_panels": bottom_panels,
         "update_top_layout": update_top_layout,
-        "update_bottom_layout": update_bottom_layout,
     }
 
 
@@ -955,7 +944,6 @@ def _setup_panel_persistence(refs: dict) -> None:
     bottom_tabs = refs["bottom_tabs"]
     bottom_panels = refs["bottom_panels"]
     update_top_layout = refs["update_top_layout"]
-    update_bottom_layout = refs["update_bottom_layout"]
 
     resize_config = {
         **PANEL_RESIZE_CONFIG,
@@ -1012,7 +1000,6 @@ def _setup_panel_persistence(refs: dict) -> None:
                             bottom_tab = None
                         bottom_tabs.value = bottom_tab
                         bottom_panels.value = bottom_tab
-                        update_bottom_layout()
                         if bottom_tab:
                             ui.run_javascript(
                                 f"PanelResize.onTabChange('bottom', '{bottom_tab}')"

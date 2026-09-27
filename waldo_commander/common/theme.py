@@ -463,6 +463,10 @@ def _scalar_block() -> str:
     lines.append(
         "  --wc-footer-clearance: calc(var(--wc-size-footer) + 2 * var(--wc-space-3));"
     )
+    # The footer's cover until PanelResize measures the footer and bottom panel.
+    lines.append(
+        "  --wc-bottom-cover: calc(var(--wc-size-footer) + var(--wc-space-3));"
+    )
     return "\n".join(lines)
 
 
@@ -608,24 +612,28 @@ def apply_theme() -> None:
     _inject_component_overrides()
 
 
+def _px(value: str) -> int:
+    return int(value.removesuffix("px"))
+
+
+# The --wc-footer-clearance the panels keep from the bottom edge, in px.
+_FOOTER_CLEARANCE = _px(SIZE["size-footer"]) + 2 * _px(SPACE["space-3"])
+
 # Panel resize configuration (passed to JS module)
 PANEL_RESIZE_CONFIG: dict[str, Any] = {
     "storageKey": "parol_panel_sizes",
     "selectors": {
-        "wrap": ".panels-wrap",
         "topContainer": ".top-panels-container",
         "bottomContainer": ".bottom-panels-container",
         "controlPanel": ".overlay-br",
+        "bottomCovers": [".status-footer", ".bottom-panel"],
     },
     "constraints": {
         "viewportMarginX": 80,
-        "viewportMarginY": 64,
-        "containerPadding": 20,
-        "bottomOffset": 52,
-        "totalMargin": 76,
-    },
-    "stateClasses": {
-        "coupled": "coupled",
+        # The top margin and the footer clearance.
+        "viewportMarginY": _FOOTER_CLEARANCE + _px(SPACE["space-3"]),
+        # The same, plus the gap between two coupled panels.
+        "totalMargin": _FOOTER_CLEARANCE + 2 * _px(SPACE["space-3"]),
     },
     "panels": {
         "program": {
@@ -1064,18 +1072,15 @@ html, body {
   max-height: calc(100vh - var(--wc-space-3) - var(--wc-footer-clearance));
 }
 
-/* The program column: full height between the top margin and the footer,
-   width from PanelResize; only the right edge is a handle. */
+/* The program column: full height between the top margin and whatever covers
+   the bottom (the footer, and the bottom panel as a terminal sits under an
+   editor), width from PanelResize; only the right edge is a handle. */
 .panels-wrap.column-open .top-panels-container {
   top: var(--wc-space-3);
-  bottom: var(--wc-footer-clearance);
+  bottom: calc(var(--wc-bottom-cover) + var(--wc-space-3));
   height: auto !important;
 }
 .panels-wrap.column-open .top-panels-container > .q-panel > .program-panel { max-height: none; }
-/* The bottom panel takes the column's lower part, as a terminal panel does under an editor. */
-body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-container {
-  bottom: calc(var(--wc-footer-clearance) + var(--wc-size-bottom-panel) + var(--wc-space-3));
-}
 
 /* Panel content is interactive when visible */
 .left-panels-container .overlay-card { pointer-events: auto; }
