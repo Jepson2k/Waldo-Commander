@@ -6,17 +6,17 @@
     <circle cx="16.5" cy="4.2" r="0.8" fill="currentColor"/>
   </g>
   <rect x="4.5" y="8.5" width="15" height="10" rx="2" fill="currentColor"/>
-  <circle class="eye-white" id="neutral-eyeL" cx="8" cy="12" r="1.8" fill="var(--face-cut, #fff)"/>
-  <circle class="eye-white" id="neutral-eyeR" cx="16" cy="12" r="1.8" fill="var(--face-cut, #fff)"/>
+  <circle class="eye-white" id="neutral-eyeL" cx="8" cy="12" r="1.8" fill="var(--face-cut)"/>
+  <circle class="eye-white" id="neutral-eyeR" cx="16" cy="12" r="1.8" fill="var(--face-cut)"/>
   <circle class="pupil" id="neutral-pupilL" cx="8" cy="12" r="0.75" fill="currentColor"/>
   <circle class="pupil" id="neutral-pupilR" cx="16" cy="12" r="0.75" fill="currentColor"/>
   <g id="neutral-blink" opacity="0">
-    <line x1="6.2" y1="12" x2="9.8" y2="12" stroke="var(--face-cut, #fff)" stroke-width="0.5" stroke-linecap="round"/>
-    <line x1="14.2" y1="12" x2="17.8" y2="12" stroke="var(--face-cut, #fff)" stroke-width="0.5" stroke-linecap="round"/>
+    <line x1="6.2" y1="12" x2="9.8" y2="12" stroke="var(--face-cut)" stroke-width="0.5" stroke-linecap="round"/>
+    <line x1="14.2" y1="12" x2="17.8" y2="12" stroke="var(--face-cut)" stroke-width="0.5" stroke-linecap="round"/>
   </g>
   <g id="neutral-mouth">
-    <line data-state="flat" x1="9" y1="16" x2="15" y2="16" stroke="var(--face-cut, #fff)" stroke-width="1" stroke-linecap="round"/>
-    <polyline data-state="zigzag" points="9,16 10.2,15.2 11.4,16.8 12.6,15.2 13.8,16.8 15,16" stroke="var(--face-cut, #fff)" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0"/>
-    <line data-state="slant" x1="9" y1="16.3" x2="15" y2="15.7" stroke="var(--face-cut, #fff)" stroke-width="1" stroke-linecap="round" opacity="0"/>
+    <line data-state="flat" x1="9" y1="16" x2="15" y2="16" stroke="var(--face-cut)" stroke-width="1" stroke-linecap="round"/>
+    <polyline data-state="zigzag" points="9,16 10.2,15.2 11.4,16.8 12.6,15.2 13.8,16.8 15,16" stroke="var(--face-cut)" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0"/>
+    <line data-state="slant" x1="9" y1="16.3" x2="15" y2="15.7" stroke="var(--face-cut)" stroke-width="1" stroke-linecap="round" opacity="0"/>
   </g>
 </svg>

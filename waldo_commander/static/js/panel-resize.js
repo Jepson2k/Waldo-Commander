@@ -319,14 +319,17 @@
 
     // ========== Configuration Helpers ==========
 
+    // Floor for a panel that declares no minimum; plugins may leave them unset.
+    const DEFAULT_MIN = { width: 200, height: 100 };
+
     function getPanelConfig(panel) {
         const panelId = getPanelId(panel);
 
         if (panelId && config.panels[panelId]) {
             const cfg = config.panels[panelId];
             return {
-                minWidth: cfg.minWidth,
-                minHeight: cfg.minHeight,
+                minWidth: cfg.minWidth ?? DEFAULT_MIN.width,
+                minHeight: cfg.minHeight ?? DEFAULT_MIN.height,
                 maxWidth: getMaxWidth(),
                 maxHeight: getMaxHeight(),
                 group: cfg.group,
@@ -335,8 +338,8 @@
         }
 
         return {
-            minWidth: 200,
-            minHeight: 100,
+            minWidth: DEFAULT_MIN.width,
+            minHeight: DEFAULT_MIN.height,
             maxWidth: getMaxWidth(),
             maxHeight: getMaxHeight(),
             group: 'unknown',
@@ -424,7 +427,7 @@
             const otherPanel = isTop ? bottomResizable : topResizable;
             const otherContainer = isTop ? bottomContainer : topContainer;
             const otherPanelConfig = otherPanel ? getPanelConfig(otherPanel) : null;
-            const otherMinHeight = otherPanelConfig ? otherPanelConfig.minHeight : 100;
+            const otherMinHeight = otherPanelConfig ? otherPanelConfig.minHeight : DEFAULT_MIN.height;
 
             // Constrain to min/max
             newHeight = Math.max(panelConfig.minHeight, Math.min(newHeight, availableHeight));
@@ -768,7 +771,7 @@
         const topPanel = getVisibleResizablePanel('top');
         const bottomPanel = getVisibleResizablePanel('bottom');
         const topMinHeight = topPanel ? getPanelConfig(topPanel).minHeight : 300;
-        const bottomMinHeight = bottomPanel ? getPanelConfig(bottomPanel).minHeight : 100;
+        const bottomMinHeight = bottomPanel ? getPanelConfig(bottomPanel).minHeight : DEFAULT_MIN.height;
         const usableHeight = availableHeight - gap;
 
         let newTopHeight = topHeight;
@@ -1065,8 +1068,8 @@
         // Clamp to constraints
         const maxW = getMaxWidth();
         const maxH = getMaxHeight();
-        if (width) width = Math.max(panelCfg.minWidth || 200, Math.min(width, maxW));
-        if (height) height = Math.max(panelCfg.minHeight || 100, Math.min(height, maxH));
+        if (width) width = Math.max(panelCfg.minWidth ?? DEFAULT_MIN.width, Math.min(width, maxW));
+        if (height) height = Math.max(panelCfg.minHeight ?? DEFAULT_MIN.height, Math.min(height, maxH));
         if (isFullHeightPanel(panelId)) height = null;
 
         // The container is shared by its group's panels: size it only for

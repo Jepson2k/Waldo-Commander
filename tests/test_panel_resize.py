@@ -5,7 +5,6 @@ The column tests share a single browser session and page load via the
 class_screen fixture.
 """
 
-import importlib.metadata
 import json
 import time
 from typing import TYPE_CHECKING, ClassVar
@@ -23,6 +22,7 @@ from tests.helpers.browser_helpers import (
     js,
     marked_element,
 )
+from tests.helpers.plugin_panels import install_plugin_panels
 from tests.helpers.wait import screen_wait_for_scene_ready
 
 if TYPE_CHECKING:
@@ -230,19 +230,7 @@ class BenchNotesPanel(Panel):
 def test_a_bottom_plugin_panel_stops_the_column_above_it(
     screen: "Screen", monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    real = importlib.metadata.entry_points
-    entry = importlib.metadata.EntryPoint(
-        name="bench-notes",
-        value="tests.test_panel_resize:BenchNotesPanel",
-        group="waldoctl.panels",
-    )
-
-    def entry_points(*, group: str = "") -> object:
-        if group == "waldoctl.panels":
-            return [entry]
-        return real(group=group) if group else real()
-
-    monkeypatch.setattr(importlib.metadata, "entry_points", entry_points)
+    install_plugin_panels(monkeypatch, BenchNotesPanel)
     screen.open("/")
     screen_wait_for_scene_ready(screen, timeout_s=40)
     dismiss_dialogs(screen)
@@ -262,3 +250,59 @@ def test_a_bottom_plugin_panel_stops_the_column_above_it(
         and g
     )
     assert shown["columnBottom"] > shown["columnTop"] + 100, shown
+
+
+class TallPanel(Panel):
+    """A drag-resizable plugin that declares no minima, as waldoctl allows,
+    with content taller than any viewport."""
+
+    id: ClassVar[str] = "tall"
+    display_name: ClassVar[str] = "Tall"
+    slot: ClassVar[PanelSlot] = PanelSlot.LEFT_TOP_TAB
+    tab_icon: ClassVar[str] = "view_day"
+    resizable: ClassVar[bool] = True
+
+    def build(self, commander: Commander) -> None:
+        ui.element("div").style("height: 3000px")
+
+
+class NotesPanel(Panel):
+    """A drag-resizable bottom plugin, so the two left panels share the height."""
+
+    id: ClassVar[str] = "notes"
+    display_name: ClassVar[str] = "Notes"
+    slot: ClassVar[PanelSlot] = PanelSlot.LEFT_BOTTOM_TAB
+    tab_icon: ClassVar[str] = "sticky_note_2"
+    resizable: ClassVar[bool] = True
+
+    def build(self, commander: Commander) -> None:
+        ui.label("notes").mark("notes")
+
+
+@pytest.mark.browser
+def test_a_plugin_without_minima_gives_way_to_a_bottom_panel(
+    screen: "Screen", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resizable plugin that leaves its minima unset is still resized: with
+    a bottom panel open below it, the taller of the two gives way and neither
+    is drawn over the other."""
+    install_plugin_panels(monkeypatch, TallPanel, NotesPanel)
+    screen.open("/")
+    screen_wait_for_scene_ready(screen, timeout_s=40)
+    dismiss_dialogs(screen)
+    wait_ready(screen, timeout=10)
+    js(screen, "PanelResize.clearAllSizes()")
+
+    marked_element(screen, "tab-tall").click()
+    marked_element(screen, "tab-notes").click()
+    measure = """
+        const top = document.querySelector('.top-panels-container').getBoundingClientRect();
+        const bottom = document.querySelector('.bottom-panels-container').getBoundingClientRect();
+        return {plugin: !!document.querySelector('.tall-panel')?.offsetParent,
+                topBottom: top.bottom, bottomTop: bottom.top};
+    """
+    WebDriverWait(screen.selenium, 10).until(
+        lambda _: (r := js(screen, measure))["plugin"]
+        and r["topBottom"] <= r["bottomTop"] + 1
+        and r
+    )

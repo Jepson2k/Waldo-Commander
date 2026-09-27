@@ -12,7 +12,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass, field
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -125,12 +125,15 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
 
     case = SimulationCase(**args[0])
     robot = get_robot(case.backend)
-    # Case replay uses the installed model; a nearby live daemon must not
-    # silently substitute a different configuration for the same case.
     if case.backend != "par6":
         raise ValueError(
             f"Backend {case.backend!r} does not support simulation scenarios"
         )
+    model_root = Path(str(files(case.backend))) / "_data"
+    # The packaged model, named explicitly: left unset, the dry run adopts
+    # a reachable controller's configuration, which the model hash below
+    # would not describe.
+    config_path = model_root / "config" / "PAR6.toml"
     world = world_from_dict(case.world) if case.world is not None else None
     result = _run_simulation_isolated(
         case.program,
@@ -142,6 +145,8 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
         initial_homed=case.initial_homed,
         simulate_seconds=case.max_seconds,
         scenario=case.scenario,
+        plan_seconds=case.max_seconds,
+        config_path=str(config_path),
     )
     ticks = result["predicted"]
     error = result["error"] or result["physics_error"]
@@ -163,7 +168,6 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
         case.expected_error_code is None
         or any(e["code"] == case.expected_error_code for e in errors)
     )
-    model_root = Path(str(files(case.backend))) / "_data"
     model_digest = hashlib.sha256()
     for path in sorted(model_root.rglob("*")):
         if path.is_file():
@@ -180,8 +184,8 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
         "expected_stop": case.expected_stop,
         "expected_error_code": case.expected_error_code,
         "backend": case.backend,
-        "backend_version": version(case.backend),
-        "commander_version": version("waldo-commander"),
+        "backend_version": _version_or_none(case.backend),
+        "commander_version": _version_or_none("waldo-commander"),
         "program_sha256": hashlib.sha256(case.program.encode()).hexdigest(),
         "model_sha256": model_digest.hexdigest(),
         "case_sha256": hashlib.sha256(
@@ -197,6 +201,15 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
         if ticks is not None and ticks.rows
         else None,
     }
+
+
+def _version_or_none(package: str) -> str | None:
+    """The installed version, or None: a case can name a backend that is
+    not installed, and its report must still be written."""
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return None
 
 
 def _unrun_report(case: SimulationCase, stop: str, error: str) -> dict[str, Any]:
@@ -216,8 +229,8 @@ def _unrun_report(case: SimulationCase, stop: str, error: str) -> dict[str, Any]
         "expected_stop": case.expected_stop,
         "expected_error_code": case.expected_error_code,
         "backend": case.backend,
-        "backend_version": version(case.backend),
-        "commander_version": version("waldo-commander"),
+        "backend_version": _version_or_none(case.backend),
+        "commander_version": _version_or_none("waldo-commander"),
         "program_sha256": hashlib.sha256(case.program.encode()).hexdigest(),
         "model_sha256": "",
         "case_sha256": hashlib.sha256(

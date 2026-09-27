@@ -205,6 +205,10 @@ class _EStopManager:
         self._last_io_state = current
 
 
+_IDLE_FILL = "color=wc-control text-color=wc-text"
+_ENGAGED_FILL = "color=wc-action text-color=wc-on-bright"
+
+
 class _ToolQuickActions:
     """Tool action buttons (L/R) and adjust buttons with visual updates."""
 
@@ -321,7 +325,7 @@ class _ToolQuickActions:
                 off_icon, on_icon = tool.action_l_icons
                 off_label, on_label = tool.action_l_labels or ("Close", "Open")
                 icon = off_icon if is_open else on_icon
-                color = "wc-control" if is_open else "wc-action"
+                fill = _IDLE_FILL if is_open else _ENGAGED_FILL
                 tooltip_text = off_label if is_open else on_label
             else:
                 off_icon, on_icon = tool.action_l_icons
@@ -329,15 +333,15 @@ class _ToolQuickActions:
                 engaged = waldoctl.commander.status.tool.engaged
                 if tool.action_l_mode == ToggleMode.TRIGGER:
                     icon = off_icon
-                    color = "wc-control"
+                    fill = _IDLE_FILL
                     tooltip_text = off_label
                 else:
                     icon = off_icon if engaged else on_icon
-                    color = "wc-action" if engaged else "wc-control"
+                    fill = _ENGAGED_FILL if engaged else _IDLE_FILL
                     tooltip_text = off_label if engaged else on_label
 
             self._action_l_btn._props["icon"] = icon
-            self._action_l_btn.props(f"color={color}")
+            self._action_l_btn.props(fill)
             if self._action_l_tooltip is None:
                 with self._action_l_btn:
                     self._action_l_tooltip = ui.tooltip(tooltip_text)
@@ -355,16 +359,14 @@ class _ToolQuickActions:
                 off_label_r, on_label_r = tool.action_r_labels
                 if tool.action_r_mode == ToggleMode.TRIGGER:
                     self._action_r_btn._props["icon"] = off_icon_r
-                    self._action_r_btn.props("color=wc-control text-color=wc-text")
+                    self._action_r_btn.props(_IDLE_FILL)
                     r_tooltip = off_label_r
                 else:
                     engaged_r = waldoctl.commander.status.tool.engaged
                     self._action_r_btn._props["icon"] = (
                         off_icon_r if engaged_r else on_icon_r
                     )
-                    self._action_r_btn.props(
-                        f"color={'wc-action' if engaged_r else 'wc-control'}"
-                    )
+                    self._action_r_btn.props(_ENGAGED_FILL if engaged_r else _IDLE_FILL)
                     r_tooltip = off_label_r if engaged_r else on_label_r
                 if self._action_r_tooltip is None:
                     with self._action_r_btn:
@@ -432,8 +434,13 @@ class _ToolQuickActions:
                     ui_state.gripper_page.set_target_position(target)
                 else:
                     waldoctl.commander.settings.gripper.target_position = target
-                await tool.set_position(target, **spd_kwargs)
-                motion_recorder.record_action("gripper", position=target, **spd_kwargs)
+                await motion_recorder.owned_tool_move(
+                    waldoctl.commander.client,
+                    tool.set_position(target, **spd_kwargs),
+                    lambda: motion_recorder.record_action(
+                        "gripper", position=target, **spd_kwargs
+                    ),
+                )
             else:
                 await tool.action_l(not waldoctl.commander.status.tool.engaged)
         except Exception as e:
@@ -469,8 +476,13 @@ class _ToolQuickActions:
             waldoctl.commander.settings.gripper.current = new_cur
         try:
             pos = waldoctl.commander.settings.gripper.target_position
-            await tool.set_position(pos, current=new_cur)
-            motion_recorder.record_action("gripper", position=pos, current=new_cur)
+            await motion_recorder.owned_tool_move(
+                waldoctl.commander.client,
+                tool.set_position(pos, current=new_cur),
+                lambda: motion_recorder.record_action(
+                    "gripper", position=pos, current=new_cur
+                ),
+            )
         except Exception as e:
             logger.error("Adjust failed: %s", e)
             ui.notify(f"Adjust failed: {e}", color="negative")
@@ -1800,6 +1812,19 @@ class ControlPanel:
         else:
             motion_recorder.on_jog_end()
 
+    async def _dial_move(self, target: list[float], speed: float) -> None:
+        """Send a dial's joint move, recorded as a jog once the arm settles. A
+        move the controller never took records nothing and leaves the motion
+        to the recorder's observer again."""
+        index = -1
+        try:
+            index = await self.client.move_j(target, speed=speed)
+        finally:
+            if index < 0:
+                motion_recorder.abort_jog()
+        if index >= 0:
+            self._schedule_jog_end_wait()
+
     async def move_joint_to_angle(self, joint_index: int, target_deg: float) -> None:
         """Move a single joint to the specified angle (deg) while holding others."""
         if not self._movement_allowed():
@@ -1814,8 +1839,7 @@ class ControlPanel:
             spd = _norm_speed()
 
             motion_recorder.on_jog_start("joint", f"J{joint_index + 1}")
-            await self.client.move_j(pose, speed=spd)
-            self._schedule_jog_end_wait()
+            await self._dial_move(pose, spd)
         except Exception as e:
             logger.error("Go to joint angle failed: %s", e)
 
@@ -1837,8 +1861,7 @@ class ControlPanel:
             spd = _norm_speed()
 
             motion_recorder.on_jog_start("joint", f"J{joint_index + 1}{which}")
-            await self.client.move_j(target, speed=spd)
-            self._schedule_jog_end_wait()
+            await self._dial_move(target, spd)
         except Exception as e:
             logger.error("Go to joint limit failed: %s", e)
             ui.notify(f"Failed joint move: {e}", color="negative")
@@ -1908,13 +1931,16 @@ class ControlPanel:
         self._home_inflight = True
         self._home_progress_start()
         try:
-            index = await self.client.home(calibrate=calibrate)
-            if index < 0:
-                logger.error("HOME rejected by the controller")
-                return
-            logger.info("HOME sent%s", " (calibrate)" if calibrate else "")
-            motion_recorder.record_action("home", calibrate=calibrate)
-            await self._wait_home(index)
+            # The recording gets rbt.home(); the observer must not also
+            # capture the move it makes.
+            with motion_recorder.owned():
+                index = await self.client.home(calibrate=calibrate)
+                if index < 0:
+                    logger.error("HOME rejected by the controller")
+                    return
+                logger.info("HOME sent%s", " (calibrate)" if calibrate else "")
+                motion_recorder.record_action("home", calibrate=calibrate)
+                await self._wait_home(index)
         except Exception as e:
             logger.error("HOME failed: %s", e)
         finally:
@@ -2076,8 +2102,8 @@ class ControlPanel:
     async def on_toggle_sim(self) -> None:
         """Toggle between robot and simulator modes and update URDF appearance."""
         try:
-            # Stop any running user script before mode switch (safety)
-            if is_any_program_running():
+            # Stop any running or launching user script before mode switch (safety)
+            if script_exec.active:
                 logger.info("Stopping running script before mode switch")
                 try:
                     await script_exec.stop()
@@ -2656,7 +2682,7 @@ class ControlPanel:
                     icon="precision_manufacturing",
                     on_click=self.on_toggle_sim,
                 )
-                .props("round unelevated dense")
+                .props("round unelevated dense color=wc-control text-color=wc-text")
                 .tooltip("Robot/Simulator")
             )
             robot_btn.mark("btn-robot-toggle")

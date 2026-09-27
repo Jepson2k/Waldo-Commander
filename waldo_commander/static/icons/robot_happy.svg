@@ -6,21 +6,21 @@
     <circle cx="16.5" cy="4.2" r="0.8" fill="currentColor"/>
   </g>
   <rect x="4.5" y="8.5" width="15" height="10" rx="2" fill="currentColor"/>
-  <circle class="eye-white" id="happy-eyeL" cx="8" cy="12" r="1.8" fill="var(--face-cut, #fff)"/>
-  <circle class="eye-white" id="happy-eyeR" cx="16" cy="12" r="1.8" fill="var(--face-cut, #fff)"/>
+  <circle class="eye-white" id="happy-eyeL" cx="8" cy="12" r="1.8" fill="var(--face-cut)"/>
+  <circle class="eye-white" id="happy-eyeR" cx="16" cy="12" r="1.8" fill="var(--face-cut)"/>
   <circle class="pupil" id="happy-pupilL" cx="8" cy="12" r="0.75" fill="currentColor"/>
   <circle class="pupil" id="happy-pupilR" cx="16" cy="12" r="0.75" fill="currentColor"/>
   <g id="happy-blink" opacity="0">
-    <line x1="6.2" y1="12" x2="9.8" y2="12" stroke="var(--face-cut, #fff)" stroke-width="0.5" stroke-linecap="round"/>
-    <line x1="14.2" y1="12" x2="17.8" y2="12" stroke="var(--face-cut, #fff)" stroke-width="0.5" stroke-linecap="round"/>
+    <line x1="6.2" y1="12" x2="9.8" y2="12" stroke="var(--face-cut)" stroke-width="0.5" stroke-linecap="round"/>
+    <line x1="14.2" y1="12" x2="17.8" y2="12" stroke="var(--face-cut)" stroke-width="0.5" stroke-linecap="round"/>
   </g>
   <g id="happy-squint" opacity="0">
-    <path d="M6.2 12.4 Q8 10.5 9.8 12.4" stroke="var(--face-cut, #fff)" stroke-width="1.1" stroke-linecap="round" fill="none"/>
-    <path d="M14.2 12.4 Q16 10.5 17.8 12.4" stroke="var(--face-cut, #fff)" stroke-width="1.1" stroke-linecap="round" fill="none"/>
+    <path d="M6.2 12.4 Q8 10.5 9.8 12.4" stroke="var(--face-cut)" stroke-width="1.1" stroke-linecap="round" fill="none"/>
+    <path d="M14.2 12.4 Q16 10.5 17.8 12.4" stroke="var(--face-cut)" stroke-width="1.1" stroke-linecap="round" fill="none"/>
   </g>
   <g id="happy-mouth">
-    <path data-state="smile" d="M9 15.5 Q12 17.8 15 15.5" stroke="var(--face-cut, #fff)" stroke-width="1" stroke-linecap="round" fill="none"/>
-    <path data-state="grin" d="M8.2 15 Q12 18.8 15.8 15" stroke="var(--face-cut, #fff)" stroke-width="1.2" stroke-linecap="round" fill="none" opacity="0"/>
-    <path data-state="open-smile" d="M9 15.2 Q12 18 15 15.2 Z" fill="var(--face-cut, #fff)" opacity="0"/>
+    <path data-state="smile" d="M9 15.5 Q12 17.8 15 15.5" stroke="var(--face-cut)" stroke-width="1" stroke-linecap="round" fill="none"/>
+    <path data-state="grin" d="M8.2 15 Q12 18.8 15.8 15" stroke="var(--face-cut)" stroke-width="1.2" stroke-linecap="round" fill="none" opacity="0"/>
+    <path data-state="open-smile" d="M9 15.2 Q12 18 15 15.2 Z" fill="var(--face-cut)" opacity="0"/>
   </g>
 </svg>

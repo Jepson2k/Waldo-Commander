@@ -13,6 +13,7 @@ from waldoctl import (
     Panel,
     PathSegment,
     ProgramTarget,
+    RobotError,
     ShapeChange,
     ToolAction,
     ToolSelection,
@@ -140,6 +141,9 @@ class RobotState(ChangeNotifierMixin):
     # All joints homed, from the status stream. Seeds dry-run previews so an
     # unhomed robot's preview mirrors the controller's planned-motion gate.
     homed: bool = True
+    # The controller's latched error, or None; self-clearing conditions are
+    # on commander.status.warnings.
+    standing_error: RobotError | None = None
     executing_index: int = -1
     completed_index: int = -1
     _change_listeners: list[Callable[[], None]] = field(
@@ -156,6 +160,7 @@ class RobotState(ChangeNotifierMixin):
         self.torque_time_series.clear()
         self.speeds[:] = 0.0
         self.homed = True
+        self.standing_error = None
         self.executing_index = -1
         self.completed_index = -1
 

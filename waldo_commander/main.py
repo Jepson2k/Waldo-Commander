@@ -54,7 +54,10 @@ from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import StatusFooter
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.settings import adopt_applied_tcp
+from waldo_commander.components.settings import (
+    adopt_applied_tcp,
+    refresh_applied_tcp,
+)
 from waldo_commander.constants import DEFAULT_CAMERA, RESERVED_TAB_IDS, config
 from waldo_commander.mcp import start_mcp_server, stop_mcp_server
 from waldo_commander.services.tcp_calibration import read_applied_tcp
@@ -473,6 +476,7 @@ async def check_ping() -> None:
                 scene_handle = waldoctl.commander.scene
                 if scene_handle is not None:
                     asyncio.create_task(scene_handle.refresh_from_backend())
+                asyncio.create_task(refresh_applied_tcp(client))
         ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
@@ -783,7 +787,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         .props(
             "vertical animated transition-prev=slide-right transition-next=slide-right"
         )
-        .classes("left-panels-container top-panels-container z-30") as top_panels
+        .classes("left-panels-container top-panels-container") as top_panels
     ):
 
         def close_top_panels():
@@ -1095,13 +1099,11 @@ def build_page_content() -> None:
             )
 
         # Overlay panels and HUD elements.
-        with (
-            ui.column().classes("absolute inset-0 z-20").style("pointer-events: none;")
-        ):
+        with ui.column().classes("absolute inset-0").style("pointer-events: none;"):
             physics_legend.build()
             with (
                 ui.element("div")
-                .classes("panels-wrap absolute inset-0 z-30")
+                .classes("panels-wrap absolute inset-0")
                 .style("pointer-events: none;") as panels_wrap
             ):
                 panel_refs = _build_left_panels(panels_wrap)
@@ -1808,6 +1810,7 @@ async def _status_consumer() -> None:
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
     error_shadow: waldoctl.RobotError | None = None
+    robot_state.standing_error = None
     estop_shadow = 1
     try:
         # Wait for server to be responsive before subscribing to multicast
@@ -1994,6 +1997,7 @@ async def _status_consumer() -> None:
                         standing = waldoctl.RobotError.from_wire(standing)
                     if standing != error_shadow:
                         error_shadow = standing
+                        robot_state.standing_error = standing
                         if standing is not None:
                             robot_events.add(
                                 code=standing.code,
