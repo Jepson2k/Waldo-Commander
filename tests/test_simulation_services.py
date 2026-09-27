@@ -949,6 +949,39 @@ with RobotClient() as rbt:
         assert not visualizer.physics_in_flight("test-tab")
 
     @pytest.mark.asyncio
+    async def test_sys_exit_entry_point_previews(self):
+        """A script ending in ``sys.exit(main())`` previews its motion: exit
+        status 0 is a normal finish, a failure status is the preview's error,
+        and neither exit reaches the app."""
+        visualizer = PathVisualizer()
+        program = """
+import asyncio
+import sys
+
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+    return STATUS
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
+"""
+
+        error = await visualizer.update_path_visualization(
+            program.replace("STATUS", "0")
+        )
+        assert error is None
+        assert len(self._active_dry_run().path_segments) >= 1
+
+        error = await visualizer.update_path_visualization(
+            program.replace("STATUS", "3")
+        )
+        assert error is not None and "status 3" in error
+        assert len(self._active_dry_run().path_segments) >= 1
+
+    @pytest.mark.asyncio
     async def test_visualizer_updates_total_steps(self):
         """PathVisualizer should update total_steps after simulation."""
         visualizer = PathVisualizer()

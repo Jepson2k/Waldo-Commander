@@ -5,11 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import secrets
 from collections.abc import Awaitable, Callable
 
 from waldo_commander.camera import CameraSnapshot, CameraUnavailable
 from waldo_commander.camera_sources import MAX_IMAGE_BYTES, check_timeout
+
+logger = logging.getLogger(__name__)
+
+# How long closing waits for handlers and the listening socket to finish.
+CLOSE_TIMEOUT_S = 1.0
 
 
 class CameraSession:
@@ -19,6 +25,7 @@ class CameraSession:
         self.server: asyncio.Server | None = None
         self.tasks: set[asyncio.Task] = set()
         self.closed = False
+        self._closing: asyncio.Future[None] | None = None
         self._slots = asyncio.Semaphore(2)
 
     async def start(self) -> dict[str, str]:
@@ -34,16 +41,34 @@ class CameraSession:
         }
 
     async def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
+        """Stop serving; a request waiting on a stalled camera or on a peer
+        that stopped reading is cut off rather than waited out.
+
+        Every caller waits for the same close, however many there are.
+        """
+        if self._closing is None:
+            self.closed = True
+            self._closing = asyncio.ensure_future(self._shut_down())
+        await asyncio.shield(self._closing)
+
+    async def _shut_down(self) -> None:
         if self.server is not None:
             self.server.close()
-            await self.server.wait_closed()
+        # Handlers abort their connections once the session is closed, which
+        # is what lets wait_closed() return.
         tasks = list(self.tasks)
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if tasks:
+            await asyncio.wait(tasks, timeout=CLOSE_TIMEOUT_S)
+        if self.server is not None:
+            try:
+                async with asyncio.timeout(CLOSE_TIMEOUT_S):
+                    await self.server.wait_closed()
+            except TimeoutError:
+                logger.warning(
+                    "Camera session connections outlived %.1f s", CLOSE_TIMEOUT_S
+                )
 
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -93,7 +118,10 @@ class CameraSession:
         except (ConnectionError, asyncio.CancelledError):
             pass
         finally:
-            writer.close()
+            if self.closed:
+                writer.transport.abort()
+            else:
+                writer.close()
             try:
                 await writer.wait_closed()
             except OSError:

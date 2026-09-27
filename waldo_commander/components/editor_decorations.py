@@ -108,16 +108,27 @@ class EditorDecorations:
 
     @staticmethod
     def _staged_decoration_specs(tab_id: str, textarea) -> list[DecorationSpec]:
-        """The lines a recording session wrote and nobody has kept yet, and a
-        badge on each captured span saying what it became."""
-        session = motion_recorder.session
-        if session is None or session.tab_id != tab_id:
-            return []
+        """The lines a recording session wrote and nobody has kept yet, a
+        badge on each captured span saying what it became, and one where a
+        capture still converting will go."""
         lines = str(textarea.value or "").split("\n")
         starts = [0]
         for line in lines:
             starts.append(starts[-1] + len(line) + 1)
-        specs: list[DecorationSpec] = []
+        specs: list[DecorationSpec] = [
+            {
+                "kind": "widget",
+                "position": starts[pending.line - 1] + len(lines[pending.line - 1]),
+                "text": "captured · converting…",
+                "class": "cm-staged-badge",
+                "side": 1,
+            }
+            for pending in motion_recorder.pending_captures(tab_id)
+            if 1 <= pending.line <= len(lines)
+        ]
+        session = motion_recorder.session
+        if session is None or session.tab_id != tab_id:
+            return specs
         for block in session.blocks:
             first = max(1, block.first_line)
             last = min(block.last_line, len(lines))
