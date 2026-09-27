@@ -28,9 +28,12 @@ R = TypeVar("R")
 
 _COMMANDS = command_table()
 
-# Commands that queue on the controller and return an index: the ones the
-# wrapper waits on and steps.
-STEPPABLE_METHODS = frozenset(n for n, s in _COMMANDS.items() if s.mints_index)
+# Commands the wrapper steps: everything queued on the controller, plus
+# streamed motion (jog, servo), which moves the robot but returns no index,
+# so it is stepped without being waited on.
+STEPPABLE_METHODS = frozenset(
+    n for n, s in _COMMANDS.items() if s.mints_index or s.kind is CommandKind.MOTION
+)
 # Plain attribute reads a skill makes on its client; not commands, so a
 # pending blend group has nothing to close.
 _PASSTHROUGH_ATTRS = frozenset({"robot"})
@@ -66,6 +69,17 @@ def _read_control(control_file: Path) -> dict:
 def _is_blended(kwargs: dict) -> bool:
     """Check if motion kwargs specify a blend radius."""
     return float(kwargs.get("r", 0)) > 0
+
+
+def _require_stop_ack(name: str, result: Any) -> None:
+    """Raise when stop()/estop() went unacknowledged: queued motion may still
+    run, so a pending blend group must stay tracked and the program must not
+    carry on as if the robot had stopped."""
+    if result <= 0:
+        raise RuntimeError(
+            f"{name}() was not acknowledged by the controller; "
+            "queued motion may still be running"
+        )
 
 
 class StepIO:
@@ -293,12 +307,15 @@ class SteppingClientWrapper:
         attr = getattr(self._wrapped, name)
 
         if name in STEPPABLE_METHODS and callable(attr):
-            return self._wrap_motion_method(name, attr)
+            return self._wrap_motion_method(
+                name, attr, waits=_COMMANDS[name].mints_index
+            )
 
         if name in _IMMEDIATE_CONTROLS:
 
             def immediate(*args: Any, **kwargs: Any) -> Any:
                 result = attr(*args, **kwargs)
+                _require_stop_ack(name, result)
                 self._discard_blend()
                 return result
 
@@ -310,8 +327,11 @@ class SteppingClientWrapper:
         self._flush_blend()
         return attr
 
-    def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
-        """Create a wrapper function for a motion method."""
+    def _wrap_motion_method(
+        self, name: str, method: Callable, *, waits: bool = True
+    ) -> Callable:
+        """Create a wrapper function for a motion method; ``waits`` is False
+        for streamed motion, which has no queue index to wait on."""
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             is_blended = _is_blended(kwargs)
@@ -350,7 +370,7 @@ class SteppingClientWrapper:
 
             result = method(*args, **kwargs)
 
-            if isinstance(result, int) and result >= 0:
+            if waits and isinstance(result, int) and result >= 0:
                 self._wait_completed(result)
 
             self._step_io.emit_event("complete", name)
@@ -458,13 +478,16 @@ class AsyncSteppingClientWrapper:
         attr = getattr(self._wrapped, name)
 
         if name in STEPPABLE_METHODS and callable(attr):
-            return self._wrap_motion_method(name, attr)
+            return self._wrap_motion_method(
+                name, attr, waits=_COMMANDS[name].mints_index
+            )
 
         if asyncio.iscoroutinefunction(attr):
             if name in _IMMEDIATE_CONTROLS:
 
                 async def immediate(*args: Any, **kwargs: Any) -> Any:
                     result = await attr(*args, **kwargs)
+                    _require_stop_ack(name, result)
                     self._discard_blend()
                     return result
 
@@ -478,7 +501,9 @@ class AsyncSteppingClientWrapper:
 
         return attr
 
-    def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
+    def _wrap_motion_method(
+        self, name: str, method: Callable, *, waits: bool = True
+    ) -> Callable:
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             is_blended = _is_blended(kwargs)
 
@@ -508,7 +533,7 @@ class AsyncSteppingClientWrapper:
 
             self._step_io.emit_event("start", name)
             result = await method(*args, **kwargs)
-            if isinstance(result, int) and result >= 0:
+            if waits and isinstance(result, int) and result >= 0:
                 await self._wait_completed(result)
             self._step_io.emit_event("complete", name)
             self._step_io.increment_step_count()
