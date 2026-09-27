@@ -3,8 +3,6 @@
     class="robot-buddy"
     :class="rootClasses"
     :style="rootStyle"
-    @pointerenter="onEnter"
-    @pointerleave="onLeave"
     @click="onPoke"
   >
     <svg viewBox="3 3 18 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -30,10 +28,6 @@
 
           <rect x="4.5" y="8.5" width="15" height="10" rx="2" fill="currentColor" />
           <rect class="bb-gloss" x="5.6" y="9.3" width="4.4" height="0.6" rx="0.3" />
-          <g class="bb-cheeks" :style="{ opacity: cheeks }">
-            <ellipse cx="6.3" cy="15.3" rx="1" ry="0.6" />
-            <ellipse cx="17.7" cy="15.3" rx="1" ry="0.6" />
-          </g>
 
           <g class="bb-eyes">
             <g class="bb-eyes-open" :style="{ opacity: eyes === 'open' || eyes === 'wink' ? 1 : 0 }">
@@ -93,15 +87,6 @@
                 class="bb-spiral"
                 :style="{ transformOrigin: e.cx + 0.17 + 'px 12px' }"
                 :d="spiral(e.cx, 12)"
-              />
-            </g>
-            <g class="bb-eyes-alt bb-eyes-star" :style="{ opacity: eyes === 'star' ? 1 : 0 }">
-              <path
-                v-for="e in EYES"
-                :key="e.side"
-                class="bb-star"
-                :style="{ transformOrigin: e.cx + 'px 12px' }"
-                :d="star(e.cx, 12)"
               />
             </g>
             <g class="bb-eyes-alt bb-eyes-scan" :style="{ opacity: eyes === 'scan' ? 1 : 0 }">
@@ -256,7 +241,6 @@ export default {
       pupilScale: 1,
       look: [0, 0],
       lookSpeed: 0.4,
-      cheeks: 0,
       leds: "",
       antenna: { l: 0, r: 0 },
       antennaWave: "",
@@ -265,7 +249,6 @@ export default {
       sink: 0,
       fx: { zzz: false, exclaim: false, question: false, note: false, sparkles: false, sweat: false, tear: false },
       asleep: false,
-      hovered: false,
     };
   },
 
@@ -390,16 +373,6 @@ export default {
       );
     },
 
-    star(cx, cy) {
-      const pts = [];
-      for (let i = 0; i < 10; i++) {
-        const r = i % 2 ? 0.85 : 1.95;
-        const a = -Math.PI / 2 + (i * Math.PI) / 5;
-        pts.push((cx + r * Math.cos(a)).toFixed(2) + " " + (cy + r * Math.sin(a)).toFixed(2));
-      }
-      return "M" + pts.join(" L") + " Z";
-    },
-
     // ---------- face state ----------
 
     restLook() {
@@ -425,7 +398,6 @@ export default {
       this.pupilScale = face.pupilScale;
       this.lookSpeed = 0.4;
       if (!this.tracking) this.look = this.restLook();
-      this.cheeks = this.hovered && LIVELY.has(this.mood) ? 0.45 : 0;
       this.leds = face.leds || (this.busy && LIVELY.has(this.mood) ? "chase" : "");
       const droop = this.asleep ? 14 : this.mood === "sad" ? 5 : 0;
       this.antenna = { l: -droop, r: droop };
@@ -533,7 +505,7 @@ export default {
             this.mouth = "small-o"; this.fx.note = true; this.headTilt = -5;
             await wait(900); this.headTilt = 5; await wait(900);
           }],
-          [1, async (wait) => { this.eyes = "happy"; this.cheeks = 0.5; this.mouth = "cat"; await wait(1500); }],
+          [1, async (wait) => { this.eyes = "happy"; this.mouth = "cat"; await wait(1500); }],
         ],
         neutral: [
           [3, async (wait) => {
@@ -594,7 +566,6 @@ export default {
           this.lookAt(0, 0);
           this.eyes = "wink";
           this.mouth = "grin";
-          this.cheeks = 0.5;
           this.antennaWave = "r";
           await this.anim("hop", 450, wait);
           await wait(1300);
@@ -618,7 +589,7 @@ export default {
           await wait(600);
         },
         celebrate: async (wait) => {
-          this.eyes = "star";
+          this.eyes = "happy";
           this.mouth = "open";
           this.fx.sparkles = true;
           this.leds = "party";
@@ -667,7 +638,6 @@ export default {
         giggle: async (wait) => {
           this.eyes = "happy";
           this.mouth = "cat";
-          this.cheeks = 0.6;
           await this.anim("hop", 450, wait);
           await wait(500);
         },
@@ -750,16 +720,6 @@ export default {
     checkSleep() {
       if (this.asleep || this.acting || this.busy || !LIVELY.has(this.mood)) return;
       if (Date.now() - this.lastActivity > this.sleepAfter * 1000) this.react("yawn");
-    },
-
-    onEnter() {
-      this.hovered = true;
-      if (!this.acting && this.interactive) this.cheeks = LIVELY.has(this.mood) ? 0.45 : 0;
-    },
-
-    onLeave() {
-      this.hovered = false;
-      if (!this.acting) this.cheeks = 0;
     },
 
     onPoke() {
@@ -886,8 +846,7 @@ export default {
 .robot-buddy .bb-lid { transition: transform 0.25s ease; }
 .robot-buddy .bb-eyes > g,
 .robot-buddy .bb-eye,
-.robot-buddy .bb-mouth > *,
-.robot-buddy .bb-cheeks { transition: opacity 0.15s ease, transform 0.3s ease; }
+.robot-buddy .bb-mouth > * { transition: opacity 0.15s ease, transform 0.3s ease; }
 
 .robot-buddy .bb-stroke,
 .robot-buddy .bb-stroke path,
@@ -903,8 +862,6 @@ export default {
 .robot-buddy .bb-eyes-alt.bb-eyes-spiral path { stroke-width: 0.32; }
 .robot-buddy .bb-fill { fill: white; stroke: white; stroke-width: 0.4; stroke-linejoin: round; }
 .robot-buddy .bb-gloss { fill: white; opacity: 0.16; }
-.robot-buddy .bb-cheeks ellipse { fill: #ff8fa3; }
-.robot-buddy .bb-star { fill: #ffd54f; stroke: white; stroke-width: 0.25; stroke-linejoin: round; animation: bb-star-pulse 0.6s ease-in-out infinite alternate; }
 .robot-buddy .bb-spiral { animation: bb-spin 0.8s linear infinite; }
 .robot-buddy .bb-scan-bar { animation: bb-scan 1.1s ease-in-out infinite alternate; }
 .robot-buddy .bb-tremble { animation: bb-tremble 0.18s linear infinite; }
@@ -977,7 +934,6 @@ export default {
   0%, 100% { transform: translateX(0); }
   50% { transform: translateX(0.15px); }
 }
-@keyframes bb-star-pulse { to { transform: scale(1.12) rotate(8deg); } }
 @keyframes bb-led {
   0%, 100% { opacity: 0; }
   50% { opacity: 0.95; }
@@ -1022,7 +978,6 @@ export default {
   .robot-buddy svg,
   .robot-buddy .bb-rig,
   .robot-buddy .bb-spiral,
-  .robot-buddy .bb-star,
   .robot-buddy .bb-scan-bar,
   .robot-buddy .bb-tremble,
   .robot-buddy .bb-wave { animation: none !important; }
