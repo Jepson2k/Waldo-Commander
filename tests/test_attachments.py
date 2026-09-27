@@ -95,6 +95,14 @@ async def test_gathered_attachments_both_land(user: User):
         }
     finally:
         await client.set_shapes([])
+        # The app's model mirrors the controller's world, and the next test's
+        # previews plan against it: wait until it holds the cleared one.
+        scene = waldoctl.commander.scene
+        assert scene is not None
+        async with asyncio.timeout(5):
+            while scene.shapes or not scene.confirmed:
+                await scene.refresh_from_backend()
+                await asyncio.sleep(0.05)
 
 
 @pytest.mark.integration
@@ -226,3 +234,8 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
     finally:
         await client.stop()
         await client.set_shapes([])
+        # As above: the next test's previews plan against the app's model.
+        async with asyncio.timeout(5):
+            while handle.shapes or not handle.confirmed:
+                await handle.refresh_from_backend()
+                await asyncio.sleep(0.05)
