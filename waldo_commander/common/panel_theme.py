@@ -30,11 +30,9 @@ def inject_panel_css() -> None:
   background: var(--wc-surface) !important;
   font-size: 14px;
 }
-.task-panel .q-btn, .task-dialog .q-btn { text-transform: none; }
-.task-panel .q-tab, .task-dialog .q-tab { text-transform: none; min-height: 36px; }
+.task-panel .q-tab, .task-dialog .q-tab { min-height: 36px; }
 .task-panel .q-field__label, .task-dialog .q-field__label { font-size: 16px; }
 .task-panel .text-caption, .task-dialog .text-caption { font-size: 12px; line-height: 1.45; }
-.task-panel .q-separator, .task-dialog .q-separator { background: var(--wc-glass-border); }
 .task-panel .q-expansion-item > .q-expansion-item__container > .q-item,
 .task-dialog .q-expansion-item > .q-expansion-item__container > .q-item {
   min-height: 36px; padding: 4px 8px; background: transparent;

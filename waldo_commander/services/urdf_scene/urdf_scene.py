@@ -36,7 +36,6 @@ from waldo_commander.common.theme import (
     SceneColors,
     get_color_for_move_type,
     hex_of,
-    rgb01,
 )
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
 from waldo_commander.services.programs import active_cursor_line
@@ -140,10 +139,10 @@ def _lerp_hex(c1: tuple[int, int, int], c2: tuple[int, int, int], factor: float)
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _invalid_rgb() -> tuple[int, int, int]:
-    """``path-invalid`` as 0-255 ints for :func:`_lerp_hex`."""
-    r, g, b = rgb01("path-invalid")
-    return (int(r * 255 + 0.5), int(g * 255 + 0.5), int(b * 255 + 0.5))
+def _hex_rgb(hex_color: str) -> tuple[int, int, int]:
+    """A ``#rrggbb`` colour as 0-255 ints for :func:`_lerp_hex`."""
+    h = hex_color.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
 class RenderedSegment(NamedTuple):
@@ -1313,9 +1312,8 @@ class UrdfScene(
         if dist_before > rng and dist_after > rng:
             return None
 
-        h = seg.color.lstrip("#")
-        rgb1 = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
-        invalid_rgb = _invalid_rgb()
+        rgb1 = _hex_rgb(seg.color)
+        invalid_rgb = _hex_rgb(hex_of("path-invalid"))
 
         colors = []
         for j in range(n_pairs):
@@ -2418,7 +2416,7 @@ class UrdfScene(
         """
         if self.scene is None:
             return
-        bg = int(self.config.background_color.lstrip("#"), 16)
+        bg = self.config.background_color
         reach = self._chain_reach()
         ui.run_javascript(
             f"""
@@ -2429,7 +2427,7 @@ class UrdfScene(
               view.renderer.toneMappingExposure = 1.0;
               view.renderer.shadowMap.enabled = true;
               view.renderer.shadowMap.type = THREE.PCFShadowMap;
-              view.scene.fog = new THREE.Fog({bg}, {reach * 2:.3f}, {reach * 5:.3f});
+              view.scene.fog = new THREE.Fog("{bg}", {reach * 2:.3f}, {reach * 5:.3f});
               view.resize();
             }});
             """
