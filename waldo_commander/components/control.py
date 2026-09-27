@@ -15,6 +15,7 @@ from nicegui import Client, app, ui
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
+from waldo_commander.components.joint_dial import JointDial
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import _setting_row
@@ -66,85 +67,6 @@ _AXIS_ORDER = (
     "RZ-",
 )
 _AXIS_MAP = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
-
-#: Joint dial drawing box (viewBox side), ring radius and knob radius, in SVG units.
-DIAL_SIZE = 64.0
-DIAL_RADIUS = 26.0
-DIAL_KNOB_RADIUS = 4.0
-#: A joint has to move this far before its dial is redrawn.
-DIAL_REDRAW_DEG = 0.5
-
-
-@dataclasses.dataclass(frozen=True)
-class DialGeometry:
-    """SVG path data for one joint dial: ``track`` spans the limits, ``fill``
-    runs from the joint's zero (clamped into the limits) to the angle, ``ticks``
-    marks the limits and ``knob`` sits on the angle."""
-
-    track: str
-    fill: str
-    ticks: str
-    knob: tuple[float, float]
-
-
-def _dial_point(deg: float, r: float) -> tuple[float, float]:
-    """Point on the ring at ``deg``: zero at the top, clockwise positive."""
-    rad = math.radians(deg)
-    c = DIAL_SIZE / 2
-    return c + r * math.sin(rad), c - r * math.cos(rad)
-
-
-def _dial_arc(start_deg: float, end_deg: float, r: float) -> str:
-    span = end_deg - start_deg
-    if abs(span) >= 360.0:
-        x0, y0 = _dial_point(start_deg, r)
-        x1, y1 = _dial_point(start_deg + 180.0, r)
-        return (
-            f"M{x0:.2f} {y0:.2f} A{r:g} {r:g} 0 1 1 {x1:.2f} {y1:.2f}"
-            f" A{r:g} {r:g} 0 1 1 {x0:.2f} {y0:.2f}"
-        )
-    if abs(span) < 1e-6:
-        return ""
-    x0, y0 = _dial_point(start_deg, r)
-    x1, y1 = _dial_point(end_deg, r)
-    large = 1 if abs(span) > 180.0 else 0
-    sweep = 1 if span > 0 else 0
-    return f"M{x0:.2f} {y0:.2f} A{r:g} {r:g} 0 {large} {sweep} {x1:.2f} {y1:.2f}"
-
-
-def dial_geometry(lo: float, hi: float, angle: float, r: float) -> DialGeometry:
-    """Geometry of a joint dial with limits ``lo..hi`` (degrees) at ``angle``.
-
-    A span of a full turn or more draws the track as a whole circle and
-    drops the limit ticks; a non-finite angle sits at the fill's origin."""
-    origin = min(max(0.0, lo), hi)
-    a = min(max(angle, lo), hi) if math.isfinite(angle) else origin
-    if hi - lo >= 360.0:
-        ticks = ""
-    else:
-        tick_parts = []
-        for limit in (lo, hi):
-            x0, y0 = _dial_point(limit, r - 5.0)
-            x1, y1 = _dial_point(limit, r + 5.0)
-            tick_parts.append(f"M{x0:.2f} {y0:.2f} L{x1:.2f} {y1:.2f}")
-        ticks = " ".join(tick_parts)
-    return DialGeometry(
-        track=_dial_arc(lo, hi, r),
-        fill=_dial_arc(origin, a, r),
-        ticks=ticks,
-        knob=_dial_point(a, r),
-    )
-
-
-@dataclasses.dataclass
-class _JointDial:
-    """The SVG parts of one joint dial that move with the joint."""
-
-    lo: float
-    hi: float
-    fill: ui.element
-    knob: ui.element
-    last_deg: float = math.nan
 
 
 @dataclasses.dataclass
@@ -702,7 +624,7 @@ class ControlPanel:
         self._joint_limit_btns: dict[
             tuple[int, str], ui.button
         ] = {}  # (joint_idx, "min"/"max") -> button
-        self._dials: list[_JointDial] = []
+        self._dials: list[JointDial] = []
         self._cart_axis_imgs: dict[str, ui.element] = {}
 
         # Jog state tracking
@@ -1059,21 +981,10 @@ class ControlPanel:
             self._set_strong_disabled(self._joint_left_btns.get(j), not neg[j])
 
     def refresh_joint_dials(self) -> None:
-        """Redraw the fill and knob of every dial whose joint moved ≥ DIAL_REDRAW_DEG."""
+        """Redraw every dial whose joint moved enough to show."""
         angles = waldoctl.commander.status.joints.angles.deg
-        for i, dial in enumerate(self._dials):
-            if i >= len(angles):
-                return
-            a = float(angles[i])
-            if not math.isfinite(a) or abs(a - dial.last_deg) < DIAL_REDRAW_DEG:
-                continue
-            dial.last_deg = a
-            g = dial_geometry(dial.lo, dial.hi, a, DIAL_RADIUS)
-            dial.fill._props["d"] = g.fill
-            dial.fill.update()
-            dial.knob._props["cx"] = f"{g.knob[0]:.2f}"
-            dial.knob._props["cy"] = f"{g.knob[1]:.2f}"
-            dial.knob.update()
+        for i, dial in enumerate(self._dials[: len(angles)]):
+            dial.show(float(angles[i]))
 
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
@@ -2224,7 +2135,6 @@ class ControlPanel:
         """One joint: minus cap, dial ring with the readout in its centre, plus cap,
         the name, and a limits row revealed with the caps on hover."""
         lo, hi = self._get_joint_limits(idx)
-        g = dial_geometry(lo, hi, math.nan, DIAL_RADIUS)
         joints = waldoctl.commander.status.joints
 
         def _cap(icon: str, side: str) -> ui.button:
@@ -2242,22 +2152,7 @@ class ControlPanel:
             with ui.element("div").classes("joint-dial"):
                 left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
 
-                with (
-                    ui.element("svg")
-                    .props(f'viewBox="0 0 {DIAL_SIZE:g} {DIAL_SIZE:g}"')
-                    .classes("joint-dial-svg")
-                ):
-                    track = ui.element("path").classes("dial-track")
-                    track._props["d"] = g.track
-                    fill = ui.element("path").classes("dial-fill")
-                    fill._props["d"] = g.fill
-                    ticks = ui.element("path").classes("dial-tick")
-                    ticks._props["d"] = g.ticks
-                    knob = ui.element("circle").classes("dial-knob")
-                    knob._props["cx"] = f"{g.knob[0]:.2f}"
-                    knob._props["cy"] = f"{g.knob[1]:.2f}"
-                    knob._props["r"] = f"{DIAL_KNOB_RADIUS:g}"
-                self._dials.append(_JointDial(lo=lo, hi=hi, fill=fill, knob=knob))
+                self._dials.append(JointDial(lo, hi))
 
                 num = (
                     ui.number(

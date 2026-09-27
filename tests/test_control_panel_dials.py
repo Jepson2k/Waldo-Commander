@@ -21,7 +21,7 @@ from tests.helpers.wait import (
     wait_for_motion_start,
     wait_until,
 )
-from waldo_commander.components.control import DIAL_RADIUS, DIAL_SIZE, dial_geometry
+from waldo_commander.components.joint_dial import DIAL_RADIUS, DIAL_SIZE, dial_geometry
 from waldo_commander.state import ui_state
 
 if TYPE_CHECKING:
@@ -109,8 +109,8 @@ async def test_a_jog_click_redraws_only_the_dial_of_the_joint_that_moved(
     ), "the dials never took their first angles from the status loop"
     j1, j2 = cp._dials[0], cp._dials[1]
 
-    def props(dial) -> tuple[str, str, str]:
-        return dial.fill._props["d"], dial.knob._props["cx"], dial.knob._props["cy"]
+    def props(dial) -> tuple[str, list[float]]:
+        return dial.props["fill"], list(dial.props["knob"])
 
     j1_before, j2_before = props(j1), props(j2)
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
@@ -129,9 +129,9 @@ async def test_a_jog_click_redraws_only_the_dial_of_the_joint_that_moved(
     # puts the current J1 angle, within the redraw threshold.
     live = float(waldoctl.commander.status.joints.angles.deg[0])
     expected = dial_geometry(j1.lo, j1.hi, live, R).knob
-    knob = (float(j1.knob._props["cx"]), float(j1.knob._props["cy"]))
+    knob = tuple(j1.props["knob"])
     assert math.dist(knob, expected) < 0.3, f"knob {knob} vs live angle {live:.2f}°"
-    end = _arc(j1.fill._props["d"])["end"]
+    end = _arc(j1.props["fill"])["end"]
     assert math.dist(end, expected) < 0.3, "the fill ends under the knob"
 
 
