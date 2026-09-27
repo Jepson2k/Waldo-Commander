@@ -407,7 +407,8 @@ class MotionRecorder:
         )
         for i, line in enumerate(lines):
             if motion_re.match(line):
-                lines.insert(i, set_tool_line)
+                # Inside the block the move is in, or the program won't parse.
+                lines.insert(i, line[: len(line) - len(line.lstrip())] + set_tool_line)
                 self._write(textarea, "\n".join(lines))
                 if self._session is not None:
                     self._shift(i, 1)

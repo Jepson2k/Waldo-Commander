@@ -531,6 +531,37 @@ async def test_undo_puts_back_the_tool_a_take_changed(user: User):
 
 
 @pytest.mark.integration
+async def test_a_tool_on_the_arm_is_selected_inside_the_program_block(user: User):
+    """Recording with a tool on the arm and none named in the program adds
+    its select_tool before the first move, in the move's block."""
+    source = (
+        "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.home()\n"
+    )
+    textarea = await _open_program(user, source)
+    assert await wait_until(
+        lambda: simulation._simulation_debounce_timer is None, timeout_s=15
+    )
+    client = waldoctl.commander.client
+    index = await client.select_tool("PNEUMATIC")
+    assert await client.wait_command(index, timeout=5)
+    try:
+        assert await wait_until(
+            lambda: waldoctl.commander.status.tool.key == "PNEUMATIC", timeout_s=5
+        )
+        _set_cursor_line(textarea, 3)
+        user.find(marker="editor-record-btn").click()
+        await asyncio.sleep(0.1)
+        lines = str(textarea.value).split("\n")
+        assert lines[2] == '    rbt.select_tool("PNEUMATIC")', textarea.value
+        compile(str(textarea.value), "program.py", "exec")
+    finally:
+        if is_any_program_recording():
+            motion_recorder.toggle_recording()
+        index = await client.select_tool("NONE")
+        assert await client.wait_command(index, timeout=5)
+
+
+@pytest.mark.integration
 async def test_a_take_survives_a_page_reload(user: User):
     """A reload builds new editors while the take goes on staged. Keep and
     Undo act on the editor the program has now, not on the one it had."""
