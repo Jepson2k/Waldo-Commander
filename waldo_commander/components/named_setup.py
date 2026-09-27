@@ -84,10 +84,7 @@ class NamedSetupPanel(Panel):
             for kind, widgets in fields.items():
                 for widget, value in zip(widgets, initial_values[kind]):
                     widget.set_value(value)
-            tcp_editor.clear_samples()
-            tcp_editor.binding = None
-            tcp_editor.saved_measurement = None
-            tcp_editor.taught = None
+            tcp_editor.reset()
             refresh()
             # Another session (or a script) can write a setup after this panel
             # was built; without the options the dropdown drops a value it
@@ -97,7 +94,7 @@ class NamedSetupPanel(Panel):
                 (frame_existing, snapshot.frames, select_frame),
                 (pose_existing, snapshot.poses, select_pose),
                 (parameter_existing, snapshot.parameters, select_parameter),
-                (tcp_editor.existing, snapshot.tcp_calibrations, tcp_editor.load),
+                (tcp_editor.existing, snapshot.tcp_calibrations, select_tcp),
             ):
                 if entries:
                     selector.set_value(next(iter(entries)))
@@ -111,7 +108,11 @@ class NamedSetupPanel(Panel):
         shown: dict[str, str | None] = {}
 
         def signature(kind: str) -> tuple:
-            return tuple(field.value for field in fields[kind])
+            values = tuple(field.value for field in fields[kind])
+            if kind == "tcp":
+                # A measurement can bind or re-bind the same numbers.
+                return (*values, tcp_editor.draft_state())
+            return values
 
         def remember(kind: str | None = None) -> None:
             for key in [kind] if kind else fields:
@@ -459,6 +460,16 @@ class NamedSetupPanel(Panel):
                 parameter_unit.set_value(entry.unit)
                 remember("parameters")
 
+            def select_tcp(name: str | None) -> None:
+                if name not in snapshot.tcp_calibrations:
+                    return
+                if not keep_current("tcp"):
+                    tcp_editor.existing.set_value(shown.get("tcp"))
+                    return
+                shown["tcp"] = name
+                tcp_editor.load(name)
+                remember("tcp")
+
             with ui.tab_panels(tabs, value=frames_tab).classes(
                 "w-full flex-1 min-h-0 overflow-y-auto gap-2"
             ):
@@ -584,7 +595,11 @@ class NamedSetupPanel(Panel):
 
                 with ui.tab_panel(tcp_tab).classes("p-0"):
                     tcp_editor = TcpCalibrationEditor(
-                        commander, lambda: snapshot, set_snapshot
+                        commander,
+                        lambda: snapshot,
+                        set_snapshot,
+                        lambda: pending_snapshot(["frames"]),
+                        update_dirty,
                     )
 
             @ui.refreshable
@@ -641,4 +656,4 @@ class NamedSetupPanel(Panel):
             for widgets in fields.values():
                 for field in widgets:
                     field.on_value_change(update_dirty)
-            tcp_editor.existing.on_value_change(lambda: remember("tcp"))
+            tcp_editor.existing.on_value_change(lambda e: select_tcp(e.value))
