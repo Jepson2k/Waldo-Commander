@@ -102,7 +102,7 @@ class NamedSetupPanel(Panel):
                 (pose_existing, snapshot.poses, select_pose),
                 (parameter_existing, snapshot.parameters, select_parameter),
                 (tcp_editor.existing, snapshot.tcp_calibrations, tcp_editor.load),
-                (signal_editor.existing, snapshot.signals, signal_editor.load),
+                (signal_editor.existing, snapshot.signals, select_signal),
             ):
                 if entries:
                     selector.set_value(next(iter(entries)))
@@ -472,6 +472,16 @@ class NamedSetupPanel(Panel):
                 parameter_unit.set_value(entry.unit)
                 remember("parameters")
 
+            def select_signal(name: str | None) -> None:
+                if name not in snapshot.signals:
+                    return
+                if not keep_current("signals"):
+                    signal_editor.existing.set_value(shown.get("signals"))
+                    return
+                shown["signals"] = name
+                signal_editor.load(name)
+                remember("signals")
+
             with ui.tab_panels(tabs, value=frames_tab).classes(
                 "w-full flex-1 min-h-0 overflow-y-auto gap-2"
             ):
@@ -665,4 +675,4 @@ class NamedSetupPanel(Panel):
                 for field in widgets:
                     field.on_value_change(update_dirty)
             tcp_editor.existing.on_value_change(lambda: remember("tcp"))
-            signal_editor.existing.on_value_change(lambda: remember("signals"))
+            signal_editor.existing.on_value_change(lambda e: select_signal(e.value))

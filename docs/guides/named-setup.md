@@ -132,9 +132,13 @@ change that inserted snapshot.
 `wait_signal` returns `matched` or `timeout` with the latest observation and
 elapsed time; it reads the controller's status broadcast rather than asking for
 I/O, so a level is seen on the tick it is published and there is no poll
-interval to tune. A controller that broadcasts nothing raises `ConnectionError`
-instead of reporting a timeout it could not tell apart from a level that never
-arrived; a rejected command or an unconfirmed output write raises an error. Controller output readback confirms
+interval to tune. It never matches on the status the client already held, and a
+controller that broadcasts no fresh status before the deadline raises
+`ConnectionError` instead of reporting a timeout it could not tell apart from a
+level that never arrived. A rejected command raises an error; an output write
+still queued when its timeout runs out stops the robot rather than landing later. Each
+step of a write (acceptance, the queued write, the level) gets the whole
+timeout, so time a program spends paused at a step is not counted against it. Controller output readback confirms
 the reported electrical level, not that an attached actuator moved or gripped.
 Cancelling a skill requests the backend's existing Stop behavior and prevents
 further commands from that invocation; it does not undo an output write.
