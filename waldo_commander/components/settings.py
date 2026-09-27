@@ -1200,7 +1200,7 @@ class SettingsContent:
                 [
                     lambda: self._build_show_route(prefs),
                     lambda: self._build_envelope(prefs),
-                    self._build_theme,
+                    *([self._build_theme] if len(theme_names()) > 1 else []),
                 ],
             ),
             (
