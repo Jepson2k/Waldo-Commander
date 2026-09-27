@@ -5,6 +5,7 @@ import asyncio
 import pytest
 import waldoctl
 from nicegui import Client, core
+from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -31,9 +32,15 @@ def test_browser_reviews_stopped_run_and_selects_an_entry(
     def element(marker):
         def identifier():
             client = Client.instances[ui_state.active_client_id]
-            return next(e.id for e in client.elements.values() if marker in e._markers)
+            return next(
+                (e.id for e in client.elements.values() if marker in e._markers), None
+            )
 
-        return screen.selenium.find_element(By.ID, f"c{run_in_app(identifier)}")
+        found = run_in_app(identifier)
+        if found is None:
+            # WebDriverWait retries this, not StopIteration: the dialog may still be building.
+            raise NoSuchElementException(marker)
+        return screen.selenium.find_element(By.ID, f"c{found}")
 
     def drive(coro):
         assert core.loop is not None
