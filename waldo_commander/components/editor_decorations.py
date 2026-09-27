@@ -13,10 +13,7 @@ import html
 import re
 
 from nicegui import ui
-from nicegui.elements.codemirror.codemirror import (
-    DecorationSpec,
-    Diagnostic,
-)
+from nicegui.elements.codemirror.codemirror import Diagnostic
 
 import waldoctl
 
@@ -86,7 +83,7 @@ class EditorDecorations:
         textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
-        specs: list[DecorationSpec] = []
+        specs: list[dict] = []
         if tab_id == waldoctl.commander.programs.active_id:
             flash_lines: set[int] = set()
             for _, lines in self._active_flashes:
@@ -107,7 +104,7 @@ class EditorDecorations:
         textarea.decorations[:] = specs
 
     @staticmethod
-    def _staged_decoration_specs(tab_id: str, textarea) -> list[DecorationSpec]:
+    def _staged_decoration_specs(tab_id: str, textarea) -> list[dict]:
         """The lines a recording session wrote and nobody has kept yet, and a
         badge on each captured span saying what it became."""
         session = motion_recorder.session
@@ -117,7 +114,7 @@ class EditorDecorations:
         starts = [0]
         for line in lines:
             starts.append(starts[-1] + len(line) + 1)
-        specs: list[DecorationSpec] = []
+        specs: list[dict] = []
         for block in session.blocks:
             first = max(1, block.first_line)
             last = min(block.last_line, len(lines))
@@ -137,7 +134,7 @@ class EditorDecorations:
                 )
         return specs
 
-    def _diff_decoration_specs(self, tab_id: str) -> list[DecorationSpec]:
+    def _diff_decoration_specs(self, tab_id: str) -> list[dict]:
         """Build decoration specs from this tab's pending LLM edits.
 
         For each pending edit:
@@ -171,7 +168,7 @@ class EditorDecorations:
         line_starts = [0]
         for line in re.split(r"\r\n|\r|\n", tab.source):
             line_starts.append(line_starts[-1] + len(line.encode("utf-16-le")) // 2 + 1)
-        specs: list[DecorationSpec] = []
+        specs: list[dict] = []
         for edit in tab.edits.pending:
             try:
                 hunks = waldoctl.parse_unified_diff(edit.diff)
