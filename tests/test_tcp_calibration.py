@@ -9,7 +9,7 @@ import waldoctl
 from nicegui import run, ui
 from nicegui.testing import User
 from parol6.client.dry_run_client import DryRunRobotClient
-from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot
+from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot, TcpCalibration
 
 from tests.helpers.wait import (
     enable_sim,
@@ -194,6 +194,230 @@ with RobotClient() as rbt:
         await completed(await client.select_tool("NONE"))
         await completed(await client.set_tcp_transform())
         await asyncio.sleep(0)
+
+
+_STILL_POSE = [85, -85, 135, 10, 45, 170]
+
+
+async def _completed(client, index) -> None:
+    assert index >= 0 and await client.wait_command(index, timeout=20)
+
+
+async def _bare_flange_at_rest(user: User, tmp_path, monkeypatch, snapshot):
+    """The app open on a still, referenced arm with no tool or TCP, and ``snapshot`` saved as bench."""
+    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    SetupStore(tmp_path).save("bench", snapshot)
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    await _completed(client, await client.select_tool("NONE"))
+    await _completed(client, await client.set_tcp_transform())
+    await _completed(client, await client.move_j(_STILL_POSE, speed=1.0))
+    return client
+
+
+async def _open_tcp_tab(user: User) -> None:
+    user.find(marker="tab-setup").click()
+    user.find(marker="setup-load").click()
+    await user.should_see("Loaded bench")
+    user.find(kind=ui.tab, content="TCP").click()
+    next(iter(user.find(marker="tcp-measure-details").elements)).set_value(True)
+
+
+def _element(user: User, marker: str):
+    return next(iter(user.find(marker=marker).elements))
+
+
+@pytest.mark.integration
+async def test_apply_refuses_queued_work_and_sends_nothing_after_a_stop_or_takeover(
+    user: User, tmp_path, monkeypatch
+):
+    """A transform is never queued behind other work, and a Stop or a change of
+    control while Apply is still checking keeps it from reaching the controller."""
+    from fastmcp import Client
+
+    from waldo_commander.mcp.server import get_mcp
+
+    client = await _bare_flange_at_rest(
+        user,
+        tmp_path,
+        monkeypatch,
+        SetupSnapshot(
+            tcp_calibrations={"tip": TcpCalibration((0, 0, 30, 0, 0, 0), "NONE")}
+        ),
+    )
+    real_queue = client.queue
+    held: list[asyncio.Event] = []
+    entered = asyncio.Event()
+
+    async def gated_queue():
+        if held:
+            release = held.pop()
+            entered.set()
+            await release.wait()
+        return await real_queue()
+
+    monkeypatch.setattr(client, "queue", gated_queue)
+
+    async def interrupted_apply(interrupt) -> None:
+        release = asyncio.Event()
+        entered.clear()
+        held.append(release)
+        user.find(marker="tcp-calibration-apply").click()
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        await interrupt()
+        release.set()
+
+    async def mcp_stop() -> None:
+        async with Client(get_mcp()) as mcp:
+            await mcp.call_tool("motion.stop")
+
+    async def mcp_takeover() -> None:
+        control_lease.seize(MCP, "tcp-review", "Review MCP")
+
+    try:
+        await _open_tcp_tab(user)
+        index = await client.move_j([75, -80, 145, 20, 55, 160], speed=0.1)
+        user.find(marker="tcp-calibration-apply").click()
+        await user.should_see(
+            "Wait for queued commands to finish before applying a TCP transform"
+        )
+        await _completed(client, index)
+        assert await client.tcp_transform() == pytest.approx([0] * 6)
+
+        await interrupted_apply(mcp_stop)
+        await user.should_see("The robot was stopped; nothing more was sent")
+        assert await client.tcp_transform() == pytest.approx([0] * 6)
+
+        await interrupted_apply(mcp_takeover)
+        await user.should_see(
+            "Control of the robot changed hands; nothing more was sent"
+        )
+        assert await client.tcp_transform() == pytest.approx([0] * 6)
+    finally:
+        await client.stop()
+        await _completed(client, await client.set_tcp_transform())
+
+
+@pytest.mark.integration
+async def test_teaching_orientation_on_another_tool_keeps_the_loaded_position_unbound(
+    user: User, tmp_path, monkeypatch
+):
+    """Orientation taught on the fitted tool does not carry a loaded position
+    from another tool into its calibration."""
+    loaded = TcpCalibration((100, 200, 300, 0, 0, 0), "NONE")
+    client = await _bare_flange_at_rest(
+        user,
+        tmp_path,
+        monkeypatch,
+        SetupSnapshot(tcp_calibrations={"tip": loaded}),
+    )
+    try:
+        await _open_tcp_tab(user)
+        await _completed(
+            client, await client.select_tool("PNEUMATIC", variant_key="horizontal")
+        )
+        user.find(marker="tcp-calibration-orientation").click()
+        await user.should_see(
+            "Tool or variant changed; samples cleared. Capture again.", retries=50
+        )
+        user.find(marker="tcp-calibration-orientation").click()
+        await user.should_see(
+            "The position belongs to NONE · default variant and the orientation "
+            "to PNEUMATIC · horizontal",
+            retries=50,
+        )
+        user.find(marker="tcp-calibration-set").click()
+        await user.should_see("The position and orientation belong to different tools")
+        user.find(marker="setup-save").click()
+        await user.should_see("The position and orientation belong to different tools")
+        assert SetupStore(tmp_path).load("bench").tcp_calibrations["tip"] == loaded
+    finally:
+        await _completed(client, await client.select_tool("NONE"))
+        await _completed(client, await client.set_tcp_transform())
+
+
+@pytest.mark.integration
+async def test_orientation_is_taught_against_the_pending_frame_edit(
+    user: User, tmp_path, monkeypatch
+):
+    """A frame edit not yet kept is saved with the orientation taught against
+    it, so teaching must use the edited axes."""
+    client = await _bare_flange_at_rest(user, tmp_path, monkeypatch, SetupSnapshot())
+    current = await client.pose()
+    assert current is not None
+    axes = Pose(cast(PoseValues, tuple(current))).matrix()
+    axes[:3, 3] = 0
+    SetupStore(tmp_path).save(
+        "bench", SetupSnapshot(frames={"axes": Frame(Pose.from_matrix(axes).values)})
+    )
+    await _open_tcp_tab(user)
+    user.find(kind=ui.tab, content="Frames").click()
+    _element(user, "setup-frame-rz").set_value(
+        _element(user, "setup-frame-rz").value + 90.0
+    )
+    user.find(kind=ui.tab, content="TCP").click()
+    _element(user, "tcp-calibration-reference").set_value("axes")
+    user.find(marker="tcp-calibration-orientation").click()
+    await user.should_see("Orientation taught against axes", retries=50)
+    taught = [
+        _element(user, f"tcp-calibration-{k}").value for k in ("roll", "pitch", "yaw")
+    ]
+    assert taught == pytest.approx([0, 0, 90], abs=0.5)
+
+
+@pytest.mark.integration
+async def test_a_late_measurement_is_dropped_after_the_selection_changes(
+    user: User, tmp_path, monkeypatch
+):
+    """A reading that arrives after another entry was selected does not land in
+    that entry."""
+    from waldo_commander.components import tcp_calibration as editor_module
+
+    client = await _bare_flange_at_rest(
+        user,
+        tmp_path,
+        monkeypatch,
+        SetupSnapshot(
+            tcp_calibrations={
+                "tcp_a": TcpCalibration((1, 2, 3, 0, 0, 0), "NONE"),
+                "tcp_b": TcpCalibration((4, 5, 6, 0, 0, 0), "NONE"),
+            }
+        ),
+    )
+    real_observe = editor_module.observe_tcp
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def late_observe(client, **kwargs):
+        observation = await real_observe(client, **kwargs)
+        entered.set()
+        await release.wait()
+        return observation
+
+    monkeypatch.setattr(editor_module, "observe_tcp", late_observe)
+    try:
+        await _completed(client, await client.set_tcp_transform(7, 8, 9, 0, 0, 0))
+        await _open_tcp_tab(user)
+        assert _element(user, "tcp-calibration-existing").value == "tcp_a"
+        user.find(marker="tcp-calibration-read").click()
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        _element(user, "tcp-calibration-existing").set_value("tcp_b")
+        await asyncio.sleep(0)
+        release.set()
+        await user.should_see(
+            "The selection changed while measuring; nothing was recorded."
+        )
+        assert [
+            _element(user, f"tcp-calibration-{k}").value for k in ("x", "y", "z")
+        ] == pytest.approx([4, 5, 6])
+    finally:
+        release.set()
+        await _completed(client, await client.set_tcp_transform())
 
 
 def _pivot_samples():

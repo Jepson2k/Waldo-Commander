@@ -6,6 +6,12 @@ or use **Use current TCP** to capture the current tool pose. In the Poses tab,
 choose a frame and capture or enter a pose in that frame. Use **Set** to update
 the working snapshot and **Save** to persist it under a name.
 
+Picking a name under **Saved** loads it. **Save** writes at once when the file
+is the one you loaded and nothing has saved it since; otherwise it asks whether
+to load the saved setup, merge your edits into it (entries you did not edit
+keep their saved values) or overwrite it. Saving re-plans the preview of every
+open program that loads that setup.
+
 Translations use millimetres; angles use degrees, with intrinsic XYZ
 (`Rx(roll) · Ry(pitch) · Rz(yaw)`), matching the robot clients' numeric poses.
 Shape definitions have their own documented rotation convention. A frame's parent can be WRF or another saved
@@ -63,16 +69,22 @@ The position solve leaves the displayed orientation unchanged.
 
 To teach orientation, align the physical tool with the axes of WRF or a named
 setup frame, select those reference axes, and choose **Teach orientation**.
-This changes only roll/pitch/yaw. Both operations use millimetres and intrinsic
-XYZ degrees relative to the registered tool. You can also enter all six values
-manually after **Read applied** identifies the active tool.
+This changes only roll/pitch/yaw, and a frame edit not yet kept is used as
+edited. Both operations use millimetres and intrinsic XYZ degrees relative to
+the registered tool. You can also enter all six values manually after **Read
+applied** identifies the active tool. A position and an orientation measured on
+different tools are not kept or saved together.
 
 **Set calibration** adds the displayed values to the working setup; **Save**
 persists them. Saved entries show measurement provenance and their tool/variant
 binding. Saving does not configure the robot or edit the program. **Apply to
 controller** explicitly queues the displayed transform, waits for completion,
 and checks readback before updating the scene. A different tool or variant is
-refused. A disconnected capture session discards its unsaved samples.
+refused, and so is an Apply while commands are queued or a program or
+calibration is moving the robot. A Stop or a change of control while Apply is
+checking the tool keeps the transform from being sent, and one that does not
+complete in time stops the robot. A disconnected capture session discards its
+unsaved samples.
 
 Programs apply saved data explicitly:
 
