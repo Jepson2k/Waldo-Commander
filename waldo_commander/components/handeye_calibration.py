@@ -1027,7 +1027,7 @@ class HandEyeCalibrationPanel(Panel):
         task; Stop sets ``_auto_cancel`` and halts the in-flight move, and the
         run aborts if the page that started it disconnects or another client
         takes control."""
-        with motion_recorder.owned():
+        with reservation, motion_recorder.owned():
             await self._auto_run_owned(commander, page_client)
 
     async def _auto_run_owned(self, commander: Commander, page_client: Client) -> None:
@@ -1138,7 +1138,6 @@ class HandEyeCalibrationPanel(Panel):
                         color="negative",
                     )
         finally:
-            reservation.release()
             self._auto_cancel = False
             self._set_auto_progress(None)
 
