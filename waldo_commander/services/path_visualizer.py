@@ -255,6 +255,8 @@ def _run_simulation_isolated(
     simulate_seconds: float | None = None,
     attachment_epoch: int = 0,
     scenario: dict[str, Any] | None = None,
+    plan_seconds: float | None = None,
+    config_path: str | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -280,6 +282,10 @@ def _run_simulation_isolated(
             physics plant — and the result carries the predicted record.
             The value bounds SIMULATED time, so a program that never
             terminates still comes back. None plans only.
+        plan_seconds: Cuts the commanded record to this much simulated
+            time; None keeps all of it.
+        config_path: The backend configuration the dry run loads, where
+            the backend takes one; None leaves the choice to the backend.
 
     Returns:
         Dict with keys:
@@ -310,8 +316,9 @@ def _run_simulation_isolated(
         AsyncPathPreviewClient,
     )
 
-    # Lets us read the records after execution.
-    created_clients: list[PathPreviewClient] = []
+    # The program's one dry-run session: every client it builds, sync or
+    # async, is a view of it, so one record holds all their commands in order.
+    session: list[PathPreviewClient] = []
     # (module, attribute, original) for every backend client name swapped for
     # a preview class below, so the thread fallback can put them back.
     swapped_names: list[tuple[Any, str, Any]] = []
@@ -330,6 +337,8 @@ def _run_simulation_isolated(
         _preview_robot = get_robot(backend_package)
 
         def _dr_cls(**kwargs: Any) -> Any:
+            if config_path is not None:
+                kwargs["config_path"] = config_path
             return _preview_robot.create_dry_run_client(**kwargs)
 
         def seed_world(preview: PathPreviewClient) -> None:
@@ -360,13 +369,21 @@ def _run_simulation_isolated(
                 bound.append(shape)
             if preview._client.set_shapes(bound) != 1:
                 raise ValueError("Preview world application was not confirmed")
+            # The live run never sends this, so it must not take the ordinal
+            # of the program's first command.
+            preview._attribute_commands(0, method="set_shapes")
 
         from waldo_commander.profiles import get_robot
 
         _preview_robot = get_robot(backend_package)
 
         class LocalPathPreviewClient(PathPreviewClient):
+            def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+                return session[0] if session else super().__new__(cls)
+
             def __init__(self, *args: Any, **kwargs: Any):
+                if session:
+                    return
                 super().__init__(
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
@@ -378,24 +395,12 @@ def _run_simulation_isolated(
                     tool_meta_registry=tool_meta_registry,
                     robot=_preview_robot,
                 )
-                created_clients.append(self)
+                session.append(self)
                 seed_world(self)
 
         class LocalAsyncPathPreviewClient(AsyncPathPreviewClient):
             def __init__(self, *args: Any, **kwargs: Any):
-                self._sync_client = PathPreviewClient(
-                    target_collector=local_targets,
-                    tool_action_collector=local_tool_actions,
-                    tool_selection_collector=local_tool_selections,
-                    shape_change_collector=local_shape_changes,
-                    initial_joints=initial_joints_rad,
-                    initial_homed=initial_homed,
-                    dry_run_client_cls=_dr_cls,
-                    tool_meta_registry=tool_meta_registry,
-                    robot=_preview_robot,
-                )
-                created_clients.append(self._sync_client)
-                seed_world(self._sync_client)
+                self._sync_client = LocalPathPreviewClient()
 
         for module in (backend, getattr(backend, "client", None)):
             if module is None:
@@ -449,12 +454,12 @@ def _run_simulation_isolated(
                 return getattr(self._real_time, name)
 
             def _elapsed(self) -> float:
-                return max((c.sim_time_s for c in created_clients), default=0.0)
+                return session[0].sim_time_s if session else 0.0
 
             def sleep(self, seconds):
                 if threading.get_ident() != sim_thread_id:
                     return self._real_time.sleep(seconds)
-                for client in created_clients:
+                for client in session:
                     client.record_sleep(seconds)
 
             def time(self):
@@ -520,6 +525,13 @@ def _run_simulation_isolated(
         except UnresolvedPreview as e:
             unresolved = True
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+
+        except SystemExit as e:
+            # A script entry point ends in sys.exit(main()); only a failure
+            # status is an error, and the exit must not reach the host.
+            if e.code not in (None, 0):
+                error_message = f"Program exited with status {e.code}"
+
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
@@ -536,9 +548,7 @@ def _run_simulation_isolated(
         # A pool worker is discarded with these swaps in place, but a direct
         # in-process call shares the app's interpreter, where a client built
         # from the backend's name after this point has to be the real one
-        # again. In a ``finally`` because a script ending in ``sys.exit()``
-        # raises SystemExit, which passes both excepts and would otherwise
-        # leave the preview class installed for the rest of the app's life.
+        # again, even after a BaseException neither except takes.
         for module, name, original in reversed(swapped_names):
             if original is None:
                 delattr(module, name)
@@ -547,10 +557,10 @@ def _run_simulation_isolated(
 
     # Close blend holds and note the last commands, covering scripts without
     # context managers.
-    for c in created_clients:
-        c.close()
+    for c in session:
+        c.close(plan_seconds)
 
-    for c in created_clients:
+    for c in session:
         if c.accumulated_errors:
             errors_text = "\n".join(c.accumulated_errors)
             if error_message:
@@ -558,22 +568,21 @@ def _run_simulation_isolated(
             else:
                 error_message = errors_text
 
-    # The program's records come off the last client the script built:
-    # what it commanded, and — on the predicted pass — what the arm would
-    # do, from the same client, so nothing is re-executed and no script
-    # runs twice. A failure of the predicted pass costs the physics, not
-    # the plan.
+    # The program's records come off its session: what it commanded, and
+    # — on the predicted pass — what the arm would do, from the same
+    # session, so nothing is re-executed and no script runs twice. A
+    # failure of the predicted pass costs the physics, not the plan.
     commanded: TickIndex | None = None
     predicted: TickIndex | None = None
     notes: list[CommandNote] = []
     physics_error: str | None = None
     final_joints_rad: list[float] | None = None
     collisions: dict[int, int] = {}
-    if created_clients:
-        client = created_clients[-1]
+    if session:
+        client = session[0]
         notes = list(client.notes)
         try:
-            commanded = _portable(client.plan())
+            commanded = _portable(client.plan(plan_seconds))
         except Exception as e:
             logger.warning("Reading the commanded record failed: %s", e)
             error_message = (error_message + "\n" if error_message else "") + (
@@ -691,7 +700,11 @@ class _PhysicsPool:
         """Run *fn*, abandoning whatever was running before it."""
         self.cancel()
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(self._ensure(), fn, args)
+        try:
+            future = loop.run_in_executor(self._ensure(), fn, args)
+        except Exception:
+            self._discard()
+            raise
         self._current = future
         try:
             return await future
@@ -700,6 +713,12 @@ class _PhysicsPool:
             # run; the worker must be terminated while we still own it.
             if self._current is future:
                 self.cancel()
+            raise
+        except Exception:
+            # A worker that died mid-job leaves its executor refusing every
+            # later submission, so the next pass needs a fresh one.
+            if self._current is future:
+                self._discard()
             raise
         finally:
             if self._current is future:
@@ -716,6 +735,10 @@ class _PhysicsPool:
         if current is None:
             return
         current.cancel()
+        self._discard()
+
+    def _discard(self) -> None:
+        """Kill the worker and drop its executor; the next run spawns both."""
         pool, self._pool = self._pool, None
         if pool is not None:
             for p in getattr(pool, "_processes", {}).values():
@@ -1091,9 +1114,14 @@ class PathVisualizer:
             logger.debug("Predicted record answers a superseded plan; dropped")
             return None
         commanded = dry_run.commanded
-        diverges = commanded is None or (
-            predicted.digest != commanded.digest or bool(predicted.channels)
-        )
+        # The pass re-runs the program: one that draws random targets, or
+        # reads a setup edited since, commands something else under the
+        # same revision.
+        rerun: TickIndex | None = (result or {}).get("commanded")
+        if commanded is None or rerun is None or rerun.digest != commanded.digest:
+            logger.debug("Predicted record answers other commands than the plan")
+            return None
+        diverges = predicted.digest != commanded.digest or bool(predicted.channels)
         self._predicted_diverges[backend] = diverges
         # The backend guarantees the same program gives a bit-identical
         # record, so an equal digest means an identical picture and the

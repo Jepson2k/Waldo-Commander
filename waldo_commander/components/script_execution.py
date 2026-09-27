@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from nicegui import Client, context, ui
+from nicegui import Client, background_tasks, context, ui
 
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.constants import REPO_ROOT
@@ -202,6 +202,7 @@ class ScriptExecutionController:
             return
 
         self.last_exit_code = None
+        resumed = False
         try:
             filename_input = ui_state.active_filename_input
             filename = (
@@ -258,9 +259,20 @@ class ScriptExecutionController:
             self._step_controller = GUIStepController(self._step_session_id)
             self._step_controller.initialize()
 
+            # Resuming releases whatever a native pause holds, which must be
+            # nothing but this run's own motion.
+            client = waldoctl.commander.client
+            queued = await client.queue()
+            if queued is None:
+                raise ConnectionError("Controller queue is unavailable")
+            if queued or not await client.wait_status(
+                lambda status: status.queued_duration < 1e-3, timeout=0.5
+            ):
+                raise RuntimeError("the controller still has queued motion")
             if launching_tab is not None:
                 launching_tab.execution.is_running = True
-            if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+            resumed = True
+            if await client.resume(timeout=3.0) <= 0:
                 raise TimeoutError("Controller resume was not confirmed")
 
             self.script_handle = await run_script(
@@ -308,6 +320,13 @@ class ScriptExecutionController:
                         "Failed to stop leaked subprocess after start error: %s",
                         stop_err,
                     )
+            if resumed:
+                self.script_handle = None
+                try:
+                    await self._confirm_controller_stop()
+                except Exception as stop_error:
+                    self._report_unconfirmed_stop(stop_error)
+                    return
             self._finish_record("start_failed")
             self._reset_state()
 
@@ -349,6 +368,7 @@ class ScriptExecutionController:
         else:
             self._finish_record("stopped")
             self._reset_state()
+            self._refresh_tcp()
 
     async def _confirm_controller_stop(self) -> None:
         if not await motion_guard.stop_robot(waldoctl.commander.client, "program stop"):
@@ -369,10 +389,14 @@ class ScriptExecutionController:
     async def signal_play(self) -> None:
         """Resume a paused script subprocess (no-op if no script is stepping)."""
         async with self._execution_control_lock:
-            if self._step_controller:
-                if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
-                    raise TimeoutError("Controller resume was not confirmed")
-                self._step_controller.signal_play()
+            controller = self._step_controller
+            if controller is None:
+                return
+            if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                raise TimeoutError("Controller resume was not confirmed")
+            # A run that ended during the resume must not release its successor.
+            if controller is self._step_controller:
+                controller.signal_play()
                 if self.active_record:
                     self.active_record.append({"event": "resume"})
 
@@ -396,10 +420,13 @@ class ScriptExecutionController:
     async def signal_step(self) -> None:
         """Step a paused script forward by one command (no-op if not stepping)."""
         async with self._execution_control_lock:
-            if self._step_controller:
-                if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
-                    raise TimeoutError("Controller resume was not confirmed")
-                self._step_controller.signal_step()
+            controller = self._step_controller
+            if controller is None:
+                return
+            if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                raise TimeoutError("Controller resume was not confirmed")
+            if controller is self._step_controller:
+                controller.signal_step()
                 if self.active_record:
                     self.active_record.append({"event": "step"})
 
@@ -514,6 +541,7 @@ class ScriptExecutionController:
                 )
                 self._reset_state()
                 logger.info("Script %s finished with code %s", filename, rc)
+                self._refresh_tcp()
 
     def _finish_record(self, outcome: str, exit_code: int | None = None) -> None:
         if self.active_record is not None:
@@ -534,6 +562,16 @@ class ScriptExecutionController:
         self._release_reservation()
         simulation_state.notify_changed()
         self.cleanup_stepping()
+
+    @staticmethod
+    def _refresh_tcp() -> None:
+        # A run can change the fitted tool's TCP transform, which no status
+        # field carries.
+        from waldo_commander.components.settings import refresh_applied_tcp
+
+        background_tasks.create(
+            refresh_applied_tcp(waldoctl.commander.client), name="tcp-refresh"
+        )
 
     def _release_reservation(self) -> None:
         if self._reservation is not None:

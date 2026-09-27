@@ -172,11 +172,10 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
         timeout: Seconds to wait for graceful termination before force kill
     """
     proc = handle["proc"]
-    if camera_session := handle.get("camera_session"):
-        await camera_session.close()
-
     if proc.returncode is not None:
         logger.debug("Script process already terminated (code: %s)", proc.returncode)
+        if camera_session := handle.get("camera_session"):
+            await camera_session.close()
         return
 
     try:
@@ -224,6 +223,10 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
                 pass
             except Exception as e:
                 logger.debug("Error canceling stream task: %s", e)
+    # Only once the process is gone: a request it is still waiting on
+    # would otherwise hold up the stop.
+    if camera_session := handle.get("camera_session"):
+        await camera_session.close()
 
 
 def create_default_config(filename: str, cwd: str | None = None) -> ScriptRunConfig:

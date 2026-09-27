@@ -390,13 +390,16 @@ async def test_failed_program_keeps_stop_available_until_controller_confirms(
         assert not is_any_program_running()
         assert await client.queue() == []
         assert await client.wait_status(lambda s: not s.action_current, timeout=3)
+        records = caplog.get_records("call")
+        # The controller's failure is logged where the stop was sent; the run
+        # reports the stop it could not confirm.
+        assert any(
+            "test stop acknowledgement unavailable" in r.getMessage() for r in records
+        )
         expected = [
-            r
-            for r in caplog.get_records("call")
-            if "test stop acknowledgement unavailable" in r.getMessage()
+            r for r in records if "Controller stop is unconfirmed" in r.getMessage()
         ]
         assert expected
-        records = caplog.get_records("call")
         records[:] = [r for r in records if r not in expected]
     finally:
         release.touch()
@@ -404,3 +407,121 @@ async def test_failed_program_keeps_stop_available_until_controller_confirms(
         if is_any_program_running():
             await script_exec.stop()
         await client.stop()
+
+
+@pytest.mark.integration
+async def test_unconfirmed_pause_redraws_the_play_button(user: User, monkeypatch):
+    """A Pause the controller does not confirm still holds the program, so the
+    button must stop offering Pause: pressing it again would resume the run."""
+    from waldo_commander.components.playback import playback
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = (
+        "from parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        "    rbt.delay(20)\n"
+    )
+
+    async def unconfirmed_pause(*, timeout: float = 3.0) -> int:
+        return 0
+
+    try:
+        await script_exec.start()
+        assert await client.wait_status(lambda s: bool(s.action_current), timeout=10)
+        play_btn = playback.play_btn
+        assert play_btn is not None
+        assert play_btn.props["icon"] == "pause"
+        monkeypatch.setattr(client, "pause", unconfirmed_pause)
+        with pytest.raises(TimeoutError):
+            await playback.toggle_play()
+        assert play_btn.props["icon"] == "play_arrow", (
+            "a held program still shows Pause after an unconfirmed pause"
+        )
+    finally:
+        if is_any_program_running():
+            await script_exec.stop()
+        await client.resume()
+
+
+@pytest.mark.integration
+async def test_a_launch_never_releases_motion_it_does_not_own(
+    user: User, monkeypatch, caplog
+):
+    """Starting a program resumes the controller: it refuses while a native
+    pause holds a move the run did not queue, and a launch that fails after
+    resuming stops what it released."""
+    from waldo_commander.components import script_execution
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.services.script_runner import stop_script
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    start = await client.angles()
+    assert start is not None
+    target = list(start)
+    target[0] += 8
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = (
+        "from parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        f"    rbt.move_j({target!r}, duration=4, timeout=15)\n"
+    )
+    real_run_script = script_execution.run_script
+    handles = []
+
+    async def run_script_then_fail(*args, **kwargs):
+        handle = await real_run_script(*args, **kwargs)
+        handles.append(handle)
+        assert await client.wait_status(lambda s: bool(s.action_current), timeout=10)
+        raise RuntimeError("test: launch failed after the program moved")
+
+    try:
+        assert await client.pause() == 1
+        assert await client.move_j(target, duration=1) >= 0
+        assert await client.wait_status(lambda s: s.queued_duration > 0, timeout=3)
+        await script_exec.start()
+        assert not is_any_program_running()
+        assert (await client.execution_speed()).target_scale == 0, (
+            "starting a program released a move it did not queue"
+        )
+        assert await client.wait_status(lambda s: s.queued_duration > 0, timeout=1)
+        await client.stop()
+        await client.resume()
+        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
+
+        monkeypatch.setattr(script_execution, "run_script", run_script_then_fail)
+        await script_exec.start()
+        assert handles, "the program was never spawned"
+        assert not is_any_program_running()
+        assert await client.wait_status(
+            lambda s: s.queued_duration < 1e-3 and not s.action_current, timeout=1
+        ), "a failed launch left its motion running"
+        expected = [
+            r
+            for r in caplog.get_records("call")
+            if r.getMessage().startswith("Failed to start script")
+        ]
+        assert len(expected) == 2
+        records = caplog.get_records("call")
+        records[:] = [r for r in records if r not in expected]
+    finally:
+        for handle in handles:
+            if handle["proc"].returncode is None:
+                await stop_script(handle)
+        if is_any_program_running():
+            await script_exec.stop()
+        await client.stop()
+        await client.resume()
