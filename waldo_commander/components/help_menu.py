@@ -16,7 +16,6 @@ class HelpMenu:
 
     def __init__(self) -> None:
         self._dialog: ui.dialog | None = None
-        self._stepper: ui.stepper | None = None
         self._safety_accepted: ui.checkbox | None = None
 
     def _build_keybindings_content(self) -> None:
@@ -163,9 +162,8 @@ class HelpMenu:
                 .props(
                     "vertical header-nav flat active-color=wc-text done-color=wc-text-muted"
                 )
-                .classes("p-0 w-full") as self._stepper
+                .classes("p-0 w-full") as stepper
             ):
-                stepper = self._stepper
                 if include_safety_step:
                     with ui.step("Safety Notice").classes("gap-2").mark("safety-step"):
                         with ui.row().classes("items-center gap-2 mb-2"):

@@ -20,7 +20,8 @@
             topContainer: null,
             bottomContainer: null,
             controlPanel: null,
-            bottomCovers: []
+            bottomCovers: [],
+            columnCovers: []
         },
         constraints: {
             viewportMarginX: 80,
@@ -68,7 +69,7 @@
 
     // ========== Active Tab Storage ==========
     const ACTIVE_TABS_KEY = 'parol_active_tabs';
-    let activeTabs = { top: null, bottom: null };
+    let activeTabs = { top: null, bottom: null, panel: null };
 
     function loadActiveTabs() {
         try {
@@ -79,7 +80,7 @@
             }
         } catch (e) {
             console.warn('[PanelResize] Could not load active tabs:', e);
-            activeTabs = { top: null, bottom: null };
+            activeTabs = { top: null, bottom: null, panel: null };
         }
     }
 
@@ -93,6 +94,14 @@
 
     function getActiveTabs() {
         return { ...activeTabs };
+    }
+
+    // Until the app is ready, tab changes are the page's own start-up
+    // selection and restore; recording them would overwrite what is restored.
+    function rememberTab(group, tab) {
+        if (!appReady) return;
+        activeTabs[group] = tab || null;
+        saveActiveTabs();
     }
 
     // ========== Panel Identification ==========
@@ -240,9 +249,9 @@
     // ========== Shell geometry ==========
     // What covers the 3D view: the column's right edge and the height the
     // footer and bottom panel take from the bottom. The scene frames itself
-    // from the `wc:layout` event; CSS reads --wc-bottom-cover (the column
-    // stops above it) and --wc-control-inset (the bottom panel stops short of
-    // the control panel).
+    // from the `wc:layout` event; CSS reads --wc-column-cover (the column
+    // stops above it and above the bottom plugin panels) and
+    // --wc-control-inset (the bottom panel stops short of the control panel).
 
     let columnOpen = false;
     let coupled = false;
@@ -254,10 +263,19 @@
         if (style.getPropertyValue(name) !== value + 'px') style.setProperty(name, value + 'px');
     }
 
+    // An empty container still sits at its bottom offset; it covers nothing.
     function coverFromBottom(element) {
-        return element && element.offsetParent !== null
-            ? Math.max(0, Math.round(window.innerHeight - element.getBoundingClientRect().top))
-            : 0;
+        if (!element || element.offsetParent === null) return 0;
+        const rect = element.getBoundingClientRect();
+        return rect.height > 0 ? Math.max(0, Math.round(window.innerHeight - rect.top)) : 0;
+    }
+
+    function coverOf(selectors) {
+        let cover = 0;
+        for (const selector of selectors) {
+            cover = Math.max(cover, coverFromBottom(document.querySelector(selector)));
+        }
+        return cover;
     }
 
     function publishLayout() {
@@ -267,16 +285,14 @@
         if (container) {
             columnRight = Math.round(container.getBoundingClientRect().left + container.offsetWidth);
         }
-        let bottomCover = 0;
-        for (const selector of config.selectors.bottomCovers) {
-            bottomCover = Math.max(bottomCover, coverFromBottom(document.querySelector(selector)));
-        }
+        const bottomCover = coverOf(config.selectors.bottomCovers);
+        const columnCover = Math.max(bottomCover, coverOf(config.selectors.columnCovers));
         const controlPanel = config.selectors.controlPanel ? document.querySelector(config.selectors.controlPanel) : null;
         const inset = controlPanel && controlPanel.offsetParent !== null
             ? Math.max(0, Math.round(window.innerWidth - controlPanel.getBoundingClientRect().left))
             : 0;
         setRootPx('--wc-control-inset', inset);
-        setRootPx('--wc-bottom-cover', bottomCover);
+        setRootPx('--wc-column-cover', columnCover);
         layout = { columnRight: columnRight, bottomCover: bottomCover };
         window.dispatchEvent(new CustomEvent('wc:layout', { detail: { ...layout } }));
     }
@@ -636,12 +652,7 @@
     function onTabChange(group, toTab) {
         console.log('[PanelResize] Tab change:', group, '->', toTab);
 
-        // Only update and save active tab state after app is fully initialized
-        // This prevents the initial auto-selection from overwriting saved state in memory
-        if (appReady) {
-            activeTabs[group] = toTab || null;
-            saveActiveTabs();
-        }
+        rememberTab(group, toTab);
 
         const containerSelector = group === 'top'
             ? config.selectors.topContainer
@@ -824,6 +835,7 @@
     function observeContainers() {
         if (containerObserver || !('ResizeObserver' in window)) return;
         containerObserver = new ResizeObserver(function() {
+            scheduleLayout();
             if (isResizing || !appReady) return;
             if (shouldCouple()) ensureNoOverlap();
         });
@@ -1055,20 +1067,19 @@
         const maxH = getMaxHeight();
         if (width) width = Math.max(panelCfg.minWidth || 200, Math.min(width, maxW));
         if (height) height = Math.max(panelCfg.minHeight || 100, Math.min(height, maxH));
+        if (isFullHeightPanel(panelId)) height = null;
 
-        // Find container
-        const containerSelector = panelCfg.group === 'top'
-            ? config.selectors.topContainer
-            : config.selectors.bottomContainer;
-        const container = containerSelector ? document.querySelector(containerSelector) : null;
-
-        if (container) {
+        // The container is shared by its group's panels: size it only for
+        // this one. A hidden panel gets its size when its tab opens.
+        const panel = document.querySelector(panelCfg.selector);
+        const container = getContainer(panelCfg.group);
+        if (panel && panel.offsetParent !== null && container) {
             if (width) container.style.setProperty('width', width + 'px', 'important');
             if (height) container.style.setProperty('height', height + 'px', 'important');
+            scheduleLayout();
         }
 
         // Save to localStorage
-        const panel = document.querySelector(panelCfg.selector);
         if (panel) {
             savePanelSize(panel, width, height);
         } else {
@@ -1098,6 +1109,7 @@
         onAppReady: onAppReady,
         getSavedSize: getSavedPanelSize,
         getActiveTabs: getActiveTabs,
+        rememberTab: rememberTab,
         resizePanel: resizePanel,
         clearAllSizes: function() {
             panelSizes = {};

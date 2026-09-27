@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from nicegui import ui
@@ -44,6 +45,7 @@ class BottomPanel:
                         "diagnostics", label="Diagnostics", icon="monitor_heart"
                     ).mark("bottom-tab-diagnostics")
                     ui.tab("log", label="Log", icon="article").mark("bottom-tab-log")
+                self.tabs.on_value_change(self._remember)
                 ui.space()
                 ui.button(icon="close", on_click=self.close).props(
                     "flat round dense color=wc-text"
@@ -69,7 +71,14 @@ class BottomPanel:
         assert self.card is not None and self.tabs is not None
         self.tabs.set_value(tab)
         self.card.set_visibility(True)
+        self._remember()
 
     def close(self) -> None:
         assert self.card is not None
         self.card.set_visibility(False)
+        self._remember()
+
+    def _remember(self) -> None:
+        """Save the open tab, or none, for the next page load to reopen."""
+        tab = self.tabs.value if self.visible and self.tabs is not None else None
+        ui.run_javascript(f"PanelResize.rememberTab('panel', {json.dumps(tab)})")

@@ -7,7 +7,7 @@ import math
 import weakref
 from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Any, cast
+from typing import cast
 
 import waldoctl
 from nicegui import Client, background_tasks, context, ui
@@ -16,6 +16,7 @@ from nicegui.client import ClientConnectionTimeout
 from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
 from waldoctl.setup import PoseValues, TcpCalibration
 
+from waldo_commander.components.help_menu import HelpMenu
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.common.theme import (
     STORAGE_KEY as THEME_STORAGE_KEY,
@@ -110,7 +111,7 @@ def _setting_row(title: str, description: str):
     with ui.element("div").classes("settings-row"):
         with ui.element("div").classes("settings-text"):
             ui.label(title).classes("settings-label")
-            ui.label(description).classes("settings-desc")
+            ui.label(description).classes("wc-caption text-wc-text-muted truncate")
         yield
 
 
@@ -126,6 +127,7 @@ class SettingsContent:
         self.client = client
         self.dialog: ui.dialog | None = None
         self._shortcuts_box: ui.column | None = None
+        self._tour_box: ui.column | None = None
         self._tcp_inputs: tuple[str, OffsetInputs, Client] | None = None
         _settings_views.add(self)
         self._port_select: ui.select | None = None
@@ -1166,11 +1168,9 @@ class SettingsContent:
     # ── Main entry point ─────────────────────────────────────────────
 
     def build_dialog(
-        self,
-        ai_control_section: Callable[[], None] | None = None,
-        help_menu: Any = None,
-    ) -> ui.dialog:
-        """Build the Settings dialog, closed, with every category's rows in place.
+        self, ai_control_section: Callable[[], None], help_menu: HelpMenu
+    ) -> None:
+        """Build the Settings dialog, closed.
 
         ``ai_control_section`` is the control panel's AI mode row, grouped
         with the other autonomy settings; ``help_menu`` supplies the
@@ -1224,28 +1224,10 @@ class SettingsContent:
                 "automation",
                 "Automation",
                 "smart_toy",
-                [
-                    self._build_automation,
-                    *([ai_control_section] if ai_control_section else []),
-                ],
+                [self._build_automation, ai_control_section],
             ),
-        ]
-        if help_menu is not None:
-            categories += [
-                (
-                    "shortcuts",
-                    "Shortcuts",
-                    "keyboard",
-                    [lambda: self._build_shortcuts(help_menu)],
-                ),
-                (
-                    "getting-started",
-                    "Getting started",
-                    "school",
-                    [lambda: self._build_getting_started(help_menu)],
-                ),
-            ]
-        categories.append(
+            ("shortcuts", "Shortcuts", "keyboard", [self._build_shortcuts_box]),
+            ("getting-started", "Getting started", "school", []),
             (
                 "advanced",
                 "Advanced — restart required",
@@ -1255,8 +1237,8 @@ class SettingsContent:
                     self._build_plugin_panels,
                     self._build_mcp_server,
                 ],
-            )
-        )
+            ),
+        ]
         for panel in self._plugin_contributors():
             categories.append(
                 (
@@ -1268,72 +1250,69 @@ class SettingsContent:
             )
 
         self.dialog = ui.dialog().classes("settings-dialog").mark("settings-dialog")
-        with self.dialog:
-            with ui.card().classes("settings-dialog-card p-0"):
+        with self.dialog, ui.card().classes("settings-dialog-card p-0"):
+            with (
+                ui.tabs(value=categories[0][0])
+                .props("vertical dense no-caps")
+                .classes("settings-cats") as tabs
+            ):
+                for key, title, icon, _ in categories:
+                    ui.tab(key, label=title.split(" — ")[0], icon=icon).mark(
+                        f"settings-cat-{key}"
+                    )
+            with ui.element("div").classes("settings-body"):
                 with (
-                    ui.tabs(value=categories[0][0])
-                    .props("vertical dense no-caps")
-                    .classes("settings-cats") as tabs
+                    ui.row()
+                    .classes("w-full items-center px-4 py-2 no-wrap shrink-0")
+                    .style("border-bottom: 1px solid var(--wc-glass-border);")
                 ):
-                    for key, title, icon, _ in categories:
-                        ui.tab(key, label=title.split(" — ")[0], icon=icon).mark(
-                            f"settings-cat-{key}"
-                        )
-                with ui.element("div").classes("settings-body"):
-                    with (
-                        ui.row()
-                        .classes("w-full items-center px-4 py-2 no-wrap shrink-0")
-                        .style("border-bottom: 1px solid var(--wc-glass-border);")
-                    ):
-                        ui.label("Settings").classes("wc-title")
-                        ui.space()
-                        ui.button(icon="close", on_click=self.dialog.close).props(
-                            "flat round dense color=wc-text"
-                        ).mark("settings-close")
-                    if help_menu is not None:
-                        # Bindings register after the page is built and the jog
-                        # keys' descriptions follow the inversion switches, so
-                        # the table is redrawn each time the category opens.
-                        tabs.on_value_change(
-                            lambda e: (
-                                self._refresh_shortcuts(help_menu)
-                                if e.value == "shortcuts"
-                                else None
-                            )
-                        )
-                    with ui.tab_panels(tabs, value=categories[0][0]).props("animated"):
-                        for key, title, _, sections in categories:
-                            with ui.tab_panel(key):
-                                with ui.column().classes("settings-content"):
-                                    heading = ui.label(title).classes(
-                                        "settings-group-heading"
-                                    )
-                                    if key.startswith("plugin-"):
-                                        heading.mark(
-                                            f"settings-plugin-{key[7:]}-header"
-                                        )
-                                    else:
-                                        heading.mark(
-                                            f"settings-group-{title.split()[0].lower()}"
-                                        )
-                                    for section in sections:
-                                        section()
+                    ui.label("Settings").classes("wc-title")
+                    ui.space()
+                    ui.button(icon="close", on_click=self.dialog.close).props(
+                        "flat round dense color=wc-text"
+                    ).mark("settings-close")
+                with ui.tab_panels(tabs, value=categories[0][0]).props("animated"):
+                    contents = {
+                        key: self._build_category(key, title, sections)
+                        for key, title, _, sections in categories
+                    }
+        self._tour_box = contents["getting-started"]
+        tabs.on_value_change(lambda e: self._open_category(e.value, help_menu))
 
         simulation_state.notify_changed()
-        return self.dialog
 
-    def _build_shortcuts(self, help_menu: Any) -> None:
+    @staticmethod
+    def _build_category(
+        key: str, title: str, sections: list[Callable[[], None]]
+    ) -> ui.column:
+        with ui.tab_panel(key), ui.column().classes("settings-content") as content:
+            ui.label(title).classes("settings-group-heading").mark(
+                f"settings-group-{key}"
+            )
+            for section in sections:
+                section()
+        return content
+
+    def _build_shortcuts_box(self) -> None:
         self._shortcuts_box = ui.column().classes("w-full")
-        self._refresh_shortcuts(help_menu)
 
-    def _refresh_shortcuts(self, help_menu: Any) -> None:
-        if self._shortcuts_box is None:
-            return
-        self._shortcuts_box.clear()
-        with self._shortcuts_box:
-            help_menu._build_keybindings_content()
+    def _open_category(self, key: str, help_menu: HelpMenu) -> None:
+        """Build Shortcuts and Getting started when they are opened.
 
-    def _build_getting_started(self, help_menu: Any) -> None:
+        Bindings register after the page is built and the jog keys'
+        descriptions follow the inversion switches, so the shortcuts table is
+        redrawn every time; the tour is built once.
+        """
+        if key == "shortcuts" and self._shortcuts_box is not None:
+            self._shortcuts_box.clear()
+            with self._shortcuts_box:
+                help_menu._build_keybindings_content()
+        elif key == "getting-started" and self._tour_box is not None:
+            with self._tour_box:
+                self._build_getting_started(help_menu)
+            self._tour_box = None
+
+    def _build_getting_started(self, help_menu: HelpMenu) -> None:
         with ui.row().classes("w-full items-center no-wrap gap-2"):
             ui.label("A tour of the interface, one step at a time.").classes(
                 "wc-caption text-wc-text-muted"

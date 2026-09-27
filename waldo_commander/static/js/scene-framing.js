@@ -50,6 +50,8 @@
             window.addEventListener('wc:layout', function(e) { follow(e.detail); });
         }
         if (window.PanelResize) follow(PanelResize.layout());
+        // Scene init resizes the view after attaching, resetting the aspect.
+        requestAnimationFrame(apply);
     }
 
     window.SceneFraming = {

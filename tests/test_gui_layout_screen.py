@@ -6,12 +6,11 @@ import json
 import pytest
 import waldoctl
 from nicegui import Client, core
-from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl.setup import Frame, Pose, SetupSnapshot
 
-from tests.helpers.browser_helpers import dismiss_dialogs, run_in_app
+from tests.helpers.browser_helpers import dismiss_dialogs, marked_element, run_in_app
 from tests.helpers.wait import screen_wait_for_scene_ready
 from tests.test_par6_backend import par6_env, requires_par6  # noqa: F401
 from waldo_commander.setup import SetupStore
@@ -47,16 +46,11 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         client = Client.instances[ui_state.active_client_id]
         return next(e for e in client.elements.values() if marker in e._markers)
 
-    def element(marker):
-        try:
-            identifier = run_in_app(lambda: marked(marker).id)
-        except (KeyError, StopIteration) as error:
-            raise NoSuchElementException(marker) from error
-        return screen.selenium.find_element(By.ID, f"c{identifier}")
-
     def click(marker):
         target = WebDriverWait(screen.selenium, 10).until(
-            lambda _: element(marker) if element(marker).is_displayed() else None
+            lambda _: marked_element(screen, marker)
+            if marked_element(screen, marker).is_displayed()
+            else None
         )
         target.click()
         screen.selenium.execute_cdp_cmd(
@@ -166,13 +160,13 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             assert not dimensions["tall"], (key, dimensions)
         click("settings-cat-tool")
         WebDriverWait(screen.selenium, 10).until(
-            lambda _: element("select-tool").is_displayed()
+            lambda _: marked_element(screen, "select-tool").is_displayed()
         )
         if height >= 941:
             # A tool with variants adds its Variant row, and the form still fits.
             select_tool("SSG-48")
             WebDriverWait(screen.selenium, 20).until(
-                lambda _: element("select-tool-variant").is_displayed()
+                lambda _: marked_element(screen, "select-tool-variant").is_displayed()
             )
             grown = screen.selenium.execute_script(measure_category)
             assert grown["rows"] <= grown["shown"] + 1, (
@@ -189,7 +183,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         )
         click("settings-cat-advanced")
         WebDriverWait(screen.selenium, 10).until(
-            lambda _: element("settings-backend-select").is_displayed()
+            lambda _: marked_element(screen, "settings-backend-select").is_displayed()
         )
         assert run_in_app(lambda: marked("settings-backend-select").value) == backend
         click("settings-close")
@@ -204,7 +198,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         click("editor-skills-menu")
         click("editor-skill-waldo.retract")
         WebDriverWait(screen.selenium, 10).until(
-            lambda _: element("skill-insert").is_displayed()
+            lambda _: marked_element(screen, "skill-insert").is_displayed()
         )
         WebDriverWait(screen.selenium, 10).until(
             lambda d: d.execute_script(
@@ -212,7 +206,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 const e=document.getElementById(arguments[0]); const r=e.getBoundingClientRect();
                 return e.contains(document.elementFromPoint(r.x+5,r.y+5));
                 """,
-                element("skill-insert").get_attribute("id"),
+                marked_element(screen, "skill-insert").get_attribute("id"),
             )
         )
         bounds = screen.selenium.execute_script(
@@ -220,7 +214,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             const e=document.getElementById(arguments[0]); const r=e.getBoundingClientRect();
             return {bottom:r.bottom, height:innerHeight, visible:e.contains(document.elementFromPoint(r.x+5,r.y+5))};
         """,
-            element("skill-insert").get_attribute("id"),
+            marked_element(screen, "skill-insert").get_attribute("id"),
         )
         assert bounds["bottom"] <= bounds["height"], bounds
         assert bounds["visible"], bounds
@@ -264,16 +258,16 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "mobile": False,
             },
         )
-        click("tab-diagnostics")
+        click("footer-events")
         WebDriverWait(screen.selenium, 10).until(
-            lambda _: element("diag-torque-chart").is_displayed()
+            lambda _: marked_element(screen, "diag-torque-chart").is_displayed()
         )
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(
                 lambda: bool(marked("diag-torque-chart").options["series"][0]["data"])
             )
         )
-        _ = element("diag-expand-chart").location_once_scrolled_into_view
+        _ = marked_element(screen, "diag-expand-chart").location_once_scrolled_into_view
         screen.selenium.save_screenshot(str(tmp_path / "par6-torque.png"))
         click("diag-expand-chart")
         WebDriverWait(screen.selenium, 10).until(
@@ -305,12 +299,14 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
 
         run_in_app(tune)
         WebDriverWait(screen.selenium, 10).until(
-            lambda _: element("drives-save-config").is_displayed()
+            lambda _: marked_element(screen, "drives-save-config").is_displayed()
         )
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(lambda: bool(marked("drives-node-select").options))
         )
-        _ = element("drives-save-config").location_once_scrolled_into_view
+        _ = marked_element(
+            screen, "drives-save-config"
+        ).location_once_scrolled_into_view
         geometry = screen.selenium.execute_script(
             """
             const b=document.getElementById(arguments[0]); const e=b.closest('.plugin-panel-content');
@@ -318,7 +314,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             return {scroll:e.scrollHeight, height:e.clientHeight, overflow:getComputedStyle(e).overflowY,
                     visible:b.contains(document.elementFromPoint(r.x+5,r.y+5))};
         """,
-            element("drives-save-config").get_attribute("id"),
+            marked_element(screen, "drives-save-config").get_attribute("id"),
         )
         assert geometry["scroll"] > geometry["height"], geometry
         assert geometry["overflow"] == "auto" and geometry["visible"], geometry

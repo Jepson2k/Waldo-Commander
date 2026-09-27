@@ -1,18 +1,29 @@
 """Selenium browser tests for the program column and the plugin-panel resize
 system that survives around it.
 
-All tests share a single browser session and page load via class_screen fixture.
+The column tests share a single browser session and page load via the
+class_screen fixture.
 """
 
+import importlib.metadata
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
+from nicegui import ui
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+from waldoctl import Commander, Panel, PanelSlot
 
-from tests.helpers.browser_helpers import click_tab, close_panel, js
+from tests.helpers.browser_helpers import (
+    click_tab,
+    close_panel,
+    dismiss_dialogs,
+    js,
+    marked_element,
+)
+from tests.helpers.wait import screen_wait_for_scene_ready
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -184,3 +195,70 @@ class TestProgramColumn:
         drag(class_screen, ".program-panel .resize-handle-right", dx=-500)
         panel = class_screen.selenium.find_element(By.CSS_SELECTOR, ".program-panel")
         assert panel.rect["width"] >= 395
+
+    def test_a_hidden_panels_preset_leaves_the_column_alone(
+        self, class_screen: "Screen"
+    ) -> None:
+        """The gripper's camera preset is saved for when its tab opens; the
+        container it shares is the program column's while that is open."""
+        before = open_program(class_screen)
+        js(class_screen, "PanelResize.resizePanel('gripper', 'camera')")
+        saved = get_storage(class_screen, STORAGE_KEY)
+        assert saved and saved["gripper"]["width"] == 660, saved
+        assert saved["gripper"]["height"] == 675, saved
+
+        after = js(class_screen, COLUMN)
+        for key in ("top", "bottom", "right", "width", "columnRight"):
+            assert abs(after[key] - before[key]) <= 1, (key, before, after)
+
+
+class BenchNotesPanel(Panel):
+    """A bottom-rail plugin of fixed height, as a third-party package ships one."""
+
+    id: ClassVar[str] = "bench-notes"
+    display_name: ClassVar[str] = "Bench notes"
+    slot: ClassVar[PanelSlot] = PanelSlot.LEFT_BOTTOM_TAB
+    tab_icon: ClassVar[str] = "edit_note"
+    default_width: ClassVar[int] = 320
+    default_height: ClassVar[int] = 240
+
+    def build(self, commander: Commander) -> None:
+        ui.label("bench notes").mark("bench-notes")
+
+
+@pytest.mark.browser
+def test_a_bottom_plugin_panel_stops_the_column_above_it(
+    screen: "Screen", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = importlib.metadata.entry_points
+    entry = importlib.metadata.EntryPoint(
+        name="bench-notes",
+        value="tests.test_panel_resize:BenchNotesPanel",
+        group="waldoctl.panels",
+    )
+
+    def entry_points(*, group: str = "") -> object:
+        if group == "waldoctl.panels":
+            return [entry]
+        return real(group=group) if group else real()
+
+    monkeypatch.setattr(importlib.metadata, "entry_points", entry_points)
+    screen.open("/")
+    screen_wait_for_scene_ready(screen, timeout_s=40)
+    dismiss_dialogs(screen)
+    wait_ready(screen, timeout=10)
+
+    open_program(screen)
+    marked_element(screen, "tab-bench-notes").click()
+    stacked = """
+        const r = s => document.querySelector(s).getBoundingClientRect();
+        const column = r('.top-panels-container'), plugin = r('.bottom-panels-container');
+        return {columnTop: column.top, columnBottom: column.bottom,
+                pluginTop: plugin.top, pluginHeight: plugin.height};
+    """
+    shown = WebDriverWait(screen.selenium, 10).until(
+        lambda _: (g := js(screen, stacked))["pluginHeight"] >= 200
+        and g["columnBottom"] <= g["pluginTop"] - 11
+        and g
+    )
+    assert shown["columnBottom"] > shown["columnTop"] + 100, shown

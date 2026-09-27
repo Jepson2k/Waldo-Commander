@@ -123,6 +123,7 @@ SIZE: dict[str, str] = {
     "size-rail": "52px",
     "size-panel-inset": "58px",
     "size-bottom-panel": "340px",
+    "size-column-min": "200px",
     "size-footer": "28px",
 }
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
@@ -463,9 +464,9 @@ def _scalar_block() -> str:
     lines.append(
         "  --wc-footer-clearance: calc(var(--wc-size-footer) + 2 * var(--wc-space-3));"
     )
-    # The footer's cover until PanelResize measures the footer and bottom panel.
+    # The footer's cover until PanelResize measures what the column stops above.
     lines.append(
-        "  --wc-bottom-cover: calc(var(--wc-size-footer) + var(--wc-space-3));"
+        "  --wc-column-cover: calc(var(--wc-size-footer) + var(--wc-space-3));"
     )
     return "\n".join(lines)
 
@@ -627,6 +628,7 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
         "bottomContainer": ".bottom-panels-container",
         "controlPanel": ".overlay-br",
         "bottomCovers": [".status-footer", ".bottom-panel"],
+        "columnCovers": [".bottom-panels-container"],
     },
     "constraints": {
         "viewportMarginX": 80,
@@ -980,21 +982,7 @@ html, body {
   padding: var(--wc-space-3);
 }
 
-/* Overlay anchors */
-.overlay-tl { top: var(--wc-space-3); left: var(--wc-space-3); }
-.overlay-tr { top: var(--wc-space-3); right: var(--wc-space-3); }
-.overlay-bl { bottom: var(--wc-space-3); left: var(--wc-space-3); }
 .overlay-br { bottom: var(--wc-footer-clearance); right: var(--wc-space-3); }
-.overlay-right {
-  position: absolute;
-  top: 50%;
-  right: var(--wc-space-3);
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  gap: var(--wc-space-2);
-  z-index: var(--wc-z-panels);
-}
 
 
 /* ========== Left Tabs ========== */
@@ -1073,12 +1061,14 @@ html, body {
 }
 
 /* The program column: full height between the top margin and whatever covers
-   the bottom (the footer, and the bottom panel as a terminal sits under an
-   editor), width from PanelResize; only the right edge is a handle. */
+   the bottom (the footer, the bottom panel as a terminal sits under an
+   editor, a bottom plugin panel), width from PanelResize; only the right edge
+   is a handle. */
 .panels-wrap.column-open .top-panels-container {
   top: var(--wc-space-3);
-  bottom: calc(var(--wc-bottom-cover) + var(--wc-space-3));
+  bottom: calc(var(--wc-column-cover) + var(--wc-space-3));
   height: auto !important;
+  min-height: var(--wc-size-column-min);
 }
 .panels-wrap.column-open .top-panels-container > .q-panel > .program-panel { max-height: none; }
 
@@ -1405,45 +1395,33 @@ html, body {
   }
   .left-panels-container { display: none !important; }
 
-  /* Center panels horizontally using transform */
-  .overlay-tr {
-    right: auto !important;
-    left: 50% !important;
-    transform: translateX(-50%) !important;
-    /* Variable top margin that goes to 0 on small screens */
-    top: max(0px, calc((100vw - 360px) * 0.0375)) !important;
-    /* Prevent text wrapping, scale down instead */
-    white-space: nowrap !important;
-    font-size: clamp(0.65rem, 2.8vw, 1rem) !important;
-  }
-
+  /* Centred above the footer; the scale below keeps the bottom edge. */
   .overlay-br {
     right: auto !important;
     left: 50% !important;
     transform: translateX(-50%) !important;
-    /* Variable bottom margin that goes to 0 on small screens */
-    bottom: max(0px, calc((100vw - 360px) * 0.0375)) !important;
+    bottom: calc(var(--wc-footer-clearance) + max(0px, (100vw - 360px) * 0.0375)) !important;
   }
 }
 
 /* Small phone screens - scale control panel to fit */
 /* Using stepped breakpoints since CSS can't compute unitless scale from viewport units */
 @media (max-width: 414px) {
-  .overlay-br, .overlay-tr {
+  .overlay-br {
     transform: translateX(-50%) scale(0.95) !important;
     transform-origin: center bottom !important;
   }
 }
 
 @media (max-width: 380px) {
-  .overlay-br, .overlay-tr {
+  .overlay-br {
     transform: translateX(-50%) scale(0.88) !important;
     transform-origin: center bottom !important;
   }
 }
 
 @media (max-width: 340px) {
-  .overlay-br, .overlay-tr {
+  .overlay-br {
     transform: translateX(-50%) scale(0.8) !important;
     transform-origin: center bottom !important;
   }
@@ -1451,7 +1429,7 @@ html, body {
 
 /* Transition for overlay panels on resize */
 @media (min-width: 641px) {
-  .overlay-tr, .overlay-br {
+  .overlay-br {
     transition: transform var(--wc-duration-base) var(--wc-ease-enter), left var(--wc-duration-base) var(--wc-ease-enter), right var(--wc-duration-base) var(--wc-ease-enter), width var(--wc-duration-base) var(--wc-ease-enter);
   }
 }
@@ -1638,6 +1616,7 @@ html, body {
   flex-shrink: 0;
 }
 .status-footer .pose-well .wc-caption { line-height: 1; }
+.status-footer .pose-cell { display: flex; align-items: baseline; gap: 6px; }
 .status-footer .pose-value { display: inline-block; text-align: right; }
 .status-footer .footer-action {
   flex: 1 1 0; min-width: 0;
@@ -1653,11 +1632,19 @@ html, body {
   padding: 0 8px !important;
   border-radius: var(--wc-radius-pill);
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 .status-footer .footer-btn .q-icon { font-size: 15px; }
 .status-footer .footer-btn .footer-count { margin: 0 6px 0 2px; }
-.status-footer .footer-btn.has-unread.unread-warning { background: var(--wc-warning-soft) !important; color: var(--wc-warning) !important; }
-.status-footer .footer-btn.has-unread.unread-error { background: var(--wc-error-soft) !important; color: var(--wc-error) !important; }
+.status-footer .footer-btn.unread-warning { background: var(--wc-warning-soft) !important; color: var(--wc-warning) !important; }
+.status-footer .footer-btn.unread-error { background: var(--wc-error-soft) !important; color: var(--wc-error) !important; }
+/* The launchers never shrink, so the pose gives way as the window narrows:
+   first its rotations, then the whole well. */
+@media (max-width: 1280px) { .status-footer .pose-cell-rot { display: none; } }
+@media (max-width: 960px) { .status-footer .pose-well { display: none; } }
+/* Settings has the rail's gear above phone width. */
+.status-footer .footer-settings { display: none; }
+@media (max-width: 640px) { .status-footer .footer-settings { display: inline-flex; } }
 
 /* ========== Bottom panel ========== */
 
@@ -1673,6 +1660,11 @@ html, body {
   flex-direction: column;
   padding: 0;
   pointer-events: auto;
+}
+/* Under an open column the panel shrinks to leave the column its minimum,
+   which keeps the playbar and its Stop on screen. */
+body:has(.panels-wrap.column-open) .bottom-panel {
+  max-height: calc(100vh - var(--wc-footer-clearance) - 2 * var(--wc-space-3) - var(--wc-size-column-min));
 }
 .bottom-panel .bottom-panel-tabs { flex-shrink: 0; }
 .bottom-panel .bottom-panel-tabs .q-tab { min-height: 36px; padding: 0 14px; }

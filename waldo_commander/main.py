@@ -273,6 +273,8 @@ async def initialize_urdf_scene() -> None:
         material=scene_config.material,
         background_color=scene_config.background_color,
     )
+    if ui_state.urdf_scene.scene:
+        _attach_scene_framing(ui_state.urdf_scene.scene)
 
     # Align TCP and load tool mesh from the controller's active tool.
     try:
@@ -299,11 +301,6 @@ async def initialize_urdf_scene() -> None:
         )  # Z
 
     ui_state.urdf_joint_names = list(ui_state.urdf_scene.get_joint_names())
-
-    if ui_state.urdf_scene.scene:
-        background_tasks.create(
-            _attach_scene_framing(ui_state.urdf_scene.scene), name="scene-framing"
-        )
 
     logger.debug("URDF scene initialized with joints: %s", ui_state.urdf_joint_names)
 
@@ -332,10 +329,13 @@ async def initialize_urdf_scene() -> None:
         ui_state.urdf_scene.set_simulator_appearance(True)
 
 
-async def _attach_scene_framing(scene: ui.scene) -> None:
-    """Frame the camera on the part of the view the column and footer leave clear."""
-    await scene.initialized()
-    scene.client.run_javascript(f"SceneFraming.attach({scene.id})")
+def _attach_scene_framing(scene: ui.scene) -> None:
+    """Frame the camera on the part of the view the column and footer leave clear.
+
+    Registered before the page yields, so it catches the first init; a remount
+    after WebGL context loss inits again with a new camera.
+    """
+    scene.on("init", lambda: ui.run_javascript(f"SceneFraming.attach({scene.id})"))
 
 
 async def start_controller(com_port: str | None) -> None:
@@ -944,6 +944,7 @@ def _setup_panel_persistence(refs: dict) -> None:
     bottom_tabs = refs["bottom_tabs"]
     bottom_panels = refs["bottom_panels"]
     update_top_layout = refs["update_top_layout"]
+    bottom_panel = refs["bottom_panel"]
 
     resize_config = {
         **PANEL_RESIZE_CONFIG,
@@ -1004,6 +1005,8 @@ def _setup_panel_persistence(refs: dict) -> None:
                             ui.run_javascript(
                                 f"PanelResize.onTabChange('bottom', '{bottom_tab}')"
                             )
+                    if saved_tabs.get("panel") in ("diagnostics", "log"):
+                        bottom_panel.open(saved_tabs["panel"])
                     logger.debug("Restored active tabs: %s", saved_tabs)
             except Exception as e:
                 logger.debug("Could not restore active tabs: %s", e)
@@ -1104,9 +1107,11 @@ def build_page_content() -> None:
                 panel_refs = _build_left_panels(panels_wrap)
 
         readout_panel.build()
-        BottomPanel(client, attention=readout_panel.events_button).build()
-        control_panel.build("br")
+        bottom_panel = BottomPanel(client, attention=readout_panel.events_button)
+        bottom_panel.build()
+        control_panel.build()
 
+        panel_refs["bottom_panel"] = bottom_panel
         _setup_panel_persistence(panel_refs)
 
     from waldo_commander.services.keybindings import setup_keybindings

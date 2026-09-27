@@ -38,7 +38,7 @@ def _classes(user: User, marker: str) -> list[str]:
 async def _open_diagnostics(user: User) -> None:
     await user.open("/")
     await wait_for_app_ready()
-    user.find(marker="tab-diagnostics").click()
+    user.find(marker="footer-events").click()
     await asyncio.sleep(0)
     await user.should_see(marker="diagnostics-panel")
 
@@ -117,12 +117,13 @@ async def test_drive_faults_appear_without_analog_readings(user: User) -> None:
 async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
     user: User,
 ) -> None:
-    """One warning, from the footer count on a shut panel to a cleared log.
+    """Entries from the footer count on a shut panel to a cleared log.
 
     A one-line strip could only ever show the title, which is the half that
     does not say what to do about the condition; the panel has room for the
     cause, the effect and the remedy. And nobody opens a panel they have no
-    reason to open, so an entry that lands behind a shut one has to say so.
+    reason to open, so an entry that lands behind a shut one has to say so,
+    at the worst severity still unread.
     """
     await user.open("/")
     await wait_for_app_ready()
@@ -136,7 +137,7 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
         effect="motion refused",
         remedy="check the bus wiring",
     )
-    assert robot_events.unread == 1
+    assert robot_events.unread_severity == "warning"
     await poll_until(
         lambda: _text(user, "footer-warnings"),
         lambda t: t == "1",
@@ -144,11 +145,29 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
         what="the footer's warning count",
     )
     assert _text(user, "footer-errors") == "0"
-    assert await wait_until(lambda: "has-unread" in _classes(user, "footer-events")), (
-        "an unseen entry tints the footer button"
+    assert await wait_until(
+        lambda: "unread-warning" in _classes(user, "footer-events")
+    ), "an unseen entry tints the footer button"
+
+    robot_events.add(code=61, title="Bus off", severity="error")
+    assert await wait_until(
+        lambda: "unread-error" in _classes(user, "footer-events")
+    ), "an unseen error tints it red"
+    robot_events.add(code=62, title="CAN stale again")
+    # The counts and the tint refresh in the same binding pass.
+    await poll_until(
+        lambda: _text(user, "footer-warnings"),
+        lambda t: t == "2",
+        timeout_s=3.0,
+        what="the second warning",
+    )
+    classes = _classes(user, "footer-events")
+    assert "unread-error" in classes and "unread-warning" not in classes, (
+        "a warning after an unseen error must not hide the error",
+        classes,
     )
 
-    user.find(marker="tab-diagnostics").click()
+    user.find(marker="footer-events").click()
     await asyncio.sleep(0)
     await user.should_see(marker="diagnostics-panel")
     for part in (
@@ -158,12 +177,13 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
         "check the bus wiring",
     ):
         await user.should_see(part)
-    assert await wait_until(lambda: robot_events.unread == 0), (
+    assert await wait_until(lambda: robot_events.unread_severity == ""), (
         "rendering the log to an open panel is what marks it read"
     )
     assert await wait_until(
-        lambda: "has-unread" not in _classes(user, "footer-events")
-    ), "and the tint goes with the unread count"
+        lambda: not {"unread-warning", "unread-error"}
+        & set(_classes(user, "footer-events"))
+    ), "and the tint goes with it"
 
     user.find(marker="diag-clear-events").click()
     await asyncio.sleep(0)

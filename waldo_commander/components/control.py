@@ -2544,12 +2544,8 @@ class ControlPanel:
         step = round((current + delta) / self._RATING_UNIT)
         self._set_rating_step(ui_attr, step)
 
-    def build(self, anchor: str = "bl") -> None:
-        """Render the control panel.
-
-        Args:
-            anchor: Position anchor for the panel (e.g., "bl" for bottom-left)
-        """
+    def build(self) -> None:
+        """Render the control panel in the bottom-right corner."""
         # Capture UI client for background task operations
         self._ui_client = ui.context.client
         self.estop = _EStopManager(self.client, lambda: self._ui_client)
@@ -2564,7 +2560,7 @@ class ControlPanel:
             self.CLICK_HOLD_THRESHOLD_S, ui_client_fn
         )
 
-        with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor} gap-1"):
+        with ui.card().classes("overlay-panel overlay-card overlay-br gap-1"):
             with ui.column().classes("gap-2 w-full"):
                 with ui.row().classes("items-center w-full"):
                     with ui.column().classes("gap-1 flex-grow"):

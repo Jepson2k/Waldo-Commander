@@ -5,9 +5,12 @@ consistent patterns for interacting with the UI via Selenium.
 """
 
 import concurrent.futures
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable
 
 from nicegui import core
+from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
@@ -72,16 +75,43 @@ def marked_element(screen: "Screen", marker: str) -> WebElement:
     """The DOM element of the active page's element carrying ``marker``.
 
     Markers live server-side only, so the id is looked up on the app loop.
+    Raises ``NoSuchElementException`` when no element on the page carries it,
+    so it can sit inside a ``WebDriverWait``.
     """
     from nicegui import Client
 
     from waldo_commander.state import ui_state
 
-    def lookup() -> int:
-        client = Client.instances[ui_state.active_client_id]
-        return next(e for e in client.elements.values() if marker in e._markers).id
+    def lookup() -> int | None:
+        client = Client.instances.get(ui_state.active_client_id)
+        if client is None:
+            return None
+        return next(
+            (e.id for e in client.elements.values() if marker in e._markers), None
+        )
 
-    return screen.selenium.find_element(By.ID, f"c{run_in_app(lookup)}")
+    identifier = run_in_app(lookup)
+    if identifier is None:
+        raise NoSuchElementException(marker)
+    return screen.selenium.find_element(By.ID, f"c{identifier}")
+
+
+@contextmanager
+def viewport(
+    screen: "Screen", width: int, height: int, *, mobile: bool = False
+) -> Iterator[None]:
+    """Emulate a viewport of exactly ``width`` × ``height`` CSS pixels.
+
+    The driver is shared across tests, so the override is always cleared.
+    """
+    screen.selenium.execute_cdp_cmd(
+        "Emulation.setDeviceMetricsOverride",
+        {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": mobile},
+    )
+    try:
+        yield
+    finally:
+        screen.selenium.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
 
 
 # Footer buttons and the gear that replaced the rail tabs: marker, and the

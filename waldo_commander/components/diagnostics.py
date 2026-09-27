@@ -272,7 +272,9 @@ class DiagnosticsPage:
         """
         with self._section("drives", "Drives"):
             self._drives_summary = (
-                ui.label("").classes("diag-drives-summary").mark("diag-drives-summary")
+                ui.label("")
+                .classes("wc-caption text-wc-text-muted")
+                .mark("diag-drives-summary")
             )
             self._drives_grid = (
                 ui.grid(columns=1).classes("w-full gap-x-4 gap-y-0").mark("diag-drives")
@@ -334,10 +336,10 @@ class DiagnosticsPage:
 
     def _build_torque_section(self) -> None:
         n = self._joint_count
+        palette = joint_colors()
         series: list[dict[str, Any]] = []
         for measured in (True, False):
             for j in range(n):
-                palette = joint_colors()
                 color = palette[j % len(palette)]
                 series.append(
                     {
