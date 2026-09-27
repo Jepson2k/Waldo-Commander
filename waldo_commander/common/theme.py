@@ -51,22 +51,6 @@ class Palette:
 
 
 THEMES: dict[str, Palette] = {
-    "Graphite": Palette(
-        bg="#151515",
-        surface="#303030",
-        surface_2="#5b5b5b",
-        border="#8a8a8a",
-        text="#f5f5f5",
-        muted="#d4d4d4",
-        accent="#0ea5e9",
-        red="#ef4444",
-        orange="#f97316",
-        yellow="#facc15",
-        green="#22c55e",
-        cyan="#06b6d4",
-        blue="#3b82f6",
-        magenta="#a855f7",
-    ),
     "Ink": Palette(
         bg="#000000",
         surface="#171717",
@@ -83,136 +67,8 @@ THEMES: dict[str, Palette] = {
         blue="#60a5fa",
         magenta="#c084fc",
     ),
-    "Dark Modern": Palette(
-        bg="#1f1f1f",
-        surface="#181818",
-        surface_2="#313131",
-        border="#454545",
-        text="#cccccc",
-        muted="#9d9d9d",
-        accent="#0078d4",
-        red="#f14c4c",
-        orange="#d18616",
-        yellow="#cca700",
-        green="#89d185",
-        cyan="#4ec9b0",
-        blue="#3794ff",
-        magenta="#c586c0",
-    ),
-    "Dracula": Palette(
-        bg="#282a36",
-        surface="#343746",
-        surface_2="#44475a",
-        border="#6272a4",
-        text="#f8f8f2",
-        muted="#bfc2d0",
-        accent="#bd93f9",
-        red="#ff5555",
-        orange="#ffb86c",
-        yellow="#f1fa8c",
-        green="#50fa7b",
-        cyan="#8be9fd",
-        blue="#8be9fd",
-        magenta="#ff79c6",
-    ),
-    "Nord": Palette(
-        bg="#2e3440",
-        surface="#3b4252",
-        surface_2="#4c566a",
-        border="#616e88",
-        text="#eceff4",
-        muted="#d8dee9",
-        accent="#88c0d0",
-        red="#bf616a",
-        orange="#d08770",
-        yellow="#ebcb8b",
-        green="#a3be8c",
-        cyan="#8fbcbb",
-        blue="#81a1c1",
-        magenta="#b48ead",
-    ),
-    "Gruvbox Dark": Palette(
-        bg="#282828",
-        surface="#3c3836",
-        surface_2="#504945",
-        border="#665c54",
-        text="#ebdbb2",
-        muted="#bdae93",
-        accent="#83a598",
-        red="#fb4934",
-        orange="#fe8019",
-        yellow="#fabd2f",
-        green="#b8bb26",
-        cyan="#8ec07c",
-        blue="#83a598",
-        magenta="#d3869b",
-    ),
-    "Catppuccin Mocha": Palette(
-        bg="#1e1e2e",
-        surface="#313244",
-        surface_2="#45475a",
-        border="#585b70",
-        text="#cdd6f4",
-        muted="#a6adc8",
-        accent="#89b4fa",
-        red="#f38ba8",
-        orange="#fab387",
-        yellow="#f9e2af",
-        green="#a6e3a1",
-        cyan="#94e2d5",
-        blue="#89b4fa",
-        magenta="#cba6f7",
-    ),
-    "One Dark": Palette(
-        bg="#282c34",
-        surface="#2c313a",
-        surface_2="#3e4451",
-        border="#4b5263",
-        text="#abb2bf",
-        muted="#7f848e",
-        accent="#61afef",
-        red="#e06c75",
-        orange="#d19a66",
-        yellow="#e5c07b",
-        green="#98c379",
-        cyan="#56b6c2",
-        blue="#61afef",
-        magenta="#c678dd",
-    ),
-    "Solarized Dark": Palette(
-        bg="#002b36",
-        surface="#073642",
-        surface_2="#586e75",
-        border="#657b83",
-        text="#93a1a1",
-        muted="#839496",
-        accent="#268bd2",
-        red="#dc322f",
-        orange="#cb4b16",
-        yellow="#b58900",
-        green="#859900",
-        cyan="#2aa198",
-        blue="#268bd2",
-        magenta="#d33682",
-    ),
-    "GitHub Dark": Palette(
-        bg="#0d1117",
-        surface="#161b22",
-        surface_2="#30363d",
-        border="#484f58",
-        text="#e6edf3",
-        muted="#8b949e",
-        accent="#58a6ff",
-        red="#f85149",
-        orange="#db6d28",
-        yellow="#d29922",
-        green="#3fb950",
-        cyan="#39c5cf",
-        blue="#58a6ff",
-        magenta="#bc8cff",
-    ),
 }
-DEFAULT_THEME = "Graphite"
+DEFAULT_THEME = "Ink"
 
 #: Colours that mean one thing whatever the theme.
 FIXED_COLOR: dict[str, str] = {
@@ -269,6 +125,8 @@ SIZE: dict[str, str] = {
     "size-joint-dial": "64px",
     "size-jog-slot": "72px",
     "size-rail": "52px",
+    "size-panel-inset": "58px",
+    "size-bottom-panel": "340px",
     "size-footer": "28px",
 }
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
@@ -1262,7 +1120,7 @@ html, body {
 /* Shared left-side panel container base styling */
 .left-panels-container {
   position: absolute;
-  left: 58px;
+  left: var(--wc-size-panel-inset);
   max-width: calc(100vw - 80px);
   overflow: hidden !important;
   scrollbar-width: none !important;
@@ -1293,6 +1151,10 @@ html, body {
   height: auto !important;
 }
 .panels-wrap.column-open .top-panels-container > .q-panel > .program-panel { max-height: none; }
+/* The bottom panel takes the column's lower part, as a terminal panel does under an editor. */
+body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-container {
+  bottom: calc(var(--wc-footer-clearance) + var(--wc-size-bottom-panel) + var(--wc-space-3));
+}
 
 /* Panel content is interactive when visible */
 .left-panels-container .overlay-card { pointer-events: auto; }
@@ -1888,8 +1750,8 @@ html, body {
   position: absolute;
   right: calc(min(var(--wc-control-inset, 0px), 50vw) + var(--wc-space-3));
   bottom: var(--wc-footer-clearance);
-  left: calc(var(--wc-column-right, 0px) + var(--wc-space-3));
-  height: 340px;
+  left: var(--wc-size-panel-inset);
+  height: var(--wc-size-bottom-panel);
   max-height: calc(100vh - var(--wc-footer-clearance) - var(--wc-space-3));
   z-index: var(--wc-z-panels);
   display: flex;
