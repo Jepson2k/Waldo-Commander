@@ -5,6 +5,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Any, Callable
 
 import waldoctl
@@ -55,29 +56,62 @@ logger = logging.getLogger(__name__)
 MENU_TOOLTIP = 'anchor="center left" self="center right"'
 
 
-def _imports_only(node: ast.stmt) -> bool:
-    """An import, or a ``try``/``if`` made of nothing but imports.
+def _blocks(node: ast.stmt) -> list[list[ast.stmt]]:
+    """The statement lists nested directly in *node*."""
+    match node:
+        case ast.If() | ast.For() | ast.AsyncFor() | ast.While():
+            return [node.body, node.orelse]
+        case ast.Try() | ast.TryStar():
+            return [
+                node.body,
+                node.orelse,
+                node.finalbody,
+                *(handler.body for handler in node.handlers),
+            ]
+        case (
+            ast.With()
+            | ast.AsyncWith()
+            | ast.FunctionDef()
+            | ast.AsyncFunctionDef()
+            | ast.ClassDef()
+        ):
+            return [node.body]
+        case ast.Match():
+            return [case.body for case in node.cases]
+    return []
 
-    Run selection copies these ahead of the selected lines; an import inside a
-    function or behind other code belongs to that scope, not the selection's.
-    """
+
+def _imports_only(node: ast.stmt) -> bool:
+    """An import, or a ``try``/``if`` made of nothing but imports."""
     if isinstance(node, (ast.Import, ast.ImportFrom)):
         return True
-    if isinstance(node, ast.If):
-        blocks = [node.body, node.orelse]
-    elif isinstance(node, ast.Try):
-        blocks = [
-            node.body,
-            node.orelse,
-            node.finalbody,
-            *(handler.body for handler in node.handlers),
-        ]
-    else:
+    if not isinstance(node, (ast.If, ast.Try)):
         return False
-    statements = [statement for block in blocks for statement in block]
+    statements = [statement for block in _blocks(node) for statement in block]
     return any(not isinstance(s, ast.Pass) for s in statements) and all(
         isinstance(s, ast.Pass) or _imports_only(s) for s in statements
     )
+
+
+def _selection_imports(
+    body: list[ast.stmt], first: int, last: int
+) -> Iterator[ast.stmt]:
+    """The imports in scope at lines *first* to *last*, for Run selection to
+    copy ahead of them: those at this level (a guarded one with its guard),
+    and those in the blocks the selection sits in. One inside another
+    function, or behind a branch the selection is not in, belongs to that
+    scope, not the selection's."""
+    for node in body:
+        if _imports_only(node):
+            yield node
+            continue
+        for block in _blocks(node):
+            if (
+                block
+                and block[0].lineno <= first
+                and last <= (block[-1].end_lineno or block[-1].lineno)
+            ):
+                yield from _selection_imports(block, first, last)
 
 
 class EditorPanel(FileOperationsMixin):
@@ -367,9 +401,8 @@ class EditorPanel(FileOperationsMixin):
         body = textwrap.dedent("\n".join(lines[span[0] - 1 : span[1]])).strip("\n")
         try:
             imports = [
-                ast.get_source_segment(text, node) or ""
-                for node in ast.parse(text).body
-                if _imports_only(node)
+                textwrap.dedent(ast.get_source_segment(text, node, padded=True) or "")
+                for node in _selection_imports(ast.parse(text).body, *span)
             ]
         except SyntaxError:
             imports = []

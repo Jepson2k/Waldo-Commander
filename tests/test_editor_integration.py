@@ -1577,11 +1577,13 @@ async def test_a_selection_belongs_to_the_tab_it_was_made_in(user: User) -> None
 
 
 @pytest.mark.integration
-async def test_run_selection_brings_only_the_program_level_imports(
+async def test_run_selection_brings_the_imports_in_its_scope(
     user: User,
 ) -> None:
-    """A selection runs beside the imports the program itself makes. One in a
-    function belongs to that function, and a guarded one keeps its guard."""
+    """A selection runs beside the imports in its scope: the program's own and
+    those of the block it sits in, where an inserted skill puts its import.
+    One in another function belongs to that function, and a guarded one keeps
+    its guard."""
     import waldoctl
 
     from waldo_commander.components.script_execution import script_exec
@@ -1612,10 +1614,11 @@ async def test_run_selection_brings_only_the_program_level_imports(
         "\n"
         "\n"
         "with RobotClient() as rbt:\n"
-        "    assert json.dumps(math.sqrt(4)) == '2.0'\n"
+        "    from math import tau\n"
+        "    assert json.dumps(math.sqrt(4)) == '2.0' and tau > 6\n"
     )
     await asyncio.sleep(0)
-    _set_selection(textarea, 17, 17)
+    _set_selection(textarea, 18, 18)
     await asyncio.sleep(0)
     user.find(marker="editor-run-selection").click()
     async with asyncio.timeout(30):
