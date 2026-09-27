@@ -1845,7 +1845,7 @@ html, body {
 .bottom-panel .q-tab-panels { flex: 1 1 0; min-height: 0; }
 .bottom-panel .q-tab-panel { height: 100%; padding: var(--wc-space-2) var(--wc-space-3); overflow: auto; }
 .bottom-panel .nicegui-log { height: 100%; }
-.diag-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--wc-space-4); width: 100%; }
+.diag-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 var(--wc-space-4); width: 100%; }
 .diag-grid > .diag-col { min-width: 0; }
 .diag-grid > .diag-wide { grid-column: 1 / -1; min-width: 0; }
 
