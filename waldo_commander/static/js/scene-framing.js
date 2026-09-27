@@ -1,7 +1,6 @@
 /**
  * Scene framing: keeps the camera centred on the part of the 3D view that the
- * program column and the status footer leave uncovered, and reports the
- * camera's distance from its orbit target.
+ * program column and the status footer leave uncovered.
  *
  * The fork's ui.scene resets the camera aspect on every window resize, so the
  * view offset is re-applied a frame later and again on every `wc:layout`
@@ -14,8 +13,6 @@
     let sceneId = null;
     let listening = false;
     let inset = { left: 0, bottom: 0 };
-    let distanceTimer = null;
-    let lastDistance = 0;
 
     function component() {
         return sceneId === null ? null : getElement(sceneId);
@@ -58,17 +55,6 @@
         setInset(m.left, m.bottom);
     }
 
-    function pollDistance() {
-        const c = component();
-        // move_camera recreates the controls, so they are read each tick.
-        if (!c || !c.camera || !c.controls || !c.controls.target) return;
-        const d = c.camera.position.distanceTo(c.controls.target);
-        if (lastDistance === 0 || Math.abs(d - lastDistance) / lastDistance > 0.02) {
-            lastDistance = d;
-            emitEvent('wc_camera_distance', { distance: d });
-        }
-    }
-
     function attach(id) {
         sceneId = id;
         if (!listening) {
@@ -77,9 +63,6 @@
             window.addEventListener('wc:layout', refresh);
         }
         refresh();
-        if (distanceTimer) clearInterval(distanceTimer);
-        lastDistance = 0;
-        distanceTimer = setInterval(pollDistance, 200);
     }
 
     window.SceneFraming = {

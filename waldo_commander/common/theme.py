@@ -1070,7 +1070,6 @@ html, body {
 
 /* Tool box: name over its readout, the actions to the right */
 .tool-box-readout { min-width: 0; line-height: 1.1; }
-.step-auto { font-size: 9px; }
 
 /* Control panel jog tabs: compact padding */
 .cp-jog-tabs .q-tab {

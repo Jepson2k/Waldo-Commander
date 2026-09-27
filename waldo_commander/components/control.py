@@ -39,7 +39,6 @@ from waldo_commander.services.control_lease import (
     require_browser_control,
     set_control_mode,
 )
-from waldo_commander.services.jog_step import JogStep
 from waldo_commander.services.keybindings import refresh_jog_key_descriptions
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
@@ -706,14 +705,6 @@ class ControlPanel:
         self._dials: list[_JointDial] = []
         self._cart_axis_imgs: dict[str, ui.element] = {}
 
-        # The jog step follows the camera unless overridden; its effective value
-        # is mirrored into commander.settings.jog.joint_step_deg, which every
-        # jog reader uses, in the unit of the active jog tab.
-        self.step = JogStep()
-        self.step.add_listener(self._sync_step_setting)
-        self._cartesian_active = False
-        self._mirrored_step: float = math.nan
-
         # Jog state tracking
         self._n_joints = ui_state.active_robot.joints.count
         self._jog_pressed_pos: list[bool] = [False] * self._n_joints
@@ -1083,38 +1074,6 @@ class ControlPanel:
             dial.knob._props["cx"] = f"{g.knob[0]:.2f}"
             dial.knob._props["cy"] = f"{g.knob[1]:.2f}"
             dial.knob.update()
-
-    # ---- Jog step ----
-
-    def _sync_step_setting(self) -> None:
-        """Mirror the effective step, in the active tab's unit, into the jog settings."""
-        value = float(
-            self.step.cart_mm if self._cartesian_active else self.step.joint_deg
-        )
-        self._mirrored_step = value
-        waldoctl.commander.settings.jog.joint_step_deg = value
-        if self._step_input is not None:
-            if self.step.is_auto:
-                self._step_input.props(remove="clearable")
-            else:
-                self._step_input.props(add="clearable")
-
-    def on_camera_distance(self, distance_m: float) -> None:
-        """Scene report of the camera-to-target distance; moves the auto step between bands."""
-        self.step.set_camera_distance(float(distance_m))
-
-    def _on_step_edited(self, e: Any) -> None:
-        """A value typed into the step field pins it; clearing the field returns to auto.
-        The mirror's own writes arrive here too and are recognised by value."""
-        value = e.value
-        if value is None:
-            self.step.set_override(None)
-            return
-        value = float(value)
-        if value == self._mirrored_step:
-            return
-        if math.isfinite(value) and value > 0.0:
-            self.step.set_override(value)
 
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
@@ -2247,10 +2206,9 @@ class ControlPanel:
             self.estop.show(is_physical=False)
 
     def _on_jog_tab_change(self, e: Any) -> None:
-        """Switch the step field's unit with the tab and re-mirror the step in that unit."""
-        self._cartesian_active = e.value == "Cartesian Jog"
+        """Switch the step field's unit with the tab."""
         if self._step_input is not None:
-            if self._cartesian_active:
+            if e.value == "Cartesian Jog":
                 self._step_input.props('suffix="mm"')
                 self._step_input.classes(add="step-suffix-small")
                 if self._step_input_tooltip:
@@ -2261,7 +2219,6 @@ class ControlPanel:
                 if self._step_input_tooltip:
                     self._step_input_tooltip.text = "Step size in degrees"
             self._step_input.update()
-        self._sync_step_setting()
 
     def _make_joint_dial(self, idx: int, name: str) -> None:
         """One joint: minus cap, dial ring with the readout in its centre, plus cap,
@@ -2612,12 +2569,6 @@ class ControlPanel:
             self.CLICK_HOLD_THRESHOLD_S, ui_client_fn
         )
 
-        ui.on(
-            "wc_camera_distance",
-            lambda e: self.on_camera_distance(float(e.args["distance"])),
-        )
-        self._sync_step_setting()
-
         with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor} gap-1"):
             with ui.column().classes("gap-2 w-full"):
                 with ui.row().classes("items-center w-full no-wrap gap-1"):
@@ -2792,25 +2743,21 @@ class ControlPanel:
                 self._step_input = (
                     ui.number(
                         value=waldoctl.commander.settings.jog.joint_step_deg,
-                        min=0.1,
+                        min=1,
                         max=100.0,
-                        step=0.1,
+                        step=1,
                         format="%.1f",
                         suffix="°",
-                        on_change=self._on_step_edited,
                     )
                     .props(
                         'dense borderless hide-bottom-space input-style="text-align:right"'
                     )
                     .classes("step-input")
                     .mark("step-input")
-                    .bind_value_from(waldoctl.commander.settings.jog, "joint_step_deg")
+                    .bind_value(waldoctl.commander.settings.jog, "joint_step_deg")
                 )
                 with self._step_input:
                     self._step_input_tooltip = ui.tooltip("Step size in degrees")
-                ui.badge("auto").props("outline color=wc-text-muted").classes(
-                    "step-auto"
-                ).mark("step-auto").bind_visibility_from(self.step, "is_auto")
 
             ui.button(icon="dangerous", on_click=self.on_estop_click).props(
                 "round unelevated color=wc-estop text-color=wc-on-fill"

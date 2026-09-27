@@ -111,7 +111,7 @@ class _Config:
 
 
 # Default 3D scene camera position
-DEFAULT_CAMERA = dict(x=0.3, y=0.3, z=0.22, look_at_z=0.22)
+DEFAULT_CAMERA = dict(x=0.45, y=0.45, z=0.38, look_at_z=0.2)
 
 # Gripper camera feed resolution
 CAMERA_FEED_W = 640
