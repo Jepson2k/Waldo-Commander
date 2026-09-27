@@ -899,15 +899,14 @@ html, body {
 .joint-dial-cell:not(:hover):not(:focus-within) .joint-cap,
 .joint-dial-cell:not(:hover):not(:focus-within) .joint-dial-limits { visibility: hidden; }
 
-/* Level chips: percentage beside the icon, the rating in the popover; its dots
-   take the progress token and Quasar dims the unselected ones */
-.level-chip { min-height: 0; padding: 0 var(--wc-space-2); font-variant-numeric: tabular-nums; }
+/* Level chips: percentage beside the icon, the rating in the popover */
+.level-chip { font-variant-numeric: tabular-nums; }
 .level-chip .q-icon { color: var(--wc-text-muted); }
 .level-menu { padding: var(--wc-space-1) var(--wc-space-2); }
-.level-speed .q-icon, .level-accel .q-icon { color: var(--wc-progress) !important; }
 
-/* Tool box: name over its readout, the actions to the right */
-.tool-box-readout { min-width: 0; line-height: 1.1; }
+/* Tool box: name over its readout, the actions to the right; the readout is a
+   bare card so its updates stay inside it */
+.tool-box-readout { min-width: 0; line-height: 1.1; background: transparent; color: inherit; }
 
 /* Control panel jog tabs: compact padding */
 .cp-jog-tabs .q-tab {

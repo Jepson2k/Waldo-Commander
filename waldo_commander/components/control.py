@@ -230,8 +230,10 @@ class _ToolQuickActions:
             return None
 
     def _channel_text(self, channels: tuple[float, ...]) -> str:
+        if not channels:
+            return ""
         tool = self._get_active_tool()
-        if not channels or tool is None or not tool.channel_descriptors:
+        if tool is None or not tool.channel_descriptors:
             return ""
         return f"{channels[0]:.0f} {tool.channel_descriptors[0].unit}"
 
@@ -244,7 +246,13 @@ class _ToolQuickActions:
             .bind_visibility_from(tool_status, "key", backward=lambda k: k != "NONE")
             .mark("tool-quick-actions")
         ):
-            with ui.column().classes("tool-box-readout gap-0 flex-grow"):
+            # A component root, so readout updates re-render this card and not
+            # the whole control card.
+            with (
+                ui.element("q-card")
+                .props("flat")
+                .classes("tool-box-readout column no-wrap flex-grow")
+            ):
                 ui.label().bind_text_from(
                     tool_status,
                     "key",
@@ -626,6 +634,7 @@ class ControlPanel:
             tuple[int, str], ui.button
         ] = {}  # (joint_idx, "min"/"max") -> button
         self._dials: list[JointDial] = []
+        self._joint_tab_shown = True
         self._cart_axis_imgs: dict[str, ui.element] = {}
 
         # Jog state tracking
@@ -982,10 +991,12 @@ class ControlPanel:
             self._set_strong_disabled(self._joint_left_btns.get(j), not neg[j])
 
     def refresh_joint_dials(self) -> None:
-        """Redraw every dial whose joint moved enough to show."""
+        """Redraw every dial whose joint moved enough to show, while the Joint tab shows."""
+        if not self._joint_tab_shown:
+            return
         angles = waldoctl.commander.status.joints.angles.deg
-        for i, dial in enumerate(self._dials[: len(angles)]):
-            dial.show(float(angles[i]))
+        for dial, angle in zip(self._dials, angles):
+            dial.show(float(angle))
 
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
@@ -2131,9 +2142,16 @@ class ControlPanel:
             self.estop.show(is_physical=False)
 
     def _on_jog_tab_change(self, e: Any) -> None:
-        """Switch the step field's unit with the tab."""
+        """Switch the step field's unit with the tab, and redraw the dials when
+        the Joint tab opens: they are not redrawn while it is hidden."""
+        cartesian = e.value == "Cartesian Jog"
+        self._joint_tab_shown = not cartesian
+        if not cartesian:
+            angles = waldoctl.commander.status.joints.angles.deg
+            for dial, angle in zip(self._dials, angles):
+                dial.redraw(float(angle))
         if self._step_input is not None:
-            if e.value == "Cartesian Jog":
+            if cartesian:
                 self._step_input.props('suffix="mm"')
                 self._step_input.classes(add="step-suffix-small")
                 if self._step_input_tooltip:
@@ -2251,6 +2269,7 @@ class ControlPanel:
 
     def render_jog_content(self) -> None:
         """Render the jog controls."""
+        self._dials = []
         with (
             ui.tabs(on_change=self._on_jog_tab_change)
             .props("dense")
@@ -2260,7 +2279,6 @@ class ControlPanel:
             cart_tab = ui.tab("Cartesian Jog").mark("tab-cartesian")
         jog_mode_tabs.value = joint_tab
         self._jog_mode_tabs = jog_mode_tabs
-        self._dials = []
 
         with (
             ui.tab_panels(jog_mode_tabs, value=joint_tab)
@@ -2397,13 +2415,9 @@ class ControlPanel:
         with chip:
             tooltip = ui.tooltip(storage_key.replace("_", " ").title())
             with ui.menu().classes("level-menu").mark(f"menu-{marker}"):
-                # color=None keeps Quasar's layered text-primary off the dots, so
-                # the ramp in theme.py can colour them.
                 rating = (
-                    ui.rating(
-                        max=10, icon="circle", size="16px", value=v_init, color=None
-                    )
-                    .classes("level-speed" if ui_attr == "jog_speed" else "level-accel")
+                    ui.rating(max=10, icon="circle", size="16px", value=v_init)
+                    .props("color=wc-progress")
                     .mark(f"rating-{marker}")
                 )
         self._rating_widgets[ui_attr] = {
