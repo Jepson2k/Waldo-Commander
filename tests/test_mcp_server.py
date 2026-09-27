@@ -475,12 +475,11 @@ async def test_program_stderr_lines_carry_a_single_err_prefix(user: User) -> Non
 
     p = waldoctl.commander.programs.active
     assert p is not None
-    # A crashing program (nonzero exit). Program source is ALSO exec'd
-    # in-process by the dry-run simulation, so the crash is gated to the real
-    # subprocess (the stepping bootstrap sets WALDO_STEP_SESSION there):
-    # unconditional SystemExit would sail through the dry-run into the app,
-    # and an unconditional RuntimeError would log a simulation ERROR that
-    # trips the unexpected-ERROR-logs teardown check.
+    # A crashing program (nonzero exit). The dry-run preview runs the source
+    # too, so the crash is gated to the real subprocess (the stepping
+    # bootstrap sets WALDO_STEP_SESSION there): in the preview a nonzero exit
+    # or a raise is a simulation ERROR, which trips the unexpected-ERROR-logs
+    # teardown check.
     code = (
         "import os, sys\n"
         'sys.stderr.write("boom\\n")\n'
