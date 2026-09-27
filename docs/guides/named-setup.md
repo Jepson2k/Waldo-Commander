@@ -6,6 +6,12 @@ or use **Use current TCP** to capture the current tool pose. In the Poses tab,
 choose a frame and capture or enter a pose in that frame. Use **Set** to update
 the working snapshot and **Save** to persist it under a name.
 
+Picking a name under **Saved** loads it. **Save** writes at once when the file
+is the one you loaded and nothing has saved it since; otherwise it asks whether
+to load the saved setup, merge your edits into it (entries you did not edit
+keep their saved values) or overwrite it. Saving re-plans the preview of every
+open program that loads that setup.
+
 Translations use millimetres; angles use degrees, with intrinsic XYZ
 (`Rx(roll) · Ry(pitch) · Rz(yaw)`), matching the robot clients' numeric poses.
 Shape definitions have their own documented rotation convention. A frame's parent can be WRF or another saved
