@@ -11,6 +11,8 @@ from waldoctl.dry_run import is_dry_run
 from waldoctl.signals import DigitalSignal, SignalObservation, SignalWaitResult
 from waldoctl.skills import MissingCapability, UnresolvedPreview, skill
 
+from waldo_commander.skills._motion import completed
+
 
 @dataclass(frozen=True)
 class SignalFixture:
@@ -30,10 +32,21 @@ def _seconds(value: float, label: str) -> None:
 
 def _binding(rbt: RobotClient, signal: DigitalSignal) -> bool:
     """Whether *rbt* previews rather than drives, once the mapping is
-    known to belong to the backend it drives."""
+    known to belong to the backend and bank layout it drives."""
     robot = rbt.robot
     if robot is None or robot.backend_package != signal.backend:
         raise MissingCapability(f"This signal mapping belongs to {signal.backend}")
+    # The level vector only checks the total, so banks that moved their
+    # boundary would silently read an input as an output.
+    if (signal.input_count, signal.output_count) != (
+        robot.digital_inputs,
+        robot.digital_outputs,
+    ):
+        raise ValueError(
+            f"Controller I/O layout ({robot.digital_inputs} inputs, "
+            f"{robot.digital_outputs} outputs) differs from the saved mapping "
+            f"({signal.input_count}, {signal.output_count})"
+        )
     return is_dry_run(rbt)
 
 
@@ -103,9 +116,15 @@ async def wait_signal(
     start = time.monotonic()
     latest: SignalObservation | None = None
     refused: ValueError | None = None
+    cached = True
 
     def reached(status) -> bool:
-        nonlocal latest, refused
+        nonlocal latest, refused, cached
+        if cached:
+            # The first evaluation is the frame the client already holds,
+            # which is stale by however long the stream has been silent.
+            cached = False
+            return False
         try:
             levels = [int(level) for level in status.io]
             latest = SignalObservation(signal.decode(levels), time.time())
@@ -121,7 +140,9 @@ async def wait_signal(
     if refused is not None:
         raise refused
     if latest is None:
-        raise ConnectionError("The controller broadcast no status to observe I/O in")
+        raise ConnectionError(
+            "The controller broadcast no fresh status to observe I/O in"
+        )
     return SignalWaitResult(
         "matched" if matched else "timeout", latest, time.monotonic() - start
     )
@@ -136,24 +157,22 @@ async def write_signal(
     timeout: float = 2.0,
     fixture: SignalFixture | None = None,
 ) -> SignalObservation:
-    """Write one mapped output and confirm its reported electrical level."""
+    """Write one mapped output and confirm its reported electrical level.
+
+    Each phase -- acceptance, the queued write, the level -- gets the whole
+    ``timeout``: a managed program holds the write at a step boundary for as
+    long as the operator takes, and that time is not the controller's.
+    """
     _seconds(timeout, "Write timeout")
     raw = signal.encode(value)
-    deadline = time.monotonic() + timeout
-
-    def remaining() -> float:
-        seconds = deadline - time.monotonic()
-        if seconds <= 0:
-            raise TimeoutError("Digital output application was not confirmed")
-        return seconds
-
     # Refuse a mismatched controller layout before sending a write.
-    await _observe(rbt, signal, min(1.0, remaining()), fixture)
-    index = await rbt.write_io(signal.index, raw, timeout=remaining())
-    if index < 0:
-        raise TimeoutError("Digital output acceptance was not confirmed")
+    await _observe(rbt, signal, min(1.0, timeout), fixture)
+    # Queued behind other work, an unconfirmed write would still land later.
+    await completed(
+        rbt, rbt.write_io(signal.index, raw, timeout=timeout), timeout, "Digital output"
+    )
     result = await wait_signal.async_call(
-        rbt, signal, value, timeout=remaining(), fixture=fixture
+        rbt, signal, value, timeout=timeout, fixture=fixture
     )
     if result.outcome != "matched" or result.observation is None:
         raise TimeoutError("Digital output application was not confirmed")

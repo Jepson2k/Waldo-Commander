@@ -15,8 +15,10 @@ from waldo_commander.services.tcp_calibration import (
 from waldoctl.setup import Pose, PoseValues, SetupSnapshot, TcpCalibration
 
 from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.tcp_calibration import (
     ToolBinding,
+    ToolChanged,
     apply_tcp_calibration,
     observe_tcp,
 )
@@ -29,16 +31,28 @@ class TcpCalibrationEditor:
         commander: Commander,
         get_snapshot: Callable[[], SetupSnapshot],
         set_snapshot: Callable[[SetupSnapshot], None],
+        get_reference_snapshot: Callable[[], SetupSnapshot],
+        on_change: Callable[[], None],
     ) -> None:
         self.commander = commander
         self.get_snapshot = get_snapshot
         self.set_snapshot = set_snapshot
+        # Frame edits pending on the Frames tab are saved with the taught
+        # orientation, so teaching resolves against them.
+        self.get_reference_snapshot = get_reference_snapshot
+        self.on_change = on_change
         self.samples: list[Pose] = []
         # The tool the controller last reported (keeps pivot samples on one
-        # tool) and the tool the displayed six values belong to. They differ
-        # after loading a saved calibration for a tool that is not fitted.
+        # tool), and the tools the displayed position and orientation belong
+        # to. They differ after loading a saved calibration for a tool that is
+        # not fitted, or after teaching one half on another tool.
         self.binding: ToolBinding | None = None
-        self.values_binding: ToolBinding | None = None
+        self.position_binding: ToolBinding | None = None
+        self.rotation_binding: ToolBinding | None = None
+        # Bumped by every new measurement, selection and clear, so a reply
+        # that arrives after one of them is dropped instead of landing in the
+        # entry now shown.
+        self._generation = 0
         self.position: PivotCalibration | None = None
         self.taught: tuple[tuple[float, float, float], str] | None = None
         self.saved_measurement: TcpCalibration | None = None
@@ -55,11 +69,7 @@ class TcpCalibrationEditor:
                     .mark("tcp-calibration-name")
                 )
                 self.existing = (
-                    ui.select(
-                        [],
-                        label="Saved in setup",
-                        on_change=lambda e: self.load(e.value),
-                    )
+                    ui.select([], label="Saved in setup")
                     .props("dense")
                     .classes("flex-1 min-w-0")
                     .mark("tcp-calibration-existing")
@@ -187,7 +197,47 @@ class TcpCalibrationEditor:
             self.message.set_text(
                 "Capture ended when the connection was lost. Existing saved calibrations remain available."
             )
+            self.on_change()
         self.was_connected = connected
+
+    def draft_state(self) -> tuple:
+        """What a save records besides the six numbers: bindings and provenance."""
+        return (
+            self.position_binding,
+            self.rotation_binding,
+            self.position,
+            self.taught,
+        )
+
+    def reset(self) -> None:
+        self.clear_samples()
+        self.binding = None
+        self.position_binding = None
+        self.rotation_binding = None
+        self.saved_measurement = None
+        self.taught = None
+
+    def _begin(self) -> int:
+        self._generation += 1
+        return self._generation
+
+    def _superseded(self, generation: int) -> bool:
+        if generation == self._generation:
+            return False
+        self.message.set_text(
+            "The selection changed while measuring; nothing was recorded."
+        )
+        return True
+
+    def _halves(self, done: str) -> str:
+        """``done``, plus a warning when the position and orientation belong to different tools."""
+        position, rotation = self.position_binding, self.rotation_binding
+        if position is None or rotation is None or position == rotation:
+            return done
+        return (
+            f"{done} The position belongs to {_describe(position)} and the "
+            f"orientation to {_describe(rotation)}; measure both on one tool."
+        )
 
     def bind_tool(self, binding: ToolBinding) -> None:
         if self.binding is not None and binding != self.binding:
@@ -195,16 +245,14 @@ class TcpCalibrationEditor:
             self.saved_measurement = None
             self.taught = None
             self.binding = binding
-            self.tool_label.set_text(
-                f"{binding.tool_key} · {binding.variant_key or 'default variant'}"
-            )
+            self.tool_label.set_text(_describe(binding))
+            self.on_change()
             raise ValueError("Tool or variant changed; samples cleared. Capture again.")
         self.binding = binding
-        self.tool_label.set_text(
-            f"{binding.tool_key} · {binding.variant_key or 'default variant'}"
-        )
+        self.tool_label.set_text(_describe(binding))
 
     def clear_samples(self) -> None:
+        self._generation += 1
         self.samples.clear()
         self.position = None
         self.count.set_text("0 new samples")
@@ -213,8 +261,11 @@ class TcpCalibrationEditor:
         self.sample_table.update()
 
     async def capture(self) -> None:
+        generation = self._begin()
         try:
             observation = await observe_tcp(self.commander.client)
+            if self._superseded(generation):
+                return
             self.bind_tool(observation.binding)
             self.samples.append(observation.nominal_tool)
             self.count.set_text(f"{len(self.samples)} samples")
@@ -238,46 +289,72 @@ class TcpCalibrationEditor:
             for element, value in zip(self.coordinates[:3], result.offset_mm):
                 element.set_value(value)
             self.position = result
-            self.values_binding = self.binding
+            self.position_binding = self.binding
             self.message.set_text(
-                f"Position: {result.sample_count} samples · RMS {result.rms_error_mm:.3f} mm · max {result.max_error_mm:.3f} mm. Orientation is unchanged."
+                self._halves(
+                    f"Position: {result.sample_count} samples · RMS {result.rms_error_mm:.3f} mm · max {result.max_error_mm:.3f} mm. Orientation is unchanged."
+                )
             )
+            self.on_change()
         except (TypeError, ValueError) as error:
             self.message.set_text(str(error))
 
     async def teach_orientation(self) -> None:
+        generation = self._begin()
         try:
             observation = await observe_tcp(self.commander.client)
+            if self._superseded(generation):
+                return
             self.bind_tool(observation.binding)
-            reference = self.get_snapshot().resolve(
+            reference = self.get_reference_snapshot().resolve(
                 Pose((0, 0, 0, 0, 0, 0), frame=self.reference.value)
             )
             rotation = teach_tcp_orientation(observation.nominal_tool, reference)
             self.taught = (rotation, self.reference.value)
-            self.values_binding = self.binding
+            self.rotation_binding = self.binding
             for element, value in zip(self.coordinates[3:], rotation):
                 element.set_value(value)
             self.message.set_text(
-                f"Orientation taught against {self.reference.value}; position is unchanged."
+                self._halves(
+                    f"Orientation taught against {self.reference.value}; position is unchanged."
+                )
             )
-        except (OSError, KeyError, ValueError, RuntimeError, TimeoutError) as error:
+            self.on_change()
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            TimeoutError,
+        ) as error:
             self.message.set_text(str(error))
 
     async def read_applied(self) -> None:
+        generation = self._begin()
         try:
             observation = await observe_tcp(self.commander.client)
+            if self._superseded(generation):
+                return
             self.bind_tool(observation.binding)
-            self.values_binding = observation.binding
+            self.position_binding = self.rotation_binding = observation.binding
             for element, value in zip(self.coordinates, observation.applied):
                 element.set_value(value)
             self.message.set_text("Read the controller's applied TCP transform.")
+            self.on_change()
         except (OSError, ValueError, RuntimeError, TimeoutError) as error:
             self.message.set_text(str(error))
 
     def calibration(self) -> TcpCalibration:
-        if self.values_binding is None:
+        position, rotation = self.position_binding, self.rotation_binding
+        binding = position if position is not None else rotation
+        if binding is None:
             raise ValueError(
                 "Read or capture the current tool before applying or saving"
+            )
+        if rotation is not None and rotation != binding:
+            raise ValueError(
+                "The position and orientation belong to different tools; measure both on one tool"
             )
         if any(element.value is None for element in self.coordinates):
             raise ValueError("Fill all six TCP coordinates")
@@ -303,8 +380,8 @@ class TcpCalibrationEditor:
         )
         return TcpCalibration(
             values,
-            self.values_binding.tool_key,
-            self.values_binding.variant_key,
+            binding.tool_key,
+            binding.variant_key,
             position_rms_mm=measured.rms_error_mm
             if measured
             else saved.position_rms_mm
@@ -327,10 +404,8 @@ class TcpCalibrationEditor:
         self.taught = None
         self.saved_measurement = calibration
         self.binding = ToolBinding(calibration.tool_key, calibration.variant_key)
-        self.values_binding = self.binding
-        self.tool_label.set_text(
-            f"{calibration.tool_key} · {calibration.variant_key or 'default variant'}"
-        )
+        self.position_binding = self.rotation_binding = self.binding
+        self.tool_label.set_text(_describe(self.binding))
         self.name.set_value(name)
         if calibration.orientation_reference in self.reference.options:
             self.reference.set_value(calibration.orientation_reference)
@@ -357,14 +432,24 @@ class TcpCalibrationEditor:
             self.message.set_text(str(error))
 
     async def apply(self) -> None:
+        from waldo_commander.components.settings import adopt_applied_tcp
+
+        page_id = ui_state.active_client_id
         try:
             calibration = self.calibration()
-            if not require_browser_control(ui_state.active_client_id):
+            if not require_browser_control(page_id):
                 return
-            await apply_tcp_calibration(self.commander.client, calibration)
-            from waldo_commander.components.settings import adopt_applied_tcp
-
+            await apply_tcp_calibration(
+                motion_guard.guarded(self.commander.client, page_id), calibration
+            )
             adopt_applied_tcp(calibration)
             self.message.set_text("Controller confirmed the displayed TCP transform.")
+        except ToolChanged as error:
+            adopt_applied_tcp(error.applied)
+            self.message.set_text(str(error))
         except (OSError, ValueError, RuntimeError, TimeoutError) as error:
             self.message.set_text(str(error))
+
+
+def _describe(binding: ToolBinding) -> str:
+    return f"{binding.tool_key} · {binding.variant_key or 'default variant'}"

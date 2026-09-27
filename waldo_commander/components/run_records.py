@@ -114,11 +114,18 @@ def show_run_records() -> None:
                     summary.text = f"{outcome} · {len(events)} entries" + (
                         " · incomplete capture" if loss else ""
                     )
+                    # A program's own timestamp, where it sent one: a backlog
+                    # drained after a disconnect is received all at once.
                     table.rows = [
                         {
                             "row": i,
                             "time": round(
-                                (e.get("received_ns", started) - started) / 1e9, 3
+                                (
+                                    e.get("mono_ns", e.get("received_ns", started))
+                                    - started
+                                )
+                                / 1e9,
+                                3,
                             ),
                             "event": e["event"],
                             "method": e.get("method", ""),

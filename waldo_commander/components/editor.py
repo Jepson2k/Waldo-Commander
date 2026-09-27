@@ -1,12 +1,15 @@
 """Program editor component with script execution and command palette."""
 
+import ast
 import asyncio
 import logging
 import re
+from pathlib import Path
+from collections.abc import Iterator
 from typing import Any, Callable
 
 import waldoctl
-from nicegui import Client, context, ui
+from nicegui import Client, background_tasks, context, ui
 from waldoctl import EditId, Program, ProgramTarget
 
 from waldo_commander.common.theme import effective_theme
@@ -40,6 +43,8 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
+from waldo_commander.services.python_source import loads_setup
+from waldo_commander.setup import add_save_listener
 from waldo_commander.state import (
     simulation_state,
     ui_state,
@@ -49,6 +54,64 @@ logger = logging.getLogger(__name__)
 
 
 MENU_TOOLTIP = 'anchor="center left" self="center right"'
+
+
+def _blocks(node: ast.stmt) -> list[list[ast.stmt]]:
+    """The statement lists nested directly in *node*."""
+    match node:
+        case ast.If() | ast.For() | ast.AsyncFor() | ast.While():
+            return [node.body, node.orelse]
+        case ast.Try() | ast.TryStar():
+            return [
+                node.body,
+                node.orelse,
+                node.finalbody,
+                *(handler.body for handler in node.handlers),
+            ]
+        case (
+            ast.With()
+            | ast.AsyncWith()
+            | ast.FunctionDef()
+            | ast.AsyncFunctionDef()
+            | ast.ClassDef()
+        ):
+            return [node.body]
+        case ast.Match():
+            return [case.body for case in node.cases]
+    return []
+
+
+def _imports_only(node: ast.stmt) -> bool:
+    """An import, or a ``try``/``if`` made of nothing but imports."""
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return True
+    if not isinstance(node, (ast.If, ast.Try)):
+        return False
+    statements = [statement for block in _blocks(node) for statement in block]
+    return any(not isinstance(s, ast.Pass) for s in statements) and all(
+        isinstance(s, ast.Pass) or _imports_only(s) for s in statements
+    )
+
+
+def _selection_imports(
+    body: list[ast.stmt], first: int, last: int
+) -> Iterator[ast.stmt]:
+    """The imports in scope at lines *first* to *last*, for Run selection to
+    copy ahead of them: those at this level (a guarded one with its guard),
+    and those in the blocks the selection sits in. One inside another
+    function, or behind a branch the selection is not in, belongs to that
+    scope, not the selection's."""
+    for node in body:
+        if _imports_only(node):
+            yield node
+            continue
+        for block in _blocks(node):
+            if (
+                block
+                and block[0].lineno <= first
+                and last <= (block[-1].end_lineno or block[-1].lineno)
+            ):
+                yield from _selection_imports(block, first, last)
 
 
 class EditorPanel(FileOperationsMixin):
@@ -104,6 +167,8 @@ class EditorPanel(FileOperationsMixin):
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
+
+        self._drop_setup_listener: Callable[[], None] = lambda: None
 
     def _insert_command(self, method_name: str) -> None:
         """Build a snippet for ``method_name`` (pre-filled with the robot's
@@ -313,7 +378,6 @@ class EditorPanel(FileOperationsMixin):
         in a tab kept for the purpose. Back to the program afterwards unless
         the run failed, so its log stays in view.
         """
-        import ast
         import textwrap
 
         from waldo_commander.components.skill_library import selected_tool_preamble
@@ -338,11 +402,9 @@ class EditorPanel(FileOperationsMixin):
         lines = text.split("\n")
         body = textwrap.dedent("\n".join(lines[span[0] - 1 : span[1]])).strip("\n")
         try:
-            tree = ast.parse(text)
             imports = [
-                textwrap.dedent(ast.get_source_segment(text, node) or "")
-                for node in ast.walk(tree)
-                if isinstance(node, (ast.Import, ast.ImportFrom))
+                textwrap.dedent(ast.get_source_segment(text, node, padded=True) or "")
+                for node in _selection_imports(ast.parse(text).body, *span)
             ]
         except SyntaxError:
             imports = []
@@ -621,6 +683,7 @@ class EditorPanel(FileOperationsMixin):
         waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
         simulation_state.remove_change_listener(self._update_capture_button)
         motion_recorder.remove_session_listener(self._on_session_changed)
+        self._drop_setup_listener()
         ui_state.capture_pose_tooltip = None
         self._cursor_selection = None
         self._selection_tab_id = None
@@ -950,6 +1013,7 @@ class EditorPanel(FileOperationsMixin):
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
             ui_state.textareas_by_tab[tab.id] = textarea
+            motion_recorder.rebind(tab.id)
 
             # Re-teach enablement needs the live anchor mirror, which the
             # browser echoes only after the sim-completion notify has fired.
@@ -1114,6 +1178,13 @@ class EditorPanel(FileOperationsMixin):
         ).classes("text-xs whitespace-nowrap").tooltip(
             "Lines this recording wrote, marked until you keep or undo them"
         ).mark("staged-summary")
+        if session.capture_stopped:
+            ui.label("Capture stopped").classes(
+                "text-xs text-wc-error whitespace-nowrap"
+            ).tooltip(
+                f"Motion from outside Commander is no longer captured: "
+                f"{session.capture_stopped}"
+            ).mark("staged-capture-stopped")
         block = self._staged_capture_at_cursor(session)
         self._shown_capture = block
         if block is not None:
@@ -1274,6 +1345,30 @@ class EditorPanel(FileOperationsMixin):
             self._refresh_header_cluster(tab.id)
         if ui_state.urdf_scene and waldoctl.commander.settings.view.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
+
+    def _on_setup_saved(self, directory: Path, name: str, revision: str) -> None:
+        """Re-plan every open program that loads the setup just saved."""
+        client = self._client
+        if client is None:
+            return
+        programs = waldoctl.commander.programs
+        stale = [p.id for p in programs.items if loads_setup(p.source, name)]
+        if programs.active_id in stale:
+            with client:
+                simulation.schedule_debounced_simulation(tab_id=programs.active_id)
+        # One debounced run is pending at a time, and it belongs to the active
+        # program; the others re-plan in turn now.
+        background = [tab_id for tab_id in stale if tab_id != programs.active_id]
+        if background:
+            background_tasks.create(
+                self._resimulate(background), name="setup-resimulate"
+            )
+
+    @staticmethod
+    async def _resimulate(tab_ids: list[str]) -> None:
+        for tab_id in tab_ids:
+            if waldoctl.commander.programs.get(tab_id) is not None:
+                await simulation.run_simulation(tab_id)
 
     def _on_tab_content_change(self, tab: Program, new_value: str) -> None:
         """Handle content change for a tab."""
@@ -1496,6 +1591,9 @@ class EditorPanel(FileOperationsMixin):
         simulation_state.add_change_listener(self._update_capture_button)
         # A staged recording is reviewed where a pending edit is.
         motion_recorder.add_session_listener(self._on_session_changed)
+        # A saved setup changes what the programs that load it do.
+        self._drop_setup_listener()
+        self._drop_setup_listener = add_save_listener(self._on_setup_saved)
 
         # Restore tabs from existing state (page refresh) or create initial tab
         if waldoctl.commander.programs.items:

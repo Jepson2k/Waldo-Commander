@@ -54,7 +54,10 @@ from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import ReadoutPanel
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.settings import adopt_applied_tcp
+from waldo_commander.components.settings import (
+    adopt_applied_tcp,
+    refresh_applied_tcp,
+)
 from waldo_commander.constants import DEFAULT_CAMERA, RESERVED_TAB_IDS, config
 from waldo_commander.mcp import start_mcp_server, stop_mcp_server
 from waldo_commander.services.tcp_calibration import read_applied_tcp
@@ -462,6 +465,7 @@ async def check_ping() -> None:
                 scene_handle = waldoctl.commander.scene
                 if scene_handle is not None:
                     asyncio.create_task(scene_handle.refresh_from_backend())
+                asyncio.create_task(refresh_applied_tcp(client))
         ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
@@ -1871,6 +1875,7 @@ async def _status_consumer() -> None:
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
     error_shadow: waldoctl.RobotError | None = None
+    robot_state.standing_error = None
     estop_shadow = 1
     try:
         # Wait for server to be responsive before subscribing to multicast
@@ -2057,6 +2062,7 @@ async def _status_consumer() -> None:
                         standing = waldoctl.RobotError.from_wire(standing)
                     if standing != error_shadow:
                         error_shadow = standing
+                        robot_state.standing_error = standing
                         if standing is not None:
                             robot_events.add(
                                 code=standing.code,

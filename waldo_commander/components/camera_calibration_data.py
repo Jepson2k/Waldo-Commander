@@ -85,8 +85,11 @@ class CameraCalibrationData:
                 ).classes("text-caption")
 
     def snapshot(self) -> SetupSnapshot:
+        return self._stored(self.setup_name.value)
+
+    def _stored(self, setup_name: str) -> SetupSnapshot:
         try:
-            return self.store.load(self.setup_name.value)
+            return self.store.load(setup_name)
         except FileNotFoundError:
             return SetupSnapshot()
 
@@ -95,23 +98,24 @@ class CameraCalibrationData:
         return f"{calibration.mount} camera, {width}×{height}, {calibration.quality.sample_count} views, {calibration.quality.reproj_rms_px:.2f} px, {calibration.calibrated_at}"
 
     async def save(self) -> bool:
+        # The destination as it was when Save was pressed; edits made while
+        # measuring must not redirect the write.
+        setup_name, camera_name = self.setup_name.value, self.name.value
         try:
-            setup = self.snapshot()
+            setup = self._stored(setup_name)
             reference = self.reference.value
             calibration = await self.measurement(setup, reference)
             # Measuring takes time: the calibration joins the setup as it is
             # now, so anything saved into it meanwhile survives, unless the
             # frame it was measured against is no longer what was measured.
-            latest = self.snapshot()
+            latest = self._stored(setup_name)
             if latest.frames.get(reference) != setup.frames.get(reference):
                 raise ValueError(
                     f"Frame {reference} changed while measuring; measure again"
                 )
-            self.store.save(
-                self.setup_name.value, latest.with_camera(self.name.value, calibration)
-            )
+            self.store.save(setup_name, latest.with_camera(camera_name, calibration))
             self.message.set_text(
-                f"Saved {self.setup_name.value}/{self.name.value}: {self.describe(calibration)}"
+                f"Saved {setup_name}/{camera_name}: {self.describe(calibration)}"
             )
             return True
         except (ValueError, OSError, TimeoutError, CameraUnavailable) as error:

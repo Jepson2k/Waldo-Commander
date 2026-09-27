@@ -57,12 +57,18 @@ _DEFAULT_STYLE = ("warning", "text-wc-warning")
 OK, WARN, FAULT = 0, 1, 2
 _SEVERITY_CLASS = {OK: "diag-ok", WARN: "diag-warn", FAULT: "diag-fault"}
 
+#: What the verdict found, each with the level it counts as.
+_Reasons = list[tuple[int, str]]
+
 #: Loop tail as a multiple of the period budget, past which the loop counts as
 #: degraded. Matches the rule parol6 applies to itself before it logs
 #: "loop overbudget" (server/controller.py). It lives here because no backend
 #: puts its own bands on the wire; the right home is waldoctl, so that each
 #: declares the thresholds it is actually judged against.
 LOOP_WARN_RATIO = 1.25
+
+#: Status older than this, seconds, says nothing about the robot now.
+STATUS_STALE_S = 1.0
 
 
 def _band(code: int) -> tuple[str, str]:
@@ -82,6 +88,29 @@ def _num(value: float, digits: int = 0) -> str:
 
 
 _DRIVE_KINDS = ("temp", "current", "fault")
+
+
+class _OverrunRate:
+    """Overruns per minute over the stretch of the count this page has seen.
+
+    The controller counts from its own boot, which may be hours before the
+    page opened, so its total over the page's age is no rate at all.
+    """
+
+    def __init__(self) -> None:
+        self._since = 0.0
+        self._first = -1
+
+    def per_minute(self, count: int, now: float) -> float | None:
+        """The rate up to ``now``, or None until there is a stretch to measure."""
+        if self._first < 0 or count < self._first:
+            # A count that went down is a controller that restarted.
+            self._since, self._first = now, count
+            return None
+        elapsed = now - self._since
+        if elapsed <= 0.0:
+            return None
+        return (count - self._first) * 60.0 / elapsed
 
 
 def _faults(drive_health: Any) -> Sequence[Sequence[str]]:
@@ -106,6 +135,8 @@ class DiagnosticsPage:
         self._verdict_meta: ui.label | None = None
         self._loop_bar: ui.element | None = None
         self._started_at = time.monotonic()
+        self._overrun_rate = _OverrunRate()
+        self._drives_reported = False
         self._drive_rows: list[tuple[ui.label, list[ui.label]]] = []
         self._drive_heads: dict[str, ui.label] = {}
         self._drives_grid: ui.grid | None = None
@@ -160,6 +191,7 @@ class DiagnosticsPage:
                 .mark("diag-nothing")
             )
         self._apply_visibility()
+        ui.timer(1.0, self._check_stale)
 
     def _section(self, key: str, title: str, visible: bool = False) -> ui.column:
         col = ui.column().classes("w-full gap-0").mark(f"diag-section-{key}")
@@ -474,7 +506,8 @@ class DiagnosticsPage:
             background_tasks.create(self._ask_constants(), name="diagnostics-constants")
         self._apply_visibility()
         worst = OK
-        reasons: list[str] = []
+        reasons: _Reasons = []
+        worst, reasons = self._update_conditions(worst, reasons)
         worst, reasons = self._update_safety(worst, reasons)
         worst, reasons = self._update_loop(worst, reasons)
         worst, reasons = self._update_link(worst, reasons)
@@ -510,7 +543,19 @@ class DiagnosticsPage:
         if label is not None and label.text != text:
             label.text = text
 
-    def _update_safety(self, worst: int, reasons: list[str]) -> tuple[int, list[str]]:
+    def _update_conditions(self, worst: int, reasons: _Reasons) -> tuple[int, _Reasons]:
+        """What the backend itself says is wrong, ahead of anything inferred:
+        its latched error has stopped it, and its warnings degrade it."""
+        error = robot_state.standing_error
+        if error is not None:
+            worst, reasons = FAULT, [*reasons, (FAULT, error.title)]
+        warnings = waldoctl.commander.status.warnings.entries
+        if warnings:
+            worst = max(worst, WARN)
+            reasons = [*reasons, (WARN, warnings[0].title)]
+        return worst, reasons
+
+    def _update_safety(self, worst: int, reasons: _Reasons) -> tuple[int, _Reasons]:
         """E-stop, controller and homed: whether the arm will move at all."""
         status = waldoctl.commander.status
         # estop == 1 is the chain intact, matching the controller wire format.
@@ -518,7 +563,7 @@ class DiagnosticsPage:
         self._set("diag-estop", "pressed" if pressed else "clear")
         self._severity("diag-estop", FAULT if pressed else OK)
         if pressed:
-            worst, reasons = max(worst, FAULT), [*reasons, "e-stop pressed"]
+            worst, reasons = max(worst, FAULT), [*reasons, (FAULT, "e-stop pressed")]
 
         ctrl = status.controller
         if ctrl.mode:
@@ -529,7 +574,8 @@ class DiagnosticsPage:
             )
             self._severity("diag-controller", OK if ctrl.enabled else FAULT)
             if not ctrl.enabled:
-                worst, reasons = max(worst, FAULT), [*reasons, "controller disabled"]
+                worst = max(worst, FAULT)
+                reasons = [*reasons, (FAULT, "controller disabled")]
         else:
             self._set("diag-controller", "—")
 
@@ -537,10 +583,10 @@ class DiagnosticsPage:
         self._set("diag-homed", "homed" if homed else "not homed")
         self._severity("diag-homed", OK if homed else WARN)
         if not homed:
-            worst, reasons = max(worst, WARN), [*reasons, "not homed"]
+            worst, reasons = max(worst, WARN), [*reasons, (WARN, "not homed")]
         return worst, reasons
 
-    def _update_loop(self, worst: int, reasons: list[str]) -> tuple[int, list[str]]:
+    def _update_loop(self, worst: int, reasons: _Reasons) -> tuple[int, _Reasons]:
         health = waldoctl.commander.status.loop_health
         self._set(
             "diag-loop-rate",
@@ -570,31 +616,34 @@ class DiagnosticsPage:
                 )
             if over:
                 worst = max(worst, WARN)
-                reasons = [*reasons, f"loop tail {ratio:.0%} of budget"]
+                reasons = [*reasons, (WARN, f"loop tail {ratio:.0%} of budget")]
         # A bare count since boot says nothing without a time base: nine
         # overruns in a minute and nine in a day are different machines.
-        elapsed_min = max((time.monotonic() - self._started_at) / 60.0, 1e-9)
+        rate = self._overrun_rate.per_minute(health.overruns, time.monotonic())
         self._set(
             "diag-loop-overruns",
-            f"{health.overruns} since start · {health.overruns / elapsed_min:.1f}/min",
+            f"{health.overruns} since start"
+            + ("" if rate is None else f" · {rate:.1f}/min"),
         )
         return worst, reasons
 
-    def _update_link(self, worst: int, reasons: list[str]) -> tuple[int, list[str]]:
+    def _update_link(self, worst: int, reasons: _Reasons) -> tuple[int, _Reasons]:
         """Bus state, where anything but Up is the whole story."""
         state = waldoctl.commander.status.link_health.state
         if not state:
             return worst, reasons
-        level = OK if state.lower() in ("up", "unknown") else FAULT
-        if state.lower() == "errorpassive":
+        # Backends spell the CAN states either way: ErrorPassive, ERROR_PASSIVE.
+        normalised = state.lower().replace("_", "")
+        level = OK if normalised in ("up", "unknown") else FAULT
+        if normalised == "errorpassive":
             level = WARN
         self._severity("diag-link-state", level)
         if level:
             worst = max(worst, level)
-            reasons = [*reasons, f"motor bus {state}"]
+            reasons = [*reasons, (level, f"motor bus {state}")]
         return worst, reasons
 
-    def _update_verdict(self, worst: int, reasons: list[str]) -> None:
+    def _update_verdict(self, worst: int, reasons: _Reasons) -> None:
         """The headline, and the two constants worth carrying beside it."""
         if self._verdict is None:
             return
@@ -603,14 +652,10 @@ class DiagnosticsPage:
             WARN: "Running degraded",
             FAULT: "Stopped",
         }[worst]
-        if reasons:
-            text = f"{text} — {reasons[0]}" if worst else text
-        if self._verdict.text != text:
-            self._verdict.text = text
-        keep = _SEVERITY_CLASS[worst]
-        self._verdict.classes(
-            add=keep, remove=" ".join(c for c in _SEVERITY_CLASS.values() if c != keep)
-        )
+        if worst:
+            # The first finding at the worst level is the one that explains it.
+            text = f"{text} — {next(r for level, r in reasons if level == worst)}"
+        self._show_verdict(text, worst)
         if self._verdict_meta is not None:
             up = time.monotonic() - self._started_at
             rate = f"{self._target_hz:.0f} Hz · " if self._target_hz else ""
@@ -618,7 +663,26 @@ class DiagnosticsPage:
             if self._verdict_meta.text != meta:
                 self._verdict_meta.text = meta
 
-    def _update_drives(self, worst: int, reasons: list[str]) -> tuple[int, list[str]]:
+    def _show_verdict(self, text: str, level: int) -> None:
+        assert self._verdict is not None
+        if self._verdict.text != text:
+            self._verdict.text = text
+        keep = _SEVERITY_CLASS[level]
+        self._verdict.classes(
+            add=keep, remove=" ".join(c for c in _SEVERITY_CLASS.values() if c != keep)
+        )
+
+    def _check_stale(self) -> None:
+        """Say so once status stops arriving: every reading below is then
+        the last one heard, not the robot as it is."""
+        last = waldoctl.commander.status.last_update
+        if self._verdict is None or not last or not self._is_open():
+            return
+        age = time.time() - last
+        if age >= STATUS_STALE_S:
+            self._show_verdict(f"No status for {int(age)} s", FAULT)
+
+    def _update_drives(self, worst: int, reasons: _Reasons) -> tuple[int, _Reasons]:
         health = waldoctl.commander.status.drive_health
         temps = health.temperatures_c
         currents = health.currents_ma
@@ -648,6 +712,14 @@ class DiagnosticsPage:
                         cells[2].classes(remove="diag-warn")
                 if labels:
                     faulted.append(self._drive_rows[j][0].text)
+        elif self._drives_reported:
+            # Readings the backend stopped sending are unknown now, not
+            # whatever they last were.
+            for _, cells in self._drive_rows:
+                for cell in cells:
+                    cell.text = "—"
+                cells[2].classes(remove="diag-warn")
+        self._drives_reported = reported > 0
         volts = health.bus_voltage_v
         if volts is not None:
             if self._supply_box is not None and not self._supply_box.visible:
@@ -657,7 +729,7 @@ class DiagnosticsPage:
             self._set("diag-drive-supply", "—")
         if faulted:
             worst = max(worst, WARN)
-            reasons = [*reasons, f"drive fault on {', '.join(faulted)}"]
+            reasons = [*reasons, (WARN, f"drive fault on {', '.join(faulted)}")]
         return worst, reasons
 
     def _update_homing(self) -> None:

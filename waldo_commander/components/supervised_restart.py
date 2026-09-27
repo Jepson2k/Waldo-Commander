@@ -112,8 +112,9 @@ async def show_supervised_restart() -> None:
                 current = await fresh_state(waldoctl.commander.client)
                 current.require_ready()
                 reference = current
+                mode = "simulator" if current.simulator_active else "robot hardware"
                 state_label.text = (
-                    "Controller ready\n"
+                    f"Controller ready · {mode}\n"
                     f"Referenced · enabled · queue empty\n"
                     f"Tool: {current.tool or 'none'} {current.tool_variant}"
                     + (

@@ -183,3 +183,51 @@ async def test_scrub_bar_never_locks_on_a_planner_only_backend(user: User) -> No
     )
     assert dry_run.predicted is None
     assert not path_visualizer.physics_in_flight(program.id)
+
+
+@pytest.mark.integration
+async def test_a_prediction_of_other_commands_is_not_accepted(user: User) -> None:
+    """The predicted pass runs the program again. One that draws a random
+    target commands something else on that run, under the same revision,
+    so its prediction answers commands the plan on screen never had and is
+    dropped rather than drawn against it."""
+    from waldo_commander.components.simulation_engine import simulation
+    from waldo_commander.services.path_visualizer import path_visualizer
+    from waldo_commander.state import simulation_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    assert await wait_until(
+        lambda: simulation._simulation_debounce_timer is None
+        and simulation._physics_timer is None,
+        timeout_s=20,
+    )
+    program = waldoctl.commander.programs.active
+    assert program is not None
+    dry_run = program.dry_run
+    source = (
+        "import random\n"
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "rbt.move_j([85 + random.uniform(-5, 5), -85, 175, 5, 5, 175], speed=1.0)\n"
+    )
+    try:
+        assert (
+            await path_visualizer.update_path_visualization(
+                source, tab_id=program.id, revision=1
+            )
+            is None
+        )
+        assert dry_run.commanded is not None and dry_run.commanded_revision == 1
+        assert await path_visualizer.update_physics_simulation(program.id) is None
+        assert dry_run.predicted is None
+        assert "parol6" not in path_visualizer._predicted_diverges
+    finally:
+        dry_run.commanded = None
+        dry_run.commanded_revision = -1
+        dry_run.predicted = None
+        dry_run.predicted_revision = -1
+        dry_run.path_segments = []
+        simulation_state.notify_changed()

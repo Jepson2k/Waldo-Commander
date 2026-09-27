@@ -100,8 +100,13 @@ class GripperPage:
                     )
                 if self._cur_slider:
                     spd_kwargs["current"] = int(self._cur_slider.value)
-            await tool.set_position(position, **spd_kwargs)
-            motion_recorder.record_action("gripper", position=position, **spd_kwargs)
+            await motion_recorder.owned_tool_move(
+                self.client,
+                tool.set_position(position, **spd_kwargs),
+                lambda: motion_recorder.record_action(
+                    "gripper", position=position, **spd_kwargs
+                ),
+            )
         except Exception as e:
             logger.error("Gripper %s failed: %s", label.lower(), e)
             ui.notify(f"{label} failed: {e}", color="negative")
