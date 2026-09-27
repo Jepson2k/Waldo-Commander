@@ -143,7 +143,9 @@ class HandEyeCalibrationPanel(Panel):
             self._spec = (
                 handeye.BoardSpec.from_dict(stored) if stored else handeye.BoardSpec()
             )
-        except (KeyError, TypeError, ValueError):
+            # Storage can hold a board that make_detector would refuse.
+            self._spec.validate()
+        except (KeyError, TypeError, ValueError, handeye.CalibrationError):
             self._spec = handeye.BoardSpec()
         self._detector = handeye.make_detector(self._spec)
         self._samples: list[handeye.HandEyeSample] = []
