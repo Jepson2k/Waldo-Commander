@@ -534,7 +534,7 @@ class HandEyeCalibrationPanel(Panel):
         with ui.row().classes("w-full items-center no-wrap gap-2"):
             self._capture_btn = ui.button(
                 "Capture view", icon="add_a_photo", on_click=self._capture
-            )
+            ).props("color=wc-action text-color=wc-on-bright")
             self._capture_btn.mark("handeye-capture")
             self._auto_btn = ui.button(
                 "Auto-capture", icon="play_circle", on_click=self._on_auto_click
@@ -561,7 +561,9 @@ class HandEyeCalibrationPanel(Panel):
 
     def _build_solve_section(self) -> None:
         with ui.row().classes("items-center gap-2"):
-            self._solve_btn = ui.button("Solve", icon="calculate", on_click=self._solve)
+            self._solve_btn = ui.button(
+                "Solve", icon="calculate", on_click=self._solve
+            ).props("color=wc-action text-color=wc-on-bright")
             self._solve_btn.mark("handeye-solve")
             self._next_btn = (
                 ui.button("Next: save", on_click=lambda: self._show_step(4))

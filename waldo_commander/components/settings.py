@@ -552,7 +552,6 @@ class SettingsContent:
                 ui.notify(f"Port change failed: {exc}", color="negative")
                 return
             ng_app.storage.general["com_port"] = port_val
-            ui.notify(f"SET_PORT {port_val}", color="primary")
 
         port_select_ref.on("update:model-value", lambda e: _apply_port())
         self._refresh_timer = ui.timer(10.0, self._refresh_serial_ports)

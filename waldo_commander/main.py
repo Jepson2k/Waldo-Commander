@@ -782,7 +782,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         .props(
             "vertical animated transition-prev=slide-right transition-next=slide-right"
         )
-        .classes("left-panels-container top-panels-container z-30") as top_panels
+        .classes("left-panels-container top-panels-container") as top_panels
     ):
 
         def close_top_panels():
@@ -1163,13 +1163,11 @@ def build_page_content() -> None:
             )
 
         # Overlay panels and HUD elements.
-        with (
-            ui.column().classes("absolute inset-0 z-20").style("pointer-events: none;")
-        ):
+        with ui.column().classes("absolute inset-0").style("pointer-events: none;"):
             physics_legend.build()
             with (
                 ui.element("div")
-                .classes("panels-wrap absolute inset-0 z-30")
+                .classes("panels-wrap absolute inset-0")
                 .style("pointer-events: none;") as panels_wrap
             ):
                 panel_refs = _build_left_panels(panels_wrap)

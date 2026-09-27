@@ -123,9 +123,10 @@ SIZE: dict[str, str] = {
     "size-rail": "52px",
 }
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
-OPACITY: dict[str, str] = {"opacity-disabled": "0.6", "opacity-locked": "0.15"}
+OPACITY: dict[str, str] = {"opacity-locked": "0.15"}
 Z_INDEX: dict[str, str] = {
     "z-loading": "10",
+    "z-cards": "20",
     "z-panels": "30",
     "z-rail": "40",
     "z-rail-bottom": "50",
@@ -287,6 +288,7 @@ def _derive(p: Palette) -> dict[str, str]:
         "fill-positive": _shift(p.green, L=0.5),
         "fill-warning": _shift(p.orange, L=0.55),
         "fill-error": _shift(p.red, L=0.5),
+        "fill-info": _shift(p.accent, L=0.5),
         "ai-inspect": _shift(p.green, L=0.76),
         "ai-inspect-text": _shift(p.green, L=0.84),
         "ai-auto-edits": _shift(p.blue, L=0.75),
@@ -534,7 +536,6 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
   outline: 2px solid var(--wc-focus-ring);
   outline-offset: 2px;
 }}
-.q-btn.disabled {{ opacity: var(--wc-opacity-disabled) !important; }}
 .q-slider__thumb {{ width: 30px !important; height: 30px !important; }}
 .q-slider__track {{ height: 8px !important; }}
 
@@ -550,7 +551,7 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
 /* ========== Inputs ========== */
 
 .q-field__native, .q-field__input, .q-field__prefix, .q-field__suffix {{ color: var(--wc-text); }}
-.q-field__label {{ color: var(--wc-text-muted); }}
+.q-field:not(.q-field--highlighted) .q-field__label {{ color: var(--wc-text-muted); }}
 .q-field:not(.q-field--borderless) .q-field__control {{
   background: var(--wc-well);
   border-radius: var(--wc-radius-sm);
@@ -594,7 +595,7 @@ def apply_theme() -> None:
         dark_page=css("scene-bg"),
         positive=css("fill-positive"),
         negative=css("fill-error"),
-        info=css("action"),
+        info=css("fill-info"),
         warning=css("fill-warning"),
         **{quasar(n): css(n) for n in color_tokens(_active_theme)},
     )
@@ -882,8 +883,9 @@ html, body {
   overflow: hidden;
 }
 
-/* Record button: a control with a record dot that pulses while recording */
-.record-btn .q-icon { color: var(--wc-record); }
+/* Record button: a control with a record dot, filled with the record colour
+   while recording, when the dot takes the text colour and pulses */
+.record-btn:not(.recording) .q-icon { color: var(--wc-record); }
 .record-btn.recording .q-icon { animation: recording-pulse var(--wc-duration-ambient) var(--wc-ease-loop) infinite; }
 
 
@@ -985,7 +987,7 @@ html, body {
 }
 
 /* Overlay panels with frosted glass effect */
-.overlay-panel { position: absolute; z-index: var(--wc-z-panels); pointer-events: auto; }
+.overlay-panel { position: absolute; z-index: var(--wc-z-cards); pointer-events: auto; }
 .overlay-card {
   padding: var(--wc-space-3);
 }
@@ -1003,7 +1005,7 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: var(--wc-space-2);
-  z-index: var(--wc-z-panels);
+  z-index: var(--wc-z-cards);
 }
 
 
@@ -1050,6 +1052,7 @@ html, body {
 /* Shared left-side panel container base styling */
 .left-panels-container {
   position: absolute;
+  z-index: var(--wc-z-panels);
   left: 58px;
   max-width: calc(100vw - 80px);
   overflow: hidden !important;
@@ -1240,6 +1243,8 @@ html, body {
   border-radius: 0 0 var(--wc-radius-sm) var(--wc-radius-sm);
 }
 .program-panel .cm-editor .cm-gutters { background: transparent !important; }
+/* Room for the last line to scroll clear of the fade and the playback bar */
+.program-panel .cm-editor .cm-content { padding-bottom: 16px; }
 
 /* Style CodeMirror's internal scrollbar */
 .cm-scroller::-webkit-scrollbar {
@@ -1446,9 +1451,9 @@ html, body {
 
 
 /* ========== Recording Notification ========== */
-/* Override parent container z-index when it contains recording notification */
+/* The standing Recording notice sits with the cards, under the left panels */
 .q-notifications__list:has(.recording-notification) {
-  z-index: var(--wc-z-rail) !important;
+  z-index: var(--wc-z-cards) !important;
 }
 
 .recording-notification .q-notification__icon {
@@ -1541,8 +1546,7 @@ html, body {
 .file-tree-scroll .q-scrollarea__content { padding: 0 !important; }
 
 /* ========== File Tree ========== */
-.file-tree .q-tree__node-header-content { color: var(--wc-text) !important; }
-.file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { color: var(--wc-text) !important; font-weight: bold !important; }
+.file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 .file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
 /* ========== Robot Face Indicator ========== */

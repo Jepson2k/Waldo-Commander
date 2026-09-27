@@ -200,9 +200,9 @@ def show_run_records() -> None:
                 refresh()
 
         with ui.row().classes("panel-actions"):
-            ui.button("Export debugging data", on_click=export).mark(
-                "run-record-export"
-            )
+            ui.button("Export debugging data", on_click=export).props(
+                "color=wc-action text-color=wc-on-bright"
+            ).mark("run-record-export")
             ui.button("Refresh", on_click=reload_choices).props("flat").mark(
                 "run-record-refresh"
             )

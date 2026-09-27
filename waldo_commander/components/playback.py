@@ -54,6 +54,7 @@ _LAYERS = (
     ("com_visible", "Centre of mass", "layer-com"),
 )
 _LAYER_PREFS = "preview_layers"
+_SPEED_FILL = "color=wc-control text-color=wc-text"
 
 
 def layers_available(dry_run) -> dict[str, bool]:
@@ -256,15 +257,19 @@ class PlaybackController:
                 ui.fab_action(
                     "sym_o_speed_0_5x",
                     on_click=lambda: self._set_speed(0.5),
-                ).mark("editor-speed-half")
+                ).props(_SPEED_FILL).mark("editor-speed-half")
                 ui.fab_action(
                     "1x_mobiledata",
                     on_click=lambda: self._set_speed(1.0),
-                ).mark("editor-speed-normal")
-                self._speed_2x = ui.fab_action(
-                    "sym_o_speed_2x",
-                    on_click=lambda: self._set_speed(2.0),
-                ).mark("editor-speed-double")
+                ).props(_SPEED_FILL).mark("editor-speed-normal")
+                self._speed_2x = (
+                    ui.fab_action(
+                        "sym_o_speed_2x",
+                        on_click=lambda: self._set_speed(2.0),
+                    )
+                    .props(_SPEED_FILL)
+                    .mark("editor-speed-double")
+                )
             ui.timer(0.5, self._refresh_execution_speed)
             self.sync_mode()
 
@@ -380,9 +385,13 @@ class PlaybackController:
         recording = is_any_program_recording()
         if self.record_btn:
             if recording:
-                self.record_btn.classes(add="recording")
+                self.record_btn.classes(add="recording").props(
+                    "color=wc-record text-color=wc-on-fill"
+                )
             else:
-                self.record_btn.classes(remove="recording")
+                self.record_btn.classes(remove="recording").props(
+                    "color=wc-control text-color=wc-text"
+                )
         if self._record_btn_tooltip:
             self._record_btn_tooltip.text = (
                 "Stop Recording" if recording else "Start Recording"

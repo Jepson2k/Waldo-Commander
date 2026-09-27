@@ -211,7 +211,7 @@ class NamedSetupPanel(Panel):
                     ui.button("Keep editing", on_click=dialog.close).props("flat")
                     ui.button(
                         "Discard and load", on_click=lambda: (dialog.close(), load())
-                    )
+                    ).props("color=wc-action text-color=wc-on-bright")
             dialog.on("hide", dialog.delete)
             dialog.open()
 
@@ -281,7 +281,9 @@ class NamedSetupPanel(Panel):
                 ui.button("Load", on_click=request_load).props("dense flat").mark(
                     "setup-load"
                 )
-                ui.button("Save setup", on_click=save).props("dense").mark("setup-save")
+                ui.button("Save setup", on_click=save).props(
+                    "dense color=wc-action text-color=wc-on-bright"
+                ).mark("setup-save")
                 ui.button("Insert load call", on_click=insert_load).props(
                     "dense flat"
                 ).mark("setup-insert-load")
@@ -515,9 +517,9 @@ class NamedSetupPanel(Panel):
                             "Use current TCP",
                             on_click=lambda: teach(frame_values, frame_parent),
                         ).props("dense flat").mark("setup-teach-frame")
-                        ui.button("Keep frame", on_click=set_frame).props("dense").mark(
-                            "setup-set-frame"
-                        )
+                        ui.button("Keep frame", on_click=set_frame).props(
+                            "dense color=wc-action text-color=wc-on-bright"
+                        ).mark("setup-set-frame")
                         ui.button(
                             icon="delete",
                             on_click=lambda: remove("frames", frame_name.value),
@@ -554,9 +556,9 @@ class NamedSetupPanel(Panel):
                             "Use current TCP",
                             on_click=lambda: teach(pose_values, pose_frame),
                         ).props("dense flat").mark("setup-teach-pose")
-                        ui.button("Keep pose", on_click=set_pose).props("dense").mark(
-                            "setup-set-pose"
-                        )
+                        ui.button("Keep pose", on_click=set_pose).props(
+                            "dense color=wc-action text-color=wc-on-bright"
+                        ).mark("setup-set-pose")
                         ui.button(
                             icon="delete",
                             on_click=lambda: remove("poses", pose_name.value),
@@ -598,7 +600,7 @@ class NamedSetupPanel(Panel):
                         )
                     with ui.row():
                         ui.button("Keep parameter", on_click=set_parameter).props(
-                            "dense"
+                            "dense color=wc-action text-color=wc-on-bright"
                         ).mark("setup-set-parameter")
                         ui.button(
                             icon="delete",

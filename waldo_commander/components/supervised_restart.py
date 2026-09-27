@@ -155,8 +155,10 @@ async def show_supervised_restart() -> None:
                 )
 
         with ui.row():
-            start_button = ui.button("Start from entry", on_click=start).mark(
-                "restart-start"
+            start_button = (
+                ui.button("Start from entry", on_click=start)
+                .props("color=wc-action text-color=wc-on-bright")
+                .mark("restart-start")
             )
             start_button.disable()
             ui.button("Refresh state", on_click=refresh).props("flat").mark(

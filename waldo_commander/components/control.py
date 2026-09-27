@@ -205,6 +205,10 @@ class _EStopManager:
         self._last_io_state = current
 
 
+_IDLE_FILL = "color=wc-control text-color=wc-text"
+_ENGAGED_FILL = "color=wc-action text-color=wc-on-bright"
+
+
 class _ToolQuickActions:
     """Tool action buttons (L/R) and adjust buttons with visual updates."""
 
@@ -321,7 +325,7 @@ class _ToolQuickActions:
                 off_icon, on_icon = tool.action_l_icons
                 off_label, on_label = tool.action_l_labels or ("Close", "Open")
                 icon = off_icon if is_open else on_icon
-                color = "wc-control" if is_open else "wc-action"
+                fill = _IDLE_FILL if is_open else _ENGAGED_FILL
                 tooltip_text = off_label if is_open else on_label
             else:
                 off_icon, on_icon = tool.action_l_icons
@@ -329,15 +333,15 @@ class _ToolQuickActions:
                 engaged = waldoctl.commander.status.tool.engaged
                 if tool.action_l_mode == ToggleMode.TRIGGER:
                     icon = off_icon
-                    color = "wc-control"
+                    fill = _IDLE_FILL
                     tooltip_text = off_label
                 else:
                     icon = off_icon if engaged else on_icon
-                    color = "wc-action" if engaged else "wc-control"
+                    fill = _ENGAGED_FILL if engaged else _IDLE_FILL
                     tooltip_text = off_label if engaged else on_label
 
             self._action_l_btn._props["icon"] = icon
-            self._action_l_btn.props(f"color={color}")
+            self._action_l_btn.props(fill)
             if self._action_l_tooltip is None:
                 with self._action_l_btn:
                     self._action_l_tooltip = ui.tooltip(tooltip_text)
@@ -355,16 +359,14 @@ class _ToolQuickActions:
                 off_label_r, on_label_r = tool.action_r_labels
                 if tool.action_r_mode == ToggleMode.TRIGGER:
                     self._action_r_btn._props["icon"] = off_icon_r
-                    self._action_r_btn.props("color=wc-control text-color=wc-text")
+                    self._action_r_btn.props(_IDLE_FILL)
                     r_tooltip = off_label_r
                 else:
                     engaged_r = waldoctl.commander.status.tool.engaged
                     self._action_r_btn._props["icon"] = (
                         off_icon_r if engaged_r else on_icon_r
                     )
-                    self._action_r_btn.props(
-                        f"color={'wc-action' if engaged_r else 'wc-control'}"
-                    )
+                    self._action_r_btn.props(_ENGAGED_FILL if engaged_r else _IDLE_FILL)
                     r_tooltip = off_label_r if engaged_r else on_label_r
                 if self._action_r_tooltip is None:
                     with self._action_r_btn:
@@ -2660,7 +2662,7 @@ class ControlPanel:
                     icon="precision_manufacturing",
                     on_click=self.on_toggle_sim,
                 )
-                .props("round unelevated dense")
+                .props("round unelevated dense color=wc-control text-color=wc-text")
                 .tooltip("Robot/Simulator")
             )
             robot_btn.mark("btn-robot-toggle")

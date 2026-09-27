@@ -1452,7 +1452,7 @@ class EditorPanel(FileOperationsMixin):
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(
                         "flat round dense color=wc-text"
-                    )
+                    ).mark("program-panel-close")
 
             # ---- Splitter: Editor (before) | Playbar (separator) | Log (after) ----
             # horizontal=True means vertical stacking (column layout)

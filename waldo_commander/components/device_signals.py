@@ -81,7 +81,7 @@ class DeviceSignalEditor:
             )
             with ui.row():
                 ui.button("Keep mapping", on_click=self.set_mapping).props(
-                    "dense"
+                    "dense color=wc-action text-color=wc-on-bright"
                 ).mark("signal-set")
                 ui.button("Remove mapping", on_click=self.remove).props(
                     "dense flat"

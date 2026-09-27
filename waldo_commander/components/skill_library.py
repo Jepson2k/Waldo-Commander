@@ -287,7 +287,7 @@ class SkillDialog:
             with ui.row().classes("panel-actions"):
                 insert_button = (
                     ui.button("Insert", on_click=insert)
-                    .props("dense")
+                    .props("dense color=wc-action text-color=wc-on-bright")
                     .mark("skill-insert")
                 )
 
