@@ -80,13 +80,27 @@ def test_a_widened_program_panel_stays_on_top_and_closes_while_recording(screen)
         )
         assert under_card["inPanel"] and under_card["onClose"], under_card
         screen.selenium.find_element(By.ID, close).click()
+        # Closed once the tab itself shows it: a click that lands before the
+        # deselection reaches the page is undone by it.
         WebDriverWait(screen.selenium, 5).until(
-            lambda _: not run_in_app(lambda: ui_state.program_panel_visible)
+            lambda _: not js(
+                screen,
+                "return [...document.querySelectorAll('.q-tab--active .q-icon')]"
+                ".some(i => i.textContent === 'code');",
+            )
         )
 
         # The standing Recording notice sits over the middle of the header;
         # it must not take the close button's click either.
-        click_tab(screen, "program")
+        program_tab = next(
+            tab
+            for tab in screen.selenium.find_elements(By.CSS_SELECTOR, ".q-tab")
+            if tab.find_elements(By.XPATH, ".//i[text()='code']")
+        )
+        program_tab.click()
+        WebDriverWait(screen.selenium, 10).until(
+            lambda _: "q-tab--active" in (program_tab.get_attribute("class") or "")
+        )
         screen.selenium.find_element(
             By.ID,
             f"c{run_in_app(lambda: ui_state.editor_panel.playback.record_btn.id)}",
