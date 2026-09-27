@@ -1387,53 +1387,19 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 .file-tree-scroll .q-scrollarea__content { padding: 0 !important; }
 
+/* Settings rows are w-full with truncating descriptions; pinning the scroll
+   content to the panel width makes a long description truncate instead of
+   widening every row and pushing the controls out of view. */
+.settings-scroll .q-scrollarea__content { width: 100%; }
+
 /* ========== File Tree ========== */
 .file-tree .q-tree__node-header-content { color: white !important; }
 .file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { color: white !important; font-weight: bold !important; }
 .file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
-/* ========== Robot Face Indicator ========== */
-
-/* Robot face SVG transitions */
-.robot-face .pupil { transition: transform 0.45s ease; }
-.robot-face .eye-white { transition: opacity 0.25s ease; }
-
-/* Breathing animations */
-@keyframes breathe-happy {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
-}
-@keyframes breathe-neutral {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-1.5px); }
-}
-@keyframes breathe-sad {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2.5px); }
-}
-.robot-face-happy svg { animation: breathe-happy 6s ease-in-out infinite; }
-.robot-face-neutral svg { animation: breathe-neutral 7s ease-in-out infinite; animation-delay: -2s; }
-.robot-face-sad svg { animation: breathe-sad 8s ease-in-out infinite; animation-delay: -4s; }
-
 /* Help tab has no panel — hide its indicator to prevent stale marker at startup */
 .side-tab-bar.absolute.bottom-0 .q-tab:last-child .q-tab__indicator {
     display: none !important;
-}
-
-
-/* ========== Takeover Overlay ========== */
-
-/* Wandering sad robot — DVD-screensaver-style bounce around the viewport.
-   Dimensions and fixed positioning are load-bearing: robot-faces.js uses
-   FACE_SIZE = 96 for collision math, and the JS sets `transform` directly
-   to compose translate + rotate without browser animation interference. */
-.takeover-face {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 96px;
-  height: 96px;
-  pointer-events: none;
 }
 
 

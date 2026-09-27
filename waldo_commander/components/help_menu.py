@@ -2,6 +2,7 @@
 
 from nicegui import app as ng_app, ui
 
+from waldo_commander.components.robot_buddy import Mood, Reaction, RobotBuddy
 from waldo_commander.services.keybindings import keybindings_manager
 
 
@@ -201,13 +202,10 @@ class HelpMenu:
             {
                 "title": "Connecting Your Robot",
                 "description": """
-                    In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
-
-                    - <span style="color: #4caf50">■</span> Connected to robot hardware
-                    - <span style="color: #f44336">■</span> Robot mode but disconnected
-                    - <span style="color: #9e9e9e">■</span> Simulator mode
+                    In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown by Waldo, the little robot in the top right corner:
                 """,
                 "video": "connecting_to_robot.mp4",
+                "status_legend": True,
             },
             {
                 "title": "Programming, Recording, and Path Visualization",
@@ -281,11 +279,11 @@ class HelpMenu:
                             "w-full rounded-lg"
                         ).props('preload="metadata"').style("max-height: 360px;")
 
-                        # sanitize=False: content is a hardcoded literal whose inline status-marker
-                        # color spans DOMPurify would otherwise strip.
-                        ui.markdown(step["description"], sanitize=False).classes(
+                        ui.markdown(step["description"]).classes(
                             "text-md text-gray-300"
                         )
+                        if step.get("status_legend"):
+                            self._build_status_legend()
 
                         with ui.stepper_navigation():
                             if i < len(steps) - 1:
@@ -300,6 +298,18 @@ class HelpMenu:
                                 ui.button(
                                     "Back", on_click=self._stepper.previous
                                 ).props("flat")
+
+    def _build_status_legend(self) -> None:
+        """The chip's three moods, drawn by the same buddy that wears them."""
+        with ui.column().classes("gap-1 ml-2").mark("status-legend"):
+            for mood, text in (
+                (Mood.HAPPY, "Connected to robot hardware"),
+                (Mood.SAD, "Robot mode but disconnected"),
+                (Mood.NEUTRAL, "Simulator mode"),
+            ):
+                with ui.row().classes("items-center gap-3 no-wrap"):
+                    RobotBuddy(mood, size=28)
+                    ui.label(text).classes("text-md text-gray-300")
 
     def _on_finish(self) -> None:
         """Handle finish button click - mark tutorial complete and close dialog."""
@@ -328,7 +338,12 @@ class HelpMenu:
         with self._dialog:
             with ui.card().classes("overlay-card tutorial-dialog-card"):
                 with ui.column().classes("w-full h-full gap-0"):
-                    ui.label("Welcome to PAROL Commander!").classes("text-xl font-bold")
+                    with ui.row().classes("items-center gap-3 no-wrap"):
+                        buddy = RobotBuddy(Mood.HAPPY, size=44, interactive=True)
+                        buddy.react(Reaction.GREET)
+                        ui.label("Welcome to PAROL Commander!").classes(
+                            "text-xl font-bold"
+                        )
 
                     ui.label(
                         "Let's get you started with a quick tour of the interface."

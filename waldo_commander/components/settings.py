@@ -10,6 +10,7 @@ from nicegui import ui
 import waldoctl
 from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
 
+from waldo_commander.components.robot_buddy import CALM_STORAGE_KEY, calm_preferred
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.constants import RESERVED_TAB_IDS
 from waldo_commander.services.camera_service import (
@@ -529,6 +530,20 @@ class SettingsContent:
                     options={"dark": "Dark"},
                     value="dark",
                 ).classes("w-24").props("dense disable")
+
+        def _on_calm_change(e) -> None:
+            calm = bool(e.value)
+            ng_app.storage.general[CALM_STORAGE_KEY] = calm
+            if ui_state._readout_panel is not None:
+                ui_state.readout_panel.set_buddy_calm(calm)
+
+        with _setting_row(
+            "Calm robot",
+            "No idle fidgets; Waldo still reacts to the robot",
+        ):
+            ui.switch(value=calm_preferred(), on_change=_on_calm_change).props(
+                "dense"
+            ).mark("switch-calm-buddy")
 
     def _build_backend_selector(self) -> None:
         """Backend (robot driver) selection dropdown.
