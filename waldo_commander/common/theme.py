@@ -776,6 +776,7 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
         "wrap": ".panels-wrap",
         "topContainer": ".top-panels-container",
         "bottomContainer": ".bottom-panels-container",
+        "controlPanel": ".overlay-br",
     },
     "constraints": {
         "viewportMarginX": 80,
@@ -1058,8 +1059,10 @@ html, body {
 .joint-dial-cell:focus-within .joint-dial-limits {
   opacity: 1;
 }
-/* Outranks the locked-state opacity so a disabled cap stays hidden until the dial is hovered */
-.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap { opacity: 0 !important; }
+/* Visibility, not opacity: Quasar's disabled opacity is !important inside a cascade
+   layer, which outranks any unlayered rule, so a cap at its limit would show */
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap,
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-dial-limits { visibility: hidden; }
 
 /* Level chips: percentage beside the icon, the rating in the popover; its dots
    take the progress token and Quasar dims the unselected ones */
@@ -1883,7 +1886,7 @@ html, body {
 
 .bottom-panel {
   position: absolute;
-  right: var(--wc-space-3);
+  right: calc(min(var(--wc-control-inset, 0px), 50vw) + var(--wc-space-3));
   bottom: var(--wc-footer-clearance);
   left: calc(var(--wc-column-right, 0px) + var(--wc-space-3));
   height: 340px;
