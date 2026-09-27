@@ -228,6 +228,8 @@ class ScriptExecutionController:
             if launching_tab is not None:
                 launching_tab.log.clear()
                 launching_tab.execution.is_running = True
+                # Stop has to show for the whole launch, not from the spawn.
+                simulation_state.notify_changed()
             log_panel.clear()
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))
