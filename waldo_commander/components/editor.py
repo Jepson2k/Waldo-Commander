@@ -1,5 +1,6 @@
 """Program editor component with script execution and command palette."""
 
+import ast
 import asyncio
 import logging
 import re
@@ -49,6 +50,31 @@ logger = logging.getLogger(__name__)
 
 
 MENU_TOOLTIP = 'anchor="center left" self="center right"'
+
+
+def _imports_only(node: ast.stmt) -> bool:
+    """An import, or a ``try``/``if`` made of nothing but imports.
+
+    Run selection copies these ahead of the selected lines; an import inside a
+    function or behind other code belongs to that scope, not the selection's.
+    """
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return True
+    if isinstance(node, ast.If):
+        blocks = [node.body, node.orelse]
+    elif isinstance(node, ast.Try):
+        blocks = [
+            node.body,
+            node.orelse,
+            node.finalbody,
+            *(handler.body for handler in node.handlers),
+        ]
+    else:
+        return False
+    statements = [statement for block in blocks for statement in block]
+    return any(not isinstance(s, ast.Pass) for s in statements) and all(
+        isinstance(s, ast.Pass) or _imports_only(s) for s in statements
+    )
 
 
 class EditorPanel(FileOperationsMixin):
@@ -311,7 +337,6 @@ class EditorPanel(FileOperationsMixin):
         in a tab kept for the purpose. Back to the program afterwards unless
         the run failed, so its log stays in view.
         """
-        import ast
         import textwrap
 
         from waldo_commander.components.skill_library import selected_tool_preamble
@@ -336,11 +361,10 @@ class EditorPanel(FileOperationsMixin):
         lines = text.split("\n")
         body = textwrap.dedent("\n".join(lines[span[0] - 1 : span[1]])).strip("\n")
         try:
-            tree = ast.parse(text)
             imports = [
-                textwrap.dedent(ast.get_source_segment(text, node) or "")
-                for node in ast.walk(tree)
-                if isinstance(node, (ast.Import, ast.ImportFrom))
+                ast.get_source_segment(text, node) or ""
+                for node in ast.parse(text).body
+                if _imports_only(node)
             ]
         except SyntaxError:
             imports = []
