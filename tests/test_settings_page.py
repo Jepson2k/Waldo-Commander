@@ -442,3 +442,69 @@ async def test_settings_follows_controller_variants_and_setup_applied_tcp(
     finally:
         await client.set_tcp_transform()
         await client.select_tool("NONE")
+
+
+@pytest.mark.integration
+async def test_program_tcp_change_survives_a_settings_nudge(user: User) -> None:
+    """A transform set outside Settings -- by another client, or by a program
+    on the same tool -- is where the next nudge starts from, and a finished
+    run shows it in the inputs."""
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+
+    def shown(marker: str):
+        return next(iter(user.find(marker=marker).elements))
+
+    async def expect_transform(expected: list[float]) -> None:
+        await poll_until(
+            client.tcp_transform,
+            lambda got: [round(float(v), 3) for v in got] == expected,
+            timeout_s=5.0,
+            what=f"controller TCP transform {expected}",
+        )
+
+    try:
+        index = await client.select_tool("NONE")
+        assert index >= 0 and await client.wait_command(index, timeout=5)
+        user.find(marker="tab-settings").click()
+        await user.should_see("TCP offset")
+
+        index = await client.set_tcp_transform(10.0, 0.0, 0.0, 0.0, 0.0, 30.0)
+        assert index >= 0 and await client.wait_command(index, timeout=5)
+        user.find(marker="tcp-offset-y").trigger("update:modelValue", 1.0)
+        await expect_transform([10.0, 1.0, 0.0, 0.0, 0.0, 30.0])
+
+        user.find(marker="tab-program").click()
+        await asyncio.sleep(0)
+        textarea = ui_state.active_textarea
+        assert textarea is not None
+        textarea.value = (
+            "from parol6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    index = rbt.set_tcp_transform(20.0, 1.0, 0.0, 0.0, 0.0, 45.0)\n"
+            "    assert rbt.wait_command(index, timeout=5)\n"
+        )
+        await script_exec.start()
+        async with asyncio.timeout(30):
+            while is_any_program_running():
+                await asyncio.sleep(0.05)
+        assert script_exec.last_exit_code == 0
+
+        user.find(marker="tab-settings").click()
+        await poll_until(
+            lambda: [
+                round(float(shown(f"tcp-offset-{axis}").value), 3)
+                for axis in ("x", "yaw")
+            ],
+            lambda values: values == [20.0, 45.0],
+            timeout_s=5.0,
+            what="Settings showing the transform the program set",
+        )
+        user.find(marker="tcp-offset-z").trigger("update:modelValue", 2.0)
+        await expect_transform([20.0, 1.0, 2.0, 0.0, 0.0, 45.0])
+    finally:
+        await client.set_tcp_transform()
