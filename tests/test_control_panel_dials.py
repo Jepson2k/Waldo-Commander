@@ -193,3 +193,22 @@ def test_idle_dials_hide_their_caps_even_at_a_limit(screen: Screen) -> None:
         and r
     )
     assert caps["shown"] == 0, f"an idle dial shows its caps: {caps}"
+
+
+@pytest.mark.browser
+def test_the_joint_tab_is_as_tall_as_its_dials(screen: Screen) -> None:
+    screen.open("/")
+    screen_wait_for_scene_ready(screen, timeout_s=40.0)
+    sizes = WebDriverWait(screen.selenium, 10).until(
+        lambda _: js(
+            screen,
+            """
+            const panels = document.querySelector('.cp-jog-panels').getBoundingClientRect();
+            const cells = [...document.querySelectorAll('.joint-dial-cell')].map(c => c.getBoundingClientRect());
+            if (!cells.length) return null;
+            return {panelsHeight: panels.height,
+                    dialsHeight: Math.max(...cells.map(c => c.bottom)) - panels.top};
+            """,
+        )
+    )
+    assert sizes["panelsHeight"] <= sizes["dialsHeight"] + 8, sizes
