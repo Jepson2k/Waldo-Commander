@@ -359,6 +359,8 @@ class ScriptExecutionController:
                 with ui_client:
                     self._reset_state()
                     logger.info("Script %s finished with code %s", filename, rc)
+                    if ui_state._readout_panel is not None:
+                        ui_state.readout_panel.on_script_finished(rc)
         except Exception as e:
             logger.error("Error monitoring script process: %s", e)
             with ui_client:
