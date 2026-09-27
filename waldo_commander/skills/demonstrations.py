@@ -52,6 +52,18 @@ async def _fresh(stream: AsyncIterator[StatusBuffer], timeout: float) -> StatusB
                 return status
 
 
+async def _stop_motion(rbt: RobotClient) -> bool:
+    """Stop what the replay already dispatched. Shielded, so cancelling the
+    replay cannot cut the stop short, and bounded, so a silent controller
+    cannot hold the failure back."""
+    stop = asyncio.ensure_future(rbt.stop())
+    try:
+        async with asyncio.timeout(3.0):
+            return await asyncio.shield(stop) > 0
+    except (TimeoutError, OSError):
+        return False
+
+
 @skill(id="waldo.replay_demonstration", version="1.0.0")
 async def replay_demonstration(
     rbt: RobotClient,
@@ -216,6 +228,10 @@ async def replay_demonstration(
         if watcher in done:
             execution.cancel()
             await asyncio.gather(execution, return_exceptions=True)
+            if not await _stop_motion(rbt):
+                raise SkillError(
+                    "Replay observation failed and the stop was not confirmed"
+                ) from watcher.exception()
             await watcher
             raise SkillError("Replay observation stream ended")
         return await execution
