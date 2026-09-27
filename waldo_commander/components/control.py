@@ -40,6 +40,7 @@ from waldo_commander.services.control_lease import (
     set_control_mode,
 )
 from waldo_commander.services.keybindings import refresh_jog_key_descriptions
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.startup_mode import set_startup_mode
@@ -1041,6 +1042,7 @@ class ControlPanel:
                 waldoctl.commander.status.simulator_active
                 or waldoctl.commander.status.connected
             )
+            and motion_guard.owner is None
             and not is_any_program_running()
         )
         if not jog_possible and not self._gizmo_auto_hidden:
@@ -1056,10 +1058,10 @@ class ControlPanel:
 
     @staticmethod
     def _movement_allowed(notify: bool = True) -> bool:
-        """Return True if robot movement is permitted (simulator active or hardware connected, no script running)."""
-        if is_any_program_running():
+        """Return True if robot movement is permitted (simulator active or hardware connected, nobody else driving)."""
+        if (busy := motion_guard.busy_reason()) is not None:
             if notify:
-                ui.notify("Script is running — jog disabled", color="warning")
+                ui.notify(f"{busy} — jog disabled", color="warning")
             return False
         if not require_browser_control(ui_state.active_client_id, notify=notify):
             return False
@@ -1209,12 +1211,17 @@ class ControlPanel:
         if cid is None:
             return
         control_lease.seize(BROWSER, cid, "Browser")
-        try:
-            await waldoctl.commander.client.stop()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("take_control stop failed: %s", e)
+        stopped = await motion_guard.stop_robot(
+            waldoctl.commander.client, "browser took control"
+        )
         self.refresh_control_indicator()
-        ui.notify("You're in control — robot stopped", color="positive")
+        if stopped:
+            ui.notify("You're in control — robot stopped", color="positive")
+        else:
+            ui.notify(
+                "You're in control, but the stop was not confirmed — use E-stop",
+                color="negative",
+            )
 
     def refresh_control_indicator(self) -> None:
         """Drive the ambient glow, Take-control button, and pending approvals
@@ -2072,6 +2079,9 @@ class ControlPanel:
                     logger.warning("Failed to stop script before mode switch: %s", e)
 
             enabled = not waldoctl.commander.status.simulator_active
+            # The controller drops its queue on a mode switch; motion sources
+            # holding their own state must drop theirs too.
+            motion_guard.note_stop("simulator switch")
             await self.client.simulator(enabled)
             waldoctl.commander.status.simulator_active = enabled
             # Persist the human's choice so the next boot starts in this mode.
@@ -2098,7 +2108,11 @@ class ControlPanel:
             ui.notify("Physical E-STOP is active - release it first", color="warning")
             return
 
-        await self.client.estop()
+        if not await motion_guard.stop_robot(self.client, "E-stop", estop=True):
+            ui.notify(
+                "E-STOP was not confirmed by the controller — use the physical E-stop",
+                color="negative",
+            )
         if self.estop:
             self.estop._digital_active = True
             self.estop.show(is_physical=False)
