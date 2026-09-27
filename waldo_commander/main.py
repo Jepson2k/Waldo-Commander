@@ -970,7 +970,11 @@ def _setup_panel_persistence(refs: dict) -> None:
     async def restore_active_tabs():
         with ui_client:
             try:
-                saved_tabs = await ui.run_javascript("PanelResize.getActiveTabs()")
+                # The page is still loading the scene, which can hold the
+                # answer past the default second.
+                saved_tabs = await ui.run_javascript(
+                    "PanelResize.getActiveTabs()", timeout=10.0
+                )
                 if saved_tabs:
                     # A persisted tab id can name a plugin that's since been
                     # disabled / uninstalled; restoring it would select a tab
