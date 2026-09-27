@@ -7,7 +7,12 @@ import pytest
 import waldoctl
 from nicegui.testing import User
 
-from tests.helpers.wait import enable_sim, wait_for_app_ready, wait_until
+from tests.helpers.wait import (
+    enable_sim,
+    ensure_robot_ready_for_motion,
+    wait_for_app_ready,
+    wait_until,
+)
 from waldo_commander.state import ui_state
 
 
@@ -42,6 +47,7 @@ async def test_the_action_history_is_drawn_when_its_menu_opens(user: User) -> No
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     action = waldoctl.commander.status.action
     await ui_state.control_panel.client.home()
