@@ -617,7 +617,11 @@ class _PhysicsPool:
         """Run *fn*, abandoning whatever was running before it."""
         self.cancel()
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(self._ensure(), fn, args)
+        try:
+            future = loop.run_in_executor(self._ensure(), fn, args)
+        except Exception:
+            self._discard()
+            raise
         self._current = future
         try:
             return await future
@@ -626,6 +630,12 @@ class _PhysicsPool:
             # run; the worker must be terminated while we still own it.
             if self._current is future:
                 self.cancel()
+            raise
+        except Exception:
+            # A worker that died mid-job leaves its executor refusing every
+            # later submission, so the next pass needs a fresh one.
+            if self._current is future:
+                self._discard()
             raise
         finally:
             if self._current is future:
@@ -642,6 +652,10 @@ class _PhysicsPool:
         if current is None:
             return
         current.cancel()
+        self._discard()
+
+    def _discard(self) -> None:
+        """Kill the worker and drop its executor; the next run spawns both."""
         pool, self._pool = self._pool, None
         if pool is not None:
             for p in getattr(pool, "_processes", {}).values():
