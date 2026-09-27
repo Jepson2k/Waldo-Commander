@@ -10,7 +10,7 @@ scene floor.
 
 - CSS reads ``var(--wc-<name>)`` (emitted on ``:root``).
 - Quasar ``color=`` / ``text-color=`` props use the registered name ``wc-<name>``.
-- Three.js and ECharts read hex from :func:`hex_of`; vertex colours use :func:`rgb01`.
+- Three.js and ECharts read hex from :func:`hex_of`; vertex colours use :func:`linear_rgb`.
 """
 
 import math
@@ -123,12 +123,14 @@ SIZE: dict[str, str] = {
     "size-rail": "52px",
     "size-panel-inset": "58px",
     "size-bottom-panel": "340px",
+    "size-column-min": "200px",
     "size-footer": "28px",
 }
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
-OPACITY: dict[str, str] = {"opacity-disabled": "0.6", "opacity-locked": "0.15"}
+OPACITY: dict[str, str] = {"opacity-locked": "0.15"}
 Z_INDEX: dict[str, str] = {
     "z-loading": "10",
+    "z-cards": "20",
     "z-panels": "30",
     "z-rail": "40",
     "z-rail-bottom": "50",
@@ -193,11 +195,13 @@ def _oklch_to_srgb(L: float, C: float, h: float) -> tuple[float, float, float]:
     return enc(lin[0]), enc(lin[1]), enc(lin[2])
 
 
-def _srgb_to_oklch(r: float, g: float, b: float) -> tuple[float, float, float]:
-    def lin(x: float) -> float:
-        return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+def _srgb_eotf(x: float) -> float:
+    """An sRGB-encoded channel in 0–1 as linear light."""
+    return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
 
-    r, g, b = lin(r), lin(g), lin(b)
+
+def _srgb_to_oklch(r: float, g: float, b: float) -> tuple[float, float, float]:
+    r, g, b = _srgb_eotf(r), _srgb_eotf(g), _srgb_eotf(b)
     l_ = math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
     m_ = math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
     s_ = math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
@@ -288,6 +292,7 @@ def _derive(p: Palette) -> dict[str, str]:
         "fill-positive": _shift(p.green, L=0.5),
         "fill-warning": _shift(p.orange, L=0.55),
         "fill-error": _shift(p.red, L=0.5),
+        "fill-info": _shift(p.accent, L=0.5),
         "ai-inspect": _shift(p.green, L=0.76),
         "ai-inspect-text": _shift(p.green, L=0.84),
         "ai-auto-edits": _shift(p.blue, L=0.75),
@@ -370,9 +375,9 @@ def hex_of(name: str) -> str:
     return _hex_table(_active_theme)[name]
 
 
-def rgb01(name: str) -> list[float]:
-    """A token as an RGB triple in 0–1, for Three.js vertex colours."""
-    return list(_rgba(hex_of(name))[:3])
+def linear_rgb(name: str) -> list[float]:
+    """A token as a linear-light RGB triple in 0–1, for Three.js vertex colours."""
+    return [_srgb_eotf(c) for c in _rgba(hex_of(name))[:3]]
 
 
 def effective_theme() -> ThemeKey:
@@ -463,6 +468,10 @@ def _scalar_block() -> str:
     lines.append(
         "  --wc-footer-clearance: calc(var(--wc-size-footer) + 2 * var(--wc-space-3));"
     )
+    # The footer's cover until PanelResize measures what the column stops above.
+    lines.append(
+        "  --wc-column-cover: calc(var(--wc-size-footer) + var(--wc-space-3));"
+    )
     return "\n".join(lines)
 
 
@@ -539,7 +548,6 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
   outline: 2px solid var(--wc-focus-ring);
   outline-offset: 2px;
 }}
-.q-btn.disabled {{ opacity: var(--wc-opacity-disabled) !important; }}
 .q-slider__thumb {{ width: 30px !important; height: 30px !important; }}
 .q-slider__track {{ height: 8px !important; }}
 
@@ -555,7 +563,7 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
 /* ========== Inputs ========== */
 
 .q-field__native, .q-field__input, .q-field__prefix, .q-field__suffix {{ color: var(--wc-text); }}
-.q-field__label {{ color: var(--wc-text-muted); }}
+.q-field:not(.q-field--highlighted) .q-field__label {{ color: var(--wc-text-muted); }}
 .q-field:not(.q-field--borderless) .q-field__control {{
   background: var(--wc-well);
   border-radius: var(--wc-radius-sm);
@@ -598,7 +606,7 @@ def apply_theme() -> None:
         dark_page=css("scene-bg"),
         positive=css("fill-positive"),
         negative=css("fill-error"),
-        info=css("action"),
+        info=css("fill-info"),
         warning=css("fill-warning"),
         **{quasar(n): css(n) for n in color_tokens(_active_theme)},
     )
@@ -607,24 +615,29 @@ def apply_theme() -> None:
     _inject_component_overrides()
 
 
+def _px(value: str) -> int:
+    return int(value.removesuffix("px"))
+
+
+# The --wc-footer-clearance the panels keep from the bottom edge, in px.
+_FOOTER_CLEARANCE = _px(SIZE["size-footer"]) + 2 * _px(SPACE["space-3"])
+
 # Panel resize configuration (passed to JS module)
 PANEL_RESIZE_CONFIG: dict[str, Any] = {
     "storageKey": "parol_panel_sizes",
     "selectors": {
-        "wrap": ".panels-wrap",
         "topContainer": ".top-panels-container",
         "bottomContainer": ".bottom-panels-container",
         "controlPanel": ".overlay-br",
+        "bottomCovers": [".status-footer", ".bottom-panel"],
+        "columnCovers": [".bottom-panels-container"],
     },
     "constraints": {
         "viewportMarginX": 80,
-        "viewportMarginY": 64,
-        "containerPadding": 20,
-        "bottomOffset": 52,
-        "totalMargin": 76,
-    },
-    "stateClasses": {
-        "coupled": "coupled",
+        # The top margin and the footer clearance.
+        "viewportMarginY": _FOOTER_CLEARANCE + _px(SPACE["space-3"]),
+        # The same, plus the gap between two coupled panels.
+        "totalMargin": _FOOTER_CLEARANCE + 2 * _px(SPACE["space-3"]),
     },
     "panels": {
         "program": {
@@ -919,8 +932,9 @@ html, body {
   overflow: hidden;
 }
 
-/* Record button: a control with a record dot that pulses while recording */
-.record-btn .q-icon { color: var(--wc-record); }
+/* Record button: a control with a record dot, filled with the record colour
+   while recording, when the dot takes the text colour and pulses */
+.record-btn:not(.recording) .q-icon { color: var(--wc-record); }
 .record-btn.recording .q-icon { animation: recording-pulse var(--wc-duration-ambient) var(--wc-ease-loop) infinite; }
 
 
@@ -1022,26 +1036,12 @@ html, body {
 }
 
 /* Overlay panels with frosted glass effect */
-.overlay-panel { position: absolute; z-index: var(--wc-z-panels); pointer-events: auto; }
+.overlay-panel { position: absolute; z-index: var(--wc-z-cards); pointer-events: auto; }
 .overlay-card {
   padding: var(--wc-space-3);
 }
 
-/* Overlay anchors */
-.overlay-tl { top: var(--wc-space-3); left: var(--wc-space-3); }
-.overlay-tr { top: var(--wc-space-3); right: var(--wc-space-3); }
-.overlay-bl { bottom: var(--wc-space-3); left: var(--wc-space-3); }
 .overlay-br { bottom: var(--wc-footer-clearance); right: var(--wc-space-3); }
-.overlay-right {
-  position: absolute;
-  top: 50%;
-  right: var(--wc-space-3);
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  gap: var(--wc-space-2);
-  z-index: var(--wc-z-panels);
-}
 
 
 /* ========== Left Tabs ========== */
@@ -1096,6 +1096,7 @@ html, body {
 /* Shared left-side panel container base styling */
 .left-panels-container {
   position: absolute;
+  z-index: var(--wc-z-panels);
   left: var(--wc-size-panel-inset);
   max-width: calc(100vw - 80px);
   overflow: hidden !important;
@@ -1119,18 +1120,17 @@ html, body {
   max-height: calc(100vh - var(--wc-space-3) - var(--wc-footer-clearance));
 }
 
-/* The program column: full height between the top margin and the footer,
-   width from PanelResize; only the right edge is a handle. */
+/* The program column: full height between the top margin and whatever covers
+   the bottom (the footer, the bottom panel as a terminal sits under an
+   editor, a bottom plugin panel), width from PanelResize; only the right edge
+   is a handle. */
 .panels-wrap.column-open .top-panels-container {
   top: var(--wc-space-3);
-  bottom: var(--wc-footer-clearance);
+  bottom: calc(var(--wc-column-cover) + var(--wc-space-3));
   height: auto !important;
+  min-height: var(--wc-size-column-min);
 }
 .panels-wrap.column-open .top-panels-container > .q-panel > .program-panel { max-height: none; }
-/* The bottom panel takes the column's lower part, as a terminal panel does under an editor. */
-body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-container {
-  bottom: calc(var(--wc-footer-clearance) + var(--wc-size-bottom-panel) + var(--wc-space-3));
-}
 
 /* Panel content is interactive when visible */
 .left-panels-container .overlay-card { pointer-events: auto; }
@@ -1302,6 +1302,8 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
   border-radius: 0 0 var(--wc-radius-sm) var(--wc-radius-sm);
 }
 .program-panel .cm-editor .cm-gutters { background: transparent !important; }
+/* Room for the last line to scroll clear of the fade and the playback bar */
+.program-panel .cm-editor .cm-content { padding-bottom: 16px; }
 
 /* Style CodeMirror's internal scrollbar */
 .cm-scroller::-webkit-scrollbar {
@@ -1455,45 +1457,33 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
   }
   .left-panels-container { display: none !important; }
 
-  /* Center panels horizontally using transform */
-  .overlay-tr {
-    right: auto !important;
-    left: 50% !important;
-    transform: translateX(-50%) !important;
-    /* Variable top margin that goes to 0 on small screens */
-    top: max(0px, calc((100vw - 360px) * 0.0375)) !important;
-    /* Prevent text wrapping, scale down instead */
-    white-space: nowrap !important;
-    font-size: clamp(0.65rem, 2.8vw, 1rem) !important;
-  }
-
+  /* Centred above the footer; the scale below keeps the bottom edge. */
   .overlay-br {
     right: auto !important;
     left: 50% !important;
     transform: translateX(-50%) !important;
-    /* Variable bottom margin that goes to 0 on small screens */
-    bottom: max(0px, calc((100vw - 360px) * 0.0375)) !important;
+    bottom: calc(var(--wc-footer-clearance) + max(0px, (100vw - 360px) * 0.0375)) !important;
   }
 }
 
 /* Small phone screens - scale control panel to fit */
 /* Using stepped breakpoints since CSS can't compute unitless scale from viewport units */
 @media (max-width: 414px) {
-  .overlay-br, .overlay-tr {
+  .overlay-br {
     transform: translateX(-50%) scale(0.95) !important;
     transform-origin: center bottom !important;
   }
 }
 
 @media (max-width: 380px) {
-  .overlay-br, .overlay-tr {
+  .overlay-br {
     transform: translateX(-50%) scale(0.88) !important;
     transform-origin: center bottom !important;
   }
 }
 
 @media (max-width: 340px) {
-  .overlay-br, .overlay-tr {
+  .overlay-br {
     transform: translateX(-50%) scale(0.8) !important;
     transform-origin: center bottom !important;
   }
@@ -1501,16 +1491,16 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
 
 /* Transition for overlay panels on resize */
 @media (min-width: 641px) {
-  .overlay-tr, .overlay-br {
+  .overlay-br {
     transition: transform var(--wc-duration-base) var(--wc-ease-enter), left var(--wc-duration-base) var(--wc-ease-enter), right var(--wc-duration-base) var(--wc-ease-enter), width var(--wc-duration-base) var(--wc-ease-enter);
   }
 }
 
 
 /* ========== Recording Notification ========== */
-/* Override parent container z-index when it contains recording notification */
+/* The standing Recording notice sits with the cards, under the left panels */
 .q-notifications__list:has(.recording-notification) {
-  z-index: var(--wc-z-rail) !important;
+  z-index: var(--wc-z-cards) !important;
 }
 
 .recording-notification .q-notification__icon {
@@ -1592,8 +1582,7 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
 .file-tree-scroll .q-scrollarea__content { padding: 0 !important; }
 
 /* ========== File Tree ========== */
-.file-tree .q-tree__node-header-content { color: var(--wc-text) !important; }
-.file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { color: var(--wc-text) !important; font-weight: bold !important; }
+.file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 .file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
 /* ========== Robot Face Indicator ========== */
@@ -1688,6 +1677,7 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
   flex-shrink: 0;
 }
 .status-footer .pose-well .wc-caption { line-height: 1; }
+.status-footer .pose-cell { display: flex; align-items: baseline; gap: 6px; }
 .status-footer .pose-value { display: inline-block; text-align: right; }
 .status-footer .footer-action {
   flex: 1 1 0; min-width: 0;
@@ -1703,11 +1693,19 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
   padding: 0 8px !important;
   border-radius: var(--wc-radius-pill);
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 .status-footer .footer-btn .q-icon { font-size: 15px; }
 .status-footer .footer-btn .footer-count { margin: 0 6px 0 2px; }
-.status-footer .footer-btn.has-unread.unread-warning { background: var(--wc-warning-soft) !important; color: var(--wc-warning) !important; }
-.status-footer .footer-btn.has-unread.unread-error { background: var(--wc-error-soft) !important; color: var(--wc-error) !important; }
+.status-footer .footer-btn.unread-warning { background: var(--wc-warning-soft) !important; color: var(--wc-warning) !important; }
+.status-footer .footer-btn.unread-error { background: var(--wc-error-soft) !important; color: var(--wc-error) !important; }
+/* The launchers never shrink, so the pose gives way as the window narrows:
+   first its rotations, then the whole well. */
+@media (max-width: 1280px) { .status-footer .pose-cell-rot { display: none; } }
+@media (max-width: 960px) { .status-footer .pose-well { display: none; } }
+/* Settings has the rail's gear above phone width. */
+.status-footer .footer-settings { display: none; }
+@media (max-width: 640px) { .status-footer .footer-settings { display: inline-flex; } }
 
 /* ========== Bottom panel ========== */
 
@@ -1723,6 +1721,11 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
   flex-direction: column;
   padding: 0;
   pointer-events: auto;
+}
+/* Under an open column the panel shrinks to leave the column its minimum,
+   which keeps the playbar and its Stop on screen. */
+body:has(.panels-wrap.column-open) .bottom-panel {
+  max-height: calc(100vh - var(--wc-footer-clearance) - 2 * var(--wc-space-3) - var(--wc-size-column-min));
 }
 .bottom-panel .bottom-panel-tabs { flex-shrink: 0; }
 .bottom-panel .bottom-panel-tabs .q-tab { min-height: 36px; padding: 0 14px; }

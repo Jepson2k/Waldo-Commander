@@ -1,8 +1,25 @@
 """Explicit collision-model declarations through the supplied robot client."""
 
+import asyncio
+from weakref import WeakKeyDictionary
+
 from waldoctl.client import RobotClient
 from waldoctl.shapes import Pose6, Shape, ShapeWorld
 from waldoctl.skills import SkillError, report_progress, skill
+
+
+# A declaration rewrites the whole program layer from a readback, so two in
+# flight drop each other's shape. A skill sees a per-call guard, not the
+# client, so declarations queue per event loop.
+_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = WeakKeyDictionary()
+
+
+def _declaring() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _locks.get(loop)
+    if lock is None:
+        lock = _locks[loop] = asyncio.Lock()
+    return lock
 
 
 async def _world(
@@ -22,7 +39,10 @@ async def _world(
     return world, shape
 
 
-async def _apply(rbt: RobotClient, world: ShapeWorld, shape: Shape) -> Shape:
+async def _apply(rbt: RobotClient, shape: Shape) -> Shape:
+    world = await rbt.shapes()
+    if world is None:
+        raise SkillError("Attachment context readback is unavailable")
     program = tuple(shape if s.name == shape.name else s for s in world.program)
     if all(s.name != shape.name for s in program):
         program = (*program, shape)
@@ -57,16 +77,16 @@ async def attach_object(
     supplies the declaration when the backend does not hold it (a refused
     draft); it must carry ``name``.
     """
-    world, shape = await _world(rbt, name, shape)
-    return await _apply(
-        rbt,
-        world,
-        shape.attach(
-            flange_pose=flange_pose,
-            epoch=world.attachment_epoch,
-            allowed_contacts=allowed_contacts,
-        ),
-    )
+    async with _declaring():
+        world, shape = await _world(rbt, name, shape)
+        return await _apply(
+            rbt,
+            shape.attach(
+                flange_pose=flange_pose,
+                epoch=world.attachment_epoch,
+                allowed_contacts=allowed_contacts,
+            ),
+        )
 
 
 @skill(id="waldo.detach_object", version="1.0.0")
@@ -79,7 +99,8 @@ async def detach_object(
     not release the gripper or assert where a physical object came to rest.
     ``shape`` supplies a declaration the backend refused and never held.
     """
-    world, shape = await _world(rbt, name, shape)
-    if shape.attachment is None:
-        raise ValueError(f"Shape {name!r} is not attached")
-    return await _apply(rbt, world, shape.detach(world_pose=world_pose))
+    async with _declaring():
+        _, shape = await _world(rbt, name, shape)
+        if shape.attachment is None:
+            raise ValueError(f"Shape {name!r} is not attached")
+        return await _apply(rbt, shape.detach(world_pose=world_pose))

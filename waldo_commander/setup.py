@@ -9,19 +9,24 @@ loads, never a snapshot already held by a running program.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import logging
 import os
 import tempfile
-from collections.abc import Iterator, Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import fields
 from pathlib import Path
 from pprint import pformat
 
 from waldoctl.setup import SetupSnapshot, validate_name
 
 from waldo_commander.constants import default_program_dir
+
+logger = logging.getLogger(__name__)
 
 _directory: ContextVar[Path | None] = ContextVar("waldo_setup_directory", default=None)
 _load_observer: ContextVar[Callable[[str, SetupSnapshot], None] | None] = ContextVar(
@@ -39,6 +44,43 @@ def observe_setup_loads(
         yield
     finally:
         _load_observer.reset(token)
+
+
+_save_listeners: list[Callable[[Path, str, str], None]] = []
+
+
+def add_save_listener(
+    listener: Callable[[Path, str, str], None],
+) -> Callable[[], None]:
+    """Call ``listener(directory, name, revision)`` on every save; returns a remover."""
+    _save_listeners.append(listener)
+
+    def remove() -> None:
+        with contextlib.suppress(ValueError):
+            _save_listeners.remove(listener)
+
+    return remove
+
+
+def merge_snapshots(
+    base: SetupSnapshot, ours: SetupSnapshot, theirs: SetupSnapshot
+) -> SetupSnapshot:
+    """Per entry, what *ours* changed from *base* wins and the rest is *theirs*."""
+    merged: dict[str, dict] = {}
+    for section in fields(SetupSnapshot):
+        before, mine, other = (
+            getattr(snapshot, section.name) for snapshot in (base, ours, theirs)
+        )
+        entries = dict(other)
+        for name in before.keys() | mine.keys():
+            if mine.get(name) == before.get(name):
+                continue
+            if name in mine:
+                entries[name] = mine[name]
+            else:
+                entries.pop(name, None)
+        merged[section.name] = entries
+    return SetupSnapshot(**merged)
 
 
 @contextmanager
@@ -90,23 +132,46 @@ class SetupStore:
         return sorted(names)
 
     def load(self, name: str) -> SetupSnapshot:
-        snapshot = _import_snapshot(self._path(name))
+        snapshot = self.read(name)[0]
         observer = _load_observer.get()
         if observer is not None:
             try:
                 observer(name, snapshot)
             except Exception:
-                logging.getLogger(__name__).exception("Setup recording observer failed")
+                logger.exception("Setup recording observer failed")
         return snapshot
 
-    def save(self, name: str, snapshot: SetupSnapshot) -> None:
+    def read(self, name: str) -> tuple[SetupSnapshot, str]:
+        """The saved snapshot and its revision, the SHA-256 of the module
+        source that was executed for it."""
+        path = self._path(name)
+        if not path.is_file():
+            raise FileNotFoundError(f"No setup module {path}")
+        data = path.read_bytes()
+        return _import_snapshot(path, data), hashlib.sha256(data).hexdigest()
+
+    def revision(self, name: str) -> str | None:
+        """The SHA-256 of the saved file, or None when there is none."""
+        try:
+            return hashlib.sha256(self._path(name).read_bytes()).hexdigest()
+        except FileNotFoundError:
+            return None
+
+    def save(self, name: str, snapshot: SetupSnapshot) -> str:
+        """Write *snapshot* under *name* and return its new revision."""
         destination = self._path(name)
-        module = (
+        data = (
             f'"""Named setup {name!r}, written by the Setup panel; edit freely."""\n\n'
             + export_snapshot(snapshot)
-        )
-        self.directory.mkdir(parents=True, exist_ok=True)
-        write_atomic(destination, module)
+        ).encode("utf-8")
+        write_atomic(destination, data)
+        revision = hashlib.sha256(data).hexdigest()
+        for listener in list(_save_listeners):
+            try:
+                listener(self.directory, name, revision)
+            except Exception:
+                logger.exception("Setup save listener failed")
+        return revision
 
     def _convert_legacy_json(self, root: Path) -> None:
         """A `.json` setup from an earlier release, here or in the old
@@ -127,9 +192,7 @@ class SetupStore:
                     json.loads(legacy.read_text(encoding="utf-8"))
                 )
             except (OSError, ValueError, TypeError, KeyError) as error:
-                logging.getLogger(__name__).warning(
-                    "Legacy setup %s not converted: %s", legacy.name, error
-                )
+                logger.warning("Legacy setup %s not converted: %s", legacy.name, error)
                 continue
             self.save(name, snapshot)
             legacy.unlink()
@@ -139,21 +202,20 @@ def _legacy_home_dir() -> Path:
     return Path.home() / ".waldo-commander" / "setups"
 
 
-def _import_snapshot(path: Path) -> SetupSnapshot:
-    """Execute a setup module in its own namespace and take its `setup`.
+def _import_snapshot(path: Path, source: bytes) -> SetupSnapshot:
+    """Execute a setup module's *source* in its own namespace and take its
+    `setup`.
 
     Compiled from source each time: the import system's bytecode cache is
     keyed on the source's mtime and size, so a re-teach within the same
     second could read back the previous values.
     """
-    if not path.is_file():
-        raise FileNotFoundError(f"No setup module {path}")
     namespace: dict[str, object] = {
         "__name__": f"setups.{path.stem}",
         "__file__": str(path),
     }
     try:
-        exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), namespace)
+        exec(compile(source.decode("utf-8"), str(path), "exec"), namespace)
     except Exception as error:
         raise ValueError(
             f"Setup module {path.name} failed to import: {error}"
@@ -166,16 +228,17 @@ def _import_snapshot(path: Path) -> SetupSnapshot:
     return snapshot
 
 
-def write_atomic(path: Path, text: str) -> None:
+def write_atomic(path: Path, data: bytes) -> None:
     """Readers see either complete revision, including a preview subprocess
-    importing the module mid-save."""
+    importing the module mid-save. Bytes, so no newline translation makes
+    the file differ from the revision reported for it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{path.stem}-", suffix=".tmp", dir=path.parent
     )
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)

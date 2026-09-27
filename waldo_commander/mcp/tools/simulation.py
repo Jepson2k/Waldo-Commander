@@ -44,13 +44,13 @@ def _page_client():
 async def set_simulator(enabled: bool) -> dict:
     """Switch the controller between simulator and real-hardware mode.
 
-    Mirrors the GUI's robot/sim toggle: stops any running script first (safety),
-    flips the backend, and re-enables. A mode switch, not an actuation — needs
-    only the control lease.
+    Mirrors the GUI's robot/sim toggle: stops any running or launching script
+    first (safety), flips the backend, and re-enables. A mode switch, not an
+    actuation — needs only the control lease.
     """
     require_control()
     client = waldoctl.commander.client
-    if is_any_program_running():
+    if script_exec.active:
         # stop()'s ui.notify needs a client context (this runs in the MCP
         # background task, which has none of its own).
         with _page_client():

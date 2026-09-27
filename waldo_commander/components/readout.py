@@ -1,18 +1,16 @@
 """Status footer: mode, robot, tool, I/O, pose, last action and the event counts."""
 
 import html as html_mod
-import logging
 import random
 from enum import Enum
 from pathlib import Path
 
 import waldoctl
 from nicegui import binding, ui
+from nicegui.events import ValueChangeEventArguments
 from waldoctl import ActionStatus
 
 from waldo_commander.state import robot_events, ui_state
-
-logger = logging.getLogger(__name__)
 
 
 class RobotFace(Enum):
@@ -41,6 +39,13 @@ _CHIP_COLORS = {
     RobotFace.NEUTRAL: ("wc-mode-sim", "wc-on-bright"),
     RobotFace.SAD: ("wc-error-soft", "wc-error"),
 }
+
+
+def _current_face() -> RobotFace:
+    status = waldoctl.commander.status
+    if status.simulator_active:
+        return RobotFace.NEUTRAL
+    return RobotFace.HAPPY if status.connected else RobotFace.SAD
 
 
 def _fmt_1f(v: float) -> str:
@@ -119,13 +124,13 @@ class StatusFooter:
         self._robot_face_container: ui.element | None = None
         self._robot_chip: ui.chip | None = None
         self._mode_word: ui.label | None = None
-        self._backend_label: ui.label | None = None
         self._tool_chip: ui.chip | None = None
         self._tool_label: ui.label | None = None
         self._io_dots: list[ui.element] = []
         self._io_container: ui.element | None = None
 
         self._action_line: ui.html | None = None
+        self._history_menu: ui.menu | None = None
         self._history_html: ui.html | None = None
         self.events_button: ui.button | None = None
 
@@ -133,27 +138,24 @@ class StatusFooter:
         self._last_tool_key: str | None = None
         self._last_io_inputs: list[int] | None = None
         self._last_io_outputs: list[int] | None = None
-        self._unread = 0
-        binding.bind_from(self, "unread", robot_events, "unread")
+        self._unread_severity = ""
+        binding.bind_from(self, "unread_severity", robot_events, "unread_severity")
 
     # ---- unread tint, bound from the event log ----
 
     @property
-    def unread(self) -> int:
-        return self._unread
+    def unread_severity(self) -> str:
+        return self._unread_severity
 
-    @unread.setter
-    def unread(self, value: int) -> None:
-        self._unread = value
+    @unread_severity.setter
+    def unread_severity(self, value: str) -> None:
+        self._unread_severity = value
         if self.events_button is None:
             return
-        if value:
-            latest = robot_events.entries[-1][6] if robot_events.entries else "warning"
-            keep = "unread-error" if latest == "error" else "unread-warning"
-            drop = "unread-warning" if keep == "unread-error" else "unread-error"
-            self.events_button.classes(add=f"has-unread {keep}", remove=drop)
-        else:
-            self.events_button.classes(remove="has-unread unread-warning unread-error")
+        self.events_button.classes(
+            add=f"unread-{value}" if value else None,
+            remove="unread-warning unread-error",
+        )
 
     # ---- I/O ----
 
@@ -175,14 +177,7 @@ class StatusFooter:
     def update_conn_io(self) -> None:
         """Update the mode chip, tool chip and I/O dots. Called from the status consumer."""
         if self._robot_face_html and self._robot_face_container:
-            sim_active = waldoctl.commander.status.simulator_active
-            connected = waldoctl.commander.status.connected
-            if sim_active:
-                face = RobotFace.NEUTRAL
-            elif connected:
-                face = RobotFace.HAPPY
-            else:
-                face = RobotFace.SAD
+            face = _current_face()
             if face != self._last_face_state:
                 self._last_face_state = face
                 self._robot_face_html.set_content(FACE_SVGS[face])
@@ -192,7 +187,6 @@ class StatusFooter:
                 self._robot_face_container.classes(
                     add=f"robot-face-{face.value}", remove=remove
                 )
-                self._robot_face_container.update()
                 ui.run_javascript(
                     "window.stopRobotFace();"
                     " window.initRobotFace('" + face.value + "');"
@@ -202,7 +196,6 @@ class StatusFooter:
                 if self._robot_chip:
                     fill, text = _CHIP_COLORS[face]
                     self._robot_chip.props(f"color={fill} text-color={text}")
-                    self._robot_chip.update()
 
         tool_key = waldoctl.commander.status.tool.key
         if tool_key != self._last_tool_key:
@@ -234,23 +227,32 @@ class StatusFooter:
             if inputs != self._last_io_inputs or outputs != self._last_io_outputs:
                 self._last_io_inputs = list(inputs)
                 self._last_io_outputs = list(outputs)
-                all_vals = self._last_io_inputs + self._last_io_outputs
-                for i, dot in enumerate(self._io_dots):
-                    if i < len(all_vals):
-                        if all_vals[i]:
-                            dot.classes(add="io-dot-on")
-                        else:
-                            dot.classes(remove="io-dot-on")
+                values = self._last_io_inputs + self._last_io_outputs
+                for dot, on in zip(self._io_dots, values):
+                    if on:
+                        dot.classes(add="io-dot-on")
+                    else:
+                        dot.classes(remove="io-dot-on")
 
     # ---- action line ----
 
     def update_action_log(self) -> None:
-        """Redraw the last action and the history menu from ``commander.status.action``."""
-        if self._action_line is None or self._history_html is None:
+        """Redraw the last action, and the history while its menu is open."""
+        if self._action_line is None:
             return
         latest = waldoctl.commander.status.action.latest
         self._action_line.set_content(_entry_html(latest) if latest else _TIP_HTML)
-        self._history_html.set_content(_build_log_entries_html())
+        if self._history_menu is not None and self._history_menu.value:
+            self._draw_history()
+
+    def _draw_history(self) -> None:
+        if self._history_html is not None:
+            self._history_html.set_content(_build_log_entries_html())
+
+    def _on_history_toggle(self, e: ValueChangeEventArguments) -> None:
+        # The whole history is tens of kilobytes; it is drawn for a reader.
+        if e.value:
+            self._draw_history()
 
     def _bind_action_log_listener(self) -> None:
         waldoctl.commander.status.action.add_change_listener(self.update_action_log)
@@ -262,35 +264,42 @@ class StatusFooter:
         if ui_state.bottom_panel is not None:
             ui_state.bottom_panel.open(tab)
 
+    @staticmethod
+    def _open_settings() -> None:
+        if ui_state.settings_content is not None:
+            ui_state.settings_content.open()
+
     def _build_pose_well(self) -> None:
         pose = waldoctl.commander.status.pose
         with ui.element("div").classes("pose-well well"):
-            for axis, unit, width in (
-                ("x", "mm", "3.6rem"),
-                ("y", "mm", "3.6rem"),
-                ("z", "mm", "3.6rem"),
-                ("rx", "°", "3.2rem"),
-                ("ry", "°", "3.2rem"),
-                ("rz", "°", "3.2rem"),
+            for axis, unit, width, cell in (
+                ("x", "mm", "3.6rem", "pose-cell"),
+                ("y", "mm", "3.6rem", "pose-cell"),
+                ("z", "mm", "3.6rem", "pose-cell"),
+                ("rx", "°", "3.2rem", "pose-cell pose-cell-rot"),
+                ("ry", "°", "3.2rem", "pose-cell pose-cell-rot"),
+                ("rz", "°", "3.2rem", "pose-cell pose-cell-rot"),
             ):
-                ui.label(axis.upper()).classes(f"wc-micro tcp-{axis}-text")
+                with ui.element("div").classes(cell):
+                    ui.label(axis.upper()).classes(f"wc-micro tcp-{axis}-text")
+                    (
+                        ui.label("-")
+                        .bind_text_from(pose, axis, backward=_fmt_1f)
+                        .classes(f"wc-caption pose-value tcp-{axis}-text")
+                        .style(f"min-width: {width}")
+                        .mark(f"readout-{axis}")
+                    )
+                    ui.label(unit).classes("wc-micro text-wc-text-muted")
+            with ui.element("div").classes("pose-cell"):
+                ui.label("v").classes("wc-micro text-wc-text-muted")
                 (
                     ui.label("-")
-                    .bind_text_from(pose, axis, backward=_fmt_1f)
-                    .classes(f"wc-caption pose-value tcp-{axis}-text")
-                    .style(f"min-width: {width}")
-                    .mark(f"readout-{axis}")
+                    .bind_text_from(pose, "tcp_speed", backward=lambda v: f"{v:.0f}")
+                    .classes("wc-caption pose-value")
+                    .style("min-width: 2.2rem")
+                    .mark("readout-tcp-speed")
                 )
-                ui.label(unit).classes(f"wc-micro tcp-{axis}-text text-wc-text-muted")
-            ui.label("v").classes("wc-micro text-wc-text-muted")
-            (
-                ui.label("-")
-                .bind_text_from(pose, "tcp_speed", backward=lambda v: f"{v:.0f}")
-                .classes("wc-caption pose-value")
-                .style("min-width: 2.2rem")
-                .mark("readout-tcp-speed")
-            )
-            ui.label("mm/s").classes("wc-micro text-wc-text-muted")
+                ui.label("mm/s").classes("wc-micro text-wc-text-muted")
 
     def build(self) -> None:
         """Render the footer as one absolute row along the bottom edge."""
@@ -302,15 +311,9 @@ class StatusFooter:
             .classes("status-footer")
             .mark("status-footer")
         ):
-            _init_face = (
-                RobotFace.NEUTRAL
-                if waldoctl.commander.status.simulator_active
-                else RobotFace.HAPPY
-                if waldoctl.commander.status.connected
-                else RobotFace.SAD
-            )
-            self._last_face_state = _init_face
-            fill, text = _CHIP_COLORS[_init_face]
+            face = _current_face()
+            self._last_face_state = face
+            fill, text = _CHIP_COLORS[face]
             self._robot_chip = (
                 ui.chip()
                 .props(f"dense color={fill} text-color={text}")
@@ -320,17 +323,13 @@ class StatusFooter:
             with self._robot_chip:
                 self._robot_face_container = (
                     ui.element("div")
-                    .classes(f"robot-face robot-face-{_init_face.value}")
+                    .classes(f"robot-face robot-face-{face.value}")
                     .mark("readout-robot-face")
                 )
                 with self._robot_face_container:
-                    self._robot_face_html = ui.html(
-                        FACE_SVGS[_init_face], sanitize=False
-                    )
-                self._mode_word = ui.label(_FACE_WORDS[_init_face]).classes("wc-micro")
-            self._backend_label = ui.label(ui_state.active_robot.name).classes(
-                "wc-label readout-robot-name"
-            )
+                    self._robot_face_html = ui.html(FACE_SVGS[face], sanitize=False)
+                self._mode_word = ui.label(_FACE_WORDS[face]).classes("wc-micro")
+            ui.label(ui_state.active_robot.name).classes("wc-label readout-robot-name")
             self._tool_chip = (
                 ui.chip()
                 .props("dense color=wc-control text-color=wc-text")
@@ -352,16 +351,23 @@ class StatusFooter:
                 .mark("readout-action-log")
             ):
                 self._action_line = ui.html("", sanitize=False)
-                with ui.menu().classes("footer-history").mark("footer-history"):
-                    self._history_html = ui.html("", sanitize=False).classes(
-                        "wc-caption"
+                with (
+                    ui.menu()
+                    .classes("footer-history")
+                    .mark("footer-history")
+                    .on_value_change(self._on_history_toggle) as self._history_menu
+                ):
+                    self._history_html = (
+                        ui.html("", sanitize=False)
+                        .classes("wc-caption")
+                        .mark("footer-history-entries")
                     )
 
             self.events_button = (
                 ui.button(on_click=lambda: self._open_bottom("diagnostics"))
                 .props("flat dense no-caps color=wc-text")
                 .classes("footer-btn")
-                .mark("footer-events tab-diagnostics")
+                .mark("footer-events")
                 .tooltip("Diagnostics")
             )
             with self.events_button:
@@ -373,14 +379,22 @@ class StatusFooter:
                 ui.label().bind_text_from(robot_events, "errors", backward=str).classes(
                     "footer-count"
                 ).mark("footer-errors")
-            self.unread = robot_events.unread
+            self.unread_severity = robot_events.unread_severity
 
             (
                 ui.button(icon="article", on_click=lambda: self._open_bottom("log"))
                 .props("flat dense color=wc-text")
                 .classes("footer-btn")
-                .mark("footer-log tab-log")
+                .mark("footer-log")
                 .tooltip("Log")
+            )
+            # The rail and its gear are hidden on a phone.
+            (
+                ui.button(icon="tune", on_click=self._open_settings)
+                .props("flat dense color=wc-text")
+                .classes("footer-btn footer-settings")
+                .mark("footer-settings")
+                .tooltip("Settings")
             )
 
         self._bind_action_log_listener()

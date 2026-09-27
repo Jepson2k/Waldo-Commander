@@ -1,10 +1,11 @@
+
 /**
  * Scene framing: keeps the camera centred on the part of the 3D view that the
  * program column, the status footer and the bottom panel leave uncovered.
  *
- * The fork's ui.scene resets the camera aspect on every window resize, so the
- * view offset is re-applied a frame later and again on every `wc:layout`
- * event PanelResize dispatches.
+ * PanelResize publishes what covers the view in a `wc:layout` event. The
+ * fork's ui.scene resets the camera aspect on every window resize, so the
+ * view offset is re-applied a frame later.
  */
 
 (function() {
@@ -18,30 +19,14 @@
         return sceneId === null ? null : getElement(sceneId);
     }
 
-    function measure() {
-        let left = 0;
-        const wrap = document.querySelector('.panels-wrap');
-        if (wrap && wrap.classList.contains('column-open')) {
-            left = parseFloat(document.documentElement.style.getPropertyValue('--wc-column-right')) || 0;
-        }
-        let bottom = 0;
-        for (const selector of ['.status-footer', '.bottom-panel']) {
-            const cover = document.querySelector(selector);
-            if (cover && cover.offsetParent !== null) {
-                bottom = Math.max(bottom, Math.round(window.innerHeight - cover.getBoundingClientRect().top));
-            }
-        }
-        return { left: Math.max(0, left), bottom: bottom };
-    }
-
-    function setInset(left, bottom) {
-        inset = { left: left, bottom: bottom };
+    function apply() {
         const c = component();
         if (!c || !c.camera || !c.camera.isPerspectiveCamera) return;
         const cam = c.camera;
         const W = c.$el.clientWidth;
         const H = c.$el.clientHeight;
         if (!W || !H) return;
+        const { left, bottom } = inset;
         if (left <= 0 && bottom <= 0) {
             if (cam.view && cam.view.enabled) cam.clearViewOffset();
             cam.aspect = W / H;
@@ -52,28 +37,25 @@
         cam.updateProjectionMatrix();
     }
 
-    function refresh() {
-        const m = measure();
-        setInset(m.left, m.bottom);
+    function follow(layout) {
+        inset = { left: Math.max(0, layout.columnRight), bottom: Math.max(0, layout.bottomCover) };
+        apply();
     }
 
     function attach(id) {
         sceneId = id;
         if (!listening) {
             listening = true;
-            window.addEventListener('resize', function() { requestAnimationFrame(refresh); });
-            window.addEventListener('wc:layout', refresh);
-            // Showing or hiding the bottom panel changes its size, which is when the cover changes.
-            const bottomPanel = document.querySelector('.bottom-panel');
-            if (bottomPanel && 'ResizeObserver' in window) new ResizeObserver(refresh).observe(bottomPanel);
+            window.addEventListener('resize', function() { requestAnimationFrame(apply); });
+            window.addEventListener('wc:layout', function(e) { follow(e.detail); });
         }
-        refresh();
+        if (window.PanelResize) follow(PanelResize.layout());
+        // Scene init resizes the view after attaching, resetting the aspect.
+        requestAnimationFrame(apply);
     }
 
     window.SceneFraming = {
         attach: attach,
-        setInset: setInset,
-        refresh: refresh,
         getInset: function() { return { ...inset }; },
         camera: function() { const c = component(); return c ? c.camera : null; }
     };

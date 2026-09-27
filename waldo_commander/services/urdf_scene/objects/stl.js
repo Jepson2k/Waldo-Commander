@@ -2,6 +2,10 @@ import { apply_material, THREE, STLLoader } from "nicegui-scene";
 
 const loader = new STLLoader();
 
+// Smoothed geometry per URL: tool changes and scene rebuilds load the same
+// meshes again, and smoothing is the slow part.
+const smoothed = new Map();
+
 // STL files carry one flat normal per triangle, so curved surfaces render as
 // facets. Average the normals of the triangles that meet at each vertex,
 // area-weighted, but only across triangles within the crease angle, so
@@ -69,22 +73,35 @@ function smoothNormals(geometry, creaseDegrees) {
   geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
 }
 
+function loadSmoothed(url) {
+  let geometry = smoothed.get(url);
+  if (!geometry) {
+    geometry = loader.loadAsync(url).then((loaded) => {
+      smoothNormals(loaded, 32);
+      return loaded;
+    });
+    geometry.catch(() => smoothed.delete(url));
+    smoothed.set(url, geometry);
+  }
+  return geometry;
+}
+
 // NiceGUI's STL object with a standard (PBR) material that casts and receives
-// shadows, and crease-aware smooth normals.
+// shadows, and crease-aware smooth normals. Each mesh owns a clone of the
+// cached geometry, so disposing one leaves the others drawn.
 export default class Stl {
   mesh;
 
   async create_mesh(url, wireframe) {
-    const geometry = await loader.loadAsync(url);
     this.mesh = new THREE.Group();
     if (wireframe) {
+      const geometry = await loader.loadAsync(url);
       this.mesh.add(
         new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({ transparent: true })),
       );
     } else {
-      smoothNormals(geometry, 32);
       const mesh = new THREE.Mesh(
-        geometry,
+        (await loadSmoothed(url)).clone(),
         new THREE.MeshStandardMaterial({ transparent: true, roughness: 0.55, metalness: 0.1 }),
       );
       mesh.castShadow = true;

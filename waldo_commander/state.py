@@ -13,6 +13,7 @@ from waldoctl import (
     Panel,
     PathSegment,
     ProgramTarget,
+    RobotError,
     ShapeChange,
     ToolAction,
     ToolSelection,
@@ -140,6 +141,9 @@ class RobotState(ChangeNotifierMixin):
     # All joints homed, from the status stream. Seeds dry-run previews so an
     # unhomed robot's preview mirrors the controller's planned-motion gate.
     homed: bool = True
+    # The controller's latched error, or None; self-clearing conditions are
+    # on commander.status.warnings.
+    standing_error: RobotError | None = None
     executing_index: int = -1
     completed_index: int = -1
     _change_listeners: list[Callable[[], None]] = field(
@@ -156,6 +160,7 @@ class RobotState(ChangeNotifierMixin):
         self.torque_time_series.clear()
         self.speeds[:] = 0.0
         self.homed = True
+        self.standing_error = None
         self.executing_index = -1
         self.completed_index = -1
 
@@ -220,9 +225,10 @@ class RobotEventLog:
     )
     """(wall-clock time, code, title, cause, effect, remedy, severity), oldest first."""
     version: int = 0
-    unread: int = 0
-    """Entries added since the log was last looked at. Drives the footer's
-    unread tint; cleared by :meth:`mark_read` when Diagnostics renders them."""
+    unread_severity: str = ""
+    """The worst severity added since the log was last looked at, or "".
+    Drives the footer's tint; cleared by :meth:`mark_read` when Diagnostics
+    renders the entries."""
     warnings: int = 0
     errors: int = 0
     _MAX = 200
@@ -244,7 +250,8 @@ class RobotEventLog:
             del self.entries[: -self._MAX]
         self._recount()
         self.version += 1
-        self.unread += 1
+        if self.unread_severity != "error":
+            self.unread_severity = severity
 
     def _recount(self) -> None:
         self.errors = sum(1 for e in self.entries if e[6] == "error")
@@ -252,13 +259,13 @@ class RobotEventLog:
 
     def mark_read(self) -> None:
         # No version bump: the log rendering keys a full rebuild on it, and
-        # the read count is not something that rendering displays.
-        self.unread = 0
+        # the read state is not something that rendering displays.
+        self.unread_severity = ""
 
     def clear(self) -> None:
-        if self.entries or self.unread:
+        if self.entries or self.unread_severity:
             self.entries.clear()
-            self.unread = 0
+            self.unread_severity = ""
             self.warnings = 0
             self.errors = 0
             self.version += 1

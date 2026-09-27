@@ -582,10 +582,14 @@ class ShapeEditingMixin:
 
             with ui.row().classes("w-full justify-end"):
                 ui.button("Cancel", on_click=dismiss).props("flat")
-                button = ui.button(
-                    "Declare detachment" if detach else "Declare attachment",
-                    on_click=apply,
-                ).mark("attachment-apply")
+                button = (
+                    ui.button(
+                        "Declare detachment" if detach else "Declare attachment",
+                        on_click=apply,
+                    )
+                    .props("color=wc-action text-color=wc-on-bright")
+                    .mark("attachment-apply")
+                )
         dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
         dialog.open()
 
