@@ -294,7 +294,14 @@ class StatusFooter:
 
     def build(self) -> None:
         """Render the footer as one absolute row along the bottom edge."""
-        with ui.element("div").classes("status-footer").mark("status-footer"):
+        # A component root: NiceGUI renders plain elements in their nearest
+        # component's render, so pose updates on a bare div re-render the page.
+        with (
+            ui.element("q-card")
+            .props("flat")
+            .classes("status-footer")
+            .mark("status-footer")
+        ):
             _init_face = (
                 RobotFace.NEUTRAL
                 if waldoctl.commander.status.simulator_active
