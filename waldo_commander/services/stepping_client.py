@@ -364,10 +364,9 @@ class SteppingClientWrapper:
         if not self._in_blend:
             return
         try:
-            # Indices complete in order: the group's last member covers the
-            # rest, and its budget is what the whole group was dispatched with.
-            if self._blend_waits:
-                index, budget = self._blend_waits[-1]
+            # Each member keeps the deadline it was dispatched with; indices
+            # complete in order, so waiting on the earlier ones costs nothing.
+            for index, budget in self._blend_waits:
                 token = current_budget.set(budget)
                 try:
                     self._wait_completed(index)
@@ -599,8 +598,7 @@ class AsyncSteppingClientWrapper:
         if not self._in_blend:
             return
         try:
-            if self._blend_waits:
-                index, budget = self._blend_waits[-1]
+            for index, budget in self._blend_waits:
                 token = current_budget.set(budget)
                 try:
                     await self._wait_completed(index)

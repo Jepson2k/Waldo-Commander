@@ -455,3 +455,107 @@ class TestSteppingClientWrapper:
             ("start", "move_j"),
             ("complete", "move_j"),
         ]
+
+    def test_a_paused_jog_is_held_until_play(
+        self, tmp_path, monkeypatch, session_controller
+    ):
+        """Streamed motion obeys a managed Pause: a jog issued while paused
+        never reaches the controller until Play releases it."""
+        import threading
+        import time
+
+        from parol6 import RobotClient
+
+        from tests.conftest import _get_test_ports
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_jog_hold")
+        controller.initialize()
+        controller.signal_play()
+        controller.signal_pause()
+        port, _ = _get_test_ports()
+        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+            client.simulator(True)
+            client.reset()
+            assert client.home(wait=True, timeout=10.0) >= 0
+            start = client.angles()
+            assert start is not None
+            wrapper = SteppingClientWrapper(client, StepIO("test_jog_hold"))
+            errors: list[BaseException] = []
+
+            def jog() -> None:
+                try:
+                    wrapper.jog_j(0, speed=0.5, duration=0.5)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            jogger = threading.Thread(target=jog, daemon=True)
+            jogger.start()
+            # Being held is an absence of motion, so it is watched over a window.
+            window_end = time.monotonic() + 1.0
+            while time.monotonic() < window_end:
+                assert jogger.is_alive(), "a jog issued while paused was dispatched"
+                angles = client.angles()
+                assert angles is not None and abs(angles[0] - start[0]) < 0.05, (
+                    "the arm moved while the program was paused"
+                )
+                time.sleep(0.05)
+
+            controller.signal_play()
+            jogger.join(timeout=5.0)
+            assert not jogger.is_alive(), "Play did not release the held jog"
+            assert errors == []
+            deadline = time.monotonic() + 3.0
+            while True:
+                angles = client.angles()
+                if angles is not None and abs(angles[0] - start[0]) > 0.5:
+                    break
+                assert time.monotonic() < deadline, "the released jog never moved J1"
+                time.sleep(0.05)
+
+    def test_an_earlier_blend_member_keeps_its_own_deadline(
+        self, tmp_path, monkeypatch, session_controller
+    ):
+        """Closing a blend group enforces every member's timeout=, not only
+        the last one's: an earlier member's overrun raises and stops the arm."""
+        import time
+
+        from parol6 import RobotClient
+
+        from tests.conftest import _get_test_ports
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_blend_deadline")
+        controller.initialize()
+        controller.signal_play()
+        port, _ = _get_test_ports()
+        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+            client.simulator(True)
+            client.reset()
+            assert client.home(wait=True, timeout=10.0) >= 0
+            home = client.angles()
+            assert home is not None
+            away = [a + 10.0 for a in home]
+            wrapper = SteppingClientWrapper(client, StepIO("test_blend_deadline"))
+            started = time.monotonic()
+            assert wrapper.move_j(away, duration=4.0, r=15, timeout=0.5) >= 0
+            assert wrapper.move_j(home, duration=0.5, r=15) >= 0
+            with pytest.raises(TimeoutError):
+                wrapper.move_j(home, duration=0.5)
+            assert time.monotonic() - started < 2.5, (
+                "the first member's deadline was not enforced"
+            )
+            deadline = time.monotonic() + 3.0
+            while not (client.queue() == [] and client.is_robot_stopped()):
+                assert time.monotonic() < deadline, "controller did not stop"
+                time.sleep(0.05)
