@@ -322,3 +322,141 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         # would move their robot too.
         await client.set_tcp_offset(0.0, 0.0, 0.0)
         await client.select_tool("NONE")
+
+
+async def _reconciled() -> None:
+    """Wait for every page's offset reconcile to finish, pushes included."""
+    from nicegui import background_tasks
+
+    assert await wait_until(
+        lambda: not any(
+            t.get_name() == "tcp-offset-reconcile"
+            for t in background_tasks.running_tasks
+        ),
+        timeout_s=10.0,
+    ), "the TCP offset reconcile never finished"
+
+
+async def _reopen(user: User) -> None:
+    # The old tab's disconnect clears the active slot before the reload.
+    ui_state.active_client_id = None
+    await user.open("/")
+    await wait_for_app_ready()
+
+
+@pytest.mark.integration
+async def test_opening_a_page_never_pushes_an_offset_under_an_ai_holder(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page load carries no human intent to drive. With an AI session
+    holding control, the browser's remembered offset must not replace the
+    controller's, even on a controller this app has never told: the AI plans
+    its Cartesian moves with the TCP it has."""
+    from waldo_commander.components import settings
+    from waldo_commander.services.control_lease import MCP, control_lease
+
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    monkeypatch.setattr(settings, "_pushed_offset_tools", set())
+    try:
+        index = await client.select_tool("PNEUMATIC")
+        assert await client.wait_command(index, timeout=5.0)
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        app_storage.general["selected_tool"] = "PNEUMATIC"
+        app_storage.general["tcp_offset_PNEUMATIC"] = {"x": 5.0, "y": 0.0, "z": 0.0}
+        control_lease.seize(MCP, "settings-review", "AI")
+
+        await _reopen(user)
+        await _reconciled()
+
+        assert [float(v) for v in await client.tcp_offset()] == [0.0, 0.0, 0.0]
+        assert control_lease.held_by(MCP, "settings-review")
+    finally:
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        await client.select_tool("NONE")
+
+
+@pytest.mark.integration
+async def test_another_tools_offset_is_not_adopted(user: User) -> None:
+    """The controller's offset belongs to the tool it carries. A page that
+    remembers a different tool must not file that offset under its own."""
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    try:
+        index = await client.select_tool("SSG-48")
+        assert await client.wait_command(index, timeout=5.0)
+        await client.set_tcp_offset(1.0, 2.0, 3.0)
+        await poll_until(
+            client.tcp_offset,
+            lambda got: [float(v) for v in got] == [1.0, 2.0, 3.0],
+            what="the SSG-48 offset on the controller",
+        )
+        app_storage.general["selected_tool"] = "PNEUMATIC"
+        app_storage.general["tcp_offset_PNEUMATIC"] = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        await _reopen(user)
+        await _reconciled()
+
+        assert app_storage.general["tcp_offset_PNEUMATIC"] == {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+        }
+        assert [float(v) for v in await client.tcp_offset()] == [1.0, 2.0, 3.0]
+    finally:
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        await client.select_tool("NONE")
+
+
+@pytest.mark.integration
+async def test_an_edit_queued_when_the_page_goes_is_dropped(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Edits go out one at a time, newest last. One still waiting when its
+    page disconnects has nobody left to see it land, so it never does."""
+    page = await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    content = ui_state.settings_content
+    assert content is not None
+
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    replaced = next(iter(user.find(marker="tcp-offset-x").elements))
+    next(iter(user.find(marker="select-tool").elements)).set_value("PNEUMATIC")
+    await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
+    await poll_until(
+        lambda: next(iter(user.find(marker="tcp-offset-x").elements)),
+        lambda el: el is not replaced,
+        what="the offset inputs rebuilt for PNEUMATIC",
+    )
+    await _reconciled()
+
+    gate = asyncio.Event()
+    real_set = client.set_tcp_offset
+
+    async def held_set(x: float = 0, y: float = 0, z: float = 0) -> int:
+        await gate.wait()
+        return await real_set(x, y, z)
+
+    monkeypatch.setattr(client, "set_tcp_offset", held_set)
+    try:
+        user.find(marker="tcp-offset-x").trigger("update:modelValue", 5.0)
+        assert await wait_until(lambda: content._tcp_pushing), "the first edit went out"
+        user.find(marker="tcp-offset-x").trigger("update:modelValue", 7.0)
+        assert await wait_until(lambda: content._tcp_push_next is not None), (
+            "the second edit waits behind the first"
+        )
+
+        page.handle_disconnect(next(iter(page._socket_to_document_id)))
+        gate.set()
+        assert await wait_until(lambda: not content._tcp_pushing), (
+            "the push loop never finished"
+        )
+        assert [float(v) for v in await client.tcp_offset()] == [5.0, 0.0, 0.0]
+    finally:
+        gate.set()
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        await client.select_tool("NONE")

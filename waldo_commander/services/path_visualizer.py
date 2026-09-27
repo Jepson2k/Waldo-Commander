@@ -394,6 +394,12 @@ def _run_simulation_isolated(
             with using_setup_directory(setup_directory):
                 exec(code, sim_globals)
 
+        except SystemExit as e:
+            # A script entry point ends in sys.exit(main()); only a failure
+            # status is an error, and the exit must not reach the host.
+            if e.code not in (None, 0):
+                error_message = f"Program exited with status {e.code}"
+
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
@@ -410,9 +416,7 @@ def _run_simulation_isolated(
         # A pool worker is discarded with these swaps in place, but a direct
         # in-process call shares the app's interpreter, where a client built
         # from the backend's name after this point has to be the real one
-        # again. In a ``finally`` because a script ending in ``sys.exit()``
-        # raises SystemExit, which passes both excepts and would otherwise
-        # leave the preview class installed for the rest of the app's life.
+        # again, even after a BaseException neither except takes.
         for module, name, original in reversed(swapped_names):
             if original is None:
                 delattr(module, name)
