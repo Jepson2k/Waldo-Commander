@@ -9,7 +9,6 @@ package can ship a tab purely via the ``waldoctl.panels`` entry-point group.
 from __future__ import annotations
 
 import asyncio
-import importlib.metadata
 from typing import ClassVar
 
 import pytest
@@ -17,6 +16,7 @@ from nicegui import ui
 from nicegui.testing import User
 from waldoctl import Commander, Panel, PanelSlot
 
+from tests.helpers.plugin_panels import install_plugin_panels
 from tests.helpers.wait import wait_for_app_ready
 
 
@@ -54,30 +54,6 @@ class NotesPanel(Panel):
         type(self).stop_called = True
 
 
-def _patch_entry_points(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Inject NotesPanel into ``waldoctl.panels`` discovery and reset state."""
-    from waldo_commander.state import ui_state
-
-    real = importlib.metadata.entry_points
-    fake_ep = importlib.metadata.EntryPoint(
-        name="notes",
-        value="tests.test_external_panel_plugin:NotesPanel",
-        group="waldoctl.panels",
-    )
-
-    def fake_entry_points(*, group: str = "") -> object:
-        if group == "waldoctl.panels":
-            return [fake_ep]
-        return real(group=group) if group else real()
-
-    monkeypatch.setattr(importlib.metadata, "entry_points", fake_entry_points)
-    ui_state.plugin_panels = []
-    ui_state._started_panel_ids = set()
-    NotesPanel.start_called = False
-    NotesPanel.stop_called = False
-    NotesPanel.commander_seen = None
-
-
 @pytest.mark.integration
 async def test_external_panel_lifecycle(
     user: User, monkeypatch: pytest.MonkeyPatch
@@ -86,7 +62,10 @@ async def test_external_panel_lifecycle(
     page is built, and stop() runs on shutdown — the full lifecycle."""
     from waldo_commander.state import ui_state
 
-    _patch_entry_points(monkeypatch)
+    install_plugin_panels(monkeypatch, NotesPanel)
+    NotesPanel.start_called = False
+    NotesPanel.stop_called = False
+    NotesPanel.commander_seen = None
 
     await user.open("/")
     await wait_for_app_ready()
