@@ -10,7 +10,7 @@ scene floor.
 
 - CSS reads ``var(--wc-<name>)`` (emitted on ``:root``).
 - Quasar ``color=`` / ``text-color=`` props use the registered name ``wc-<name>``.
-- Three.js and ECharts read hex from :func:`hex_of`; vertex colours use :func:`rgb01`.
+- Three.js and ECharts read hex from :func:`hex_of`; vertex colours use :func:`linear_rgb`.
 """
 
 import math
@@ -190,11 +190,13 @@ def _oklch_to_srgb(L: float, C: float, h: float) -> tuple[float, float, float]:
     return enc(lin[0]), enc(lin[1]), enc(lin[2])
 
 
-def _srgb_to_oklch(r: float, g: float, b: float) -> tuple[float, float, float]:
-    def lin(x: float) -> float:
-        return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+def _srgb_eotf(x: float) -> float:
+    """An sRGB-encoded channel in 0–1 as linear light."""
+    return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
 
-    r, g, b = lin(r), lin(g), lin(b)
+
+def _srgb_to_oklch(r: float, g: float, b: float) -> tuple[float, float, float]:
+    r, g, b = _srgb_eotf(r), _srgb_eotf(g), _srgb_eotf(b)
     l_ = math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
     m_ = math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
     s_ = math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
@@ -367,9 +369,9 @@ def hex_of(name: str) -> str:
     return _hex_table(_active_theme)[name]
 
 
-def rgb01(name: str) -> list[float]:
-    """A token as an RGB triple in 0–1, for Three.js vertex colours."""
-    return list(_rgba(hex_of(name))[:3])
+def linear_rgb(name: str) -> list[float]:
+    """A token as a linear-light RGB triple in 0–1, for Three.js vertex colours."""
+    return [_srgb_eotf(c) for c in _rgba(hex_of(name))[:3]]
 
 
 def effective_theme() -> ThemeKey:
