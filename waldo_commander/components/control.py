@@ -2251,12 +2251,12 @@ class ControlPanel:
         with (
             ui.tab_panels(jog_mode_tabs, value=joint_tab)
             .classes("cp-jog-panels")
-            .style("width: 400px; height: 225px")
+            .style("width: 400px")
         ):
             # Joint jog panel
             with ui.tab_panel(joint_tab):
                 with ui.row().classes(
-                    "joint-dials w-full h-full items-center justify-around no-wrap gap-0"
+                    "joint-dials w-full items-center justify-around no-wrap gap-0"
                 ):
                     for i, n in enumerate(ui_state.active_robot.joints.names):
                         self._make_joint_dial(i, n)
