@@ -64,8 +64,10 @@ def test_chip_buddy_greets_watches_the_pointer_and_answers_pokes(screen) -> None
     )
     dismiss_dialogs(screen)
     _wait(
-        lambda: _layer_shown(screen, CHIP, ".bb-eyes-open")
-        and not _layer_shown(screen, CHIP, ".bb-eyes-wink"),
+        lambda: (
+            _layer_shown(screen, CHIP, ".bb-eyes-open")
+            and not _layer_shown(screen, CHIP, ".bb-eyes-wink")
+        ),
         timeout=5.0,
         what="the greeting to finish",
     )
@@ -91,12 +93,13 @@ def test_chip_buddy_greets_watches_the_pointer_and_answers_pokes(screen) -> None
         timeout=2.0,
         what="a giggle after one poke",
     )
-    # Three more make four inside the poke window.
-    ActionChains(screen.selenium).click(chip).click().click().perform()
+    # Four quick pokes land dizzy whether or not the first poke is still
+    # inside the poke window: pokes are ignored while it is dizzy.
+    ActionChains(screen.selenium).click(chip).click().click().click().perform()
     _wait(
-        lambda: _layer_shown(screen, CHIP, ".bb-eyes-spiral"),
+        lambda: _layer_shown(screen, CHIP, ".bb-eyes-x"),
         timeout=2.0,
-        what="spiral eyes after a flurry of pokes",
+        what="X eyes after a flurry of pokes",
     )
 
     # E-STOP: the chip sounds the alarm and the dialog brings a big one.

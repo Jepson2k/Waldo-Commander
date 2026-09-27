@@ -202,7 +202,7 @@ class HelpMenu:
             {
                 "title": "Connecting Your Robot",
                 "description": """
-                    In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown by the robot in the top right corner:
+                    In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown by Waldo, the little robot in the top right corner:
                 """,
                 "video": "connecting_to_robot.mp4",
                 "status_legend": True,

@@ -39,11 +39,11 @@ Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[/]** to adjust
 
 ### Connecting Your Robot
 
-In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
+In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown by Waldo, the little robot in the top right corner:
 
-- <span style="color: #4caf50">&#9632;</span> Connected to robot hardware
-- <span style="color: #f44336">&#9632;</span> Robot mode but disconnected
-- <span style="color: #9e9e9e">&#9632;</span> Simulator mode
+- <img src="assets/img/waldo-happy.svg" width="27" alt=""> Connected to robot hardware
+- <img src="assets/img/waldo-sad.svg" width="27" alt=""> Robot mode but disconnected
+- <img src="assets/img/waldo-neutral.svg" width="27" alt=""> Simulator mode
 
 <video controls width="100%">
   <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/connecting_to_robot.mp4" type="video/mp4">

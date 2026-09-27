@@ -1387,6 +1387,11 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 
 .file-tree-scroll .q-scrollarea__content { padding: 0 !important; }
 
+/* Settings rows are w-full with truncating descriptions; pinning the scroll
+   content to the panel width makes a long description truncate instead of
+   widening every row and pushing the controls out of view. */
+.settings-scroll .q-scrollarea__content { width: 100%; }
+
 /* ========== File Tree ========== */
 .file-tree .q-tree__node-header-content { color: white !important; }
 .file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { color: white !important; font-weight: bold !important; }

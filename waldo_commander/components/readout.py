@@ -11,8 +11,12 @@ import waldoctl
 from waldoctl import ActionStatus
 
 from waldo_commander.common.theme import IO_COLOR_OFF, IO_COLOR_ON
-from waldo_commander.components.robot_buddy import Mood, Reaction, RobotBuddy
-from waldo_commander.services.programs import is_any_program_running
+from waldo_commander.components.robot_buddy import Light, Mood, Reaction, RobotBuddy
+from waldo_commander.services.control_lease import MCP, control_lease
+from waldo_commander.services.programs import (
+    is_any_program_recording,
+    is_any_program_running,
+)
 from waldo_commander.state import robot_events, robot_state, ui_state
 
 logger = logging.getLogger(__name__)
@@ -23,6 +27,10 @@ _MOOD_TOOLTIPS = {
     Mood.NEUTRAL: "Simulator",
     Mood.SAD: "Disconnected",
     Mood.ALARMED: "E-STOP active",
+}
+_LIGHT_TOOLTIPS = {
+    Light.RECORDING: "Recording",
+    Light.AGENT: "AI agent in control",
 }
 # Chip background — darker hue of the buddy's colour
 _CHIP_COLORS = {
@@ -35,7 +43,13 @@ _CHIP_COLORS = {
 # so a train of step jogs reads as one stretch of work, not a flicker.
 _MOVING_DEG_S = 0.5
 _MOVING_HOLD_S = 1.0
+# Only the simulator buddy dozes: on a live or lost hardware connection a
+# sleeping robot would read as "robot idle / offline" at a glance.
 _BUDDY_SLEEP_AFTER_S = 180.0
+
+
+def _sleep_after(mood: Mood) -> float:
+    return _BUDDY_SLEEP_AFTER_S if mood == Mood.NEUTRAL else 0.0
 
 
 def _chip_style(mood: Mood) -> str:
@@ -60,6 +74,21 @@ def _status_mood() -> Mood:
     if status.connected:
         return Mood.HAPPY
     return Mood.SAD
+
+
+def _status_light() -> Light | None:
+    """The standing condition the chip buddy's antennae show, if any."""
+    holder = control_lease.holder()
+    if holder is not None and holder.channel == MCP:
+        return Light.AGENT
+    if is_any_program_recording():
+        return Light.RECORDING
+    return None
+
+
+def _tooltip(mood: Mood, light: Light | None) -> str:
+    text = _MOOD_TOOLTIPS[mood]
+    return f"{text} · {_LIGHT_TOOLTIPS[light]}" if light else text
 
 
 def _fmt_1f(v: float) -> str:
@@ -189,6 +218,10 @@ class ReadoutPanel:
         # Dirty checking state
         self._moving_until: float = 0.0
         self._last_collision: bool = False
+        self._last_homed: bool | None = None
+        self._seen_jog_pos: list[bool] | None = None
+        self._seen_jog_neg: list[bool] | None = None
+        self._blocked_jogs: int = 0
         self._last_tool_key: str | None = None
         self._last_io_inputs: list[int] | None = None
         self._last_io_outputs: list[int] | None = None
@@ -228,14 +261,19 @@ class ReadoutPanel:
     def _update_buddy(self) -> None:
         assert self._buddy is not None
         mood = _status_mood()
+        light = _status_light()
         if mood != self._buddy.mood:
             self._buddy.set_mood(mood)
-            if self._buddy_tooltip is not None:
-                self._buddy_tooltip.text = _MOOD_TOOLTIPS[mood]
-                self._buddy_tooltip.update()
+            self._buddy.set_sleep_after(_sleep_after(mood))
             if self._robot_chip is not None:
                 self._robot_chip.style(_chip_style(mood))
                 self._robot_chip.update()
+        self._buddy.set_light(light)
+        if self._buddy_tooltip is not None:
+            text = _tooltip(mood, light)
+            if self._buddy_tooltip.text != text:
+                self._buddy_tooltip.text = text
+                self._buddy_tooltip.update()
 
         now = time.monotonic()
         speeds = robot_state.speeds
@@ -243,12 +281,33 @@ class ReadoutPanel:
             speeds.max() > _MOVING_DEG_S or speeds.min() < -_MOVING_DEG_S
         ):
             self._moving_until = now + _MOVING_HOLD_S
-        self._buddy.set_busy(is_any_program_running() or now < self._moving_until)
+        moving = now < self._moving_until
+        self._buddy.set_busy(is_any_program_running() or moving)
 
         collision = waldoctl.commander.status.collision.active
         if collision and not self._last_collision:
             self._buddy.react(Reaction.STARTLE)
         self._last_collision = collision
+
+        # The status loop replaces these lists only when a limit changes, so
+        # an identity check keeps the per-tick cost at two comparisons.
+        joints = waldoctl.commander.status.joints
+        pos, neg = joints.can_jog_pos, joints.can_jog_neg
+        if pos is not self._seen_jog_pos or neg is not self._seen_jog_neg:
+            blocked = pos.count(False) + neg.count(False)
+            if blocked > self._blocked_jogs and moving:
+                self._buddy.react(Reaction.SHRUG)
+            self._blocked_jogs = blocked
+            self._seen_jog_pos, self._seen_jog_neg = pos, neg
+
+        homed = robot_state.homed
+        if homed and self._last_homed is False:
+            self._buddy.react(Reaction.NOD)
+        self._last_homed = homed
+
+    def set_buddy_calm(self, calm: bool) -> None:
+        if self._buddy is not None:
+            self._buddy.set_calm(calm)
 
     def greet(self) -> None:
         """Wave hello once the page has finished loading."""
@@ -342,7 +401,7 @@ class ReadoutPanel:
                             RobotBuddy(
                                 mood,
                                 interactive=True,
-                                sleep_after_s=_BUDDY_SLEEP_AFTER_S,
+                                sleep_after_s=_sleep_after(mood),
                             )
                             .style(
                                 "margin-top: 4px;"
@@ -351,7 +410,7 @@ class ReadoutPanel:
                             .mark("readout-robot-buddy")
                         )
                         with self._buddy:
-                            self._buddy_tooltip = ui.tooltip(_MOOD_TOOLTIPS[mood])
+                            self._buddy_tooltip = ui.tooltip(_tooltip(mood, None))
                         self._backend_label = (
                             ui.label(ui_state.active_robot.name)
                             .classes("text-lg font-medium ml-2")

@@ -1,14 +1,22 @@
-"""Robot buddy: the animated little robot that fronts Waldo Commander's state.
+"""Waldo, the little robot that fronts Waldo Commander's state.
 
 One element per appearance (status chip, e-stop dialog, loading screen, ...).
 Each instance animates on its own in the browser — blinking, glancing
 around, dozing off, following the pointer — while the server only sets its
-``mood``, whether it is ``busy``, and asks for one-shot reactions.
+``mood``, whether it is ``busy``, which antenna ``light`` is on, and asks for
+one-shot reactions.
 """
 
 from enum import StrEnum
 
-from nicegui import ui
+from nicegui import app, ui
+
+CALM_STORAGE_KEY = "ui/calm_buddy"
+
+
+def calm_preferred() -> bool:
+    """The user's "Calm robot" setting: no idle fidgets anywhere Waldo appears."""
+    return bool(app.storage.general.get(CALM_STORAGE_KEY, False))
 
 
 class Mood(StrEnum):
@@ -26,6 +34,15 @@ class Mood(StrEnum):
     """Grey with a scanning visor: waiting for the controller."""
 
 
+class Light(StrEnum):
+    """A steady antenna light for a standing condition."""
+
+    RECORDING = "rec"
+    """Red dot on one bulb: the motion recorder is capturing."""
+    AGENT = "agent"
+    """Both bulbs glow warm: an AI agent holds control of the arm."""
+
+
 class Reaction(StrEnum):
     """One-shot animations, after which the buddy settles back into its mood."""
 
@@ -33,6 +50,8 @@ class Reaction(StrEnum):
     CELEBRATE = "celebrate"
     OOPS = "oops"
     STARTLE = "startle"
+    SHRUG = "shrug"
+    NOD = "nod"
 
 
 class RobotBuddy(ui.element, component="robot_buddy.vue"):
@@ -62,6 +81,8 @@ class RobotBuddy(ui.element, component="robot_buddy.vue"):
         self._props["mood"] = Mood(mood).value
         self._props["color"] = color
         self._props["busy"] = False
+        self._props["light"] = ""
+        self._props["calm"] = calm_preferred()
         self._props["interactive"] = interactive
         self._props["sleepAfter"] = sleep_after_s
         self._props["roam"] = roam_avoid is not None
@@ -79,20 +100,45 @@ class RobotBuddy(ui.element, component="robot_buddy.vue"):
         return self._props["busy"]
 
     @property
+    def light(self) -> Light | None:
+        return Light(self._props["light"]) if self._props["light"] else None
+
+    @property
+    def calm(self) -> bool:
+        return self._props["calm"]
+
+    @property
+    def sleep_after_s(self) -> float:
+        return self._props["sleepAfter"]
+
+    @property
     def last_reaction(self) -> Reaction | None:
         reaction = self._props["reaction"]
         return Reaction(reaction["name"]) if reaction else None
 
-    def set_mood(self, mood: Mood) -> None:
-        if self._props["mood"] != mood.value:
-            self._props["mood"] = mood.value
+    def _set(self, prop: str, value: object) -> None:
+        if self._props[prop] != value:
+            self._props[prop] = value
             self.update()
+
+    def set_mood(self, mood: Mood) -> None:
+        self._set("mood", mood.value)
 
     def set_busy(self, busy: bool) -> None:
         """Busy buddies focus: lids lower, eyes on the arm, antenna LEDs chase."""
-        if self._props["busy"] != busy:
-            self._props["busy"] = busy
-            self.update()
+        self._set("busy", busy)
+
+    def set_light(self, light: Light | None) -> None:
+        self._set("light", light.value if light else "")
+
+    def set_calm(self, calm: bool) -> None:
+        """Calm buddies skip idle fidgets, breathing, pointer-following and
+        sleep; reactions to what the robot does still play."""
+        self._set("calm", calm)
+
+    def set_sleep_after(self, seconds: float) -> None:
+        """Doze off after this long idle; 0 keeps it awake (and wakes it)."""
+        self._set("sleepAfter", seconds)
 
     def react(self, reaction: Reaction) -> None:
         self._reaction_seq += 1

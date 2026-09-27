@@ -22,7 +22,7 @@
           >
             <rect :x="a.x - 0.5" y="4.5" width="1" height="3" rx="0.5" fill="currentColor" />
             <circle class="bb-halo" :cx="a.x" cy="4.2" r="1.6" />
-            <circle :cx="a.x" cy="4.2" r="0.8" fill="currentColor" />
+            <circle class="bb-bulb" :cx="a.x" cy="4.2" r="0.8" fill="currentColor" />
             <circle class="bb-led" :cx="a.x" cy="4.2" r="0.45" />
           </g>
 
@@ -50,7 +50,6 @@
                     fill="currentColor"
                     :style="{ transformOrigin: e.cx + 'px 12px', transform: 'scale(' + pupilScale + ')' }"
                   />
-                  <circle :cx="e.cx + 0.3" cy="11.68" r="0.2" fill="white" />
                 </g>
                 <g :clip-path="'url(#' + uid + e.side + ')'">
                   <rect
@@ -80,15 +79,6 @@
               <path d="M6.9 10.9 L9.1 13.1 M9.1 10.9 L6.9 13.1" />
               <path d="M14.9 10.9 L17.1 13.1 M17.1 10.9 L14.9 13.1" />
             </g>
-            <g class="bb-eyes-alt bb-eyes-spiral bb-stroke" :style="{ opacity: eyes === 'spiral' ? 1 : 0 }">
-              <path
-                v-for="e in EYES"
-                :key="e.side"
-                class="bb-spiral"
-                :style="{ transformOrigin: e.cx + 0.17 + 'px 12px' }"
-                :d="spiral(e.cx, 12)"
-              />
-            </g>
             <g class="bb-eyes-alt bb-eyes-scan" :style="{ opacity: eyes === 'scan' ? 1 : 0 }">
               <rect x="5.8" y="11" width="12.4" height="2" rx="1" fill="white" opacity="0.22" />
               <rect class="bb-scan-bar" x="5.8" y="11" width="2.6" height="2" rx="1" fill="white" />
@@ -104,21 +94,10 @@
             <path class="bb-stroke" :style="m('zigzag')" stroke-width="0.8" d="M9 16 L10.2 15.2 L11.4 16.8 L12.6 15.2 L13.8 16.8 L15 16" />
             <path class="bb-stroke" :style="m('frown')" d="M9 16.8 Q12 14.5 15 16.8" />
             <path class="bb-stroke" :style="m('deep-frown')" stroke-width="1.2" d="M9.5 17.2 Q12 13.5 14.5 17.2" />
-            <path class="bb-stroke bb-tremble" :style="m('tremble')" stroke-width="0.8" d="M9.2 17 Q12 14.8 14.8 17" />
             <path class="bb-stroke" :style="m('wavy')" stroke-width="0.8" d="M9 16.2 Q10 15.3 11 16.2 T13 16.2 T15 16.2" />
-            <path class="bb-stroke" :style="m('cat')" stroke-width="0.9" d="M9.6 15.5 Q10.8 17 12 15.6 Q13.2 17 14.4 15.5" />
             <ellipse class="bb-fill" :style="m('o')" cx="12" cy="16.1" rx="0.9" ry="1" />
             <ellipse class="bb-fill" :style="m('small-o')" cx="12" cy="16.2" rx="0.5" ry="0.55" />
             <ellipse class="bb-fill" :style="m('yawn')" cx="12" cy="16.2" rx="1.3" ry="1.55" />
-          </g>
-
-          <g class="bb-fx">
-            <g v-if="fx.sweat" transform="translate(19.4 9.9)">
-              <path class="bb-drop bb-slide" d="M0 -1 Q0.9 0.3 0 0.8 Q-0.9 0.3 0 -1 Z" />
-            </g>
-            <g v-if="fx.tear" transform="translate(9.5 13.9) scale(0.6)">
-              <path class="bb-drop bb-slide" d="M0 -1 Q0.9 0.3 0 0.8 Q-0.9 0.3 0 -1 Z" />
-            </g>
           </g>
         </g>
       </g>
@@ -138,22 +117,7 @@
         <g v-if="fx.question" transform="translate(20.4 5)">
           <g class="bb-pop">
             <path class="bb-glyph" d="M-0.8 -1.3 Q-0.8 -2.5 0.2 -2.5 Q1.2 -2.5 1.1 -1.5 Q1 -0.8 0.2 -0.5 L0.2 0.2" />
-            <circle cx="0.2" cy="1.1" r="0.32" fill="white" />
-          </g>
-        </g>
-        <g v-if="fx.note" transform="translate(19.6 8.4)">
-          <g class="bb-note">
-            <ellipse cx="0" cy="0" rx="0.55" ry="0.42" fill="white" transform="rotate(-20)" />
-            <path class="bb-glyph" stroke-width="0.3" d="M0.48 -0.1 V-2.1 Q1.3 -1.7 1.4 -1" />
-          </g>
-        </g>
-        <g v-if="fx.sparkles">
-          <g v-for="(s, i) in SPARKLES" :key="i" :transform="'translate(' + s.x + ' ' + s.y + ') scale(' + s.s + ')'">
-            <path
-              class="bb-sparkle"
-              :style="{ animationDelay: i * 0.18 + 's' }"
-              d="M0 -1 Q0.15 -0.15 1 0 Q0.15 0.15 0 1 Q-0.15 0.15 -1 0 Q-0.15 -0.15 0 -1 Z"
-            />
+            <circle class="bb-glyph-dot" cx="0.2" cy="1.1" r="0.32" />
           </g>
         </g>
       </g>
@@ -208,6 +172,8 @@ export default {
     reaction: { type: Object, default: null },
     roam: { type: Boolean, default: false },
     roamAvoid: { type: String, default: "" },
+    calm: { type: Boolean, default: false },
+    light: { type: String, default: "" },
   },
 
   data() {
@@ -226,12 +192,6 @@ export default {
         { x: 20.9, y: 5.3, s: 0.9 },
         { x: 22.4, y: 2.9, s: 1.1 },
       ],
-      SPARKLES: [
-        { x: 3.4, y: 6.8, s: 0.9 },
-        { x: 20.6, y: 6.4, s: 1.1 },
-        { x: 2.8, y: 15.8, s: 0.7 },
-        { x: 21.2, y: 15.2, s: 0.8 },
-      ],
       eyes: "open",
       mouth: "smile",
       lid: 0,
@@ -247,7 +207,7 @@ export default {
       rigAnim: "",
       headTilt: 0,
       sink: 0,
-      fx: { zzz: false, exclaim: false, question: false, note: false, sparkles: false, sweat: false, tear: false },
+      fx: { zzz: false, exclaim: false, question: false },
       asleep: false,
     };
   },
@@ -258,6 +218,7 @@ export default {
         "bb-mood-" + this.mood,
         this.leds ? "bb-leds-" + this.leds : "",
         this.asleep ? "bb-asleep" : "",
+        this.calm ? "bb-calm" : "",
         this.roam ? "bb-roam" : "",
       ];
     },
@@ -289,6 +250,23 @@ export default {
     },
     busy() {
       if (!this.acting) this.restFace();
+    },
+    light() {
+      if (!this.acting) this.restFace();
+    },
+    calm(now) {
+      if (now) {
+        this.tracking = false;
+        this.asleep = false;
+        if (!this.acting) this.restFace();
+      }
+      this.scheduleIdle();
+    },
+    sleepAfter(now) {
+      if (now <= 0 && this.asleep) {
+        this.asleep = false;
+        this.react("wake");
+      }
     },
     // NiceGUI resends every prop on each update, so a fresh object alone is
     // not a new reaction; the server bumps `seq` for each one it sends.
@@ -324,7 +302,7 @@ export default {
         window.addEventListener(type, this.onActivity, { passive: true });
       }
     }
-    if (this.sleepAfter > 0) {
+    if (this.interactive || this.sleepAfter > 0) {
       this.sleepTimer = setInterval(() => this.checkSleep(), 1000);
     }
     if (this.roam) this.startRoaming();
@@ -366,13 +344,6 @@ export default {
       };
     },
 
-    spiral(cx, cy) {
-      return (
-        `M${cx} ${cy} a0.35 0.35 0 0 1 0.7 0 a0.7 0.7 0 0 1 -1.4 0` +
-        " a1.05 1.05 0 0 1 2.1 0 a1.4 1.4 0 0 1 -2.8 0"
-      );
-    },
-
     // ---------- face state ----------
 
     restLook() {
@@ -398,7 +369,7 @@ export default {
       this.pupilScale = face.pupilScale;
       this.lookSpeed = 0.4;
       if (!this.tracking) this.look = this.restLook();
-      this.leds = face.leds || (this.busy && LIVELY.has(this.mood) ? "chase" : "");
+      this.leds = face.leds || this.light || (this.busy && LIVELY.has(this.mood) ? "chase" : "");
       const droop = this.asleep ? 14 : this.mood === "sad" ? 5 : 0;
       this.antenna = { l: -droop, r: droop };
       this.antennaWave = "";
@@ -479,13 +450,19 @@ export default {
       }, rand(gap[0], gap[1]) * 1000);
     },
 
+    // Calm (a user setting) and reduced motion (an OS setting) both drop the
+    // idle fidgets; reactions to what the robot does still play.
+    still() {
+      return this.calm || this.reducedMotion;
+    },
+
     scheduleIdle() {
       clearTimeout(this.idleTimer);
       const gap = IDLE_GAP_S[this.mood];
-      if (!gap || this.reducedMotion) return;
+      if (!gap || this.still()) return;
       this.idleTimer = setTimeout(() => {
         const trackedRecently = Date.now() - this.lastTrackAt < 2500;
-        if (!this.acting && !this.asleep && !this.busy && !trackedRecently) {
+        if (!this.acting && !this.asleep && !this.busy && !trackedRecently && !this.still()) {
           const fn = pick(this.idleActions()[this.mood] || [[1, async () => {}]]);
           this.play(fn);
         }
@@ -501,11 +478,7 @@ export default {
           [2, async (wait) => { this.eyeScale = 1.2; this.mouth = "open"; await wait(1200); }],
           [3, async (wait) => { this.lookAt(rand(-0.7, 0.7), rand(-0.5, 0.4), 0.35); await wait(rand(800, 1500)); }],
           [2, async (wait) => { this.wiggleAntennae(); await wait(700); }],
-          [1, async (wait) => {
-            this.mouth = "small-o"; this.fx.note = true; this.headTilt = -5;
-            await wait(900); this.headTilt = 5; await wait(900);
-          }],
-          [1, async (wait) => { this.eyes = "happy"; this.mouth = "cat"; await wait(1500); }],
+          [1, async (wait) => { this.headTilt = -5; await wait(900); this.headTilt = 5; await wait(900); }],
         ],
         neutral: [
           [3, async (wait) => {
@@ -526,9 +499,6 @@ export default {
           [3, async (wait) => { this.lookAt(0, 0.55, 0.6); await wait(1800); }],
           [2, async (wait) => { this.lookAt(-0.55, 0.25, 0.7); await wait(1400); }],
           [2, async (wait) => { this.eyes = "closed"; this.mouth = "deep-frown"; await wait(2200); }],
-          [1, async (wait) => {
-            this.eyeScale = 1.12; this.mouth = "tremble"; this.fx.tear = true; await wait(1900);
-          }],
           [2, async (wait) => {
             this.mouth = "small-o"; this.sink = 0.6; this.antenna = { l: -12, r: 12 };
             await wait(1300); this.mouth = "frown"; await wait(700);
@@ -541,7 +511,7 @@ export default {
             this.lookAt(-0.6, 0, 0.12); await wait(300);
           }],
           [2, async (wait) => { await this.anim("shake", 500, wait); }],
-          [2, async (wait) => { this.mouth = "zigzag"; this.fx.sweat = true; await wait(1100); }],
+          [2, async (wait) => { this.mouth = "zigzag"; this.lookAt(0, 0.4, 0.3); await wait(1100); }],
         ],
       };
     },
@@ -591,7 +561,6 @@ export default {
         celebrate: async (wait) => {
           this.eyes = "happy";
           this.mouth = "open";
-          this.fx.sparkles = true;
           this.leds = "party";
           await this.anim("hop2", 900, wait);
           this.antennaWave = "l";
@@ -602,7 +571,6 @@ export default {
           this.pupilScale = 0.7;
           this.mouth = "o";
           await this.anim("jolt", 350, wait);
-          this.fx.sweat = true;
           this.mouth = "wavy";
           this.eyeScale = 1;
           this.pupilScale = 1;
@@ -626,7 +594,6 @@ export default {
           this.eyes = "closed";
           this.mouth = "small-o";
           this.sink = 0.7;
-          this.fx.sweat = true;
           await wait(900);
           this.sink = 0;
           this.mouth = "smile";
@@ -637,17 +604,32 @@ export default {
         },
         giggle: async (wait) => {
           this.eyes = "happy";
-          this.mouth = "cat";
+          this.mouth = "open";
           await this.anim("hop", 450, wait);
           await wait(500);
         },
         dizzy: async (wait) => {
-          this.eyes = "spiral";
+          this.eyes = "x";
           this.mouth = "wavy";
           await this.anim("wobble", 1800, wait);
           this.eyes = "open";
           await this.anim("shake", 450, wait);
           await this.blinkOnce(wait);
+        },
+        shrug: async (wait) => {
+          this.mouth = "slant";
+          this.lid = 0.3;
+          this.lookAt(0.5, -0.45, 0.3);
+          this.headTilt = 6;
+          this.antenna = { l: -22, r: 22 };
+          await this.anim("shrug", 520, wait);
+          await wait(700);
+        },
+        nod: async (wait) => {
+          this.eyes = "happy";
+          this.mouth = "smile";
+          await this.anim("nod", 720, wait);
+          await wait(200);
         },
         bonk: async (wait) => {
           this.lid = 1;
@@ -703,7 +685,7 @@ export default {
       const dx = this.pointer[0] - (r.left + r.width / 2);
       const dy = this.pointer[1] - (r.top + r.height * 0.55);
       const d = Math.hypot(dx, dy);
-      const free = !this.acting && !this.busy && LIVELY.has(this.mood);
+      const free = !this.acting && !this.busy && !this.calm && LIVELY.has(this.mood);
       if (d > TRACK_RADIUS_PX || !free) {
         if (this.tracking) {
           this.tracking = false;
@@ -718,13 +700,14 @@ export default {
     },
 
     checkSleep() {
-      if (this.asleep || this.acting || this.busy || !LIVELY.has(this.mood)) return;
+      if (this.sleepAfter <= 0 || this.calm || this.asleep || this.acting || this.busy) return;
+      if (!LIVELY.has(this.mood)) return;
       if (Date.now() - this.lastActivity > this.sleepAfter * 1000) this.react("yawn");
     },
 
     onPoke() {
       if (!this.interactive || !LIVELY.has(this.mood) || this.asleep) return;
-      // Still seeing stars: pokes don't land until it has shaken it off.
+      // Still reeling: pokes don't land until it has shaken it off.
       if (this.current === "dizzy") return;
       const now = Date.now();
       this.pokes = this.pokes.filter((t) => now - t < POKE_WINDOW_MS);
@@ -815,6 +798,8 @@ export default {
   line-height: 0;
   color: var(--bb-color);
   transition: color 0.6s ease;
+  /* Floating glyphs sit on the page, not the body: follow the theme's text. */
+  --bb-glyph: var(--ctk-text, white);
 }
 .robot-buddy.bb-mood-happy { --bb-color: #4caf50; }
 .robot-buddy.bb-mood-neutral { --bb-color: #888; }
@@ -832,6 +817,7 @@ export default {
 .robot-buddy.bb-mood-sad svg { animation-duration: 8s; animation-delay: -4s; }
 .robot-buddy.bb-mood-alarmed svg { animation-duration: 1.4s; }
 .robot-buddy.bb-asleep svg { animation-duration: 4.5s; }
+.robot-buddy.bb-calm svg { animation: none; }
 @keyframes bb-breathe {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-2px); }
@@ -859,12 +845,9 @@ export default {
 }
 .robot-buddy .bb-eyes-alt.bb-stroke path { stroke-width: 1.1; }
 .robot-buddy .bb-eyes-alt.bb-eyes-x path { stroke-width: 0.75; }
-.robot-buddy .bb-eyes-alt.bb-eyes-spiral path { stroke-width: 0.32; }
 .robot-buddy .bb-fill { fill: white; stroke: white; stroke-width: 0.4; stroke-linejoin: round; }
 .robot-buddy .bb-gloss { fill: white; opacity: 0.16; }
-.robot-buddy .bb-spiral { animation: bb-spin 0.8s linear infinite; }
 .robot-buddy .bb-scan-bar { animation: bb-scan 1.1s ease-in-out infinite alternate; }
-.robot-buddy .bb-tremble { animation: bb-tremble 0.18s linear infinite; }
 
 .robot-buddy .bb-led { fill: white; opacity: 0; }
 .robot-buddy .bb-halo { fill: none; stroke: currentColor; stroke-width: 0.35; opacity: 0; }
@@ -876,17 +859,26 @@ export default {
 .robot-buddy.bb-leds-alarm .bb-halo { animation: bb-halo 0.5s ease-out infinite; }
 .robot-buddy.bb-leds-alarm .bb-antenna-r .bb-led,
 .robot-buddy.bb-leds-alarm .bb-antenna-r .bb-halo { animation-delay: 0.25s; }
-.robot-buddy.bb-leds-party .bb-led { animation: bb-led 0.3s ease-in-out infinite; fill: #ffd54f; }
+.robot-buddy.bb-leds-party .bb-led { animation: bb-led 0.3s ease-in-out infinite; }
 .robot-buddy.bb-leds-party .bb-antenna-r .bb-led { animation-delay: 0.15s; }
 
+/* Steady lights for standing conditions, big enough to read at chip size:
+   the left bulb turns REC red while recording, both bulbs glow warm while
+   an AI agent drives. */
+.robot-buddy.bb-leds-rec .bb-antenna-l .bb-bulb { fill: oklab(63.7% 0.214 0.101); }
+.robot-buddy.bb-leds-agent .bb-bulb { fill: oklab(67.2% 0.102 0.082); }
+.robot-buddy.bb-leds-rec .bb-antenna-l .bb-led,
+.robot-buddy.bb-leds-agent .bb-led { animation: bb-glow 2s ease-in-out infinite; }
+@keyframes bb-glow {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0; }
+}
+
 .robot-buddy .bb-alert { fill: #ffca28; stroke: rgba(0, 0, 0, 0.35); stroke-width: 0.15; }
-.robot-buddy .bb-drop { fill: #81d4fa; }
-.robot-buddy .bb-sparkle { fill: #ffd54f; transform-box: fill-box; transform-origin: center; animation: bb-twinkle 0.9s ease-in-out infinite; }
-.robot-buddy .bb-glyph { stroke-width: 0.45; }
+.robot-buddy .bb-glyph { stroke: var(--bb-glyph); stroke-width: 0.45; }
+.robot-buddy .bb-glyph-dot { fill: var(--bb-glyph); }
 .robot-buddy .bb-z { stroke-width: 0.42; opacity: 0; animation: bb-z 2.7s ease-out infinite; }
 .robot-buddy .bb-pop { transform-box: fill-box; transform-origin: bottom center; animation: bb-pop 0.35s cubic-bezier(0.3, 1.8, 0.5, 1); }
-.robot-buddy .bb-note { animation: bb-note 1.8s ease-out forwards; }
-.robot-buddy .bb-slide { animation: bb-slide 1.6s ease-in forwards; }
 
 .robot-buddy .bb-rig { transform-origin: 12px 18.5px; }
 .robot-buddy .bb-anim-hop { animation: bb-hop 0.45s ease-out; }
@@ -895,6 +887,8 @@ export default {
 .robot-buddy .bb-anim-shake { animation: bb-shake 0.45s linear; }
 .robot-buddy .bb-anim-wobble { animation: bb-wobble 0.6s ease-in-out 3; }
 .robot-buddy .bb-anim-squash { animation: bb-squash 0.3s ease-out; }
+.robot-buddy .bb-anim-shrug { animation: bb-shrug 0.52s ease-in-out; }
+.robot-buddy .bb-anim-nod { animation: bb-nod 0.36s ease-in-out 2; }
 .robot-buddy .bb-wave { animation: bb-wave 0.45s ease-in-out 3; }
 
 @keyframes bb-hop {
@@ -919,6 +913,14 @@ export default {
   25% { transform: rotate(-9deg); }
   75% { transform: rotate(9deg); }
 }
+@keyframes bb-shrug {
+  0%, 100% { transform: translateY(0); }
+  30%, 70% { transform: translateY(-0.8px); }
+}
+@keyframes bb-nod {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(0.9px) scale(1, 0.97); }
+}
 @keyframes bb-squash {
   0% { transform: scale(1, 1); }
   35% { transform: scale(1.14, 0.84); }
@@ -928,12 +930,7 @@ export default {
   0%, 100% { transform: rotate(0); }
   50% { transform: rotate(28deg); }
 }
-@keyframes bb-spin { to { transform: rotate(360deg); } }
 @keyframes bb-scan { to { transform: translateX(9.8px); } }
-@keyframes bb-tremble {
-  0%, 100% { transform: translateX(0); }
-  50% { transform: translateX(0.15px); }
-}
 @keyframes bb-led {
   0%, 100% { opacity: 0; }
   50% { opacity: 0.95; }
@@ -943,10 +940,6 @@ export default {
   100% { opacity: 0; transform: scale(1.4); }
 }
 .robot-buddy .bb-halo { transform-box: fill-box; transform-origin: center; }
-@keyframes bb-twinkle {
-  0%, 100% { transform: scale(0) rotate(0deg); opacity: 0; }
-  50% { transform: scale(1.2) rotate(45deg); opacity: 1; }
-}
 @keyframes bb-z {
   0% { opacity: 0; transform: translate(0, 0.6px); }
   25% { opacity: 1; }
@@ -955,16 +948,6 @@ export default {
 @keyframes bb-pop {
   from { transform: scale(0); }
   to { transform: scale(1); }
-}
-@keyframes bb-note {
-  0% { opacity: 0; transform: translate(0, 0.5px); }
-  20% { opacity: 1; }
-  100% { opacity: 0; transform: translate(1.4px, -3px) rotate(12deg); }
-}
-@keyframes bb-slide {
-  0% { opacity: 0; transform: translateY(-0.4px); }
-  20% { opacity: 1; }
-  100% { opacity: 0; transform: translateY(1.6px); }
 }
 
 .robot-buddy.bb-roam {
@@ -977,9 +960,7 @@ export default {
 @media (prefers-reduced-motion: reduce) {
   .robot-buddy svg,
   .robot-buddy .bb-rig,
-  .robot-buddy .bb-spiral,
   .robot-buddy .bb-scan-bar,
-  .robot-buddy .bb-tremble,
   .robot-buddy .bb-wave { animation: none !important; }
 }
 </style>

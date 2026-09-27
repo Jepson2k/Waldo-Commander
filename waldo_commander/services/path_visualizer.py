@@ -427,6 +427,10 @@ def _run_simulation_isolated(
                 elif callable(main_func):
                     cast(Callable[[], None], main_func)()
 
+        except SystemExit:
+            # The program ended itself (sys.exit / raise SystemExit): the
+            # preview stops where the real run would, keeping what it planned.
+            pass
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 

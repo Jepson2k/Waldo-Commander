@@ -922,6 +922,29 @@ async def main():
         )
 
     @pytest.mark.asyncio
+    async def test_program_that_exits_previews_up_to_the_exit(self):
+        """A program ending itself with sys.exit() previews the motion it
+        planned before exiting, like the real run, instead of the SystemExit
+        escaping the preview and taking its caller down."""
+        visualizer = PathVisualizer()
+
+        program = """
+import sys
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+        sys.exit(3)
+        await rbt.move_j([100, -100, 190, -10, -10, 190], speed=1.0)
+"""
+
+        error = await visualizer.update_path_visualization(program)
+
+        assert error is None
+        assert len(self._active_dry_run().path_segments) == 1
+
+    @pytest.mark.asyncio
     async def test_visualizer_updates_total_steps(self):
         """PathVisualizer should update total_steps after simulation."""
         visualizer = PathVisualizer()
