@@ -1058,8 +1058,10 @@ html, body {
 .joint-dial-cell:focus-within .joint-dial-limits {
   opacity: 1;
 }
-/* Outranks the locked-state opacity so a disabled cap stays hidden until the dial is hovered */
-.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap { opacity: 0 !important; }
+/* Visibility, not opacity: Quasar's disabled opacity is !important inside a cascade
+   layer, which outranks any unlayered rule, so a cap at its limit would show */
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap,
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-dial-limits { visibility: hidden; }
 
 /* Level chips: percentage beside the icon, the rating in the popover; its dots
    take the progress token and Quasar dims the unselected ones */
