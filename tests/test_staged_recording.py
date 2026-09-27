@@ -152,7 +152,7 @@ async def test_recorded_lines_are_staged_until_kept_and_undo_takes_them_out(
     assert str(textarea.value).startswith(kept.rstrip("\n"))
     assert not staged_lines(textarea)
     editor = ui_state.editor_panel
-    assert editor.playback.record_btn._props.get("color") == "negative"
+    assert "recording" not in editor.playback.record_btn.classes
     assert editor.playback._recording_notification is None
 
 
