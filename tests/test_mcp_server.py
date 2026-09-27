@@ -779,3 +779,62 @@ async def test_play_pause_starts_preview_when_mcp_holds_lease(
     assert started["hit"], (
         "play_pause should start the preview when the MCP session holds the lease"
     )
+
+
+@pytest.mark.integration
+async def test_nothing_else_drives_while_a_program_holds_the_robot(
+    user: User,
+) -> None:
+    """A running program holds the robot: an MCP move is refused with a reason
+    that names the program, instead of reaching the controller and
+    interleaving with the program's own moves, and the refusal ends with the
+    run."""
+    from fastmcp.exceptions import ToolError
+
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_lease,
+        set_control_mode,
+    )
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    textarea = ui_state.active_textarea
+    assert textarea is not None
+    # Gated to the real subprocess: the dry-run preview runs the source too.
+    textarea.value = (
+        "import os, time\n"
+        'if os.environ.get("WALDO_STEP_SESSION"):\n'
+        "    time.sleep(30)\n"
+    )
+    home = list(waldoctl.commander.status.joints.angles.deg)
+    target = [home[0] + 5.0, *home[1:]]
+
+    set_control_mode(ControlMode.AUTOPILOT)  # simulator: no prompts
+    waldoctl.commander.status.simulator_active = True
+    try:
+        async with Client(get_mcp()) as client:
+            await client.call_tool("control.take_control")
+            await client.call_tool("execution.run_active")
+            for _ in range(100):
+                if is_any_program_running():
+                    break
+                await asyncio.sleep(0.05)
+            assert is_any_program_running()
+
+            with pytest.raises(ToolError, match="A program is moving the robot"):
+                await client.call_tool("motion.move_j", {"angles": target})
+
+            await client.call_tool("execution.stop_active")
+            await client.call_tool("motion.move_j", {"angles": target, "wait": True})
+        assert abs(waldoctl.commander.status.joints.angles.deg[0] - target[0]) < 1.0
+    finally:
+        if is_any_program_running():
+            async with Client(get_mcp()) as client:
+                await client.call_tool("execution.stop_active")
+        control_lease.reset()
