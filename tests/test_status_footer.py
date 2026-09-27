@@ -50,9 +50,14 @@ async def test_the_action_history_is_drawn_when_its_menu_opens(user: User) -> No
     await ensure_robot_ready_for_motion()
 
     action = waldoctl.commander.status.action
-    await ui_state.control_panel.client.home()
+    client = ui_state.control_panel.client
+    # Long enough to be seen executing: the log records what it sees run,
+    # and a command that ends between two status frames leaves no entry.
+    target = list(await client.angles())
+    target[0] += 5.0
+    await client.move_j(target, duration=1.0)
     assert await wait_until(lambda: action.latest is not None, timeout_s=10.0), (
-        "homing never reached the action log"
+        "the move never reached the action log"
     )
     latest = action.latest
     assert latest is not None
