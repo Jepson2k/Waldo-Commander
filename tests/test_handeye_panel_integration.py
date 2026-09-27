@@ -398,6 +398,31 @@ async def test_handeye_panel_workflow(
             calibration.pose.matrix(),
             atol=1e-8,
         )
+        save_button = panel._save_btn
+        assert save_button is not None and panel._saved
+
+        # Another solve is a measurement nobody saved yet.
+        user.find(marker="handeye-step-3").click()
+        await asyncio.sleep(0)
+        user.find(marker="handeye-solve").click()
+        await _wait_for(lambda: panel._result is not result, timeout=30.0)
+        assert not panel._saved, "a new solve still reads as saved"
+        assert "handeye-step-done" not in panel._step_buttons[4].classes
+        assert save_button.enabled
+        # A solve that fails leaves nothing to save.
+        good = panel._samples[0]
+        panel._samples[0] = replace(
+            good, detection=replace(good.detection, image_size=(1, 1))
+        )
+        user.find(marker="handeye-solve").click()
+        await _wait_for(
+            lambda: not save_button.enabled,
+            timeout=30.0,
+            message="a failed solve left Save enabled",
+        )
+        panel._samples[0] = good
+        user.find(marker="handeye-step-4").click()
+        await asyncio.sleep(0)
         user.find(marker="camera-load").click()
         await user.should_see("Bindings match:", retries=50)
         user.find(marker="camera-export").click()

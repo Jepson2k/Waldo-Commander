@@ -112,6 +112,10 @@ AUTO_SETTLE_S = 0.5
 AUTO_CAPTURE_ATTEMPTS = 3
 AUTO_CAPTURE_RETRY_S = 0.6
 AUTO_MAX_CONSECUTIVE_REJECTS = 3
+# Largest tool motion between the poses read before and after a capture.
+# Rotation has its own limit: turning about the tool origin moves it by nothing.
+STILL_TRANSLATION_MM = 0.05
+STILL_ROTATION_DEG = 0.05
 
 
 class _CaptureRefused(Exception):
@@ -167,7 +171,7 @@ class HandEyeCalibrationPanel(Panel):
         self._sample_revision = 0
         self._solving = False
         self._method = "PARK"
-        self._result: handeye.HandEyeResult | None = None
+        self._solved: handeye.HandEyeResult | None = None
         self._last_detection: handeye.Detection | None = None
         self._detect_busy = False
         self._decode_failures = 0
@@ -179,6 +183,17 @@ class HandEyeCalibrationPanel(Panel):
         self._advanced = False
         self._saved = False
         self._reset_element_refs()
+
+    @property
+    def _result(self) -> handeye.HandEyeResult | None:
+        return self._solved
+
+    @_result.setter
+    def _result(self, result: handeye.HandEyeResult | None) -> None:
+        # Save stores one solve; any other result has not been saved.
+        if result is not self._solved:
+            self._saved = False
+        self._solved = result
 
     def _reset_element_refs(self) -> None:
         self._image: ui.interactive_image | None = None
@@ -777,16 +792,18 @@ class HandEyeCalibrationPanel(Panel):
             raise _CaptureRefused(str(error)) from error
         except (OSError, NotImplementedError) as error:
             raise _CaptureRefused(str(error), fatal=True) from error
+        drift = (
+            np.linalg.inv(before.nominal_tool.matrix()) @ after.nominal_tool.matrix()
+        )
+        turned_deg = np.degrees(
+            np.arccos(np.clip((np.trace(drift[:3, :3]) - 1.0) / 2.0, -1.0, 1.0))
+        )
         if (
             after.binding != before.binding
             or after.applied != before.applied
             or latest.session_id != observation.session_id
-            or not np.allclose(
-                before.nominal_tool.matrix(),
-                after.nominal_tool.matrix(),
-                atol=0.05,
-                rtol=0,
-            )
+            or np.linalg.norm(drift[:3, 3]) > STILL_TRANSLATION_MM
+            or turned_deg > STILL_ROTATION_DEG
         ):
             raise _CaptureRefused(
                 "Camera or robot changed during capture; hold still and try again"
@@ -840,8 +857,6 @@ class HandEyeCalibrationPanel(Panel):
 
     def _refresh_samples(self) -> None:
         n = len(self._samples)
-        if self._result is None:
-            self._saved = False
         if self._sample_count is not None:
             self._sample_count.set_text(f"{n} of {TARGET_VIEWS} views")
         if self._progress is not None:
@@ -1302,6 +1317,8 @@ class HandEyeCalibrationPanel(Panel):
             )
         except handeye.CalibrationError as e:
             ui.notify(str(e), color="negative")
+            if self._save_btn is not None:
+                self._save_btn.set_enabled(False)
             return
         finally:
             self._solving = False
