@@ -78,6 +78,7 @@ from waldo_commander.services.control_lease import (
     control_lease,
     restore_control_mode,
 )
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services import startup_mode
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
@@ -1803,6 +1804,7 @@ def _cycle_start_tick(page_client: Client | None) -> None:
         and cur == 1
         and time.monotonic() - a._cycle_last_fire >= CYCLE_START_DEBOUNCE_S
         and not is_any_program_running()
+        and motion_guard.owner is None
         and robot_state.homed
         and (st.connected or st.simulator_active)
         and io.estop == 1
@@ -1870,6 +1872,7 @@ async def _status_consumer() -> None:
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
     error_shadow: waldoctl.RobotError | None = None
+    estop_shadow = 1
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1904,6 +1907,12 @@ async def _status_consumer() -> None:
                         st.joints.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io
+                    # The physical E-stop halts the controller without any
+                    # Commander stop path running; tell motion sources.
+                    estop_now = int(robot_state.io[-1])
+                    if estop_shadow == 1 and estop_now == 0:
+                        motion_guard.note_stop("physical E-stop")
+                    estop_shadow = estop_now
                     if not playback_coordination.sim_pose_override:
                         robot_state.tool_status = status.tool_status
 
