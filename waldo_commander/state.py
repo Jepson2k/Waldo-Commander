@@ -477,9 +477,11 @@ def reset_all_state() -> None:
     from waldo_commander.services.action_log import action_log_service
     from waldo_commander.services.control_lease import control_lease
     from waldo_commander.services.edit_decisions import clear as clear_edit_decisions
+    from waldo_commander.services.motion_guard import motion_guard
 
     action_log_service.clear()
     control_lease.reset()
+    motion_guard.reset()
     clear_edit_decisions()
     import waldoctl
 
