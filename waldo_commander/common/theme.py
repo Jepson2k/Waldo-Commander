@@ -13,7 +13,6 @@ scene floor.
 - Three.js and ECharts read hex from :func:`hex_of`; vertex colours use :func:`rgb01`.
 """
 
-import logging
 import math
 import re
 from dataclasses import dataclass
@@ -22,9 +21,6 @@ from typing import Any, Literal
 
 from nicegui import app, ui
 
-logger = logging.getLogger(__name__)
-
-ThemeMode = Literal["light", "dark", "system"]
 ThemeKey = Literal["dark", "light"]
 
 STORAGE_KEY = "theme"
@@ -132,9 +128,7 @@ SIZE: dict[str, str] = {
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
 OPACITY: dict[str, str] = {"opacity-disabled": "0.6", "opacity-locked": "0.15"}
 Z_INDEX: dict[str, str] = {
-    "z-scene": "0",
     "z-loading": "10",
-    "z-hud": "20",
     "z-panels": "30",
     "z-rail": "40",
     "z-rail-bottom": "50",
@@ -165,15 +159,11 @@ FONT_FAMILY: dict[str, str] = {
 }
 # name -> (font-size, line-height, weight, letter-spacing or None)
 TYPE_STYLE: dict[str, tuple[str, str, int, str | None]] = {
-    "headline": ("20px", "28px", 600, None),
     "title": ("18px", "28px", 500, None),
     "label": ("14px", "20px", 500, None),
     "body": ("14px", "20px", 400, None),
     "caption": ("12px", "16px", 400, None),
     "micro": ("11px", "14px", 500, "0.02em"),
-    "readout-lg": ("30px", "36px", 400, None),
-    "readout": ("16px", "24px", 400, None),
-    "code": ("13px", "20px", 400, None),
 }
 
 # ── Colour maths (sRGB <-> OKLCH) ────────────────────────────────────
@@ -269,7 +259,6 @@ def _derive(p: Palette) -> dict[str, str]:
         "scene-ground": _shift(p.bg, L=ground_L),
         "scene-grid": _shift(p.bg, L=ground_L + 0.16),
         "surface": p.surface,
-        "surface-2": p.surface_2,
         "glass": _alpha(p.surface, 0.86),
         "glass-end": _alpha(_shift(p.surface, dL=-0.08), 0.86),
         "glass-border": _alpha(p.border, 0.5),
@@ -287,7 +276,6 @@ def _derive(p: Palette) -> dict[str, str]:
         "focus-ring": _shift(p.accent, L=0.75),
         "control": p.surface_2,
         "progress": _shift(p.accent, L=0.75),
-        "level-track": p.surface,
         "positive": _shift(p.green, L=0.88, C=0.6),
         "positive-soft": _alpha(p.green, 0.12),
         "warning": _shift(p.yellow, L=0.92, C=0.7),
@@ -351,11 +339,6 @@ def theme_names() -> list[str]:
     return list(THEMES)
 
 
-def active_theme() -> str:
-    """The theme :func:`apply_theme` last put on the page."""
-    return _active_theme
-
-
 def stored_theme() -> str:
     """The theme the user chose, or the default."""
     try:
@@ -389,8 +372,7 @@ def hex_of(name: str) -> str:
 
 def rgb01(name: str) -> list[float]:
     """A token as an RGB triple in 0–1, for Three.js vertex colours."""
-    h = hex_of(name).lstrip("#")
-    return [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    return list(_rgba(hex_of(name))[:3])
 
 
 def effective_theme() -> ThemeKey:
@@ -405,30 +387,30 @@ class SceneColors:
     :func:`hex_of` at the point of use.
     """
 
-    AXIS_X_HEX = "#d94c3f"
-    AXIS_Y_HEX = "#2faf7a"
-    AXIS_Z_HEX = "#4a63e0"
-    AXIS_RX_HEX = "#f1a79f"
-    AXIS_RY_HEX = "#aee5cf"
-    AXIS_RZ_HEX = "#aeb9f3"
+    AXIS_X_HEX = FIXED_COLOR["axis-x"]
+    AXIS_Y_HEX = FIXED_COLOR["axis-y"]
+    AXIS_Z_HEX = FIXED_COLOR["axis-z"]
+    AXIS_RX_HEX = FIXED_COLOR["axis-rx"]
+    AXIS_RY_HEX = FIXED_COLOR["axis-ry"]
+    AXIS_RZ_HEX = FIXED_COLOR["axis-rz"]
 
-    SIM_AMBER_HEX = "#c77d28"
-    EDIT_GRAY_HEX = "#525252"
-    COLLISION_HEX = "#b00020"
+    SIM_AMBER_HEX = FIXED_COLOR["scene-arm-sim"]
+    EDIT_GRAY_HEX = FIXED_COLOR["scene-arm-edit"]
+    COLLISION_HEX = FIXED_COLOR["scene-collision"]
 
-    SHAPE_HEX = "#6d8ea0"
-    SHAPE_DRAFT_HEX = "#9db8c8"
-    SHAPE_INSTALL_HEX = "#55606a"
-    SHAPE_PROPOSED_HEX = "#8a7bb5"
+    SHAPE_HEX = FIXED_COLOR["scene-shape"]
+    SHAPE_DRAFT_HEX = FIXED_COLOR["scene-shape-draft"]
+    SHAPE_INSTALL_HEX = FIXED_COLOR["scene-shape-install"]
+    SHAPE_PROPOSED_HEX = FIXED_COLOR["scene-shape-proposed"]
 
-    TOOL_BODY_HEX = "#2a9d8f"
-    TOOL_BODY_SIM_HEX = "#2a9d8f"
-    TOOL_BODY_EDIT_HEX = "#3d6b65"
-    TOOL_MOVING_HEX = "#4ecdc4"
-    TOOL_MOVING_SIM_HEX = "#4ecdc4"
-    TOOL_MOVING_EDIT_HEX = "#4d7e77"
+    TOOL_BODY_HEX = FIXED_COLOR["scene-tool"]
+    TOOL_BODY_SIM_HEX = TOOL_BODY_HEX
+    TOOL_BODY_EDIT_HEX = FIXED_COLOR["scene-tool-edit"]
+    TOOL_MOVING_HEX = FIXED_COLOR["scene-tool-moving"]
+    TOOL_MOVING_SIM_HEX = TOOL_MOVING_HEX
+    TOOL_MOVING_EDIT_HEX = FIXED_COLOR["scene-tool-moving-edit"]
 
-    HOVER_HEX = "#ffffff"
+    HOVER_HEX = FIXED_COLOR["scene-hover"]
     ENVELOPE_HEX = AXIS_Z_HEX
     TCP_ACTIVE_HEX = AXIS_Z_HEX
     TCP_INACTIVE_HEX = EDIT_GRAY_HEX
@@ -487,9 +469,10 @@ def _scalar_block() -> str:
 def _type_classes() -> str:
     rules = []
     for name, (size, lh, weight, spacing) in TYPE_STYLE.items():
-        family = "var(--wc-font-mono)" if name == "code" else "var(--wc-font-sans)"
         extra = f" letter-spacing: {spacing};" if spacing else ""
-        rules.append(f".wc-{name} {{ font: {weight} {size}/{lh} {family};{extra} }}")
+        rules.append(
+            f".wc-{name} {{ font: {weight} {size}/{lh} var(--wc-font-sans);{extra} }}"
+        )
     return "\n".join(rules)
 
 
@@ -604,13 +587,10 @@ input[type=number] {{
     )
 
 
-def apply_theme(name: str | None = None) -> None:
-    """Put a theme on the page: Quasar colours, dark mode and the token CSS.
-
-    Without a name, the theme the user chose (or the default) is applied.
-    """
+def apply_theme() -> None:
+    """Put the stored theme on the page: Quasar colours, dark mode and the token CSS."""
     global _active_theme
-    _active_theme = name if name in THEMES else stored_theme()
+    _active_theme = stored_theme()
     ui.colors(
         primary=css("action"),
         secondary=css("action-hover"),
@@ -844,8 +824,6 @@ html, body {
 }
 .joint-bar .q-linear-progress__track { opacity: 1; }
 
-/* Settings rows fill the panel, never the widest child */
-.settings-scroll .q-scrollarea__content { width: 100%; min-width: 0; }
 .joint-value-pill {
   padding: 0 var(--wc-space-2);
   color: var(--wc-text);
@@ -1211,7 +1189,6 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
 .editor-tabs .q-tab {
   padding: 4px 8px !important;
   min-height: 42px !important;
-  text-transform: none !important;
 }
 .editor-tabs .q-tab__indicator { display: none; }
 
@@ -1253,16 +1230,6 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
   min-height: 20px !important;
   font-size: 0.85rem;
 }
-
-/* Compact save FAB in tabs */
-.editor-tab .save-fab {
-  min-width: var(--wc-size-control-sm) !important;
-  min-height: var(--wc-size-control-sm) !important;
-  width: var(--wc-size-control-sm) !important;
-  height: var(--wc-size-control-sm) !important;
-}
-
-.editor-tab .save-fab .q-icon { font-size: 14px !important; }
 
 /* Editor tabs scroll area - no padding */
 .editor-tabs-scroll .q-scrollarea__content {
@@ -1323,19 +1290,19 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
   white-space: pre;
 }
 
-/* Lines a recording session wrote that nobody has kept yet, in the Record
-   button's amber, and a badge on each captured span. */
+/* Lines a recording session wrote that nobody has kept yet, and a badge on
+   each captured span. */
 .cm-line.cm-line-staged {
-  background-color: color-mix(in srgb, var(--q-warning) 12%, transparent);
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--q-warning) 70%, transparent);
+  background-color: color-mix(in srgb, var(--wc-fill-warning) 12%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--wc-fill-warning) 70%, transparent);
 }
 .cm-staged-badge {
   margin-left: 10px;
   padding: 0 6px;
-  border-radius: 9999px;
+  border-radius: var(--wc-radius-pill);
   font-size: 11px;
-  color: var(--q-warning);
-  background-color: color-mix(in srgb, var(--q-warning) 15%, transparent);
+  color: var(--wc-fill-warning);
+  background-color: color-mix(in srgb, var(--wc-fill-warning) 15%, transparent);
 }
 
 /* Pending-edit review cluster — swaps in for the editor toolbar buttons. */
@@ -1346,8 +1313,8 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
   padding: 0 2px 0 10px;
 }
 .pending-edits-banner.staged-take {
-  background-color: color-mix(in srgb, var(--q-warning) 8%, transparent);
-  border-color: color-mix(in srgb, var(--q-warning) 30%, transparent);
+  background-color: color-mix(in srgb, var(--wc-fill-warning) 8%, transparent);
+  border-color: color-mix(in srgb, var(--wc-fill-warning) 30%, transparent);
 }
 
 

@@ -69,7 +69,6 @@ class UrdfSceneConfig:
     Signature: ``(tool_key, variant_key) -> ToolPose | None``.
     """
 
-    # Colors from theme.py SceneColors
     material: str = field(default_factory=lambda: hex_of("scene-arm"))
     """Default material color for robot meshes."""
 
@@ -77,8 +76,10 @@ class UrdfSceneConfig:
     """Scene background color."""
 
     ground_color: str = field(default_factory=lambda: hex_of("scene-ground"))
-    grid_color: str = field(default_factory=lambda: hex_of("scene-grid"))
     """Ground plane color (contrasts with background)."""
+
+    grid_color: str = field(default_factory=lambda: hex_of("scene-grid"))
+    """Floor grid line color."""
 
     sim_color: str = SceneColors.SIM_AMBER_HEX
     """Color for robot in simulator mode (amber ghost)."""
