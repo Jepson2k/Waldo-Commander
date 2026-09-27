@@ -32,6 +32,12 @@ from waldo_commander.services.script_runner import (
     run_script,
     stop_script,
 )
+from waldo_commander.services.motion_guard import (
+    PROGRAM,
+    MotionBusy,
+    Reservation,
+    motion_guard,
+)
 from waldo_commander.services.stepping_client import GUIStepController
 from waldo_commander.services.programs import is_any_program_running
 import waldoctl
@@ -63,6 +69,9 @@ class ScriptExecutionController:
         # Exit code of the most recently finished run (None while running or
         # before any run) — lets execution.wait_active report success/crash.
         self.last_exit_code: int | None = None
+        # Held from start() until the run is over, so nothing else drives
+        # the robot while a program does.
+        self._reservation: Reservation | None = None
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel the event watcher bound to this page.
@@ -156,6 +165,11 @@ class ScriptExecutionController:
         """
         if is_any_program_running():
             ui.notify("Script already running", color="warning")
+            return
+        try:
+            self._reservation = motion_guard.reserve(PROGRAM)
+        except MotionBusy as e:
+            ui.notify(str(e), color="warning")
             return
 
         self.last_exit_code = None
@@ -255,6 +269,7 @@ class ScriptExecutionController:
             ui.notify("No script running", color="warning")
             return
 
+        motion_guard.note_stop("program stop")
         try:
             handle = self.script_handle
             self.script_handle = None
@@ -271,6 +286,8 @@ class ScriptExecutionController:
         except Exception as e:
             ui.notify(f"Error stopping script: {e}", color="negative")
             logger.error("Error stopping script: %s", e)
+        finally:
+            self._release_reservation()
 
     # ---- Public step-controller actions (called from playback UI handlers) ----
 
@@ -385,8 +402,14 @@ class ScriptExecutionController:
             running_tab.dry_run.playback.is_playing = False
         self._script_tab_id = None
         playback_coordination.sim_pose_override = False
+        self._release_reservation()
         simulation_state.notify_changed()
         self.cleanup_stepping()
+
+    def _release_reservation(self) -> None:
+        if self._reservation is not None:
+            self._reservation.release()
+            self._reservation = None
 
     def _cancel_watcher(self) -> None:
         """Cancel the event watcher task without touching step IPC state.

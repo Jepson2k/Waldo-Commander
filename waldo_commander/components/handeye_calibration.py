@@ -34,6 +34,12 @@ from waldo_commander.services.control_lease import (
     require_browser_control,
 )
 from waldo_commander.services.camera_service import camera_service
+from waldo_commander.services.motion_guard import (
+    CALIBRATION,
+    MotionBusy,
+    Reservation,
+    motion_guard,
+)
 from waldo_commander.state import robot_state
 
 logger = logging.getLogger(__name__)
@@ -729,8 +735,13 @@ class HandEyeCalibrationPanel(Panel):
             return
         if self._auto_running:
             self._auto_cancel = True
-            await commander.client.stop()
-            ui.notify("Stopping after the current move", color="warning")
+            if await motion_guard.stop_robot(commander.client, "auto-calibration stop"):
+                ui.notify("Auto-calibration stopped", color="warning")
+            else:
+                ui.notify("Stop not confirmed — use E-stop", color="negative")
+            return
+        if (busy := motion_guard.busy_reason()) is not None:
+            ui.notify(busy, color="warning")
             return
         if not camera_service.active:
             ui.notify("No camera active — assign a tool camera first", color="warning")
@@ -769,12 +780,20 @@ class HandEyeCalibrationPanel(Panel):
         page_client = context.client
         if not require_browser_control(page_client.id):
             return
+        try:
+            reservation = motion_guard.reserve(CALIBRATION)
+        except MotionBusy as e:
+            ui.notify(str(e), color="warning")
+            return
         self._auto_cancel = False
         self._auto_task = background_tasks.create(
-            self._auto_run(commander, page_client), name="handeye-auto-calibration"
+            self._auto_run(commander, page_client, reservation),
+            name="handeye-auto-calibration",
         )
 
-    async def _auto_run(self, commander: Commander, page_client: Client) -> None:
+    async def _auto_run(
+        self, commander: Commander, page_client: Client, reservation: Reservation
+    ) -> None:
         """Drive the robot through :data:`AUTO_VIEW_DELTAS_DEG`, capture at
         each pose, return to the start pose, and solve. Runs as a background
         task; Stop sets ``_auto_cancel`` and halts the in-flight move, and the
@@ -888,6 +907,7 @@ class HandEyeCalibrationPanel(Panel):
                         color="negative",
                     )
         finally:
+            reservation.release()
             self._auto_cancel = False
             self._set_auto_progress(None)
 
