@@ -86,6 +86,8 @@ def test_bottom_panel_stays_clear_of_the_control_panel(screen):
     screen_wait_for_scene_ready(screen, timeout_s=40)
     dismiss_dialogs(screen)
     screen.selenium.set_window_size(1366, 768)
+    # The program column narrows the panel from the left as the control panel does from the right.
+    click_tab(screen, "program")
     click_tab(screen, "diagnostics")
     rects = WebDriverWait(screen.selenium, 10).until(
         lambda _: (
@@ -103,3 +105,13 @@ def test_bottom_panel_stays_clear_of_the_control_panel(screen):
         and r
     )
     assert rects["panelLeft"] < rects["panelRight"], rects
+    grid = js(
+        screen,
+        """
+        const g = document.querySelector('.bottom-panel .diag-grid');
+        return {width: g.clientWidth,
+                columns: getComputedStyle(g).gridTemplateColumns.split(' ').length};
+        """,
+    )
+    # Two 300 px columns and their gap do not fit, so the sections stack.
+    assert grid["width"] < 616 and grid["columns"] == 1, grid
