@@ -43,6 +43,12 @@ from waldo_commander.services.control_lease import (
     control_lease,
     require_browser_control,
 )
+from waldo_commander.services.motion_guard import (
+    CALIBRATION,
+    MotionBusy,
+    Reservation,
+    motion_guard,
+)
 from waldo_commander.services.tcp_calibration import observe_tcp, read_applied_tcp
 from waldo_commander.state import robot_state
 
@@ -143,14 +149,6 @@ class _CaptureRefused(Exception):
 
 def _selected_tool_key() -> str:
     return ng_app.storage.general.get("selected_tool", "NONE")
-
-
-def _quality_color(value: float, thresholds: tuple[float, float]) -> str:
-    if value < thresholds[0]:
-        return "text-wc-positive"
-    if value < thresholds[1]:
-        return "text-wc-warning"
-    return "text-wc-error"
 
 
 def _verdict(result: handeye.HandEyeResult) -> tuple[str, str, str]:
@@ -1081,8 +1079,13 @@ class HandEyeCalibrationPanel(Panel):
             return
         if self._auto_running:
             self._auto_cancel = True
-            await commander.client.stop()
-            ui.notify("Stopping after the current move", color="warning")
+            if await motion_guard.stop_robot(commander.client, "auto-calibration stop"):
+                ui.notify("Auto-calibration stopped", color="warning")
+            else:
+                ui.notify("Stop not confirmed — use E-stop", color="negative")
+            return
+        if (busy := motion_guard.busy_reason()) is not None:
+            ui.notify(busy, color="warning")
             return
         if not camera_service.active:
             ui.notify("No camera active — assign a tool camera first", color="warning")
@@ -1125,18 +1128,26 @@ class HandEyeCalibrationPanel(Panel):
         page_client = context.client
         if not require_browser_control(page_client.id):
             return
+        try:
+            reservation = motion_guard.reserve(CALIBRATION)
+        except MotionBusy as e:
+            ui.notify(str(e), color="warning")
+            return
         self._auto_cancel = False
         self._auto_task = background_tasks.create(
-            self._auto_run(commander, page_client), name="handeye-auto-calibration"
+            self._auto_run(commander, page_client, reservation),
+            name="handeye-auto-calibration",
         )
 
-    async def _auto_run(self, commander: Commander, page_client: Client) -> None:
+    async def _auto_run(
+        self, commander: Commander, page_client: Client, reservation: Reservation
+    ) -> None:
         """Drive the robot through :data:`AUTO_VIEW_DELTAS_DEG`, capture at
         each pose, return to the start pose, and solve. Runs as a background
         task; Stop sets ``_auto_cancel`` and halts the in-flight move, and the
         run aborts if the page that started it disconnects or another client
         takes control."""
-        with motion_recorder.owned():
+        with reservation, motion_recorder.owned():
             await self._auto_run_owned(commander, page_client)
 
     async def _auto_run_owned(self, commander: Commander, page_client: Client) -> None:

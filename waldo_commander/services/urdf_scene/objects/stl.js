@@ -1,9 +1,6 @@
 import { apply_material, THREE, STLLoader } from "nicegui-scene";
 
 const loader = new STLLoader();
-let requested = 0;
-let loaded = 0;
-const report = () => emitEvent("wc-mesh-progress", { loaded, requested });
 
 // STL files carry one flat normal per triangle, so curved surfaces render as
 // facets. Average the normals of the triangles that meet at each vertex,
@@ -73,21 +70,12 @@ function smoothNormals(geometry, creaseDegrees) {
 }
 
 // NiceGUI's STL object with a standard (PBR) material that casts and receives
-// shadows, crease-aware smooth normals, and a load report to the page so the
-// loading overlay can count meshes in.
+// shadows, and crease-aware smooth normals.
 export default class Stl {
   mesh;
 
   async create_mesh(url, wireframe) {
-    requested += 1;
-    report();
-    let geometry;
-    try {
-      geometry = await loader.loadAsync(url);
-    } finally {
-      loaded += 1;
-      report();
-    }
+    const geometry = await loader.loadAsync(url);
     this.mesh = new THREE.Group();
     if (wireframe) {
       this.mesh.add(

@@ -10,6 +10,7 @@ from waldoctl import (
     RobotClient,
 )
 
+from waldo_commander.common.panel_theme import chart_grid, chart_text
 from waldo_commander.common.theme import css, hex_of
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S, config
 from waldo_commander.services.camera_service import camera_service
@@ -161,13 +162,13 @@ class GripperPage:
 
     def _build_chart(self) -> None:
         clr_pos, clr_cur = self._clr_pos, self._clr_cur
-        clr_axis = hex_of("text-muted")
+        clr_axis = chart_text()
         y_axis_left: dict = {
             "type": "value",
             "name": "%",
             "nameTextStyle": {"fontSize": 11, "color": clr_axis},
             "axisLabel": {"fontSize": 11, "color": clr_axis},
-            "splitLine": {"lineStyle": {"color": hex_of("control")}},
+            "splitLine": {"lineStyle": {"color": chart_grid()}},
             "min": 0,
             "max": 100,
         }

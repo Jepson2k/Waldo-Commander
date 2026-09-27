@@ -1,4 +1,4 @@
-"""Pre-commit check: colour values live in theme.py and tokens.py only.
+"""Pre-commit check: colour values live in theme.py only.
 
 Everything else refers to a token: ``var(--wc-<name>)`` in CSS and styles,
 ``wc-<name>`` in Quasar props, ``text-wc-<name>`` / ``bg-wc-<name>`` classes,
@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "waldo_commander"
-ALLOWED = {PACKAGE / "common" / "theme.py", PACKAGE / "common" / "tokens.py"}
+ALLOWED = {PACKAGE / "common" / "theme.py"}
 
 QUASAR_HUES = (
     "red|pink|purple|deep-purple|indigo|blue|light-blue|cyan|teal|green|light-green|"
