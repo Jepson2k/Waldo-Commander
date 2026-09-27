@@ -1,6 +1,6 @@
 /**
  * Scene framing: keeps the camera centred on the part of the 3D view that the
- * program column and the status footer leave uncovered.
+ * program column, the status footer and the bottom panel leave uncovered.
  *
  * The fork's ui.scene resets the camera aspect on every window resize, so the
  * view offset is re-applied a frame later and again on every `wc:layout`
@@ -25,9 +25,11 @@
             left = parseFloat(document.documentElement.style.getPropertyValue('--wc-column-right')) || 0;
         }
         let bottom = 0;
-        const footer = document.querySelector('.status-footer');
-        if (footer && footer.offsetParent !== null) {
-            bottom = Math.max(0, Math.round(window.innerHeight - footer.getBoundingClientRect().top));
+        for (const selector of ['.status-footer', '.bottom-panel']) {
+            const cover = document.querySelector(selector);
+            if (cover && cover.offsetParent !== null) {
+                bottom = Math.max(bottom, Math.round(window.innerHeight - cover.getBoundingClientRect().top));
+            }
         }
         return { left: Math.max(0, left), bottom: bottom };
     }
@@ -61,6 +63,9 @@
             listening = true;
             window.addEventListener('resize', function() { requestAnimationFrame(refresh); });
             window.addEventListener('wc:layout', refresh);
+            // Showing or hiding the bottom panel changes its size, which is when the cover changes.
+            const bottomPanel = document.querySelector('.bottom-panel');
+            if (bottomPanel && 'ResizeObserver' in window) new ResizeObserver(refresh).observe(bottomPanel);
         }
         refresh();
     }

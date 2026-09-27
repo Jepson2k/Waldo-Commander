@@ -125,6 +125,8 @@ SIZE: dict[str, str] = {
     "size-joint-bar": "33px",
     "size-jog-slot": "72px",
     "size-rail": "52px",
+    "size-panel-inset": "58px",
+    "size-bottom-panel": "340px",
     "size-footer": "28px",
 }
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
@@ -1061,7 +1063,7 @@ html, body {
 /* Shared left-side panel container base styling */
 .left-panels-container {
   position: absolute;
-  left: 58px;
+  left: var(--wc-size-panel-inset);
   max-width: calc(100vw - 80px);
   overflow: hidden !important;
   scrollbar-width: none !important;
@@ -1092,6 +1094,10 @@ html, body {
   height: auto !important;
 }
 .panels-wrap.column-open .top-panels-container > .q-panel > .program-panel { max-height: none; }
+/* The bottom panel takes the column's lower part, as a terminal panel does under an editor. */
+body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-container {
+  bottom: calc(var(--wc-footer-clearance) + var(--wc-size-bottom-panel) + var(--wc-space-3));
+}
 
 /* Panel content is interactive when visible */
 .left-panels-container .overlay-card { pointer-events: auto; }
@@ -1687,8 +1693,8 @@ html, body {
   position: absolute;
   right: calc(min(var(--wc-control-inset, 0px), 50vw) + var(--wc-space-3));
   bottom: var(--wc-footer-clearance);
-  left: calc(var(--wc-column-right, 0px) + var(--wc-space-3));
-  height: 340px;
+  left: var(--wc-size-panel-inset);
+  height: var(--wc-size-bottom-panel);
   max-height: calc(100vh - var(--wc-footer-clearance) - var(--wc-space-3));
   z-index: var(--wc-z-panels);
   display: flex;
