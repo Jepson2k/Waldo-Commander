@@ -8,6 +8,7 @@ calibrateHandEye) recovers it.
 from __future__ import annotations
 
 import math
+import time
 
 import cv2
 import numpy as np
@@ -255,3 +256,71 @@ def test_fixed_camera_and_saved_measurement_import():
                 backend="parol6",
                 tool=tool,
             )
+
+
+@pytest.mark.unit
+def test_board_must_fit_its_dictionary():
+    """A 11x10 board needs 55 markers and DICT_4X4_50 has 50: the spec is
+    refused up front instead of failing when the board is printed."""
+    too_big = handeye.BoardSpec(squares_x=11, squares_y=10, dictionary="DICT_4X4_50")
+    with pytest.raises(handeye.CalibrationError, match="55 markers"):
+        handeye.make_detector(too_big)
+    with pytest.raises(handeye.CalibrationError, match="55 markers"):
+        handeye.board_png(too_big)
+
+    largest = handeye.BoardSpec(squares_x=10, squares_y=10, dictionary="DICT_4X4_50")
+    assert (
+        cv2.imdecode(
+            np.frombuffer(handeye.board_png(largest, dpi=72), np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        is not None
+    )
+
+
+def _brute_force_diversity(poses: list[np.ndarray]) -> tuple[float, float]:
+    angles: list[float] = []
+    axes: list[np.ndarray] = []
+    for i in range(len(poses)):
+        for j in range(i + 1, len(poses)):
+            rotvec = Rotation.from_matrix(
+                poses[i][:3, :3].T @ poses[j][:3, :3]
+            ).as_rotvec()
+            angle = float(np.linalg.norm(rotvec))
+            angles.append(math.degrees(angle))
+            if math.degrees(angle) >= handeye.AXIS_MIN_ROTATION_DEG:
+                axes.append(rotvec / angle)
+    if not angles:
+        return 0.0, 0.0
+    widest = 0.0
+    for i in range(len(axes)):
+        for j in range(i + 1, len(axes)):
+            cos = float(np.clip(abs(np.dot(axes[i], axes[j])), 0.0, 1.0))
+            widest = max(widest, math.degrees(math.acos(cos)))
+    return max(angles), widest
+
+
+@pytest.mark.unit
+def test_motion_diversity_stays_quick_as_views_pile_up():
+    """Views accumulate across runs and the panel refreshes the diversity
+    line on the UI loop: sixty views take well under a second, with the same
+    answer as comparing every pair of relative rotations one by one."""
+    rng = np.random.default_rng(11)
+
+    def poses(n: int) -> list[np.ndarray]:
+        out = []
+        for rotvec_deg in rng.normal(0.0, 25.0, (n, 3)):
+            T = np.eye(4)
+            T[:3, :3] = Rotation.from_rotvec(np.radians(rotvec_deg)).as_matrix()
+            out.append(T)
+        return out
+
+    for sample in (poses(8), [poses(1)[0]] * 3, poses(1), []):
+        assert handeye.motion_diversity(sample) == pytest.approx(
+            _brute_force_diversity(sample), rel=1e-9, abs=1e-6
+        )
+
+    many = poses(60)
+    started = time.perf_counter()
+    handeye.motion_diversity(many)
+    assert time.perf_counter() - started < 1.0

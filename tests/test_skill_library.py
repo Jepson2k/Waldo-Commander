@@ -177,15 +177,19 @@ async def test_skill_form_inserts_fixed_calls_and_the_selection_runs_live(
     assert editor is not None
     open_skill("waldo.approach")
     await asyncio.sleep(0)
-    # A clearance far outside the workspace is refused by the planner, and the
-    # form says so before the call is inserted, rather than drawing nothing and
-    # leaving the refusal for the robot to deliver.
-    element("skill-arg-clearance_mm").set_value(5000)
-    await user.should_see(content="Cannot plan this from the current pose", retries=100)
-    element("skill-arg-clearance_mm").set_value(2)
     # The configured call is drawn in the scene before it is inserted anywhere.
     scene = ui_state.urdf_scene
     assert scene is not None
+    element("skill-arg-clearance_mm").set_value(2)
+    assert await wait_until(lambda: bool(scene._skill_preview_objects), timeout_s=30)
+    # A clearance far outside the workspace is refused by the planner, and the
+    # form says so before the call is inserted, rather than drawing nothing and
+    # leaving the refusal for the robot to deliver. The path drawn for the
+    # previous clearance goes: it is not what Insert would now put in.
+    element("skill-arg-clearance_mm").set_value(5000)
+    await user.should_see(content="Cannot plan this from the current pose", retries=100)
+    assert not scene._skill_preview_objects, "a refused call keeps an older path"
+    element("skill-arg-clearance_mm").set_value(2)
     assert await wait_until(lambda: bool(scene._skill_preview_objects), timeout_s=10)
     await user.should_not_see(content="Cannot plan this from the current pose")
     user.find(marker="skill-insert").click()
@@ -400,3 +404,53 @@ def test_a_skill_without_a_saved_setup_or_a_pose_says_what_to_do():
     assert labels["waldo.approach"] == "Approach"
     assert labels["waldo.retract"] != labels["acme.retract"]
     assert "waldo" in labels["waldo.retract"] and "acme" in labels["acme.retract"]
+
+
+@pytest.mark.integration
+async def test_a_skill_preview_leaves_the_app_collision_world_alone(
+    user: User, monkeypatch: pytest.MonkeyPatch
+):
+    """A skill is planned in the preview worker, never in the app: a skill that
+    edits the world must not leave its shapes in the app's own collision
+    checker, which mirrors the controller's world."""
+    import importlib.metadata
+
+    import parol6.PAROL6_ROBOT as PAROL6_ROBOT
+    import waldoctl.skills
+
+    real_entry_points = waldoctl.skills.entry_points
+    fence = importlib.metadata.EntryPoint(
+        name="fence_then_retract",
+        value="tests.helpers.preview_skills:fence_then_retract",
+        group="waldoctl.skills",
+    )
+
+    def entry_points(*, group: str):
+        found = list(real_entry_points(group=group))
+        return [*found, fence] if group == "waldoctl.skills" else found
+
+    monkeypatch.setattr(waldoctl.skills, "entry_points", entry_points)
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    index = await client.move_j(START, speed=1)
+    assert index >= 0 and await client.wait_command(index, timeout=20)
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    world = PAROL6_ROBOT.program_shapes()
+    try:
+        user.find(marker="editor-commands-btn").click()
+        user.find(marker="editor-skill-test.fence_then_retract").click()
+        assert await wait_until(
+            lambda: bool(scene._skill_preview_objects), timeout_s=30
+        ), "the skill was never planned"
+        assert [shape.name for shape in PAROL6_ROBOT.program_shapes()] == [
+            shape.name for shape in world
+        ]
+        user.find(marker="skill-close").click()
+    finally:
+        PAROL6_ROBOT.apply_shapes(world)

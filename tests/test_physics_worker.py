@@ -1,6 +1,7 @@
-"""A cancelled physics job must leave the app and the next job usable."""
+"""A cancelled or crashed physics job must leave the app and the next job usable."""
 
 import asyncio
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import suppress
 import multiprocessing
 import os
@@ -22,6 +23,10 @@ def _blocked_job(paths: tuple[str, str]) -> int:
 
 def _worker_pid(_args: tuple) -> int:
     return os.getpid()
+
+
+def _dying_job(_args: tuple) -> int:
+    os._exit(1)
 
 
 async def test_physics_cancellation_terminates_its_worker_and_allows_another_job(
@@ -62,3 +67,15 @@ async def test_physics_cancellation_terminates_its_worker_and_allows_another_job
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+
+
+async def test_a_worker_that_dies_mid_job_leaves_the_next_job_a_fresh_one() -> None:
+    pool = _PhysicsPool()
+    try:
+        async with asyncio.timeout(40):
+            with pytest.raises(BrokenProcessPool):
+                await pool.run(_dying_job, ())
+            successor = await pool.run(_worker_pid, ())
+        assert successor != os.getpid()
+    finally:
+        pool.shutdown()
