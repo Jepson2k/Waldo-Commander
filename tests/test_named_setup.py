@@ -84,6 +84,41 @@ def test_named_storage_and_export_remain_independent_snapshots(tmp_path, monkeyp
 
 
 @pytest.mark.integration
+async def test_a_program_imports_its_setup_module_from_the_library(
+    user: User, tmp_path
+):
+    """A setup is a module beside the programs. A program previewed or run
+    from Commander imports it as `python program.py` in the library would,
+    though Commander runs a copy of it from elsewhere."""
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.components.simulation_engine import simulation
+
+    library = tmp_path / "programs"
+    SetupStore(library / "setups").save(
+        "bench", SetupSnapshot(poses={"pick": Pose((1, 2, 3, 0, 0, 0))})
+    )
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    script_exec.set_program_dir(library)
+    textarea = ui_state.active_textarea
+    program = waldoctl.commander.programs.active
+    assert textarea is not None and program is not None
+    textarea.value = (
+        "from setups.bench import setup\nprint('bench poses:', len(setup.poses))\n"
+    )
+    assert await simulation.run_simulation() is None
+    assert await script_exec.start()
+    async with asyncio.timeout(20):
+        while is_any_program_running():
+            await asyncio.sleep(0.05)
+    output = [entry.text for entry in program.log.entries]
+    assert script_exec.last_exit_code == 0, output
+    assert "bench poses: 1" in output
+
+
+@pytest.mark.integration
 async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
     user: User, tmp_path, monkeypatch
 ):

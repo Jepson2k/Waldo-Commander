@@ -1,6 +1,8 @@
 """Restart entry discovery must not execute module initialization or old locals."""
 
 import asyncio
+from dataclasses import replace
+from unittest.mock import AsyncMock
 
 import pytest
 import waldoctl
@@ -120,6 +122,8 @@ if __name__ == '__main__':
                 await asyncio.sleep(0.05)
 
     ui_state.active_textarea.value = source
+    program = waldoctl.commander.programs.active
+    assert program is not None
     script_exec.record_runs = True
     assert await script_exec.start()
     await finished()
@@ -131,7 +135,7 @@ if __name__ == '__main__':
     user.find(marker="editor-more-btn").click()
     user.find(marker="editor-restart-btn").click()
     await user.should_see("Previous run: failed · same source")
-    await user.should_see("Controller ready", retries=50)
+    await user.should_see("Controller ready · simulator", retries=50)
     assert not marker.exists()
     user.find(marker="restart-physical-confirmation").click()
     from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
@@ -143,6 +147,10 @@ if __name__ == '__main__':
             await asyncio.sleep(0.05)
     await finished()
     assert script_exec.last_exit_code == 0
+    # The entry's commands are counted from its own start, not the plan's.
+    assert program.dry_run.playback.executing_command == -1, (
+        "a restart highlighted a command of the full program"
+    )
     assert control_lease.held_by(BROWSER, ui_state.active_client_id)
     await user.should_see("You've taken control from the AI")
     assert marker.read_text() == "sync:2\n"
@@ -183,15 +191,17 @@ if __name__ == '__main__':
             await script_exec.stop()
         await client.set_status_rate(20)
 
-    # A reviewed state cannot survive a TCP edit, stale source, pending
-    # command, or loss of reference. Refusals never launch the entry.
+    # A reviewed state cannot survive a mode switch, TCP edit, stale source,
+    # pending command, or loss of reference. Refusals never launch the entry.
     reference = await fresh_state(client)
+    assert reference.simulator_active
+    assert not await selected(
+        "after_pick", replace(reference, simulator_active=False)
+    ), "a review of the other mode authorized this one"
     tcp = await client.tcp_transform()
     changed = list(tcp)
     changed[0] += 1
     assert await client.set_tcp_transform(*changed) > 0
-    program = waldoctl.commander.programs.active
-    assert program is not None
     outcome_before = script_exec.last_outcome
     record_before = script_exec.last_record
     log_before = [entry.text for entry in program.log.entries]
@@ -234,7 +244,7 @@ if __name__ == '__main__':
 
 @pytest.mark.integration
 async def test_a_restart_in_preflight_is_one_launch_and_stop_cancels_it(
-    user: User, tmp_path, monkeypatch
+    user: User, tmp_path, monkeypatch, caplog
 ):
     """Between Start and the subprocess a restart reads the controller's
     state. Nothing was marked running then, so a second Start launched a
@@ -245,7 +255,10 @@ async def test_a_restart_in_preflight_is_one_launch_and_stop_cancels_it(
         wait_for_app_ready,
     )
     from waldo_commander.components import script_execution as launching
+    from waldo_commander.components.playback import playback
     from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
+    from waldo_commander.services.motion_guard import motion_guard
     from waldo_commander.services.programs import is_any_program_running
     from waldo_commander.services.supervised_restart import fresh_state, source_digest
     from waldo_commander.state import ui_state
@@ -266,10 +279,11 @@ async def test_a_restart_in_preflight_is_one_launch_and_stop_cancels_it(
     assert ui_state.active_textarea is not None
     ui_state.active_textarea.value = source
     reference = await fresh_state(client)
-    gate = asyncio.Event()
+    gate, reading = asyncio.Event(), asyncio.Event()
     read_state = launching.fresh_state
 
     async def held_fresh_state(c):
+        reading.set()
         await gate.wait()
         return await read_state(c)
 
@@ -282,10 +296,20 @@ async def test_a_restart_in_preflight_is_one_launch_and_stop_cancels_it(
             reviewed_source_digest=source_digest(source),
         )
 
-    launch = asyncio.create_task(restart())
+    async def reading_state() -> asyncio.Task:
+        gate.clear()
+        reading.clear()
+        launch = asyncio.create_task(restart())
+        await asyncio.wait_for(reading.wait(), 5)
+        return launch
+
+    launch = await reading_state()
     try:
-        await asyncio.sleep(0.2)
         assert not launch.done()
+        stop_btn = playback.stop_btn
+        assert stop_btn is not None and stop_btn.visible, (
+            "Stop is hidden while the launch reads the controller"
+        )
         assert not await script_exec.start(), "a second Start launched in preflight"
         assert not await restart(), "a second restart launched in preflight"
         await script_exec.stop()
@@ -293,9 +317,59 @@ async def test_a_restart_in_preflight_is_one_launch_and_stop_cancels_it(
         assert not await launch, "Stop did not cancel the launch in preflight"
         assert not is_any_program_running()
         assert script_exec.script_handle is None
+        assert not stop_btn.visible
+
+        # A Stop the controller never confirms keeps the launch reserved:
+        # Start is refused and Stop stays offered until a retry confirms.
+        launch = await reading_state()
+        with monkeypatch.context() as patched:
+            patched.setattr(client, "stop", AsyncMock(return_value=0))
+            with pytest.raises(TimeoutError):
+                await script_exec.stop()
+        assert not await launch
+        assert stop_btn.visible, "an unconfirmed Stop cannot be retried"
+        assert not await script_exec.start(), "Start ran over an unconfirmed Stop"
+        await script_exec.stop()
+        assert motion_guard.busy_reason() is None, "a confirmed retry released nothing"
+        assert not stop_btn.visible
+
+        # Control passing to the AI while the launch reads the controller
+        # ends the launch: the browser that started it no longer drives.
+        launch = await reading_state()
+        control_lease.seize(MCP, "preflight", "Review MCP")
+        gate.set()
+        assert not await launch, "the launch went on after losing control"
+        assert not is_any_program_running()
+        control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
+
+        # A mode switch stops a launch as it stops a run.
+        launch = await reading_state()
+        user.find(marker="btn-robot-toggle").click()
+        async with asyncio.timeout(10):
+            while not launch.done():
+                await asyncio.sleep(0.05)
+        assert not launch.result(), "the mode switch left the launch running"
+        # The switch goes on after the launch ends; back to the simulator only
+        # once it has landed, or the suite's controller is left on the robot.
+        async with asyncio.timeout(10):
+            while waldoctl.commander.status.simulator_active:
+                await asyncio.sleep(0.05)
+        await enable_sim(user)
+        # Each refusal above is reported as an error, and the switch to the
+        # robot finds no serial port on a test machine.
+        expected = (
+            "Controller stop is unconfirmed",
+            "Control changed hands while the program was starting",
+            "Serial connection error",
+        )
+        records = caplog.get_records("call")
+        records[:] = [
+            r for r in records if not any(text in r.getMessage() for text in expected)
+        ]
     finally:
         gate.set()
         if not launch.done():
             launch.cancel()
         if is_any_program_running():
             await script_exec.stop()
+        await enable_sim(user)

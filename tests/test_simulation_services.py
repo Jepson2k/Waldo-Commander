@@ -651,7 +651,7 @@ class TestEditorAutoSimulation:
             update_called = False
             update_content = None
 
-            async def mock_update(content, tab_id=None, revision=0):
+            async def mock_update(content, tab_id=None, revision=0, program_dir=None):
                 nonlocal update_called, update_content
                 update_called = True
                 update_content = content
@@ -1481,16 +1481,16 @@ class TestScriptExecutionLifecycle:
     async def test_cleanup_preserves_stepping_ipc_across_page_reload(
         self, tmp_path, monkeypatch
     ):
-        """Per-page ``cleanup()`` must NOT close the stepping link.
+        """Per-page ``cleanup()`` must NOT close the stepping link or end the
+        run's event watcher.
 
         Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``,
         which tore the session down under a still-running program — the
         program then ran unmanaged (free-run) for the rest of its life.
 
-        After fix: ``cleanup()`` cancels only the event watcher; the step
-        controller, session id and link are preserved so the program keeps
-        stepping, and ``set_ui_client`` on the next page rebinds a fresh
-        watcher to the new client.
+        The step controller, session id, link and watcher belong to the run:
+        the program keeps stepping and recording with no page, and the next
+        page's ``set_ui_client`` only says where to show it.
         """
         from waldo_commander.components import script_execution as se
         from waldo_commander.services.stepping_client import GUIStepController
@@ -1532,26 +1532,26 @@ class TestScriptExecutionLifecycle:
             se.script_exec._event_watcher_task = asyncio.create_task(fake_watcher())
             await watcher_started.wait()
 
+            watcher = se.script_exec._event_watcher_task
             # Per-page disconnect cleanup
             se.script_exec.cleanup()
 
-            await asyncio.sleep(0)  # let the cancellation propagate
-            assert watcher_cancelled.is_set(), "Watcher task was not cancelled"
-            assert se.script_exec._event_watcher_task is None
+            await asyncio.sleep(0)
+            assert not watcher_cancelled.is_set(), "the run's watcher was cancelled"
+            assert se.script_exec._event_watcher_task is watcher
             # Step controller + session preserved across the disconnect.
             assert se.script_exec._step_controller is step_controller
             assert se.script_exec._step_session_id == session_id
             # The link survived.
             assert step_controller._listener is not None
 
-            # New page connecting — set_ui_client should rebind a new
-            # watcher because the subprocess is still flagged as running.
+            # A new page connecting is where the same watcher shows the run.
             fake_client = MagicMock()
             se.script_exec.set_ui_client(fake_client)
-            assert se.script_exec._event_watcher_task is not None
-            assert not se.script_exec._event_watcher_task.done()
+            assert se.script_exec._event_watcher_task is watcher
+            assert se.script_exec._ui_client is fake_client
         finally:
-            # Drop the restarted watcher before the link it polls is closed.
+            # Drop the watcher before the link it polls is closed.
             if (
                 se.script_exec._event_watcher_task is not None
                 and not se.script_exec._event_watcher_task.done()

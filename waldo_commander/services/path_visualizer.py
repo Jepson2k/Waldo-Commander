@@ -16,6 +16,7 @@ it answers, so a slow pass never draws over a newer plan.
 
 import asyncio
 import builtins
+import contextlib
 import inspect
 import linecache
 import logging
@@ -25,9 +26,10 @@ import pickle
 import sys
 import threading
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, replace
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 import numpy as np
@@ -84,6 +86,33 @@ def _warm_worker(backend_package: str = "parol6") -> bool:
     from waldo_commander.services.path_preview_client import PathPreviewClient  # noqa: F401
 
     return True
+
+
+@contextlib.contextmanager
+def _program_imports(directory: str | None) -> Iterator[None]:
+    """The program's library importable while it runs, as it is when the
+    program runs from there; what it imported from it is dropped after, so
+    a reused worker never answers the next preview with a module since
+    edited."""
+    if directory is None:
+        yield
+        return
+    root = str(Path(directory).resolve())
+    inside = os.path.join(root, "")
+    before = set(sys.modules)
+    sys.path.insert(0, root)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError):
+            sys.path.remove(root)
+        for name in set(sys.modules) - before:
+            spec = getattr(sys.modules[name], "__spec__", None)
+            if spec is None:
+                continue
+            places = [spec.origin, *(spec.submodule_search_locations or [])]
+            if any(p and p.startswith(inside) for p in places):
+                del sys.modules[name]
 
 
 def _mark_colliding_commands(
@@ -255,6 +284,7 @@ def _run_simulation_isolated(
     simulate_seconds: float | None = None,
     attachment_epoch: int = 0,
     scenario: dict[str, Any] | None = None,
+    program_directory: str | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -280,6 +310,8 @@ def _run_simulation_isolated(
             physics plant — and the result carries the predicted record.
             The value bounds SIMULATED time, so a program that never
             terminates still comes back. None plans only.
+        program_directory: The program library the script imports its
+            neighbours from, as it does when run.
 
     Returns:
         Dict with keys:
@@ -514,7 +546,10 @@ def _run_simulation_isolated(
 
             from waldo_commander.setup import using_setup_directory
 
-            with using_setup_directory(setup_directory):
+            with (
+                using_setup_directory(setup_directory),
+                _program_imports(program_directory),
+            ):
                 exec(code, sim_globals)
 
         except UnresolvedPreview as e:
@@ -772,6 +807,7 @@ class PathVisualizer:
         robot: Any,
         revision: int = 0,
         simulate_seconds: float | None = None,
+        program_dir: Path | None = None,
     ) -> tuple | None:
         """Everything a preview worker needs, or None when this backend
         cannot preview at all.
@@ -821,7 +857,7 @@ class PathVisualizer:
 
         from waldo_commander.setup import SetupStore
 
-        return (
+        bound = inspect.signature(_run_simulation_isolated).bind(
             program_text,
             initial_joints_rad,
             backend_pkg,
@@ -833,10 +869,17 @@ class PathVisualizer:
             str(SetupStore().directory),
             simulate_seconds,
             scene_handle.attachment_epoch if scene_handle is not None else 0,
+            program_directory=None if program_dir is None else str(program_dir),
         )
+        bound.apply_defaults()
+        return bound.args
 
     async def update_path_visualization(
-        self, program_text: str, tab_id: str | None = None, revision: int = 0
+        self,
+        program_text: str,
+        tab_id: str | None = None,
+        revision: int = 0,
+        program_dir: Path | None = None,
     ) -> str | None:
         """
         Run the dry-run simulation for the given program text and update the
@@ -851,6 +894,7 @@ class PathVisualizer:
                 stored in this tab. If None, uses active tab.
             revision: The program revision this plan answers; the predicted
                 pass that follows carries the same one.
+            program_dir: The program library its imports resolve in.
 
         Returns:
             Error message if simulation failed, None otherwise.
@@ -880,7 +924,7 @@ class PathVisualizer:
                 )
 
             sim_args = self._simulation_args(
-                program_text, ui_state.active_robot, revision
+                program_text, ui_state.active_robot, revision, program_dir=program_dir
             )
             if sim_args is None:
                 simulation_state.notify_changed()

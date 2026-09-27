@@ -244,6 +244,15 @@ if os.environ.get("WALDO_STEP_SESSION"):
     ui_state.active_textarea.value = "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.delay(30)\n"
     try:
         await script_exec.start()
+        # The page goes away while the program starts: the run keeps
+        # recording what it does, not only once a page is back.
+        script_exec.cleanup()
+        async with asyncio.timeout(15):
+            while not any(
+                e["event"] == "command_returned" and e.get("method") == "delay"
+                for e in load_record(script_exec.last_record)
+            ):
+                await asyncio.sleep(0.05)
         assert await waldoctl.commander.client.wait_status(
             lambda s: bool(s.action_current), timeout=15
         )
