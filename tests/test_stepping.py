@@ -435,6 +435,20 @@ class TestSteppingClientWrapper:
             assert wrapper.move_j(home, duration=8.0, r=15, wait=False) >= 0
             assert wrapper._in_blend is True
 
+            # A stop whose ack never arrives leaves the group possibly still
+            # moving: it stays tracked, and the program is told.
+            events_file = tmp_path / ".parol_events_test_stop"
+            acked_stop = client.stop
+            monkeypatch.setattr(client, "stop", lambda: 0)
+            with pytest.raises(RuntimeError, match="not acknowledged"):
+                wrapper.stop()
+            assert wrapper._in_blend is True
+            assert [
+                (e["event"], e["method"])
+                for e in json.loads(events_file.read_text())["events"]
+            ] == [("start", "move_j")], "an unconfirmed stop must not close the group"
+            monkeypatch.setattr(client, "stop", acked_stop)
+
             started = time.monotonic()
             assert wrapper.stop() == 1
             assert time.monotonic() - started < 1.0, (
@@ -448,7 +462,7 @@ class TestSteppingClientWrapper:
             index = wrapper.move_j(home, duration=0.5)
             assert index >= 0 and client.wait_command(index, timeout=5.0)
 
-        events = json.loads((tmp_path / ".parol_events_test_stop").read_text())
+        events = json.loads(events_file.read_text())
         assert [(e["event"], e["method"]) for e in events["events"]] == [
             ("start", "move_j"),
             ("complete", "blend_group"),
@@ -517,6 +531,67 @@ class TestSteppingClientWrapper:
                     break
                 assert time.monotonic() < deadline, "the released jog never moved J1"
                 time.sleep(0.05)
+
+    def test_paused_jog_holds_until_a_step_is_granted(
+        self, tmp_path, monkeypatch, session_controller
+    ):
+        """Streamed motion (jog, servo) is a step like queued motion: a paused
+        program holds after it until the operator steps, in the sync and the
+        async wrapper alike."""
+        import asyncio
+        import threading
+
+        from parol6 import AsyncRobotClient, RobotClient
+
+        from tests.conftest import _get_test_ports
+        from waldo_commander.services.stepping_client import (
+            AsyncSteppingClientWrapper,
+            GUIStepController,
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        # One session per program, as Commander runs them: a step granted to
+        # one is not a grant to the next.
+        controller = GUIStepController("test_jog")
+        controller.initialize()
+        async_controller = GUIStepController("test_jog_async")
+        async_controller.initialize()
+        port, _ = _get_test_ports()
+        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+            client.simulator(True)
+            client.reset()
+            wrapper = SteppingClientWrapper(client, StepIO("test_jog"))
+            jog = threading.Thread(
+                target=lambda: wrapper.jog_j(0, 0.2, 0.1), daemon=True
+            )
+            jog.start()
+            jog.join(timeout=0.5)
+            assert jog.is_alive(), "a paused program must hold after a jog"
+            controller.signal_step()
+            jog.join(timeout=2.0)
+            assert not jog.is_alive(), "a granted step must release the jog"
+
+        async def async_jog() -> None:
+            async with AsyncRobotClient(
+                host="127.0.0.1", port=port, timeout=5.0
+            ) as client:
+                wrapper = AsyncSteppingClientWrapper(client, StepIO("test_jog_async"))
+                task = asyncio.ensure_future(wrapper.jog_j(0, -0.2, 0.1))
+                await asyncio.sleep(0.5)
+                assert not task.done(), "a paused program must hold after a jog"
+                async_controller.signal_step()
+                await asyncio.wait_for(task, timeout=2.0)
+
+        asyncio.run(async_jog())
+
+        for session in ("test_jog", "test_jog_async"):
+            events = json.loads((tmp_path / f".parol_events_{session}").read_text())
+            assert [(e["event"], e["method"]) for e in events["events"]] == [
+                ("start", "jog_j"),
+                ("complete", "jog_j"),
+            ]
 
     def test_an_earlier_blend_member_keeps_its_own_deadline(
         self, tmp_path, monkeypatch, session_controller

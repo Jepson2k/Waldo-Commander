@@ -22,7 +22,7 @@ import time
 import uuid
 from pathlib import Path
 
-from nicegui import Client, context, ui
+from nicegui import Client, background_tasks, context, ui
 
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.constants import REPO_ROOT
@@ -320,6 +320,7 @@ class ScriptExecutionController:
             raise
         else:
             self._reset_state()
+            self._refresh_tcp()
 
     async def _confirm_controller_stop(self) -> None:
         if not await motion_guard.stop_robot(waldoctl.commander.client, "program stop"):
@@ -479,6 +480,7 @@ class ScriptExecutionController:
             if self.script_handle is handle:
                 self._reset_state()
                 logger.info("Script %s finished with code %s", filename, rc)
+                self._refresh_tcp()
 
     def _reset_state(self) -> None:
         """Reset all script-related state after a script finishes or errors."""
@@ -493,6 +495,16 @@ class ScriptExecutionController:
         self._release_reservation()
         simulation_state.notify_changed()
         self.cleanup_stepping()
+
+    @staticmethod
+    def _refresh_tcp() -> None:
+        # A run can change the fitted tool's TCP transform, which no status
+        # field carries.
+        from waldo_commander.components.settings import refresh_applied_tcp
+
+        background_tasks.create(
+            refresh_applied_tcp(waldoctl.commander.client), name="tcp-refresh"
+        )
 
     def _release_reservation(self) -> None:
         if self._reservation is not None:

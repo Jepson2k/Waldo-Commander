@@ -209,6 +209,21 @@ async def test_camera_localization_program_preview_and_session_lifetime(
         with pytest.raises(CameraUnavailable, match="deadline"):
             await source.snapshot(timeout_s=0.1)
         assert time.monotonic() - start < 1
+        # Stopping a program waiting on the stalled camera is not held up by
+        # the request it is waiting on.
+        script.write_text(
+            "import asyncio\nfrom waldo_commander.camera_sources import CommanderCameraSource\nasyncio.run(CommanderCameraSource().snapshot(timeout_s=5))\n"
+        )
+        handle = await run_script(
+            create_default_config(str(script)), stdout.append, stderr.append
+        )
+        async with asyncio.timeout(15):
+            while not handle["camera_session"].tasks:
+                await asyncio.sleep(0.02)
+        start = time.monotonic()
+        await stop_script(handle)
+        assert time.monotonic() - start < 1.5, "a stalled camera request held up Stop"
+        assert handle["camera_session"].closed and not handle["camera_session"].tasks
         waiting = asyncio.create_task(source.snapshot(timeout_s=5))
         async with asyncio.timeout(3):
             while not session.tasks:
