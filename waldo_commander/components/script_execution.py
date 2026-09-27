@@ -34,6 +34,12 @@ from waldo_commander.services.script_runner import (
     run_script,
     stop_script,
 )
+from waldo_commander.services.motion_guard import (
+    PROGRAM,
+    MotionBusy,
+    Reservation,
+    motion_guard,
+)
 from waldo_commander.services.stepping_client import GUIStepController
 from waldo_commander.services.run_records import RunRecord
 from waldo_commander.services.supervised_restart import (
@@ -103,6 +109,9 @@ class ScriptExecutionController:
         self._launch_task: asyncio.Task | None = None
         self._cancel_launch_from_stop = False
         self._stop_unconfirmed = False
+        # Held from start() until the run is over, so nothing else drives
+        # the robot while a program does.
+        self._reservation: Reservation | None = None
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel the event watcher bound to this page.
@@ -209,6 +218,11 @@ class ScriptExecutionController:
         # Stop can cancel it, in the meantime.
         if self._launch_task is not None:
             ui.notify("Script already starting", color="warning")
+            return False
+        try:
+            self._reservation = motion_guard.reserve(PROGRAM)
+        except MotionBusy as e:
+            ui.notify(str(e), color="warning")
             return False
 
         self._launch_task = asyncio.current_task()
@@ -381,6 +395,7 @@ class ScriptExecutionController:
             ui.notify("No script running", color="warning")
             return
 
+        motion_guard.note_stop("program stop")
         handle = self.script_handle
         try:
             if self._launch_task is not None:
@@ -418,9 +433,8 @@ class ScriptExecutionController:
             self._cancel_launch_from_stop = False
 
     async def _confirm_controller_stop(self) -> None:
-        async with asyncio.timeout(3.0):
-            if await waldoctl.commander.client.stop() <= 0:
-                raise TimeoutError("Controller did not acknowledge Stop")
+        if not await motion_guard.stop_robot(waldoctl.commander.client, "program stop"):
+            raise TimeoutError("Controller did not acknowledge Stop")
 
     def _report_unconfirmed_stop(self, error: Exception) -> None:
         self._stop_unconfirmed = True
@@ -601,8 +615,14 @@ class ScriptExecutionController:
             running_tab.dry_run.playback.is_playing = False
         self._script_tab_id = None
         playback_coordination.sim_pose_override = False
+        self._release_reservation()
         simulation_state.notify_changed()
         self.cleanup_stepping()
+
+    def _release_reservation(self) -> None:
+        if self._reservation is not None:
+            self._reservation.release()
+            self._reservation = None
 
     def _cancel_watcher(self) -> None:
         """Cancel the event watcher task without touching step IPC state.
