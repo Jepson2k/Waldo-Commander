@@ -18,6 +18,12 @@ from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    control_lease,
+    require_browser_control,
+)
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
 from waldo_commander.state import automation_state, simulation_state, ui_state
 
@@ -26,8 +32,8 @@ logger = logging.getLogger(__name__)
 # Trailing-edge window for a TCP offset edit, seconds.
 TCP_EDIT_THROTTLE_S = 0.4
 
-# How long an adopted offset waits for its page's socket, seconds.
-ADOPT_CONNECT_TIMEOUT_S = 5.0
+# How long a reconcile waits for its page's socket, seconds.
+RECONCILE_CONNECT_TIMEOUT_S = 5.0
 
 # Tools this app has pushed a TCP offset for since it started. Until then a
 # controller reporting zero may simply never have been told; afterwards a zero
@@ -231,6 +237,7 @@ class SettingsContent:
             vk = self._get_variant_key(tool_key)
             self._apply_tool_scene(tool_key, variant_key=vk)
             self._notify_and_resimulate()
+            require_browser_control(page_client.id)
             await self._push_tcp_offset(
                 tool_key, vals, (x_input, y_input, z_input), page_client
             )
@@ -300,6 +307,10 @@ class SettingsContent:
         finally:
             self._tcp_pushing = False
 
+    def _drop_queued_push(self) -> None:
+        """An edit still waiting when its page goes is nobody's to send."""
+        self._tcp_push_next = None
+
     async def _send_tcp_offset(
         self,
         tool_key: str,
@@ -310,10 +321,10 @@ class SettingsContent:
     ) -> None:
         """Set the offset and adopt what the controller reports back, so the
         GUI's TCP is the one the controller plans with."""
-        if epoch != self._tool_epoch:
-            # The tool changed while this edit was queued. The controller
-            # zeroed its offset for the new tool; sending the old tool's
-            # number now would silently restore it.
+        if epoch != self._tool_epoch or not page_client.has_socket_connection:
+            # The tool changed while this edit was queued (the controller
+            # zeroed its offset for the new tool, and the old tool's number
+            # would silently restore it), or the page that typed it is gone.
             return
         x, y, z = (float(vals.get(k, 0) or 0) for k in ("x", "y", "z"))
         back: list[float] = []
@@ -354,11 +365,23 @@ class SettingsContent:
         someone else's — a program or another client, and a deliberate zero
         counts. The remembered offset is pushed only where the controller's
         cannot be: right after a tool change, which resets it, and on a
-        controller reporting nothing that this app has never told."""
+        controller reporting nothing that this app has never told, while
+        nobody else is driving."""
         try:
+            # Started while the page is still being built, so its socket is
+            # often not up yet.
+            await page_client.connected(timeout=RECONCILE_CONNECT_TIMEOUT_S)
+        except ClientConnectionTimeout:
+            return
+        try:
+            tools = await self.client.tools()
             back = [float(v) for v in await self.client.tcp_offset()]
         except Exception as exc:
             logger.debug("tcp_offset readback failed: %s", exc)
+            return
+        if tools is None or tools.tool != tool_key:
+            # The readback is the offset of whatever tool the controller
+            # carries; adopting it would file it under this one.
             return
         stored = self._get_tcp_offset(tool_key)
         mine = [float(stored.get(k, 0) or 0) for k in ("x", "y", "z")]
@@ -367,10 +390,19 @@ class SettingsContent:
         never_told = tool_key not in _pushed_offset_tools and not any(
             abs(b) > 1e-3 for b in back
         )
-        if tool_changed or never_told:
+        if tool_changed or (never_told and self._may_push_unasked(page_client)):
             await self._push_tcp_offset(tool_key, stored, inputs, page_client)
         else:
             await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+
+    @staticmethod
+    def _may_push_unasked(page_client: Client) -> bool:
+        """A push nobody typed must not move the TCP under another driver."""
+        holder = control_lease.holder()
+        free_or_ours = holder is None or (
+            holder.channel == BROWSER and holder.id == page_client.id
+        )
+        return free_or_ours and motion_guard.busy_reason() is None
 
     async def _adopt_tcp_offset(
         self,
@@ -385,16 +417,6 @@ class SettingsContent:
             "z": float(offset_mm[2]),
         }
         ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
-        if not page_client.has_socket_connection:
-            # The reconcile that adopts an out-of-band offset is started
-            # while the page is still being built, so its socket is often
-            # not up yet. Dropping the update here would leave the inputs
-            # showing the browser's remembered offset while the controller
-            # plans with another one.
-            try:
-                await page_client.connected(timeout=ADOPT_CONNECT_TIMEOUT_S)
-            except ClientConnectionTimeout:
-                return
         with page_client:
             for inp, v in zip(inputs, (vals["x"], vals["y"], vals["z"])):
                 if inp.value != v:
@@ -527,6 +549,7 @@ class SettingsContent:
             self._tool_epoch += 1
             self._tcp_push_next = None
             vk = self._get_variant_key(tool)
+            require_browser_control(context.client.id)
             try:
                 index = await self.client.select_tool(tool, variant_key=vk or "")
                 if isinstance(index, int) and index >= 0:
@@ -1025,6 +1048,7 @@ class SettingsContent:
         the bottom so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
+        context.client.on_disconnect(self._drop_queued_push)
 
         groups: list[tuple[str, list[Callable[[], None]]]] = [
             ("Connection", [lambda: self._build_serial_port(prefs)]),

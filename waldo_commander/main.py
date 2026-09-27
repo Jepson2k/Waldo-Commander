@@ -1883,6 +1883,7 @@ async def _status_consumer() -> None:
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
     error_shadow: waldoctl.RobotError | None = None
+    robot_state.standing_error = None
     estop_shadow = 1
     try:
         # Wait for server to be responsive before subscribing to multicast
@@ -2069,6 +2070,7 @@ async def _status_consumer() -> None:
                         standing = waldoctl.RobotError.from_wire(standing)
                     if standing != error_shadow:
                         error_shadow = standing
+                        robot_state.standing_error = standing
                         if standing is not None:
                             robot_events.add(
                                 code=standing.code,

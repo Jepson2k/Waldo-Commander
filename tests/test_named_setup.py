@@ -312,3 +312,64 @@ async def test_the_panel_keeps_its_lists_and_its_selector_usable_while_switching
     await message("Loaded cell")
     assert element("setup-saved").value == "cell"
     assert "cell" in element("setup-saved").options
+
+
+@pytest.mark.integration
+async def test_setup_save_replans_programs_that_load_it(
+    user: User, tmp_path, monkeypatch
+):
+    """Saving a setup re-plans the preview of a program that loads it, though
+    the program's text is unchanged."""
+    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    index = await client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
+    assert index >= 0 and await client.wait_command(index, timeout=20)
+    current = await client.pose()
+    assert current is not None
+    below = list(current)
+    below[2] -= 20.0
+    SetupStore().save(
+        "bench", SetupSnapshot(poses={"pick": Pose(cast(PoseValues, tuple(below)))})
+    )
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    textarea = ui_state.active_textarea
+    program = waldoctl.commander.programs.active
+    assert textarea is not None and program is not None
+    textarea.value = (
+        "from parol6 import RobotClient\n"
+        "from waldo_commander.setup import load_setup\n\n"
+        'setup = load_setup("bench")\n'
+        "with RobotClient() as rbt:\n"
+        '    rbt.move_l(setup.resolve("pick").as_list(), speed=0.3)\n'
+    )
+    await asyncio.sleep(0)
+
+    async def planned_end_z(z: float) -> None:
+        async with asyncio.timeout(20):
+            while True:
+                segments = program.dry_run.path_segments
+                if segments and segments[-1].points:
+                    if segments[-1].points[-1][2] * 1000 == pytest.approx(z, abs=0.1):
+                        return
+                await asyncio.sleep(0.05)
+
+    await planned_end_z(below[2])
+
+    user.find(marker="tab-setup").click()
+    user.find(marker="setup-load").click()
+    await user.should_see("Loaded bench")
+    user.find(kind=ui.tab, content="Poses").click()
+    pose_z = next(iter(user.find(marker="setup-pose-z").elements))
+    assert pose_z.value == pytest.approx(below[2])
+    pose_z.set_value(below[2] - 10.0)
+    user.find(marker="setup-save").click()
+    await user.should_see("Saved bench")
+    await planned_end_z(below[2] - 10.0)
