@@ -124,14 +124,6 @@ def _selected_tool_key() -> str:
     return ng_app.storage.general.get("selected_tool", "NONE")
 
 
-def _quality_color(value: float, thresholds: tuple[float, float]) -> str:
-    if value < thresholds[0]:
-        return "text-wc-positive"
-    if value < thresholds[1]:
-        return "text-wc-warning"
-    return "text-wc-error"
-
-
 class HandEyeCalibrationPanel(Panel):
     id = "handeye"
     display_name = "Hand-Eye Calibration"

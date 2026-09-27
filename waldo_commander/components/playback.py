@@ -1179,13 +1179,11 @@ class PlaybackController:
         if self.play_btn:
             playing = (script_running and play_is_playing) or active_is_active
             if playing:
-                self.play_btn.props("icon=pause color=wc-run text-color=wc-on-bright")
+                self.play_btn.props("icon=pause")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Pause (Space)"
             else:
-                self.play_btn.props(
-                    "icon=play_arrow color=wc-run text-color=wc-on-bright"
-                )
+                self.play_btn.props("icon=play_arrow")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Play (Space)"
 
