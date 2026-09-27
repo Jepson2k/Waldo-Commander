@@ -808,6 +808,33 @@ rbt.home()
             assert len(result["final_joints_rad"]) == 6
 
 
+def test_every_client_a_program_builds_plans_into_one_record():
+    """A program that opens a second client, sync then async, gets one
+    dry run: the second move starts where the first ended and both are on
+    the record, not just the last client's."""
+    from waldo_commander.services.path_visualizer import _run_simulation_isolated
+
+    program = """import asyncio
+from parol6 import AsyncRobotClient, RobotClient
+
+rbt = RobotClient()
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+
+async def main():
+    async with AsyncRobotClient() as other:
+        await other.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+
+asyncio.run(main())
+"""
+    result = _run_simulation_isolated(program)
+    assert result["error"] is None, result["error"]
+    commanded = result["commanded"]
+    notes = result["notes"]
+    moves = [b for b in commanded.blocks if notes[b.command].method == "move_j"]
+    assert [b.line_number for b in moves] == [5, 9]
+    assert all(b.rows > 0 for b in moves)
+
+
 class TestPathVisualizerIntegration:
     """Integration tests for PathVisualizer with dry run client.
 
