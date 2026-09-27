@@ -5,7 +5,7 @@ import waldoctl
 from nicegui import Client
 from selenium.webdriver.support.ui import WebDriverWait
 
-from tests.helpers.browser_helpers import dismiss_dialogs, js, run_in_app
+from tests.helpers.browser_helpers import click_tab, dismiss_dialogs, js, run_in_app
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.state import ui_state
 
@@ -78,3 +78,28 @@ def test_many_io_lines_keep_the_footer_one_row(screen):
 
     restored = _measure_with(screen, 4)
     assert abs(restored["height"] - before["height"]) < 1, (restored, before)
+
+
+@pytest.mark.browser
+def test_bottom_panel_stays_clear_of_the_control_panel(screen):
+    screen.open("/")
+    screen_wait_for_scene_ready(screen, timeout_s=40)
+    dismiss_dialogs(screen)
+    screen.selenium.set_window_size(1366, 768)
+    click_tab(screen, "diagnostics")
+    rects = WebDriverWait(screen.selenium, 10).until(
+        lambda _: (
+            r := js(
+                screen,
+                """
+                const p = document.querySelector('.bottom-panel').getBoundingClientRect();
+                const c = document.querySelector('.overlay-br').getBoundingClientRect();
+                return {panelRight: p.right, panelLeft: p.left, controlLeft: c.left,
+                        panelTop: p.top, controlBottom: c.bottom};
+                """,
+            )
+        )
+        and r["panelRight"] <= r["controlLeft"] - 11
+        and r
+    )
+    assert rects["panelLeft"] < rects["panelRight"], rects

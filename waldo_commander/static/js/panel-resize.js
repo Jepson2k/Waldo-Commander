@@ -19,7 +19,8 @@
         selectors: {
             wrap: null,
             topContainer: null,
-            bottomContainer: null
+            bottomContainer: null,
+            controlPanel: null
         },
         constraints: {
             viewportMarginX: 80,
@@ -260,6 +261,12 @@
         // the scene, which sit outside it.
         wrap.style.setProperty('--wc-column-right', right + 'px');
         document.documentElement.style.setProperty('--wc-column-right', right + 'px');
+        // The bottom panel stops short of the control panel in the lower right.
+        const controlPanel = config.selectors.controlPanel ? document.querySelector(config.selectors.controlPanel) : null;
+        const inset = controlPanel && controlPanel.offsetParent !== null
+            ? Math.max(0, Math.round(window.innerWidth - controlPanel.getBoundingClientRect().left))
+            : 0;
+        document.documentElement.style.setProperty('--wc-control-inset', inset + 'px');
         window.dispatchEvent(new CustomEvent('wc:layout', { detail: { columnRight: right } }));
     }
 
@@ -820,6 +827,8 @@
             const container = getContainer(group);
             if (container) containerObserver.observe(container);
         });
+        const controlPanel = config.selectors.controlPanel ? document.querySelector(config.selectors.controlPanel) : null;
+        if (controlPanel) new ResizeObserver(function() { publishLayout(); }).observe(controlPanel);
     }
 
     // ========== Viewport Resize Handler ==========

@@ -777,6 +777,7 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
         "wrap": ".panels-wrap",
         "topContainer": ".top-panels-container",
         "bottomContainer": ".bottom-panels-container",
+        "controlPanel": ".overlay-br",
     },
     "constraints": {
         "viewportMarginX": 80,
@@ -1828,7 +1829,7 @@ html, body {
 
 .bottom-panel {
   position: absolute;
-  right: var(--wc-space-3);
+  right: calc(min(var(--wc-control-inset, 0px), 50vw) + var(--wc-space-3));
   bottom: var(--wc-footer-clearance);
   left: calc(var(--wc-column-right, 0px) + var(--wc-space-3));
   height: 340px;
