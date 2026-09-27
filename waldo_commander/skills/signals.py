@@ -167,9 +167,10 @@ async def write_signal(
     raw = signal.encode(value)
     # Refuse a mismatched controller layout before sending a write.
     await _observe(rbt, signal, min(1.0, timeout), fixture)
-    index = await rbt.write_io(signal.index, raw, timeout=timeout)
     # Queued behind other work, an unconfirmed write would still land later.
-    await completed(rbt, index, timeout, "Digital output")
+    await completed(
+        rbt, rbt.write_io(signal.index, raw, timeout=timeout), timeout, "Digital output"
+    )
     result = await wait_signal.async_call(
         rbt, signal, value, timeout=timeout, fixture=fixture
     )
