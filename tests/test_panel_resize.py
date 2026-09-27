@@ -5,13 +5,16 @@ All tests share a single browser session and page load via class_screen fixture.
 
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
+from nicegui import ui
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
+from waldoctl import Commander, Panel, PanelSlot
 
-from tests.helpers.browser_helpers import click_tab, close_panel, js
+from tests.helpers.browser_helpers import click_tab, close_panel, dismiss_dialogs, js
+from tests.helpers.plugin_panels import install_plugin_panels
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -374,3 +377,56 @@ class TestPanelResize:
         close_panel(class_screen, "settings-panel")
         close_panel(class_screen, "diagnostics-view")
         time.sleep(0.3)
+
+
+class TallPanel(Panel):
+    """A drag-resizable plugin that declares no minima, as waldoctl allows,
+    with content taller than any viewport."""
+
+    id: ClassVar[str] = "tall"
+    display_name: ClassVar[str] = "Tall"
+    slot: ClassVar[PanelSlot] = PanelSlot.LEFT_TOP_TAB
+    tab_icon: ClassVar[str] = "view_day"
+    resizable: ClassVar[bool] = True
+
+    def build(self, commander: Commander) -> None:
+        ui.element("div").style("height: 3000px")
+
+
+@pytest.mark.browser
+def test_a_plugin_without_minima_gives_way_to_settings(
+    screen: "Screen", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resizable plugin that leaves its minima unset is still resized: with
+    Settings open below it, the taller of the two gives way and neither is
+    drawn over the other."""
+    install_plugin_panels(monkeypatch, TallPanel)
+    screen.open("/")
+    wait_ready(screen, timeout=30.0)
+    dismiss_dialogs(screen)
+    js(screen, "PanelResize.clearAllSizes()")
+
+    js(
+        screen,
+        """
+        [...document.querySelectorAll('.q-tab')]
+            .find(t => t.querySelector('.q-icon')?.textContent.trim() === arguments[0])
+            .click();
+        """,
+        TallPanel.tab_icon,
+    )
+    click_tab(screen, "settings")
+
+    measure = """
+        const top = document.querySelector('.top-panels-container').getBoundingClientRect();
+        const bottom = document.querySelector('.bottom-panels-container').getBoundingClientRect();
+        return {plugin: !!document.querySelector('.tall-panel')?.offsetParent,
+                topBottom: top.bottom, bottomTop: bottom.top};
+    """
+    deadline = time.time() + 5.0
+    while True:
+        rects = js(screen, measure)
+        if rects["plugin"] and rects["topBottom"] <= rects["bottomTop"] + 1:
+            break
+        assert time.time() < deadline, rects
+        time.sleep(0.1)
