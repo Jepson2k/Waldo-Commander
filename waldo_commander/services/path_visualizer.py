@@ -255,6 +255,8 @@ def _run_simulation_isolated(
     simulate_seconds: float | None = None,
     attachment_epoch: int = 0,
     scenario: dict[str, Any] | None = None,
+    plan_seconds: float | None = None,
+    config_path: str | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -280,6 +282,10 @@ def _run_simulation_isolated(
             physics plant — and the result carries the predicted record.
             The value bounds SIMULATED time, so a program that never
             terminates still comes back. None plans only.
+        plan_seconds: Cuts the commanded record to this much simulated
+            time; None keeps all of it.
+        config_path: The backend configuration the dry run loads, where
+            the backend takes one; None leaves the choice to the backend.
 
     Returns:
         Dict with keys:
@@ -330,6 +336,8 @@ def _run_simulation_isolated(
         _preview_robot = get_robot(backend_package)
 
         def _dr_cls(**kwargs: Any) -> Any:
+            if config_path is not None:
+                kwargs["config_path"] = config_path
             return _preview_robot.create_dry_run_client(**kwargs)
 
         def seed_world(preview: PathPreviewClient) -> None:
@@ -548,7 +556,7 @@ def _run_simulation_isolated(
     # Close blend holds and note the last commands, covering scripts without
     # context managers.
     for c in created_clients:
-        c.close()
+        c.close(plan_seconds)
 
     for c in created_clients:
         if c.accumulated_errors:
@@ -573,7 +581,7 @@ def _run_simulation_isolated(
         client = created_clients[-1]
         notes = list(client.notes)
         try:
-            commanded = _portable(client.plan())
+            commanded = _portable(client.plan(plan_seconds))
         except Exception as e:
             logger.warning("Reading the commanded record failed: %s", e)
             error_message = (error_message + "\n" if error_message else "") + (
