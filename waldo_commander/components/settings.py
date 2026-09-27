@@ -21,6 +21,12 @@ from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    control_lease,
+    require_browser_control,
+)
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
 from waldo_commander.services.tcp_calibration import ToolChanged, read_applied_tcp
 from waldo_commander.state import automation_state, simulation_state, ui_state
@@ -30,8 +36,8 @@ logger = logging.getLogger(__name__)
 # Trailing-edge window for a TCP offset edit, seconds.
 TCP_EDIT_THROTTLE_S = 0.4
 
-# How long an adopted offset waits for its page's socket, seconds.
-ADOPT_CONNECT_TIMEOUT_S = 5.0
+# How long a reconcile waits for its page's socket, seconds.
+RECONCILE_CONNECT_TIMEOUT_S = 5.0
 
 # Tools this app has pushed a TCP offset for since it started. Until then a
 # controller reporting zero may simply never have been told; afterwards a zero
@@ -337,6 +343,7 @@ class SettingsContent:
             value = inputs[TCP_AXES.index(axis)].value
             if value is None:
                 return
+            require_browser_control(page_client.id)
             await self._push_tcp_offset(tool_key, {axis: value}, inputs, page_client)
 
         with self._tcp_offset_container:
@@ -431,6 +438,10 @@ class SettingsContent:
         values = await self.client.tcp_transform()
         return list(TcpCalibration(cast(PoseValues, tuple(values)), "readback").values)
 
+    def _drop_queued_push(self) -> None:
+        """An edit still waiting when its page goes is nobody's to send."""
+        self._tcp_push_next = None
+
     async def _send_tcp_offset(
         self,
         tool_key: str,
@@ -452,7 +463,10 @@ class SettingsContent:
         page_client: Client,
         epoch: int,
     ) -> None:
-        if epoch != self._tool_epoch:
+        if epoch != self._tool_epoch or not page_client.has_socket_connection:
+            # The tool changed while this edit was queued (the controller
+            # zeroed its offset for the new tool, and the old tool's number
+            # would silently restore it), or the page that typed it is gone.
             return
         try:
             # Axes not edited here keep the controller's values: a program
@@ -501,7 +515,14 @@ class SettingsContent:
         someone else's — a program or another client, and a deliberate zero
         counts. The remembered offset is pushed only where the controller's
         cannot be: right after a tool change, which resets it, and on a
-        controller reporting nothing that this app has never told."""
+        controller reporting nothing that this app has never told, while
+        nobody else is driving."""
+        try:
+            # Started while the page is still being built, so its socket is
+            # often not up yet.
+            await page_client.connected(timeout=RECONCILE_CONNECT_TIMEOUT_S)
+        except ClientConnectionTimeout:
+            return
         async with self._tool_lock:
             if epoch != self._tool_epoch:
                 return
@@ -527,12 +548,21 @@ class SettingsContent:
             never_told = tool_key not in _pushed_offset_tools and not any(
                 abs(b) > 1e-3 for b in back
             )
-            if tool_changed or never_told:
+            if tool_changed or (never_told and self._may_push_unasked(page_client)):
                 await self._send_tcp_offset_locked(
                     tool_key, stored, inputs, page_client, epoch
                 )
             else:
                 await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+
+    @staticmethod
+    def _may_push_unasked(page_client: Client) -> bool:
+        """A push nobody typed must not move the TCP under another driver."""
+        holder = control_lease.holder()
+        free_or_ours = holder is None or (
+            holder.channel == BROWSER and holder.id == page_client.id
+        )
+        return free_or_ours and motion_guard.busy_reason() is None
 
     async def _adopt_tcp_offset(
         self,
@@ -544,16 +574,6 @@ class SettingsContent:
         values = cast(PoseValues, tuple(float(v) for v in offset_mm))
         calibration = TcpCalibration(values, tool_key, self._bound_variant(tool_key))
         adopt_applied_tcp(calibration)
-        if not page_client.has_socket_connection:
-            # The reconcile that adopts an out-of-band offset is started
-            # while the page is still being built, so its socket is often
-            # not up yet. Dropping the update here would leave the inputs
-            # showing the browser's remembered offset while the controller
-            # plans with another one.
-            try:
-                await page_client.connected(timeout=ADOPT_CONNECT_TIMEOUT_S)
-            except ClientConnectionTimeout:
-                return
         with page_client:
             for inp, v in zip(inputs, values):
                 if inp.value != v:
@@ -704,6 +724,7 @@ class SettingsContent:
                 self._tool_epoch += 1
                 self._tcp_push_next = None
                 vk = self._get_variant_key(tool)
+                require_browser_control(context.client.id)
                 try:
                     index = await self.client.select_tool(tool, variant_key=vk or "")
                     if index < 0 or not await self.client.wait_command(
@@ -1254,6 +1275,7 @@ class SettingsContent:
         the bottom so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
+        context.client.on_disconnect(self._drop_queued_push)
 
         groups: list[tuple[str, list[Callable[[], None]]]] = []
         if ui_state.active_robot.name.lower() == "parol6":

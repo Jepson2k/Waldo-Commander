@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import keyword
 import math
@@ -98,7 +99,7 @@ def call_source(
     return f"from {module} import {parts[0]} as {alias}\nfrom waldoctl.setup import Pose, SetupSnapshot\n{'await ' if async_call else ''}{call}"
 
 
-def plan_preview(
+async def plan_preview(
     entry: SkillEntry,
     arguments: dict[str, Any],
     robot: Robot,
@@ -108,11 +109,60 @@ def plan_preview(
     """Plan the call this panel would insert, from *joints_rad*, without the robot.
 
     The plan runs the generated source itself, so what is drawn is exactly
-    what Insert would put in the program.
+    what Insert would put in the program. That source is the skill's own
+    code, and a dry run's world and tool are process-wide, so it runs in the
+    program-preview worker under the program preview's time limit.
     """
+    import waldoctl
+    from nicegui import run
+
+    from waldo_commander.services.path_visualizer import _simulation_timeout_s
+
+    source = call_source(entry, arguments)
+    if run.process_pool is None:
+        raise RuntimeError("Preview unavailable: no simulation process pool")
+    scene = waldoctl.commander.scene
+    shapes_wire = [s.to_wire() for s in scene.shapes] if scene is not None else []
+    try:
+        async with asyncio.timeout(_simulation_timeout_s() + 2.0):
+            planned = await run.cpu_bound(
+                _plan_isolated,
+                source,
+                robot.backend_package,
+                joints_rad,
+                tool,
+                shapes_wire,
+            )
+    except TimeoutError:
+        planned = None
+    except run.SubprocessException as error:
+        # Its text carries the worker's whole traceback; the form shows a sentence.
+        raise RuntimeError(error.original_message) from None
+    # cpu_bound answers None when its wait is cancelled: by the limit, or at shutdown.
+    if planned is None:
+        raise TimeoutError("planning it took too long")
+    segments, tool_actions = planned
+    return [PathSegment.from_dict(segment) for segment in segments], tool_actions
+
+
+def _plan_isolated(
+    source: str,
+    backend_package: str,
+    joints_rad: Any,
+    tool: tuple[str, str],
+    shapes_wire: list[tuple],
+) -> tuple[list[dict], list[ToolAction]]:
+    """Run a generated call against a dry run; :func:`plan_preview` in a worker."""
+    from waldoctl import shape_from_wire
+
+    from waldo_commander.profiles import get_robot
     from waldo_commander.services.path_preview_client import PathPreviewClient
     from waldo_commander.services.path_visualizer import _tool_metadata
 
+    robot = get_robot(backend_package)
+    # The worker is shared, so it still holds the last preview's world.
+    if robot.has_collision_checking:
+        robot.apply_shapes([shape_from_wire(*wire) for wire in shapes_wire])
     client = PathPreviewClient(
         dry_run_client_cls=lambda **kw: robot.create_dry_run_client(**kw),
         initial_joints=joints_rad,
@@ -122,9 +172,6 @@ def plan_preview(
     key, variant = tool
     if key not in ("", "NONE") and client.select_tool(key, variant_key=variant) < 0:
         raise RuntimeError(f"The preview refused tool {key}")
-    exec(call_source(entry, arguments), {"rbt": client})
+    exec(source, {"rbt": client})
     client.close()
-    return (
-        [PathSegment.from_dict(segment) for segment in client.segment_collector],
-        list(client.tool_action_collector),
-    )
+    return list(client.segment_collector), list(client.tool_action_collector)
