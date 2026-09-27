@@ -954,6 +954,7 @@ class EditorPanel(FileOperationsMixin):
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
             ui_state.textareas_by_tab[tab.id] = textarea
+            motion_recorder.rebind(tab.id)
 
             # Re-teach enablement needs the live anchor mirror, which the
             # browser echoes only after the sim-completion notify has fired.
@@ -1116,6 +1117,13 @@ class EditorPanel(FileOperationsMixin):
         ).classes("text-xs whitespace-nowrap").tooltip(
             "Lines this recording wrote, marked until you keep or undo them"
         ).mark("staged-summary")
+        if session.capture_stopped:
+            ui.label("Capture stopped").classes(
+                "text-xs text-negative whitespace-nowrap"
+            ).tooltip(
+                f"Motion from outside Commander is no longer captured: "
+                f"{session.capture_stopped}"
+            ).mark("staged-capture-stopped")
         block = self._staged_capture_at_cursor(session)
         self._shown_capture = block
         if block is not None:

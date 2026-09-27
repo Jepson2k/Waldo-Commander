@@ -1,6 +1,7 @@
 """Observed motion survives export and capture ends on controller disable."""
 
 import asyncio
+import textwrap
 from dataclasses import replace
 from typing import cast
 from types import SimpleNamespace
@@ -12,12 +13,14 @@ import numpy as np
 from nicegui.testing import User
 from nicegui import run
 from parol6.client.dry_run_client import DryRunRobotClient
+from waldoctl.recordings import Demonstration, RecordedSample
 from waldoctl.skills import MissingCapability, SkillError
 
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
+    wait_until,
 )
 from waldo_commander.demonstrations import (
     load_demonstration,
@@ -404,6 +407,36 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         if line.startswith("rbt.")
     ), "the lines differ from what the same span converts to as a program"
     assert not captures.exists(), "nothing needed the recording saved"
+
+    # Publications missing mid-move: the lines take the arm across the stretch
+    # nobody observed with a planned move that says so, rather than starting
+    # the next piece from wherever the last one left it.
+    moving = next(
+        n
+        for n, sample in enumerate(recording.samples)
+        if abs(sample.joints_deg[0] - recording.samples[0].joints_deg[0]) > 2.0
+    )
+    gapped = replace(
+        recording,
+        samples=recording.samples[:moving] + recording.samples[moving + 4 :],
+    )
+    assert gapped.gaps
+    bridged = span_to_lines(
+        gapped, robot, program="bench", directory=tmp_path / "gapped"
+    )
+    assert "# not observed" in bridged.source, bridged.source
+    preview = await run.cpu_bound(
+        _run_simulation_isolated,
+        "from parol6 import RobotClient\nwith RobotClient() as rbt:\n"
+        + textwrap.indent(bridged.source, "    ")
+        + "\n",
+        np.radians(gapped.samples[0].joints_deg),
+        dry_run_client_cls=DryRunRobotClient,
+    )
+    assert preview["error"] is None, preview["error"]
+    final = preview["segments"][-1]["joints"]
+    assert np.degrees(final) == pytest.approx(gapped.samples[-1].joints_deg, abs=0.5)
+
     strict_lines = span_to_lines(
         recording, robot, program="bench", directory=captures, tolerance_mm=1e-6
     )
@@ -489,3 +522,145 @@ async def test_a_stall_near_the_end_of_a_capture_is_a_disconnect(
     # Every frame the wire delivered was kept: the first is the baseline the
     # capture compares against rather than a sample of its own.
     assert len(recording.samples) == frames - 1
+
+
+@pytest.mark.integration
+async def test_conversion_follows_the_recorded_posture_and_its_backend(
+    user: User, tmp_path
+):
+    """A wrist that swings out and back while the tool point barely moves is
+    not a short move to where it ended, and a recording from another backend
+    is not converted for this one."""
+    await user.open("/")
+    await wait_for_app_ready()
+    robot = ui_state.active_robot
+    # J6 out 60° and back to 1°, with J5 nudging the tool point under a
+    # millimetre so it is never quite still in space.
+    swing = np.concatenate([np.linspace(0.0, 60.0, 31), np.linspace(60.0, 1.0, 31)[1:]])
+    nudge = 0.6 * np.sin(np.linspace(0.0, np.pi, len(swing)))
+    samples = tuple(
+        RecordedSample(
+            seq=n + 1,
+            observed_ns=1_000_000_000 + n * 50_000_000,
+            received_ns=1_000_000_000 + n * 50_000_000,
+            joints_deg=(90.0, -90.0, 180.0, 0.0, 30.0 + float(j5), 180.0 + float(j6)),
+        )
+        for n, (j5, j6) in enumerate(zip(nudge, swing))
+    )
+    recording = Demonstration(
+        backend=robot.backend_package,
+        session_id=1,
+        simulator=True,
+        tcp_transform=(0.0,) * 6,
+        requested_rate_hz=20.0,
+        gap_threshold_s=0.2,
+        ended="stopped",
+        samples=samples,
+    )
+    lines = span_to_lines(recording, robot, program="swing", directory=tmp_path)
+    preview = await run.cpu_bound(
+        _run_simulation_isolated,
+        "from parol6 import RobotClient\nwith RobotClient() as rbt:\n"
+        + textwrap.indent(lines.source, "    ")
+        + "\n",
+        np.radians(samples[0].joints_deg),
+        dry_run_client_cls=DryRunRobotClient,
+    )
+    assert preview["error"] is None, preview["error"]
+    wrist = max(
+        float(np.degrees(np.asarray(segment["joint_trajectory"]))[:, 5].max())
+        for segment in preview["segments"]
+        if segment.get("joint_trajectory")
+    )
+    assert wrist >= 235.0, (
+        f"the converted lines never swing the wrist out ({wrist:.1f}°):\n{lines.source}"
+    )
+
+    elsewhere = replace(recording, backend="par6")
+    with pytest.raises(ValueError, match="belongs to par6"):
+        span_to_lines(elsewhere, robot, program="swing", directory=tmp_path)
+    with pytest.raises(ValueError, match="belongs to par6"):
+        to_program(elsewhere, robot, name="swing")
+
+
+@pytest.mark.integration
+async def test_a_dial_move_the_controller_never_took_records_nothing(
+    user: User, tmp_path, monkeypatch, caplog
+):
+    """A dial move the controller refuses or never acknowledges is not
+    recorded, and does not leave the recorder treating motion as its own."""
+    from parol6.utils.error_catalog import ErrorCode, make_error
+    from parol6.utils.errors import MotionError
+
+    from waldo_commander.services.motion_recorder import motion_recorder
+    from waldo_commander.services.programs import is_any_program_recording
+
+    monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    panel = ui_state.control_panel
+    assert panel is not None
+    client = panel.client
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    program = waldoctl.commander.programs.active
+    assert program is not None
+    textarea = ui_state.active_textarea
+    textarea.value = (
+        "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.home()\n"
+    )
+    program.dry_run.playback.active_cursor_line = 3
+    user.find(marker="editor-record-btn").click()
+    await asyncio.sleep(0.1)
+    assert is_any_program_recording()
+    real = client.move_j
+
+    async def refused(*args, **kwargs):
+        raise MotionError(
+            make_error(ErrorCode.SYS_SELF_COLLISION, sample=1, total=1, pairs="L4/L6")
+        )
+
+    async def unacknowledged(*args, **kwargs):
+        return -1
+
+    try:
+        start = await client.angles()
+        assert start is not None
+        recorded = str(textarea.value)
+        monkeypatch.setattr(client, "move_j", refused)
+        await panel.move_joint_to_angle(0, start[0] + 5.0)
+        assert not motion_recorder.owns_motion, "a refused dial move left its jog open"
+        monkeypatch.setattr(client, "move_j", unacknowledged)
+        await panel.move_joint_to_angle(0, start[0] + 5.0)
+        assert not motion_recorder.owns_motion
+        waiting = panel._jog_end_wait_task
+        if waiting is not None:
+            await waiting
+        assert str(textarea.value) == recorded, (
+            "a move the controller never took was recorded"
+        )
+        monkeypatch.setattr(client, "move_j", real)
+
+        # What moves the arm next is captured again.
+        target = list(start)
+        target[0] += 6.0
+        index = await client.move_j(target, duration=0.8)
+        assert await client.wait_command(index, timeout=10)
+        assert await wait_until(
+            lambda: any(b.kind == "capture" for b in motion_recorder.session.blocks),
+            timeout_s=30,
+        ), textarea.value
+        refusals = [
+            r
+            for r in caplog.get_records("call")
+            if r.getMessage().startswith("Go to joint angle failed")
+        ]
+        assert refusals
+        records = caplog.get_records("call")
+        records[:] = [r for r in records if r not in refusals]
+    finally:
+        monkeypatch.setattr(client, "move_j", real)
+        if is_any_program_recording():
+            motion_recorder.toggle_recording()
