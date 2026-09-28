@@ -37,6 +37,24 @@ Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[/]** to adjust
   <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/basic_control.mp4" type="video/mp4">
 </video>
 
+### Jogging in the 3D view
+
+Rest the pointer on a link of the arm and that joint's ring appears around it; rest it on the last link or the tool and the gizmo appears at the TCP. One handle shows at a time, and it goes a moment after the pointer leaves it. On a touch screen, tap the link instead; tapping empty space puts the handle away.
+
+- **Rings.** Drag anywhere on a ring to turn its joint. The joint moves in whole steps from where the drag began, stops at its limits, and the label beside the knob shows the joint's value, the change so far and the step, for example `Shoulder  −47.5°  Δ+20.0°  step 5°`. The dots on the ring mark the steps.
+- **Gizmo.** Drag an arrow to move the tool along its own axes, or a ring (in Rotate mode) to turn it about them. Moves snap to whole steps in the tool frame; dots along the dragged axis mark them and a label shows the change.
+
+The step follows the zoom: the further the camera is from what it orbits, the coarser the step.
+
+| Camera distance | Ring step | Gizmo step |
+|---|---|---|
+| over 1.2 m | 5° | 10 mm, 5° |
+| 0.5 – 1.2 m | 1° | 5 mm, 1° |
+| 0.3 – 0.5 m | 0.5° | 1 mm, 0.5° |
+| under 0.3 m | 0.1° | 0.5 mm, 0.1° |
+
+The step field in the control panel is separate: it sets the step of the jog buttons and keys only. The gizmo buttons in the control panel choose Move or Rotate for the gizmo, or Hidden to never show it; the rings still appear. No handle appears while a program runs, while you edit a target, or when there is no robot or simulator to move. While recording, a drag is recorded as one `move_j` (ring) or `move_l` (gizmo) when the arm settles.
+
 ### Connecting Your Robot
 
 Open **Settings** from the gear in the bottom-left rail and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the footer along the bottom of the window.

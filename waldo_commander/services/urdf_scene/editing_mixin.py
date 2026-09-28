@@ -80,6 +80,9 @@ class EditingMixin(ShapeEditingMixin):
     _apply_joint_angles: Any
     _ensure_ik_solver: Any
     _update_collision_highlight: Any
+    set_gizmo_visible: Any
+    suspend_hover: Any
+    resume_hover: Any
 
     def _init_editing_state(self) -> None:
         """Initialize all editing state variables."""
@@ -119,6 +122,7 @@ class EditingMixin(ShapeEditingMixin):
 
     def enter_editing_mode(self, joint_angles: list[float]) -> None:
         """Enter editing mode at specified joint angles."""
+        self.suspend_hover()
         n = len(self.joint_names)
         self._pre_edit_angles = list(waldoctl.commander.status.joints.angles.rad[:n])
 
@@ -147,9 +151,7 @@ class EditingMixin(ShapeEditingMixin):
     def exit_editing_mode(self) -> None:
         """Exit editing mode and restore pre-edit state."""
         self._disable_joint_transform_controls()
-
-        if self._tcp_ball:
-            self._tcp_ball.material(SceneColors.TCP_INACTIVE_HEX, 0.9)
+        self.set_gizmo_visible(False)
 
         self._apply_joint_angles(self._pre_edit_angles)
 
@@ -165,9 +167,9 @@ class EditingMixin(ShapeEditingMixin):
 
         waldoctl.commander.status.editing_mode = False
 
-        # Snap TCP ball back to robot's live position
+        # The cached FK pose is the editing one.
         self.invalidate_fk_cache()
-        self._update_tcp_ball_position()
+        self.resume_hover()
 
     def _cleanup_editing(self) -> None:
         """Clean up editing state."""
@@ -391,7 +393,7 @@ class EditingMixin(ShapeEditingMixin):
                     on_click=lambda: self._show_unified_target_editor(
                         use_click_position=False
                     ),
-                )
+                ).mark("scene-target-at-robot")
                 if self._last_click_coords and self._last_click_coords != (
                     0.0,
                     0.0,
@@ -587,10 +589,10 @@ class EditingMixin(ShapeEditingMixin):
                 ui.space()
                 ui.button(icon="close", on_click=self._on_edit_bar_cancel).props(
                     "round flat color=wc-error"
-                )
+                ).mark("edit-bar-cancel")
                 ui.button(icon="check", on_click=self._on_edit_bar_confirm).props(
                     "round color=wc-action text-color=wc-on-bright"
-                )
+                ).mark("edit-bar-confirm")
 
         self._current_editing_type = editing_type
         self._update_edit_bar_content(editing_type)
