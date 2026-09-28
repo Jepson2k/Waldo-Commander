@@ -379,7 +379,18 @@ def _run_simulation_isolated(
             from waldoctl import shape_from_wire
 
             if initial_tool is not None:
+                first_note = len(preview.notes)
+                first_selection = len(preview.tool_selection_collector)
                 preview.select_tool(initial_tool[0], variant_key=initial_tool[1])
+                # select_tool now mints a queue index, but this call initializes
+                # the preview; the live script never issues it. Keep its block
+                # for tool geometry without consuming a live step ordinal.
+                for index in range(first_note, len(preview.notes)):
+                    preview.notes[index] = replace(
+                        preview.notes[index], line_number=0, method="initial_tool"
+                    )
+                for selection in preview.tool_selection_collector[first_selection:]:
+                    selection.line_number = 0
             shapes = [shape_from_wire(*t) for t in shapes_wire or []]
             if not shapes:
                 return

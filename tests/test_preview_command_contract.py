@@ -174,7 +174,8 @@ def test_the_async_preview_does_not_offer_the_sync_clients_run_skill():
         AsyncPathPreviewClient.from_sync(_preview()).run_skill
 
 
-async def test_the_seeded_world_does_not_take_the_first_commands_ordinal():
+@pytest.mark.parametrize("initial_tool", [None, ("NONE", "")])
+async def test_the_seeded_world_does_not_take_the_first_commands_ordinal(initial_tool):
     """A preview starts from the live world by applying it before the program
     runs. The live run never sends that, so the running program's first
     queued command must still map to its first move, not to the seed."""
@@ -195,10 +196,14 @@ async def test_the_seeded_world_does_not_take_the_first_commands_ordinal():
         program,
         np.radians(HOME_DEG),
         shapes_wire=[bench.to_wire()],
+        initial_tool=initial_tool,
     )
     assert result["error"] is None, result["error"]
     notes = result["notes"]
     first = program_command(notes, 0)
-    assert notes[0].method == "set_shapes"
-    assert notes[first].method == "move_j" and first == 1
+    seed_count = 1 if initial_tool is None else 2
+    assert notes[seed_count - 1].method == "set_shapes"
+    if initial_tool is not None:
+        assert notes[0].method == "initial_tool" and notes[0].line_number == 0
+    assert notes[first].method == "move_j" and first == seed_count
     assert next(b for b in result["commanded"].blocks if b.command == first).rows > 0
