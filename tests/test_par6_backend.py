@@ -75,6 +75,11 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
             "par6d on PATH (cargo build -p par6d --release)"
         )
     port = _free_udp_port()
+    from waldo_commander.constants import config
+
+    # main() retains parsed CLI overrides between User lifespans. Keep that
+    # override aligned with this test's fresh daemon and client environment.
+    monkeypatch.setitem(config._overrides, "controller_port", port)
     monkeypatch.setenv("WALDO_ROBOT", "par6")
     monkeypatch.setenv("WALDO_CONTROLLER_PORT", str(port))
     # par6's Robot reads its own port var when constructed without kwargs.
