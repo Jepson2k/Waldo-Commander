@@ -1400,14 +1400,10 @@ class HandEyeCalibrationPanel(Panel):
         within a slice instead of at the end of the move.
 
         A Stop Commander did not send (another client of the controller)
-        cancels the command without completing it and without an error, so
-        ``wait_command`` resolves neither True nor raises. The action going
-        idle after it ran is the only signal, and it has to halt this run: the
-        controller stays enabled through a Stop, so a caller that treated the
-        halt as success would capture a view at the halted pose and then drive
-        the arm to the next one, seconds after a human deliberately stopped
-        it. (``ControlPanel._wait_home`` makes the same distinction for the
-        same reason.)
+        cancels the command. New backends raise RobotError.cancelled; older
+        ones only go idle without completing it. Both must halt this run:
+        the controller stays enabled through a Stop, so treating it as a
+        rejected view would let the next iteration move the arm again.
 
         A move whose dispatch went unanswered, or that has not finished by
         its deadline, is stopped: the next view's move would queue behind
@@ -1457,6 +1453,11 @@ class HandEyeCalibrationPanel(Panel):
                     if time.monotonic() > deadline:
                         break
         except Exception as e:
+            if isinstance(e, waldoctl.RobotError) and e.cancelled:
+                logger.info("Auto-calibration halted: the move was cancelled")
+                if self._run is not None:
+                    self._run.halt("the move was cancelled")
+                return _Move.HALTED
             logger.warning("Auto-calibration move refused: %s", e)
             return _Move.REJECTED
         logger.warning("Auto-calibration move not confirmed; stopping the robot")

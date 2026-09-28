@@ -1085,9 +1085,9 @@ async def test_auto_move_distinguishes_late_completion_from_stop(
 async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
     """A Stop from anywhere else aborts auto-calibration.
 
-    The controller cancels the command without completing it and without an
-    error, so `wait_command` resolves neither True nor raises — and it stays
-    enabled through a Stop. A run that read the halt as success would capture
+    The controller cancels the command without completing it and stays
+    enabled through a Stop. A run that read the cancellation as a rejected
+    view or a successful move would capture
     a view at the halted pose and then drive the arm to the next one, seconds
     after a human deliberately stopped it.
 
