@@ -42,6 +42,7 @@ AXIS_MIN_ROTATION_DEG = 3.0
 # cv2.calibrateHandEye can return a non-orthonormal or left-handed rotation
 # without raising; the solve is garbage whenever it does.
 RIGID_TOL = 1e-4
+_AXIS_BLOCK_ROWS = 256
 
 HAND_EYE_METHODS: dict[str, int] = {
     "PARK": cv2.CALIB_HAND_EYE_PARK,
@@ -99,6 +100,16 @@ class BoardSpec:
             )
         if self.dictionary not in ARUCO_DICTIONARIES:
             raise CalibrationError(f"Unknown ArUco dictionary {self.dictionary!r}")
+        # A ChArUco board carries a marker in every other square.
+        markers = self.squares_x * self.squares_y // 2
+        available = cv2.aruco.getPredefinedDictionary(
+            ARUCO_DICTIONARIES[self.dictionary]
+        ).bytesList.shape[0]
+        if markers > available:
+            raise CalibrationError(
+                f"A {self.squares_x}x{self.squares_y} board needs {markers} "
+                f"markers; {self.dictionary} has only {available}"
+            )
 
 
 def _hand_eye_solver() -> Callable[..., tuple[np.ndarray, np.ndarray]]:
@@ -193,7 +204,7 @@ class HandEyeSample:
     detection: Detection
     timestamp: float
     thumbnail: bytes | None = None  # small JPEG of the captured frame
-    cells: frozenset[int] = frozenset()  # view_cells at capture; empty = not computed
+    cells: frozenset[int] = frozenset()  # view_cells at capture
     tilt: str | None = None  # view_tilt at capture
 
 
@@ -201,6 +212,9 @@ class HandEyeSample:
 # of cells, and the direction the camera views the board from as one of eight
 # 45-degree sectors, named from the camera's image (x right, y down).
 TILT_MIN_DEG = 5.0
+# Corners this close to one line (the spread across it over the spread along
+# it) fix no tilt: IPPE returns NaN or an arbitrary rotation for them.
+COLLINEAR_RATIO = 0.02
 SECTORS: tuple[str, ...] = (
     "right",
     "down-right",
@@ -267,31 +281,37 @@ def view_cells(detection: Detection, image_size: tuple[int, int]) -> frozenset[i
 
 
 def view_tilt(
-    detection: Detection, spec: BoardSpec, image_size: tuple[int, int]
+    detection: Detection, board: cv2.aruco.CharucoBoard, image_size: tuple[int, int]
 ) -> str | None:
     """The side the camera views the board from, as a sector name, or None
-    within ``TILT_MIN_DEG`` of straight on.
+    within ``TILT_MIN_DEG`` of straight on or when the corners fix no tilt.
 
     Solved against a nominal camera matrix (focal length = the frame's long
     side) because no intrinsics exist before the solve: a wrong focal length
     biases the tilt magnitude but leaves its direction intact.
     """
-    obj, img = make_board(spec).matchImagePoints(
+    obj, img = board.matchImagePoints(
         cast("Sequence[cv2.typing.MatLike]", detection.corners), detection.ids
     )
     if obj is None or img is None or len(obj) < 4:
+        return None
+    points = np.asarray(img, dtype=np.float64).reshape(-1, 2)
+    if not np.all(np.isfinite(points)):
+        return None
+    spread = np.linalg.svd(points - points.mean(axis=0), compute_uv=False)
+    if spread[1] <= COLLINEAR_RATIO * spread[0]:
         return None
     w, h = image_size
     f = float(max(w, h))
     K = np.array([[f, 0.0, w / 2.0], [0.0, f, h / 2.0], [0.0, 0.0, 1.0]])
     ok, rvec, _tvec = cv2.solvePnP(
         np.asarray(obj, dtype=np.float64),
-        np.asarray(img, dtype=np.float64),
+        points,
         K,
         np.zeros(5),
         flags=cv2.SOLVEPNP_IPPE,
     )
-    if not ok:
+    if not ok or not np.all(np.isfinite(rvec)) or not np.all(np.isfinite(_tvec)):
         return None
     zx, zy, zz = (float(v) for v in cv2.Rodrigues(rvec)[0][:, 2])
     if math.degrees(math.acos(min(abs(zz), 1.0))) < TILT_MIN_DEG:
@@ -301,22 +321,32 @@ def view_tilt(
     return SECTORS[round(math.degrees(math.atan2(zy, zx)) / 45.0) % 8]
 
 
-def coverage(samples: Sequence[HandEyeSample], spec: BoardSpec) -> Coverage:
-    """Per-cell and per-sector view counts, using what a sample stored at
-    capture and computing it for samples that carry nothing."""
+def analyse_view(
+    image_bgr: np.ndarray, detector: cv2.aruco.CharucoDetector
+) -> tuple[Detection, frozenset[int], str | None] | None:
+    """The board in a frame with the cells and tilt it was seen from, or None
+    when no board is found."""
+    detection = detect_board(image_bgr, detector)
+    if detection is None:
+        return None
+    size = detection.image_size
+    return (
+        detection,
+        view_cells(detection, size),
+        view_tilt(detection, detector.getBoard(), size),
+    )
+
+
+def coverage(samples: Sequence[HandEyeSample]) -> Coverage:
+    """Per-cell and per-sector view counts from what each sample stored at
+    capture."""
     cells = [0] * len(CELLS)
     sectors = [0] * len(SECTORS)
     for s in samples:
-        if s.cells:
-            s_cells, tilt = s.cells, s.tilt
-        else:
-            size = s.detection.image_size
-            s_cells = view_cells(s.detection, size)
-            tilt = view_tilt(s.detection, spec, size)
-        for c in s_cells:
+        for c in s.cells:
             cells[c] += 1
-        if tilt is not None:
-            sectors[SECTORS.index(tilt)] += 1
+        if s.tilt is not None:
+            sectors[SECTORS.index(s.tilt)] += 1
     return Coverage(
         cells=tuple(cells),
         sectors=tuple(sectors),
@@ -439,24 +469,27 @@ def motion_diversity(poses: list[np.ndarray]) -> tuple[float, float]:
     ``AXIS_MIN_ROTATION_DEG`` contribute an axis, so the second value is 0.0
     when fewer than two such rotations exist.
     """
-    angles: list[float] = []
-    axes: list[np.ndarray] = []
-    for i in range(len(poses)):
-        for j in range(i + 1, len(poses)):
-            R_rel = poses[i][:3, :3].T @ poses[j][:3, :3]
-            rotvec = Rotation.from_matrix(R_rel).as_rotvec()
-            angle = float(np.linalg.norm(rotvec))
-            angles.append(math.degrees(angle))
-            if math.degrees(angle) >= AXIS_MIN_ROTATION_DEG:
-                axes.append(rotvec / angle)
-    if not angles:
+    if len(poses) < 2:
         return 0.0, 0.0
-    max_axis_angle = 0.0
-    for i in range(len(axes)):
-        for j in range(i + 1, len(axes)):
-            cosang = float(np.clip(abs(np.dot(axes[i], axes[j])), 0.0, 1.0))
-            max_axis_angle = max(max_axis_angle, math.degrees(math.acos(cosang)))
-    return max(angles), max_axis_angle
+    rotations = np.stack([p[:3, :3] for p in poses])
+    i, j = np.triu_indices(len(poses), 1)
+    rotvecs = Rotation.from_matrix(
+        np.swapaxes(rotations[i], 1, 2) @ rotations[j]
+    ).as_rotvec()
+    angles = np.linalg.norm(rotvecs, axis=1)
+    moving = np.degrees(angles) >= AXIS_MIN_ROTATION_DEG
+    axes = rotvecs[moving] / angles[moving, None]
+    # The widest pair of axes has the smallest |cos|. The pairs grow with the
+    # square of the views, so their Gram matrix is taken a block of rows at a
+    # time, with each axis's pairing with itself masked out.
+    min_cos = 1.0
+    for start in range(0, len(axes), _AXIS_BLOCK_ROWS):
+        block = np.abs(axes[start : start + _AXIS_BLOCK_ROWS] @ axes.T)
+        rows = np.arange(len(block))
+        block[rows, start + rows] = np.inf
+        min_cos = min(min_cos, float(block.min()))
+    max_rotation = math.degrees(float(angles.max()))
+    return max_rotation, math.degrees(math.acos(max(min_cos, 0.0)))
 
 
 def _target2cam_matrix(rvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:

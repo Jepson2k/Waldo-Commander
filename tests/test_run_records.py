@@ -17,6 +17,7 @@ from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
+    wait_until,
 )
 from waldo_commander.services.run_records import (
     MAX_RECORD_BYTES,
@@ -56,10 +57,12 @@ def test_export_removes_personal_values_and_journal_recovers_a_partial_tail(tmp_
         {
             "event": "command_failed",
             "method": "move_j",
+            "command": 7,
             "code": 53,
             "message": "secret error detail",
         }
     )
+    record.append({"event": "stop_unconfirmed"})
     for _ in range(10000):
         record.append(
             {
@@ -92,6 +95,11 @@ def test_export_removes_personal_values_and_journal_recovers_a_partial_tail(tmp_
         )
     )
     assert '"record_truncated"' in text
+    exported = json.loads(text)["events"]
+    assert next(e for e in exported if e["event"] == "command_failed")["command"] == 7
+    assert any(e["event"] == "stop_unconfirmed" for e in exported), (
+        "an unconfirmed stop is what a debugging export is for"
+    )
     assert load_record(record.path)[-1]["outcome"] == "failed"
     with record.path.open("ab") as stream:
         stream.write(b'{"event":')
@@ -112,13 +120,29 @@ def test_export_removes_personal_values_and_journal_recovers_a_partial_tail(tmp_
 async def test_managed_records_capture_nested_calls_results_status_and_stop(
     user: User, tmp_path, monkeypatch
 ):
+    from waldo_commander.components.playback import playback
     from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.components.simulation_engine import simulation
     from waldo_commander.services.programs import is_any_program_running
     from waldo_commander.state import ui_state
 
     monkeypatch.setenv("WALDO_RUN_RECORD_DIR", str(tmp_path / "records"))
     monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path / "setups"))
     SetupStore().save("bench", SetupSnapshot(poses={"pick": Pose((1, 2, 3, 0, 0, 0))}))
+    # A run whose events reached the journal in one late batch, as they do
+    # when the page was away: its rows are timed by when the program sent
+    # them, not by when they were drained.
+    backlog = RunRecord("print('earlier run')", "parol6")
+    drained_from = load_record(backlog.path)[0]["received_ns"]
+    backlog.append(
+        {
+            "event": "command_started",
+            "method": "move_j",
+            "command": 0,
+            "mono_ns": drained_from + 2_500_000_000,
+        }
+    )
+    backlog.finish("completed", 0)
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
@@ -165,11 +189,41 @@ if os.environ.get("WALDO_STEP_SESSION"):
     await user.should_see("Record future program runs")
     user.find(marker="record-runs-enabled").click()
     await user.should_see("Export debugging data")
+    events_table = next(iter(user.find(marker="run-record-events").elements))
+    assert [
+        r["time"] for r in events_table.rows if r["event"] == "command_started"
+    ] == [2.5]
     user.find("Close").click()
     assert script_exec.record_runs
     program = waldoctl.commander.programs.active
     assert program is not None
-    await script_exec.start()
+    assert await wait_until(
+        lambda: simulation._simulation_debounce_timer is None
+        and simulation._physics_timer is None,
+        timeout_s=30,
+    )
+    # The launch reads the controller's context before it spawns anything;
+    # Stop is offered from the moment the program counts as running.
+    client = waldoctl.commander.client
+    reading, release = asyncio.Event(), asyncio.Event()
+    read_tools = client.tools
+
+    async def held_tools():
+        reading.set()
+        await release.wait()
+        return await read_tools()
+
+    with monkeypatch.context() as patched:
+        patched.setattr(client, "tools", held_tools)
+        launch = asyncio.create_task(script_exec.start())
+        try:
+            async with asyncio.timeout(5):
+                await reading.wait()
+            assert is_any_program_running()
+            assert playback.stop_btn is not None and playback.stop_btn.visible
+        finally:
+            release.set()
+            await launch
     async with asyncio.timeout(40):
         while is_any_program_running():
             await asyncio.sleep(0.05)
@@ -238,12 +292,21 @@ if os.environ.get("WALDO_STEP_SESSION"):
     async with asyncio.timeout(15):
         while is_any_program_running():
             await asyncio.sleep(0.05)
-    assert len(list((tmp_path / "records").glob("*.jsonl"))) == 1
+    assert len(list((tmp_path / "records").glob("*.jsonl"))) == 2
 
     script_exec.record_runs = True
     ui_state.active_textarea.value = "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.delay(30)\n"
     try:
         await script_exec.start()
+        # The page goes away while the program starts: the run keeps
+        # recording what it does, not only once a page is back.
+        script_exec.cleanup()
+        async with asyncio.timeout(15):
+            while not any(
+                e["event"] == "command_returned" and e.get("method") == "delay"
+                for e in load_record(script_exec.last_record)
+            ):
+                await asyncio.sleep(0.05)
         assert await waldoctl.commander.client.wait_status(
             lambda s: bool(s.action_current), timeout=15
         )

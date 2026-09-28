@@ -249,7 +249,7 @@ rbt.set_shapes([
 Units are metres and radians, poses are `(x, y, z, rx, ry, rz)`. A plain shape
 is a keep-out: the controller refuses any planned move or jog that would
 collide with it, previews mark the path red, and the scene draws it (slate once
-the backend confirms it, amber until then). `collision=False` makes a visual
+the backend confirms it, a paler slate until then). `collision=False` makes a visual
 marker that is drawn and never enforced. A shape carrying `physics` is also a
 body in the simulator's contact world on backends that have one (par6): a
 fixture without `mass`, a free object with one — the dry run then previews the

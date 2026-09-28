@@ -83,7 +83,7 @@ holds control) seizes control back for you and halts any motion the AI started.
 
 The `world.*` tools edit the same collision world the 3D scene shows and the
 backend enforces. Every mutation reassigns the scene's program layer, so the
-backend push, the amber "not yet confirmed" styling, program recording and the
+backend push, the pale "not yet confirmed" styling, program recording and the
 local collision checker all apply exactly as they do to a human's edit.
 Mutations need the control lease (changing the enforced world is not
 actuation, so no hardware consent is asked); reads never do. Shapes travel as

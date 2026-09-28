@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from collections.abc import Callable
+from pathlib import Path
 from typing import ClassVar, cast
 
-from nicegui import ui
+from nicegui import context, ui
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.setup import Frame, Parameter, Pose, PoseValues, SetupSnapshot
 
 from waldo_commander.components.device_signals import DeviceSignalEditor
 from waldo_commander.components.tcp_calibration import TcpCalibrationEditor
 from waldo_commander.services.python_source import insert_prelude
-from waldo_commander.setup import SetupStore, export_snapshot
+from waldo_commander.setup import (
+    SetupStore,
+    add_save_listener,
+    export_snapshot,
+    merge_snapshots,
+)
 
 
 class NamedSetupPanel(Panel):
@@ -28,10 +34,24 @@ class NamedSetupPanel(Panel):
     min_height: ClassVar[int] = 420
     resizable: ClassVar[bool] = True
 
+    def __init__(self) -> None:
+        self._drop_save_listener: Callable[[], None] = lambda: None
+
+    async def stop(self) -> None:
+        self._drop_save_listener()
+
     def build(self, commander: Commander) -> None:
+        # Only the latest page's panel follows saves; an earlier build's
+        # elements belong to a dead client.
+        self._drop_save_listener()
         store = SetupStore()
         snapshot = SetupSnapshot()
         persisted = snapshot
+        # The saved setup `persisted` came from, and that file's revision then:
+        # Save replaces nothing else without asking.
+        loaded_name: str | None = None
+        loaded_revision: str | None = None
+        writing = False
         baselines: dict[str, tuple] = {}
         fields: dict[str, list] = {}
         initial_values: dict[str, tuple] = {}
@@ -75,42 +95,45 @@ class NamedSetupPanel(Panel):
                 remember(kind)
             refresh()
 
-        def load() -> None:
-            nonlocal snapshot, persisted, loading
+        def load(name: str) -> None:
+            nonlocal loaded_name, loaded_revision
             try:
-                loaded = store.load(setup_name.value)
+                loaded, revision = store.read(name)
             except (OSError, ValueError) as error:
                 inform(str(error))
                 return
-            snapshot = loaded
-            persisted = loaded
+            loaded_name, loaded_revision = name, revision
+            adopt(loaded)
+            inform(f"Loaded {name}")
+
+        def adopt(saved_snapshot: SetupSnapshot) -> None:
+            """Show *saved_snapshot* as the clean copy of ``loaded_name``."""
+            nonlocal snapshot, persisted, loading
+            snapshot = persisted = saved_snapshot
+            setup_name.set_value(loaded_name)
             loading = True
             for kind, widgets in fields.items():
                 for widget, value in zip(widgets, initial_values[kind]):
                     widget.set_value(value)
-            tcp_editor.clear_samples()
-            tcp_editor.binding = None
-            tcp_editor.saved_measurement = None
-            tcp_editor.taught = None
+            tcp_editor.reset()
             signal_editor.use_current_robot()
             refresh()
             # Another session (or a script) can write a setup after this panel
             # was built; without the options the dropdown drops a value it
             # does not list and shows nothing for the setup just loaded.
-            saved.set_options(store.names(), value=setup_name.value)
+            saved.set_options(store.names(), value=loaded_name)
             for selector, entries, select in (
                 (frame_existing, snapshot.frames, select_frame),
                 (pose_existing, snapshot.poses, select_pose),
                 (parameter_existing, snapshot.parameters, select_parameter),
-                (tcp_editor.existing, snapshot.tcp_calibrations, tcp_editor.load),
-                (signal_editor.existing, snapshot.signals, signal_editor.load),
+                (tcp_editor.existing, snapshot.tcp_calibrations, select_tcp),
+                (signal_editor.existing, snapshot.signals, select_signal),
             ):
                 if entries:
                     selector.set_value(next(iter(entries)))
                     select(selector.value)
             loading = False
             remember()
-            inform(f"Loaded {setup_name.value}")
 
         #: The entry each tab's fields are currently showing, so a refused
         #: switch can put the selector back on it.
@@ -118,6 +141,9 @@ class NamedSetupPanel(Panel):
 
         def signature(kind: str) -> tuple:
             values = tuple(field.value for field in fields[kind])
+            if kind == "tcp":
+                # A measurement can bind or re-bind the same numbers.
+                return (*values, tcp_editor.draft_state())
             if kind == "signals":
                 return (*values, signal_editor.binding)
             return values
@@ -179,41 +205,132 @@ class NamedSetupPanel(Panel):
             return True
 
         def save() -> None:
-            nonlocal snapshot, persisted
+            name = setup_name.value
             try:
                 updated = pending_snapshot()
-                # Sections this panel never edits belong to whoever wrote the
-                # file last (the camera calibration panel), not to the copy
-                # loaded here before they did.
-                try:
-                    on_disk = store.load(setup_name.value)
-                except FileNotFoundError:
-                    on_disk = None
-                if on_disk is not None:
-                    updated = replace(updated, cameras=on_disk.cameras)
-                store.save(setup_name.value, updated)
+                on_disk = store.revision(name)
             except (OSError, ValueError, TypeError) as error:
                 inform(str(error))
                 return
+            if on_disk is None or on_disk == (
+                loaded_revision if name == loaded_name else None
+            ):
+                write(name, updated)
+            else:
+                confirm_replace(name, updated)
+
+        def write(name: str, updated: SetupSnapshot) -> bool:
+            nonlocal snapshot, persisted, loaded_name, loaded_revision, writing
+            writing = True
+            try:
+                revision = store.save(name, updated)
+            except (OSError, ValueError, TypeError) as error:
+                inform(str(error))
+                return False
+            finally:
+                writing = False
             snapshot = persisted = updated
+            loaded_name, loaded_revision = name, revision
             remember()
             refresh()
-            saved.set_options(store.names(), value=setup_name.value)
-            inform(f"Saved {setup_name.value}")
+            saved.set_options(store.names(), value=name)
+            inform(f"Saved {name}")
+            return True
 
-        def request_load() -> None:
-            if not dirty.visible:
-                load()
+        def merge(name: str) -> None:
+            try:
+                theirs, _ = store.read(name)
+                merged = merge_snapshots(
+                    persisted if name == loaded_name else SetupSnapshot(),
+                    pending_snapshot(),
+                    theirs,
+                )
+            except (OSError, ValueError, TypeError) as error:
+                inform(f"Could not merge into {name}: {error}")
                 return
-            with ui.dialog() as dialog, ui.card().classes("task-dialog"):
+            if write(name, merged):
+                adopt(merged)
+                inform(f"Merged your edits into {name}")
+
+        def confirm_replace(name: str, updated: SetupSnapshot) -> None:
+            edited = dirty.visible
+            prompt.clear()
+            with prompt, ui.card().classes("task-dialog"):
+                ui.label(
+                    f"{name} changed on disk since it was loaded"
+                    if name == loaded_name
+                    else f"{name} is already saved and is not loaded here"
+                ).classes("panel-heading")
+                ui.label(
+                    "Merge keeps the saved entries you did not edit. "
+                    "Overwrite replaces the whole setup with this one."
+                    if edited
+                    else "Load it to edit the saved setup, or overwrite it "
+                    "with this one."
+                ).classes("text-caption")
+                with ui.row().classes("panel-actions"):
+                    ui.button("Cancel", on_click=prompt.close).props("flat").mark(
+                        "setup-replace-cancel"
+                    )
+                    ui.button(
+                        "Overwrite",
+                        on_click=lambda: (prompt.close(), write(name, updated)),
+                    ).props("flat").mark("setup-replace-overwrite")
+                    if edited:
+                        ui.button(
+                            "Merge", on_click=lambda: (prompt.close(), merge(name))
+                        ).props("color=wc-action text-color=wc-on-bright").mark(
+                            "setup-replace-merge"
+                        )
+                    else:
+                        ui.button(
+                            "Load it", on_click=lambda: (prompt.close(), load(name))
+                        ).props("color=wc-action text-color=wc-on-bright").mark(
+                            "setup-replace-load"
+                        )
+            prompt.open()
+
+        def show_loaded() -> None:
+            saved.set_value(loaded_name if loaded_name in saved.options else None)
+
+        def pick(name: str | None) -> None:
+            if name is not None and name != loaded_name:
+                request_load(name)
+
+        def request_load(name: str) -> None:
+            if not dirty.visible:
+                load(name)
+                return
+            prompt.clear()
+            with prompt, ui.card().classes("task-dialog"):
                 ui.label("Discard unsaved setup edits?").classes("panel-heading")
                 with ui.row().classes("panel-actions"):
-                    ui.button("Keep editing", on_click=dialog.close).props("flat")
+                    ui.button("Keep editing", on_click=prompt.close).props("flat")
                     ui.button(
-                        "Discard and load", on_click=lambda: (dialog.close(), load())
-                    )
-            dialog.on("hide", dialog.delete)
-            dialog.open()
+                        "Discard and load",
+                        on_click=lambda: (load(name), prompt.close()),
+                    ).props("color=wc-action text-color=wc-on-bright")
+            prompt.open()
+
+        def on_saved(directory: Path, name: str, revision: str) -> None:
+            if writing or directory != store.directory:
+                return
+            saved.set_options(store.names(), value=saved.value)
+            if name != loaded_name or revision == loaded_revision:
+                return
+            if dirty.visible:
+                inform(f"{name} was saved elsewhere; Save will ask before replacing it")
+            else:
+                load(name)
+
+        self._drop_save_listener = add_save_listener(on_saved)
+        context.client.on_delete(self._drop_save_listener)
+
+        # One prompt, refilled for each question, so a dismissed one leaves no
+        # stale buttons behind.
+        prompt = ui.dialog()
+        # A picked setup that was not loaded leaves the list on the one that is.
+        prompt.on_value_change(lambda e: None if e.value else show_loaded())
 
         def insert_load() -> None:
             program = commander.programs.active
@@ -269,19 +386,19 @@ class NamedSetupPanel(Panel):
                     ui.select(
                         store.names(),
                         label="Saved",
-                        on_change=lambda e: (
-                            setup_name.set_value(e.value) if e.value else None
-                        ),
+                        on_change=lambda e: pick(e.value),
                     )
                     .props("dense")
                     .classes("grow")
                     .mark("setup-saved")
                 )
             with ui.row():
-                ui.button("Load", on_click=request_load).props("dense flat").mark(
-                    "setup-load"
-                )
-                ui.button("Save setup", on_click=save).props("dense").mark("setup-save")
+                ui.button(
+                    "Load", on_click=lambda: request_load(setup_name.value)
+                ).props("dense flat").mark("setup-load")
+                ui.button("Save setup", on_click=save).props(
+                    "dense color=wc-action text-color=wc-on-bright"
+                ).mark("setup-save")
                 ui.button("Insert load call", on_click=insert_load).props(
                     "dense flat"
                 ).mark("setup-insert-load")
@@ -482,6 +599,26 @@ class NamedSetupPanel(Panel):
                 parameter_unit.set_value(entry.unit)
                 remember("parameters")
 
+            def select_tcp(name: str | None) -> None:
+                if name not in snapshot.tcp_calibrations:
+                    return
+                if not keep_current("tcp"):
+                    tcp_editor.existing.set_value(shown.get("tcp"))
+                    return
+                shown["tcp"] = name
+                tcp_editor.load(name)
+                remember("tcp")
+
+            def select_signal(name: str | None) -> None:
+                if name not in snapshot.signals:
+                    return
+                if not keep_current("signals"):
+                    signal_editor.existing.set_value(shown.get("signals"))
+                    return
+                shown["signals"] = name
+                signal_editor.load(name)
+                remember("signals")
+
             with ui.tab_panels(tabs, value=frames_tab).classes(
                 "w-full flex-1 min-h-0 overflow-y-auto gap-2"
             ):
@@ -515,9 +652,9 @@ class NamedSetupPanel(Panel):
                             "Use current TCP",
                             on_click=lambda: teach(frame_values, frame_parent),
                         ).props("dense flat").mark("setup-teach-frame")
-                        ui.button("Keep frame", on_click=set_frame).props("dense").mark(
-                            "setup-set-frame"
-                        )
+                        ui.button("Keep frame", on_click=set_frame).props(
+                            "dense color=wc-action text-color=wc-on-bright"
+                        ).mark("setup-set-frame")
                         ui.button(
                             icon="delete",
                             on_click=lambda: remove("frames", frame_name.value),
@@ -554,9 +691,9 @@ class NamedSetupPanel(Panel):
                             "Use current TCP",
                             on_click=lambda: teach(pose_values, pose_frame),
                         ).props("dense flat").mark("setup-teach-pose")
-                        ui.button("Keep pose", on_click=set_pose).props("dense").mark(
-                            "setup-set-pose"
-                        )
+                        ui.button("Keep pose", on_click=set_pose).props(
+                            "dense color=wc-action text-color=wc-on-bright"
+                        ).mark("setup-set-pose")
                         ui.button(
                             icon="delete",
                             on_click=lambda: remove("poses", pose_name.value),
@@ -598,7 +735,7 @@ class NamedSetupPanel(Panel):
                         )
                     with ui.row():
                         ui.button("Keep parameter", on_click=set_parameter).props(
-                            "dense"
+                            "dense color=wc-action text-color=wc-on-bright"
                         ).mark("setup-set-parameter")
                         ui.button(
                             icon="delete",
@@ -607,7 +744,11 @@ class NamedSetupPanel(Panel):
 
                 with ui.tab_panel(tcp_tab).classes("p-0"):
                     tcp_editor = TcpCalibrationEditor(
-                        commander, lambda: snapshot, set_snapshot
+                        commander,
+                        lambda: snapshot,
+                        set_snapshot,
+                        lambda: pending_snapshot(["frames"]),
+                        update_dirty,
                     )
                 with ui.tab_panel(signals_tab).classes("p-0"):
                     signal_editor = DeviceSignalEditor(
@@ -674,5 +815,5 @@ class NamedSetupPanel(Panel):
             for widgets in fields.values():
                 for field in widgets:
                     field.on_value_change(update_dirty)
-            tcp_editor.existing.on_value_change(lambda: remember("tcp"))
-            signal_editor.existing.on_value_change(lambda: remember("signals"))
+            tcp_editor.existing.on_value_change(lambda e: select_tcp(e.value))
+            signal_editor.existing.on_value_change(lambda e: select_signal(e.value))

@@ -23,7 +23,6 @@ lies: the legend beside the scene quotes both.
 
 from __future__ import annotations
 
-import functools
 import logging
 import math
 from typing import Any
@@ -33,7 +32,7 @@ from nicegui import ui
 from scipy.spatial.transform import Rotation as ScipyRotation
 from waldoctl import TickIndex, following_error
 
-from waldo_commander.common.theme import hex_of, rgb01
+from waldo_commander.common.theme import hex_of, linear_rgb
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +63,12 @@ _DROP_RADIUS_M = 0.001
 _CONE_AXIS = np.array([0.0, 1.0, 0.0])
 
 
-@functools.cache
 def _gradient_endpoints() -> tuple[np.ndarray, np.ndarray]:
     """The on-track and diverged ends of the colour scale."""
-    return (np.array(rgb01("physics-on-track")), np.array(rgb01("physics-diverged")))
+    return (
+        np.array(linear_rgb("physics-on-track")),
+        np.array(linear_rgb("physics-diverged")),
+    )
 
 
 def following_error_colors(error_rad: np.ndarray) -> list[list[float]]:

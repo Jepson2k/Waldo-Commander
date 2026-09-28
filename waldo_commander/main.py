@@ -54,7 +54,10 @@ from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import StatusFooter
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.settings import adopt_applied_tcp
+from waldo_commander.components.settings import (
+    adopt_applied_tcp,
+    refresh_applied_tcp,
+)
 from waldo_commander.constants import DEFAULT_CAMERA, RESERVED_TAB_IDS, config
 from waldo_commander.mcp import start_mcp_server, stop_mcp_server
 from waldo_commander.services.tcp_calibration import read_applied_tcp
@@ -76,6 +79,7 @@ from waldo_commander.services.control_lease import (
     control_lease,
     restore_control_mode,
 )
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.path_visualizer import warm_process_pool
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services.urdf_scene import (
@@ -272,6 +276,8 @@ async def initialize_urdf_scene() -> None:
         material=scene_config.material,
         background_color=scene_config.background_color,
     )
+    if ui_state.urdf_scene.scene:
+        _attach_scene_framing(ui_state.urdf_scene.scene)
 
     # Align TCP and load tool mesh from the controller's active tool.
     try:
@@ -298,11 +304,6 @@ async def initialize_urdf_scene() -> None:
         )  # Z
 
     ui_state.urdf_joint_names = list(ui_state.urdf_scene.get_joint_names())
-
-    if ui_state.urdf_scene.scene:
-        background_tasks.create(
-            _attach_scene_framing(ui_state.urdf_scene.scene), name="scene-framing"
-        )
 
     logger.debug("URDF scene initialized with joints: %s", ui_state.urdf_joint_names)
 
@@ -331,10 +332,13 @@ async def initialize_urdf_scene() -> None:
         ui_state.urdf_scene.set_simulator_appearance(True)
 
 
-async def _attach_scene_framing(scene: ui.scene) -> None:
-    """Frame the camera on the part of the view the column and footer leave clear."""
-    await scene.initialized()
-    scene.client.run_javascript(f"SceneFraming.attach({scene.id})")
+def _attach_scene_framing(scene: ui.scene) -> None:
+    """Frame the camera on the part of the view the column and footer leave clear.
+
+    Registered before the page yields, so it catches the first init; a remount
+    after WebGL context loss inits again with a new camera.
+    """
+    scene.on("init", lambda: ui.run_javascript(f"SceneFraming.attach({scene.id})"))
 
 
 async def start_controller(com_port: str | None) -> None:
@@ -472,6 +476,7 @@ async def check_ping() -> None:
                 scene_handle = waldoctl.commander.scene
                 if scene_handle is not None:
                     asyncio.create_task(scene_handle.refresh_from_backend())
+                asyncio.create_task(refresh_applied_tcp(client))
         ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
@@ -782,13 +787,13 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         .props(
             "vertical animated transition-prev=slide-right transition-next=slide-right"
         )
-        .classes("left-panels-container top-panels-container z-30") as top_panels
+        .classes("left-panels-container top-panels-container") as top_panels
     ):
 
         def close_top_panels():
             side_tabs.value = None
             top_panels.value = None
-            panels_wrap.classes(remove="coupled column-open")
+            panels_wrap.classes(remove="column-open")
             ui_state.program_panel_visible = False
             ui.run_javascript("PanelResize.onTabChange('top', '')")
 
@@ -875,7 +880,8 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
             ui_state.program_panel_visible = new_tab == "program"
-            if new_tab == "program":
+            panel = PANEL_RESIZE_CONFIG["panels"].get(new_tab, {})
+            if panel.get("fullHeight"):
                 panels_wrap.classes(add="column-open")
             else:
                 panels_wrap.classes(remove="column-open")
@@ -920,22 +926,11 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
     ):
         _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
-        def update_bottom_layout():
-            is_open = bool(bottom_tabs.value)
-            top_is_resizable = side_tabs.value == "program"
-            if is_open and top_is_resizable:
-                panels_wrap.classes(add="coupled")
-            else:
-                panels_wrap.classes(remove="coupled")
-
-        bottom_tabs.on("update:model-value", lambda _: update_bottom_layout())
-
         def handle_bottom_tab_change(e):
             to_tab = e.args or ""
             ui.run_javascript(f"PanelResize.onTabChange('bottom', '{to_tab}')")
 
         bottom_tabs.on("update:model-value", handle_bottom_tab_change)
-        update_bottom_layout()
 
     return {
         "side_tabs": side_tabs,
@@ -943,7 +938,6 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         "bottom_tabs": bottom_tabs,
         "bottom_panels": bottom_panels,
         "update_top_layout": update_top_layout,
-        "update_bottom_layout": update_bottom_layout,
     }
 
 
@@ -954,7 +948,7 @@ def _setup_panel_persistence(refs: dict) -> None:
     bottom_tabs = refs["bottom_tabs"]
     bottom_panels = refs["bottom_panels"]
     update_top_layout = refs["update_top_layout"]
-    update_bottom_layout = refs["update_bottom_layout"]
+    bottom_panel = refs["bottom_panel"]
 
     resize_config = {
         **PANEL_RESIZE_CONFIG,
@@ -976,7 +970,11 @@ def _setup_panel_persistence(refs: dict) -> None:
     async def restore_active_tabs():
         with ui_client:
             try:
-                saved_tabs = await ui.run_javascript("PanelResize.getActiveTabs()")
+                # The page is still loading the scene, which can hold the
+                # answer past the default second.
+                saved_tabs = await ui.run_javascript(
+                    "PanelResize.getActiveTabs()", timeout=10.0
+                )
                 if saved_tabs:
                     # A persisted tab id can name a plugin that's since been
                     # disabled / uninstalled; restoring it would select a tab
@@ -1011,11 +1009,12 @@ def _setup_panel_persistence(refs: dict) -> None:
                             bottom_tab = None
                         bottom_tabs.value = bottom_tab
                         bottom_panels.value = bottom_tab
-                        update_bottom_layout()
                         if bottom_tab:
                             ui.run_javascript(
                                 f"PanelResize.onTabChange('bottom', '{bottom_tab}')"
                             )
+                    if saved_tabs.get("panel") in ("diagnostics", "log"):
+                        bottom_panel.open(saved_tabs["panel"])
                     logger.debug("Restored active tabs: %s", saved_tabs)
             except Exception as e:
                 logger.debug("Could not restore active tabs: %s", e)
@@ -1104,21 +1103,21 @@ def build_page_content() -> None:
             )
 
         # Overlay panels and HUD elements.
-        with (
-            ui.column().classes("absolute inset-0 z-20").style("pointer-events: none;")
-        ):
+        with ui.column().classes("absolute inset-0").style("pointer-events: none;"):
             physics_legend.build()
             with (
                 ui.element("div")
-                .classes("panels-wrap absolute inset-0 z-30")
+                .classes("panels-wrap absolute inset-0")
                 .style("pointer-events: none;") as panels_wrap
             ):
                 panel_refs = _build_left_panels(panels_wrap)
 
         readout_panel.build()
-        BottomPanel(client, attention=readout_panel.events_button).build()
-        control_panel.build("br")
+        bottom_panel = BottomPanel(client, attention=readout_panel.events_button)
+        bottom_panel.build()
+        control_panel.build()
 
+        panel_refs["bottom_panel"] = bottom_panel
         _setup_panel_persistence(panel_refs)
 
     from waldo_commander.services.keybindings import setup_keybindings
@@ -1747,6 +1746,7 @@ def _cycle_start_tick(page_client: Client | None) -> None:
         and cur == 1
         and time.monotonic() - a._cycle_last_fire >= CYCLE_START_DEBOUNCE_S
         and not is_any_program_running()
+        and motion_guard.owner is None
         and robot_state.homed
         and (st.connected or st.simulator_active)
         and io.estop == 1
@@ -1814,6 +1814,8 @@ async def _status_consumer() -> None:
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
     error_shadow: waldoctl.RobotError | None = None
+    robot_state.standing_error = None
+    estop_shadow = 1
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1848,6 +1850,12 @@ async def _status_consumer() -> None:
                         st.joints.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io
+                    # The physical E-stop halts the controller without any
+                    # Commander stop path running; tell motion sources.
+                    estop_now = int(robot_state.io[-1])
+                    if estop_shadow == 1 and estop_now == 0:
+                        motion_guard.note_stop("physical E-stop")
+                    estop_shadow = estop_now
                     if not playback_coordination.sim_pose_override:
                         robot_state.tool_status = status.tool_status
 
@@ -1993,6 +2001,7 @@ async def _status_consumer() -> None:
                         standing = waldoctl.RobotError.from_wire(standing)
                     if standing != error_shadow:
                         error_shadow = standing
+                        robot_state.standing_error = standing
                         if standing is not None:
                             robot_events.add(
                                 code=standing.code,

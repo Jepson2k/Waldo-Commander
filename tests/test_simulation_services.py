@@ -651,7 +651,7 @@ class TestEditorAutoSimulation:
             update_called = False
             update_content = None
 
-            async def mock_update(content, tab_id=None, revision=0):
+            async def mock_update(content, tab_id=None, revision=0, program_dir=None):
                 nonlocal update_called, update_content
                 update_called = True
                 update_content = content
@@ -808,6 +808,33 @@ rbt.home()
             assert len(result["final_joints_rad"]) == 6
 
 
+def test_every_client_a_program_builds_plans_into_one_record():
+    """A program that opens a second client, sync then async, gets one
+    dry run: the second move starts where the first ended and both are on
+    the record, not just the last client's."""
+    from waldo_commander.services.path_visualizer import _run_simulation_isolated
+
+    program = """import asyncio
+from parol6 import AsyncRobotClient, RobotClient
+
+rbt = RobotClient()
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+
+async def main():
+    async with AsyncRobotClient() as other:
+        await other.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+
+asyncio.run(main())
+"""
+    result = _run_simulation_isolated(program)
+    assert result["error"] is None, result["error"]
+    commanded = result["commanded"]
+    notes = result["notes"]
+    moves = [b for b in commanded.blocks if notes[b.command].method == "move_j"]
+    assert [b.line_number for b in moves] == [5, 9]
+    assert all(b.rows > 0 for b in moves)
+
+
 class TestPathVisualizerIntegration:
     """Integration tests for PathVisualizer with dry run client.
 
@@ -920,6 +947,39 @@ with RobotClient() as rbt:
         assert await visualizer.update_physics_simulation("test-tab") is None
         assert dry_run.predicted is None, "the probe is not repeated this session"
         assert not visualizer.physics_in_flight("test-tab")
+
+    @pytest.mark.asyncio
+    async def test_sys_exit_entry_point_previews(self):
+        """A script ending in ``sys.exit(main())`` previews its motion: exit
+        status 0 is a normal finish, a failure status is the preview's error,
+        and neither exit reaches the app."""
+        visualizer = PathVisualizer()
+        program = """
+import asyncio
+import sys
+
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+    return STATUS
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
+"""
+
+        error = await visualizer.update_path_visualization(
+            program.replace("STATUS", "0")
+        )
+        assert error is None
+        assert len(self._active_dry_run().path_segments) >= 1
+
+        error = await visualizer.update_path_visualization(
+            program.replace("STATUS", "3")
+        )
+        assert error is not None and "status 3" in error
+        assert len(self._active_dry_run().path_segments) >= 1
 
     @pytest.mark.asyncio
     async def test_visualizer_updates_total_steps(self):
@@ -1481,16 +1541,16 @@ class TestScriptExecutionLifecycle:
     async def test_cleanup_preserves_stepping_ipc_across_page_reload(
         self, tmp_path, monkeypatch
     ):
-        """Per-page ``cleanup()`` must NOT close the stepping link.
+        """Per-page ``cleanup()`` must NOT close the stepping link or end the
+        run's event watcher.
 
         Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``,
         which tore the session down under a still-running program — the
         program then ran unmanaged (free-run) for the rest of its life.
 
-        After fix: ``cleanup()`` cancels only the event watcher; the step
-        controller, session id and link are preserved so the program keeps
-        stepping, and ``set_ui_client`` on the next page rebinds a fresh
-        watcher to the new client.
+        The step controller, session id, link and watcher belong to the run:
+        the program keeps stepping and recording with no page, and the next
+        page's ``set_ui_client`` only says where to show it.
         """
         from waldo_commander.components import script_execution as se
         from waldo_commander.services.stepping_client import GUIStepController
@@ -1532,26 +1592,26 @@ class TestScriptExecutionLifecycle:
             se.script_exec._event_watcher_task = asyncio.create_task(fake_watcher())
             await watcher_started.wait()
 
+            watcher = se.script_exec._event_watcher_task
             # Per-page disconnect cleanup
             se.script_exec.cleanup()
 
-            await asyncio.sleep(0)  # let the cancellation propagate
-            assert watcher_cancelled.is_set(), "Watcher task was not cancelled"
-            assert se.script_exec._event_watcher_task is None
+            await asyncio.sleep(0)
+            assert not watcher_cancelled.is_set(), "the run's watcher was cancelled"
+            assert se.script_exec._event_watcher_task is watcher
             # Step controller + session preserved across the disconnect.
             assert se.script_exec._step_controller is step_controller
             assert se.script_exec._step_session_id == session_id
             # The link survived.
             assert step_controller._listener is not None
 
-            # New page connecting — set_ui_client should rebind a new
-            # watcher because the subprocess is still flagged as running.
+            # A new page connecting is where the same watcher shows the run.
             fake_client = MagicMock()
             se.script_exec.set_ui_client(fake_client)
-            assert se.script_exec._event_watcher_task is not None
-            assert not se.script_exec._event_watcher_task.done()
+            assert se.script_exec._event_watcher_task is watcher
+            assert se.script_exec._ui_client is fake_client
         finally:
-            # Drop the restarted watcher before the link it polls is closed.
+            # Drop the watcher before the link it polls is closed.
             if (
                 se.script_exec._event_watcher_task is not None
                 and not se.script_exec._event_watcher_task.done()

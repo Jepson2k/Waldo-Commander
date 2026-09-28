@@ -213,14 +213,15 @@ class PathPreviewClient:
     def __exit__(self, exc_type, exc, tb):
         self.flush()
 
-    def close(self):
+    def close(self, max_seconds: float | None = None):
         """Close the blend hold, note whatever the backend recorded after
         the last noted call, and place a target at the end of every move
-        the program wrote with literal coordinates."""
+        the program wrote with literal coordinates, within *max_seconds*
+        of simulated time when given."""
         self.flush()
         self._attribute_commands(self._last_attributed_line)
         known = {t["id"] for t in self.target_collector}
-        for target in targets_from_record(self._client.plan(), self.notes):
+        for target in targets_from_record(self._client.plan(max_seconds), self.notes):
             if target.id not in known:
                 self.target_collector.append(
                     {

@@ -270,6 +270,8 @@ def load_demonstration(path: str | Path) -> Demonstration:
 
 #: An encoder at rest wanders less than this between publications (degrees).
 STILL_DEG = 0.05
+#: A gripper at rest reports positions closer together than this (0–1).
+STILL_TOOL = 1e-3
 #: A span whose path stays this close to its chord is one linear move (mm).
 STRAIGHT_MM = 3.0
 BLEND_MM = (1.0, 10.0)
@@ -366,18 +368,31 @@ def _path_gap_mm(first: NDArray[np.float64], second: NDArray[np.float64]) -> flo
     )
 
 
-def _orientation_gap_deg(
-    planned: NDArray[np.float64], recorded: NDArray[np.float64]
-) -> float:
-    """Worst per-axis orientation difference at the nearest recorded point.
+def _frechet_deg(first: NDArray[np.float64], second: NDArray[np.float64]) -> float:
+    """Discrete Fréchet distance between two angle paths, per axis (degrees).
 
+    Order-preserving and in both directions: an excursion one path makes and
+    the other skips cannot hide behind a point that is only near in space.
     Per axis rather than as one rotation angle: it needs no convention for
     the triple, and it never under-reports the rotation it stands for.
     """
-    distance = np.linalg.norm(planned[:, None, :3] - recorded[None, :, :3], axis=2)
-    nearest = recorded[distance.argmin(axis=1), 3:]
-    delta = (planned[:, 3:] - nearest + 180.0) % 360.0 - 180.0
-    return float(np.abs(delta).max())
+    delta = (first[:, None, :] - second[None, :, :] + 180.0) % 360.0 - 180.0
+    cost = np.abs(delta).max(axis=2)
+    rows, cols = cost.shape
+    coupled = np.full((rows, cols), np.inf)
+    coupled[0, 0] = cost[0, 0]
+    # Each anti-diagonal depends only on the two before it.
+    for diagonal in range(1, rows + cols - 1):
+        i = np.arange(max(0, diagonal - cols + 1), min(rows, diagonal + 1))
+        j = diagonal - i
+        before = np.full(len(i), np.inf)
+        up, left = i > 0, j > 0
+        both = up & left
+        before[up] = coupled[i[up] - 1, j[up]]
+        before[left] = np.minimum(before[left], coupled[i[left], j[left] - 1])
+        before[both] = np.minimum(before[both], coupled[i[both] - 1, j[both] - 1])
+        coupled[i, j] = np.maximum(cost[i, j], before)
+    return float(coupled[-1, -1])
 
 
 def _simplify(points: NDArray[np.float64], tolerance_mm: float) -> list[int]:
@@ -421,39 +436,28 @@ def _numbers(values) -> str:
     return ", ".join(f"{float(v):.3f}" for v in values)
 
 
+def _moved(before: RecordedSample, after: RecordedSample) -> bool:
+    """Whether the arm is anywhere but where *before* found it."""
+    return (
+        max(abs(a - b) for a, b in zip(after.joints_deg, before.joints_deg)) > STILL_DEG
+    )
+
+
 def _dwells(recording: Demonstration, dwell_s: float) -> list[tuple[int, int]]:
-    """Sample ranges the arm held still for at least *dwell_s*, inclusive."""
+    """Sample ranges the arm held still for at least *dwell_s*, inclusive.
+
+    Still means within ``STILL_DEG`` of the range's first sample: comparing
+    neighbours instead reads a slow, steady move as standing still.
+    """
     samples = recording.samples
     held: list[tuple[int, int]] = []
-    index = 1
-    while index < len(samples):
-        if (
-            max(
-                abs(a - b)
-                for a, b in zip(
-                    samples[index].joints_deg, samples[index - 1].joints_deg
-                )
-            )
-            > STILL_DEG
-        ):
-            index += 1
+    start = 0
+    for index in range(1, len(samples) + 1):
+        if index < len(samples) and not _moved(samples[start], samples[index]):
             continue
-        start = index - 1
-        while (
-            index < len(samples)
-            and max(
-                abs(a - b)
-                for a, b in zip(
-                    samples[index].joints_deg, samples[index - 1].joints_deg
-                )
-            )
-            <= STILL_DEG
-        ):
-            index += 1
-        stop = index - 1
-        seconds = (samples[stop].observed_ns - samples[start].observed_ns) / 1e9
-        if seconds >= dwell_s:
-            held.append((start, stop))
+        if index - 1 > start and _seconds(recording, start, index - 1) >= dwell_s:
+            held.append((start, index - 1))
+        start = index
     return held
 
 
@@ -467,28 +471,6 @@ def _tool_position(sample: RecordedSample) -> float | None:
 def _seconds(recording: Demonstration, start: int, stop: int) -> float:
     samples = recording.samples
     return (samples[stop].observed_ns - samples[start].observed_ns) / 1e9
-
-
-def _joint_gap_deg(
-    planned_joints: NDArray[np.float64],
-    planned_poses: NDArray[np.float64],
-    recorded_joints: NDArray[np.float64],
-    recorded_poses: NDArray[np.float64],
-) -> float:
-    """Worst per-joint difference between the planned and recorded postures.
-
-    The tool pose is not the arm: a Cartesian move can trace the recorded path
-    exactly through a flipped wrist, which is a different machine posture and
-    a different sweep through the cell. Postures are matched at the nearest
-    recorded tool position, and the final posture is compared outright.
-    """
-    distance = np.linalg.norm(
-        planned_poses[:, None, :3] - recorded_poses[None, :, :3], axis=2
-    )
-    nearest = recorded_joints[distance.argmin(axis=1)]
-    delta = (planned_joints - nearest + 180.0) % 360.0 - 180.0
-    ending = (planned_joints[-1] - recorded_joints[-1] + 180.0) % 360.0 - 180.0
-    return max(float(np.abs(delta).max()), float(np.abs(ending).max()))
 
 
 def _candidates(
@@ -534,10 +516,27 @@ def _candidates(
     return options
 
 
+def _probe_setup(recording: Demonstration) -> tuple[str, ...]:
+    """The tool and TCP the recording was made with, for a probe to select:
+    the preview starts on no tool, and a Cartesian target means nothing
+    without the TCP it was computed for."""
+    lines: list[str] = []
+    tool = recording.samples[0].tool
+    if tool is not None and tool.key != "NONE":
+        lines.append(f"rbt.select_tool({tool.key!r}, variant_key={tool.variant_key!r})")
+    if any(recording.tcp_transform):
+        lines.append(f"rbt.set_tcp_transform({_numbers(recording.tcp_transform)})")
+    return tuple(lines)
+
+
 def _probe(
-    robot: Robot, lines: tuple[str, ...], start_joints_deg
+    robot: Robot,
+    lines: tuple[str, ...],
+    start_joints_deg,
+    setup: tuple[str, ...] = (),
 ) -> tuple[NDArray[np.float64], float, str]:
-    """Plan *lines* in a preview from *start_joints_deg*; return its joint path.
+    """Plan *lines* in a preview from *start_joints_deg*, after *setup*; return
+    its joint path.
 
     The preview runs the backend's own planner, so the path compared against
     the recording is the one the controller would drive, not an interpolation
@@ -551,7 +550,7 @@ def _probe(
     )
     try:
         exec(
-            compile("\n".join(lines), "converted_demonstration.py", "exec"),
+            compile("\n".join((*setup, *lines)), "converted_demonstration.py", "exec"),
             {"rbt": client},
         )
         client.close()
@@ -607,6 +606,7 @@ def _convert_spans(
     """
     samples = recording.samples
     held = _dwells(recording, dwell_s)
+    setup = _probe_setup(recording)
     spans: list[ConvertedSpan] = []
     position_error = 0.0
     orientation_error = 0.0
@@ -614,9 +614,51 @@ def _convert_spans(
     tool_position = _tool_position(samples[0])
     needs_tool = False
 
+    def tool_changes(start: int, stop: int) -> list[tuple[int, str]]:
+        """Where the gripper started moving within *start*..*stop*, each with
+        the line that puts it where it settled."""
+        nonlocal tool_position, needs_tool
+        changes: list[tuple[int, str]] = []
+        index = start
+        while index <= stop:
+            position = _tool_position(samples[index])
+            if position is None or (
+                tool_position is not None
+                and abs(position - tool_position) <= STILL_TOOL
+            ):
+                index += 1
+                continue
+            began = index
+            while index < stop:
+                following = _tool_position(samples[index + 1])
+                if following is None or abs(following - position) <= STILL_TOOL:
+                    break
+                index += 1
+                position = following
+            changes.append((began, f"rbt.tool.set_position({position:.3f})"))
+            tool_position = position
+            needs_tool = True
+            index += 1
+        return changes
+
+    def moving(start: int, stop: int) -> None:
+        """The motion from *start* to *stop*, split where the gripper moved
+        during it so the program actuates it there too."""
+        for index, line in tool_changes(start + 1, stop):
+            motion(start, index)
+            spans.append(
+                ConvertedSpan(
+                    kind="tool", start=index, stop=index, seconds=0.0, lines=(line,)
+                )
+            )
+            start = index
+        motion(start, stop)
+
     def motion(start: int, stop: int) -> None:
         nonlocal position_error, orientation_error, planned_total
-        if stop <= start:
+        if not any(
+            _moved(samples[start], samples[i]) for i in range(start + 1, stop + 1)
+        ):
             return
         recorded_joints = np.array(
             [samples[i].joints_deg for i in range(start, stop + 1)]
@@ -626,17 +668,17 @@ def _convert_spans(
         reasons = [] if plan else ["kept as recorded"]
         candidates = _candidates(recording, robot, start, stop) if plan else []
         for kind, lines, waypoints in candidates:
-            path, planned, failure = _probe(robot, lines, samples[start].joints_deg)
+            path, planned, failure = _probe(
+                robot, lines, samples[start].joints_deg, setup
+            )
             if failure or not len(path):
                 reasons.append(f"{kind}: {failure or 'planned no motion'}")
                 continue
             planned_poses = _decimate(_poses(robot, path))
             planned_joints = _decimate(path)
             gap_mm = _path_gap_mm(planned_poses[:, :3], recorded[:, :3])
-            gap_deg = _orientation_gap_deg(planned_poses, recorded)
-            gap_joint = _joint_gap_deg(
-                planned_joints, planned_poses, recorded_decimated, recorded
-            )
+            gap_deg = _frechet_deg(planned_poses[:, 3:], recorded[:, 3:])
+            gap_joint = _frechet_deg(planned_joints, recorded_decimated)
             if (
                 gap_mm > tolerance_mm
                 or gap_deg > tolerance_deg
@@ -682,16 +724,8 @@ def _convert_spans(
 
     cursor = 0
     for number, (start, stop) in enumerate(held):
-        motion(cursor, start)
-        lines: list[str] = []
-        for index in range(start, stop + 1):
-            position = _tool_position(samples[index])
-            if position is not None and (
-                tool_position is None or abs(position - tool_position) > 1e-6
-            ):
-                lines.append(f"rbt.tool.set_position({position:.3f})")
-                tool_position = position
-                needs_tool = True
+        moving(cursor, start)
+        lines = [line for _, line in tool_changes(start, stop)]
         seconds = _seconds(recording, start, stop)
         edge = (start == 0 and not lines) or (
             stop == len(samples) - 1 and number == len(held) - 1 and not lines
@@ -728,8 +762,23 @@ def _convert_spans(
         if not edge:
             planned_total += seconds
         cursor = stop
-    motion(cursor, len(samples) - 1)
+    moving(cursor, len(samples) - 1)
     return spans, position_error, orientation_error, planned_total, needs_tool
+
+
+def _require_backend(recording: Demonstration, robot: Robot) -> None:
+    if recording.backend != robot.backend_package:
+        raise ValueError(
+            f"This recording belongs to {recording.backend}, "
+            f"not {robot.backend_package}"
+        )
+
+
+def _reconciled_replay(joints_deg, call: str) -> tuple[str, ...]:
+    """A replay call preceded by a move to where it begins: a replay refuses
+    to start more than half a degree from its first sample, and the lines
+    before it are only held to the planner's tolerance."""
+    return (f"rbt.move_j([{_numbers(joints_deg)}], speed=0.2)", call)
 
 
 def to_program(
@@ -759,6 +808,7 @@ def to_program(
     recording.require_continuous()
     _validated(dwell_s, tolerance_mm, tolerance_deg)
     validate_name(name)
+    _require_backend(recording, robot)
     if len(recording.samples) < 2:
         raise ValueError("A conversion needs at least two observations")
 
@@ -783,7 +833,8 @@ def to_program(
             replay_lines=(
                 None
                 if source_path is None
-                else lambda a, b: (
+                else lambda a, b: _reconciled_replay(
+                    recording.samples[a].joints_deg,
                     f"replay_demonstration(rbt, recording.select({a}, {b + 1}))",
                 )
             ),
@@ -856,37 +907,73 @@ def span_to_lines(
     recording saved under *directory*, named after *program*; the file is
     written only when something needs it, unless *recording_path* names the
     copy already saved. With *as_recorded*, every motion is replayed rather
-    than planned. Missing publications split the recording, and each
-    continuous piece is converted on its own.
+    than planned. Missing publications split the recording: each continuous
+    piece is converted on its own, joined by a planned move marked as not
+    observed.
     """
     _validated(dwell_s, tolerance_mm, tolerance_deg)
+    _require_backend(recording, robot)
     if len(recording.samples) < 2:
         raise ValueError("A conversion needs at least two observations")
     saved: dict[str, Path] = {"path": recording_path} if recording_path else {}
+    setup = _probe_setup(recording)
 
     def replay(piece: Demonstration, offset: int):
         def lines(a: int, b: int) -> tuple[str, ...]:
             if "path" not in saved:
                 saved["path"] = _new_recording_path(directory, program)
                 save_demonstration(saved["path"], recording)
-            # A replay refuses to start more than half a degree from its first
-            # sample, and the lines before it are only held to the planner's
-            # tolerance, so each replay first goes to where it begins.
             return (
                 "from waldo_commander.demonstrations import load_demonstration",
                 "from waldo_commander.skills import replay_demonstration",
-                f"rbt.move_j([{_numbers(piece.samples[a].joints_deg)}], speed=0.2)",
-                "replay_demonstration(rbt, load_demonstration("
-                f"{str(saved['path'])!r}).select({offset + a}, {offset + b + 1}))",
+                *_reconciled_replay(
+                    piece.samples[a].joints_deg,
+                    "replay_demonstration(rbt, load_demonstration("
+                    f"{str(saved['path'])!r}).select({offset + a}, {offset + b + 1}))",
+                ),
             )
 
         return lines
 
     spans: list[ConvertedSpan] = []
     position_error = orientation_error = planned_total = 0.0
-    offset = 0
+
+    def bridge(start: int, stop: int) -> None:
+        """Where publications went missing the path is unknown: the lines go
+        straight to the next observation, planned, and say so."""
+        nonlocal planned_total
+        before, after = recording.samples[start], recording.samples[stop]
+        if not _moved(before, after):
+            return
+        seconds = _seconds(recording, start, stop)
+        line = (
+            f"rbt.move_j([{_numbers(after.joints_deg)}], duration={seconds:.3f})"
+            f"  # not observed: {seconds:.2f} s without status"
+        )
+        _, planned, failure = _probe(robot, (line,), before.joints_deg, setup)
+        if failure:
+            raise ValueError(
+                f"The unobserved motion before sample {stop} cannot be planned: "
+                f"{failure}"
+            )
+        planned_total += planned
+        spans.append(
+            ConvertedSpan(
+                kind="move_j",
+                start=start,
+                stop=stop,
+                seconds=seconds,
+                lines=(line,),
+                waypoints=1,
+                reason="not observed",
+            )
+        )
+
+    reached = 0
     for piece in _continuous_pieces(recording):
         offset = recording.samples.index(piece.samples[0])
+        bridge(reached, offset)
+        reached = offset + len(piece.samples) - 1
         converted, pos, ori, planned, _ = _convert_spans(
             piece,
             robot,
@@ -913,6 +1000,7 @@ def span_to_lines(
         position_error = max(position_error, pos)
         orientation_error = max(orientation_error, ori)
         planned_total += planned
+    bridge(reached, len(recording.samples) - 1)
     lines = [line for span in spans for line in span.lines]
     source = "\n".join(lines)
     compile(source, f"{program}.py", "exec")

@@ -12,9 +12,10 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 
 from tests.conftest import skip_webgl_macos_ci
+from tests.helpers.browser_helpers import click_tab, marked_element
 from tests.helpers.wait import screen_wait_for_scene_ready
 
 if TYPE_CHECKING:
@@ -111,14 +112,9 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
         "Envelope should be generated before testing visibility"
     )
 
-    # The Settings tab is an icon in the bottom-left bar, so it is addressed
-    # by its glyph rather than by a text label it no longer carries.
-    settings_tab = WebDriverWait(screen.selenium, 5).until(
-        EC.element_to_be_clickable(
-            (By.XPATH, "//*[text()='tune']/ancestor::*[contains(@class, 'q-tab')][1]")
-        )
-    )
-    settings_tab.click()
+    # Settings is a dialog from the gear; the envelope row is under View.
+    click_tab(screen, "settings")
+    marked_element(screen, "settings-cat-view").click()
     WebDriverWait(screen.selenium, 5).until(
         EC.element_to_be_clickable(
             (
@@ -134,14 +130,11 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
         )
     )
     on_option.click()
-    time.sleep(1.0)
 
-    result = screen.selenium.execute_script(
-        """
+    find_envelope = """
         const sceneDiv = document.querySelector('.nicegui-scene');
         if (!sceneDiv) return {found: false, objects: []};
-        const sceneId = sceneDiv.id;
-        const scene = window['scene_' + sceneId];
+        const scene = window['scene_' + sceneDiv.id];
         if (!scene) return {found: false, objects: []};
         let found = false;
         let objects = [];
@@ -151,7 +144,12 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
         });
         return {found: found, objects: objects};
     """
-    )
+    try:
+        result = WebDriverWait(screen.selenium, 10).until(
+            lambda d: (r := d.execute_script(find_envelope)) and r["found"] and r
+        )
+    except TimeoutException:
+        result = screen.selenium.execute_script(find_envelope)
 
     assert result and result.get("found") is True, (
         f"Envelope sphere should be visible in scene when mode='on'. "

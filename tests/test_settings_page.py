@@ -446,3 +446,207 @@ async def test_settings_follows_controller_variants_and_setup_applied_tcp(
     finally:
         await client.set_tcp_transform()
         await client.select_tool("NONE")
+
+
+@pytest.mark.integration
+async def test_program_tcp_change_survives_a_settings_nudge(user: User) -> None:
+    """A transform set outside Settings -- by another client, or by a program
+    on the same tool -- is where the next nudge starts from, and a finished
+    run shows it in the inputs."""
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+
+    def shown(marker: str):
+        return next(iter(user.find(marker=marker).elements))
+
+    async def expect_transform(expected: list[float]) -> None:
+        await poll_until(
+            client.tcp_transform,
+            lambda got: [round(float(v), 3) for v in got] == expected,
+            timeout_s=5.0,
+            what=f"controller TCP transform {expected}",
+        )
+
+    try:
+        index = await client.select_tool("NONE")
+        assert index >= 0 and await client.wait_command(index, timeout=5)
+        user.find(marker="tab-settings").click()
+        await user.should_see("TCP offset")
+
+        index = await client.set_tcp_transform(10.0, 0.0, 0.0, 0.0, 0.0, 30.0)
+        assert index >= 0 and await client.wait_command(index, timeout=5)
+        user.find(marker="tcp-offset-y").trigger("update:modelValue", 1.0)
+        await expect_transform([10.0, 1.0, 0.0, 0.0, 0.0, 30.0])
+
+        user.find(marker="tab-program").click()
+        await asyncio.sleep(0)
+        textarea = ui_state.active_textarea
+        assert textarea is not None
+        textarea.value = (
+            "from parol6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    index = rbt.set_tcp_transform(20.0, 1.0, 0.0, 0.0, 0.0, 45.0)\n"
+            "    assert rbt.wait_command(index, timeout=5)\n"
+        )
+        await script_exec.start()
+        async with asyncio.timeout(30):
+            while is_any_program_running():
+                await asyncio.sleep(0.05)
+        assert script_exec.last_exit_code == 0
+
+        user.find(marker="tab-settings").click()
+        await poll_until(
+            lambda: [
+                round(float(shown(f"tcp-offset-{axis}").value), 3)
+                for axis in ("x", "yaw")
+            ],
+            lambda values: values == [20.0, 45.0],
+            timeout_s=5.0,
+            what="Settings showing the transform the program set",
+        )
+        user.find(marker="tcp-offset-z").trigger("update:modelValue", 2.0)
+        await expect_transform([20.0, 1.0, 2.0, 0.0, 0.0, 45.0])
+    finally:
+        await client.set_tcp_transform()
+
+
+async def _reconciled() -> None:
+    """Wait for every page's offset reconcile to finish, pushes included."""
+    from nicegui import background_tasks
+
+    assert await wait_until(
+        lambda: not any(
+            t.get_name() == "tcp-offset-reconcile"
+            for t in background_tasks.running_tasks
+        ),
+        timeout_s=10.0,
+    ), "the TCP offset reconcile never finished"
+
+
+async def _reopen(user: User) -> None:
+    # The old tab's disconnect clears the active slot before the reload.
+    ui_state.active_client_id = None
+    await user.open("/")
+    await wait_for_app_ready()
+
+
+@pytest.mark.integration
+async def test_opening_a_page_never_pushes_an_offset_under_an_ai_holder(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page load carries no human intent to drive. With an AI session
+    holding control, the browser's remembered offset must not replace the
+    controller's, even on a controller this app has never told: the AI plans
+    its Cartesian moves with the TCP it has."""
+    from waldo_commander.components import settings
+    from waldo_commander.services.control_lease import MCP, control_lease
+
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    monkeypatch.setattr(settings, "_pushed_offset_tools", set())
+    try:
+        index = await client.select_tool("PNEUMATIC")
+        assert await client.wait_command(index, timeout=5.0)
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        app_storage.general["selected_tool"] = "PNEUMATIC"
+        app_storage.general["tcp_offset_PNEUMATIC"] = {"x": 5.0, "y": 0.0, "z": 0.0}
+        control_lease.seize(MCP, "settings-review", "AI")
+
+        await _reopen(user)
+        await _reconciled()
+
+        assert [float(v) for v in await client.tcp_offset()] == [0.0, 0.0, 0.0]
+        assert control_lease.held_by(MCP, "settings-review")
+    finally:
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        await client.select_tool("NONE")
+
+
+@pytest.mark.integration
+async def test_another_tools_offset_is_not_adopted(user: User) -> None:
+    """The controller's offset belongs to the tool it carries. A page that
+    remembers a different tool must not file that offset under its own."""
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    try:
+        index = await client.select_tool("SSG-48")
+        assert await client.wait_command(index, timeout=5.0)
+        await client.set_tcp_offset(1.0, 2.0, 3.0)
+        await poll_until(
+            client.tcp_offset,
+            lambda got: [float(v) for v in got] == [1.0, 2.0, 3.0],
+            what="the SSG-48 offset on the controller",
+        )
+        app_storage.general["selected_tool"] = "PNEUMATIC"
+        app_storage.general["tcp_offset_PNEUMATIC"] = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        await _reopen(user)
+        await _reconciled()
+
+        assert app_storage.general["tcp_offset_PNEUMATIC"] == {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+        }
+        assert [float(v) for v in await client.tcp_offset()] == [1.0, 2.0, 3.0]
+    finally:
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        await client.select_tool("NONE")
+
+
+@pytest.mark.integration
+async def test_an_edit_queued_when_the_page_goes_is_dropped(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Edits go out one at a time, newest last. One still waiting when its
+    page disconnects has nobody left to see it land, so it never does."""
+    page = await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    content = ui_state.settings_content
+    assert content is not None
+
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    replaced = next(iter(user.find(marker="tcp-offset-x").elements))
+    next(iter(user.find(marker="select-tool").elements)).set_value("PNEUMATIC")
+    await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
+    await poll_until(
+        lambda: next(iter(user.find(marker="tcp-offset-x").elements)),
+        lambda el: el is not replaced,
+        what="the offset inputs rebuilt for PNEUMATIC",
+    )
+    await _reconciled()
+
+    gate = asyncio.Event()
+    real_set = client.set_tcp_transform
+
+    async def held_set(*values: float) -> int:
+        await gate.wait()
+        return await real_set(*values)
+
+    monkeypatch.setattr(client, "set_tcp_transform", held_set)
+    try:
+        user.find(marker="tcp-offset-x").trigger("update:modelValue", 5.0)
+        assert await wait_until(lambda: content._tcp_pushing), "the first edit went out"
+        user.find(marker="tcp-offset-x").trigger("update:modelValue", 7.0)
+        assert await wait_until(lambda: content._tcp_push_next is not None), (
+            "the second edit waits behind the first"
+        )
+
+        page.handle_disconnect(next(iter(page._socket_to_document_id)))
+        gate.set()
+        assert await wait_until(lambda: not content._tcp_pushing), (
+            "the push loop never finished"
+        )
+        assert [float(v) for v in await client.tcp_offset()] == [5.0, 0.0, 0.0]
+    finally:
+        gate.set()
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        await client.select_tool("NONE")
