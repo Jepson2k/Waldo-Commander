@@ -1181,7 +1181,9 @@ def _set_selection(textarea, from_line: int, to_line: int) -> None:
 
 
 @pytest.mark.integration
-async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
+async def test_capture_pose_reteaches_replaces_and_inserts(
+    user: User, caplog: pytest.LogCaptureFixture
+) -> None:
     """The capture-pose button stamps the current robot position into the
     program at the cursor: a bare cursor on a single-pose move re-teaches it
     in place (kwargs kept), a ranged selection is replaced wholesale by one
@@ -1364,6 +1366,18 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     assert lines[:3] + lines[4:] == before_insert, (
         "insert must leave existing lines untouched"
     )
+
+    # These arbitrary Cartesian targets can be unreachable: capture must let
+    # the operator re-teach them too. The preview reports that known IK error;
+    # retain the error gate for every other failure in this editing workflow.
+    caplog.get_records("call")[:] = [
+        record
+        for record in caplog.get_records("call")
+        if not (
+            record.name == "waldo_commander.services.path_visualizer"
+            and "IK: partial path failure" in record.getMessage()
+        )
+    ]
 
 
 @pytest.mark.integration

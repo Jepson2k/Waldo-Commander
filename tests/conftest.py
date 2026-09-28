@@ -459,6 +459,18 @@ def class_screen(
             # CI with SwiftShader needs more time for WebGL initialization
             screen_instance.open("/", timeout=30.0)
 
+            # Pages can finish constructing after their initial connection
+            # (e.g. once the viewport has selected the control layout).
+            from selenium.webdriver.support.ui import WebDriverWait
+
+            WebDriverWait(class_driver, 30).until(
+                lambda driver: driver.execute_script(
+                    "return !!document.querySelector('.side-tab-bar, .mobile-control')"
+                )
+            )
+            # CodeMirror reports focused selections only in the active tab.
+            class_driver.execute_cdp_cmd("Page.bringToFront", {})
+
             yield screen_instance
 
             # Stop server before exiting context
