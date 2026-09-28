@@ -258,7 +258,9 @@ if os.environ.get("WALDO_STEP_SESSION"):
     ]
     assert len(commands) == 2
     assert commands[0]["parent_id"] == starts[0]["invocation_id"]
-    assert len([e for e in events if e["event"] == "command_completed"]) == 6
+    # Both skill calls send a move and a delay; selecting the pneumatic tool
+    # now queues work too, followed by its open and close actions.
+    assert len([e for e in events if e["event"] == "command_completed"]) == 7
     assert [
         e["method"]
         for e in events
