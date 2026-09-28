@@ -71,12 +71,6 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         screen.selenium.execute_cdp_cmd(
             "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 600, "y": 4}
         )
-        WebDriverWait(screen.selenium, 10).until(
-            lambda d: d.execute_script("""
-                return ['.status-footer', '.overlay-br', '.side-tab-bar.bottom-0']
-                    .every(selector => document.querySelector(selector));
-            """)
-        )
 
     def settings():
         # The gear in the bottom-left rail opens the Settings dialog.
@@ -123,6 +117,12 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "deviceScaleFactor": zoom,
                 "mobile": False,
             },
+        )
+        WebDriverWait(screen.selenium, 10).until(
+            lambda d: d.execute_script("""
+                return ['.status-footer', '.overlay-br', '.side-tab-bar.bottom-0']
+                    .every(selector => document.querySelector(selector));
+            """)
         )
         # The footer is one row inside the viewport, and the control panel
         # sits clear of it.
@@ -337,7 +337,21 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "return !Array.from(document.querySelectorAll('.q-dialog')).some(e => e.getClientRects().length)"
             )
         )
-        click("bottom-panel-close")
+
+        # The remaining check concerns the drive panel's scrolling. Set up
+        # its unobstructed layout directly; bottom-panel close interactions
+        # have their own footer tests.
+        def close_diagnostics():
+            with Client.instances[ui_state.active_client_id]:
+                ui_state.bottom_panel.close()
+
+        run_in_app(close_diagnostics)
+        # The form fits at 900px. Use the smallest desktop height so this
+        # actually exercises scrolling instead of requiring needless overflow.
+        screen.selenium.execute_cdp_cmd(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 1366, "height": 768, "deviceScaleFactor": 1, "mobile": False},
+        )
 
         click("tab-par6-drives")
 
