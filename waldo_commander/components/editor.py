@@ -617,8 +617,10 @@ class EditorPanel(FileOperationsMixin):
                 categories[cat] = []
             categories[cat].append({"key": key, **cmd})
 
-        with ui.menu():
-            self._build_skills_menu()
+        # Insertion focuses the editor. Closing the command menus must not
+        # restore focus to the toolbar and steal the snippet's Tab key presses.
+        with ui.menu().props("no-refocus") as commands_menu:
+            self._build_skills_menu(commands_menu)
             for category_name, commands in sorted(categories.items()):
                 # auto_close must stay off so the submenu stays open while navigating.
                 with ui.menu_item(category_name, auto_close=False).classes(
@@ -628,14 +630,17 @@ class EditorPanel(FileOperationsMixin):
                         ui.icon("keyboard_arrow_right")
                     with (
                         ui.menu()
-                        .props('anchor="top end" self="top start" auto-close')
+                        .props(
+                            'anchor="top end" self="top start" auto-close no-refocus'
+                        )
                         .classes("max-h-80 overflow-y-auto")
                     ):
                         for cmd in sorted(commands, key=lambda c: c["title"]):
                             item = ui.menu_item(
                                 cmd["title"],
-                                on_click=lambda e, k=cmd["key"]: self._insert_command(
-                                    k
+                                on_click=lambda e, k=cmd["key"]: (
+                                    commands_menu.close(),
+                                    self._insert_command(k),
                                 ),
                             ).classes("text-sm")
 
@@ -647,7 +652,7 @@ class EditorPanel(FileOperationsMixin):
                                     "max-width: 300px; white-space: pre-wrap;"
                                 )
 
-    def _build_skills_menu(self) -> None:
+    def _build_skills_menu(self, commands_menu: ui.menu) -> None:
         """Skills inserted as a call whose arguments are fields to fill in,
         drawn in the scene while the cursor is on them."""
         commander = waldoctl.commander
@@ -663,13 +668,16 @@ class EditorPanel(FileOperationsMixin):
         ):
             with ui.item_section().props("side"):
                 ui.icon("keyboard_arrow_right")
-            with ui.menu().props('anchor="top end" self="top start" auto-close'):
+            with ui.menu().props(
+                'anchor="top end" self="top start" auto-close no-refocus'
+            ):
                 for key in keys:
                     entry = entries[key]
                     with (
                         ui.menu_item(
-                            on_click=lambda _, k=key: skill_inserter.insert(
-                                commander, k
+                            on_click=lambda _, k=key: (
+                                commands_menu.close(),
+                                skill_inserter.insert(commander, k),
                             )
                         )
                         .classes("text-sm")

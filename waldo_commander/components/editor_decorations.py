@@ -169,16 +169,14 @@ class EditorDecorations:
         tab = waldoctl.commander.programs.get(tab_id)
         if tab is None or not tab.edits.pending:
             return []
-        # CodeMirror document positions are UTF-16 code-unit offsets, so the
-        # widget anchor must accumulate UTF-16 lengths — Python's ``len`` counts
-        # code points, which drifts one unit per astral-plane char (e.g. an
-        # emoji) earlier in the source. Split on LF/CRLF/CR only and count
-        # every break as ONE unit: CodeMirror normalizes documents to "\n"
+        # NiceGUI's decoration API accepts Python str indices and converts
+        # them to CodeMirror's UTF-16 offsets. Split on LF/CRLF/CR only and count
+        # every break as ONE character: CodeMirror normalizes documents to "\n"
         # (a CRLF counted as 2 would drift anchors +1 per preceding line) and,
         # unlike str.splitlines, doesn't break lines on \f/\x85/U+2028.
         line_starts = [0]
         for line in re.split(r"\r\n|\r|\n", tab.source):
-            line_starts.append(line_starts[-1] + len(line.encode("utf-16-le")) // 2 + 1)
+            line_starts.append(line_starts[-1] + len(line) + 1)
         specs: list[dict] = []
         for edit in tab.edits.pending:
             try:
