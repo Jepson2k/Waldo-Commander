@@ -121,8 +121,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         # description beside its control, not a card with a divider.
         measure_category = """
             const card = document.querySelector('.settings-dialog-card');
-            const e = card.querySelector('.q-tab-panel:not(.q-tab-panel--inactive) .settings-content')
-                || card.querySelector('.q-tab-panel .settings-content');
+            const e = arguments[0].closest('.q-tab-panel').querySelector('.settings-content');
             const r = card.getBoundingClientRect();
             const content = e.getBoundingClientRect();
             const clipped = [...e.querySelectorAll('.settings-row > :not(.settings-text)')]
@@ -146,14 +145,20 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 lambda d: d.execute_script(
                     """
                     const panel = arguments[0].closest('.q-tab-panel');
+                    const bounds = panel.getBoundingClientRect();
+                    const body = panel.closest('.settings-body').getBoundingClientRect();
                     return panel.offsetParent !== null
+                        && Math.abs(bounds.left - body.left) < 1
+                        && Math.abs(bounds.right - body.right) < 1
                         && !panel.getAnimations().some(a => a.playState === 'running')
                         && !panel.parentElement.querySelector('[class*="-leave-active"]');
                     """,
                     marked_element(screen, f"settings-group-{key}"),
                 )
             )
-            dimensions = screen.selenium.execute_script(measure_category)
+            dimensions = screen.selenium.execute_script(
+                measure_category, marked_element(screen, f"settings-group-{key}")
+            )
             if zoom > 1:
                 # Only the tightest window is worth a picture of every category.
                 screen.selenium.save_screenshot(
@@ -186,7 +191,9 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             WebDriverWait(screen.selenium, 20).until(
                 lambda _: marked_element(screen, "select-tool-variant").is_displayed()
             )
-            grown = screen.selenium.execute_script(measure_category)
+            grown = screen.selenium.execute_script(
+                measure_category, marked_element(screen, "settings-group-tool")
+            )
             assert grown["rows"] <= grown["shown"] + 1, (
                 "Settings → Tool scrolls on a 1080p screen with a gripper selected",
                 grown,
