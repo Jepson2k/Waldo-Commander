@@ -459,6 +459,14 @@ class ReadinessState:
             logger.debug("Readiness: backend done")
             self._check_app_ready()
 
+    def begin_page(self) -> None:
+        """A replacement page must finish building before it is ready."""
+        self._page_done = False
+        self.app_ready.clear()
+        self.app_ready_ts = 0.0
+        self.urdf_scene_ready.clear()
+        self.urdf_scene_ready_ts = 0.0
+
     def mark_page_done(self) -> None:
         """Mark page as ready (call from index_page after setup)."""
         if not self._page_done:

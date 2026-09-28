@@ -1589,6 +1589,7 @@ async def index_page():
         ui.timer(interval=1.0, callback=check_ping, active=True)
         return
 
+    readiness_state.begin_page()
     apply_theme()
     ui.query(".nicegui-content").classes("p-0")
     inject_layout_css()
@@ -1634,7 +1635,8 @@ async def index_page():
     # Mark page as ready for tests
     async def _mark_page_done():
         await asyncio.sleep(0)  # Yield to event loop to ensure timers are wired
-        readiness_state.mark_page_done()
+        if ui_state.active_client_id == this_client.id:
+            readiness_state.mark_page_done()
 
     asyncio.create_task(_mark_page_done())
 
