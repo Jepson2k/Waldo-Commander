@@ -6,6 +6,7 @@ import json
 import pytest
 import waldoctl
 from nicegui import Client, core
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl.setup import Frame, Pose, SetupSnapshot
@@ -223,9 +224,9 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         click("editor-commands-btn")
         click("editor-skills-menu")
         click("editor-skill-waldo.transfer")
-        WebDriverWait(screen.selenium, 10).until(
-            lambda _: marked_element(screen, "skill-strip-teach").is_displayed()
-        )
+        WebDriverWait(
+            screen.selenium, 10, ignored_exceptions=(StaleElementReferenceException,)
+        ).until(lambda _: marked_element(screen, "skill-strip-teach").is_displayed())
         bounds = screen.selenium.execute_script(
             """
             const strip=[...document.querySelectorAll('.skill-strip')].find(e => e.offsetParent);
