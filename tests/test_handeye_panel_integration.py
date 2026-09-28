@@ -472,7 +472,7 @@ async def test_handeye_panel_workflow(
             timeout=30.0,
         )
         assert not panel._saved, "a new solve still reads as saved"
-        assert "handeye-step-done" not in panel._step_buttons["save"].classes
+        assert "handeye-step-done" not in element("handeye-step-save").classes
         assert save_button.enabled
         # A solve that fails leaves nothing to save.
         good = panel._samples[0]
