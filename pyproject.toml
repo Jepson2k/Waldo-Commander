@@ -9,7 +9,7 @@ description = "A web interface for controlling robotic arms"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
-  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@45220c959c99cc8a64d052c447fa018354958929",
+  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@0c311a558881f8940bb949e743c2491468bb8bca",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
   "scipy>=1.10",
