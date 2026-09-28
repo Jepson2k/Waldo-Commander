@@ -142,25 +142,26 @@ async def test_interior_additions_render_at_their_own_positions(user: User) -> N
 
 
 @pytest.mark.integration
-async def test_crlf_source_widget_offsets_match_codemirror_units(user: User) -> None:
-    """CodeMirror normalizes every line break to one UTF-16 unit; widget
-    offsets must count them that way or anchors drift +1 per preceding CRLF
-    line."""
+@pytest.mark.parametrize("first", ["a", "😀a"])
+async def test_crlf_source_widget_offsets_match_python_indices(
+    user: User, first
+) -> None:
+    """NiceGUI accepts Python indices into the normalized document, including
+    after astral characters. The browser owns the conversion to UTF-16."""
     await user.open("/")
     await wait_for_app_ready()
 
     p = waldoctl.commander.programs.active
     assert p is not None
-    p.source = "a\r\nb\r\nc\r\n"
+    p.source = f"{first}\r\nb\r\nc\r\n"
     p.edits.propose("@@ -3,1 +3,1 @@\n-c\n+C\n")
     await asyncio.sleep(0)
 
     textarea = ui_state.active_textarea
     add_specs = [s for s in textarea.decorations if s.get("class") == "cm-edit-add"]
-    # In CM units each "X\r\n" line is 2 (char + one normalized break), so the
-    # widget after removed line 3 sits at offset 6 — not 9 (CRLF counted as 2).
+    # The widget follows removed line 3: each normalized break counts once.
     assert len(add_specs) == 1
-    assert add_specs[0]["position"] == 6
+    assert add_specs[0]["position"] == len(f"{first}\nb\nc\n")
     p.edits.reject(p.edits.pending[0].id)
 
 
