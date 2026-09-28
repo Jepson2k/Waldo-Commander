@@ -35,7 +35,7 @@ def test_skill_fields_tab_in_order_and_stay_live_through_a_strip_write(
     screen_wait_for_scene_ready(screen, timeout_s=40)
     dismiss_dialogs(screen)
     driver = screen.selenium
-    driver.set_window_size(1366, 768)
+    driver.set_window_size(1366, 1024)
 
     def element_id(marker: str) -> int | None:
         def find():
