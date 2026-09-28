@@ -6,7 +6,6 @@ import json
 import pytest
 import waldoctl
 from nicegui import Client, core
-from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl.setup import Frame, Pose, SetupSnapshot
@@ -231,9 +230,15 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         click("editor-commands-btn")
         click("editor-skills-menu")
         click("editor-skill-waldo.transfer")
-        WebDriverWait(
-            screen.selenium, 10, ignored_exceptions=(StaleElementReferenceException,)
-        ).until(lambda _: marked_element(screen, "skill-strip-teach").is_displayed())
+        # The strip can rebuild while the preview and cursor settle. Query
+        # the rendered controls together, rather than resolve a server-side
+        # element id that can be replaced before it reaches the browser.
+        WebDriverWait(screen.selenium, 30).until(
+            lambda d: d.execute_script("""
+                return [...document.querySelectorAll('.skill-strip button')]
+                    .some(e => e.offsetParent !== null && e.textContent.includes('Teach now'));
+            """)
+        )
         bounds = screen.selenium.execute_script(
             """
             const strip=[...document.querySelectorAll('.skill-strip')].find(e => e.offsetParent);
