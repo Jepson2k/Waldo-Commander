@@ -209,7 +209,7 @@ class HelpMenu:
                     with ui.step(step["title"]).classes("gap-2"):
                         ui.video(f"{self._TUTORIALS_URL}/{step['video']}").classes(
                             "w-full rounded-lg"
-                        ).props('preload="metadata"').style("max-height: 360px;")
+                        ).props('preload="none"').style("max-height: 360px;")
 
                         # sanitize=False: content is a hardcoded literal whose inline status-marker
                         # color spans DOMPurify would otherwise strip.
