@@ -91,7 +91,9 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         (1920, 941, 1),
         (1366, 900, 1),
         (1366, 768, 1),
-        (1366, 768, 1.25),
+        # At 125%, 960 physical pixels leaves 768 CSS pixels. Smaller
+        # viewports use the manual controls covered by test_mobile_control.
+        (1366, 960, 1.25),
     ]:
         screen.selenium.execute_cdp_cmd(
             "Emulation.setDeviceMetricsOverride",
@@ -187,11 +189,15 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             lambda _: marked_element(screen, "select-tool").is_displayed()
         )
         if height >= 941:
-            # A tool with variants adds its Variant row, and the form still fits.
-            select_tool("SSG-48")
-            WebDriverWait(screen.selenium, 20).until(
-                lambda _: marked_element(screen, "select-tool-variant").is_displayed()
-            )
+            # PAROL6's gripper adds a Variant row. PAR6 publishes its
+            # grippers as distinct tools instead of variants.
+            select_tool("SSG48" if backend == "par6" else "SSG-48")
+            if backend == "parol6":
+                WebDriverWait(screen.selenium, 20).until(
+                    lambda _: marked_element(
+                        screen, "select-tool-variant"
+                    ).is_displayed()
+                )
             grown = screen.selenium.execute_script(
                 measure_category, marked_element(screen, "settings-group-tool")
             )
@@ -199,7 +205,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "Settings → Tool scrolls on a 1080p screen with a gripper selected",
                 grown,
             )
-            select_tool("NONE")
+            select_tool("Flange" if backend == "par6" else "NONE")
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(
                 lambda: (
