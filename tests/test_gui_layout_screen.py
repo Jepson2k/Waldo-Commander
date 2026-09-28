@@ -15,6 +15,8 @@ from tests.helpers.wait import screen_wait_for_scene_ready
 from tests.test_par6_backend import par6_env, requires_par6  # noqa: F401
 from waldo_commander.setup import SetupStore
 from waldo_commander.state import ui_state
+from waldo_commander.components.simulation_engine import SimulationEngine
+from waldo_commander.components.skill_library import SkillStrip
 
 
 @pytest.fixture
@@ -26,6 +28,14 @@ def layout_screen(screen):
 
 
 def review_layout(screen, tmp_path, monkeypatch, backend):
+    # This test measures controls, not the inserted sample's motion plan.
+    # Keep the live daemon/status and scene, but avoid starting planners for
+    # each edit with fixture-only poses and a temporary setup directory.
+    # Native planning/execution is covered by test_par6_backend and scenarios.
+    monkeypatch.setattr(
+        SimulationEngine, "schedule_debounced_simulation", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(SkillStrip, "_schedule_preview", lambda self: None)
     monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path / "setups"))
     SetupStore().save(
         "assembly",
@@ -55,6 +65,12 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         target.click()
         screen.selenium.execute_cdp_cmd(
             "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 600, "y": 4}
+        )
+        WebDriverWait(screen.selenium, 10).until(
+            lambda d: d.execute_script("""
+                return ['.status-footer', '.overlay-br', '.side-tab-bar.bottom-0']
+                    .every(selector => document.querySelector(selector));
+            """)
         )
 
     def settings():
