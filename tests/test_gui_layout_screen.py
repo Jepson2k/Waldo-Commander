@@ -189,10 +189,10 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             lambda _: marked_element(screen, "select-tool").is_displayed()
         )
         if height >= 941:
-            # PAROL6's gripper adds a Variant row. PAR6 publishes its
-            # grippers as distinct tools instead of variants.
-            select_tool("SSG48" if backend == "par6" else "SSG-48")
+            # PAROL6's gripper adds a Variant row. PAR6 only permits the
+            # gripper fitted in its daemon config, so review that tool.
             if backend == "parol6":
+                select_tool("SSG-48")
                 WebDriverWait(screen.selenium, 20).until(
                     lambda _: marked_element(
                         screen, "select-tool-variant"
@@ -205,7 +205,8 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "Settings → Tool scrolls on a 1080p screen with a gripper selected",
                 grown,
             )
-            select_tool("Flange" if backend == "par6" else "NONE")
+            if backend == "parol6":
+                select_tool("NONE")
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(
                 lambda: (
