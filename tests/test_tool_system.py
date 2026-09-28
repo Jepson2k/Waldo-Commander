@@ -400,7 +400,7 @@ class TestGripperCloseAnimation:
 async def test_tool_quick_action_properties(user: User) -> None:
     """Verify quick-action properties on all tool types.
 
-    Electric grippers: action_l_labels, action_l_icons, adjust_step within current_range.
+    Electric grippers: action_l_labels, action_l_icons, adjust_step a percent step.
     Pneumatic grippers: action_l_labels, action_l_icons, adjust_step is None.
     is_open() boundary: 0.49 → True, 0.5 → False.
     """
@@ -421,8 +421,7 @@ async def test_tool_quick_action_properties(user: User) -> None:
 
         step = tool.adjust_step
         assert step is not None, f"{key} should have adjust_step"
-        lo, hi = tool.current_range
-        assert 0 < step <= (hi - lo), f"{key} adjust_step {step} not in (0, {hi - lo}]"
+        assert 0 < step <= 100, f"{key} adjust_step {step} not a percent step"
 
         # is_open boundary (0.0 = open, 1.0 = closed)
         assert tool.is_open(0.49), f"{key} is_open(0.49) should be True"

@@ -47,6 +47,7 @@ from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.startup_mode import set_startup_mode
 from waldo_commander.state import (
     global_phase_timer,
+    robot_state,
     ui_state,
 )
 
@@ -395,9 +396,8 @@ class _ToolQuickActions:
                 step = tool.adjust_step
                 # Disable at limits
                 if isinstance(tool, ElectricGripperTool):
-                    lo, hi = tool.current_range
-                    at_lo = cur <= lo
-                    at_hi = cur >= hi
+                    at_lo = cur <= 0
+                    at_hi = cur >= 100
                 else:
                     at_lo = at_hi = False
                 if at_lo:
@@ -417,10 +417,8 @@ class _ToolQuickActions:
                         self._adjust_plus_tooltip = ui.tooltip("")
                 assert self._adjust_minus_tooltip is not None
                 assert self._adjust_plus_tooltip is not None
-                self._adjust_minus_tooltip.text = (
-                    f"{dec_label}: {cur} mA (\u2212{step})"
-                )
-                self._adjust_plus_tooltip.text = f"{inc_label}: {cur} mA (+{step})"
+                self._adjust_minus_tooltip.text = f"{dec_label}: {cur}% (\u2212{step})"
+                self._adjust_plus_tooltip.text = f"{inc_label}: {cur}% (+{step})"
 
     async def _on_action_l(self) -> None:
         if not self._movement_allowed():
@@ -433,8 +431,10 @@ class _ToolQuickActions:
                 spd_kwargs: dict = {}
                 if isinstance(tool, ElectricGripperTool):
                     spd_kwargs["speed"] = waldoctl.commander.settings.jog.speed / 100.0
-                    spd_kwargs["current"] = waldoctl.commander.settings.gripper.current
-                _cur_pos = waldoctl.commander.status.tool.position
+                    spd_kwargs["current"] = (
+                        waldoctl.commander.settings.gripper.current / 100.0
+                    )
+                _cur_pos = waldoctl.commander.settings.gripper.target_position
                 if tool.is_open(_cur_pos):
                     target = 1.0  # close
                 else:
@@ -463,7 +463,23 @@ class _ToolQuickActions:
         if tool is None or tool.action_r_labels is None:
             return
         try:
-            await tool.action_r(not waldoctl.commander.status.tool.engaged)
+            if isinstance(tool, ElectricGripperTool):
+                session = robot_state.controller_session
+                generation = motion_guard.stop_generation
+                robot_state.gripper_calibrated = False
+                with motion_recorder.owned():
+                    index = await tool.calibrate()
+                    if index >= 0 and await waldoctl.commander.client.wait_command(
+                        index, timeout=10.0
+                    ):
+                        robot_state.gripper_calibrated = (
+                            session == robot_state.controller_session
+                            and generation == motion_guard.stop_generation
+                            and robot_state.homed
+                        )
+                        motion_recorder.record_action("gripper", calibrate=True)
+            else:
+                await tool.action_r(not waldoctl.commander.status.tool.engaged)
         except Exception as e:
             logger.error("Tool action_r failed: %s", e)
             ui.notify(f"Action failed: {e}", color="negative")
@@ -477,19 +493,19 @@ class _ToolQuickActions:
         if not isinstance(tool, ElectricGripperTool):
             return
         step = tool.adjust_step * direction
-        lo, hi = tool.current_range
-        new_cur = max(lo, min(hi, waldoctl.commander.settings.gripper.current + step))
+        new_cur = max(0, min(100, waldoctl.commander.settings.gripper.current + step))
         if ui_state.gripper_page is not None:
             ui_state.gripper_page.set_target_current(new_cur)
         else:
             waldoctl.commander.settings.gripper.current = new_cur
         try:
             pos = waldoctl.commander.settings.gripper.target_position
+            current = new_cur / 100.0
             await motion_recorder.owned_tool_move(
                 waldoctl.commander.client,
-                tool.set_position(pos, current=new_cur),
+                tool.set_position(pos, current=current),
                 lambda: motion_recorder.record_action(
-                    "gripper", position=pos, current=new_cur
+                    "gripper", position=pos, current=current
                 ),
             )
         except Exception as e:
@@ -780,6 +796,7 @@ class ControlPanel:
             and ui_state.active_client_id == self._ui_client.id
             and self._drag_context == self._current_drag_context()
             and control_lease.held_by(BROWSER, self._ui_client.id)
+            and time.time() - waldoctl.commander.status.last_update <= 1
             and not waldoctl.commander.status.editing_mode
             and self._movement_allowed(notify=False)
         )
@@ -1738,13 +1755,13 @@ class ControlPanel:
         if generation != self._drag_generation or not self._drag_allowed():
             return
         self._ring_joint = None
-        self._schedule_jog_end_wait()
+        self._schedule_jog_end_wait(list(self._ring_angles))
         ui_state.joint_jog_timer.active = any(self._jog_pressed_pos) or any(
             self._jog_pressed_neg
         )
 
     async def _send_ring_target(self) -> None:
-        """Stream the ring's target when it moved more than 0.01° since the last send."""
+        """Refresh a moving servo; deduplicate only once it reaches its target."""
         j = self._ring_joint
         if j is None or not self._drag_allowed():
             return
@@ -1753,6 +1770,7 @@ class ControlPanel:
         if (
             abs(target - self._ring_sent_deg) <= 0.01
             and limits == self._ring_sent_limits
+            and self._at_drag_target(self._ring_angles)
         ):
             return
         generation = self._drag_generation
@@ -1920,7 +1938,9 @@ class ControlPanel:
                         ):
                             pose_changed = True
                             break
-                    if not pose_changed:
+                    if not pose_changed and self._at_drag_target(
+                        self._tcp_latest_pose, cartesian=True
+                    ):
                         self._cart_cadence.tick(
                             time.time(),
                             self.JOG_TICK_S,
@@ -1933,9 +1953,7 @@ class ControlPanel:
                     logger.debug("TCP Drag: First move (no last sent pose)")
 
                 try:
-                    # Use speed for stream blending. The server enforces a
-                    # minimum 200ms duration to keep commands alive long enough for
-                    # subsequent updates to blend in, creating a "mouse trail" effect.
+                    # Servo targets expire unless refreshed while moving.
                     generation = self._drag_generation
                     pose = list(self._tcp_latest_pose[:6])
                     result = await self.client.servo_l(
@@ -2047,15 +2065,52 @@ class ControlPanel:
             any_pressed = any(bool(v) for v in self._cart_pressed_axes.values())
             t.active = bool(any_pressed)
 
-    def _schedule_jog_end_wait(self) -> None:
+    def _at_drag_target(self, target: list[float], *, cartesian: bool = False) -> bool:
+        if cartesian:
+            pose = waldoctl.commander.status.pose
+            current = [pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz]
+            delta = np.array(current) - target
+            delta[3:] = (delta[3:] + 180) % 360 - 180
+            return bool(np.all(np.abs(delta) <= 0.01))
+        return bool(
+            np.allclose(
+                waldoctl.commander.status.joints.angles.deg, target, atol=0.01, rtol=0
+            )
+        )
+
+    def _schedule_jog_end_wait(self, target: list[float] | None = None) -> None:
         """Schedule a jog end wait task, cancelling any stale one."""
         if self._jog_end_wait_task is not None and not self._jog_end_wait_task.done():
             self._jog_end_wait_task.cancel()
-        self._jog_end_wait_task = asyncio.create_task(self._wait_and_record_jog_end())
+        self._jog_end_wait_task = asyncio.create_task(
+            self._wait_and_record_jog_end(list(target) if target is not None else None)
+        )
 
-    async def _wait_and_record_jog_end(self) -> None:
+    async def _wait_and_record_jog_end(self, target: list[float] | None = None) -> None:
         """Wait for robot motion to stop, then record the jog end position."""
         try:
+            # A released joint ring still owns its final target. Keep the
+            # expiring stream alive until arrival, with the same cancellation
+            # gates as the held drag and a bounded completion budget.
+            deadline = time.monotonic() + 30
+            while target is not None and not self._at_drag_target(target):
+                if (
+                    not self._drag_allowed()
+                    or waldoctl.commander.status.action.state
+                    == waldoctl.ActionState.ERROR
+                    or time.monotonic() >= deadline
+                ):
+                    self.cancel_drags()
+                    return
+                if (
+                    await self.client.servo_j(
+                        target, speed=_norm_speed(), accel=_norm_accel()
+                    )
+                    < 0
+                ):
+                    self.cancel_drags()
+                    return
+                await asyncio.sleep(self.JOG_TICK_S)
             settled = await self.client.wait_motion(timeout=30.0, settle_window=0.5)
             if not settled:
                 logger.warning("Jog: wait timed out, recording current position")
@@ -2392,6 +2447,7 @@ class ControlPanel:
             # The controller drops its queue on a mode switch; motion sources
             # holding their own state must drop theirs too.
             motion_guard.note_stop("simulator switch")
+            robot_state.gripper_calibrated = False
             await self.client.simulator(enabled)
             waldoctl.commander.status.simulator_active = enabled
             # Persist the human's choice so the next boot starts in this mode.

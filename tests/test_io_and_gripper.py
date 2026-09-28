@@ -76,6 +76,9 @@ async def test_control_panel_tool_quick_actions(user: User) -> None:
     # Set tool to SSG-48 and wait for status loop to propagate
     await ui_state.control_panel.client.select_tool("SSG-48")
     await wait_for_tool_key("SSG-48")
+    client = ui_state.control_panel.client
+    index = await client.tool.calibrate()
+    assert index >= 0 and await client.wait_command(index, timeout=10)
 
     # Tool action L button should be visible
     await user.should_see(marker="btn-tool-action-l")
@@ -137,3 +140,49 @@ async def test_the_footer_io_dots_follow_the_line_count(user: User) -> None:
     assert len(footer._io_dots) == 24, "a dot per line the backend reports"
     lit = [i for i, d in enumerate(footer._io_dots) if "io-dot-on" in d.classes]
     assert lit == [0], "and only the high line is lit"
+
+
+@pytest.mark.integration
+async def test_grip_current_is_a_percent_of_the_tools_range(user: User) -> None:
+    """The adjust buttons step the grip current in percent of the tool's
+    current range, and the next grip draws that share of the range."""
+    import waldoctl
+    from waldoctl import ElectricGripperTool
+
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await enable_sim(user)
+    client = ui_state.control_panel.client
+    try:
+        await client.select_tool("SSG-48")
+        await wait_for_tool_key("SSG-48")
+        tool = client.tool
+        assert isinstance(tool, ElectricGripperTool)
+        assert await tool.calibrate(wait=True) >= 0
+        step = tool.adjust_step
+        assert step is not None
+
+        grip = waldoctl.commander.settings.gripper
+        before = grip.current
+        user.find(marker="btn-tool-adjust-minus").click()
+        for _ in range(40):
+            if grip.current != before:
+                break
+            await asyncio.sleep(0.05)
+        assert grip.current == before - step
+
+        # A slow close keeps the jaws travelling, and drawing current,
+        # across many status ticks.
+        waldoctl.commander.settings.jog.speed = 10
+        user.find(marker="btn-tool-action-l").click()
+        drawn = 0.0
+        for _ in range(500):
+            drawn = waldoctl.commander.status.tool.current
+            if drawn:
+                break
+            await asyncio.sleep(0.01)
+        lo, hi = tool.current_range
+        assert drawn == round(lo + grip.current / 100 * (hi - lo))
+    finally:
+        await client.select_tool("NONE")

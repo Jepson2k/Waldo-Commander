@@ -26,7 +26,7 @@ import waldoctl
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.testing import User
-from parol6.protocol.wire import StatusResultStruct
+from parol6 import StatusSnapshot
 from scipy.spatial.transform import Rotation
 from waldoctl.setup import Frame, Pose, SetupSnapshot
 from waldo_commander.setup import SetupStore, export_snapshot
@@ -137,7 +137,7 @@ async def _wait_for(condition, timeout: float = 5.0, message: str = "") -> None:
 
 async def _current_pose() -> np.ndarray:
     st = await waldoctl.commander.client.status()
-    assert isinstance(st, StatusResultStruct)
+    assert isinstance(st, StatusSnapshot)
     return np.asarray(st.pose, dtype=np.float64).reshape(4, 4)
 
 

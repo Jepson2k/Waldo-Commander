@@ -243,9 +243,9 @@ class TestMotionRecorder:
 
         # Part 2: Move command with params (partial position → set_position)
         mock_textarea.value = ""
-        recorder.record_action("gripper", position=0.5, speed=50, current=200)
+        recorder.record_action("gripper", position=0.5, speed=0.5, current=0.3)
         inserted_code = mock_textarea.value
-        assert "rbt.tool.set_position(0.5, speed=50, current=200)" in inserted_code
+        assert "rbt.tool.set_position(0.5, speed=0.5, current=0.3)" in inserted_code
 
         # Part 3: Full open (position=0.0) — always uses set_position
         mock_textarea.value = ""
@@ -449,8 +449,8 @@ class TestMotionRecorderWaitTimeGaps:
 
         recorder.toggle_recording()
 
-    def test_flush_sets_wall_time_to_last_pending(self, mock_textarea):
-        """After flushing pending actions, wall time = last pending action time."""
+    def test_queued_tool_is_recorded_after_the_blocking_move(self, mock_textarea):
+        """Queued tools follow the recorded move without artificial overlap."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
 
@@ -461,15 +461,18 @@ class TestMotionRecorderWaitTimeGaps:
         time.sleep(0.1)
         recorder.record_action("gripper", position=0.5)
         assert len(recorder._pending_actions) == 1
-        queued_time = recorder._pending_actions[0][2]
 
         # End the jog — flushes pending actions
         set_robot_pose(200, 200, 300)
         time.sleep(0.1)
         recorder.on_jog_end()
 
-        # Wall time should be set to the queued action's timestamp
-        assert recorder._last_action_wall_time == pytest.approx(queued_time, abs=0.01)
+        code = mock_textarea.value
+        lines = [line.strip() for line in code.splitlines()]
+        move = next(i for i, line in enumerate(lines) if "rbt.move_l(" in line)
+        assert lines[move + 1].startswith("rbt.tool.set_position(0.5")
+        assert "wait=False" not in lines[move]
+        assert "time.sleep" not in code
 
         recorder.toggle_recording()
 
@@ -1297,6 +1300,7 @@ class TestToolActionTracking:
             dry_run_client_cls=DryRunRobotClient,
             tool_action_collector=tool_actions,
             tool_meta_registry=tool_meta,
+            initial_gripper_calibrated=True,
         )
 
         client.select_tool("SSG-48", "pinch")
@@ -1320,28 +1324,27 @@ class TestToolActionTracking:
 
 
 class TestTeleportCommand:
-    """Tests for TeleportCommand as a streamable motion command."""
+    """Teleport is an acknowledged simulator state change used by scrubbing."""
 
-    def test_teleport_is_streamable_motion_command(self):
-        from parol6.commands.base import MotionCommand
+    def test_teleport_is_an_immediate_system_command(self):
+        from parol6.commands.base import SystemCommand
         from parol6.commands.basic_commands import TeleportCommand
 
-        assert issubclass(TeleportCommand, MotionCommand)
-        assert TeleportCommand.streamable is True
+        assert issubclass(TeleportCommand, SystemCommand)
 
-    def test_teleport_not_in_system_cmd_types(self):
+    def test_teleport_requires_acknowledgement(self):
         from parol6.ack_policy import FIRE_AND_FORGET, SYSTEM_CMD_TYPES
         from parol6.protocol.wire import CmdType
 
-        assert CmdType.TELEPORT not in SYSTEM_CMD_TYPES
-        assert CmdType.TELEPORT in FIRE_AND_FORGET
+        assert CmdType.TELEPORT in SYSTEM_CMD_TYPES
+        assert CmdType.TELEPORT not in FIRE_AND_FORGET
 
     def test_teleport_converts_degrees_to_steps(self):
         from parol6.commands.basic_commands import TeleportCommand
         from parol6.protocol.wire import TeleportCmd
         from parol6.server.state import ControllerState
 
-        angles_deg = [90.0, -45.0, 30.0, 0.0, 60.0, 180.0]
+        angles_deg = [90.0, -45.0, 135.0, 0.0, 60.0, 180.0]
         cmd = TeleportCommand(TeleportCmd(angles=angles_deg))
         state = ControllerState()
         cmd.do_setup(state)
@@ -1353,8 +1356,7 @@ class TestTeleportCommand:
     def test_teleport_clears_gripper_command_bits(self):
         """Teleport with tool_positions must clear Gripper_data_out[3]
         to prevent the write-frame JIT from re-arming the gripper ramp."""
-        import os
-
+        from parol6.config import HOME_ANGLES_DEG
         from parol6.commands.basic_commands import TeleportCommand
         from parol6.protocol.wire import CommandCode, TeleportCmd
         from parol6.server.state import ControllerState
@@ -1362,12 +1364,12 @@ class TestTeleportCommand:
         state = ControllerState()
         state.Gripper_data_out[3] = 1  # simulate in-flight gripper command
 
-        angles = [0.0] * 6
-        cmd = TeleportCommand(TeleportCmd(angles=angles, tool_positions=[0.5]))
+        cmd = TeleportCommand(
+            TeleportCmd(angles=list(HOME_ANGLES_DEG), tool_positions=[0.5])
+        )
         cmd.do_setup(state)
 
-        with patch.dict(os.environ, {"PAROL6_FAKE_SERIAL": "1"}):
-            cmd.execute_step(state)
+        cmd.execute_step(state)
 
         assert state.Command_out == CommandCode.TELEPORT
         assert state.Gripper_data_out[3] == 0

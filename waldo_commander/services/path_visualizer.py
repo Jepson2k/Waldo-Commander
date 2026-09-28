@@ -287,6 +287,7 @@ def _run_simulation_isolated(
     plan_seconds: float | None = None,
     config_path: str | None = None,
     program_directory: str | None = None,
+    initial_gripper_calibrated: bool = False,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -423,6 +424,7 @@ def _run_simulation_isolated(
                     shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
                     initial_homed=initial_homed,
+                    initial_gripper_calibrated=initial_gripper_calibrated,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
                     robot=_preview_robot,
@@ -893,6 +895,7 @@ class PathVisualizer:
             simulate_seconds,
             scene_handle.attachment_epoch if scene_handle is not None else 0,
             program_directory=None if program_dir is None else str(program_dir),
+            initial_gripper_calibrated=robot_state.gripper_calibrated,
         )
         bound.apply_defaults()
         return bound.args

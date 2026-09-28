@@ -141,6 +141,10 @@ class RobotState(ChangeNotifierMixin):
     # All joints homed, from the status stream. Seeds dry-run previews so an
     # unhomed robot's preview mirrors the controller's planned-motion gate.
     homed: bool = True
+    # Last calibration confirmed by Commander. The shared status protocol
+    # does not expose the backend's calibration latch.
+    gripper_calibrated: bool = False
+    controller_session: tuple[int, bool] | None = None
     # The controller's latched error, or None; self-clearing conditions are
     # on commander.status.warnings.
     standing_error: RobotError | None = None
@@ -160,6 +164,8 @@ class RobotState(ChangeNotifierMixin):
         self.torque_time_series.clear()
         self.speeds[:] = 0.0
         self.homed = True
+        self.gripper_calibrated = False
+        self.controller_session = None
         self.standing_error = None
         self.executing_index = -1
         self.completed_index = -1
