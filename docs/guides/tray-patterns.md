@@ -2,8 +2,10 @@
 
 Generate tray poses in Python, then execute them with an ordinary loop. The
 `transfer` skill approaches a pickup, closes the selected gripper, retracts,
-approaches a placement, opens, and retracts again. The Skills panel can insert
-or run one transfer using saved pickup and placement poses.
+approaches a placement, opens, and retracts again. The editor's **Skills**
+menu inserts one transfer whose pickup and placement are the setup's poses by
+name, `setup.resolve("pick")` and `setup.resolve("place")`, and a pose can be
+taught from there; see [Python skills](skills.md).
 
 ## Generate poses
 

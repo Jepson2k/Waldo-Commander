@@ -191,37 +191,32 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             lambda _: not run_in_app(lambda: ui_state.settings_content.dialog.value)
         )
 
-        # A skill's form opens from the editor's Insert menu, and Insert stays
-        # on screen however small the window.
+        # A skill goes in from the editor's Insert menu as its call, and the
+        # strip over it, a pose field's teach controls and all, fits the
+        # program column however small the window, leaving the code in view.
         click("tab-program")
         click("editor-commands-btn")
         click("editor-skills-menu")
-        click("editor-skill-waldo.retract")
+        click("editor-skill-waldo.transfer")
         WebDriverWait(screen.selenium, 10).until(
-            lambda _: marked_element(screen, "skill-insert").is_displayed()
-        )
-        WebDriverWait(screen.selenium, 10).until(
-            lambda d: d.execute_script(
-                """
-                const e=document.getElementById(arguments[0]); const r=e.getBoundingClientRect();
-                return e.contains(document.elementFromPoint(r.x+5,r.y+5));
-                """,
-                marked_element(screen, "skill-insert").get_attribute("id"),
-            )
+            lambda _: marked_element(screen, "skill-strip-teach").is_displayed()
         )
         bounds = screen.selenium.execute_script(
             """
-            const e=document.getElementById(arguments[0]); const r=e.getBoundingClientRect();
-            return {bottom:r.bottom, height:innerHeight, visible:e.contains(document.elementFromPoint(r.x+5,r.y+5))};
-        """,
-            marked_element(screen, "skill-insert").get_attribute("id"),
+            const strip=[...document.querySelectorAll('.skill-strip')].find(e => e.offsetParent);
+            const r=strip.getBoundingClientRect();
+            const code=strip.parentElement.querySelector('.cm-editor').getBoundingClientRect();
+            return {content:strip.scrollWidth, width:strip.clientWidth, right:r.right,
+                    viewportWidth:innerWidth, bottom:r.bottom, codeTop:code.top, code:code.height};
+        """
         )
-        assert bounds["bottom"] <= bounds["height"], bounds
-        assert bounds["visible"], bounds
+        assert bounds["content"] <= bounds["width"] + 1, bounds
+        assert bounds["right"] <= bounds["viewportWidth"] + 1, bounds
+        assert bounds["codeTop"] >= bounds["bottom"] - 1, bounds
+        assert bounds["code"] > 60, ("the code stays in view under the strip", bounds)
         screen.selenium.save_screenshot(
             str(tmp_path / f"{backend}-skills-{width}-{height}-{zoom}.png")
         )
-        click("skill-close")
 
         WebDriverWait(screen.selenium, 10).until(
             lambda d: d.execute_script(

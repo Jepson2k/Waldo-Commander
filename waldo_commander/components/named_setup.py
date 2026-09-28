@@ -13,13 +13,14 @@ from waldoctl.setup import Frame, Parameter, Pose, PoseValues, SetupSnapshot
 
 from waldo_commander.components.device_signals import DeviceSignalEditor
 from waldo_commander.components.tcp_calibration import TcpCalibrationEditor
-from waldo_commander.services.python_source import insert_prelude
 from waldo_commander.setup import (
     SetupStore,
     add_save_listener,
     export_snapshot,
     merge_snapshots,
 )
+from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.setup import DEFAULT_SETUP_NAME
 
 
 class NamedSetupPanel(Panel):
@@ -342,18 +343,14 @@ class NamedSetupPanel(Panel):
             except (OSError, ValueError) as error:
                 inform(f"Save the setup first: {error}")
                 return
-            source = f"from waldo_commander.setup import load_setup\nsetup = load_setup({setup_name.value!r})\n\n"
             try:
-                new_source = insert_prelude(program.source, source)
+                motion_recorder.insert_prelude(
+                    "from waldo_commander.setup import load_setup\n"
+                    f"setup = load_setup({setup_name.value!r})"
+                )
             except ValueError as error:
                 inform(str(error))
                 return
-            from waldo_commander.state import ui_state
-
-            textarea = ui_state.textareas_by_tab.get(program.id)
-            if textarea is not None:
-                textarea.set_value(new_source)
-            program.source = new_source
             inform("Inserted setup load at the start of the active program")
 
         def export() -> None:
@@ -377,7 +374,7 @@ class NamedSetupPanel(Panel):
                 dirty.set_visibility(False)
             with ui.row().classes("w-full items-center"):
                 setup_name = (
-                    ui.input("Setup name", value="bench")
+                    ui.input("Setup name", value=DEFAULT_SETUP_NAME)
                     .props("dense")
                     .classes("grow")
                     .mark("setup-name")
