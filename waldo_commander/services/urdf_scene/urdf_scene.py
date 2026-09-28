@@ -47,6 +47,7 @@ from waldo_commander.state import robot_state, simulation_state, ui_state
 from .config import DRAFT_PREFIX, RobotAppearanceMode, ToolPose, UrdfSceneConfig
 from .editing_mixin import EditingMixin
 from .envelope_renderer import EnvelopeRenderer
+from .jog_handles_mixin import JogHandlesMixin
 from .objects import Floor, Stl, StudioLights
 from .loader import (
     get_transl_and_rpy,
@@ -253,6 +254,7 @@ def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
 class UrdfScene(
     EditingMixin,
     TCPControlsMixin,
+    JogHandlesMixin,
     EnvelopeRenderer,
 ):
     """Load a URDF file as a NiceGUI Scene
@@ -261,6 +263,7 @@ class UrdfScene(
     - Render URDF meshes (STL) using NiceGUI scene
     - Set individual/all joint axis values to animate the model
     - Add interactive Cartesian gizmo (translate arrows + rotation rings)
+    - Reveal a jog ring per joint, or the gizmo, when the pointer rests on the arm
     - Visual parenting to WRF (world) or TRF (tool/end-effector) frame
     - TCP offset/orientation updates on tool change
     - Configurable tool pose handling via injection (no hard dependencies)
@@ -300,6 +303,9 @@ class UrdfScene(
 
         # Scene-related state
         self.joint_groups: dict[str, Any] = {}
+        # Each joint's static frame (its origin in the parent link), which
+        # does not turn with the joint: the joint's ring is drawn in it.
+        self.joint_frame_groups: dict[str, Any] = {}
         self.joint_pos_limits: dict[str, dict[str, float | None]] = {}
         self.joint_trafos: dict = {}
         self.scene: Any | None = None
@@ -393,6 +399,7 @@ class UrdfScene(
         self._init_editing_state()
         self._init_shape_editing()
         self._init_tcp_controls_state()
+        self._init_jog_handles_state()
         self._init_envelope_state()
         self.path_renderer = PathRenderer()
 
@@ -428,7 +435,7 @@ class UrdfScene(
                     background_color=background_color,
                     # White ~0.2-opacity halo at 1.5x footprint, matching the
                     # original feature-branch hoverable() visuals.
-                    hover_color=SceneColors.HOVER_HEX,
+                    hover_color=hex_of("scene-hover"),
                     hover_opacity=0.2,
                     hover_scale=1.5,
                     on_click=self._handle_scene_click,
@@ -506,6 +513,7 @@ class UrdfScene(
             self.scene.on_transform_start(self._handle_transform_start)
             # Continuous events drive live ghost robot updates.
             self.scene.on_transform(self._handle_transform_continuous)
+            self._register_hover_sources()
 
     def _handle_transform_continuous(self, e) -> None:
         """Handle continuous transform events for TCP ball and joint controls.
@@ -528,11 +536,16 @@ class UrdfScene(
     def _handle_transform_start(self, e) -> None:
         """Handle TransformControls transform_start events to manage orbit and mutex."""
         object_name = getattr(e, "object_name", "") or ""
+        if object_name in ("tcp:ball", "tcp:jog_ball", "ghost:tcp_ball") and (
+            self._tcp_ball is None or e.object_id != self._tcp_ball.id
+        ):
+            return
         if object_name in ("tcp:ball", "ghost:tcp_ball"):
             # Disable orbit controls for the duration of the TCP drag.
             if self.scene:
                 self.scene.set_orbit_enabled(False)
             self._tcp_ball_dragging = True
+            self._begin_gizmo_marks(e)
             if self._appearance_mode == RobotAppearanceMode.EDITING:
                 # Suspend joint controls during TCP ball manipulation in editing mode.
                 if not self._joint_controls_suspended:
@@ -563,12 +576,17 @@ class UrdfScene(
         """
         object_name = getattr(e, "object_name", "") or ""
         event_type = getattr(e, "type", "")
+        if object_name in ("tcp:ball", "tcp:jog_ball", "ghost:tcp_ball") and (
+            self._tcp_ball is None or e.object_id != self._tcp_ball.id
+        ):
+            return
 
         # Unified TCP ball: on transform_end re-enable orbit and joint controls.
         if object_name in ("tcp:ball", "ghost:tcp_ball"):
             if event_type == "transform_end":
                 self._tcp_ball_dragging = False
                 self._tcp_drag_start_rot_deg = None
+                self._end_gizmo_marks(e)
                 if self.scene:
                     self.scene.set_orbit_enabled(True)
                 if self._joint_controls_suspended:
@@ -587,6 +605,7 @@ class UrdfScene(
                             logger.error(
                                 "TCP cartesian move end callback error: %s", err
                             )
+                self._settle_hover()
             return
 
         # Legacy jog ball names.
@@ -753,6 +772,9 @@ class UrdfScene(
         if not self.scene:
             return
         with batch_scene(self.scene):
+            # The view settings change on this channel too (the gizmo's Hidden
+            # among them, e.g. from MCP).
+            self.refresh_handles()
             self._do_update_simulation_view_body()
 
     def _do_update_simulation_view_body(self) -> None:
@@ -1893,12 +1915,15 @@ class UrdfScene(
         if not self.scene:
             return
 
+        n = min(len(val), len(self._joint_q))
+        self._joint_q[:n] = val[:n]
         with batch_scene(self.scene):
             for joint_name, q in zip(self.joint_names, val):
                 joint_TF = self.joint_trafos[joint_name]
                 joint_i = self.joint_groups[joint_name]
                 t, r = joint_TF(q)
                 joint_i.move(*t).rotate(*r)
+            self._follow_dial()
 
     def _apply_joint_angles(self, angles_rad: list[float]) -> None:
         """Apply joint angles to the main robot joint groups.
@@ -2292,11 +2317,12 @@ class UrdfScene(
         """Recursively add joint and child link to scene."""
         t, r = get_transl_and_rpy(joint.origin)
         # Static transform from parent link to this joint frame.
-        with ui.scene.group().move(*t).rotate(*r):
+        with ui.scene.group().move(*t).rotate(*r) as joint_frame:
             # Inner group carries the dynamic joint value (q).
             with ui.scene.group() as joint_trafo:
                 if joint.joint_type != "fixed":
                     self.joint_groups[joint.name] = joint_trafo
+                    self.joint_frame_groups[joint.name] = joint_frame
 
                     if joint.joint_type == "prismatic":
                         self.joint_trafos[joint.name] = lambda q, axis=joint.axis: (
@@ -2385,6 +2411,7 @@ class UrdfScene(
                 logger.warning("Unsupported URDF visual on link %s", link.name)
                 continue
             origin = visual.origin if visual.origin is not None else np.eye(4)
+            obj.with_name(f"link:{link.name}")
             obj.move(*origin[:3, 3])
             obj.rotate_R((origin[:3, :3] @ rotation).tolist())
             if material is not None:

@@ -1,7 +1,9 @@
 
 /**
  * Scene framing: keeps the camera centred on the part of the 3D view that the
- * program column, the status footer and the bottom panel leave uncovered.
+ * program column, bottom panel and status footer leave uncovered, and reports the
+ * camera's distance from its orbit target, which sets how far the scene's
+ * rings and gizmo snap.
  *
  * PanelResize publishes what covers the view in a `wc:layout` event. The
  * fork's ui.scene resets the camera aspect on every window resize, so the
@@ -14,6 +16,8 @@
     let sceneId = null;
     let listening = false;
     let inset = { left: 0, bottom: 0 };
+    let distanceTimer = null;
+    let lastDistance = 0;
 
     function component() {
         return sceneId === null ? null : getElement(sceneId);
@@ -42,6 +46,17 @@
         apply();
     }
 
+    function pollDistance() {
+        const c = component();
+        // move_camera can recreate the controls, so they are looked up on every tick.
+        if (!c || !c.camera || !c.controls || !c.controls.target) return;
+        const d = c.camera.position.distanceTo(c.controls.target);
+        if (lastDistance === 0 || Math.abs(d - lastDistance) / lastDistance > 0.02) {
+            lastDistance = d;
+            emitEvent('wc_camera_distance', { distance: d });
+        }
+    }
+
     function attach(id) {
         sceneId = id;
         if (!listening) {
@@ -52,6 +67,9 @@
         if (window.PanelResize) follow(PanelResize.layout());
         // Scene init resizes the view after attaching, resetting the aspect.
         requestAnimationFrame(apply);
+        if (distanceTimer) clearInterval(distanceTimer);
+        lastDistance = 0;
+        distanceTimer = setInterval(pollDistance, 200);
     }
 
     window.SceneFraming = {
