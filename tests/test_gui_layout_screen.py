@@ -6,6 +6,7 @@ import json
 import pytest
 import waldoctl
 from nicegui import Client, core
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl.setup import Frame, Pose, SetupSnapshot
@@ -57,12 +58,16 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         return next(e for e in client.elements.values() if marker in e._markers)
 
     def click(marker):
-        target = WebDriverWait(screen.selenium, 10).until(
-            lambda _: marked_element(screen, marker)
-            if marked_element(screen, marker).is_displayed()
-            else None
-        )
-        target.click()
+        def click_visible(_):
+            target = marked_element(screen, marker)
+            if not target.is_displayed():
+                return False
+            target.click()
+            return True
+
+        WebDriverWait(
+            screen.selenium, 10, ignored_exceptions=(StaleElementReferenceException,)
+        ).until(click_visible)
         screen.selenium.execute_cdp_cmd(
             "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 600, "y": 4}
         )
