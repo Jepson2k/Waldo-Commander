@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import numpy as np
-from waldoctl import RobotClient
+from waldoctl import ActionState, RobotClient
 from waldoctl.setup import Pose, PoseValues, TcpCalibration
 from waldoctl.status import StatusBuffer
 
@@ -17,6 +17,15 @@ from waldoctl.status import StatusBuffer
 class ToolBinding:
     tool_key: str
     variant_key: str
+
+
+class ToolChanged(ValueError):
+    """The controller carries another tool than the one a transform was applied for."""
+
+    def __init__(self, message: str, applied: TcpCalibration) -> None:
+        super().__init__(message)
+        #: What the controller actually carries, for the caller to adopt.
+        self.applied = applied
 
 
 @dataclass(frozen=True)
@@ -193,20 +202,64 @@ async def observe_tcp(client: RobotClient, *, timeout: float = 3.0) -> TcpObserv
     return TcpObservation(nominal, binding, after.values)
 
 
+async def _moving(client: RobotClient) -> bool:
+    """Whether a fresh status frame shows a command executing, which queue()
+    leaves out once it is planned. No fresh frame counts as moving."""
+    verdict: list[bool] = []
+    held = True
+
+    def judge(status: StatusBuffer) -> bool:
+        nonlocal held
+        if held:
+            # The frame the client already holds can predate a move just sent.
+            held = False
+            return False
+        verdict.append(
+            status.executing_index > status.completed_index
+            or status.action_state == ActionState.EXECUTING
+        )
+        return True
+
+    if not await client.wait_status(judge, timeout=0.5):
+        return True
+    return verdict[0]
+
+
 async def apply_tcp_calibration(
     client: RobotClient, calibration: TcpCalibration, *, timeout: float = 15.0
 ) -> int:
+    """Set and confirm ``calibration`` on the tool the controller carries.
+
+    Refused while a program or calibration drives the robot or anything is
+    queued: a tool change queued ahead would receive this tool's transform.
+    """
+    # Skills import this module inside programs, where Commander's motion
+    # guard (and the GUI it needs) does not exist.
+    from waldo_commander.services.motion_guard import MotionBusy, motion_guard
+
+    if (busy := motion_guard.busy_reason()) is not None:
+        raise MotionBusy(busy)
+    if await client.queue() != [] or await _moving(client):
+        raise ValueError(
+            "Wait for queued commands to finish before applying a TCP transform"
+        )
     binding = ToolBinding(calibration.tool_key, calibration.variant_key)
     if await current_tool(client) != binding:
         raise ValueError("This calibration belongs to a different tool or variant")
     index = await client.set_tcp_transform(*calibration.values)
-    if index < 0 or not await client.wait_command(index, timeout=timeout):
-        raise TimeoutError("TCP calibration application was not confirmed")
-    actual = Pose(cast(PoseValues, tuple(await client.tcp_transform())))
-    if await current_tool(client) != binding or not np.allclose(
-        actual.matrix(), calibration.matrix(), atol=1e-6, rtol=0
-    ):
-        raise ValueError(
-            "The controller's tool or TCP changed before readback was confirmed"
+    if index < 0:
+        raise ValueError("The controller refused the TCP transform")
+    if not await client.wait_command(index, timeout=timeout):
+        # Still queued, it would land later behind whatever blocks it.
+        await motion_guard.stop_robot(client, "TCP transform not confirmed")
+        raise TimeoutError(
+            "TCP calibration application was not confirmed; the robot was stopped"
         )
+    applied = await read_applied_tcp(client)
+    if ToolBinding(applied.tool_key, applied.variant_key) != binding:
+        raise ToolChanged(
+            "The controller's tool changed before readback was confirmed", applied
+        )
+    if not np.allclose(applied.matrix(), calibration.matrix(), atol=1e-6, rtol=0):
+        raise ValueError("The controller's TCP changed before readback was confirmed")
     return index

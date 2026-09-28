@@ -66,6 +66,46 @@ async def test_preview_seeds_held_world_and_confirms_explicit_detach(user: User)
 
 
 @pytest.mark.integration
+async def test_gathered_attachments_both_land(user: User):
+    """Two declarations in flight at once each rewrite the program layer from
+    what they read; both held shapes must survive, neither dropped nor
+    refused as a mismatched readback."""
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    first = Sphere(name="first", radius=0.01, pose=(1, 1, 1, 0, 0, 0))
+    second = Sphere(name="second", radius=0.01, pose=(1, 1, 1.2, 0, 0, 0))
+    try:
+        assert await client.set_shapes([first, second]) == 1
+        await asyncio.gather(
+            attach_object.async_call(
+                client, name="first", flange_pose=(0, 0, 0.25, 0, 0, 0)
+            ),
+            attach_object.async_call(
+                client, name="second", flange_pose=(0, 0, 0.3, 0, 0, 0)
+            ),
+        )
+        world = await client.shapes()
+        assert world is not None and world.attachments_valid
+        assert {s.name: s.attachment is not None for s in world.program} == {
+            "first": True,
+            "second": True,
+        }
+    finally:
+        await client.set_shapes([])
+        # The app's model mirrors the controller's world, and the next test's
+        # previews plan against it: wait until it holds the cleared one.
+        scene = waldoctl.commander.scene
+        assert scene is not None
+        async with asyncio.timeout(5):
+            while scene.shapes or not scene.confirmed:
+                await scene.refresh_from_backend()
+                await asyncio.sleep(0.05)
+
+
+@pytest.mark.integration
 async def test_attachment_controls_confirm_model_and_require_reconciliation(
     user: User, caplog
 ):
@@ -194,3 +234,8 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
     finally:
         await client.stop()
         await client.set_shapes([])
+        # As above: the next test's previews plan against the app's model.
+        async with asyncio.timeout(5):
+            while handle.shapes or not handle.confirmed:
+                await handle.refresh_from_backend()
+                await asyncio.sleep(0.05)

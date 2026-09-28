@@ -21,8 +21,19 @@ from waldoctl.types import Axis, Frame
 
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.mcp.tools.control import require_actuation
+from waldo_commander.services.motion_guard import motion_guard
 
 mcp = get_mcp()
+
+
+def _require_robot_free() -> None:
+    """Refuse while a program or automatic calibration is driving the robot.
+
+    Checked before the actuation gate so the refusal names the owner
+    instead of asking the human to approve a move that can't run.
+    """
+    if (busy := motion_guard.busy_reason()) is not None:
+        raise RuntimeError(f"{busy}; stop it first")
 
 
 def _dispatched(index: int, verb: str) -> int:
@@ -48,6 +59,7 @@ async def move_j(
     wait: bool = False,
 ) -> int:
     """Joint-space move to ``angles`` (degrees). Returns the command index."""
+    _require_robot_free()
     require_actuation(f"move joints to {angles}°")
     return _dispatched(
         await waldoctl.commander.client.move_j(
@@ -66,6 +78,7 @@ async def move_l(
     wait: bool = False,
 ) -> int:
     """Linear Cartesian move to ``pose = [x,y,z,rx,ry,rz]`` (mm, deg)."""
+    _require_robot_free()
     require_actuation(f"linear move to {pose}")
     return _dispatched(
         await waldoctl.commander.client.move_l(
@@ -79,6 +92,7 @@ async def move_l(
 async def home(wait: bool = False) -> int:
     """Move to the robot's home position (runs the full homing/referencing
     sequence first if the robot is unhomed)."""
+    _require_robot_free()
     require_actuation("move to home position")
     return _dispatched(await waldoctl.commander.client.home(wait=wait), "home")
 
@@ -86,6 +100,7 @@ async def home(wait: bool = False) -> int:
 @mcp.tool(name="motion.jog_j")
 async def jog_j(joint: int, speed: float, duration: float = 0.1) -> int:
     """Velocity jog one joint for ``duration`` seconds."""
+    _require_robot_free()
     require_actuation(f"jog joint {joint} at speed {speed}")
     return _dispatched(
         await waldoctl.commander.client.jog_j(joint, speed, duration), "jog_j"
@@ -100,6 +115,7 @@ async def jog_l(
     duration: float = 0.1,
 ) -> int:
     """Velocity jog one Cartesian axis for ``duration`` seconds."""
+    _require_robot_free()
     require_actuation(f"jog {frame} {axis} at speed {speed}")
     return _dispatched(
         await waldoctl.commander.client.jog_l(frame, axis, speed, duration), "jog_l"
@@ -107,16 +123,21 @@ async def jog_l(
 
 
 @mcp.tool(name="motion.stop")
-async def stop() -> int:
+async def stop() -> None:
     """Stop all motion — cancel the active move and clear the queue. The
-    robot stays enabled and accepts the next command immediately.
+    robot stays enabled and accepts the next command immediately. Raises
+    when the controller does not confirm the stop.
 
     Deliberately ungated: stopping is always safe, so ``stop`` needs no lease
     or consent (it and ``wait_motion`` are the exceptions). There is no MCP
     way to latch or unlatch the protective stop (estop) — that belongs to the
     human in the GUI.
     """
-    return _dispatched(await waldoctl.commander.client.stop(), "stop")
+    if not await motion_guard.stop_robot(waldoctl.commander.client, "MCP motion.stop"):
+        raise RuntimeError(
+            "motion.stop was not confirmed by the controller "
+            "(the robot may be disconnected); ask the human to use the E-stop"
+        )
 
 
 @mcp.tool(name="motion.wait_motion")

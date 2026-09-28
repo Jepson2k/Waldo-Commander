@@ -13,23 +13,25 @@ export default class Floor {
     const group = new THREE.Group();
     const outer = reach * 1.5;
 
-    // Tint alpha sampled per pixel in units of the reach: 0.85 under the
-    // robot, gone by 1.3 reach. The disc's UV square maps its radius to 0.5.
+    // Tint alpha in units of the reach: 0.85 under the robot, easing out
+    // between 0.45 and 1.3 reach. The disc's UV square maps its radius to the
+    // canvas's half-width; the stops sample the easing along that radius.
     const size = 512;
     const canvas = document.createElement("canvas");
     canvas.width = canvas.height = size;
     const ctx = canvas.getContext("2d");
-    const img = ctx.createImageData(size, size);
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const d = (Math.hypot(x - size / 2 + 0.5, y - size / 2 + 0.5) / (size / 2)) * (outer / reach);
-        const a = 0.85 * (1 - smoothstep(0.45, 1.3, d));
-        const i = (y * size + x) * 4;
-        img.data[i] = img.data[i + 1] = img.data[i + 2] = Math.round(a * 255);
-        img.data[i + 3] = 255;
-      }
+    const fade = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    const from = (0.45 * reach) / outer;
+    const to = (1.3 * reach) / outer;
+    const stops = 16;
+    for (let s = 0; s <= stops; s++) {
+      const t = from + ((to - from) * s) / stops;
+      const level = Math.round(255 * 0.85 * (1 - smoothstep(0.45, 1.3, (t * outer) / reach)));
+      const hex = level.toString(16).padStart(2, "0");
+      fade.addColorStop(t, `#${hex}${hex}${hex}`);
     }
-    ctx.putImageData(img, 0, 0);
+    ctx.fillStyle = fade;
+    ctx.fillRect(0, 0, size, size);
     const tint = new THREE.Mesh(
       new THREE.CircleGeometry(outer, 96),
       new THREE.MeshBasicMaterial({

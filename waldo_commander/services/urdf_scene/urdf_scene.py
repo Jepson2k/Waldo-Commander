@@ -36,7 +36,6 @@ from waldo_commander.common.theme import (
     SceneColors,
     get_color_for_move_type,
     hex_of,
-    rgb01,
 )
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
 from waldo_commander.services.programs import active_cursor_line
@@ -140,10 +139,10 @@ def _lerp_hex(c1: tuple[int, int, int], c2: tuple[int, int, int], factor: float)
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _invalid_rgb() -> tuple[int, int, int]:
-    """``path-invalid`` as 0-255 ints for :func:`_lerp_hex`."""
-    r, g, b = rgb01("path-invalid")
-    return (int(r * 255 + 0.5), int(g * 255 + 0.5), int(b * 255 + 0.5))
+def _hex_rgb(hex_color: str) -> tuple[int, int, int]:
+    """A ``#rrggbb`` colour as 0-255 ints for :func:`_lerp_hex`."""
+    h = hex_color.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
 class RenderedSegment(NamedTuple):
@@ -1313,9 +1312,8 @@ class UrdfScene(
         if dist_before > rng and dist_after > rng:
             return None
 
-        h = seg.color.lstrip("#")
-        rgb1 = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
-        invalid_rgb = _invalid_rgb()
+        rgb1 = _hex_rgb(seg.color)
+        invalid_rgb = _hex_rgb(hex_of("path-invalid"))
 
         colors = []
         for j in range(n_pairs):
@@ -1656,7 +1654,7 @@ class UrdfScene(
         that changes nothing, and the group is created once, so a dragged
         object survives the readback that confirms its new pose.
 
-        ``shapes`` is the program layer — amber while ``draft`` (not yet
+        ``shapes`` is the program layer — pale slate while ``draft`` (not yet
         confirmed by backend readback), slate once confirmed. ``installation``
         shapes come from the backend's robot config and render in their own
         muted color; they are never draft — the floor is one of them, an
@@ -2412,24 +2410,48 @@ class UrdfScene(
         return walk(self.urdf_model.base_link.name)
 
     def _configure_renderer(self) -> None:
-        """Swap the fork's flat default lights for ours; tone-map, cast shadows and fog the distance.
+        """Swap the fork's flat default lights for ours, cast shadows and fog the distance.
 
+        No tone mapping, so unlit token colours render as their hex. The fog
+        starts past the floor's edge wherever the camera is, and the shadow
+        map redraws only when a shadow caster moves, appears or hides.
         Runs on every scene init, so a remount after WebGL context loss gets it again.
         """
         if self.scene is None:
             return
-        bg = int(self.config.background_color.lstrip("#"), 16)
+        bg = self.config.background_color
         reach = self._chain_reach()
         ui.run_javascript(
             f"""
             import("nicegui-scene").then(({{ THREE }}) => {{
               const view = getElement({self.scene.id});
               view.scene.children.filter((o) => o.isLight).forEach((o) => view.scene.remove(o));
-              view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-              view.renderer.toneMappingExposure = 1.0;
-              view.renderer.shadowMap.enabled = true;
-              view.renderer.shadowMap.type = THREE.PCFShadowMap;
-              view.scene.fog = new THREE.Fog({bg}, {reach * 2:.3f}, {reach * 5:.3f});
+              view.renderer.toneMapping = THREE.NoToneMapping;
+              const shadows = view.renderer.shadowMap;
+              shadows.enabled = true;
+              shadows.type = THREE.PCFShadowMap;
+              shadows.autoUpdate = false;
+              shadows.needsUpdate = true;
+              const fog = new THREE.Fog("{bg}", 0, 1);
+              view.scene.fog = fog;
+              let casters = 0;
+              let lastCasters = NaN;
+              const sumCaster = (o) => {{
+                if (!o.castShadow) return;
+                casters += o.id;
+                const e = o.matrixWorld.elements;
+                for (let i = 0; i < 16; i++) casters += e[i] * (i + 1);
+              }};
+              view.scene.onBeforeRender = (renderer, scene, camera) => {{
+                fog.near = camera.position.length() + {reach * 1.5:.3f};
+                fog.far = fog.near + {reach * 3:.3f};
+                casters = 0;
+                scene.traverseVisible(sumCaster);
+                if (casters !== lastCasters) {{
+                  lastCasters = casters;
+                  shadows.needsUpdate = true;
+                }}
+              }};
               view.resize();
             }});
             """

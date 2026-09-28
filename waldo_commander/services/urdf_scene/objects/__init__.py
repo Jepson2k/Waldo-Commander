@@ -20,7 +20,7 @@ class Floor(Object3D, component="floor.js"):
 
 
 class Stl(Object3D, component="stl.js"):
-    """An STL mesh with a standard (PBR) material that casts and receives shadows and reports its load."""
+    """An STL mesh with a standard (PBR) material that casts and receives shadows."""
 
     def __init__(self, url: str, wireframe: bool = False) -> None:
         super().__init__(url, wireframe)

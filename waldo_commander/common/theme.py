@@ -10,10 +10,9 @@ scene floor.
 
 - CSS reads ``var(--wc-<name>)`` (emitted on ``:root``).
 - Quasar ``color=`` / ``text-color=`` props use the registered name ``wc-<name>``.
-- Three.js and ECharts read hex from :func:`hex_of`; vertex colours use :func:`rgb01`.
+- Three.js and ECharts read hex from :func:`hex_of`; vertex colours use :func:`linear_rgb`.
 """
 
-import logging
 import math
 import re
 from dataclasses import dataclass
@@ -22,9 +21,6 @@ from typing import Any, Literal
 
 from nicegui import app, ui
 
-logger = logging.getLogger(__name__)
-
-ThemeMode = Literal["light", "dark", "system"]
 ThemeKey = Literal["dark", "light"]
 
 STORAGE_KEY = "theme"
@@ -51,22 +47,6 @@ class Palette:
 
 
 THEMES: dict[str, Palette] = {
-    "Graphite": Palette(
-        bg="#151515",
-        surface="#303030",
-        surface_2="#5b5b5b",
-        border="#8a8a8a",
-        text="#f5f5f5",
-        muted="#d4d4d4",
-        accent="#0ea5e9",
-        red="#ef4444",
-        orange="#f97316",
-        yellow="#facc15",
-        green="#22c55e",
-        cyan="#06b6d4",
-        blue="#3b82f6",
-        magenta="#a855f7",
-    ),
     "Ink": Palette(
         bg="#000000",
         surface="#171717",
@@ -83,136 +63,8 @@ THEMES: dict[str, Palette] = {
         blue="#60a5fa",
         magenta="#c084fc",
     ),
-    "Dark Modern": Palette(
-        bg="#1f1f1f",
-        surface="#181818",
-        surface_2="#313131",
-        border="#454545",
-        text="#cccccc",
-        muted="#9d9d9d",
-        accent="#0078d4",
-        red="#f14c4c",
-        orange="#d18616",
-        yellow="#cca700",
-        green="#89d185",
-        cyan="#4ec9b0",
-        blue="#3794ff",
-        magenta="#c586c0",
-    ),
-    "Dracula": Palette(
-        bg="#282a36",
-        surface="#343746",
-        surface_2="#44475a",
-        border="#6272a4",
-        text="#f8f8f2",
-        muted="#bfc2d0",
-        accent="#bd93f9",
-        red="#ff5555",
-        orange="#ffb86c",
-        yellow="#f1fa8c",
-        green="#50fa7b",
-        cyan="#8be9fd",
-        blue="#8be9fd",
-        magenta="#ff79c6",
-    ),
-    "Nord": Palette(
-        bg="#2e3440",
-        surface="#3b4252",
-        surface_2="#4c566a",
-        border="#616e88",
-        text="#eceff4",
-        muted="#d8dee9",
-        accent="#88c0d0",
-        red="#bf616a",
-        orange="#d08770",
-        yellow="#ebcb8b",
-        green="#a3be8c",
-        cyan="#8fbcbb",
-        blue="#81a1c1",
-        magenta="#b48ead",
-    ),
-    "Gruvbox Dark": Palette(
-        bg="#282828",
-        surface="#3c3836",
-        surface_2="#504945",
-        border="#665c54",
-        text="#ebdbb2",
-        muted="#bdae93",
-        accent="#83a598",
-        red="#fb4934",
-        orange="#fe8019",
-        yellow="#fabd2f",
-        green="#b8bb26",
-        cyan="#8ec07c",
-        blue="#83a598",
-        magenta="#d3869b",
-    ),
-    "Catppuccin Mocha": Palette(
-        bg="#1e1e2e",
-        surface="#313244",
-        surface_2="#45475a",
-        border="#585b70",
-        text="#cdd6f4",
-        muted="#a6adc8",
-        accent="#89b4fa",
-        red="#f38ba8",
-        orange="#fab387",
-        yellow="#f9e2af",
-        green="#a6e3a1",
-        cyan="#94e2d5",
-        blue="#89b4fa",
-        magenta="#cba6f7",
-    ),
-    "One Dark": Palette(
-        bg="#282c34",
-        surface="#2c313a",
-        surface_2="#3e4451",
-        border="#4b5263",
-        text="#abb2bf",
-        muted="#7f848e",
-        accent="#61afef",
-        red="#e06c75",
-        orange="#d19a66",
-        yellow="#e5c07b",
-        green="#98c379",
-        cyan="#56b6c2",
-        blue="#61afef",
-        magenta="#c678dd",
-    ),
-    "Solarized Dark": Palette(
-        bg="#002b36",
-        surface="#073642",
-        surface_2="#586e75",
-        border="#657b83",
-        text="#93a1a1",
-        muted="#839496",
-        accent="#268bd2",
-        red="#dc322f",
-        orange="#cb4b16",
-        yellow="#b58900",
-        green="#859900",
-        cyan="#2aa198",
-        blue="#268bd2",
-        magenta="#d33682",
-    ),
-    "GitHub Dark": Palette(
-        bg="#0d1117",
-        surface="#161b22",
-        surface_2="#30363d",
-        border="#484f58",
-        text="#e6edf3",
-        muted="#8b949e",
-        accent="#58a6ff",
-        red="#f85149",
-        orange="#db6d28",
-        yellow="#d29922",
-        green="#3fb950",
-        cyan="#39c5cf",
-        blue="#58a6ff",
-        magenta="#bc8cff",
-    ),
 }
-DEFAULT_THEME = "Graphite"
+DEFAULT_THEME = "Ink"
 
 #: Colours that mean one thing whatever the theme.
 FIXED_COLOR: dict[str, str] = {
@@ -269,14 +121,16 @@ SIZE: dict[str, str] = {
     "size-joint-dial": "64px",
     "size-jog-slot": "72px",
     "size-rail": "52px",
+    "size-panel-inset": "58px",
+    "size-bottom-panel": "340px",
+    "size-column-min": "200px",
     "size-footer": "28px",
 }
 EFFECT: dict[str, str] = {"glass-blur": "36px", "glass-saturate": "150%"}
-OPACITY: dict[str, str] = {"opacity-disabled": "0.6", "opacity-locked": "0.15"}
+OPACITY: dict[str, str] = {"opacity-locked": "0.15"}
 Z_INDEX: dict[str, str] = {
-    "z-scene": "0",
     "z-loading": "10",
-    "z-hud": "20",
+    "z-cards": "20",
     "z-panels": "30",
     "z-rail": "40",
     "z-rail-bottom": "50",
@@ -307,15 +161,11 @@ FONT_FAMILY: dict[str, str] = {
 }
 # name -> (font-size, line-height, weight, letter-spacing or None)
 TYPE_STYLE: dict[str, tuple[str, str, int, str | None]] = {
-    "headline": ("20px", "28px", 600, None),
     "title": ("18px", "28px", 500, None),
     "label": ("14px", "20px", 500, None),
     "body": ("14px", "20px", 400, None),
     "caption": ("12px", "16px", 400, None),
     "micro": ("11px", "14px", 500, "0.02em"),
-    "readout-lg": ("30px", "36px", 400, None),
-    "readout": ("16px", "24px", 400, None),
-    "code": ("13px", "20px", 400, None),
 }
 
 # ── Colour maths (sRGB <-> OKLCH) ────────────────────────────────────
@@ -345,11 +195,13 @@ def _oklch_to_srgb(L: float, C: float, h: float) -> tuple[float, float, float]:
     return enc(lin[0]), enc(lin[1]), enc(lin[2])
 
 
-def _srgb_to_oklch(r: float, g: float, b: float) -> tuple[float, float, float]:
-    def lin(x: float) -> float:
-        return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+def _srgb_eotf(x: float) -> float:
+    """An sRGB-encoded channel in 0–1 as linear light."""
+    return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
 
-    r, g, b = lin(r), lin(g), lin(b)
+
+def _srgb_to_oklch(r: float, g: float, b: float) -> tuple[float, float, float]:
+    r, g, b = _srgb_eotf(r), _srgb_eotf(g), _srgb_eotf(b)
     l_ = math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
     m_ = math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
     s_ = math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
@@ -411,7 +263,6 @@ def _derive(p: Palette) -> dict[str, str]:
         "scene-ground": _shift(p.bg, L=ground_L),
         "scene-grid": _shift(p.bg, L=ground_L + 0.16),
         "surface": p.surface,
-        "surface-2": p.surface_2,
         "glass": _alpha(p.surface, 0.86),
         "glass-end": _alpha(_shift(p.surface, dL=-0.08), 0.86),
         "glass-border": _alpha(p.border, 0.5),
@@ -429,7 +280,6 @@ def _derive(p: Palette) -> dict[str, str]:
         "focus-ring": _shift(p.accent, L=0.75),
         "control": p.surface_2,
         "progress": _shift(p.accent, L=0.75),
-        "level-track": p.surface,
         "positive": _shift(p.green, L=0.88, C=0.6),
         "positive-soft": _alpha(p.green, 0.12),
         "warning": _shift(p.yellow, L=0.92, C=0.7),
@@ -442,6 +292,7 @@ def _derive(p: Palette) -> dict[str, str]:
         "fill-positive": _shift(p.green, L=0.5),
         "fill-warning": _shift(p.orange, L=0.55),
         "fill-error": _shift(p.red, L=0.5),
+        "fill-info": _shift(p.accent, L=0.5),
         "ai-inspect": _shift(p.green, L=0.76),
         "ai-inspect-text": _shift(p.green, L=0.84),
         "ai-auto-edits": _shift(p.blue, L=0.75),
@@ -493,11 +344,6 @@ def theme_names() -> list[str]:
     return list(THEMES)
 
 
-def active_theme() -> str:
-    """The theme :func:`apply_theme` last put on the page."""
-    return _active_theme
-
-
 def stored_theme() -> str:
     """The theme the user chose, or the default."""
     try:
@@ -529,10 +375,9 @@ def hex_of(name: str) -> str:
     return _hex_table(_active_theme)[name]
 
 
-def rgb01(name: str) -> list[float]:
-    """A token as an RGB triple in 0–1, for Three.js vertex colours."""
-    h = hex_of(name).lstrip("#")
-    return [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+def linear_rgb(name: str) -> list[float]:
+    """A token as a linear-light RGB triple in 0–1, for Three.js vertex colours."""
+    return [_srgb_eotf(c) for c in _rgba(hex_of(name))[:3]]
 
 
 def effective_theme() -> ThemeKey:
@@ -547,30 +392,30 @@ class SceneColors:
     :func:`hex_of` at the point of use.
     """
 
-    AXIS_X_HEX = "#d94c3f"
-    AXIS_Y_HEX = "#2faf7a"
-    AXIS_Z_HEX = "#4a63e0"
-    AXIS_RX_HEX = "#f1a79f"
-    AXIS_RY_HEX = "#aee5cf"
-    AXIS_RZ_HEX = "#aeb9f3"
+    AXIS_X_HEX = FIXED_COLOR["axis-x"]
+    AXIS_Y_HEX = FIXED_COLOR["axis-y"]
+    AXIS_Z_HEX = FIXED_COLOR["axis-z"]
+    AXIS_RX_HEX = FIXED_COLOR["axis-rx"]
+    AXIS_RY_HEX = FIXED_COLOR["axis-ry"]
+    AXIS_RZ_HEX = FIXED_COLOR["axis-rz"]
 
-    SIM_AMBER_HEX = "#c77d28"
-    EDIT_GRAY_HEX = "#525252"
-    COLLISION_HEX = "#b00020"
+    SIM_AMBER_HEX = FIXED_COLOR["scene-arm-sim"]
+    EDIT_GRAY_HEX = FIXED_COLOR["scene-arm-edit"]
+    COLLISION_HEX = FIXED_COLOR["scene-collision"]
 
-    SHAPE_HEX = "#6d8ea0"
-    SHAPE_DRAFT_HEX = "#9db8c8"
-    SHAPE_INSTALL_HEX = "#55606a"
-    SHAPE_PROPOSED_HEX = "#8a7bb5"
+    SHAPE_HEX = FIXED_COLOR["scene-shape"]
+    SHAPE_DRAFT_HEX = FIXED_COLOR["scene-shape-draft"]
+    SHAPE_INSTALL_HEX = FIXED_COLOR["scene-shape-install"]
+    SHAPE_PROPOSED_HEX = FIXED_COLOR["scene-shape-proposed"]
 
-    TOOL_BODY_HEX = "#2a9d8f"
-    TOOL_BODY_SIM_HEX = "#2a9d8f"
-    TOOL_BODY_EDIT_HEX = "#3d6b65"
-    TOOL_MOVING_HEX = "#4ecdc4"
-    TOOL_MOVING_SIM_HEX = "#4ecdc4"
-    TOOL_MOVING_EDIT_HEX = "#4d7e77"
+    TOOL_BODY_HEX = FIXED_COLOR["scene-tool"]
+    TOOL_BODY_SIM_HEX = TOOL_BODY_HEX
+    TOOL_BODY_EDIT_HEX = FIXED_COLOR["scene-tool-edit"]
+    TOOL_MOVING_HEX = FIXED_COLOR["scene-tool-moving"]
+    TOOL_MOVING_SIM_HEX = TOOL_MOVING_HEX
+    TOOL_MOVING_EDIT_HEX = FIXED_COLOR["scene-tool-moving-edit"]
 
-    HOVER_HEX = "#ffffff"
+    HOVER_HEX = FIXED_COLOR["scene-hover"]
     ENVELOPE_HEX = AXIS_Z_HEX
     TCP_ACTIVE_HEX = AXIS_Z_HEX
     TCP_INACTIVE_HEX = EDIT_GRAY_HEX
@@ -623,15 +468,20 @@ def _scalar_block() -> str:
     lines.append(
         "  --wc-footer-clearance: calc(var(--wc-size-footer) + 2 * var(--wc-space-3));"
     )
+    # The footer's cover until PanelResize measures what the column stops above.
+    lines.append(
+        "  --wc-column-cover: calc(var(--wc-size-footer) + var(--wc-space-3));"
+    )
     return "\n".join(lines)
 
 
 def _type_classes() -> str:
     rules = []
     for name, (size, lh, weight, spacing) in TYPE_STYLE.items():
-        family = "var(--wc-font-mono)" if name == "code" else "var(--wc-font-sans)"
         extra = f" letter-spacing: {spacing};" if spacing else ""
-        rules.append(f".wc-{name} {{ font: {weight} {size}/{lh} {family};{extra} }}")
+        rules.append(
+            f".wc-{name} {{ font: {weight} {size}/{lh} var(--wc-font-sans);{extra} }}"
+        )
     return "\n".join(rules)
 
 
@@ -698,7 +548,6 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
   outline: 2px solid var(--wc-focus-ring);
   outline-offset: 2px;
 }}
-.q-btn.disabled {{ opacity: var(--wc-opacity-disabled) !important; }}
 .q-slider__thumb {{ width: 30px !important; height: 30px !important; }}
 .q-slider__track {{ height: 8px !important; }}
 
@@ -714,7 +563,7 @@ body.body--dark, body.body--light, .q-page {{ background: transparent !important
 /* ========== Inputs ========== */
 
 .q-field__native, .q-field__input, .q-field__prefix, .q-field__suffix {{ color: var(--wc-text); }}
-.q-field__label {{ color: var(--wc-text-muted); }}
+.q-field:not(.q-field--highlighted) .q-field__label {{ color: var(--wc-text-muted); }}
 .q-field:not(.q-field--borderless) .q-field__control {{
   background: var(--wc-well);
   border-radius: var(--wc-radius-sm);
@@ -745,13 +594,10 @@ input[type=number] {{
     )
 
 
-def apply_theme(name: str | None = None) -> None:
-    """Put a theme on the page: Quasar colours, dark mode and the token CSS.
-
-    Without a name, the theme the user chose (or the default) is applied.
-    """
+def apply_theme() -> None:
+    """Put the stored theme on the page: Quasar colours, dark mode and the token CSS."""
     global _active_theme
-    _active_theme = name if name in THEMES else stored_theme()
+    _active_theme = stored_theme()
     ui.colors(
         primary=css("action"),
         secondary=css("action-hover"),
@@ -760,7 +606,7 @@ def apply_theme(name: str | None = None) -> None:
         dark_page=css("scene-bg"),
         positive=css("fill-positive"),
         negative=css("fill-error"),
-        info=css("action"),
+        info=css("fill-info"),
         warning=css("fill-warning"),
         **{quasar(n): css(n) for n in color_tokens(_active_theme)},
     )
@@ -769,23 +615,29 @@ def apply_theme(name: str | None = None) -> None:
     _inject_component_overrides()
 
 
+def _px(value: str) -> int:
+    return int(value.removesuffix("px"))
+
+
+# The --wc-footer-clearance the panels keep from the bottom edge, in px.
+_FOOTER_CLEARANCE = _px(SIZE["size-footer"]) + 2 * _px(SPACE["space-3"])
+
 # Panel resize configuration (passed to JS module)
 PANEL_RESIZE_CONFIG: dict[str, Any] = {
     "storageKey": "parol_panel_sizes",
     "selectors": {
-        "wrap": ".panels-wrap",
         "topContainer": ".top-panels-container",
         "bottomContainer": ".bottom-panels-container",
+        "controlPanel": ".overlay-br",
+        "bottomCovers": [".status-footer", ".bottom-panel"],
+        "columnCovers": [".bottom-panels-container"],
     },
     "constraints": {
         "viewportMarginX": 80,
-        "viewportMarginY": 64,
-        "containerPadding": 20,
-        "bottomOffset": 52,
-        "totalMargin": 76,
-    },
-    "stateClasses": {
-        "coupled": "coupled",
+        # The top margin and the footer clearance.
+        "viewportMarginY": _FOOTER_CLEARANCE + _px(SPACE["space-3"]),
+        # The same, plus the gap between two coupled panels.
+        "totalMargin": _FOOTER_CLEARANCE + 2 * _px(SPACE["space-3"]),
     },
     "panels": {
         "program": {
@@ -979,9 +831,6 @@ html, body {
   transition: transform var(--wc-duration-instant) linear, filter var(--wc-duration-instant) linear, outline-color var(--wc-duration-instant) linear;
 }
 
-/* Settings rows fill the panel, never the widest child */
-.settings-scroll .q-scrollarea__content { width: 100%; min-width: 0; }
-
 /* Joint dials: a ring per joint on a control track with the travelled arc in
    progress; the jog caps and limit buttons appear when the dial is hovered or
    holds focus */
@@ -1058,18 +907,19 @@ html, body {
 .joint-dial-cell:focus-within .joint-dial-limits {
   opacity: 1;
 }
-/* Outranks the locked-state opacity so a disabled cap stays hidden until the dial is hovered */
-.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap { opacity: 0 !important; }
+/* Visibility, not opacity: Quasar's disabled opacity is !important inside a cascade
+   layer, which outranks any unlayered rule, so a cap at its limit would show */
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap,
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-dial-limits { visibility: hidden; }
 
-/* Level chips: percentage beside the icon, the rating in the popover; its dots
-   take the progress token and Quasar dims the unselected ones */
-.level-chip { min-height: 0; padding: 0 var(--wc-space-2); font-variant-numeric: tabular-nums; }
+/* Level chips: percentage beside the icon, the rating in the popover */
+.level-chip { font-variant-numeric: tabular-nums; }
 .level-chip .q-icon { color: var(--wc-text-muted); }
 .level-menu { padding: var(--wc-space-1) var(--wc-space-2); }
-.level-speed .q-icon, .level-accel .q-icon { color: var(--wc-progress) !important; }
 
-/* Tool box: name over its readout, the actions to the right */
-.tool-box-readout { min-width: 0; line-height: 1.1; }
+/* Tool box: name over its readout, the actions to the right; the readout is a
+   bare card so its updates stay inside it */
+.tool-box-readout { min-width: 0; line-height: 1.1; background: transparent; color: inherit; }
 
 /* Control panel jog tabs: compact padding */
 .cp-jog-tabs .q-tab {
@@ -1082,8 +932,9 @@ html, body {
   overflow: hidden;
 }
 
-/* Record button: a control with a record dot that pulses while recording */
-.record-btn .q-icon { color: var(--wc-record); }
+/* Record button: a control with a record dot, filled with the record colour
+   while recording, when the dot takes the text colour and pulses */
+.record-btn:not(.recording) .q-icon { color: var(--wc-record); }
 .record-btn.recording .q-icon { animation: recording-pulse var(--wc-duration-ambient) var(--wc-ease-loop) infinite; }
 
 
@@ -1185,26 +1036,12 @@ html, body {
 }
 
 /* Overlay panels with frosted glass effect */
-.overlay-panel { position: absolute; z-index: var(--wc-z-panels); pointer-events: auto; }
+.overlay-panel { position: absolute; z-index: var(--wc-z-cards); pointer-events: auto; }
 .overlay-card {
   padding: var(--wc-space-3);
 }
 
-/* Overlay anchors */
-.overlay-tl { top: var(--wc-space-3); left: var(--wc-space-3); }
-.overlay-tr { top: var(--wc-space-3); right: var(--wc-space-3); }
-.overlay-bl { bottom: var(--wc-space-3); left: var(--wc-space-3); }
 .overlay-br { bottom: var(--wc-footer-clearance); right: var(--wc-space-3); }
-.overlay-right {
-  position: absolute;
-  top: 50%;
-  right: var(--wc-space-3);
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  gap: var(--wc-space-2);
-  z-index: var(--wc-z-panels);
-}
 
 
 /* ========== Left Tabs ========== */
@@ -1259,7 +1096,8 @@ html, body {
 /* Shared left-side panel container base styling */
 .left-panels-container {
   position: absolute;
-  left: 58px;
+  z-index: var(--wc-z-panels);
+  left: var(--wc-size-panel-inset);
   max-width: calc(100vw - 80px);
   overflow: hidden !important;
   scrollbar-width: none !important;
@@ -1282,12 +1120,15 @@ html, body {
   max-height: calc(100vh - var(--wc-space-3) - var(--wc-footer-clearance));
 }
 
-/* The program column: full height between the top margin and the footer,
-   width from PanelResize; only the right edge is a handle. */
+/* The program column: full height between the top margin and whatever covers
+   the bottom (the footer, the bottom panel as a terminal sits under an
+   editor, a bottom plugin panel), width from PanelResize; only the right edge
+   is a handle. */
 .panels-wrap.column-open .top-panels-container {
   top: var(--wc-space-3);
-  bottom: var(--wc-footer-clearance);
+  bottom: calc(var(--wc-column-cover) + var(--wc-space-3));
   height: auto !important;
+  min-height: var(--wc-size-column-min);
 }
 .panels-wrap.column-open .top-panels-container > .q-panel > .program-panel { max-height: none; }
 
@@ -1403,7 +1244,6 @@ html, body {
 .editor-tabs .q-tab {
   padding: 4px 8px !important;
   min-height: 42px !important;
-  text-transform: none !important;
 }
 .editor-tabs .q-tab__indicator { display: none; }
 
@@ -1446,16 +1286,6 @@ html, body {
   font-size: 0.85rem;
 }
 
-/* Compact save FAB in tabs */
-.editor-tab .save-fab {
-  min-width: var(--wc-size-control-sm) !important;
-  min-height: var(--wc-size-control-sm) !important;
-  width: var(--wc-size-control-sm) !important;
-  height: var(--wc-size-control-sm) !important;
-}
-
-.editor-tab .save-fab .q-icon { font-size: 14px !important; }
-
 /* Editor tabs scroll area - no padding */
 .editor-tabs-scroll .q-scrollarea__content {
   padding: 0 !important;
@@ -1472,6 +1302,8 @@ html, body {
   border-radius: 0 0 var(--wc-radius-sm) var(--wc-radius-sm);
 }
 .program-panel .cm-editor .cm-gutters { background: transparent !important; }
+/* Room for the last line to scroll clear of the fade and the playback bar */
+.program-panel .cm-editor .cm-content { padding-bottom: 16px; }
 
 /* Style CodeMirror's internal scrollbar */
 .cm-scroller::-webkit-scrollbar {
@@ -1515,19 +1347,19 @@ html, body {
   white-space: pre;
 }
 
-/* Lines a recording session wrote that nobody has kept yet, in the Record
-   button's amber, and a badge on each captured span. */
+/* Lines a recording session wrote that nobody has kept yet, and a badge on
+   each captured span. */
 .cm-line.cm-line-staged {
-  background-color: color-mix(in srgb, var(--q-warning) 12%, transparent);
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--q-warning) 70%, transparent);
+  background-color: color-mix(in srgb, var(--wc-fill-warning) 12%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--wc-fill-warning) 70%, transparent);
 }
 .cm-staged-badge {
   margin-left: 10px;
   padding: 0 6px;
-  border-radius: 9999px;
+  border-radius: var(--wc-radius-pill);
   font-size: 11px;
-  color: var(--q-warning);
-  background-color: color-mix(in srgb, var(--q-warning) 15%, transparent);
+  color: var(--wc-fill-warning);
+  background-color: color-mix(in srgb, var(--wc-fill-warning) 15%, transparent);
 }
 
 /* Pending-edit review cluster — swaps in for the editor toolbar buttons. */
@@ -1538,8 +1370,8 @@ html, body {
   padding: 0 2px 0 10px;
 }
 .pending-edits-banner.staged-take {
-  background-color: color-mix(in srgb, var(--q-warning) 8%, transparent);
-  border-color: color-mix(in srgb, var(--q-warning) 30%, transparent);
+  background-color: color-mix(in srgb, var(--wc-fill-warning) 8%, transparent);
+  border-color: color-mix(in srgb, var(--wc-fill-warning) 30%, transparent);
 }
 
 
@@ -1625,45 +1457,33 @@ html, body {
   }
   .left-panels-container { display: none !important; }
 
-  /* Center panels horizontally using transform */
-  .overlay-tr {
-    right: auto !important;
-    left: 50% !important;
-    transform: translateX(-50%) !important;
-    /* Variable top margin that goes to 0 on small screens */
-    top: max(0px, calc((100vw - 360px) * 0.0375)) !important;
-    /* Prevent text wrapping, scale down instead */
-    white-space: nowrap !important;
-    font-size: clamp(0.65rem, 2.8vw, 1rem) !important;
-  }
-
+  /* Centred above the footer; the scale below keeps the bottom edge. */
   .overlay-br {
     right: auto !important;
     left: 50% !important;
     transform: translateX(-50%) !important;
-    /* Variable bottom margin that goes to 0 on small screens */
-    bottom: max(0px, calc((100vw - 360px) * 0.0375)) !important;
+    bottom: calc(var(--wc-footer-clearance) + max(0px, (100vw - 360px) * 0.0375)) !important;
   }
 }
 
 /* Small phone screens - scale control panel to fit */
 /* Using stepped breakpoints since CSS can't compute unitless scale from viewport units */
 @media (max-width: 414px) {
-  .overlay-br, .overlay-tr {
+  .overlay-br {
     transform: translateX(-50%) scale(0.95) !important;
     transform-origin: center bottom !important;
   }
 }
 
 @media (max-width: 380px) {
-  .overlay-br, .overlay-tr {
+  .overlay-br {
     transform: translateX(-50%) scale(0.88) !important;
     transform-origin: center bottom !important;
   }
 }
 
 @media (max-width: 340px) {
-  .overlay-br, .overlay-tr {
+  .overlay-br {
     transform: translateX(-50%) scale(0.8) !important;
     transform-origin: center bottom !important;
   }
@@ -1671,16 +1491,16 @@ html, body {
 
 /* Transition for overlay panels on resize */
 @media (min-width: 641px) {
-  .overlay-tr, .overlay-br {
+  .overlay-br {
     transition: transform var(--wc-duration-base) var(--wc-ease-enter), left var(--wc-duration-base) var(--wc-ease-enter), right var(--wc-duration-base) var(--wc-ease-enter), width var(--wc-duration-base) var(--wc-ease-enter);
   }
 }
 
 
 /* ========== Recording Notification ========== */
-/* Override parent container z-index when it contains recording notification */
+/* The standing Recording notice sits with the cards, under the left panels */
 .q-notifications__list:has(.recording-notification) {
-  z-index: var(--wc-z-rail) !important;
+  z-index: var(--wc-z-cards) !important;
 }
 
 .recording-notification .q-notification__icon {
@@ -1762,8 +1582,7 @@ html, body {
 .file-tree-scroll .q-scrollarea__content { padding: 0 !important; }
 
 /* ========== File Tree ========== */
-.file-tree .q-tree__node-header-content { color: var(--wc-text) !important; }
-.file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { color: var(--wc-text) !important; font-weight: bold !important; }
+.file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 .file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
 /* ========== Robot Face Indicator ========== */
@@ -1858,6 +1677,7 @@ html, body {
   flex-shrink: 0;
 }
 .status-footer .pose-well .wc-caption { line-height: 1; }
+.status-footer .pose-cell { display: flex; align-items: baseline; gap: 6px; }
 .status-footer .pose-value { display: inline-block; text-align: right; }
 .status-footer .footer-action {
   flex: 1 1 0; min-width: 0;
@@ -1873,20 +1693,28 @@ html, body {
   padding: 0 8px !important;
   border-radius: var(--wc-radius-pill);
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 .status-footer .footer-btn .q-icon { font-size: 15px; }
 .status-footer .footer-btn .footer-count { margin: 0 6px 0 2px; }
-.status-footer .footer-btn.has-unread.unread-warning { background: var(--wc-warning-soft) !important; color: var(--wc-warning) !important; }
-.status-footer .footer-btn.has-unread.unread-error { background: var(--wc-error-soft) !important; color: var(--wc-error) !important; }
+.status-footer .footer-btn.unread-warning { background: var(--wc-warning-soft) !important; color: var(--wc-warning) !important; }
+.status-footer .footer-btn.unread-error { background: var(--wc-error-soft) !important; color: var(--wc-error) !important; }
+/* The launchers never shrink, so the pose gives way as the window narrows:
+   first its rotations, then the whole well. */
+@media (max-width: 1280px) { .status-footer .pose-cell-rot { display: none; } }
+@media (max-width: 960px) { .status-footer .pose-well { display: none; } }
+/* Settings has the rail's gear above phone width. */
+.status-footer .footer-settings { display: none; }
+@media (max-width: 640px) { .status-footer .footer-settings { display: inline-flex; } }
 
 /* ========== Bottom panel ========== */
 
 .bottom-panel {
   position: absolute;
-  right: var(--wc-space-3);
+  right: calc(min(var(--wc-control-inset, 0px), 50vw) + var(--wc-space-3));
   bottom: var(--wc-footer-clearance);
-  left: calc(var(--wc-column-right, 0px) + var(--wc-space-3));
-  height: 340px;
+  left: var(--wc-size-panel-inset);
+  height: var(--wc-size-bottom-panel);
   max-height: calc(100vh - var(--wc-footer-clearance) - var(--wc-space-3));
   z-index: var(--wc-z-panels);
   display: flex;
@@ -1894,12 +1722,17 @@ html, body {
   padding: 0;
   pointer-events: auto;
 }
+/* Under an open column the panel shrinks to leave the column its minimum,
+   which keeps the playbar and its Stop on screen. */
+body:has(.panels-wrap.column-open) .bottom-panel {
+  max-height: calc(100vh - var(--wc-footer-clearance) - 2 * var(--wc-space-3) - var(--wc-size-column-min));
+}
 .bottom-panel .bottom-panel-tabs { flex-shrink: 0; }
 .bottom-panel .bottom-panel-tabs .q-tab { min-height: 36px; padding: 0 14px; }
 .bottom-panel .q-tab-panels { flex: 1 1 0; min-height: 0; }
 .bottom-panel .q-tab-panel { height: 100%; padding: var(--wc-space-2) var(--wc-space-3); overflow: auto; }
 .bottom-panel .nicegui-log { height: 100%; }
-.diag-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--wc-space-4); width: 100%; }
+.diag-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 var(--wc-space-4); width: 100%; }
 .diag-grid > .diag-col { min-width: 0; }
 .diag-grid > .diag-wide { grid-column: 1 / -1; min-width: 0; }
 
@@ -1927,7 +1760,7 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   .control-glow-breathe, .ai-cluster .btn-take-control, .recording-notification .q-notification__icon,
   .record-btn.recording .q-icon, .robot-face-happy svg, .robot-face-neutral svg, .robot-face-sad svg,
-  .tab-flash, .cm-line.cm-line-flash { animation: none !important; }
+  .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next { animation: none !important; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
 }
 """

@@ -6,8 +6,8 @@ import logging
 import math
 import weakref
 from collections.abc import Callable
-from contextlib import contextmanager
-from typing import Any, cast
+from contextlib import AsyncExitStack, contextmanager
+from typing import cast
 
 import waldoctl
 from nicegui import Client, background_tasks, context, ui
@@ -16,6 +16,7 @@ from nicegui.client import ClientConnectionTimeout
 from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
 from waldoctl.setup import PoseValues, TcpCalibration
 
+from waldo_commander.components.help_menu import HelpMenu
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.common.theme import (
     STORAGE_KEY as THEME_STORAGE_KEY,
@@ -27,7 +28,14 @@ from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    control_lease,
+    require_browser_control,
+)
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
+from waldo_commander.services.tcp_calibration import ToolChanged, read_applied_tcp
 from waldo_commander.state import automation_state, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
@@ -35,8 +43,8 @@ logger = logging.getLogger(__name__)
 # Trailing-edge window for a TCP offset edit, seconds.
 TCP_EDIT_THROTTLE_S = 0.4
 
-# How long an adopted offset waits for its page's socket, seconds.
-ADOPT_CONNECT_TIMEOUT_S = 5.0
+# How long a reconcile waits for its page's socket, seconds.
+RECONCILE_CONNECT_TIMEOUT_S = 5.0
 
 # Tools this app has pushed a TCP offset for since it started. Until then a
 # controller reporting zero may simply never have been told; afterwards a zero
@@ -89,6 +97,25 @@ def adopt_applied_tcp(calibration: TcpCalibration) -> None:
         view.show_applied_tcp(calibration)
 
 
+async def refresh_applied_tcp(client: RobotClient) -> None:
+    """Adopt the controller's TCP transform after a program run or a reconnect.
+
+    Neither leaves a status edge when the tool stays the same, so without
+    this the inputs and local kinematics keep the transform from before.
+    """
+    async with AsyncExitStack() as stack:
+        # A Settings push in flight adopts its own readback; wait for it.
+        # One lock order, so two refreshes never hold each other's locks.
+        for view in sorted(_settings_views, key=id):
+            await stack.enter_async_context(view._tool_lock)
+        try:
+            applied = await read_applied_tcp(client)
+        except (OSError, TimeoutError, ValueError) as exc:
+            logger.debug("TCP refresh skipped: %s", exc)
+            return
+        adopt_applied_tcp(applied)
+
+
 def get_available_serial_ports() -> list[str]:
     """Detect available serial ports on the system."""
     try:
@@ -110,7 +137,7 @@ def _setting_row(title: str, description: str):
     with ui.element("div").classes("settings-row"):
         with ui.element("div").classes("settings-text"):
             ui.label(title).classes("settings-label")
-            ui.label(description).classes("settings-desc")
+            ui.label(description).classes("wc-caption text-wc-text-muted truncate")
         yield
 
 
@@ -126,6 +153,7 @@ class SettingsContent:
         self.client = client
         self.dialog: ui.dialog | None = None
         self._shortcuts_box: ui.column | None = None
+        self._tour_box: ui.column | None = None
         self._tcp_inputs: tuple[str, OffsetInputs, Client] | None = None
         _settings_views.add(self)
         self._port_select: ui.select | None = None
@@ -316,11 +344,12 @@ class SettingsContent:
         page_client = context.client
         inputs: OffsetInputs = ()
 
-        async def _on_offset_change(_e=None):
-            if any(item.value is None for item in inputs):
+        async def _on_offset_change(axis: str) -> None:
+            value = inputs[TCP_AXES.index(axis)].value
+            if value is None:
                 return
-            vals = {axis: item.value for axis, item in zip(TCP_AXES, inputs)}
-            await self._push_tcp_offset(tool_key, vals, inputs, page_client)
+            require_browser_control(page_client.id)
+            await self._push_tcp_offset(tool_key, {axis: value}, inputs, page_client)
 
         with self._tcp_offset_container:
             with _setting_row(
@@ -339,7 +368,7 @@ class SettingsContent:
                         .props("dense")
                         .on(
                             "update:model-value",
-                            _on_offset_change,
+                            lambda _e, axis=axis: _on_offset_change(axis),
                             throttle=TCP_EDIT_THROTTLE_S,
                             leading_events=False,
                         )
@@ -382,16 +411,23 @@ class SettingsContent:
     async def _push_tcp_offset(
         self,
         tool_key: str,
-        vals: dict,
+        edits: dict,
         inputs: OffsetInputs,
         page_client: Client,
     ) -> None:
-        """Send the offset to the controller, newest values only.
+        """Send the edited axes to the controller, newest values only.
 
         One push runs at a time: overlapping pushes race each other's
         readbacks, and the loser adopts an intermediate value the user has
         already typed past."""
-        self._tcp_push_next = (tool_key, vals, inputs, page_client, self._tool_epoch)
+        pending = self._tcp_push_next
+        if (
+            pending is not None
+            and pending[0] == tool_key
+            and pending[4] == self._tool_epoch
+        ):
+            edits = {**pending[1], **edits}
+        self._tcp_push_next = (tool_key, edits, inputs, page_client, self._tool_epoch)
         if self._tcp_pushing:
             return
         self._tcp_pushing = True
@@ -407,31 +443,47 @@ class SettingsContent:
         values = await self.client.tcp_transform()
         return list(TcpCalibration(cast(PoseValues, tuple(values)), "readback").values)
 
+    def _drop_queued_push(self) -> None:
+        """An edit still waiting when its page goes is nobody's to send."""
+        self._tcp_push_next = None
+
     async def _send_tcp_offset(
         self,
         tool_key: str,
-        vals: dict,
+        edits: dict,
         inputs: OffsetInputs,
         page_client: Client,
         epoch: int,
     ) -> None:
         async with self._tool_lock:
             await self._send_tcp_offset_locked(
-                tool_key, vals, inputs, page_client, epoch
+                tool_key, edits, inputs, page_client, epoch
             )
 
     async def _send_tcp_offset_locked(
         self,
         tool_key: str,
-        vals: dict,
+        edits: dict,
         inputs: OffsetInputs,
         page_client: Client,
         epoch: int,
     ) -> None:
-        if epoch != self._tool_epoch:
+        if epoch != self._tool_epoch or not page_client.has_socket_connection:
+            # The tool changed while this edit was queued (the controller
+            # zeroed its offset for the new tool, and the old tool's number
+            # would silently restore it), or the page that typed it is gone.
             return
         try:
-            values = cast(PoseValues, tuple(float(vals.get(k, 0)) for k in TCP_AXES))
+            # Axes not edited here keep the controller's values: a program
+            # may have changed them since these inputs were drawn.
+            applied = await read_applied_tcp(self.client)
+            values = cast(
+                PoseValues,
+                tuple(
+                    float(edits[axis]) if axis in edits else current
+                    for axis, current in zip(TCP_AXES, applied.values)
+                ),
+            )
             calibration = TcpCalibration(
                 values, tool_key, self._bound_variant(tool_key)
             )
@@ -444,6 +496,10 @@ class SettingsContent:
             if epoch != self._tool_epoch:
                 return
             await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+        except ToolChanged as exc:
+            adopt_applied_tcp(exc.applied)
+            logger.warning("TCP transform was not applied: %s", exc)
+            self._notify(page_client, f"TCP transform not applied: {exc}", "negative")
         except Exception as exc:
             logger.warning("TCP transform was not applied: %s", exc)
             self._notify(page_client, f"TCP transform not applied: {exc}", "negative")
@@ -464,15 +520,29 @@ class SettingsContent:
         someone else's — a program or another client, and a deliberate zero
         counts. The remembered offset is pushed only where the controller's
         cannot be: right after a tool change, which resets it, and on a
-        controller reporting nothing that this app has never told."""
+        controller reporting nothing that this app has never told, while
+        nobody else is driving."""
+        try:
+            # Started while the page is still being built, so its socket is
+            # often not up yet.
+            await page_client.connected(timeout=RECONCILE_CONNECT_TIMEOUT_S)
+        except ClientConnectionTimeout:
+            return
         async with self._tool_lock:
             if epoch != self._tool_epoch:
                 return
             try:
-                back = await self._read_tcp()
+                applied = await read_applied_tcp(self.client)
             except Exception as exc:
                 logger.debug("tcp_offset readback failed: %s", exc)
                 return
+            if (applied.tool_key, applied.variant_key) != (
+                tool_key,
+                self._get_variant_key(tool_key) or "",
+            ):
+                # Another tool's transform; sync_tool follows the tool change.
+                return
+            back = list(applied.values)
             stored = self._get_tcp_offset(tool_key)
             if adopt_only:
                 await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
@@ -486,12 +556,21 @@ class SettingsContent:
             never_told = tool_key not in _pushed_offset_tools and not any(
                 abs(b) > 1e-3 for b in back
             )
-            if tool_changed or never_told:
+            if tool_changed or (never_told and self._may_push_unasked(page_client)):
                 await self._send_tcp_offset_locked(
                     tool_key, stored, inputs, page_client, epoch
                 )
             else:
                 await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+
+    @staticmethod
+    def _may_push_unasked(page_client: Client) -> bool:
+        """A push nobody typed must not move the TCP under another driver."""
+        holder = control_lease.holder()
+        free_or_ours = holder is None or (
+            holder.channel == BROWSER and holder.id == page_client.id
+        )
+        return free_or_ours and motion_guard.busy_reason() is None
 
     async def _adopt_tcp_offset(
         self,
@@ -503,16 +582,6 @@ class SettingsContent:
         values = cast(PoseValues, tuple(float(v) for v in offset_mm))
         calibration = TcpCalibration(values, tool_key, self._bound_variant(tool_key))
         adopt_applied_tcp(calibration)
-        if not page_client.has_socket_connection:
-            # The reconcile that adopts an out-of-band offset is started
-            # while the page is still being built, so its socket is often
-            # not up yet. Dropping the update here would leave the inputs
-            # showing the browser's remembered offset while the controller
-            # plans with another one.
-            try:
-                await page_client.connected(timeout=ADOPT_CONNECT_TIMEOUT_S)
-            except ClientConnectionTimeout:
-                return
         with page_client:
             for inp, v in zip(inputs, values):
                 if inp.value != v:
@@ -555,7 +624,6 @@ class SettingsContent:
                 ui.notify(f"Port change failed: {exc}", color="negative")
                 return
             ng_app.storage.general["com_port"] = port_val
-            ui.notify(f"SET_PORT {port_val}", color="primary")
 
         port_select_ref.on("update:model-value", lambda e: _apply_port())
         self._refresh_timer = ui.timer(10.0, self._refresh_serial_ports)
@@ -630,6 +698,7 @@ class SettingsContent:
                 self._tool_epoch += 1
                 self._tcp_push_next = None
                 vk = self._get_variant_key(tool)
+                require_browser_control(context.client.id)
                 try:
                     index = await self.client.select_tool(tool, variant_key=vk or "")
                     if index < 0 or not await self.client.wait_command(
@@ -1166,11 +1235,9 @@ class SettingsContent:
     # ── Main entry point ─────────────────────────────────────────────
 
     def build_dialog(
-        self,
-        ai_control_section: Callable[[], None] | None = None,
-        help_menu: Any = None,
-    ) -> ui.dialog:
-        """Build the Settings dialog, closed, with every category's rows in place.
+        self, ai_control_section: Callable[[], None], help_menu: HelpMenu
+    ) -> None:
+        """Build the Settings dialog, closed.
 
         ``ai_control_section`` is the control panel's AI mode row, grouped
         with the other autonomy settings; ``help_menu`` supplies the
@@ -1181,6 +1248,7 @@ class SettingsContent:
         at the end so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
+        context.client.on_disconnect(self._drop_queued_push)
 
         categories: list[tuple[str, str, str, list[Callable[[], None]]]] = []
         if ui_state.active_robot.name.lower() == "parol6":
@@ -1217,35 +1285,17 @@ class SettingsContent:
                 [
                     lambda: self._build_show_route(prefs),
                     lambda: self._build_envelope(prefs),
-                    self._build_theme,
+                    *([self._build_theme] if len(theme_names()) > 1 else []),
                 ],
             ),
             (
                 "automation",
                 "Automation",
                 "smart_toy",
-                [
-                    self._build_automation,
-                    *([ai_control_section] if ai_control_section else []),
-                ],
+                [self._build_automation, ai_control_section],
             ),
-        ]
-        if help_menu is not None:
-            categories += [
-                (
-                    "shortcuts",
-                    "Shortcuts",
-                    "keyboard",
-                    [lambda: self._build_shortcuts(help_menu)],
-                ),
-                (
-                    "getting-started",
-                    "Getting started",
-                    "school",
-                    [lambda: self._build_getting_started(help_menu)],
-                ),
-            ]
-        categories.append(
+            ("shortcuts", "Shortcuts", "keyboard", [self._build_shortcuts_box]),
+            ("getting-started", "Getting started", "school", []),
             (
                 "advanced",
                 "Advanced — restart required",
@@ -1255,8 +1305,8 @@ class SettingsContent:
                     self._build_plugin_panels,
                     self._build_mcp_server,
                 ],
-            )
-        )
+            ),
+        ]
         for panel in self._plugin_contributors():
             categories.append(
                 (
@@ -1268,72 +1318,69 @@ class SettingsContent:
             )
 
         self.dialog = ui.dialog().classes("settings-dialog").mark("settings-dialog")
-        with self.dialog:
-            with ui.card().classes("settings-dialog-card p-0"):
+        with self.dialog, ui.card().classes("settings-dialog-card p-0"):
+            with (
+                ui.tabs(value=categories[0][0])
+                .props("vertical dense no-caps")
+                .classes("settings-cats") as tabs
+            ):
+                for key, title, icon, _ in categories:
+                    ui.tab(key, label=title.split(" — ")[0], icon=icon).mark(
+                        f"settings-cat-{key}"
+                    )
+            with ui.element("div").classes("settings-body"):
                 with (
-                    ui.tabs(value=categories[0][0])
-                    .props("vertical dense no-caps")
-                    .classes("settings-cats") as tabs
+                    ui.row()
+                    .classes("w-full items-center px-4 py-2 no-wrap shrink-0")
+                    .style("border-bottom: 1px solid var(--wc-glass-border);")
                 ):
-                    for key, title, icon, _ in categories:
-                        ui.tab(key, label=title.split(" — ")[0], icon=icon).mark(
-                            f"settings-cat-{key}"
-                        )
-                with ui.element("div").classes("settings-body"):
-                    with (
-                        ui.row()
-                        .classes("w-full items-center px-4 py-2 no-wrap shrink-0")
-                        .style("border-bottom: 1px solid var(--wc-glass-border);")
-                    ):
-                        ui.label("Settings").classes("wc-title")
-                        ui.space()
-                        ui.button(icon="close", on_click=self.dialog.close).props(
-                            "flat round dense color=wc-text"
-                        ).mark("settings-close")
-                    if help_menu is not None:
-                        # Bindings register after the page is built and the jog
-                        # keys' descriptions follow the inversion switches, so
-                        # the table is redrawn each time the category opens.
-                        tabs.on_value_change(
-                            lambda e: (
-                                self._refresh_shortcuts(help_menu)
-                                if e.value == "shortcuts"
-                                else None
-                            )
-                        )
-                    with ui.tab_panels(tabs, value=categories[0][0]).props("animated"):
-                        for key, title, _, sections in categories:
-                            with ui.tab_panel(key):
-                                with ui.column().classes("settings-content"):
-                                    heading = ui.label(title).classes(
-                                        "settings-group-heading"
-                                    )
-                                    if key.startswith("plugin-"):
-                                        heading.mark(
-                                            f"settings-plugin-{key[7:]}-header"
-                                        )
-                                    else:
-                                        heading.mark(
-                                            f"settings-group-{title.split()[0].lower()}"
-                                        )
-                                    for section in sections:
-                                        section()
+                    ui.label("Settings").classes("wc-title")
+                    ui.space()
+                    ui.button(icon="close", on_click=self.dialog.close).props(
+                        "flat round dense color=wc-text"
+                    ).mark("settings-close")
+                with ui.tab_panels(tabs, value=categories[0][0]).props("animated"):
+                    contents = {
+                        key: self._build_category(key, title, sections)
+                        for key, title, _, sections in categories
+                    }
+        self._tour_box = contents["getting-started"]
+        tabs.on_value_change(lambda e: self._open_category(e.value, help_menu))
 
         simulation_state.notify_changed()
-        return self.dialog
 
-    def _build_shortcuts(self, help_menu: Any) -> None:
+    @staticmethod
+    def _build_category(
+        key: str, title: str, sections: list[Callable[[], None]]
+    ) -> ui.column:
+        with ui.tab_panel(key), ui.column().classes("settings-content") as content:
+            ui.label(title).classes("settings-group-heading").mark(
+                f"settings-group-{key}"
+            )
+            for section in sections:
+                section()
+        return content
+
+    def _build_shortcuts_box(self) -> None:
         self._shortcuts_box = ui.column().classes("w-full")
-        self._refresh_shortcuts(help_menu)
 
-    def _refresh_shortcuts(self, help_menu: Any) -> None:
-        if self._shortcuts_box is None:
-            return
-        self._shortcuts_box.clear()
-        with self._shortcuts_box:
-            help_menu._build_keybindings_content()
+    def _open_category(self, key: str, help_menu: HelpMenu) -> None:
+        """Build Shortcuts and Getting started when they are opened.
 
-    def _build_getting_started(self, help_menu: Any) -> None:
+        Bindings register after the page is built and the jog keys'
+        descriptions follow the inversion switches, so the shortcuts table is
+        redrawn every time; the tour is built once.
+        """
+        if key == "shortcuts" and self._shortcuts_box is not None:
+            self._shortcuts_box.clear()
+            with self._shortcuts_box:
+                help_menu._build_keybindings_content()
+        elif key == "getting-started" and self._tour_box is not None:
+            with self._tour_box:
+                self._build_getting_started(help_menu)
+            self._tour_box = None
+
+    def _build_getting_started(self, help_menu: HelpMenu) -> None:
         with ui.row().classes("w-full items-center no-wrap gap-2"):
             ui.label("A tour of the interface, one step at a time.").classes(
                 "wc-caption text-wc-text-muted"

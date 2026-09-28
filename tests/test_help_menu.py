@@ -4,10 +4,19 @@ import asyncio
 
 import pytest
 from nicegui import app as ng_app
+from nicegui import ui
 from nicegui.testing import User
+from nicegui.testing.user_interaction import UserInteraction
 
 from waldo_commander.components.help_menu import HelpMenu
 from waldo_commander.state import ui_state
+
+
+def _settings_button(user: User, label: str) -> UserInteraction:
+    """The tour's buttons in Settings, not the first-visit tour's."""
+    dialog = ui_state.settings_content.dialog
+    found = user.find(kind=ui.button, content=label).elements
+    return UserInteraction(user, {b for b in found if dialog in b.ancestors()}, label)
 
 
 async def _open_settings(user: User, category: str) -> None:
@@ -59,11 +68,11 @@ class TestTutorialStepper:
         await _open_settings(user, "getting-started")
 
         for _ in range(3):  # 4 steps total, need 3 Next clicks
-            user.find("Next").click()
+            _settings_button(user, "Next").click()
             await asyncio.sleep(0)
 
         await user.should_see("Toggle digital outputs")
-        user.find("Finish").click()
+        _settings_button(user, "Finish").click()
         await asyncio.sleep(0)
         assert not ui_state.settings_content.dialog.value
 

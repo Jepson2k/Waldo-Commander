@@ -12,6 +12,7 @@ against the real par6 runtime in ``test_par6_backend.py``.
 """
 
 import asyncio
+import contextlib
 
 import pytest
 import waldoctl
@@ -38,7 +39,7 @@ def _classes(user: User, marker: str) -> list[str]:
 async def _open_diagnostics(user: User) -> None:
     await user.open("/")
     await wait_for_app_ready()
-    user.find(marker="tab-diagnostics").click()
+    user.find(marker="footer-events").click()
     await asyncio.sleep(0)
     await user.should_see(marker="diagnostics-panel")
 
@@ -117,12 +118,13 @@ async def test_drive_faults_appear_without_analog_readings(user: User) -> None:
 async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
     user: User,
 ) -> None:
-    """One warning, from the footer count on a shut panel to a cleared log.
+    """Entries from the footer count on a shut panel to a cleared log.
 
     A one-line strip could only ever show the title, which is the half that
     does not say what to do about the condition; the panel has room for the
     cause, the effect and the remedy. And nobody opens a panel they have no
-    reason to open, so an entry that lands behind a shut one has to say so.
+    reason to open, so an entry that lands behind a shut one has to say so,
+    at the worst severity still unread.
     """
     await user.open("/")
     await wait_for_app_ready()
@@ -136,7 +138,7 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
         effect="motion refused",
         remedy="check the bus wiring",
     )
-    assert robot_events.unread == 1
+    assert robot_events.unread_severity == "warning"
     await poll_until(
         lambda: _text(user, "footer-warnings"),
         lambda t: t == "1",
@@ -144,11 +146,29 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
         what="the footer's warning count",
     )
     assert _text(user, "footer-errors") == "0"
-    assert await wait_until(lambda: "has-unread" in _classes(user, "footer-events")), (
-        "an unseen entry tints the footer button"
+    assert await wait_until(
+        lambda: "unread-warning" in _classes(user, "footer-events")
+    ), "an unseen entry tints the footer button"
+
+    robot_events.add(code=61, title="Bus off", severity="error")
+    assert await wait_until(
+        lambda: "unread-error" in _classes(user, "footer-events")
+    ), "an unseen error tints it red"
+    robot_events.add(code=62, title="CAN stale again")
+    # The counts and the tint refresh in the same binding pass.
+    await poll_until(
+        lambda: _text(user, "footer-warnings"),
+        lambda t: t == "2",
+        timeout_s=3.0,
+        what="the second warning",
+    )
+    classes = _classes(user, "footer-events")
+    assert "unread-error" in classes and "unread-warning" not in classes, (
+        "a warning after an unseen error must not hide the error",
+        classes,
     )
 
-    user.find(marker="tab-diagnostics").click()
+    user.find(marker="footer-events").click()
     await asyncio.sleep(0)
     await user.should_see(marker="diagnostics-panel")
     for part in (
@@ -158,12 +178,13 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
         "check the bus wiring",
     ):
         await user.should_see(part)
-    assert await wait_until(lambda: robot_events.unread == 0), (
+    assert await wait_until(lambda: robot_events.unread_severity == ""), (
         "rendering the log to an open panel is what marks it read"
     )
     assert await wait_until(
-        lambda: "has-unread" not in _classes(user, "footer-events")
-    ), "and the tint goes with the unread count"
+        lambda: not {"unread-warning", "unread-error"}
+        & set(_classes(user, "footer-events"))
+    ), "and the tint goes with it"
 
     user.find(marker="diag-clear-events").click()
     await asyncio.sleep(0)
@@ -202,6 +223,12 @@ async def test_a_condition_this_backend_reports_reaches_the_log(
     assert remedy, "the remedy is the half that says what to do about it"
     assert severity == "error", "a standing error is counted as one"
     assert robot_events.errors == 1 and robot_events.warnings == 0
+
+    # A latched error has stopped the backend, and the headline says so in
+    # the backend's own words rather than "Running normally" above the log.
+    user.find(marker="footer-events").click()
+    await asyncio.sleep(0)
+    await _settle(user, "diag-verdict", lambda t: t == f"Stopped — {title}")
 
     # The refused move is the point of the test, and the controller logs it at
     # ERROR. Drop just that record so the fixture's blanket ERROR check still
@@ -245,3 +272,86 @@ async def test_the_verdict_names_what_is_wrong(user: User) -> None:
     page.update()
     await asyncio.sleep(0)
     assert _text(user, "diag-verdict").startswith("Running"), "and it clears again"
+
+    # The backend's own warnings come first: they name the condition, where
+    # an inferred reading only names a symptom. Read back before yielding,
+    # since the next status frame republishes this backend's empty list.
+    status = waldoctl.commander.status
+    status.warnings.entries = [
+        waldoctl.RobotError(-1, 60, "Gripper slow to answer", "", "", "")
+    ]
+    page.update()
+    assert _text(user, "diag-verdict") == "Running degraded — Gripper slow to answer"
+    status.warnings.entries = []
+
+    # A CAN bus that is error-passive still carries traffic: degraded, not
+    # stopped, however the backend spells the state.
+    status.link_health.state = "ERROR_PASSIVE"
+    page.update()
+    assert _text(user, "diag-verdict").startswith("Running degraded")
+    link = next(iter(user.find(marker="diag-link-state").elements))
+    assert "diag-warn" in link.classes
+    status.link_health.state = ""
+    page.update()
+    assert _text(user, "diag-verdict").startswith("Running")
+
+
+@pytest.mark.integration
+async def test_the_verdict_goes_stale_when_status_stops(user: User) -> None:
+    """Every reading is the last one heard once status stops arriving, and
+    a green "Running normally" over them claims a robot nobody can see."""
+    await _open_diagnostics(user)
+    await _settle(user, "diag-verdict", lambda t: t.startswith("Running"))
+
+    consumer = next(
+        t
+        for t in asyncio.all_tasks()
+        if getattr(t.get_coro(), "__qualname__", "") == "_status_consumer"
+    )
+    consumer.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await consumer
+
+    await _settle(user, "diag-verdict", lambda t: t.startswith("No status for"))
+    verdict = next(iter(user.find(marker="diag-verdict").elements))
+    assert "diag-fault" in verdict.classes
+
+
+@pytest.mark.integration
+async def test_drive_readings_that_stop_arriving_read_unknown(user: User) -> None:
+    """A backend that stops reporting its drives leaves nothing to show, and
+    the last temperature and fault it sent are no longer true."""
+    await _open_diagnostics(user)
+    page = ui_state.diagnostics_page
+    health = waldoctl.commander.status.drive_health
+    joints = ui_state.active_robot.joints.count
+
+    # Written and read without yielding: the next status frame republishes
+    # this backend's own drive health.
+    health.temperatures_c = [41.0] * joints
+    health.faults = [("overcurrent",)] + [()] * (joints - 1)
+    page.update()
+    assert _text(user, "diag-drive-temp-1") == "41"
+    assert _text(user, "diag-drive-fault-1") == "overcurrent"
+
+    health.temperatures_c = []
+    health.currents_ma = []
+    health.faults = []
+    page.update()
+    assert _text(user, "diag-drive-temp-1") == "—"
+    assert _text(user, "diag-drive-fault-1") == "—"
+
+
+def test_the_overrun_rate_counts_only_what_this_page_watched() -> None:
+    """The controller's count runs from its own boot; a page that opens an
+    hour later and divides that total by its own age reports a rate that
+    never happened."""
+    from waldo_commander.components.diagnostics import _OverrunRate
+
+    rate = _OverrunRate()
+    assert rate.per_minute(500, now=100.0) is None, "one sample is no rate"
+    assert rate.per_minute(500, now=160.0) == 0.0
+    assert rate.per_minute(503, now=220.0) == pytest.approx(1.5)
+    # A controller restart starts its count again, and the rate with it.
+    assert rate.per_minute(2, now=230.0) is None
+    assert rate.per_minute(4, now=290.0) == pytest.approx(2.0)

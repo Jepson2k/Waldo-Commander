@@ -54,6 +54,7 @@ _LAYERS = (
     ("com_visible", "Centre of mass", "layer-com"),
 )
 _LAYER_PREFS = "preview_layers"
+_SPEED_FILL = "color=wc-control text-color=wc-text"
 
 
 def layers_available(dry_run) -> dict[str, bool]:
@@ -256,15 +257,19 @@ class PlaybackController:
                 ui.fab_action(
                     "sym_o_speed_0_5x",
                     on_click=lambda: self._set_speed(0.5),
-                ).mark("editor-speed-half")
+                ).props(_SPEED_FILL).mark("editor-speed-half")
                 ui.fab_action(
                     "1x_mobiledata",
                     on_click=lambda: self._set_speed(1.0),
-                ).mark("editor-speed-normal")
-                self._speed_2x = ui.fab_action(
-                    "sym_o_speed_2x",
-                    on_click=lambda: self._set_speed(2.0),
-                ).mark("editor-speed-double")
+                ).props(_SPEED_FILL).mark("editor-speed-normal")
+                self._speed_2x = (
+                    ui.fab_action(
+                        "sym_o_speed_2x",
+                        on_click=lambda: self._set_speed(2.0),
+                    )
+                    .props(_SPEED_FILL)
+                    .mark("editor-speed-double")
+                )
             ui.timer(0.5, self._refresh_execution_speed)
             self.sync_mode()
 
@@ -380,9 +385,13 @@ class PlaybackController:
         recording = is_any_program_recording()
         if self.record_btn:
             if recording:
-                self.record_btn.classes(add="recording")
+                self.record_btn.classes(add="recording").props(
+                    "color=wc-record text-color=wc-on-fill"
+                )
             else:
-                self.record_btn.classes(remove="recording")
+                self.record_btn.classes(remove="recording").props(
+                    "color=wc-control text-color=wc-text"
+                )
         if self._record_btn_tooltip:
             self._record_btn_tooltip.text = (
                 "Stop Recording" if recording else "Start Recording"
@@ -471,23 +480,26 @@ class PlaybackController:
         — the GUI play button and the MCP ``execution.pause/resume`` tools —
         must go through here, or the play button desyncs from the subprocess."""
         prog = self._play_program()
-        if playing:
-            await script_exec.signal_play()
-            if prog is not None:
-                prog.dry_run.playback.is_playing = True
-            logger.debug("Script playing")
-        else:
-            try:
-                await script_exec.signal_pause()
-                logger.debug("Script paused")
-            finally:
-                # The subprocess is held before the controller's pause is
-                # requested, so the button has to show a held program even when
-                # that request goes unconfirmed -- otherwise it offers to pause
-                # a program that is already stopped at its next command.
+        try:
+            if playing:
+                await script_exec.signal_play()
                 if prog is not None:
-                    prog.dry_run.playback.is_playing = False
-        simulation_state.notify_changed()
+                    prog.dry_run.playback.is_playing = True
+                logger.debug("Script playing")
+            else:
+                try:
+                    await script_exec.signal_pause()
+                    logger.debug("Script paused")
+                finally:
+                    # The subprocess is held before the controller's pause is
+                    # requested, so the button has to show a held program even
+                    # when that request goes unconfirmed -- otherwise it offers
+                    # to pause a program that is already stopped at its next
+                    # command.
+                    if prog is not None:
+                        prog.dry_run.playback.is_playing = False
+        finally:
+            simulation_state.notify_changed()
 
     async def toggle_play(self, *, control_verified: bool = False) -> None:
         """Toggle play/pause for script execution or simulation playback.
@@ -1179,18 +1191,16 @@ class PlaybackController:
         if self.play_btn:
             playing = (script_running and play_is_playing) or active_is_active
             if playing:
-                self.play_btn.props("icon=pause color=wc-run text-color=wc-on-bright")
+                self.play_btn.props("icon=pause")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Pause (Space)"
             else:
-                self.play_btn.props(
-                    "icon=play_arrow color=wc-run text-color=wc-on-bright"
-                )
+                self.play_btn.props("icon=play_arrow")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Play (Space)"
 
         if self.stop_btn:
-            self.stop_btn.set_visibility(script_running)
+            self.stop_btn.set_visibility(script_exec.active)
 
         total_steps = active.dry_run.total_steps if active is not None else 0
         has_steps = total_steps > 0

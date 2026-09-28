@@ -8,6 +8,8 @@ from waldoctl.setup import SetupSnapshot
 from waldoctl.signals import DigitalSignal
 
 from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.services.motion_guard import MotionBusy, motion_guard
+from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.skills.signals import read_signal, write_signal
 from waldo_commander.state import ui_state
 
@@ -42,11 +44,7 @@ class DeviceSignalEditor:
                     .mark("signal-name")
                 )
                 self.existing = (
-                    ui.select(
-                        [],
-                        label="Saved in setup",
-                        on_change=lambda e: self.load(e.value),
-                    )
+                    ui.select([], label="Saved in setup")
                     .props("dense")
                     .classes("flex-1 min-w-0")
                     .mark("signal-existing")
@@ -81,7 +79,7 @@ class DeviceSignalEditor:
             )
             with ui.row():
                 ui.button("Keep mapping", on_click=self.set_mapping).props(
-                    "dense"
+                    "dense color=wc-action text-color=wc-on-bright"
                 ).mark("signal-set")
                 ui.button("Remove mapping", on_click=self.remove).props(
                     "dense flat"
@@ -179,11 +177,19 @@ class DeviceSignalEditor:
             self.message.set_text(str(error))
 
     async def write(self) -> None:
-        if not require_browser_control(ui_state.active_client_id):
-            return
+        page_id = ui_state.active_client_id
         try:
+            if (busy := motion_guard.busy_reason()) is not None:
+                raise MotionBusy(busy)
+            mapping = self.mapping()
+            value = self.output_value.value
+            if not require_browser_control(page_id):
+                return
             observation = await write_signal.async_call(
-                self.commander.client, self.mapping(), self.output_value.value
+                motion_guard.guarded(self.commander.client, page_id), mapping, value
+            )
+            motion_recorder.record_action(
+                "io", port=mapping.index, state=mapping.encode(value)
             )
             self.message.set_text(
                 f"Controller reports logical output: {observation.value}"
