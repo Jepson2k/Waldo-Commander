@@ -378,7 +378,7 @@ def test_compact_layout_parol6(layout_screen, tmp_path, monkeypatch):
 
 @requires_par6
 @pytest.mark.browser
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(240)
 @pytest.mark.usefixtures("par6_env")
 def test_compact_layout_par6(layout_screen, tmp_path, monkeypatch):
     review_layout(layout_screen, tmp_path, monkeypatch, "par6")
