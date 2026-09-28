@@ -77,6 +77,9 @@ SAMPLE_KWARGS: dict[str, dict] = {
 
 
 def _call(client: PathPreviewClient, name: str):
+    if name == "tool_action":
+        # Like the controller, the preview refuses actions on an unfitted tool.
+        assert client.wait_command(client.select_tool("SSG-48"))
     return getattr(client, name)(
         *SAMPLE_ARGS.get(name, ()), **SAMPLE_KWARGS.get(name, {})
     )
