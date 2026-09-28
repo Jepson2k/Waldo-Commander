@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from nicegui import app, ui, run
+from nicegui import app, background_tasks, run
 from nicegui.events import SceneClipPlane
 
 import waldoctl
@@ -337,7 +337,8 @@ class WorkspaceEnvelope:
                     self.reset()
                     self.generate(tool_offset_z=pending)
 
-        ui.timer(0.0, start_background_generation, once=True)
+        # Tool readback can request regeneration outside a page's slot stack.
+        background_tasks.create(start_background_generation(), name="workspace-hull")
         return True
 
     def generate_sync(
