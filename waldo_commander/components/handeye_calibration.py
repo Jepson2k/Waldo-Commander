@@ -67,12 +67,6 @@ FRUSTUM_DEPTH_MM = 120.0
 _QUALITY_RMS_PX = (1.0, 2.0)
 _QUALITY_SPREAD_MM = (2.0, 5.0)
 
-STEPS: tuple[tuple[str, str], ...] = (
-    ("board", "Board"),
-    ("views", "Views"),
-    ("save", "Save"),
-)
-
 _SECTOR_PHRASE = {
     "up": "from above",
     "down": "from below",
@@ -264,7 +258,6 @@ class HandEyeCalibrationPanel(Panel):
         self._solve_error: str | None = None
         self._method = "PARK"
         self._result: handeye.HandEyeResult | None = None
-        self._coverage: handeye.Coverage | None = None
         self._last_detection: handeye.Detection | None = None
         self._detect_busy = False
         self._decode_failures = 0
@@ -288,6 +281,9 @@ class HandEyeCalibrationPanel(Panel):
         self._ring: _CoverageRing | None = None
         self._views_expand: ui.expansion | None = None
         self._views_grid: ui.element | None = None
+        self._view_tiles: list[
+            tuple[handeye.HandEyeSample, ui.element, ui.tooltip]
+        ] = []
         self._diversity_label: ui.label | None = None
         self._step_headers: dict[str, ui.button] = {}
         self._step_icons: dict[str, ui.icon] = {}
@@ -330,21 +326,18 @@ class HandEyeCalibrationPanel(Panel):
                     "selected_tool",
                     lambda t: f"Tool: {t}" if t and t != "NONE" else "No tool",
                 ).classes("text-caption text-wc-text-muted")
-            for key, name in STEPS:
+            steps = (
+                ("board", "Board", self._build_board_step),
+                ("views", "Views", self._build_views_step),
+                ("save", "Save", lambda: self._build_save_section(commander)),
+            )
+            for key, name, builder in steps:
                 self._build_step_header(key, name)
                 self._step_bodies[key] = ui.column().classes(
                     "handeye-step-body w-full gap-2"
                 )
                 with self._step_bodies[key]:
-                    if key == "board":
-                        self._build_camera_hint()
-                        self._build_mount_controls()
-                        self._build_board_section()
-                    elif key == "views":
-                        self._build_camera_section()
-                        self._build_views_section()
-                    else:
-                        self._build_save_section(commander)
+                    builder()
 
         ui.timer(DETECT_INTERVAL_S, self._detect_tick)
         self._advanced = bool(self._samples)
@@ -370,6 +363,8 @@ class HandEyeCalibrationPanel(Panel):
                 .mark(f"handeye-step-summary-{key}")
             )
         self._step_headers[key] = button
+        # A refresh earlier in the build never wrote this header.
+        self._last_stage = None
 
     def _open_step(self, key: str) -> None:
         self._step = key
@@ -381,6 +376,15 @@ class HandEyeCalibrationPanel(Panel):
             else:
                 header.classes(remove="handeye-step-open")
         self._refresh_stage()
+
+    def _build_board_step(self) -> None:
+        self._build_camera_hint()
+        self._build_mount_controls()
+        self._build_board_section()
+
+    def _build_views_step(self) -> None:
+        self._build_camera_section()
+        self._build_views_section()
 
     def _build_camera_hint(self) -> None:
         self._camera_hint = ui.row().classes("items-center")
@@ -694,8 +698,7 @@ class HandEyeCalibrationPanel(Panel):
         return "solves when the run ends" if self._auto_running else "solving…"
 
     def _refresh_stage(self) -> None:
-        """Icons and summaries of the three headers. Driven from the
-        detection timer too, so it writes only on change."""
+        """Icons and summaries of the three headers, written only on change."""
         done = {
             "board": camera_service.active or bool(self._samples),
             "views": len(self._samples) >= SOLVE_MIN_SAMPLES,
@@ -758,14 +761,15 @@ class HandEyeCalibrationPanel(Panel):
             if hint != self._last_hint_text:
                 self._last_hint_text = hint
                 self._camera_hint_label.set_text(hint)
-        if active and not self._camera_was_active and self._image is not None:
-            # Force the browser to reconnect the MJPEG stream.
-            self._image.set_source(f"/tool/camera/stream?t={time.time()}")
-        self._camera_was_active = active
+        if active != self._camera_was_active:
+            if active and self._image is not None:
+                # Force the browser to reconnect the MJPEG stream.
+                self._image.set_source(f"/tool/camera/stream?t={time.time()}")
+            self._camera_was_active = active
+            self._refresh_stage()
 
     async def _detect_tick(self) -> None:
         self._set_camera_visibility(camera_service.active)
-        self._refresh_stage()
         self._refresh_auto_ui()
         if _selected_tool_key() != self._last_stored_tool:
             self._refresh_stored()
@@ -829,23 +833,9 @@ class HandEyeCalibrationPanel(Panel):
 
     # --------------------------------------------------------------- capture
 
-    async def _capture(self) -> bool:
-        """One view from the current pose; False when refused. Needs no UI
-        context: the refusal is logged, not shown."""
-        if self._auto_running:
-            logger.info("Capture refused: auto-calibration is running")
-            return False
-        try:
-            await self._capture_sample()
-        except _CaptureRefused as e:
-            logger.info("Capture refused: %s", e)
-            return False
-        return True
-
     async def _capture_sample(self) -> None:
         """Take one stationary (TCP pose, fresh frame) sample, or raise
-        :class:`_CaptureRefused`. Shared by :meth:`_capture` and the
-        auto-calibration run."""
+        :class:`_CaptureRefused`. Needs no UI context."""
         commander = self._commander
         if commander is None:
             raise _CaptureRefused("Panel is not connected to a robot", fatal=True)
@@ -875,9 +865,10 @@ class HandEyeCalibrationPanel(Panel):
         frame = handeye.decode_jpeg(observation.jpeg)
         if frame is None:
             raise _CaptureRefused("No camera frame available")
-        detection = await run.io_bound(handeye.detect_board, frame, self._detector)
-        if detection is None:
+        analysis = await run.io_bound(handeye.analyse_view, frame, self._detector)
+        if analysis is None:
             raise _CaptureRefused("Board not detected in the captured frame")
+        detection, cells, tilt = analysis
         if (
             self._samples
             and detection.image_size != self._samples[0].detection.image_size
@@ -919,8 +910,8 @@ class HandEyeCalibrationPanel(Panel):
                 detection,
                 observation.received_at,
                 thumbnail=handeye.thumbnail_jpeg(frame),
-                cells=handeye.view_cells(detection, detection.image_size),
-                tilt=handeye.view_tilt(detection, self._spec, detection.image_size),
+                cells=cells,
+                tilt=tilt,
             )
         )
         self._sample_revision += 1
@@ -965,8 +956,7 @@ class HandEyeCalibrationPanel(Panel):
         if self._sample_count is not None:
             self._sample_count.set_text(f"{n} of {TARGET_VIEWS} views")
         flags = self._view_flags()
-        cov = handeye.coverage(self._samples, self._spec)
-        self._coverage = cov
+        cov = handeye.coverage(self._samples)
         if self._ring is not None:
             self._ring.update(cov, n, TARGET_VIEWS)
         if self._diversity_label is not None:
@@ -975,32 +965,51 @@ class HandEyeCalibrationPanel(Panel):
             self._views_expand.set_text(
                 f"{n} captured view{'s' if n != 1 else ''}" if n else "Captured views"
             )
-        if self._views_grid is not None:
-            self._views_grid.clear()
-            with self._views_grid:
-                for i, sample in enumerate(self._samples):
-                    kind, why = flags.get(i, ("", ""))
-                    with ui.element("div").classes(
-                        "handeye-view" + (f" handeye-view-{kind}" if kind else "")
-                    ):
-                        if sample.thumbnail:
-                            ui.image(
-                                "data:image/jpeg;base64,"
-                                + base64.b64encode(sample.thumbnail).decode()
-                            )
-                        ui.label(str(i + 1)).classes("handeye-view-index")
-                        ui.button(
-                            icon="close",
-                            on_click=lambda _, idx=i: self._delete_sample(idx),
-                        ).props("flat dense round size=xs").mark(
-                            f"handeye-sample-del-{i}"
-                        )
-                        ui.tooltip(
-                            f"View {i + 1}: {len(sample.detection.corners)} corners"
-                            + (f", {why}" if why else "")
-                        )
+        self._refresh_views(flags)
         self._schedule_solve()
         self._refresh_stage()
+
+    def _refresh_views(self, flags: dict[int, tuple[str, str]]) -> None:
+        """The thumbnails: a capture appends one and a changed list rebuilds
+        them; otherwise only their flags change, so a solve restyles in place."""
+        if self._views_grid is None:
+            return
+        tiles = self._view_tiles
+        if len(tiles) > len(self._samples) or any(
+            shown is not sample
+            for (shown, _, _), sample in zip(tiles, self._samples, strict=False)
+        ):
+            self._views_grid.clear()
+            tiles.clear()
+        with self._views_grid:
+            for i in range(len(tiles), len(self._samples)):
+                tiles.append(self._build_view_tile(i, self._samples[i]))
+        for i, (sample, tile, tooltip) in enumerate(tiles):
+            kind, why = flags.get(i, ("", ""))
+            tile.classes(
+                replace="handeye-view" + (f" handeye-view-{kind}" if kind else "")
+            )
+            tooltip.set_text(
+                f"View {i + 1}: {len(sample.detection.corners)} corners"
+                + (f", {why}" if why else "")
+            )
+
+    def _build_view_tile(
+        self, i: int, sample: handeye.HandEyeSample
+    ) -> tuple[handeye.HandEyeSample, ui.element, ui.tooltip]:
+        with ui.element("div").classes("handeye-view") as tile:
+            if sample.thumbnail:
+                ui.image(
+                    "data:image/jpeg;base64,"
+                    + base64.b64encode(sample.thumbnail).decode()
+                )
+            ui.label(str(i + 1)).classes("handeye-view-index")
+            ui.button(
+                icon="close",
+                on_click=lambda _, idx=i: self._delete_sample(idx),
+            ).props("flat dense round size=xs").mark(f"handeye-sample-del-{i}")
+            tooltip = ui.tooltip()
+        return sample, tile, tooltip
 
     def _hint(self, cov: handeye.Coverage, flags: dict[int, tuple[str, str]]) -> str:
         """Where the next view should come from, while views are still
@@ -1383,12 +1392,14 @@ class HandEyeCalibrationPanel(Panel):
 
     def _refresh_auto_ui(self) -> None:
         """Swap the Auto-capture button into a Stop button while the run is
-        active. Driven from the detection timer, so it also restores the idle
-        state after a page reload mid-run."""
+        active, and refresh the headers when that changes. Driven from the
+        detection timer, so it also restores the idle state after a page
+        reload mid-run."""
         running = self._auto_running
         if self._auto_btn is None or running == self._last_auto_running:
             return
         self._last_auto_running = running
+        self._refresh_stage()
         if running:
             self._auto_btn.set_text("Stop")
             self._auto_btn.props("icon=stop color=wc-control text-color=wc-error")

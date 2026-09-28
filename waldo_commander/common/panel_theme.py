@@ -113,8 +113,7 @@ def inject_panel_css() -> None:
 .handeye-coverage .cov-1 { background: var(--wc-progress); opacity: .4; }
 .handeye-coverage .cov-2 { background: var(--wc-progress); opacity: .7; }
 .handeye-coverage .cov-3 { background: var(--wc-progress); }
-.handeye-coverage .handeye-coverage-next { background: var(--wc-warning-fill); animation: handeye-glow var(--wc-duration-ambient) var(--wc-ease-loop) infinite alternate; }
-@keyframes handeye-glow { from { opacity: .35; } to { opacity: .9; } }
+.handeye-coverage .handeye-coverage-next { background: var(--wc-warning-fill); animation: wc-glow-breathe var(--wc-duration-ambient) var(--wc-ease-loop) infinite; }
 .handeye-views { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; padding: 4px 0; }
 .handeye-view { position: relative; aspect-ratio: 4 / 3; border: 1px solid var(--wc-glass-border); border-radius: 3px; overflow: hidden; background: var(--wc-scene-bg); }
 .handeye-view .q-img { position: absolute; inset: 0; height: 100%; }

@@ -1758,7 +1758,7 @@ body:has(.bottom-panel:not(.hidden)) .panels-wrap.column-open .top-panels-contai
 @media (prefers-reduced-motion: reduce) {
   .control-glow-breathe, .ai-cluster .btn-take-control, .recording-notification .q-notification__icon,
   .record-btn.recording .q-icon, .robot-face-happy svg, .robot-face-neutral svg, .robot-face-sad svg,
-  .tab-flash, .cm-line.cm-line-flash { animation: none !important; }
+  .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next { animation: none !important; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
 }
 """

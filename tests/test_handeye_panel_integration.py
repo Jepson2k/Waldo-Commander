@@ -42,6 +42,7 @@ from waldo_commander.components.handeye_calibration import (
     TARGET_VIEWS,
     STATIONARY_SPEED_DEG_S,
     HandEyeCalibrationPanel,
+    _CaptureRefused,
 )
 from waldo_commander.services import handeye
 from waldo_commander.services.camera_service import camera_service
@@ -294,7 +295,7 @@ async def test_handeye_panel_workflow(
             )
             await user.should_see("Board detected")
             n_before = len(panel._samples)
-            assert await panel._capture(), f"capture {i + 1} was refused"
+            await panel._capture_sample()
             assert len(panel._samples) == n_before + 1
             return frame
 
@@ -314,8 +315,8 @@ async def test_handeye_panel_workflow(
                     "cov-1" in element(f"handeye-coverage-cell-{c}").classes
                     for c in sample.cells
                 )
-                cov = panel._coverage
-                assert cov is not None and cov.next_sector is not None
+                cov = handeye.coverage(panel._samples)
+                assert cov.next_sector is not None
                 glowing = [
                     k
                     for k in range(len(handeye.SECTORS))
@@ -519,7 +520,7 @@ async def test_handeye_panel_workflow(
             timeout=15.0,
             message="detect tick did not report the board after the reload",
         )
-        assert await panel._capture(), "a capture after the page reload was refused"
+        await panel._capture_sample()
         n_views += 1
         assert len(panel._samples) == n_views
         # The rebuilt panel solves the enlarged set by itself too.
@@ -544,7 +545,8 @@ async def test_handeye_panel_workflow(
             message="detect tick did not clear the board",
         )
         await user.should_see("No board detected")
-        assert not await panel._capture()
+        with pytest.raises(_CaptureRefused):
+            await panel._capture_sample()
         assert len(panel._samples) == n_views
     except BaseException:
         import traceback
@@ -691,8 +693,7 @@ async def test_handeye_auto_calibration(
         # board is pitched 40°), the rolls spread them over more than one
         # sector and more than one frame cell, the rim is full exactly when
         # the whole set was captured, and the headers carry count and fit.
-        cov = panel._coverage
-        assert cov is not None
+        cov = handeye.coverage(panel._samples)
         assert (
             sum(cov.sectors)
             == len(panel._samples)

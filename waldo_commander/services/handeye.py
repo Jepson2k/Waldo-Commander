@@ -193,7 +193,7 @@ class HandEyeSample:
     detection: Detection
     timestamp: float
     thumbnail: bytes | None = None  # small JPEG of the captured frame
-    cells: frozenset[int] = frozenset()  # view_cells at capture; empty = not computed
+    cells: frozenset[int] = frozenset()  # view_cells at capture
     tilt: str | None = None  # view_tilt at capture
 
 
@@ -201,6 +201,9 @@ class HandEyeSample:
 # of cells, and the direction the camera views the board from as one of eight
 # 45-degree sectors, named from the camera's image (x right, y down).
 TILT_MIN_DEG = 5.0
+# Corners this close to one line (the spread across it over the spread along
+# it) fix no tilt: IPPE returns NaN or an arbitrary rotation for them.
+COLLINEAR_RATIO = 0.02
 SECTORS: tuple[str, ...] = (
     "right",
     "down-right",
@@ -267,31 +270,37 @@ def view_cells(detection: Detection, image_size: tuple[int, int]) -> frozenset[i
 
 
 def view_tilt(
-    detection: Detection, spec: BoardSpec, image_size: tuple[int, int]
+    detection: Detection, board: cv2.aruco.CharucoBoard, image_size: tuple[int, int]
 ) -> str | None:
     """The side the camera views the board from, as a sector name, or None
-    within ``TILT_MIN_DEG`` of straight on.
+    within ``TILT_MIN_DEG`` of straight on or when the corners fix no tilt.
 
     Solved against a nominal camera matrix (focal length = the frame's long
     side) because no intrinsics exist before the solve: a wrong focal length
     biases the tilt magnitude but leaves its direction intact.
     """
-    obj, img = make_board(spec).matchImagePoints(
+    obj, img = board.matchImagePoints(
         cast("Sequence[cv2.typing.MatLike]", detection.corners), detection.ids
     )
     if obj is None or img is None or len(obj) < 4:
+        return None
+    points = np.asarray(img, dtype=np.float64).reshape(-1, 2)
+    if not np.all(np.isfinite(points)):
+        return None
+    spread = np.linalg.svd(points - points.mean(axis=0), compute_uv=False)
+    if spread[1] <= COLLINEAR_RATIO * spread[0]:
         return None
     w, h = image_size
     f = float(max(w, h))
     K = np.array([[f, 0.0, w / 2.0], [0.0, f, h / 2.0], [0.0, 0.0, 1.0]])
     ok, rvec, _tvec = cv2.solvePnP(
         np.asarray(obj, dtype=np.float64),
-        np.asarray(img, dtype=np.float64),
+        points,
         K,
         np.zeros(5),
         flags=cv2.SOLVEPNP_IPPE,
     )
-    if not ok:
+    if not ok or not np.all(np.isfinite(rvec)) or not np.all(np.isfinite(_tvec)):
         return None
     zx, zy, zz = (float(v) for v in cv2.Rodrigues(rvec)[0][:, 2])
     if math.degrees(math.acos(min(abs(zz), 1.0))) < TILT_MIN_DEG:
@@ -301,22 +310,32 @@ def view_tilt(
     return SECTORS[round(math.degrees(math.atan2(zy, zx)) / 45.0) % 8]
 
 
-def coverage(samples: Sequence[HandEyeSample], spec: BoardSpec) -> Coverage:
-    """Per-cell and per-sector view counts, using what a sample stored at
-    capture and computing it for samples that carry nothing."""
+def analyse_view(
+    image_bgr: np.ndarray, detector: cv2.aruco.CharucoDetector
+) -> tuple[Detection, frozenset[int], str | None] | None:
+    """The board in a frame with the cells and tilt it was seen from, or None
+    when no board is found."""
+    detection = detect_board(image_bgr, detector)
+    if detection is None:
+        return None
+    size = detection.image_size
+    return (
+        detection,
+        view_cells(detection, size),
+        view_tilt(detection, detector.getBoard(), size),
+    )
+
+
+def coverage(samples: Sequence[HandEyeSample]) -> Coverage:
+    """Per-cell and per-sector view counts from what each sample stored at
+    capture."""
     cells = [0] * len(CELLS)
     sectors = [0] * len(SECTORS)
     for s in samples:
-        if s.cells:
-            s_cells, tilt = s.cells, s.tilt
-        else:
-            size = s.detection.image_size
-            s_cells = view_cells(s.detection, size)
-            tilt = view_tilt(s.detection, spec, size)
-        for c in s_cells:
+        for c in s.cells:
             cells[c] += 1
-        if tilt is not None:
-            sectors[SECTORS.index(tilt)] += 1
+        if s.tilt is not None:
+            sectors[SECTORS.index(s.tilt)] += 1
     return Coverage(
         cells=tuple(cells),
         sectors=tuple(sectors),
