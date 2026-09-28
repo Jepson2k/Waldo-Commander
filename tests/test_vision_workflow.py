@@ -128,11 +128,17 @@ async def test_camera_localization_program_preview_and_session_lifetime(
         user.find(marker="editor-commands-btn").click()
         user.find(marker="editor-skill-waldo.locate_board").click()
         await asyncio.sleep(0)
-        user.find(marker="skill-insert").click()
-        await asyncio.sleep(0)
         program = waldoctl.commander.programs.active
-        assert "CameraCalibration.from_dict(" in program.source
-        assert "CommanderCameraSource()" in program.source
+        # The calibration comes from the setup by name, the camera from the
+        # session the program is launched with: no credential is written.
+        assert (
+            '_skill_waldo_locate_board(rbt, calibration=setup.cameras["overhead"], '
+            "source=CommanderCameraSource(), setup=setup," in program.source
+        ), program.source
+        assert (
+            "from waldo_commander.camera_sources import CommanderCameraSource"
+            in program.source
+        )
         assert source.token not in program.source
         error = await path_visualizer.update_path_visualization(
             program.source, tab_id=program.id

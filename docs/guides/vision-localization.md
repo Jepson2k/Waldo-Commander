@@ -31,10 +31,12 @@ with RobotClient() as rbt:
 
 With an async robot client, call
 `await locate_board.async_call(rbt, camera, source, setup)`.
-The **Skills** panel lets you select a saved calibration and setup, then
-explicitly insert their fixed snapshots and `CommanderCameraSource()` into
-Python. **Run once** opens and executes the call as a program. Its log includes
-the detection outcome and, when found, the WRF pose and corner error.
+**Locate board** in the editor's **Skills** menu writes the call with the
+setup's calibration by name, `setup.cameras["overhead"]`, the program's
+`setup` and `CommanderCameraSource()` as fields; the camera session's
+credentials never appear in the program. Select the line and choose **Run
+selection** to run it on the robot. Its log includes the detection outcome
+and, when found, the WRF pose and corner error.
 
 | Result | Meaning |
 |---|---|

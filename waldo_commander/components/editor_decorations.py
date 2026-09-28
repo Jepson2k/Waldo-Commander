@@ -291,7 +291,8 @@ class EditorDecorations:
         self._active_flashes.append((token, set(line_numbers)))
         self._apply_active_tab_decorations()
         textarea.reveal_line(max(line_numbers))
-        ui.timer(1.5, lambda t=token: self._expire_flash(t), once=True)
+        with textarea.client:
+            ui.timer(1.5, lambda t=token: self._expire_flash(t), once=True)
 
     def _expire_flash(self, token: int) -> None:
         before = len(self._active_flashes)

@@ -202,10 +202,15 @@ async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
     assert program.source == original_source, (
         "saving setup must not silently edit Python"
     )
+    # The Setup tab covers the program column, as the side tabs record.
+    ui_state.program_panel_visible = False
     user.find(marker="setup-insert-load").click()
     await message("Inserted setup load at the start of the active program")
     assert "setup = load_setup('bench')" in program.source
     assert textarea.value == program.source
+    assert "tab-flash" in ui_state._program_tab.classes, (
+        "the load lands where nobody is looking, so the program tab flashes"
+    )
 
     initial = await client.angles()
     assert initial is not None

@@ -52,8 +52,13 @@ next load, including poses in child frames. Existing loaded objects keep their
 values. A second `load_setup` explicitly loads the current saved revision.
 
 **Insert load call** inserts the named load at the start of the active stopped
-program. **Export snapshot** downloads Python containing the fixed values,
-usable without access to the saved setup. Saving setup alone never edits code.
+program and flashes it (the program tab flashes while this tab covers the
+program). While recording, it is part of the take, so **Undo** removes it with
+the rest. A skill inserted from the editor adds the same load when the program
+has none, and poses can be taught into that setup from the editor; see
+[Python skills](skills.md). **Export snapshot** downloads Python containing the
+fixed values, usable without access to the saved setup. Saving setup alone
+never edits code.
 
 Programs can also create snapshots directly:
 
@@ -69,10 +74,11 @@ pick_wrf = setup.resolve("pick").as_list()
 clearance = setup.parameters["clearance"].value
 ```
 
-The default directory is `~/.waldo-commander/setups`. Set `WALDO_SETUP_DIR` or
-pass `directory=...` to `load_setup`/`SetupStore` to select another directory.
-Commander passes its directory to launched scripts and isolated previews.
-Files use a versioned JSON format and atomic replacement. Corrupt or
+The default directory is `setups/` in Commander's program folder. Set
+`WALDO_SETUP_DIR` or pass `directory=...` to `load_setup`/`SetupStore` to
+select another directory. Commander passes its directory to launched scripts
+and isolated previews. A save replaces the module atomically, so a program or
+preview loading it mid-save reads one revision or the other. Corrupt or
 unsupported snapshots fail explicitly. Loading or saving setup issues no
 motion and does not apply robot configuration.
 
@@ -154,9 +160,9 @@ with RobotClient() as rbt:
 ```
 
 Async programs use `await wait_signal.async_call(async_rbt, ...)`, and the same
-pattern for reads and writes. The **Skills** tab can select a saved mapping and
-insert a call containing its fixed values. Editing the setup later does not
-change that inserted snapshot.
+pattern for reads and writes. A skill inserted from the editor takes a
+signal by name, `setup.signals["valve"]`, so the call uses whatever mapping
+the setup holds when the program runs.
 
 `read_signal` returns a logical value, a host receipt timestamp, and its source.
 `wait_signal` returns `matched` or `timeout` with the latest observation and

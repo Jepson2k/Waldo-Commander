@@ -154,6 +154,14 @@ def advance_active_cursor(line: int) -> None:
         dry_run.playback.active_cursor_line = line
 
 
+def shift_active_cursor(after_line: int, delta: int) -> None:
+    """Keep the tracked cursor on its text when *delta* lines go in below
+    1-indexed *after_line*. An unset cursor stays unset."""
+    dry_run = active_dry_run()
+    if dry_run is not None and dry_run.playback.active_cursor_line > after_line:
+        dry_run.playback.active_cursor_line += delta
+
+
 def _indent_unit(lines: list[str]) -> str:
     """Indent step used by the file: the first indented line's leading
     whitespace (tabs win), defaulting to 4 spaces."""

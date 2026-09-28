@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 import waldoctl
 from nicegui import Client, background_tasks, context, ui
+from nicegui.elements.codemirror.codemirror import CompletionItem
 from waldoctl import EditId, Program, ProgramTarget
 
 from waldo_commander.common.theme import effective_theme
@@ -28,11 +29,21 @@ from waldo_commander.components.simulation_engine import (
     is_default_script,
     simulation,
 )
+from waldo_commander.components.skill_library import (
+    SkillStrip,
+    _skill_labels,
+    _summary,
+    menu_skills,
+    selected_tool_preamble,
+    skill_icon,
+    skill_inserter,
+)
 from waldo_commander.constants import default_program_dir
 from waldo_commander.services import edit_decisions
 from waldo_commander.services.command_discovery import (
     discover_robot_commands,
     generate_completions_from_commands,
+    setup_completions,
 )
 from waldo_commander.services.control_lease import control_mode
 from waldo_commander.services.motion_recorder import motion_recorder, move_snippet
@@ -43,8 +54,14 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
-from waldo_commander.services.python_source import loads_setup
-from waldo_commander.setup import add_save_listener
+from waldo_commander.services.python_source import (
+    SetupBinding,
+    loads_setup,
+    preamble_statements,
+    program_setup,
+)
+from waldo_commander.services.skill_library import library
+from waldo_commander.setup import SetupStore, add_save_listener
 from waldo_commander.state import (
     simulation_state,
     ui_state,
@@ -380,7 +397,6 @@ class EditorPanel(FileOperationsMixin):
         """
         import textwrap
 
-        from waldo_commander.components.skill_library import selected_tool_preamble
         from waldo_commander.services.control_lease import require_browser_control
 
         commander = waldoctl.commander
@@ -409,7 +425,7 @@ class EditorPanel(FileOperationsMixin):
         except SyntaxError:
             imports = []
         source = (
-            "\n".join(dict.fromkeys(imports))
+            "\n".join(dict.fromkeys([*imports, *preamble_statements(text, span[0])]))
             + f"\nfrom {commander.robot.backend_package} import RobotClient\n\n"
             + "with RobotClient() as rbt:\n"
             + textwrap.indent(
@@ -632,17 +648,8 @@ class EditorPanel(FileOperationsMixin):
                                 )
 
     def _build_skills_menu(self) -> None:
-        """Skills with a form: a call with fixed arguments, drawn in the scene
-        while it is filled in."""
-        from waldo_commander.components.skill_library import (
-            _skill_labels,
-            _summary,
-            menu_skills,
-            skill_dialog,
-            skill_icon,
-        )
-        from waldo_commander.services.skill_library import library
-
+        """Skills inserted as a call whose arguments are fields to fill in,
+        drawn in the scene while the cursor is on them."""
         commander = waldoctl.commander
         entries, _ = library(commander.robot)
         keys = menu_skills(entries)
@@ -661,7 +668,9 @@ class EditorPanel(FileOperationsMixin):
                     entry = entries[key]
                     with (
                         ui.menu_item(
-                            on_click=lambda _, k=key: skill_dialog.open(commander, k)
+                            on_click=lambda _, k=key: skill_inserter.insert(
+                                commander, k
+                            )
                         )
                         .classes("text-sm")
                         .mark(f"editor-skill-{key}") as item
@@ -684,6 +693,9 @@ class EditorPanel(FileOperationsMixin):
         simulation_state.remove_change_listener(self._update_capture_button)
         motion_recorder.remove_session_listener(self._on_session_changed)
         self._drop_setup_listener()
+        for widgets in self._tab_widgets.values():
+            if widgets.get("strip") is not None:
+                widgets["strip"].hide()
         ui_state.capture_pose_tooltip = None
         self._cursor_selection = None
         self._selection_tab_id = None
@@ -811,6 +823,8 @@ class EditorPanel(FileOperationsMixin):
             motion_recorder.forget_session()
         widgets = self._tab_widgets.pop(tab_id, None)
         if widgets:
+            if widgets.get("strip") is not None:
+                widgets["strip"].hide()
             if widgets.get("tab_element"):
                 widgets["tab_element"].delete()
             if widgets.get("panel"):
@@ -988,7 +1002,7 @@ class EditorPanel(FileOperationsMixin):
                 .style("padding: 0; width: 100%; height: 100%; gap: 0;")
             )
             with panel:
-                completions = generate_completions_from_commands()
+                setup, completions = self._completions(tab.source)
 
                 # Flex-fills the panel and uses CodeMirror's own internal
                 # scrolling; min-h-0 lets it shrink within the fixed height.
@@ -1009,9 +1023,13 @@ class EditorPanel(FileOperationsMixin):
                 textarea.theme = (
                     "basicLight" if effective_theme() == "light" else "oneDark"
                 )
+                strip = SkillStrip(tab, textarea)
+                strip.row.move(target_index=0)
 
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
+            self._tab_widgets[tab.id]["strip"] = strip
+            self._tab_widgets[tab.id]["setup"] = setup
             ui_state.textareas_by_tab[tab.id] = textarea
             motion_recorder.rebind(tab.id)
 
@@ -1305,8 +1323,11 @@ class EditorPanel(FileOperationsMixin):
             for tab_id in list(self._tab_widgets):
                 if tab_id not in live_ids:
                     self._remove_tab_widgets(tab_id)
-            # Follow the active program.
+            # Follow the active program; a tab out of sight draws no skill path.
             active_id = programs.active_id
+            for tab_id, widgets in self._tab_widgets.items():
+                if tab_id != active_id and widgets.get("strip") is not None:
+                    widgets["strip"].hide()
             if active_id and active_id in self._tab_widgets:
                 self.tab_panels_container.set_value(active_id)
                 self.tabs_container.set_value(active_id)
@@ -1315,6 +1336,44 @@ class EditorPanel(FileOperationsMixin):
                 ui_state.active_filename_input = widgets.get("filename_input")
                 self._refresh_header_cluster(active_id)
             self._update_capture_button()
+
+    def skill_strip(self, tab_id: str) -> SkillStrip | None:
+        """The strip above *tab_id*'s code that follows the skill call under its cursor."""
+        return self._tab_widgets.get(tab_id, {}).get("strip")
+
+    def hide_skill_strips(self) -> None:
+        """Remove field previews when the program panel is closed."""
+        for widgets in self._tab_widgets.values():
+            if (strip := widgets.get("strip")) is not None:
+                strip.hide()
+
+    @staticmethod
+    def _completions(
+        source: str,
+        line: int | None = None,
+    ) -> tuple[SetupBinding | None, list[CompletionItem]]:
+        """The setup *source* loads and the completions for it: robot commands
+        and skills, and the setup's entries under the name it is loaded as."""
+        setup = program_setup(source, line)
+        completions = generate_completions_from_commands()
+        if setup is not None:
+            variable, name = setup.variable, setup.name
+            try:
+                snapshot = SetupStore(setup.directory).read_literal(name)
+            except (OSError, ValueError) as error:
+                logger.debug("No setup completions from %s: %s", name, error)
+            else:
+                completions += setup_completions(snapshot, variable)
+        return setup, completions
+
+    def _refresh_completions(self, tab_id: str, line: int | None = None) -> None:
+        widgets = self._tab_widgets.get(tab_id)
+        textarea = widgets.get("textarea") if widgets else None
+        if widgets is None or textarea is None:
+            return
+        widgets["setup"], textarea.completions = self._completions(
+            str(textarea.value or ""), line
+        )
 
     def _on_editor_focus(self, tab: Program, e) -> None:
         if e.focused:
@@ -1336,6 +1395,12 @@ class EditorPanel(FileOperationsMixin):
         self._cursor_selection = None if e.empty else (e.from_line, e.to_line)
         self._selection_tab_id = tab.id
         self._update_capture_button()
+        strip = self.skill_strip(tab.id)
+        if strip is not None:
+            strip.on_cursor(e.line, e.column)
+        widgets = self._tab_widgets.get(tab.id, {})
+        if program_setup(tab.source, e.line) != widgets.get("setup"):
+            self._refresh_completions(tab.id, e.line)
         session = motion_recorder.session
         if (
             session is not None
@@ -1352,6 +1417,20 @@ class EditorPanel(FileOperationsMixin):
         if client is None:
             return
         programs = waldoctl.commander.programs
+        with client:
+            for tab_id, widgets in list(self._tab_widgets.items()):
+                setup = widgets.get("setup")
+                tab = programs.get(tab_id)
+                if (
+                    setup is not None
+                    and setup.name == name
+                    and SetupStore(setup.directory).directory == directory
+                ):
+                    self._refresh_completions(
+                        tab_id, tab.dry_run.playback.active_cursor_line if tab else None
+                    )
+                if widgets.get("strip") is not None:
+                    widgets["strip"].on_setup_saved(directory, name, revision)
         stale = [p.id for p in programs.items if loads_setup(p.source, name)]
         if programs.active_id in stale:
             with client:
@@ -1375,6 +1454,12 @@ class EditorPanel(FileOperationsMixin):
         tab.source = new_value
 
         self._update_dirty_dot(tab)
+        widgets = self._tab_widgets.get(tab.id, {})
+        if widgets.get("strip") is not None:
+            widgets["strip"].on_source_changed()
+        line = tab.dry_run.playback.active_cursor_line
+        if "setup" in widgets and program_setup(new_value, line) != widgets["setup"]:
+            self._refresh_completions(tab.id, line)
 
         # Pending LLM-edit decorations are NOT re-pushed here: CodeMirror's
         # decoration StateField maps the pushed specs through the human's
