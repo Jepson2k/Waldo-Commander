@@ -435,7 +435,14 @@ class TestEditorInteractivity:
             "precision_manufacturing": "on-bright",  # mode-sim fill (simulator on)
             "home": "text",  # control fill
             "stop": "error",  # control fill with a red glyph (hidden until running)
-            "fiber_manual_record": "record",  # record dot
+            "fiber_manual_record": (
+                "on-fill"
+                if "recording"
+                in class_screen.selenium.find_element(
+                    By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
+                ).get_attribute("class")
+                else "record"
+            ),
         }
         problems = [
             r
