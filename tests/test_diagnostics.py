@@ -258,9 +258,10 @@ async def test_the_verdict_names_what_is_wrong(user: User) -> None:
     assert "diag-fault" not in estop.classes, "a healthy reading carries no colour"
 
     # estop == 0 is the chain broken, matching the controller wire format.
+    # Read synchronous rendering before yielding to the live status consumer,
+    # which replaces these injected fields with the simulator's next frame.
     waldoctl.commander.status.io.estop = 0
     page.update()
-    await asyncio.sleep(0)
 
     assert _text(user, "diag-verdict") == "Stopped — e-stop pressed", (
         "the headline has to say what is wrong, not just that something is"
@@ -270,7 +271,6 @@ async def test_the_verdict_names_what_is_wrong(user: User) -> None:
 
     waldoctl.commander.status.io.estop = 1
     page.update()
-    await asyncio.sleep(0)
     assert _text(user, "diag-verdict").startswith("Running"), "and it clears again"
 
     # The backend's own warnings come first: they name the condition, where
