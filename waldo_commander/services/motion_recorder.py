@@ -36,7 +36,9 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
     replace_lines,
+    shift_active_cursor,
 )
+from waldo_commander.services import python_source
 from waldo_commander.state import (
     ui_state,
 )
@@ -1178,16 +1180,70 @@ class MotionRecorder:
         does not wait out time the program already spends on its own."""
         self._last_action_wall_time = time.time()
 
-    def insert_skill_call(self, source: str) -> None:
-        """Insert an explicitly requested Python call at the editor cursor.
+    def insert_skill_call(self, source: str) -> tuple[int, int]:
+        """Insert an explicitly requested Python call at the editor cursor;
+        returns the first line written and how many.
 
         The insertion is an action in the recording like a captured pose, so it
         stamps the action clock: otherwise the next recorded jog is delayed by
         the time the operator spent composing the call, and the program waits
         that long every time it runs.
         """
-        self._insert_snippet(source)
+        placed = self._insert_snippet(source)
         self._last_action_wall_time = time.time()
+        return placed
+
+    def insertion_line(self) -> int:
+        """The line the next inserted snippet goes below; 0 is the end of the
+        program."""
+        if self._insert_line is not None and is_any_program_recording():
+            self._sync_from_mirror()
+            return self._insert_line
+        return active_cursor_line()
+
+    def insert_prelude(self, prelude: str) -> tuple[int, int]:
+        """Put *prelude* at the top of the active program, below its docstring
+        and future imports, and flash it; returns the first line written and
+        how many.
+
+        While recording it is staged as its own block, so Undo takes it out
+        with the rest of the take. It never consumes a pending re-recording
+        (that replaces the selected lines with recorded actions, and a prelude
+        is not one), and it is no action in the recording, so it leaves the
+        action clock alone. Raises ``ValueError`` for a program that does not
+        parse.
+        """
+        textarea = ui_state.active_textarea
+        if not textarea:
+            logger.error("Editor textarea not ready - open Program tab first")
+            return 0, 0
+        if self._insert_line is not None and not is_any_program_recording():
+            self._insert_line = None
+        session = self._session
+        tracked = session is not None and session.textarea is textarea
+        if tracked or self._insert_line:
+            self._sync_from_mirror()
+        new_value, first_line, count = python_source.insert_prelude(
+            str(textarea.value or ""), prelude
+        )
+        self._write(textarea, new_value)
+        staging = tracked and is_any_program_recording()
+        if tracked:
+            self._shift(first_line - 1, count)
+            if staging:
+                self._stage(first_line, count, "action", merge=False)
+        if self._insert_line and self._insert_line >= first_line - 1:
+            self._insert_line += count
+        shift_active_cursor(first_line - 1, count)
+        if tracked or self._insert_line:
+            self._push_anchors()
+
+        from waldo_commander.components.editor_decorations import decorations
+
+        decorations.flash_editor_lines(list(range(first_line, first_line + count)))
+        if staging:
+            self._notify_session()
+        return first_line, count
 
     def _insert_snippet(self, snippet: str) -> tuple[int, int]:
         """Insert code below the recording session's insertion cursor (or the
