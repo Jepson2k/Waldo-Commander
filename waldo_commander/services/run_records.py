@@ -300,6 +300,7 @@ def debugging_export(path: Path) -> bytes:
             "context_unavailable",
             "record_truncated",
             "events_lost",
+            "stop_unconfirmed",
             "setup_loaded",
             "start",
             "complete",
@@ -317,6 +318,7 @@ def debugging_export(path: Path) -> bytes:
         clean = {"event": kind}
         for key in (
             "step",
+            "command",
             "sequence",
             "count",
             "ts",

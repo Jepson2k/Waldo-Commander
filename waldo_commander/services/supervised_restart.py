@@ -262,6 +262,7 @@ class RestartState:
     queue_empty: bool
     fault: bool
     freedrive: bool
+    simulator_active: bool
 
     def require_ready(self) -> None:
         if not self.homed:
@@ -288,6 +289,10 @@ class RestartState:
             raise ValueError("Wait for the arm to stop before restarting")
 
     def require_same_setup(self, previous: RestartState) -> None:
+        if self.simulator_active != previous.simulator_active:
+            raise ValueError(
+                "The controller changed between simulator and hardware. Review fresh state and check the physical setup again."
+            )
         if (
             self.session_id,
             self.scene_epoch,
@@ -313,7 +318,10 @@ class RestartState:
 
 
 async def fresh_state(client: RobotClient, *, timeout: float = 3.0) -> RestartState:
-    """Require advancing publications and read current queue/fault/TCP state."""
+    """Require advancing publications and read current queue/fault/TCP state.
+
+    The queue is read on both sides of the status frame, so a command that
+    arrives in between is in one of the two reads."""
     async with asyncio.timeout(timeout):
         queue = await client.queue()
         if queue is None:
@@ -339,6 +347,11 @@ async def fresh_state(client: RobotClient, *, timeout: float = 3.0) -> RestartSt
                     and identity[1] > previous[1]
                     and identity[2] > previous[2]
                 ):
+                    after = await client.queue()
+                    if after is None:
+                        raise ConnectionError(
+                            "The controller queue could not be read; review again"
+                        )
                     return RestartState(
                         *identity,
                         time.monotonic_ns(),
@@ -351,11 +364,12 @@ async def fresh_state(client: RobotClient, *, timeout: float = 3.0) -> RestartSt
                         bool(status.homed),
                         bool(status.enabled),
                         int(status.executing_index),
-                        queue == [],
+                        queue == [] and after == [],
                         error is not None
                         or bool(status.collision_active)
                         or status.action_state == ActionState.ERROR,
                         bool(status.freedrive),
+                        bool(status.simulator_active),
                     )
                 previous = identity
         finally:

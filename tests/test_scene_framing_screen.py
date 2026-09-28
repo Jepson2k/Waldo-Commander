@@ -10,7 +10,6 @@ VIEW = """
     const cam = window.SceneFraming && SceneFraming.camera();
     if (!cam) return null;
     const el = document.querySelector('.nicegui-scene');
-    const wrap = document.querySelector('.panels-wrap');
     const footer = document.querySelector('.status-footer').getBoundingClientRect();
     return {enabled: !!(cam.view && cam.view.enabled),
             fullWidth: cam.view ? cam.view.fullWidth : null,
@@ -18,7 +17,7 @@ VIEW = """
             offsetY: cam.view ? cam.view.offsetY : null,
             aspect: cam.aspect,
             width: el.clientWidth, height: el.clientHeight,
-            columnRight: parseFloat(wrap.style.getPropertyValue('--wc-column-right')) || 0,
+            columnRight: PanelResize.layout().columnRight,
             footerCover: Math.round(innerHeight - footer.top)};
 """
 

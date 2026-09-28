@@ -3,9 +3,13 @@
 from typing import TYPE_CHECKING
 
 import pytest
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.support.ui import WebDriverWait
 
 from tests.conftest import skip_webgl_macos_ci
+from tests.helpers.browser_helpers import run_in_app
 from tests.helpers.wait import screen_wait_for_scene_ready
+from waldo_commander.state import ui_state
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -48,3 +52,26 @@ class TestUrdfSceneRender:
         assert all(v is False for v in log), (
             f"renderer.autoClear must be false during viewHelper.render; got {log}"
         )
+
+    def test_zoomed_out_the_fog_starts_beyond_the_robot(
+        self, class_screen: "Screen"
+    ) -> None:
+        """A fog fixed to the reach swallowed the arm, its paths and targets
+        once the camera pulled back past a couple of metres."""
+        screen_wait_for_scene_ready(class_screen)
+        reach = run_in_app(lambda: ui_state.urdf_scene._chain_reach())
+        read = (
+            "const view = getElement(document.querySelector('.nicegui-scene'));"
+            "if (!view.scene.fog) return null;"
+            "view.camera.position.set(0, -6, 6); view.controls.update();"
+            "return {near: view.scene.fog.near, d: view.camera.position.length()};"
+        )
+        try:
+            fog = WebDriverWait(class_screen.selenium, 5).until(
+                lambda _: (m := class_screen.selenium.execute_script(read))
+                and m["near"] > m["d"] + reach
+                and m
+            )
+        except TimeoutException:
+            fog = class_screen.selenium.execute_script(read)
+        assert fog and fog["near"] > fog["d"] + reach, (fog, reach)

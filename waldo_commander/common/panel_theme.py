@@ -23,7 +23,7 @@ def inject_panel_css() -> None:
 @layer quasar {
   /* A skill's form opens where the side panels do, clear of the scene, the
      readout and the E-stop. */
-  .skill-dialog-host > .q-dialog__inner--left { align-items: flex-start !important; padding: 12px 0 12px 58px !important; }
+  .skill-dialog-host > .q-dialog__inner--left { align-items: flex-start !important; padding: 12px 0 12px var(--wc-size-panel-inset) !important; }
 }
 .task-panel, .overlay-card.task-panel, .task-dialog {
   color: var(--wc-text);
@@ -65,11 +65,9 @@ def inject_panel_css() -> None:
 .settings-body .q-tab-panel { height: 100%; padding: 0; }
 .settings-content { display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%; gap: 0; flex-wrap: nowrap; overflow-y: auto; overflow-x: hidden; padding: 12px 20px 16px; }
 .settings-group-heading { width: 100%; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--wc-glass-border); font-size: 15px; font-weight: 600; color: var(--wc-text); }
-.settings-content > .settings-group-heading:not(:first-child) { margin-top: 16px; }
 .settings-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; align-items: center; min-height: 40px; width: 100%; padding: 4px 0; }
 .settings-row > .settings-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .settings-row .settings-label { font-size: 13px; line-height: 1.3; font-weight: 600; color: var(--wc-text); }
-.settings-row .settings-desc { font-size: 12px; line-height: 1.3; color: var(--wc-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-row > :not(.settings-text) { justify-self: end; min-width: 0; max-width: 100%; }
 .settings-address { display: grid; grid-template-columns: 160px 80px; column-gap: 8px; }
 .settings-row .q-field__control, .settings-row .q-field__marginal { min-height: 28px; height: 28px; }
@@ -91,7 +89,6 @@ def inject_panel_css() -> None:
 .diag-bar { flex: 0 0 auto; width: 180px; height: 4px; margin: 3px 0 5px; border-radius: 2px; background: var(--wc-control); overflow: hidden; }
 .diag-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--wc-text-muted); transition: width .2s linear; }
 .diag-bar-fill.over { background: var(--wc-warning); }
-.diag-drives-summary { font-size: 12px; color: var(--wc-text-muted); }
 /* Calibration is one flow of three steps: the open step shows its body, the
    others are a header line carrying their summary. */
 .handeye-step { width: 100%; padding: 0 6px; }

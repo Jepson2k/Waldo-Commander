@@ -1,11 +1,14 @@
 import { THREE } from "nicegui-scene";
 
 // Hemisphere ambient plus key, fill and rim lights. The key casts shadows
-// over a square of half-width `radius` around the scene origin.
+// over a square of half-width `radius` around the scene origin. The scene is
+// z-up, so the sky comes from +z and every light sits above the floor.
 export default class StudioLights {
   create_mesh(radius) {
     const group = new THREE.Group();
-    group.add(new THREE.HemisphereLight(0xffffff, 0x1b2430, 0.6 * Math.PI));
+    const sky = new THREE.HemisphereLight(0xffffff, 0x1b2430, 0.6 * Math.PI);
+    sky.position.set(0, 0, 1);
+    group.add(sky);
 
     const key = new THREE.DirectionalLight(0xffffff, 0.8 * Math.PI);
     key.position.set(4, -6, 9);
@@ -27,7 +30,7 @@ export default class StudioLights {
     group.add(fill, fill.target);
 
     const rim = new THREE.DirectionalLight(0xffffff, 0.35 * Math.PI);
-    rim.position.set(1, 8, -2);
+    rim.position.set(1, 8, 5);
     group.add(rim, rim.target);
     return group;
   }

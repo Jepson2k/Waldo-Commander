@@ -43,8 +43,8 @@ class PhysicsLegend:
             # Bottom-left, clear of the icon rail: the right half of the
             # scene belongs to the control panel, and a key painted
             # underneath it is worse than no key at all.
-            .classes("absolute bottom-24 left-24 z-30 rounded-lg px-3 py-2 gap-2 glass")
-            .style("pointer-events: none;") as root
+            .classes("absolute bottom-24 left-24 rounded-lg px-3 py-2 gap-2 glass")
+            .style("pointer-events: none; z-index: var(--wc-z-cards);") as root
         ):
             self._root = root
             self._rows = [

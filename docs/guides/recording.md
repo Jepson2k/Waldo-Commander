@@ -11,16 +11,18 @@ selection** runs it live without writing it again.
 Motion that Commander did not command is recorded too. On an arm that can be
 hand-guided, put it in freedrive and move it; on any backend, moves sent by
 another client or by MCP count the same way. The recorder watches the
-controller's status stream while recording is on. Joints moving while no
-Commander action is under way open a span; the arm standing still for half a
-second closes it. The span is converted to ordinary moves and written into the
-program like any other recorded action.
+controller's status stream while recording is on. The joints or the gripper
+moving while no Commander action is under way open a span; the arm standing
+still for half a second closes it. The span is converted to ordinary moves in
+the background, its place in the program marked *converting…* meanwhile, and
+written there like any other recorded action. Stopping or keeping a take while
+the arm is still moving keeps the motion up to that moment.
 
 ## Keeping a take
 
-The lines a recording writes stay marked in the editor, tinted in the Record
-button's amber, until you decide. The editor's header shows how many lines the
-take wrote with **Keep** and **Undo** where Open and Save usually are. Stopping
+The lines a recording writes stay marked in the editor, tinted orange, until
+you decide. The editor's header shows how many lines the take wrote with
+**Keep** and **Undo** where Open and Save usually are. Stopping
 the recording does not decide: stop, play the program to watch the arm do it,
 then keep the lines or undo them all. Keep or Undo while still recording also
 stops it, and starting a new recording keeps the last take.
@@ -38,18 +40,21 @@ recording, with its waits and gripper positions kept as statements.
 ## How captured motion becomes code
 
 The arm holding still is what separates the moves. Each still span of at
-least 0.3 s becomes an `rbt.delay`, a gripper position that changed in one
-becomes `rbt.tool.set_position`, and the motion between them becomes a single
-`rbt.move_l` where the tool travelled in a straight line, or the joint
-waypoints that hold its path otherwise, blended so the arm does not stop at
-each one. Each move carries the recorded leg's duration, so the program keeps
+least 0.3 s becomes an `rbt.delay`, a gripper position change becomes
+`rbt.tool.set_position` where it happened, and the motion between them
+becomes a single `rbt.move_l` where the tool travelled in a straight line, or
+the joint waypoints that hold its path otherwise, blended so the arm does not
+stop at each one. Each move carries the recorded leg's duration, so the program keeps
 the demonstration's pace as far as the configured limits allow.
 
 Every motion span is planned in the backend's preview and compared against
 the recorded path before it is written: within 5 mm of tool position, 2° of
-tool orientation, and 2° on every joint. The posture is compared as well as
-the path, because a Cartesian move can trace the same line through a flipped
-wrist and sweep the cell differently. A span that fails both forms is replayed
+tool orientation, and 2° on every joint. The posture is compared along the
+whole path, in order, as well as the tool position, because a Cartesian move
+can trace the same line through a flipped wrist, or skip a wrist swing that
+barely moves the tool, and sweep the cell differently. Where the status stream
+skipped publications, a planned `move_j` marked `# not observed` crosses the
+stretch nobody saw. A span that fails both forms is replayed
 instead: the recording is saved under the recordings directory, named after
 the program, and the lines call `replay_demonstration` over that sample range.
 The span's badge says how many moves were replayed.
