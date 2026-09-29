@@ -116,8 +116,7 @@ def _build_log_entries_html() -> str:
 
 
 class StatusFooter:
-    """One row along the bottom: mode chip, robot, tool, I/O dots, pose well,
-    the last action, and the buttons that open Diagnostics and the Log."""
+    """Live status in one desktop row or a wrapped footer below the controls."""
 
     def __init__(self) -> None:
         self._robot_face_html: ui.html | None = None
@@ -170,6 +169,10 @@ class StatusFooter:
         lines += [("Digital Output", i) for i in range(len(io.outputs))]
         with self._io_container:
             for description, i in lines:
+                if i == 0:
+                    ui.label("IN" if description == "Digital Input" else "OUT").classes(
+                        "footer-io-label wc-micro text-wc-text-muted"
+                    )
                 with ui.element("div").classes("io-dot") as dot:
                     ui.tooltip(f"{description} {i + 1}")
                 self._io_dots.append(dot)
@@ -280,7 +283,7 @@ class StatusFooter:
                 ("ry", "°", "3.2rem", "pose-cell pose-cell-rot"),
                 ("rz", "°", "3.2rem", "pose-cell pose-cell-rot"),
             ):
-                with ui.element("div").classes(cell):
+                with ui.element("div").classes(f"{cell} footer-pose-{axis}"):
                     ui.label(axis.upper()).classes(f"wc-micro tcp-{axis}-text")
                     (
                         ui.label("-")
@@ -290,7 +293,7 @@ class StatusFooter:
                         .mark(f"readout-{axis}")
                     )
                     ui.label(unit).classes("wc-micro text-wc-text-muted")
-            with ui.element("div").classes("pose-cell"):
+            with ui.element("div").classes("pose-cell footer-speed"):
                 ui.label("v").classes("wc-micro text-wc-text-muted")
                 (
                     ui.label("-")
@@ -302,7 +305,7 @@ class StatusFooter:
                 ui.label("mm/s").classes("wc-micro text-wc-text-muted")
 
     def build(self) -> None:
-        """Render the footer as one absolute row along the bottom edge."""
+        """Render the shared status elements for both workspace layouts."""
         # A component root: NiceGUI renders plain elements in their nearest
         # component's render, so pose updates on a bare div re-render the page.
         with (
@@ -339,6 +342,13 @@ class StatusFooter:
             self._tool_chip.set_visibility(False)
             with self._tool_chip:
                 self._tool_label = ui.label("").classes("wc-caption truncate")
+            ui.label("No tool").classes(
+                "footer-empty-tool wc-caption text-wc-text-muted"
+            ).bind_visibility_from(
+                waldoctl.commander.status.tool,
+                "key",
+                backward=lambda key: not key or key == "NONE",
+            )
             ui.element("div").classes("footer-sep")
             self._io_container = ui.element("div").classes("io-dots").mark("io-dots")
             self._build_io_dots()
@@ -384,7 +394,7 @@ class StatusFooter:
             (
                 ui.button(icon="article", on_click=lambda: self._open_bottom("log"))
                 .props("flat dense color=wc-text")
-                .classes("footer-btn")
+                .classes("footer-btn footer-log")
                 .mark("footer-log")
                 .tooltip("Log")
             )
