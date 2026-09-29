@@ -105,8 +105,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         (1920, 941, 1),
         (1366, 900, 1),
         (1366, 768, 1),
-        # At 125%, 960 physical pixels leaves 768 CSS pixels. Smaller
-        # viewports use the manual controls covered by test_mobile_control.
+        # At 125%, 960 physical pixels leaves 768 CSS pixels.
         (1366, 960, 1.25),
     ]:
         screen.selenium.execute_cdp_cmd(
