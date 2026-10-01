@@ -1033,7 +1033,12 @@ class GUIStepController:
         key = id(conn)
         try:
             while True:
-                message = conn.recv()
+                try:
+                    message = conn.recv()
+                except TypeError:
+                    # cleanup() closed the link as this reader woke on EOF;
+                    # multiprocessing reads the cleared handle as None.
+                    return
                 if not isinstance(message, dict):
                     continue
                 if message.get("type") == "event":

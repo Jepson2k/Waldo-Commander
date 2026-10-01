@@ -478,7 +478,11 @@ async def test_failed_program_keeps_stop_available_until_controller_confirms(
         monkeypatch.setattr(client, "stop", real_stop)
         await script_exec.stop()
         assert not is_any_program_running()
-        assert await client.queue() == []
+        # The stop discarded the program's 6 s move; the page may still be
+        # fitting its tool through the queue, which drains at once.
+        async with asyncio.timeout(2):
+            while await client.queue():
+                await asyncio.sleep(0.05)
         assert await client.wait_status(lambda s: not s.action_current, timeout=3)
         records = caplog.get_records("call")
         # The controller's failure is logged where the stop was sent; the run
