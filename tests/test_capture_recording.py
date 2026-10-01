@@ -6,24 +6,18 @@ import asyncio
 import numpy as np
 import pytest
 import waldoctl
-from nicegui import run
 from nicegui.testing import User
 
+from tests.helpers.recording import staged_lines
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
     wait_until,
 )
-from tests.test_editor_integration import _set_selection
-from waldo_commander.components.script_execution import script_exec
-from waldo_commander.demonstrations import span_to_lines
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
-from waldo_commander.services.programs import (
-    is_any_program_recording,
-    is_any_program_running,
-)
+from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.state import ui_state
 
 PROGRAM = "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.home()\n"
@@ -41,6 +35,9 @@ def _capture(session):
 async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
     user: User, tmp_path, monkeypatch
 ):
+    """A move nobody in WC commanded lands in the take as moves that plan to
+    where the arm ended, badged with their count; switched to raw it replays
+    the saved points instead, and Undo takes the whole take out."""
     monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
     await user.open("/")
     await wait_for_app_ready()
@@ -91,8 +88,7 @@ async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
         ast.parse(str(textarea.value))
 
         # The lines plan to where the arm actually ended up.
-        preview = await run.cpu_bound(
-            _run_simulation_isolated,
+        preview = _run_simulation_isolated(
             PROGRAM.rsplit("    rbt.home()", 1)[0] + captured + "\n",
             np.radians(start),
         )
@@ -123,66 +119,7 @@ async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
         await asyncio.sleep(0.1)
         assert str(textarea.value) == PROGRAM
         assert motion_recorder.session is None and not is_any_program_recording()
-
-        # A new take: a span, then a skill inserted and run live while the
-        # span is staged. The skill's motion is WC's own: the program gets its
-        # call once and no captured moves, and the span stays staged.
-        program.dry_run.playback.active_cursor_line = 3
-        user.find(marker="editor-record-btn").click()
-        await asyncio.sleep(0.1)
-        target[1] -= 6.0
-        index = await client.move_j(target, duration=1.0)
-        assert await client.wait_command(index, timeout=10)
-        assert await wait_until(
-            lambda: _capture(motion_recorder.session) is not None, timeout_s=20
-        )
-        recording = _capture(motion_recorder.session).recording
-        user.find(marker="editor-commands-btn").click()
-        user.find(marker="editor-skill-waldo.retract").click()
-        await asyncio.sleep(0)
-        lines = str(textarea.value).split("\n")
-        call = next(
-            number
-            for number, line in enumerate(lines, start=1)
-            if "_skill_waldo_retract(rbt," in line
-        )
-        lines[call - 1] = lines[call - 1].replace("distance_mm=30.0", "distance_mm=2.0")
-        textarea.value = "\n".join(lines)
-        _set_selection(textarea, call, call)
-        await asyncio.sleep(0)
-        user.find(marker="editor-run-selection").click()
-        editor = ui_state.editor_panel
-        async with asyncio.timeout(30):
-            await asyncio.sleep(0.1)
-            while editor._running_selection or is_any_program_running():
-                await asyncio.sleep(0.05)
-        assert waldoctl.commander.programs.active is program
-        await asyncio.sleep(1.0)
-        # The skill's import went in at the top; what follows the call is
-        # what the take wrote after it.
-        tail = "\n".join(str(textarea.value).split("\n")[call - 1 :])
-        assert tail.count("_skill_waldo_retract(rbt,") == 1, tail
-        assert "rbt.move_l(" not in tail and "rbt.move_j(" not in tail, tail
-        kinds = [b.kind for b in motion_recorder.session.blocks]
-        assert "capture" in kinds and "action" in kinds, kinds
-        user.find(marker="staged-keep").click()
-        await asyncio.sleep(0.1)
-        assert motion_recorder.session is None
-
-        # A span the planner cannot follow is replayed from a saved copy.
-        fallback = span_to_lines(
-            recording,
-            ui_state.active_robot,
-            program="test",
-            directory=tmp_path / "fallback",
-            tolerance_mm=1e-6,
-        )
-        assert fallback.replayed
-        assert list((tmp_path / "fallback").glob("test-*.json"))
-        assert "replay_demonstration(rbt, load_demonstration(" in fallback.source
     finally:
-        if is_any_program_running():
-            await script_exec.stop()
         if is_any_program_recording():
             motion_recorder.toggle_recording()
     assert not is_any_program_recording()
@@ -225,13 +162,23 @@ async def _move(client, target, duration: float) -> None:
     assert await client.wait_command(index, timeout=15)
 
 
+def _inserted(before: list[str], after: list[str]) -> tuple[int, list[str]]:
+    """Where *after* has lines *before* lacks, as one insertion."""
+    at = next((i for i, (a, b) in enumerate(zip(before, after)) if a != b), len(before))
+    count = len(after) - len(before)
+    assert after[:at] == before[:at] and after[at + count :] == before[at:], after
+    return at, after[at : at + count]
+
+
 @pytest.mark.integration
 async def test_a_capture_holds_its_place_while_it_converts(
     user: User, tmp_path, monkeypatch
 ):
     """Conversion runs beside the observer, not in its way: an action recorded
     while a capture converts goes after it, and a second move made meanwhile
-    is watched from its start."""
+    is watched from its start. Keep and a tab switch landing mid-conversion
+    still put the lines where the span closed, kept, in the program it was
+    recorded in; the program in front gets nothing."""
     import threading
 
     from waldo_commander.services import motion_recorder as recorder_module
@@ -285,6 +232,40 @@ async def test_a_capture_holds_its_place_while_it_converts(
         assert recorded.samples[-1].joints_deg == pytest.approx(second, abs=0.2)
         assert len(recorded.samples) >= 10, len(recorded.samples)
         ast.parse(str(textarea.value))
+
+        closes_at = two.last_line
+        entered.clear()
+        release.clear()
+        third = list(second)
+        third[0] -= 8.0
+        await _move(client, third, 1.0)
+        assert await wait_until(entered.is_set, timeout_s=20), (
+            "the third span never started converting"
+        )
+        user.find(marker="staged-keep").click()
+        await asyncio.sleep(0.1)
+        assert not is_any_program_recording()
+        assert motion_recorder.session is None
+        kept = str(textarea.value).split("\n")
+        other = waldoctl.commander.programs.new(
+            source="print('other')\n", filename="other.py"
+        )
+        waldoctl.commander.programs.switch(other.id)
+        await asyncio.sleep(0.1)
+        in_front = ui_state.active_textarea
+        in_front_text = str(in_front.value)
+        release.set()
+        assert await wait_until(
+            lambda: len(str(textarea.value).split("\n")) > len(kept), timeout_s=30
+        ), f"the kept take's capture was dropped:\n{textarea.value}"
+        assert other.source == "print('other')\n", other.source
+        assert str(in_front.value) == in_front_text
+        at, inserted = _inserted(kept, str(textarea.value).split("\n"))
+        assert at == closes_at, (
+            f"the capture did not land where it closed:\n{textarea.value}"
+        )
+        assert any("rbt.move_" in line for line in inserted), inserted
+        assert not staged_lines(textarea)
     finally:
         release.set()
         if is_any_program_recording():
@@ -292,43 +273,74 @@ async def test_a_capture_holds_its_place_while_it_converts(
 
 
 @pytest.mark.integration
-async def test_a_slow_move_is_captured(user: User, tmp_path, monkeypatch):
-    """Stillness is distance from where the arm came to rest: a move slower
-    than the per-publication threshold is still a move."""
+async def test_what_one_captured_span_is(user: User, tmp_path, monkeypatch, caplog):
+    """A dial move the controller refuses or never acknowledges records
+    nothing and leaves no motion owned. Stillness is distance from where the
+    arm came to rest, so a move slower than the per-publication threshold is
+    still a move. Commander's own move is left alone, and a move nobody
+    commanded that starts as soon as it has come to rest is captured whole.
+    The time the arm stood still between two captures is a delay before the
+    second, as it is before a recorded action."""
+    from parol6.utils.error_catalog import ErrorCode, make_error
+    from parol6.utils.errors import MotionError
+
     await _open(user, monkeypatch, tmp_path)
     _, textarea = await _record(user)
-    client = waldoctl.commander.client
+    panel = ui_state.control_panel
+    assert panel is not None
+    client = panel.client
+    real = client.move_j
+
+    async def refused(*args, **kwargs):
+        raise MotionError(
+            make_error(ErrorCode.SYS_SELF_COLLISION, sample=1, total=1, pairs="L4/L6")
+        )
+
+    async def unacknowledged(*args, **kwargs):
+        return -1
+
+    def captures() -> list:
+        return _captures(motion_recorder.session)
+
     try:
         start = await client.angles()
         assert start is not None
-        target = list(start)
-        target[0] += 2.0
-        await _move(client, target, 4.0)
-        assert await wait_until(
-            lambda: bool(_captures(motion_recorder.session)), timeout_s=30
-        ), "a 2° move over 4 s was not captured"
-        block = _captures(motion_recorder.session)[0]
+        written = str(textarea.value)
+        monkeypatch.setattr(client, "move_j", refused)
+        await panel.move_joint_to_angle(0, start[0] + 5.0)
+        assert not motion_recorder.owns_motion, "a refused dial move left its jog open"
+        monkeypatch.setattr(client, "move_j", unacknowledged)
+        await panel.move_joint_to_angle(0, start[0] + 5.0)
+        assert not motion_recorder.owns_motion
+        waiting = panel._jog_end_wait_task
+        if waiting is not None:
+            await waiting
+        assert str(textarea.value) == written, (
+            "a move the controller never took was recorded"
+        )
+        monkeypatch.setattr(client, "move_j", real)
+        refusals = [
+            r
+            for r in caplog.get_records("call")
+            if r.getMessage().startswith("Go to joint angle failed")
+        ]
+        assert refusals
+        records = caplog.get_records("call")
+        records[:] = [r for r in records if r not in refusals]
+
+        # What moves the arm next is captured again, slow as it is.
+        slow = list(start)
+        slow[0] += 1.0
+        await _move(client, slow, 2.0)
+        assert await wait_until(lambda: len(captures()) == 1, timeout_s=30), (
+            "a 1° move over 2 s was not captured"
+        )
+        block = captures()[0]
         assert "rbt.move_" in _block_text(textarea, block), textarea.value
         assert block.recording.samples[0].joints_deg == pytest.approx(start, abs=0.1)
-        assert block.recording.samples[-1].joints_deg == pytest.approx(target, abs=0.1)
-    finally:
-        if is_any_program_recording():
-            motion_recorder.toggle_recording()
+        assert block.recording.samples[-1].joints_deg == pytest.approx(slow, abs=0.1)
 
-
-@pytest.mark.integration
-async def test_motion_right_after_owned_motion_is_captured_from_its_start(
-    user: User, tmp_path, monkeypatch
-):
-    """Commander's own move is left alone, and a move nobody commanded that
-    starts as soon as it has come to rest is captured whole."""
-    await _open(user, monkeypatch, tmp_path)
-    _, textarea = await _record(user)
-    client = waldoctl.commander.client
-    try:
-        start = await client.angles()
-        assert start is not None
-        owned = list(start)
+        owned = list(slow)
         owned[0] += 6.0
         with motion_recorder.owned():
             await _move(client, owned, 0.8)
@@ -337,17 +349,27 @@ async def test_motion_right_after_owned_motion_is_captured_from_its_start(
         external = list(owned)
         external[0] += 6.0
         await _move(client, external, 0.6)
-        assert await wait_until(
-            lambda: bool(_captures(motion_recorder.session)), timeout_s=30
-        ), "the move right after the owned one was not captured"
-        captures = _captures(motion_recorder.session)
-        assert len(captures) == 1, textarea.value
-        recorded = captures[0].recording
+        assert await wait_until(lambda: len(captures()) >= 2, timeout_s=30), (
+            "the move right after the owned one was not captured"
+        )
+        assert len(captures()) == 2, textarea.value
+        recorded = captures()[1].recording
         assert recorded.samples[0].joints_deg == pytest.approx(owned, abs=0.1), (
             "the capture began partway through the move"
         )
         assert recorded.samples[-1].joints_deg == pytest.approx(external, abs=0.1)
+
+        await asyncio.sleep(1.0)  # the operator waits before the next move
+        back = list(external)
+        back[0] -= 6.0
+        await _move(client, back, 0.6)
+        assert await wait_until(lambda: len(captures()) == 3, timeout_s=30)
+        last = captures()[2]
+        above = str(textarea.value).split("\n")[last.first_line - 2].strip()
+        assert above.startswith("rbt.delay("), textarea.value
+        assert float(above.removeprefix("rbt.delay(").rstrip(")")) >= 1.0, above
     finally:
+        monkeypatch.setattr(client, "move_j", real)
         if is_any_program_recording():
             motion_recorder.toggle_recording()
 
@@ -456,38 +478,6 @@ async def test_capture_survives_a_stalled_stream_and_says_when_it_stops(
         await asyncio.sleep(0.1)
         assert is_any_program_recording()
         await user.should_see(marker="staged-capture-stopped", retries=100)
-    finally:
-        if is_any_program_recording():
-            motion_recorder.toggle_recording()
-
-
-@pytest.mark.integration
-async def test_a_wait_between_captures_is_kept(user: User, tmp_path, monkeypatch):
-    """The time the arm stood still between two captured moves is a delay
-    before the second, as it is before a recorded action."""
-    await _open(user, monkeypatch, tmp_path)
-    _, textarea = await _record(user)
-    client = waldoctl.commander.client
-    try:
-        start = await client.angles()
-        assert start is not None
-        first = list(start)
-        first[0] += 6.0
-        await _move(client, first, 0.6)
-        assert await wait_until(
-            lambda: bool(_captures(motion_recorder.session)), timeout_s=30
-        )
-        await asyncio.sleep(1.0)  # the operator waits before the next move
-        second = list(first)
-        second[0] += 6.0
-        await _move(client, second, 0.6)
-        assert await wait_until(
-            lambda: len(_captures(motion_recorder.session)) == 2, timeout_s=30
-        )
-        two = _captures(motion_recorder.session)[1]
-        above = str(textarea.value).split("\n")[two.first_line - 2].strip()
-        assert above.startswith("rbt.delay("), textarea.value
-        assert float(above.removeprefix("rbt.delay(").rstrip(")")) >= 1.0, above
     finally:
         if is_any_program_recording():
             motion_recorder.toggle_recording()

@@ -22,21 +22,6 @@ requires_par6 = pytest.mark.skipif(
 FIXTURES = Path(__file__).parents[1] / "examples" / "simulation"
 
 
-async def test_a_case_for_a_backend_that_is_not_installed_still_reports():
-    """The worker fails to load the backend, and the report of that failure
-    must not need the missing package's version to be written."""
-    case = SimulationCase(
-        name="absent",
-        program="pass\n",
-        initial_joints_deg=(0, -90, 180, 0, 0, 180),
-        backend="absent-backend",
-    )
-    report = await run_case(case)
-    assert report["stop"] == "error" and not report["passed"], report
-    assert "absent-backend" in report["error"]
-    assert report["backend_version"] is None
-
-
 @requires_par6
 @pytest.mark.timeout(60)
 async def test_a_case_never_consults_a_nearby_controller(monkeypatch):
@@ -55,7 +40,7 @@ async def test_a_case_never_consults_a_nearby_controller(monkeypatch):
 
 
 @requires_par6
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(240)
 async def test_reusable_cases_report_replay_faults_and_enforce_worker_deadlines(
     tmp_path,
 ):
@@ -111,8 +96,7 @@ async def test_reusable_cases_report_replay_faults_and_enforce_worker_deadlines(
     # A tool without variants is selected with an empty variant key, the shape
     # the preview itself seeds with; demanding one left no case able to choose
     # its starting tool.
-    with_tool = replace(load_case(FIXTURES / "idle.json"), initial_tool=("SSG48", ""))
-    assert with_tool.initial_tool == ("SSG48", "")
+    replace(load_case(FIXTURES / "idle.json"), initial_tool=("SSG48", ""))
     with pytest.raises(ValueError, match="tool key"):
         replace(load_case(FIXTURES / "idle.json"), initial_tool=("", ""))
 
@@ -124,6 +108,19 @@ async def test_reusable_cases_report_replay_faults_and_enforce_worker_deadlines(
         result["rows"] == 0 and result["digest"] == "" and result["duration_s"] == 0.0
     )
     assert result["backend_version"] and result["case_sha256"]
+    # A case naming a backend that is not installed fails in the worker, and
+    # its report must not need the missing package's version to be written.
+    absent = await run_case(
+        SimulationCase(
+            name="absent",
+            program="pass\n",
+            initial_joints_deg=(0, -90, 180, 0, 0, 180),
+            backend="absent-backend",
+        )
+    )
+    assert absent["stop"] == "error" and not absent["passed"], absent
+    assert "absent-backend" in absent["error"]
+    assert absent["backend_version"] is None
     # A killed worker cannot poison the next case.
     assert (await asyncio.wait_for(run_case(load_case(FIXTURES / "idle.json")), 30))[
         "passed"

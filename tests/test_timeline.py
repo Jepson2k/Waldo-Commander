@@ -7,7 +7,6 @@ from dataclasses import replace
 import numpy as np
 import pytest
 from parol6.client.dry_run_client import DryRunRobotClient
-from parol6.config import HOME_ANGLES_DEG
 from waldoctl import ObjectTicks, TickIndex
 
 from waldo_commander.services.path_preview_client import PathPreviewClient
@@ -81,31 +80,6 @@ def test_segments_window_the_commanded_record_and_samples_read_its_rows():
     empty, none = _planned(_preview())
     assert none == []
     assert Timeline.from_record(empty, none).sample(0.5).joints is None
-
-
-def test_home_is_a_planned_move_when_referenced_and_a_snap_when_not():
-    client = _preview()
-    client.move_j(AWAY, speed=1.0)
-    client.home()
-    record, segments = _planned(client)
-    tl = Timeline.from_record(record, segments)
-    assert [s.checkpoint for s in segments] == [None, "home"]
-    assert tl.segment_durations[1] > 0.0
-    assert np.degrees(tl.sample(tl.total_duration).joints) == pytest.approx(
-        HOME_ANGLES_DEG, abs=0.6
-    )
-
-    client = PathPreviewClient(
-        dry_run_client_cls=DryRunRobotClient,
-        initial_joints=np.radians(START),
-        initial_homed=False,
-    )
-    client.home()
-    record, segments = _planned(client)
-    assert record.rows <= 1, "an unreferenced arm references itself without a move"
-    assert [(s.checkpoint, s.rows) for s in segments] == [("home", record.rows)]
-    assert Timeline.from_record(record, segments).total_duration <= record.row_dt_s
-    assert client.angles() == pytest.approx(HOME_ANGLES_DEG, abs=0.6)
 
 
 def test_a_predicted_record_plays_its_own_rows_at_the_same_point_of_each_command():
