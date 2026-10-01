@@ -20,6 +20,7 @@ from tests.helpers.wait import (
     JOG_SAFE_POSE_DEG,
     teleport_to_jog_pose,
     wait_for_app_ready,
+    wait_until,
 )
 from waldo_commander.mcp.server import get_mcp
 
@@ -345,14 +346,18 @@ async def test_mcp_drives_the_same_gui_state_as_the_page(
             active.dry_run.path_segments = segments_from_record(commanded, [])
             active.dry_run.total_steps = 1
             playback.invalidate_timeline()
-            # The page reclaims the lease whenever it drives, as the mirrored
-            # pause just did; each segment starts by taking it back.
-            await client.call_tool("control.take_control")
             await client.call_tool("simulation.play_pause")
             assert active.dry_run.playback.is_active, (
                 "play_pause should start the preview when the MCP session holds "
                 "the lease"
             )
+            # The page plays the preview without taking the lease back from
+            # the session that started it.
+            assert await wait_until(
+                lambda: active.dry_run.playback.playback_time > 0.2, timeout_s=5.0
+            )
+            holder = control_lease.holder()
+            assert holder is not None and holder.channel == cl.MCP, holder
             await client.call_tool("simulation.play_pause")
             assert not active.dry_run.playback.is_active
 
@@ -362,7 +367,6 @@ async def test_mcp_drives_the_same_gui_state_as_the_page(
             # simulator mode makes the controller open the real serial port,
             # which doesn't exist on a test box.
             monkeypatch.setattr(waldoctl.commander.client, "simulator", _fake_simulator)
-            await client.call_tool("control.take_control")
             await client.call_tool("simulation.set_simulator", {"enabled": False})
             assert flips == [False]
             assert panel._robot_btn._props.get("color") == "wc-control", (
