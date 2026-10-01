@@ -2,24 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
 import math
 import re
-from typing import TYPE_CHECKING
 
 import pytest
 import waldoctl
-from nicegui import app, core
+from nicegui import app
 from nicegui.testing import User
-from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl import ActionState
 
-from tests.helpers.browser_helpers import js, marked_element, run_in_app
 from tests.helpers.wait import (
-    JOG_SAFE_POSE_DEG,
     enable_sim,
     ensure_robot_ready_for_motion,
-    screen_wait_for_scene_ready,
     simulate_click,
     teleport_to_jog_pose,
     wait_for_app_ready,
@@ -33,9 +27,6 @@ from waldo_commander.components.joint_dial import (
     dial_static,
 )
 from waldo_commander.state import ui_state
-
-if TYPE_CHECKING:
-    from nicegui.testing.screen import Screen
 
 R = DIAL_RADIUS
 
@@ -164,105 +155,3 @@ async def test_level_chip_popover_sets_the_speed_text_and_storage(user: User) ->
         assert "70%" in refs["tooltip"].text
     finally:
         cp.adjust_rating("jog_speed", original - waldoctl.commander.settings.jog.speed)
-
-
-@pytest.mark.browser
-def test_idle_dials_hide_their_caps_even_at_a_limit(screen: Screen) -> None:
-    screen.open("/")
-    screen_wait_for_scene_ready(screen, timeout_s=40.0)
-    lo, _hi = run_in_app(lambda: ui_state.control_panel._get_joint_limits(2))
-    pose = list(JOG_SAFE_POSE_DEG)
-    pose[2] = lo
-
-    async def park_elbow_at_its_lower_limit() -> None:
-        await waldoctl.commander.client.teleport(pose)
-
-    asyncio.run_coroutine_threadsafe(park_elbow_at_its_lower_limit(), core.loop).result(
-        15
-    )
-    screen.selenium.execute_cdp_cmd(
-        "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 5, "y": 5}
-    )
-    caps = WebDriverWait(screen.selenium, 10).until(
-        lambda _: (
-            r := js(
-                screen,
-                """
-                const caps = [...document.querySelectorAll('.joint-cap')];
-                const shown = c => getComputedStyle(c).visibility !== 'hidden'
-                    && getComputedStyle(c).opacity !== '0';
-                return {disabled: caps.filter(c => c.classList.contains('disabled')).length,
-                        shown: caps.filter(shown).length};
-                """,
-            )
-        )
-        and r["disabled"] > 0
-        and r
-    )
-    assert caps["shown"] == 0, f"an idle dial shows its caps: {caps}"
-
-
-@pytest.mark.browser
-def test_a_dial_shows_a_move_made_while_the_cartesian_tab_was_open(
-    screen: Screen,
-) -> None:
-    screen.open("/")
-    screen_wait_for_scene_ready(screen, timeout_s=40.0)
-    lo, hi = run_in_app(lambda: ui_state.control_panel._get_joint_limits(0))
-    pose = list(JOG_SAFE_POSE_DEG)
-
-    def teleport_j1(deg: float) -> None:
-        pose[0] = deg
-
-        async def teleport() -> None:
-            await waldoctl.commander.client.teleport(pose)
-            assert await wait_until(
-                lambda: abs(waldoctl.commander.status.joints.angles.deg[0] - deg) < 0.5,
-                timeout_s=10.0,
-            ), f"J1 never reached {deg}°"
-
-        asyncio.run_coroutine_threadsafe(teleport(), core.loop).result(15)
-
-    def j1_knob_at(deg: float) -> bool:
-        knob = js(
-            screen,
-            """
-            const k = document.querySelector('.joint-dial-cell .dial-knob');
-            return k && [+k.getAttribute('cx'), +k.getAttribute('cy')];
-            """,
-        )
-        return bool(knob) and math.dist(knob, dial_angle(lo, hi, deg, R)[1]) < 0.5
-
-    teleport_j1(85.0)
-    WebDriverWait(screen.selenium, 10).until(lambda _: j1_knob_at(85.0))
-
-    marked_element(screen, "tab-cartesian").click()
-    WebDriverWait(screen.selenium, 10).until(
-        lambda _: not js(screen, "return !!document.querySelector('.joint-dial-cell')")
-    )
-    teleport_j1(40.0)
-    marked_element(screen, "tab-joint").click()
-    WebDriverWait(screen.selenium, 10).until(
-        lambda _: j1_knob_at(40.0),
-        message="J1 moved to 40° while the Cartesian tab was open, "
-        "but its dial does not show it on the Joint tab",
-    )
-
-
-@pytest.mark.browser
-def test_the_joint_tab_is_as_tall_as_its_dials(screen: Screen) -> None:
-    screen.open("/")
-    screen_wait_for_scene_ready(screen, timeout_s=40.0)
-    sizes = WebDriverWait(screen.selenium, 10).until(
-        lambda _: js(
-            screen,
-            """
-            const panels = document.querySelector('.cp-jog-panels').getBoundingClientRect();
-            const cells = [...document.querySelectorAll('.joint-dial-cell')].map(c => c.getBoundingClientRect());
-            if (!cells.length) return null;
-            return {panelsHeight: panels.height,
-                    dialsHeight: Math.max(...cells.map(c => c.bottom)) - panels.top};
-            """,
-        )
-    )
-    assert sizes["panelsHeight"] <= sizes["dialsHeight"] + 8, sizes

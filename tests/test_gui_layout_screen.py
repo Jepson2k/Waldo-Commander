@@ -1,17 +1,16 @@
 """Compact panels remain usable at laptop sizes and enlarged browser text."""
 
 import asyncio
-import json
 
 import pytest
 import waldoctl
 from nicegui import Client, core
 from selenium.common.exceptions import StaleElementReferenceException
-from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl.setup import Frame, Pose, SetupSnapshot
 
-from tests.helpers.browser_helpers import dismiss_dialogs, marked_element, run_in_app
+from tests.helpers.browser_helpers import marked_element, run_in_app
+from tests.helpers.browser_session import wait
 from tests.helpers.wait import screen_wait_for_scene_ready
 from tests.test_par6_backend import par6_env, requires_par6  # noqa: F401
 from waldo_commander.setup import SetupStore
@@ -50,7 +49,6 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
     )
     screen.open("/")
     screen_wait_for_scene_ready(screen, timeout_s=60)
-    dismiss_dialogs(screen)
     assert run_in_app(lambda: ui_state.active_robot.name.lower()) == backend
 
     def marked(marker):
@@ -66,7 +64,10 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             return True
 
         WebDriverWait(
-            screen.selenium, 10, ignored_exceptions=(StaleElementReferenceException,)
+            screen.selenium,
+            10,
+            poll_frequency=0.05,
+            ignored_exceptions=(StaleElementReferenceException,),
         ).until(click_visible)
         screen.selenium.execute_cdp_cmd(
             "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 600, "y": 4}
@@ -75,7 +76,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
     def settings():
         # The gear in the bottom-left rail opens the Settings dialog.
         click("tab-settings")
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda _: run_in_app(lambda: ui_state.settings_content.dialog.value)
         )
 
@@ -95,19 +96,14 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             assert await client.wait_command(await client.select_tool(key), timeout=10)
 
         asyncio.run_coroutine_threadsafe(select(), core.loop).result(20)
-        WebDriverWait(screen.selenium, 20).until(
+        wait(screen, 20).until(
             lambda _: run_in_app(lambda: marked("select-tool").value == key)
         )
 
-    results = []
-    # 941 is the viewport a maximised browser leaves on a 1080p screen.
-    for width, height, zoom in [
-        (1920, 941, 1),
-        (1366, 900, 1),
-        (1366, 768, 1),
-        # At 125%, 960 physical pixels leaves 768 CSS pixels.
-        (1366, 960, 1.25),
-    ]:
+    # 941 is the viewport a maximised browser leaves on a 1080p screen. At
+    # 125%, 960 physical pixels leave 1093x768 CSS pixels, tighter than either
+    # 1366x768 or 1366x900 at 100%.
+    for width, height, zoom in [(1920, 941, 1), (1366, 960, 1.25)]:
         screen.selenium.execute_cdp_cmd(
             "Emulation.setDeviceMetricsOverride",
             {
@@ -117,7 +113,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "mobile": False,
             },
         )
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda d: d.execute_script("""
                 return ['.status-footer', '.overlay-br', '.side-tab-bar.bottom-0']
                     .every(selector => document.querySelector(selector));
@@ -163,7 +159,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         """
         for key in categories:
             click(f"settings-cat-{key}")
-            WebDriverWait(screen.selenium, 10).until(
+            wait(screen, 10).until(
                 lambda d: d.execute_script(
                     """
                     const panel = arguments[0].closest('.q-tab-panel');
@@ -181,14 +177,6 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             dimensions = screen.selenium.execute_script(
                 measure_category, marked_element(screen, f"settings-group-{key}")
             )
-            if zoom > 1:
-                # Only the tightest window is worth a picture of every category.
-                screen.selenium.save_screenshot(
-                    str(
-                        tmp_path
-                        / f"{backend}-settings-{key}-{width}-{height}-{zoom}.png"
-                    )
-                )
             assert dimensions["shown"] > 100, ("the category's rows are on screen", key)
             assert dimensions["content"] <= dimensions["width"] + 1, (key, dimensions)
             assert dimensions["bottom"] <= dimensions["viewport"] + 1, (key, dimensions)
@@ -204,7 +192,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             )
             assert not dimensions["clipped"], (key, dimensions)
         click("settings-cat-tool")
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda _: marked_element(screen, "select-tool").is_displayed()
         )
         if height >= 941:
@@ -212,7 +200,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             # gripper fitted in its daemon config, so review that tool.
             if backend == "parol6":
                 select_tool("SSG-48")
-                WebDriverWait(screen.selenium, 20).until(
+                wait(screen, 20).until(
                     lambda _: marked_element(
                         screen, "select-tool-variant"
                     ).is_displayed()
@@ -226,7 +214,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             )
             if backend == "parol6":
                 select_tool("NONE")
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda _: run_in_app(
                 lambda: (
                     marked("select-tool").value == waldoctl.commander.status.tool.key
@@ -234,12 +222,12 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             )
         )
         click("settings-cat-advanced")
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda _: marked_element(screen, "settings-backend-select").is_displayed()
         )
         assert run_in_app(lambda: marked("settings-backend-select").value) == backend
         click("settings-close")
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda _: not run_in_app(lambda: ui_state.settings_content.dialog.value)
         )
 
@@ -253,7 +241,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         # The strip can rebuild while the preview and cursor settle. Query
         # the rendered controls together, rather than resolve a server-side
         # element id that can be replaced before it reaches the browser.
-        WebDriverWait(screen.selenium, 30).until(
+        wait(screen, 30).until(
             lambda d: d.execute_script("""
                 return [...document.querySelectorAll('.skill-strip button')]
                     .some(e => e.offsetParent !== null && e.textContent.includes('Teach now'));
@@ -272,11 +260,8 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         assert bounds["right"] <= bounds["viewportWidth"] + 1, bounds
         assert bounds["codeTop"] >= bounds["bottom"] - 1, bounds
         assert bounds["code"] > 60, ("the code stays in view under the strip", bounds)
-        screen.selenium.save_screenshot(
-            str(tmp_path / f"{backend}-skills-{width}-{height}-{zoom}.png")
-        )
 
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda d: d.execute_script(
                 "return (document.querySelector('.editor-tabs-scroll')?.clientWidth || 0) > 0"
             )
@@ -286,18 +271,6 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             return {width:e.clientWidth, total:e.closest('.q-tab-panel').clientWidth};
         """)
         assert dimensions["width"] >= 140, dimensions
-        screen.selenium.save_screenshot(
-            str(tmp_path / f"{backend}-program-{width}-{height}-{zoom}.png")
-        )
-        results.append(
-            {
-                "viewport": [width, height],
-                "zoom": zoom,
-                "editor": dimensions,
-                "skills": bounds,
-            }
-        )
-    (tmp_path / f"{backend}-layout.json").write_text(json.dumps(results, indent=2))
 
     if backend == "par6":
         from nicegui import ui
@@ -312,26 +285,23 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             },
         )
         click("footer-events")
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda _: marked_element(screen, "diag-torque-chart").is_displayed()
         )
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda _: run_in_app(
                 lambda: bool(marked("diag-torque-chart").options["series"][0]["data"])
             )
         )
         _ = marked_element(screen, "diag-expand-chart").location_once_scrolled_into_view
-        screen.selenium.save_screenshot(str(tmp_path / "par6-torque.png"))
         click("diag-expand-chart")
-        WebDriverWait(screen.selenium, 10).until(
-            lambda d: d.find_elements(By.CSS_SELECTOR, ".q-dialog .nicegui-echart")
-        )
-        screen.selenium.save_screenshot(str(tmp_path / "par6-torque-expanded.png"))
-        (tmp_path / "expanded-browser.json").write_text(
-            json.dumps(screen.selenium.get_log("browser"), indent=2)
+        wait(screen).until(
+            lambda d: d.execute_script(
+                "return !!document.querySelector('.q-dialog .nicegui-echart')"
+            )
         )
         click("expanded-chart-close")
-        WebDriverWait(screen.selenium, 15).until(
+        wait(screen, 15).until(
             lambda d: d.execute_script(
                 "return !Array.from(document.querySelectorAll('.q-dialog')).some(e => e.getClientRects().length)"
             )
@@ -365,10 +335,10 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 expansion.set_value(True)
 
         run_in_app(tune)
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda _: marked_element(screen, "drives-save-config").is_displayed()
         )
-        WebDriverWait(screen.selenium, 10).until(
+        wait(screen, 10).until(
             lambda _: run_in_app(lambda: bool(marked("drives-node-select").options))
         )
         _ = marked_element(
@@ -385,7 +355,6 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         )
         assert geometry["scroll"] > geometry["height"], geometry
         assert geometry["overflow"] == "auto" and geometry["visible"], geometry
-        screen.selenium.save_screenshot(str(tmp_path / "par6-drives-tuning.png"))
 
 
 @pytest.mark.browser
