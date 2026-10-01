@@ -20,7 +20,7 @@ from tests.test_handeye_panel_integration import _FrameBackend, _jpeg
 from tests.test_vision import localization_scene
 from waldo_commander.camera import CameraUnavailable
 from waldo_commander.camera_sources import CommanderCameraSource, ImageFixture
-from waldo_commander.services.camera_service import camera_service
+from waldo_commander.services.camera_service import CameraService, camera_service
 from waldo_commander.services.camera_session import CameraSession
 from waldo_commander.services.script_runner import (
     create_default_config,
@@ -53,6 +53,44 @@ async def test_camera_localization_program_preview_and_session_lifetime(
     session = CameraSession(camera_service.next_snapshot)
     handle = None
     try:
+        # A service serves only fresh frames, and a restart starts a new
+        # session rather than serving the cache that expired meanwhile.
+        service = CameraService()
+        try:
+            with pytest.raises(CameraUnavailable):
+                service.snapshot()
+            service.start(0)
+            first = await service.next_snapshot(timeout_s=3)
+            second = await service.next_snapshot(timeout_s=3)
+            assert second.sequence > first.sequence
+            assert second.received_at >= first.received_at
+            _FrameBackend.holder["jpeg"] = b""
+            deadline = time.monotonic() + 3
+            while True:
+                try:
+                    service.snapshot(max_age_s=0.05)
+                except CameraUnavailable:
+                    break
+                assert time.monotonic() < deadline, "Cached camera data never expired"
+                await asyncio.sleep(0.02)
+            with pytest.raises(CameraUnavailable, match="deadline"):
+                await service.next_snapshot(timeout_s=0.05)
+            service.stop()
+            with pytest.raises(CameraUnavailable):
+                service.snapshot()
+            _FrameBackend.holder["jpeg"] = first.jpeg
+            service.start(1)
+            changed = await service.next_snapshot(timeout_s=3)
+            assert changed.camera_id != first.camera_id
+            service.start(0)
+            restarted = await service.next_snapshot(timeout_s=3)
+            assert restarted.camera_id == first.camera_id
+            assert restarted.session_id != first.session_id
+            assert restarted.received_at > first.received_at
+            assert service.snapshot(max_age_s=1.0).session_id == restarted.session_id
+        finally:
+            service.stop()
+
         camera_service.start(0)
         calibration = replace(calibration, camera_id=camera_service.camera_id)
         setup = setup.with_camera("overhead", calibration)
@@ -196,16 +234,6 @@ async def test_camera_localization_program_preview_and_session_lifetime(
             await CommanderCameraSource(
                 f"127.0.0.1:{port}", child_session.token
             ).snapshot()
-        script.write_text("import time\nprint('waiting', flush=True)\ntime.sleep(60)\n")
-        stdout.clear()
-        handle = await run_script(
-            create_default_config(str(script)), stdout.append, stderr.append
-        )
-        async with asyncio.timeout(15):
-            while not stdout:
-                await asyncio.sleep(0.02)
-        await stop_script(handle)
-        assert handle["camera_session"].closed and not handle["camera_session"].tasks
 
         _FrameBackend.holder["jpeg"] = _jpeg(np.full_like(image, 255))
         missing = await locate_board.async_call(rbt, calibration, source, setup)

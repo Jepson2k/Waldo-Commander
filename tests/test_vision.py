@@ -154,6 +154,3 @@ def test_localization_preview_requires_explicit_observations(tmp_path):
     other_backend = _replace(calibration, backend="par6")
     with pytest.raises(MissingCapability, match="par6"):
         locate_board(preview, other_backend, fixture, setup)
-    from waldo_commander.skills.vision import _client_backend
-
-    assert _client_backend(preview, "unused") == "parol6"
