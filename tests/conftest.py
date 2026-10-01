@@ -453,7 +453,8 @@ def class_screen(
             # Stop server before exiting context
             screen_instance.stop_server()
         # NiceGUI globals reset on context exit (class teardown), which
-        # clears run.process_pool
+        # clears run.process_pool and pops "__main__"
+        sys.modules.setdefault("__main__", _MAIN_MODULE)
         _session_pool.restore()
     finally:
         os.environ.pop("NICEGUI_SCREEN_TEST_PORT", None)

@@ -400,6 +400,12 @@ async def test_nested_imported_skill_keeps_preview_and_gui_steps(user: User) -> 
                 if not any(entry is seen for seen in earlier)
             )
 
+        # A launch refuses while the controller holds queued commands, and
+        # the preview fits the program's tool through the queue.
+        client = waldoctl.commander.client
+        async with asyncio.timeout(10):
+            while await client.queue():
+                await asyncio.sleep(0.05)
         try:
             user.find(marker="editor-step-program").click()
             # The launch resets the executing command, so the last run's

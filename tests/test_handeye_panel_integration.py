@@ -569,9 +569,13 @@ async def test_handeye_panel_workflow(
         user.find(marker="handeye-clear").click()
         await asyncio.sleep(0)
         assert not panel._samples
+        user.find(marker="handeye-step-board").click()
+        await asyncio.sleep(0)
         next(iter(user.find(marker="camera-mount").elements)).set_value("fixed")
         await asyncio.sleep(0)
         assert panel._mount == "fixed"
+        user.find(marker="handeye-step-views").click()
+        await asyncio.sleep(0)
         for i in range(len(VIEW_DELTAS_DEG)):
             frame = await capture_view(i, fixed=True)
         n_views = len(VIEW_DELTAS_DEG)

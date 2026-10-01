@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from nicegui import run
 import waldoctl
 import numpy as np
 from waldoctl.recordings import Demonstration, RecordedSample
@@ -138,7 +139,9 @@ async def test_observed_motion_records_cadence_gaps_and_controller_loss(
                 "with RobotClient() as rbt:\n"
                 f"    replay_demonstration(rbt, load_demonstration({str(path)!r}))\n"
             )
-            preview = _run_simulation_isolated(source, np.radians(first_joints))
+            preview = await run.cpu_bound(
+                _run_simulation_isolated, source, np.radians(first_joints)
+            )
             assert preview["error"] is None, preview["error"]
             assert any(
                 b.move_type is not None and b.rows > 0
@@ -381,8 +384,10 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
 
     # The generated program plans through the real preview, and its last
     # position is where the demonstration ended.
-    preview = _run_simulation_isolated(
-        conversion.source, np.radians(recording.samples[0].joints_deg)
+    preview = await run.cpu_bound(
+        _run_simulation_isolated,
+        conversion.source,
+        np.radians(recording.samples[0].joints_deg),
     )
     assert preview["error"] is None, preview["error"]
     planned = [b for b in preview["commanded"].blocks if b.move_type is not None]
@@ -433,7 +438,8 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         gapped, robot, program="bench", directory=tmp_path / "gapped"
     )
     assert "# not observed" in bridged.source, bridged.source
-    preview = _run_simulation_isolated(
+    preview = await run.cpu_bound(
+        _run_simulation_isolated,
         "from parol6 import RobotClient\nwith RobotClient() as rbt:\n"
         + textwrap.indent(bridged.source, "    ")
         + "\n",
@@ -513,7 +519,8 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         samples=samples,
     )
     lines = span_to_lines(swung, robot, program="swing", directory=tmp_path)
-    preview = _run_simulation_isolated(
+    preview = await run.cpu_bound(
+        _run_simulation_isolated,
         "from parol6 import RobotClient\nwith RobotClient() as rbt:\n"
         + textwrap.indent(lines.source, "    ")
         + "\n",
