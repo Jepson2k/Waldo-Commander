@@ -280,8 +280,8 @@ async def test_tool_state_reaches_the_preview_and_the_scrubbed_arm(user: User):
         )
         program = waldoctl.commander.programs.active
         program.source = textarea.value
-        await simulation.run_simulation()
-        assert program.dry_run.path_segments
+        error = await simulation.run_simulation()
+        assert program.dry_run.path_segments, error
         timeline = playback._ensure_timeline()
         assert timeline is not None
         slider = next(iter(user.find(marker="editor-scrub-slider").elements))
