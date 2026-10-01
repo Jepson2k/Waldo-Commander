@@ -370,13 +370,7 @@ async def test_settings_follows_controller_variants_and_setup_applied_tcp(
     user: User,
 ) -> None:
     """Settings binds TCP edits to the tool the controller actually carries,
-    follows a variant another client selected, and shows a transform the
-    Setup panel applied so the next nudge does not push stale values."""
-    from waldoctl.setup import TcpCalibration
-
-    from waldo_commander.components.settings import adopt_applied_tcp
-    from waldo_commander.services.tcp_calibration import apply_tcp_calibration
-
+    and follows a variant another client selected."""
     await user.open("/")
     await wait_for_app_ready()
     client = ui_state.control_panel.client
@@ -428,21 +422,6 @@ async def test_settings_follows_controller_variants_and_setup_applied_tcp(
             what="the variant select adopting vertical",
         )
         assert app_storage.general.get("tool_variant_PNEUMATIC") == "vertical"
-
-        # Applied from the Setup panel's calibration editor.
-        calibration = TcpCalibration(
-            (25.0, 0.0, 0.0, 0.0, 90.0, 0.0), "PNEUMATIC", "vertical"
-        )
-        await apply_tcp_calibration(client, calibration)
-        adopt_applied_tcp(calibration)
-        await poll_until(
-            lambda: shown("tcp-offset-x").value,
-            lambda v: v == 25.0,
-            timeout_s=5,
-            what="Settings showing the applied X",
-        )
-        user.find(marker="tcp-offset-y").trigger("update:modelValue", 1.0)
-        await expect_transform([25.0, 1.0, 0.0, 0.0, 90.0, 0.0])
     finally:
         await client.set_tcp_transform()
         await client.select_tool("NONE")
