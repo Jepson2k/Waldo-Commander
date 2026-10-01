@@ -345,6 +345,9 @@ async def test_mcp_drives_the_same_gui_state_as_the_page(
             active.dry_run.path_segments = segments_from_record(commanded, [])
             active.dry_run.total_steps = 1
             playback.invalidate_timeline()
+            # The page reclaims the lease whenever it drives, as the mirrored
+            # pause just did; each segment starts by taking it back.
+            await client.call_tool("control.take_control")
             await client.call_tool("simulation.play_pause")
             assert active.dry_run.playback.is_active, (
                 "play_pause should start the preview when the MCP session holds "
@@ -359,6 +362,7 @@ async def test_mcp_drives_the_same_gui_state_as_the_page(
             # simulator mode makes the controller open the real serial port,
             # which doesn't exist on a test box.
             monkeypatch.setattr(waldoctl.commander.client, "simulator", _fake_simulator)
+            await client.call_tool("control.take_control")
             await client.call_tool("simulation.set_simulator", {"enabled": False})
             assert flips == [False]
             assert panel._robot_btn._props.get("color") == "wc-control", (

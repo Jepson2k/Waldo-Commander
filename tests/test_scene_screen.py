@@ -296,8 +296,17 @@ class TestScene:
         with _camera_kept(screen):
             js(screen, _ZOOM, 1.3)
             _wait(lambda: urdf.snap.joint_deg == 5.0, 1.0, "the 5° band")
-            hover_scene_object(screen, "link:L6")
-            snap = _wait(lambda: js(screen, _GIZMO_SNAP, True), 10.0, "the gizmo")
+            # A hover aimed while the teleported pose is still being drawn
+            # can land beside the link, so aim again until the gizmo comes.
+            deadline = time.monotonic() + 10.0
+            while True:
+                hover_scene_object(screen, "link:L6")
+                try:
+                    snap = _wait(lambda: js(screen, _GIZMO_SNAP, True), 1.5, "")
+                    break
+                except AssertionError:
+                    if time.monotonic() > deadline:
+                        raise AssertionError("the gizmo never attached on hover")
             assert snap["t"] == pytest.approx(0.010) and snap["r"] == pytest.approx(
                 math.radians(5.0)
             )
