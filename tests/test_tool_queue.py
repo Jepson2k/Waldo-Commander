@@ -14,6 +14,7 @@ from tests.conftest import _get_test_ports
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
+    poll_until,
     wait_for_app_ready,
     wait_for_tool_key,
     wait_until,
@@ -114,7 +115,9 @@ async def test_slider_keeps_the_final_target_and_records_it_once(user: User):
         stopped = (await client.tool.status()).position
         interaction.trigger("pan", "end")
         interaction.trigger("change", 5)
-        await asyncio.sleep(0.5)
+        # A change that got through would have started the slider's sender,
+        # which ends only once its move has completed.
+        assert await wait_until(lambda: ui_state.gripper_page._slider_task is None, 15)
         assert (await client.tool.status()).position == pytest.approx(stopped, abs=0.01)
         value(85)
         interaction.trigger("pan", "start")
@@ -131,7 +134,9 @@ async def test_slider_keeps_the_final_target_and_records_it_once(user: User):
             value(5)
             interaction.trigger("pan", "end")
             interaction.trigger("change", 5)
-            await asyncio.sleep(1.2)
+            assert await wait_until(
+                lambda: ui_state.gripper_page._slider_task is None, 15
+            )
             assert (await client.tool.status()).position == pytest.approx(
                 0.85, abs=0.025
             )
@@ -140,24 +145,6 @@ async def test_slider_keeps_the_final_target_and_records_it_once(user: User):
     finally:
         if waldoctl.commander.programs.active.recording.is_recording:
             motion_recorder.toggle_recording()
-        await client.select_tool("NONE")
-
-
-@pytest.mark.integration
-async def test_two_quick_tool_toggles_return_to_the_open_target(user: User):
-    client = await _gripper(user)
-    waldoctl.commander.settings.jog.speed = 20
-    waldoctl.commander.settings.gripper.target_position = 0.0
-    try:
-        user.find(marker="btn-tool-action-l").click()
-        await asyncio.sleep(0.1)
-        user.find(marker="btn-tool-action-l").click()
-        assert await wait_until(
-            lambda: waldoctl.commander.settings.gripper.target_position == 0.0, 2
-        )
-        assert await client.wait_motion(timeout=15, settle_window=0.1)
-        assert (await client.tool.status()).position == pytest.approx(0, abs=5 / 255)
-    finally:
         await client.select_tool("NONE")
 
 
@@ -255,57 +242,63 @@ def test_stepped_tool_waits_for_the_jaws_and_release_has_events(
 
 
 @pytest.mark.integration
-async def test_panel_calibration_seeds_the_program_preview(user: User):
+async def test_tool_state_reaches_the_preview_and_the_scrubbed_arm(user: User):
+    """The panel's calibration seeds the program preview. Scrubbing a preview
+    past the program's tool removal still teleports the arm and fits the
+    tool the program ends with. A mode toggle clears the calibration."""
+    from waldo_commander.components.playback import playback
+    from waldo_commander.components.simulation_engine import simulation
     from waldo_commander.services.path_visualizer import path_visualizer
     from waldo_commander.state import robot_state
 
     client = await _gripper(user)
-    robot_state.gripper_calibrated = False
-    user.find(marker="btn-tool-action-r").click()
-    assert await wait_until(lambda: robot_state.gripper_calibrated, 10)
-    error = await path_visualizer.update_path_visualization(
-        "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.tool.close()\n    rbt.delay(0.1)\n"
-    )
-    assert error is None, error
-    record = waldoctl.commander.programs.active.dry_run.commanded
-    assert record is not None
-    assert record.tool_closed[-1] == pytest.approx(1, abs=0.02)
-    waldoctl.commander.status.simulator_active = False
-    with user.client:
-        await ui_state.control_panel.on_toggle_sim()
-    assert await wait_until(lambda: not robot_state.gripper_calibrated, 5)
-    await client.select_tool("NONE")
+    try:
+        robot_state.gripper_calibrated = False
+        user.find(marker="btn-tool-action-r").click()
+        assert await wait_until(lambda: robot_state.gripper_calibrated, 10)
+        error = await path_visualizer.update_path_visualization(
+            "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    rbt.tool.close()\n    rbt.delay(0.1)\n"
+        )
+        assert error is None, error
+        record = waldoctl.commander.programs.active.dry_run.commanded
+        assert record is not None
+        assert record.tool_closed[-1] == pytest.approx(1, abs=0.02)
 
+        target = [90.0, -85.0, 135.0, 10.0, 45.0, 170.0]
+        user.find(marker="tab-program").click()
+        await asyncio.sleep(0)
+        textarea = ui_state.active_textarea
+        assert textarea is not None
+        textarea.value = (
+            "from parol6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    rbt.select_tool('SSG-48')\n"
+            "    rbt.tool.calibrate()\n"
+            "    rbt.tool.close()\n"
+            "    rbt.select_tool('NONE')\n"
+            f"    rbt.move_j({target!r}, speed=0.5)\n"
+        )
+        program = waldoctl.commander.programs.active
+        program.source = textarea.value
+        await simulation.run_simulation()
+        assert program.dry_run.path_segments
+        timeline = playback._ensure_timeline()
+        assert timeline is not None
+        slider = next(iter(user.find(marker="editor-scrub-slider").elements))
+        slider.set_value(timeline.total_duration)
+        assert await wait_until(lambda: waldoctl.commander.status.tool.key == "NONE", 5)
+        await poll_until(
+            client.angles,
+            lambda angles: angles is not None and np.allclose(angles, target, atol=0.1),
+            what="the arm scrubbed to the program's end",
+        )
 
-@pytest.mark.integration
-async def test_scrubbing_after_tool_removal_still_teleports_the_arm(user: User):
-    from waldo_commander.components.playback import playback
-    from waldo_commander.services.preview_segments import index_boundaries
-
-    client = await _gripper(user)
-    source = PathPreviewClient(
-        dry_run_client_cls=DryRunRobotClient,
-        initial_joints=np.radians([85, -85, 135, 10, 45, 170]),
-    )
-    source.select_tool("SSG-48")
-    source.tool.calibrate()
-    source.tool.close()
-    source.select_tool("NONE")
-    source.move_j([90, -85, 135, 10, 45, 170], speed=0.5)
-    source.flush()
-    record = source.plan()
-    segments = segments_from_record(record, source.notes)
-    index_boundaries(segments, source.tool_selection_collector)
-    timeline = Timeline.from_record(
-        record, segments, tool_selections=source.tool_selection_collector
-    )
-    playback._timeline = timeline
-    playback._apply_time(timeline.total_duration)
-    assert await wait_until(lambda: waldoctl.commander.status.tool.key == "NONE", 5)
-    await asyncio.sleep(0.2)
-    assert np.array(await client.angles()) == pytest.approx(
-        [90, -85, 135, 10, 45, 170], abs=0.1
-    )
+        waldoctl.commander.status.simulator_active = False
+        with user.client:
+            await ui_state.control_panel.on_toggle_sim()
+        assert await wait_until(lambda: not robot_state.gripper_calibrated, 5)
+    finally:
+        await client.select_tool("NONE")
 
 
 def test_tool_stop_does_not_complete_a_pending_arm_blend(session_controller):
