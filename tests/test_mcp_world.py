@@ -22,65 +22,23 @@ from waldoctl.world import world_to_dict
 
 
 @pytest.mark.integration
-async def test_world_attachment_context_survives_mcp_round_trip(user: User):
-    from tests.helpers.wait import enable_sim, ensure_robot_ready_for_motion
-    from waldo_commander.services.control_lease import control_lease
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    robot = waldoctl.commander.client
-    scene = waldoctl.commander.scene
-    assert scene is not None
-    await scene.refresh_from_backend()
-    world = await robot.shapes()
-    assert world is not None
-    try:
-        async with Client(get_mcp()) as client:
-            await client.call_tool("control.take_control")
-            snapshot = _payload(await client.call_tool("world.get"))
-            part = Sphere(name="mcp-part", radius=0.01).attach(
-                flange_pose=(0, 0, 0.25, 0, 0, 0),
-                epoch=snapshot["attachment_epoch"],
-            )
-            assert snapshot["attachment_epoch"] == world.attachment_epoch
-            await client.call_tool("world.set_shapes", {"shapes": [part.to_wire()]})
-            async with asyncio.timeout(10):
-                while not scene.confirmed:
-                    await asyncio.sleep(0.01)
-            applied = await robot.shapes()
-            assert applied is not None and applied.program == (part,)
-            assert _payload(await client.call_tool("world.get"))["attachments_valid"]
-
-            assert await robot.estop() == 1
-            async with asyncio.timeout(10):
-                while True:
-                    await scene.refresh_from_backend()
-                    stale = _payload(await client.call_tool("world.get"))
-                    if not stale["attachments_valid"]:
-                        break
-                    await asyncio.sleep(0.01)
-            assert stale["attachment_epoch"] != snapshot["attachment_epoch"]
-            assert stale["program"][0][7][0] == snapshot["attachment_epoch"]
-    finally:
-        control_lease.reset()
-        await robot.set_shapes([])
-        await robot.reset()
-        await scene.refresh_from_backend()
-
-
-@pytest.mark.integration
 async def test_world_tools_edit_the_displayed_world_and_the_library(
     user: User, tmp_path, monkeypatch
 ) -> None:
+    """The LLM edits the world the page shows and the backend enforces, keeps
+    a library of objects, exports the installation TOML, and a held part's
+    attachment context survives the round trip until an estop invalidates it."""
     from fastmcp.exceptions import ToolError
 
+    from tests.helpers.wait import enable_sim, ensure_robot_ready_for_motion
     from waldo_commander.services.control_lease import MCP, control_lease
 
     monkeypatch.setattr(world_files, "library_dir", lambda: tmp_path / "lib")
     await user.open("/")
     await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    robot = waldoctl.commander.client
     scene = waldoctl.commander.scene
     assert scene is not None
 
@@ -299,8 +257,41 @@ async def test_world_tools_edit_the_displayed_world_and_the_library(
             assert [e["name"] for e in parsed["installation_shapes"]] == ["wall"]
             assert parsed["installation_shapes"][0]["kind"] == "box"
             assert parsed["installation_shapes"][0]["pose"][0] == 0.5
+
+            # A held part keeps its attachment context through the MCP round
+            # trip; an estop moves the epoch and the part no longer matches it.
+            await scene.refresh_from_backend()
+            world = await robot.shapes()
+            assert world is not None
+            snapshot = _payload(await client.call_tool("world.get"))
+            part = Sphere(name="mcp-part", radius=0.01).attach(
+                flange_pose=(0, 0, 0.25, 0, 0, 0),
+                epoch=snapshot["attachment_epoch"],
+            )
+            assert snapshot["attachment_epoch"] == world.attachment_epoch
+            await client.call_tool("world.set_shapes", {"shapes": [part.to_wire()]})
+            async with asyncio.timeout(10):
+                while not scene.confirmed:
+                    await asyncio.sleep(0.01)
+            applied = await robot.shapes()
+            assert applied is not None and applied.program == (part,)
+            assert _payload(await client.call_tool("world.get"))["attachments_valid"]
+
+            assert await robot.estop() == 1
+            async with asyncio.timeout(10):
+                while True:
+                    await scene.refresh_from_backend()
+                    stale = _payload(await client.call_tool("world.get"))
+                    if not stale["attachments_valid"]:
+                        break
+                    await asyncio.sleep(0.01)
+            assert stale["attachment_epoch"] != snapshot["attachment_epoch"]
+            assert stale["program"][0][7][0] == snapshot["attachment_epoch"]
     finally:
         control_lease.reset()
+        await robot.set_shapes([])
+        await robot.reset()
+        await scene.refresh_from_backend()
         scene.shapes = []
 
 
