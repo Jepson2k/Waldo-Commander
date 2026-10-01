@@ -44,86 +44,51 @@ def test_get_latest_frame_returns_placeholder_then_cached():
 
 
 @pytest.mark.unit
-def test_backend_selection_prefers_linuxpy_on_linux():
-    """On Linux, start() tries LinuxpyBackend first, falls back to OpenCV."""
-
-    open_calls: list[str] = []
-
-    class FakeLinuxpy(LinuxpyBackend):
-        def open(self, device, width, height):
-            open_calls.append("linuxpy")
-            return True
-
-        def read_frame(self):
-            return _SAMPLE_JPEG
-
-        def close(self):
-            pass
-
-    class FakeOpenCV(OpenCVBackend):
-        def open(self, device, width, height):
-            open_calls.append("opencv")
-            return True
-
-        def read_frame(self):
-            return _SAMPLE_JPEG
-
-        def close(self):
-            pass
-
-    cs = CameraService()
-
-    with (
-        patch("waldo_commander.services.camera_service.LinuxpyBackend", FakeLinuxpy),
-        patch("waldo_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
-        patch("waldo_commander.services.camera_service.sys") as mock_sys,
+def test_backend_selection_prefers_linuxpy_and_falls_back_to_opencv():
+    """On Linux, start() tries LinuxpyBackend first and falls back to OpenCV
+    when it cannot open the device."""
+    for linuxpy_opens, expected in (
+        (True, ["linuxpy"]),
+        (False, ["linuxpy", "opencv"]),
     ):
-        mock_sys.platform = "linux"
-        cs.start(0)
+        open_calls: list[str] = []
 
-    assert cs.active
-    assert open_calls == ["linuxpy"]
-    cs.stop()
+        class FakeLinuxpy(LinuxpyBackend):
+            def open(self, device, width, height):
+                open_calls.append("linuxpy")
+                return linuxpy_opens
 
+            def read_frame(self):
+                return _SAMPLE_JPEG
 
-@pytest.mark.unit
-def test_backend_fallback_to_opencv_when_linuxpy_fails():
-    """When LinuxpyBackend.open() returns False, falls back to OpenCV."""
+            def close(self):
+                pass
 
-    open_calls: list[str] = []
+        class FakeOpenCV(OpenCVBackend):
+            def open(self, device, width, height):
+                open_calls.append("opencv")
+                return True
 
-    class FailLinuxpy(LinuxpyBackend):
-        def open(self, device, width, height):
-            open_calls.append("linuxpy")
-            return False
+            def read_frame(self):
+                return _SAMPLE_JPEG
 
-        def close(self):
-            pass
+            def close(self):
+                pass
 
-    class FakeOpenCV(OpenCVBackend):
-        def open(self, device, width, height):
-            open_calls.append("opencv")
-            return True
+        cs = CameraService()
+        with (
+            patch(
+                "waldo_commander.services.camera_service.LinuxpyBackend", FakeLinuxpy
+            ),
+            patch("waldo_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
+            patch("waldo_commander.services.camera_service.sys") as mock_sys,
+        ):
+            mock_sys.platform = "linux"
+            cs.start(0)
 
-        def read_frame(self):
-            return _SAMPLE_JPEG
-
-        def close(self):
-            pass
-
-    cs = CameraService()
-
-    with (
-        patch("waldo_commander.services.camera_service.LinuxpyBackend", FailLinuxpy),
-        patch("waldo_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
-        patch("waldo_commander.services.camera_service.sys") as mock_sys,
-    ):
-        mock_sys.platform = "linux"
-        cs.start(0)
-
-    assert cs.active
-    assert open_calls == ["linuxpy", "opencv"]
-    cs.stop()
+        assert cs.active
+        assert open_calls == expected
+        cs.stop()
 
 
 @pytest.mark.skipif(

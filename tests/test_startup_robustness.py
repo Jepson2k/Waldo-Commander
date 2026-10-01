@@ -12,7 +12,7 @@ from nicegui.testing import User
 
 import waldoctl
 
-from tests.helpers.wait import wait_for_app_ready, wait_for_urdf_ready
+from tests.helpers.wait import wait_for_app_ready, wait_for_urdf_ready, wait_until
 from waldo_commander.state import ui_state
 
 
@@ -26,40 +26,6 @@ async def _wait_for_stored_mode(expected: str, timeout_s: float = 2.5) -> None:
         f"startup_mode did not become {expected!r}, "
         f"still {ng_app.storage.general.get('startup_mode')!r}"
     )
-
-
-@pytest.mark.integration
-async def test_sim_toggle_persists_startup_mode(
-    user: User, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The robot/sim toggle writes the ``startup_mode`` preference.
-
-    The backend flip is stubbed: actually leaving simulator mode makes the
-    controller open the real serial port, which doesn't exist on a test box
-    (same approach as test_set_simulator_syncs_gui_mode_visuals). The subject
-    is the persisted preference and the GUI-side mode flag.
-    """
-    await user.open("/")
-    await wait_for_app_ready()
-
-    panel = ui_state.control_panel
-    assert waldoctl.commander.status.simulator_active is True
-
-    async def _fake_simulator(enabled: bool) -> int:
-        return 1
-
-    monkeypatch.setattr(panel.client, "simulator", _fake_simulator)
-    try:
-        user.find(marker="btn-robot-toggle").click()
-        await _wait_for_stored_mode("hardware")
-        assert waldoctl.commander.status.simulator_active is False
-
-        user.find(marker="btn-robot-toggle").click()
-        await _wait_for_stored_mode("sim")
-        assert waldoctl.commander.status.simulator_active is True
-    finally:
-        waldoctl.commander.status.simulator_active = True
-        ng_app.storage.general.pop("startup_mode", None)
 
 
 @pytest.mark.unit
@@ -144,23 +110,30 @@ async def test_page_renders_without_backend_status(
 
 
 @pytest.mark.integration
-async def test_hardware_autodetect_retries_after_slow_boot(
+async def test_sim_toggle_persists_and_hardware_autodetect_retries(
     user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The sim→robot auto-switch lives in check_ping and retries, so
-    hardware that produces its first frames after the page-load window
-    still flips the mode; a pinned sim preference suppresses the switch.
+    """The robot/sim toggle writes the ``startup_mode`` preference. The
+    sim→robot auto-switch lives in check_ping and retries, so hardware that
+    produces its first frames after the page-load window still flips the
+    mode; a pinned sim preference suppresses the switch.
 
-    The running app's module globals live in a runpy namespace the test
-    can't reach, so the fakes go on the shared client instance and the
-    pinned-sim leg runs first — the one-shot switch latch would otherwise
-    confound the negative assertion.
+    The backend flip is stubbed: actually leaving simulator mode makes the
+    controller open the real serial port, which doesn't exist on a test box
+    (same approach as test_set_simulator_syncs_gui_mode_visuals). The
+    running app's module globals live in a runpy namespace the test can't
+    reach, so the fakes go on the shared client instance and the pinned-sim
+    leg runs before the unpinned one — the one-shot switch latch would
+    otherwise confound the negative assertion.
     """
+    pings = 0
 
     class _HwPing:
         hardware_connected = True
 
     async def fake_ping():
+        nonlocal pings
+        pings += 1
         return _HwPing()
 
     async def fake_simulator(enabled: bool) -> int:
@@ -170,27 +143,35 @@ async def test_hardware_autodetect_retries_after_slow_boot(
     await wait_for_app_ready()
     assert waldoctl.commander.status.simulator_active is True
 
-    # Hardware "appears" only after the page finished loading.
     client = ui_state.control_panel.client
-    monkeypatch.setattr(client, "ping", fake_ping)
     monkeypatch.setattr(client, "simulator", fake_simulator)
     try:
+        user.find(marker="btn-robot-toggle").click()
+        await _wait_for_stored_mode("hardware")
+        assert waldoctl.commander.status.simulator_active is False
+
+        user.find(marker="btn-robot-toggle").click()
+        await _wait_for_stored_mode("sim")
+        assert waldoctl.commander.status.simulator_active is True
+
+        # Hardware "appears" only after the page finished loading.
+        monkeypatch.setattr(client, "ping", fake_ping)
         # Pinned sim preference: no auto-switch even with hardware present.
+        # Two pings after the pin, check_ping (1 Hz) has weighed the switch
+        # at least once and any switch it began has finished.
         ng_app.storage.general["startup_mode"] = "sim"
-        await asyncio.sleep(2.5)  # negative window: > 2 ping ticks at 1 Hz
+        seen = pings
+        assert await wait_until(lambda: pings >= seen + 2, timeout_s=5.0)
         assert waldoctl.commander.status.simulator_active is True, (
             "a pinned sim preference must suppress the auto-switch"
         )
 
         # Unpinned: the retrying detect flips out of simulator.
         ng_app.storage.general.pop("startup_mode", None)
-        for _ in range(60):  # check_ping fires at 1 Hz
-            if waldoctl.commander.status.simulator_active is False:
-                break
-            await asyncio.sleep(0.1)
-        assert waldoctl.commander.status.simulator_active is False, (
-            "late hardware must still flip out of simulator"
-        )
+        assert await wait_until(
+            lambda: waldoctl.commander.status.simulator_active is False,
+            timeout_s=6.0,
+        ), "late hardware must still flip out of simulator"
     finally:
         ng_app.storage.general.pop("startup_mode", None)
         waldoctl.commander.status.simulator_active = True

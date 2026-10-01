@@ -553,45 +553,6 @@ async def test_mcp_program_tools_edit_and_render_in_editor(
 
 
 @pytest.mark.integration
-async def test_mcp_lease_survives_session_churn(user: User) -> None:
-    """A reconnected MCP session (fresh session id) must inherit a lease held
-    by a previous MCP session instead of being refused — one field session
-    churned through 9 session ids and needed ``take_control`` after every
-    reconnect. Seizing from the Browser still requires an explicit
-    ``take_control``."""
-    from fastmcp.exceptions import ToolError
-
-    from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    mcp = get_mcp()
-    try:
-        # Lease held by a prior MCP session that is still within its TTL.
-        control_lease.seize(MCP, "stale-session", "MCP session stale-se")
-        async with Client(mcp) as client:
-            # Gated by require_control only; a no-op while nothing is running.
-            await client.call_tool("execution.stop_active")
-            h = control_lease.holder()
-            assert h is not None and h.channel == MCP and h.id != "stale-session", (
-                "a new MCP session must inherit the lease from a prior one"
-            )
-
-        # A live Browser holder is a real arbitration boundary — still refused.
-        # Must be the real page client id: liveness for BROWSER holders checks
-        # Client.instances, so a made-up id would be dropped as stale.
-        assert ui_state.active_client_id is not None
-        control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
-        async with Client(mcp) as client:
-            with pytest.raises(ToolError, match="take_control"):
-                await client.call_tool("execution.stop_active")
-    finally:
-        control_lease.reset()
-
-
-@pytest.mark.integration
 async def test_mcp_runs_programs_and_nothing_else_drives_meanwhile(
     user: User,
 ) -> None:

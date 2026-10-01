@@ -21,138 +21,75 @@ import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
-from nicegui import ui
+from nicegui.testing.user_interaction import UserInteraction
 
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import wait_for_app_ready, wait_until
 
 if TYPE_CHECKING:
     from nicegui.testing import User
 
 
-async def open_file_via_dialog(user: "User", filename: str) -> None:
-    """Open a file from server via the tree-based open dialog."""
-    user.find(marker="editor-open-btn").click()
-    await asyncio.sleep(0)
-
-    # Select the file in the tree by its node id (which is the filename)
-    trees = user.find(kind=ui.tree).elements
-    for tree in trees:
-        tree.props(f'selected="{filename}"')
-        tree._event_args["update:selected"]({"args": filename})
-        break
-    await asyncio.sleep(0)
-
-    user.find(marker="open-confirm-btn").click()
-    await asyncio.sleep(0.1)
+def _newest(user: "User", marker: str) -> UserInteraction:
+    """The marked element of the dialog opened last; a closed dialog keeps its
+    elements, and a plain find would click the first one ever built."""
+    newest = max(user.find(marker=marker).elements, key=lambda e: e.id)
+    return UserInteraction(user, {newest}, None)
 
 
 @pytest.mark.integration
-class TestFileOperations:
-    """File operation tests using simulated user fixture."""
+async def test_new_tab_save_download_and_open_dialogs(user: "User") -> None:
+    """The editor's file buttons: New adds a tab; the Save dialog shows the
+    tree, writes the tab to PROGRAM_DIR and offers a download; the Open
+    dialog shows the tree and the upload."""
+    import waldoctl
 
-    async def test_buttons_exist(self, user: "User") -> None:
-        """Verify file operation buttons are present when editor is open."""
-        await user.open("/")
-        await wait_for_app_ready()
-        user.find(marker="tab-program").click()
-        await asyncio.sleep(0)
+    from waldo_commander.state import ui_state
 
-        await user.should_see(marker="editor-save-btn")
-        await user.should_see(marker="editor-open-btn")
-        await user.should_see(marker="editor-new-tab-btn")
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    editor = ui_state.editor_panel
+    assert editor is not None
 
-    async def test_save_dialog_opens(self, user: "User") -> None:
-        """Clicking save button opens the save dialog with tree."""
-        await user.open("/")
-        await wait_for_app_ready()
-        user.find(marker="tab-program").click()
-        await asyncio.sleep(0)
+    initial_tab_count = len(waldoctl.commander.programs.items)
+    user.find(marker="editor-new-tab-btn").click()
+    await asyncio.sleep(0)
+    assert len(waldoctl.commander.programs.items) == initial_tab_count + 1
 
+    active_tab = waldoctl.commander.programs.active
+    assert active_tab is not None
+    test_content = "# Save test\nprint('saved')\n"
+    test_filename = "test_save_direct.py"
+    active_tab.source = test_content
+    # The Save dialog's filename field starts from the tab's own name.
+    active_tab.filename = test_filename
+    test_file = editor.PROGRAM_DIR / test_filename
+    try:
         user.find(marker="editor-save-btn").click()
         await asyncio.sleep(0)
-
         await user.should_see(marker="save-file-tree")
         await user.should_see(marker="save-confirm-btn")
         await user.should_see(marker="save-download-btn")
+        _newest(user, "save-confirm-btn").click()
+        assert await wait_until(test_file.exists), f"File should exist at {test_file}"
+        assert test_file.read_text(encoding="utf-8") == test_content
 
-    async def test_open_dialog_opens(self, user: "User") -> None:
-        """Clicking open button opens the open dialog with tree."""
-        await user.open("/")
-        await wait_for_app_ready()
-        user.find(marker="tab-program").click()
-        await asyncio.sleep(0)
-
-        user.find(marker="editor-open-btn").click()
-        await asyncio.sleep(0)
-
-        await user.should_see(marker="open-file-tree")
-        await user.should_see(marker="open-confirm-btn")
-        await user.should_see(marker="open-upload")
-
-    async def test_save_to_server_writes_file(self, user: "User") -> None:
-        """_save_tab writes file to PROGRAM_DIR."""
-        from waldo_commander.state import ui_state
-        import waldoctl
-
-        await user.open("/")
-        await wait_for_app_ready()
-        user.find(marker="tab-program").click()
-        await asyncio.sleep(0)
-
-        editor = ui_state.editor_panel
-        assert editor is not None
-
-        active_tab = waldoctl.commander.programs.active
-        assert active_tab is not None
-        test_content = "# Save test\nprint('saved')\n"
-        test_filename = "test_save_direct.py"
-        active_tab.source = test_content
-        active_tab.filename = test_filename
-
-        await editor._save_tab(active_tab)
-
-        test_file = editor.PROGRAM_DIR / test_filename
-        try:
-            assert test_file.exists(), f"File should exist at {test_file}"
-            saved = test_file.read_text(encoding="utf-8")
-            assert saved == test_content
-        finally:
-            if test_file.exists():
-                test_file.unlink()
-
-    async def test_new_tab_button(self, user: "User") -> None:
-        """Clicking new tab button creates a new tab."""
-        import waldoctl
-
-        await user.open("/")
-        await wait_for_app_ready()
-        user.find(marker="tab-program").click()
-        await asyncio.sleep(0)
-
-        initial_tab_count = len(waldoctl.commander.programs.items)
-
-        user.find(marker="editor-new-tab-btn").click()
-        await asyncio.sleep(0)
-
-        assert len(waldoctl.commander.programs.items) == initial_tab_count + 1
-
-    async def test_download_triggers(self, user: "User") -> None:
-        """Download button in save dialog triggers a download."""
-        await user.open("/")
-        await wait_for_app_ready()
-        user.find(marker="tab-program").click()
-        await asyncio.sleep(0)
-
-        # Open save dialog
         user.find(marker="editor-save-btn").click()
         await asyncio.sleep(0)
-
-        # Click download
-        user.find(marker="save-download-btn").click()
-
+        _newest(user, "save-download-btn").click()
         response = await user.download.next(timeout=2.0)
         assert response.status_code == 200
         assert len(response.content) > 0
+    finally:
+        if test_file.exists():
+            test_file.unlink()
+
+    user.find(marker="editor-open-btn").click()
+    await asyncio.sleep(0)
+    await user.should_see(marker="open-file-tree")
+    await user.should_see(marker="open-confirm-btn")
+    await user.should_see(marker="open-upload")
 
 
 def test_build_file_tree_ids_are_unique_for_same_named_files_in_nested_dirs(tmp_path):
