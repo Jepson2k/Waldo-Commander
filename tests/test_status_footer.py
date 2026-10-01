@@ -17,7 +17,12 @@ from waldo_commander.state import ui_state
 
 
 @pytest.mark.integration
-async def test_footer_buttons_open_the_bottom_panel(user: User) -> None:
+async def test_footer_opens_the_bottom_panel_and_the_action_history(
+    user: User,
+) -> None:
+    """The footer's buttons open the bottom panel on their tab. The whole
+    action history is tens of kilobytes: it goes to the browser when someone
+    opens the menu, not on every command, and it is current then."""
     await user.open("/")
     await wait_for_app_ready()
 
@@ -39,13 +44,6 @@ async def test_footer_buttons_open_the_bottom_panel(user: User) -> None:
     assert not panel.visible
     await user.should_not_see(marker="response-log")
 
-
-@pytest.mark.integration
-async def test_the_action_history_is_drawn_when_its_menu_opens(user: User) -> None:
-    """The whole history is tens of kilobytes: it goes to the browser when
-    someone opens the menu, not on every command, and it is current then."""
-    await user.open("/")
-    await wait_for_app_ready()
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
 

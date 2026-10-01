@@ -1,13 +1,16 @@
 """Resolve the setup a skill actually reads without executing the program."""
 
+from waldoctl.setup import Pose, SetupSnapshot
+
 from waldo_commander.services.python_source import (
     in_async_scope,
     preamble_statements,
     program_setup,
 )
+from waldo_commander.setup import SetupStore
 
 
-def test_setup_binding_follows_scope_reassignment_and_directory():
+def test_python_source_resolves_setup_and_scope_without_executing(tmp_path):
     source = (
         "from waldo_commander.setup import load_setup\n"
         "setup = load_setup('first')\n"
@@ -31,8 +34,7 @@ def test_setup_binding_follows_scope_reassignment_and_directory():
     assert program_setup(conditional, 5) is None
     assert program_setup(conditional, 3).name == "maybe"
 
-
-def test_selection_preamble_ignores_other_scopes_and_later_loads():
+    # A selection's preamble ignores other scopes and later loads.
     source = (
         "from waldo_commander.setup import load_setup\n"
         "setup = load_setup('first')\n"
@@ -45,8 +47,7 @@ def test_selection_preamble_ignores_other_scopes_and_later_loads():
     assert "first" in preamble
     assert "hidden" not in preamble and "later" not in preamble
 
-
-def test_async_insertion_on_blank_lines_uses_the_lines_indentation():
+    # An insertion on a blank line is in async scope by that line's indentation.
     source = "async def main():\n    pass\n    \n\nprint('outside')\n"
     assert in_async_scope(source, 3)
     assert not in_async_scope(source, 4)
@@ -55,11 +56,7 @@ def test_async_insertion_on_blank_lines_uses_the_lines_indentation():
     assert not in_async_scope(nested, 4)
     assert in_async_scope(nested, 5)
 
-
-def test_setup_inspection_never_executes_the_module(tmp_path):
-    from waldoctl.setup import SetupSnapshot, Pose
-    from waldo_commander.setup import SetupStore
-
+    # Inspecting a saved setup never executes its module.
     store = SetupStore(tmp_path)
     snapshot = SetupSnapshot().with_pose("pick", Pose((1, 2, 3, 0, 0, 0)))
     store.save("bench", snapshot)
