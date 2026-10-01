@@ -25,6 +25,7 @@ from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.setup import SetupStore
 from waldo_commander.skills import (
     SignalFixture,
+    gripper_close,
     gripper_open,
     transfer,
     transfer_with_signal,
@@ -48,7 +49,12 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
     assert await rbt.wait_command(index, timeout=20)
     index = await rbt.select_tool("PNEUMATIC")
     assert await rbt.wait_command(index, timeout=5)
+    await gripper_close.async_call(rbt)
+    closed = await rbt.io()
     await gripper_open.async_call(rbt)
+    opened = await rbt.io()
+    assert opened is not None and closed is not None
+    assert opened[2] != closed[2], "gripper skills must actuate the simulated valve"
     pick = Pose(tuple(await rbt.pose()))
     targets = grid_poses(pick, rows=1, columns=2, pitch_x_mm=2, pitch_y_mm=0)
     progress = PatternProgress.for_poses(targets)
