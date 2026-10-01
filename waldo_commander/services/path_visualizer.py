@@ -829,9 +829,15 @@ class PathVisualizer:
         test ends leaves this lock acquired against a loop that is about to
         close, so the next test's simulation takes the contended path and
         raises ``bound to a different event loop``.
+
+        What each backend's predicted pass carries is kept: it is learnt
+        once per session, and relearning it would spawn a physics worker in
+        every test that previews.
         """
+        diverges = self._predicted_diverges
         self._physics.shutdown()
         type(self).__init__(self)
+        self._predicted_diverges = diverges
 
     def physics_in_flight(self, tab_id: str | None) -> bool:
         """Whether a predicted pass is running for *tab_id*."""
