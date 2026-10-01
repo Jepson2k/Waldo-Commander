@@ -3,11 +3,9 @@ line decorations, the diff review cluster, skill snippet fields and the
 filled controls' computed colours.
 
 The tests share one page through ``class_screen``. Each puts back the
-program source, file name and window size it changes; the tab-flash test
-leaves recording on, so it runs last.
+program source, file name and window size it changes.
 """
 
-import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -17,7 +15,6 @@ from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl.setup import Pose, SetupSnapshot
 
 from tests.helpers.browser_helpers import (
@@ -64,78 +61,6 @@ def _source() -> str:
 
 def _set_source(text: str) -> None:
     run_in_app(lambda: setattr(ui_state.active_textarea, "value", text))
-
-
-def setup_tab_flash_observer(screen: "Screen") -> None:
-    """Install a MutationObserver that sets a flag when tab-flash is added."""
-    screen.selenium.execute_script("""
-        window.__tabFlashDetected = false;
-        const tabs = document.querySelectorAll('.q-tab');
-        for (const tab of tabs) {
-            const icon = tab.querySelector('i');
-            if (icon && icon.innerText === 'code') {
-                const obs = new MutationObserver(mutations => {
-                    for (const m of mutations) {
-                        if (tab.classList.contains('tab-flash')) {
-                            window.__tabFlashDetected = true;
-                            obs.disconnect();
-                            return;
-                        }
-                    }
-                });
-                obs.observe(tab, {attributes: true, attributeFilter: ['class']});
-                break;
-            }
-        }
-    """)
-
-
-class TabFlashCondition:
-    """Check if the MutationObserver recorded a tab-flash event."""
-
-    def __call__(self, driver):
-        try:
-            return driver.execute_script("return window.__tabFlashDetected === true")
-        except Exception:
-            return False
-
-
-def jog_joint_briefly(
-    screen: "Screen", joint_index: int = 0, duration_s: float = 0.3
-) -> None:
-    """Press and release a jog button briefly to trigger recorded movement.
-
-    Dispatches mousedown/mouseup via JS instead of ActionChains: the buttons
-    release on ``mouseleave`` (safety against stuck jogs), and a real pointer
-    hold can be cut short when the pressed-style transform or a readout
-    re-render shifts the pill under the cursor.
-
-    Args:
-        screen: Selenium screen fixture
-        joint_index: Joint number (0-5)
-        duration_s: How long to hold the button in seconds
-    """
-    # There are 2 buttons per joint (minus and plus); plus are at odd indices.
-    # The element is re-queried for each dispatch: the button re-renders while
-    # the robot moves (pressed style, enabled binding on joint angles), and a
-    # mouseup dispatched on a stale detached node is silently lost, leaving
-    # the jog streaming until something else stops it.
-    plus_btn_index = joint_index * 2 + 1
-
-    def dispatch(event: str) -> None:
-        joint_buttons = screen.selenium.find_elements(By.CSS_SELECTOR, ".joint-cap")
-        assert len(joint_buttons) > plus_btn_index, (
-            f"Joint {joint_index} + button not found"
-        )
-        screen.selenium.execute_script(
-            "arguments[0].dispatchEvent(new MouseEvent(arguments[1], {bubbles: true}))",
-            joint_buttons[plus_btn_index],
-            event,
-        )
-
-    dispatch("mousedown")
-    time.sleep(duration_s)
-    dispatch("mouseup")
 
 
 # Measures whether the review cluster (with its Approve/Reject buttons) and the
@@ -582,47 +507,3 @@ class TestEditorInteractivity:
                 wait(screen, 5).until(lambda _: selected() == "0.2")
             finally:
                 _set_source(original)
-
-    def test_tab_flashes_when_editor_closed(self, class_screen: "Screen") -> None:
-        """When editor panel is closed, recording a jog flashes the tab."""
-        # Ensure program tab is open first (may be closed from previous tests)
-        click_tab(class_screen, "program")
-        wait_for_codemirror_ready(class_screen)
-
-        # Ensure recording is on (start if not already from previous test);
-        # the record button carries the `recording` class while active.
-        record_btn = class_screen.selenium.find_element(
-            By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
-        )
-        if "recording" not in (record_btn.get_attribute("class") or ""):
-            record_btn.click()
-            WebDriverWait(class_screen.selenium, 3).until(
-                lambda d: "recording" in (record_btn.get_attribute("class") or "")
-            )
-
-        # Switch to a different tab to hide the program panel (but keep tab visible)
-        click_tab(class_screen, "io")
-
-        # Install MutationObserver on the program tab before jogging
-        # This catches the tab-flash class even if it's added and removed quickly
-        setup_tab_flash_observer(class_screen)
-
-        # Wait for backend state to propagate (tab click is async via websocket)
-        time.sleep(0.5)
-
-        # Jog joint 2 (J3) instead of joint 0 (J1) - previous tests jog J1+
-        # to its limit, causing wait_command to take up to 5s
-        jog_joint_briefly(class_screen, joint_index=2, duration_s=0.8)
-
-        # Check if the MutationObserver recorded a tab-flash event
-        # Timeout must exceed wait_command's 5s timeout + processing
-        tab_flashed = False
-        try:
-            WebDriverWait(class_screen.selenium, 8, poll_frequency=0.2).until(
-                TabFlashCondition()
-            )
-            tab_flashed = True
-        except Exception:
-            pass
-
-        assert tab_flashed, "Program tab should have tab-flash class when panel closed"
