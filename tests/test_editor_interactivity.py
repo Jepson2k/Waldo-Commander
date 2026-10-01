@@ -1,109 +1,69 @@
-"""Browser tests for editor interactivity.
+"""The program editor in a real browser: CodeMirror keystrokes, completions,
+line decorations, the diff review cluster, skill snippet fields and the
+filled controls' computed colours.
 
-Tests verify:
-- CodeMirror editor opens and displays content
-- Content can be modified
-- Clicking capture pose adds code and flashes the line
-- Recording mode adds code on jog movements
-- Tab flashes when editor panel is closed during recording
-
-All tests share a single browser session via class_screen fixture.
+The tests share one page through ``class_screen``. Each puts back the
+program source, file name and window size it changes; the tab-flash test
+leaves recording on, so it runs last.
 """
 
 import time
 from typing import TYPE_CHECKING
 
 import pytest
+import waldoctl
+from nicegui import Client
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
+from waldoctl.setup import Pose, SetupSnapshot
 
 from tests.helpers.browser_helpers import (
-    click_button_by_icon,
     click_tab,
+    ensure_robot_homed,
+    focus_editor,
+    get_autocomplete_labels,
+    js,
+    marked_element,
+    run_in_app,
+    wait_for_autocomplete,
     wait_for_codemirror_ready,
+    wait_for_notification,
 )
+from tests.helpers.browser_session import wait, window_size
+from waldo_commander.setup import SetupStore
+from waldo_commander.state import ui_state
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
 
 
-# ============================================================================
-# Local helpers (single-use in this test file)
-# ============================================================================
-
-
-def get_codemirror_content(screen: "Screen") -> str:
-    """Get content from the active CodeMirror editor.
-
-    Uses screen element lookup, then accesses CodeMirror's state for content.
-
-    Returns:
-        The editor content as a string, or empty string if not available
-    """
-    cm_content = screen.selenium.find_element(By.CSS_SELECTOR, ".cm-content")
-    return (
-        screen.selenium.execute_script(
-            """
-        const el = arguments[0];
-        if (!el || !el.cmView || !el.cmView.view) return '';
-        return el.cmView.view.state.doc.toString();
-        """,
-            cm_content,
-        )
-        or ""
-    )
-
-
-def append_to_editor(screen: "Screen", text: str) -> None:
-    """Append text to the end of the CodeMirror editor content.
-
-    Uses CodeMirror 6's dispatch API to insert text properly.
-
-    Args:
-        screen: Selenium screen fixture
-        text: The text to append
-    """
-    screen.selenium.execute_script(
+def _set_editor_content(screen: "Screen", text: str) -> None:
+    """Replace the active CodeMirror doc through its own dispatch, so the doc
+    and the tab's source stay in step."""
+    js(
+        screen,
         """
         const text = arguments[0];
         const cm = document.querySelector('.cm-content');
         if (!cm || !cm.cmView || !cm.cmView.view) return;
         const view = cm.cmView.view;
-        const len = view.state.doc.length;
         view.dispatch({
-            changes: {from: len, insert: text}
+            changes: {from: 0, to: view.state.doc.length, insert: text}
         });
         """,
         text,
     )
 
 
-def get_editor_line_count(screen: "Screen") -> int:
-    """Get the number of lines in the CodeMirror editor."""
-    cm = screen.selenium.find_element(By.CSS_SELECTOR, ".cm-editor")
-    lines = cm.find_elements(By.CSS_SELECTOR, ".cm-line")
-    return len(lines)
+def _source() -> str:
+    return str(run_in_app(lambda: ui_state.active_textarea.value))
 
 
-class LineFlashCondition:
-    """Custom expected condition for line flash detection."""
-
-    def __init__(self, screen: "Screen", min_line: int):
-        self.screen = screen
-        self.min_line = min_line
-
-    def __call__(self, driver):
-        try:
-            cm = driver.find_element(By.CSS_SELECTOR, ".cm-editor")
-            lines = cm.find_elements(By.CSS_SELECTOR, ".cm-line")
-
-            for i in range(self.min_line - 1, len(lines)):
-                if "cm-line-flash" in (lines[i].get_attribute("class") or ""):
-                    return i + 1  # Return 1-based line number
-            return False
-        except Exception:
-            return False
+def _set_source(text: str) -> None:
+    run_in_app(lambda: setattr(ui_state.active_textarea, "value", text))
 
 
 def setup_tab_flash_observer(screen: "Screen") -> None:
@@ -136,23 +96,6 @@ class TabFlashCondition:
     def __call__(self, driver):
         try:
             return driver.execute_script("return window.__tabFlashDetected === true")
-        except Exception:
-            return False
-
-
-class LineCountChangedCondition:
-    """Custom expected condition for line count change detection."""
-
-    def __init__(self, screen: "Screen", initial_count: int):
-        self.screen = screen
-        self.initial_count = initial_count
-
-    def __call__(self, driver):
-        try:
-            count = get_editor_line_count(self.screen)
-            if count != self.initial_count:
-                return count
-            return False
         except Exception:
             return False
 
@@ -195,215 +138,74 @@ def jog_joint_briefly(
     dispatch("mouseup")
 
 
-# ============================================================================
-# Tests
-# ============================================================================
+# Measures whether the review cluster (with its Approve/Reject buttons) and the
+# diff decorations both render, whether the toolbar buttons yielded their spot,
+# and whether the editor stays within the panel.
+_LAYOUT_JS = """
+const panel = document.querySelector('.editor-tab-panel');
+const banner = document.querySelector('.pending-edits-banner');
+const editor = document.querySelector('.editor-tab-panel .cm-editor');
+if (!panel || !editor) return null;
+const pr = panel.getBoundingClientRect();
+const er = editor.getBoundingClientRect();
+const bannerButtons = banner
+  ? banner.querySelectorAll('button').length : 0;
+const bannerVisible = !!banner
+  && banner.getBoundingClientRect().height > 0
+  && getComputedStyle(banner).display !== 'none';
+const toolbarVisible = [...document.querySelectorAll('.editor-toolbar-btn')]
+  .some((el) => el.getBoundingClientRect().height > 0
+    && getComputedStyle(el).display !== 'none');
+return {
+  bannerVisible: bannerVisible,
+  bannerButtons: bannerButtons,
+  toolbarVisible: toolbarVisible,
+  hasDiffDecoration: !!document.querySelector('.cm-edit-remove, .cm-edit-add'),
+  editorWithinPanel: er.bottom <= pr.bottom + 2 && er.top >= pr.top - 2,
+  bannerAboveEditor: !!banner
+    && banner.getBoundingClientRect().bottom <= er.top + 2,
+  bannerWithinPanel: !!banner
+    && banner.getBoundingClientRect().right <= pr.right + 2,
+};
+"""
+
+# Records the text of every editor line that carries the flash, whenever it
+# lands: the flash lasts 1.5 s.
+_WATCH_FLASHES = """
+window.__flashed = new Set();
+const panel = document.querySelector('.program-panel');
+const note = () => panel.querySelectorAll('.cm-line.cm-line-flash')
+    .forEach((line) => window.__flashed.add(line.textContent.trim()));
+if (window.__flashObserver) window.__flashObserver.disconnect();
+window.__flashObserver = new MutationObserver(note);
+window.__flashObserver.observe(panel, {subtree: true, childList: true,
+                                       attributes: true, attributeFilter: ['class']});
+"""
+
+
+@pytest.fixture(scope="class")
+def saved_poses(tmp_path_factory: pytest.TempPathFactory):
+    """A saved setup naming the poses a skill call is filled with, in place
+    before the class's page is built."""
+    directory = tmp_path_factory.mktemp("setups")
+    SetupStore(directory).save(
+        "bench",
+        SetupSnapshot(
+            poses={
+                "pick": Pose((15, 222, 179, 85, 2, 87)),
+                "place": Pose((45, 222, 179, 85, 2, 87)),
+            },
+        ),
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("WALDO_SETUP_DIR", str(directory))
+        yield
 
 
 @pytest.mark.browser
+@pytest.mark.usefixtures("saved_poses")
 class TestEditorInteractivity:
     """Editor tests sharing a single browser session."""
-
-    def test_editor_opens_with_default_content(self, class_screen: "Screen") -> None:
-        """Editor should open with CodeMirror and display default program."""
-        # CI with SwiftShader needs more time to initialize WebGL/3D scene
-        time.sleep(1.0)
-        click_tab(class_screen, "program")
-        wait_for_codemirror_ready(class_screen)
-
-        # Verify editor has some content (default program)
-        content = get_codemirror_content(class_screen)
-        assert len(content) > 0, "Editor should have default content"
-
-    def test_editor_content_can_be_modified(self, class_screen: "Screen") -> None:
-        """Editor content can be modified via CodeMirror."""
-        # Tab should already be open from previous test
-        wait_for_codemirror_ready(class_screen)
-
-        # Append some content and verify it appears
-        test_text = "\n# Added line"
-        append_to_editor(class_screen, test_text)
-
-        actual = get_codemirror_content(class_screen)
-        assert test_text in actual, f"Expected '{test_text}' in content, got '{actual}'"
-
-    def test_capture_pose_adds_and_flashes_line(self, class_screen: "Screen") -> None:
-        """Clicking capture pose adds code and briefly flashes the new line."""
-        # Ensure editor is ready
-        wait_for_codemirror_ready(class_screen)
-
-        # Wait for capture button to be visible
-        btn = WebDriverWait(class_screen.selenium, 5).until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//button[.//i[text()='camera_alt']]")
-            )
-        )
-
-        # Get initial state
-        initial_lines = get_editor_line_count(class_screen)
-
-        # Click capture pose button
-        WebDriverWait(class_screen.selenium, 5).until(EC.element_to_be_clickable(btn))
-        btn.click()
-
-        # Wait for line count to change using WebDriverWait
-        try:
-            new_lines = WebDriverWait(class_screen.selenium, 5).until(
-                LineCountChangedCondition(class_screen, initial_lines)
-            )
-        except Exception:
-            new_lines = get_editor_line_count(class_screen)
-
-        # Verify a new line was added
-        assert new_lines > initial_lines, (
-            f"Expected more lines after capture: {initial_lines} -> {new_lines}"
-        )
-
-        # Check if the flash class is present (may have already expired)
-        try:
-            flashed_line = WebDriverWait(class_screen.selenium, 2).until(
-                LineFlashCondition(class_screen, min_line=initial_lines + 1)
-            )
-            assert flashed_line >= initial_lines + 1, (
-                f"Flash should be on new line, got line {flashed_line}"
-            )
-        except Exception:
-            # Flash may have expired - that's acceptable
-            pass
-
-    def test_recording_adds_code_on_jog(self, class_screen: "Screen") -> None:
-        """Starting recording and jogging a joint adds code to editor."""
-        wait_for_codemirror_ready(class_screen)
-
-        # Get initial line count
-        initial_lines = get_editor_line_count(class_screen)
-
-        # Start recording (fiber_manual_record icon)
-        click_button_by_icon(class_screen, "fiber_manual_record")
-
-        # Jog a joint briefly (0.5s hold to ensure the hold threshold is exceeded
-        # and the motion recorder captures the jog on slow platforms). J3 has
-        # ample travel — J1 can start near its limit, and a jog that disables
-        # its button mid-hold exercises the limit-release path, not recording.
-        jog_joint_briefly(class_screen, joint_index=2, duration_s=0.5)
-
-        # Verify code was added. The insert lands only after the recorder's
-        # wait_motion(timeout=30.0) resolves — on timeout it records anyway —
-        # so the true ceiling is ~30s (observed 25.7s on a loaded CI runner
-        # during the class's first jog, while SwiftShader still renders the
-        # freshly built scene). Wait past that ceiling, not a guess below it.
-        try:
-            new_lines = WebDriverWait(class_screen.selenium, 40).until(
-                LineCountChangedCondition(class_screen, initial_lines)
-            )
-        except Exception:
-            new_lines = get_editor_line_count(class_screen)
-
-        assert new_lines > initial_lines, (
-            f"Recording should add code: {initial_lines} -> {new_lines}"
-        )
-
-    def test_tab_flashes_when_editor_closed(self, class_screen: "Screen") -> None:
-        """When editor panel is closed, recording a jog flashes the tab."""
-        # Ensure program tab is open first (may be closed from previous tests)
-        click_tab(class_screen, "program")
-        wait_for_codemirror_ready(class_screen)
-
-        # Ensure recording is on (start if not already from previous test);
-        # the record button carries the `recording` class while active.
-        record_btn = class_screen.selenium.find_element(
-            By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
-        )
-        if "recording" not in (record_btn.get_attribute("class") or ""):
-            record_btn.click()
-            WebDriverWait(class_screen.selenium, 3).until(
-                lambda d: "recording" in (record_btn.get_attribute("class") or "")
-            )
-
-        # Switch to a different tab to hide the program panel (but keep tab visible)
-        click_tab(class_screen, "io")
-
-        # Install MutationObserver on the program tab before jogging
-        # This catches the tab-flash class even if it's added and removed quickly
-        setup_tab_flash_observer(class_screen)
-
-        # Wait for backend state to propagate (tab click is async via websocket)
-        time.sleep(0.5)
-
-        # Jog joint 2 (J3) instead of joint 0 (J1) - previous tests jog J1+
-        # to its limit, causing wait_command to take up to 5s
-        jog_joint_briefly(class_screen, joint_index=2, duration_s=0.8)
-
-        # Check if the MutationObserver recorded a tab-flash event
-        # Timeout must exceed wait_command's 5s timeout + processing
-        tab_flashed = False
-        try:
-            WebDriverWait(class_screen.selenium, 8, poll_frequency=0.2).until(
-                TabFlashCondition()
-            )
-            tab_flashed = True
-        except Exception:
-            pass
-
-        assert tab_flashed, "Program tab should have tab-flash class when panel closed"
-
-    def test_editor_state_persists_after_refresh(self, class_screen: "Screen") -> None:
-        """Editor tabs and content should persist after page refresh."""
-        # Stop recording if active from previous test (the `recording` class)
-        try:
-            record_btn = class_screen.selenium.find_element(
-                By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
-            )
-            if "recording" in (record_btn.get_attribute("class") or ""):
-                record_btn.click()
-                WebDriverWait(class_screen.selenium, 3).until(
-                    lambda d: "recording"
-                    not in (record_btn.get_attribute("class") or "")
-                )
-        except Exception:
-            pass
-
-        # Open program tab
-        click_tab(class_screen, "program")
-        wait_for_codemirror_ready(class_screen)
-
-        # Add unique content to identify this session
-        unique_marker = "\n# REFRESH_TEST_MARKER_12345"
-        append_to_editor(class_screen, unique_marker)
-
-        # Verify content was added
-        content_before = get_codemirror_content(class_screen)
-        assert unique_marker.strip() in content_before, (
-            "Marker should be in content before refresh"
-        )
-
-        # Refresh the page — set a marker so we can detect the actual reload
-        class_screen.selenium.execute_script("window.__pre_refresh = true")
-        class_screen.selenium.refresh()
-
-        # Wait for the OLD page to unload (marker disappears)
-        WebDriverWait(class_screen.selenium, 10).until(
-            lambda d: not d.execute_script("return window.__pre_refresh")
-        )
-
-        # Wait for PanelResize to be configured and app to be ready
-        WebDriverWait(class_screen.selenium, 15).until(
-            lambda d: d.execute_script(
-                "return window.PanelResize && window.PanelResize.isConfigured() && window.PanelResize.isAppReady()"
-            )
-        )
-
-        # Sidebar tab selection isn't persisted across refresh, so re-activate
-        # program tab before checking codemirror.
-        click_tab(class_screen, "program")
-        wait_for_codemirror_ready(class_screen)
-
-        # Verify content persisted
-        content_after = get_codemirror_content(class_screen)
-        assert unique_marker.strip() in content_after, (
-            f"Content should persist after refresh. "
-            f"Expected marker '{unique_marker.strip()}' in content, got: {content_after[:200]}..."
-        )
 
     def test_filled_controls_pair_their_text_colour(
         self, class_screen: "Screen"
@@ -450,3 +252,377 @@ class TestEditorInteractivity:
             if (r := class_screen.selenium.execute_script(script, icon, token)) != "ok"
         ]
         assert not problems, problems
+
+    def test_ctrl_s_saves_the_active_tab_and_reports_a_failed_save(
+        self, class_screen: "Screen"
+    ) -> None:
+        """A real Ctrl+S keystroke goes through CodeMirror's keymap to
+        on_save and _save_tab: the tab lands on disk, and a save that fails
+        shows its error. The failure is the regression where _save_tab ran in
+        a task with no slot stack, so its ui.notify raised and the toast was
+        swallowed as "Task exception was never retrieved"."""
+        click_tab(class_screen, "program")
+        wait_for_codemirror_ready(class_screen)
+
+        active_tab = waldoctl.commander.programs.active
+        assert active_tab is not None, "expected an active tab after opening program"
+
+        original_filename = active_tab.filename
+        original_file_path = active_tab.file_path
+        original_content = active_tab.source
+        target_name = "regression_ctrl_s_test.py"
+        target_content = "# ctrl-s regression test\n"
+        target_path = ui_state.editor_panel.PROGRAM_DIR / target_name
+        active_tab.filename = target_name
+        # Through CodeMirror, so the editor's doc and tab.source agree: set
+        # from Python alone, the editor's empty initial value can clobber it
+        # before _save_tab reads it.
+        _set_editor_content(class_screen, target_content)
+
+        def _has_target_content(_d: object) -> bool:
+            # The save creates the file before writing it.
+            try:
+                return (
+                    target_path.exists() and target_path.read_text() == target_content
+                )
+            except OSError:
+                return False
+
+        try:
+            focus_editor(class_screen).send_keys(Keys.CONTROL + "s")
+            wait(class_screen).until(_has_target_content)
+
+            # A null byte makes Path.write_text raise.
+            active_tab.filename = "regression\x00invalid.py"
+            focus_editor(class_screen).send_keys(Keys.CONTROL + "s")
+            wait_for_notification(class_screen, "Save failed:", timeout=5.0)
+        finally:
+            target_path.unlink(missing_ok=True)
+            active_tab.filename = original_filename
+            active_tab.file_path = original_file_path
+            _set_editor_content(class_screen, original_content)
+
+    def test_autocomplete_popup_appears_outside_parens(
+        self, class_screen: "Screen"
+    ) -> None:
+        """Typing `rbt.move` at the top level shows the completion popup with
+        `rbt.move_j` and `rbt.move_l`.
+
+        Regression for CM.lintGutter(): its tooltip's null showTooltip provider
+        suppresses the popup outside paren contexts.
+        """
+        click_tab(class_screen, "program")
+        wait_for_codemirror_ready(class_screen)
+
+        active_tab = waldoctl.commander.programs.active
+        assert active_tab is not None
+        original_content = active_tab.source
+
+        # Cleared through dispatch; the typing itself must be real keystrokes
+        # so it goes through the keymap and activates completion.
+        _set_editor_content(class_screen, "")
+
+        cm_content = focus_editor(class_screen)
+        try:
+            cm_content.send_keys("rbt.move")
+
+            wait_for_autocomplete(class_screen, timeout=5.0)
+            labels = get_autocomplete_labels(class_screen)
+
+            assert any("rbt.move_j" in label for label in labels), (
+                f"expected rbt.move_j in completion labels, got: {labels}"
+            )
+            assert any("rbt.move_l" in label for label in labels), (
+                f"expected rbt.move_l in completion labels, got: {labels}"
+            )
+        finally:
+            _set_editor_content(class_screen, original_content)
+
+    def test_capture_pose_adds_and_flashes_line(self, class_screen: "Screen") -> None:
+        """Capture pose inserts the robot's pose as a new line, and the editor
+        flashes that line."""
+        screen = class_screen
+        click_tab(screen, "program")
+        wait_for_codemirror_ready(screen)
+        original = _source()
+        # No move to re-teach, so wherever the cursor is, capture inserts.
+        program = (
+            "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    pass\n"
+        )
+        _set_source(program)
+        try:
+            wait(screen).until(
+                lambda _: js(
+                    screen,
+                    "const c = document.querySelector('.program-panel .cm-content');"
+                    "return c && c.cmView ? c.cmView.view.state.doc.toString() : null;",
+                )
+                == program
+            )
+            js(screen, _WATCH_FLASHES)
+            marked_element(screen, "editor-capture-pose").click()
+            wait(screen, 5).until(lambda _: _source() != program)
+            added = [
+                line.strip()
+                for line in _source().splitlines()
+                if line not in program.splitlines()
+            ]
+            assert len(added) == 1 and added[0].startswith("rbt.move"), added
+            wait(screen, 5).until(
+                lambda _: added[0] in js(screen, "return [...window.__flashed]"),
+                message=f"the inserted line {added[0]!r} never flashed",
+            )
+        finally:
+            js(screen, "window.__flashObserver?.disconnect()")
+            _set_source(original)
+
+    def test_review_controls_and_diff_coexist_without_clipping(
+        self, class_screen: "Screen"
+    ) -> None:
+        """Regression for "I could see either the diff OR the Approve/Reject
+        buttons, but not both": the review controls swap in for the toolbar
+        in the editor's header row, and the editor stays within its
+        fixed-height panel instead of overflowing and being clipped by the
+        ancestor ``overflow:hidden`` and bottom mask."""
+        screen = class_screen
+        # Narrow window: the editor lives in a ~380px overlay panel, so the
+        # header must cope with tight widths.
+        with window_size(screen, 1000, 900):
+            click_tab(screen, "program")
+            wait_for_codemirror_ready(screen)
+            original = _source()
+
+            def _build_programs():
+                p = waldoctl.commander.programs.active
+                assert p is not None
+                # A tall program + an edit near the bottom: a clipped editor
+                # would push the decoration out of the visible panel. Through
+                # the editor, like a user: Program.source alone does not push
+                # a replacement document into an open CodeMirror.
+                ui_state.active_textarea.value = (
+                    "\n".join(f"line_{i} = {i}" for i in range(40)) + "\n"
+                )
+                # A second, very wide tab: the header must shrink the tab strip
+                # (it scrolls horizontally) rather than wrap the review cluster
+                # onto a second line underneath the CodeMirror.
+                second = waldoctl.commander.programs.new(
+                    filename="a_very_long_program_filename_that_widens_the_tab_strip_"
+                    "far_beyond_any_reasonable_header_width.py"
+                )
+                return p, second
+
+            p, second = run_in_app(_build_programs)
+
+            try:
+                # A long description like an LLM writes: the label must truncate
+                # instead of wrapping the cluster or pushing its buttons off-panel.
+                run_in_app(
+                    lambda: p.edits.propose(
+                        "@@ -38,1 +38,1 @@\n-line_37 = 37\n+line_37 = 3737\n",
+                        "Home safely before the wave (a blind joint move from a "
+                        "folded pose can self-collide)",
+                    )
+                )
+                try:
+                    wait(screen, 6).until(
+                        lambda _: (i := js(screen, _LAYOUT_JS))
+                        and i["bannerVisible"]
+                        and i["hasDiffDecoration"]
+                    )
+                except TimeoutException:
+                    pass
+                info = js(screen, _LAYOUT_JS)
+
+                assert info is not None, "editor panel never rendered"
+                assert info["bannerVisible"] and info["bannerButtons"] >= 2, (
+                    f"Approve/Reject review cluster not visible with its buttons: {info}"
+                )
+                assert not info["toolbarVisible"], (
+                    f"toolbar buttons must yield to the review cluster while an "
+                    f"edit is pending: {info}"
+                )
+                assert info["hasDiffDecoration"], (
+                    f"diff decorations not rendered: {info}"
+                )
+                assert info["editorWithinPanel"], (
+                    f"editor overflows/clips the panel — the 'diff OR buttons' bug: {info}"
+                )
+                assert info["bannerAboveEditor"], (
+                    f"review cluster wrapped below the header and is painted under "
+                    f"the editor: {info}"
+                )
+                assert info["bannerWithinPanel"], (
+                    f"review cluster overflows the panel — Approve/Reject "
+                    f"unreachable: {info}"
+                )
+            finally:
+
+                def _cleanup():
+                    for e in list(p.edits.pending):
+                        p.edits.reject(e.id)
+                    waldoctl.commander.programs.close(second.id)
+                    ui_state.textareas_by_tab[p.id].value = original
+
+                run_in_app(_cleanup)
+
+    def test_skill_fields_tab_in_order_and_stay_live_through_a_strip_write(
+        self, class_screen: "Screen"
+    ) -> None:
+        """A skill goes into the program as its call with the arguments as
+        fields: Tab moves between them, a write from the strip above the code
+        keeps them live, and the strip leaves the code and the scene usable."""
+        screen = class_screen
+        driver = screen.selenium
+        # The preview the skill draws mirrors the controller's unhomed gate.
+        ensure_robot_homed()
+
+        def element_id(marker: str) -> int | None:
+            def find():
+                client = Client.instances[ui_state.active_client_id]
+                return next(
+                    (e.id for e in client.elements.values() if marker in e._markers),
+                    None,
+                )
+
+            return run_in_app(find)
+
+        def click(marker: str) -> None:
+            target = wait(screen).until(
+                lambda d: (
+                    (found := element_id(marker)) is not None
+                    and (el := d.find_element(By.ID, f"c{found}")).is_displayed()
+                    and el
+                )
+            )
+            target.click()
+
+        def preview_objects() -> int:
+            scene = ui_state.urdf_scene
+            assert scene is not None
+            return len(scene._skill_preview_objects)
+
+        def selected() -> str:
+            """The text of the editor's selection, where a snippet field is selected."""
+            return driver.execute_script(
+                "const s=getElement(arguments[0]).editor.state;"
+                "return s.sliceDoc(s.selection.main.from, s.selection.main.to);",
+                run_in_app(lambda: ui_state.active_textarea.id),
+            )
+
+        def strip():
+            return ui_state.editor_panel.skill_strip(
+                waldoctl.commander.programs.active_id
+            )
+
+        def strip_field() -> str | None:
+            return run_in_app(lambda: strip()._field if strip() is not None else None)
+
+        with window_size(screen, 1366, 768):
+            click("tab-program")
+            wait_for_codemirror_ready(screen)
+            original = _source()
+            try:
+                click("editor-commands-btn")
+                click("editor-skills-menu")
+                # A skill's diagram is its label in the menu; one that failed
+                # to load is an empty square beside a word.
+                loaded = wait(screen).until(
+                    lambda d: d.execute_script(
+                        "const imgs=[...document.querySelectorAll('.q-menu .skill-menu-icon img')];"
+                        "return imgs.length && imgs.every(i => i.complete && i.naturalWidth > 0);"
+                    )
+                )
+                assert loaded
+                click("editor-skill-waldo.approach")
+
+                # The call goes in with its first field selected and the editor
+                # focused, and the saved pose it names has a motion to draw.
+                wait(screen).until(lambda _: selected() == 'setup.resolve("pick")')
+                wait(screen, 15).until(lambda _: run_in_app(preview_objects) > 0)
+                layout = driver.execute_script(
+                    "const strip=[...document.querySelectorAll('.skill-strip')].find(e => e.offsetParent);"
+                    "const r=strip.getBoundingClientRect();"
+                    "const code=strip.parentElement.querySelector('.cm-editor').getBoundingClientRect();"
+                    "const canvas=document.querySelector('canvas').getBoundingClientRect();"
+                    "const hit=document.elementFromPoint(canvas.x+canvas.width*0.6, canvas.y+canvas.height/2);"
+                    "return {content:strip.scrollWidth, width:strip.clientWidth, bottom:r.bottom,"
+                    "codeTop:code.top, code:code.height, scene: hit && hit.tagName};"
+                )
+                assert layout["content"] <= layout["width"] + 1, layout
+                assert layout["codeTop"] >= layout["bottom"] - 1, layout
+                assert layout["code"] > 100, (
+                    "the code stays in view under the strip",
+                    layout,
+                )
+                # Nothing covers the scene: where no panel is, it is still the scene.
+                assert layout["scene"] == "CANVAS", layout
+
+                # Tab and Shift+Tab move between the fields in the order of the
+                # signature.
+                ActionChains(driver).send_keys(Keys.TAB).perform()
+                wait(screen, 5).until(lambda _: selected() == "30.0")
+                ActionChains(driver).key_down(Keys.SHIFT).send_keys(Keys.TAB).key_up(
+                    Keys.SHIFT
+                ).perform()
+                wait(screen, 5).until(lambda _: selected() == 'setup.resolve("pick")')
+                wait(screen, 5).until(lambda _: strip_field() == "target")
+
+                # Choosing a pose in the strip writes only that field from the
+                # server: the snippet stays live, so Tab still moves on to the
+                # next field.
+                def choose_place() -> None:
+                    with Client.instances[ui_state.active_client_id]:
+                        strip().write_field('setup.resolve("place")')
+
+                run_in_app(choose_place)
+                wait(screen, 5).until(lambda _: selected() == 'setup.resolve("place")')
+                ActionChains(driver).send_keys(Keys.TAB).perform()
+                wait(screen, 5).until(lambda _: selected() == "30.0")
+                ActionChains(driver).send_keys(Keys.TAB).perform()
+                wait(screen, 5).until(lambda _: selected() == "0.2")
+            finally:
+                _set_source(original)
+
+    def test_tab_flashes_when_editor_closed(self, class_screen: "Screen") -> None:
+        """When editor panel is closed, recording a jog flashes the tab."""
+        # Ensure program tab is open first (may be closed from previous tests)
+        click_tab(class_screen, "program")
+        wait_for_codemirror_ready(class_screen)
+
+        # Ensure recording is on (start if not already from previous test);
+        # the record button carries the `recording` class while active.
+        record_btn = class_screen.selenium.find_element(
+            By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
+        )
+        if "recording" not in (record_btn.get_attribute("class") or ""):
+            record_btn.click()
+            WebDriverWait(class_screen.selenium, 3).until(
+                lambda d: "recording" in (record_btn.get_attribute("class") or "")
+            )
+
+        # Switch to a different tab to hide the program panel (but keep tab visible)
+        click_tab(class_screen, "io")
+
+        # Install MutationObserver on the program tab before jogging
+        # This catches the tab-flash class even if it's added and removed quickly
+        setup_tab_flash_observer(class_screen)
+
+        # Wait for backend state to propagate (tab click is async via websocket)
+        time.sleep(0.5)
+
+        # Jog joint 2 (J3) instead of joint 0 (J1) - previous tests jog J1+
+        # to its limit, causing wait_command to take up to 5s
+        jog_joint_briefly(class_screen, joint_index=2, duration_s=0.8)
+
+        # Check if the MutationObserver recorded a tab-flash event
+        # Timeout must exceed wait_command's 5s timeout + processing
+        tab_flashed = False
+        try:
+            WebDriverWait(class_screen.selenium, 8, poll_frequency=0.2).until(
+                TabFlashCondition()
+            )
+            tab_flashed = True
+        except Exception:
+            pass
+
+        assert tab_flashed, "Program tab should have tab-flash class when panel closed"
