@@ -14,7 +14,6 @@ import asyncio
 
 import pytest
 import waldoctl
-from waldoctl import ActionState
 from nicegui import Client, app
 from nicegui.events import (
     KeyboardAction,
@@ -24,20 +23,21 @@ from nicegui.events import (
 )
 from nicegui.testing import User
 
+from tests.helpers.motion import settled, wait_moved
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     teleport_to_jog_pose,
     wait_for_app_ready,
-    wait_for_motion_stable,
     wait_for_motion_start,
 )
 
 
 @pytest.mark.integration
-async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
+async def test_jog_speed_keys_and_popover_and_the_mode_shortcut(user: User) -> None:
     """`]` and `[` must update the rating widget, commander.settings.jog.speed,
-    storage, and tooltip in lockstep.
+    storage, and tooltip in lockstep, and so must a dot picked in the level
+    chip's popover. Alt+M cycles the AI control mode on every keyboard layout.
 
     Regression for the bug where the keybinding only mutated
     ``waldoctl.commander.settings.jog.speed`` so the underlying jog actions used the new
@@ -46,10 +46,17 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
     click handler and the keybinding through
     ``ControlPanel._set_rating_step``.
 
-    Verifies the bug at two layers:
-    1. The keybinding for `]` / `[` is registered with the right action
-    2. Invoking that action updates all four dependent visuals
+    Alt+M arrives in two event shapes: Linux/Windows report ``key: "m"`` with
+    altKey, but macOS Option *composes* a character (Option+M → ``key: "µ"``),
+    so matching must fall back to the physical key code (``KeyM``).
+    Regression for the shortcut being dead on Macs because the manager
+    matched only ``e.key.name``.
     """
+    from waldo_commander.services.control_lease import (
+        ControlMode,
+        control_mode,
+        set_control_mode,
+    )
     from waldo_commander.services.keybindings import keybindings_manager
     from waldo_commander.state import ui_state
 
@@ -110,27 +117,17 @@ async def test_jog_speed_keybinding_syncs_rating_widget(user: User) -> None:
             inc_binding.action()
         assert waldoctl.commander.settings.jog.speed == 100
         assert rating.value == 10
+
+        # The popover is Quasar's; picking the seventh dot in it is the
+        # rating's own change event.
+        user.find(marker="rating-jog-speed").trigger("update:modelValue", 7)
+        assert waldoctl.commander.settings.jog.speed == 70
+        assert app.storage.general["jog_speed"] == 70
+        assert chip.text == "70%"
+        assert "70%" in tooltip.text
     finally:
         cp.adjust_rating("jog_speed", 50 - waldoctl.commander.settings.jog.speed)
 
-
-@pytest.mark.integration
-async def test_alt_m_cycles_mode_on_all_keyboard_layouts(user: User) -> None:
-    """Alt+M must cycle the AI control mode from both event shapes browsers
-    send: Linux/Windows report ``key: "m"`` with altKey, but macOS Option
-    *composes* a character (Option+M → ``key: "µ"``), so matching must fall
-    back to the physical key code (``KeyM``). Regression for the shortcut
-    being dead on Macs because the manager matched only ``e.key.name``."""
-    from waldo_commander.services.control_lease import (
-        ControlMode,
-        control_mode,
-        set_control_mode,
-    )
-    from waldo_commander.services.keybindings import keybindings_manager
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
     assert ui_state.active_client_id is not None
     ng_client = Client.instances[ui_state.active_client_id]
 
@@ -197,25 +194,17 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
             modifiers=KeyboardModifiers(alt=False, ctrl=False, meta=False, shift=False),
         )
 
-    async def wait_idle() -> None:
-        for _ in range(100):
-            if waldoctl.commander.status.action.state == ActionState.IDLE:
-                return
-            await asyncio.sleep(0.1)
-
-    async def tap_key(name: str, axis_attr: str) -> float:
-        """Tap a jog key (keydown+keyup = click step) and return the axis delta."""
+    async def tap_key(name: str, axis_attr: str, expected: float) -> None:
+        """Tap a jog key (keydown+keyup = click step) and wait for the axis to
+        land ``expected`` mm away."""
 
         def axis_value() -> float:
             return float(getattr(waldoctl.commander.status.pose, axis_attr))
 
-        await wait_idle()
-        # The baseline must come from a fully settled pose: on slow runners
-        # the status view can still be converging from the previous motion
-        # when the action state already reads IDLE.
-        initial = await wait_for_motion_stable(
-            axis_value, timeout_s=10.0, tolerance=0.05, stable_ticks=20
-        )
+        # The baseline must come from a settled pose: on slow runners the
+        # status view can still be converging from the previous motion when
+        # the action state already reads IDLE.
+        initial = await settled(axis_value)
         with ng_client:
             # No await between the events, so the hold timer can never fire:
             # this is deterministically a click (single step).
@@ -224,17 +213,15 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
         await wait_for_motion_start()
         # Completion cannot be gated on action state or pose stability alone:
         # IDLE flickers between the 5mm move_l's creep phase and its main
-        # ramp, and the creep's sub-tolerance ticks read as "stable". The
-        # click step commands a fixed 5mm step, so require most of that
-        # displacement to land before settling.
-        for _ in range(300):
-            if abs(axis_value() - initial) >= 4.5:
-                break
-            await asyncio.sleep(0.1)
-        final = await wait_for_motion_stable(
-            axis_value, timeout_s=10.0, tolerance=0.05, stable_ticks=20
+        # ramp, and the creep's sub-tolerance ticks read as "stable". Both
+        # the landed displacement and IDLE together mark the end.
+        await wait_moved(
+            axis_value,
+            initial,
+            lambda d: abs(d - expected) <= 0.1,
+            what=f"'{name}' moving {axis_attr.upper()} {expected:+.1f}mm",
+            timeout_s=30.0,
         )
-        return final - initial
 
     waldoctl.commander.settings.jog.joint_step_deg = 5.0
 
@@ -255,28 +242,20 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
         "invert-Y must be off before the baseline tap"
     )
     try:
-        delta = await tap_key("d", "x")
-        assert 4.9 <= delta <= 5.1, f"d should command X+5mm, moved {delta:.2f}mm"
+        await tap_key("d", "x", 5.0)
 
         invert_x.set_value(True)
         await asyncio.sleep(0)
         assert keybindings_manager._bindings["d"].description == "Jog X-", (
             "help-menu description must follow the inversion"
         )
-        delta = await tap_key("d", "x")
-        assert -5.1 <= delta <= -4.9, (
-            f"d should command X-5mm with invert-X on, moved {delta:.2f}mm"
-        )
+        await tap_key("d", "x", -5.0)
 
-        delta = await tap_key("w", "y")
-        assert 4.9 <= delta <= 5.1, f"w should command Y+5mm, moved {delta:.2f}mm"
+        await tap_key("w", "y", 5.0)
 
         invert_y.set_value(True)
         await asyncio.sleep(0)
-        delta = await tap_key("w", "y")
-        assert -5.1 <= delta <= -4.9, (
-            f"w should command Y-5mm with invert-Y on, moved {delta:.2f}mm"
-        )
+        await tap_key("w", "y", -5.0)
     finally:
         invert_x.set_value(False)
         invert_y.set_value(False)

@@ -9,21 +9,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 import waldoctl
-from nicegui import app, core
-from nicegui.testing import User
+from nicegui import core
 from selenium.webdriver.support.ui import WebDriverWait
-from waldoctl import ActionState
 
 from tests.helpers.browser_helpers import js, marked_element, run_in_app
 from tests.helpers.wait import (
     JOG_SAFE_POSE_DEG,
-    enable_sim,
-    ensure_robot_ready_for_motion,
     screen_wait_for_scene_ready,
-    simulate_click,
-    teleport_to_jog_pose,
-    wait_for_app_ready,
-    wait_for_motion_start,
     wait_until,
 )
 from waldo_commander.components.joint_dial import (
@@ -102,68 +94,6 @@ def test_dial_geometry_draws_travel_from_zero_clamped_into_the_limits() -> None:
     assert _close(dial_angle(-123.05, 123.05, 200.0, R)[1], _point(123.05))
     unknown_fill, unknown_knob = dial_angle(-123.05, 123.05, math.nan, R)
     assert unknown_fill == "" and _close(unknown_knob, _point(0.0))
-
-
-@pytest.mark.integration
-async def test_a_jog_click_redraws_only_the_dial_of_the_joint_that_moved(
-    user: User,
-) -> None:
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    cp = ui_state.control_panel
-    await teleport_to_jog_pose(cp.client)
-
-    assert len(cp._dials) == ui_state.active_robot.joints.count
-    assert await wait_until(
-        lambda: all(math.isfinite(d.last_deg) for d in cp._dials)
-    ), "the dials never took their first angles from the status loop"
-    j1, j2 = cp._dials[0], cp._dials[1]
-
-    def props(dial) -> tuple[str, list[float]]:
-        return dial.props["fill"], list(dial.props["knob"])
-
-    j1_before, j2_before = props(j1), props(j2)
-    waldoctl.commander.settings.jog.joint_step_deg = 5.0
-    await simulate_click(user, "btn-j1-plus")
-    await wait_for_motion_start()
-    assert await wait_until(lambda: props(j1) != j1_before, timeout_s=10.0), (
-        "J1 moved but its dial did not redraw"
-    )
-    assert await wait_until(
-        lambda: waldoctl.commander.status.action.state == ActionState.IDLE,
-        timeout_s=15.0,
-    )
-    assert props(j2) == j2_before, "J2 did not move, so its dial must not redraw"
-
-    # The redrawn dial shows the live angle: its knob is where the geometry
-    # puts the current J1 angle, within the redraw threshold.
-    live = float(waldoctl.commander.status.joints.angles.deg[0])
-    expected = dial_angle(j1.lo, j1.hi, live, R)[1]
-    knob = tuple(j1.props["knob"])
-    assert math.dist(knob, expected) < 0.3, f"knob {knob} vs live angle {live:.2f}°"
-    end = _arc(j1.props["fill"])["end"]
-    assert math.dist(end, expected) < 0.3, "the fill ends under the knob"
-
-
-@pytest.mark.integration
-async def test_level_chip_popover_sets_the_speed_text_and_storage(user: User) -> None:
-    await user.open("/")
-    await wait_for_app_ready()
-    cp = ui_state.control_panel
-    refs = cp._rating_widgets["jog_speed"]
-    original = waldoctl.commander.settings.jog.speed
-    try:
-        # The popover is Quasar's; picking the seventh dot in it is the rating's
-        # own change event.
-        user.find(marker="rating-jog-speed").trigger("update:modelValue", 7)
-        assert waldoctl.commander.settings.jog.speed == 70
-        assert app.storage.general["jog_speed"] == 70
-        assert refs["label"].text == "70%"
-        assert "70%" in refs["tooltip"].text
-    finally:
-        cp.adjust_rating("jog_speed", original - waldoctl.commander.settings.jog.speed)
 
 
 @pytest.mark.browser

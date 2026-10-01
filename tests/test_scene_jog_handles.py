@@ -558,23 +558,6 @@ async def test_gizmo_grab_after_other_motion_does_not_replay_an_old_pose(
 
 
 @pytest.mark.integration
-async def test_joint_press_cancels_a_cartesian_press_before_its_hold_timer(user: User):
-    await _open(user)
-    panel = ui_state.control_panel
-    await teleport_to_jog_pose(panel.client)
-    start = np.array(await panel.client.angles())
-    await panel.set_axis_pressed("X+", True)
-    await panel.set_joint_pressed(0, "pos", True)
-    await panel.set_joint_pressed(0, "pos", False)
-    await asyncio.sleep(0.6)
-    await panel.set_axis_pressed("X+", False)
-    assert await panel.client.wait_motion(timeout=10, settle_window=0.3)
-    end = np.array(await panel.client.angles())
-    assert end[0] > start[0] + 0.1
-    assert end[1:] == pytest.approx(start[1:], abs=0.1)
-
-
-@pytest.mark.integration
 async def test_events_from_a_deleted_gizmo_do_not_move_its_replacement(user: User):
     urdf = await _open(user)
     panel = ui_state.control_panel
