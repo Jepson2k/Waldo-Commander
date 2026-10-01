@@ -463,7 +463,7 @@ def class_screen(
             # (e.g. once the viewport has selected the control layout).
             from selenium.webdriver.support.ui import WebDriverWait
 
-            WebDriverWait(class_driver, 30).until(
+            WebDriverWait(class_driver, 30, poll_frequency=0.05).until(
                 lambda driver: driver.execute_script(
                     "return !!document.querySelector('.side-tab-bar, .mobile-control')"
                 )
@@ -534,6 +534,27 @@ def reset_editor_singletons(
             p.dry_run.playback.executing_step_at_end = False
     except RuntimeError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def remove_elements_of_finished_clients(
+    request: pytest.FixtureRequest,
+) -> Generator[None, None, None]:
+    """Detach the elements of the clients a user or screen test leaves behind.
+
+    NiceGUI's per-test reset forgets clients without deleting them, so their
+    elements stay attached; each ui.dialog's canary finalizer then holds its
+    dialog, the handlers on it, and through them the whole page, for the rest
+    of the session. Every later gc.collect() walks all of it, which made the
+    per-test reset grow with every app start before it.
+    """
+    yield
+    if "class_screen" in request.fixturenames:
+        return
+    from nicegui import Client
+
+    for client in list(Client.instances.values()):
+        client.remove_all_elements()
 
 
 @pytest.fixture(autouse=True)
