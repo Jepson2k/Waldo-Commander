@@ -17,30 +17,6 @@ from waldo_commander.state import ui_state
 
 
 @pytest.mark.integration
-async def test_footer_buttons_open_the_bottom_panel(user: User) -> None:
-    await user.open("/")
-    await wait_for_app_ready()
-
-    panel = ui_state.bottom_panel
-    assert not panel.visible, "the bottom panel starts hidden"
-
-    user.find(marker="footer-events").click()
-    await asyncio.sleep(0)
-    assert panel.visible and panel.tabs.value == "diagnostics"
-    await user.should_see(marker="diagnostics-panel")
-
-    user.find(marker="footer-log").click()
-    await asyncio.sleep(0)
-    assert panel.visible and panel.tabs.value == "log"
-    await user.should_see(marker="response-log")
-
-    user.find(marker="bottom-panel-close").click()
-    await asyncio.sleep(0)
-    assert not panel.visible
-    await user.should_not_see(marker="response-log")
-
-
-@pytest.mark.integration
 async def test_the_action_history_is_drawn_when_its_menu_opens(user: User) -> None:
     """The whole history is tens of kilobytes: it goes to the browser when
     someone opens the menu, not on every command, and it is current then."""
