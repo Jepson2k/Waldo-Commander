@@ -177,12 +177,11 @@ def test_the_async_preview_does_not_offer_the_sync_clients_run_skill():
         AsyncPathPreviewClient.from_sync(_preview()).run_skill
 
 
-@pytest.mark.parametrize("initial_tool", [None, ("NONE", "")])
-async def test_the_seeded_world_does_not_take_the_first_commands_ordinal(initial_tool):
-    """A preview starts from the live world by applying it before the program
-    runs. The live run never sends that, so the running program's first
-    queued command must still map to its first move, not to the seed."""
-    from nicegui import run
+def test_the_seeded_world_does_not_take_the_first_commands_ordinal():
+    """A preview starts from the live world — its shapes, and its tool when
+    one is fitted — by applying it before the program runs. The live run
+    never sends that, so the running program's first queued command must
+    still map to its first move, not to the seed."""
     from waldoctl import Box
 
     from waldo_commander.components.script_execution import program_command
@@ -194,19 +193,21 @@ async def test_the_seeded_world_does_not_take_the_first_commands_ordinal(initial
         "rbt.move_j([80.0, -80.0, 190.0, 10.0, 10.0, 190.0], speed=0.5)\n"
     )
     bench = Box(name="bench", x=0.1, y=0.1, z=0.1, pose=(1.0, 1.0, 0.0, 0, 0, 0))
-    result = await run.cpu_bound(
-        _run_simulation_isolated,
-        program,
-        np.radians(HOME_DEG),
-        shapes_wire=[bench.to_wire()],
-        initial_tool=initial_tool,
-    )
-    assert result["error"] is None, result["error"]
-    notes = result["notes"]
-    first = program_command(notes, 0)
-    seed_count = 1 if initial_tool is None else 2
-    assert notes[seed_count - 1].method == "set_shapes"
-    if initial_tool is not None:
-        assert notes[0].method == "initial_tool" and notes[0].line_number == 0
-    assert notes[first].method == "move_j" and first == seed_count
-    assert next(b for b in result["commanded"].blocks if b.command == first).rows > 0
+    for initial_tool in (None, ("NONE", "")):
+        result = _run_simulation_isolated(
+            program,
+            np.radians(HOME_DEG),
+            shapes_wire=[bench.to_wire()],
+            initial_tool=initial_tool,
+        )
+        assert result["error"] is None, (initial_tool, result["error"])
+        notes = result["notes"]
+        first = program_command(notes, 0)
+        seed_count = 1 if initial_tool is None else 2
+        assert notes[seed_count - 1].method == "set_shapes", initial_tool
+        if initial_tool is not None:
+            assert notes[0].method == "initial_tool" and notes[0].line_number == 0
+        assert notes[first].method == "move_j" and first == seed_count, initial_tool
+        assert (
+            next(b for b in result["commanded"].blocks if b.command == first).rows > 0
+        )
