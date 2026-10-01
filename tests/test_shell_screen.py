@@ -192,7 +192,12 @@ class TestShellLayout:
         wait(screen).until(lambda _: j1_knob_at(85.0))
 
         marked_element(screen, "tab-cartesian").click()
-        wait(screen).until(lambda _: no_visible(screen, ".joint-dial-cell"))
+        # Unmounted, so the Joint tab mounts it again from its props.
+        wait(screen).until(
+            lambda _: not js(
+                screen, "return !!document.querySelector('.joint-dial-cell')"
+            )
+        )
         teleport_j1(40.0)
         marked_element(screen, "tab-joint").click()
         wait(screen).until(
