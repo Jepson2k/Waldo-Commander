@@ -653,7 +653,7 @@ def test_preview_marking_replays_tool_and_shape_boundaries() -> None:
 
 def test_shape_render_pose_matches_enforced_geometry() -> None:
     """Cylinders stand along coal's Z axis — the drawn shape must match the
-    blocked volume, not three.js's Y-up default."""
+    blocked volume."""
     import numpy as np
     from waldoctl import Box, Cylinder
 
