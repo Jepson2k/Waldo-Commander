@@ -6,13 +6,13 @@ import waldoctl
 from nicegui.testing import User
 
 from tests.helpers.wait import (
+    poll_until,
     wait_for_app_ready,
     enable_sim,
     ensure_robot_ready_for_motion,
     teleport_to_jog_pose,
     wait_for_motion_stable,
     wait_for_motion_start,
-    wait_until,
 )
 
 
@@ -100,7 +100,12 @@ async def test_cartesian_at_workspace_limit_disables_axis(
             1 for v in frame.can_jog_neg if not v
         )
 
-    await wait_until(lambda: _disabled_count() > 0, timeout_s=10.0)
+    await poll_until(
+        _disabled_count,
+        lambda n: n > 0,
+        timeout_s=10.0,
+        what="a disabled cartesian jog direction",
+    )
 
     wrf = waldoctl.commander.status.pose.cart_jog.by_frame.get("WRF")
     assert wrf is not None, "cart_jog should have WRF frame"
