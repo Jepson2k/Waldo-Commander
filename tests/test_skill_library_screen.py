@@ -12,6 +12,7 @@ from tests.test_vision import localization_scene
 from waldo_commander.setup import SetupStore
 from waldo_commander.state import ui_state
 from waldoctl.setup import Pose, SetupSnapshot
+from waldoctl.signals import DigitalSignal
 
 
 @pytest.mark.browser
@@ -22,7 +23,11 @@ def test_a_skill_form_opens_beside_the_scene_and_keeps_insert_in_reach(
     SetupStore(tmp_path).save(
         "bench",
         SetupSnapshot(
-            poses={"pick": Pose((15, 222, 179, 85, 2, 87))},
+            poses={
+                "pick": Pose((15, 222, 179, 85, 2, 87)),
+                "place": Pose((45, 222, 179, 85, 2, 87)),
+            },
+            signals={"grip": DigitalSignal("parol6", "output", 0, 2, 2)},
             cameras=localization_scene()[1].cameras,
         ),
     )
@@ -111,4 +116,34 @@ def test_a_skill_form_opens_beside_the_scene_and_keeps_insert_in_reach(
     assert dimensions["content"] <= dimensions["width"] + 1, dimensions
     assert dimensions["bottom"] < dimensions["height"], dimensions
     driver.save_screenshot(str(tmp_path / "vision-localization.png"))
+    click("skill-close")
+
+    # The longest form: two poses, a signal and its values.
+    click("editor-commands-btn")
+    click("editor-skills-menu")
+    click("editor-skill-waldo.transfer_with_signal")
+
+    def choose_place():
+        client = Client.instances[ui_state.active_client_id]
+        with client:
+            next(
+                e for e in client.elements.values() if "skill-place-pose" in e._markers
+            ).set_value("place")
+
+    WebDriverWait(driver, 10).until(
+        lambda _: element_id("skill-place-pose") is not None
+    )
+    run_in_app(choose_place)
+    WebDriverWait(driver, 10).until(
+        lambda d: "Closed value" in d.find_element(By.TAG_NAME, "body").text
+    )
+    dimensions = driver.execute_script(
+        "const form=document.querySelector('.skill-library-form-scroll');"
+        "const r=document.getElementById(arguments[0]).getBoundingClientRect();"
+        "return {width:form.clientWidth, content:form.scrollWidth, bottom:r.bottom, height:innerHeight};",
+        f"c{element_id('skill-insert')}",
+    )
+    assert dimensions["content"] <= dimensions["width"] + 1, dimensions
+    assert dimensions["bottom"] < dimensions["height"], dimensions
+    driver.save_screenshot(str(tmp_path / "tray-transfer.png"))
     click("skill-close")

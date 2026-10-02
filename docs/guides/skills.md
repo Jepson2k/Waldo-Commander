@@ -1,5 +1,8 @@
 # Python skills
 
+For pose grids, transfer helpers, and editable completion notes, see
+[Tray patterns](tray-patterns.md).
+
 Skills are reusable Python functions. Write one typed async implementation and
 call it from either a synchronous program or an async program. The supplied
 robot client owns the connection and command execution.
