@@ -208,6 +208,7 @@ def _run_simulation_isolated(
     shapes_wire: list[tuple] | None = None,
     initial_tool: tuple[str, str] | None = None,
     initial_homed: bool = True,
+    setup_directory: str | None = None,
     simulate_seconds: float | None = None,
 ) -> dict[str, Any]:
     """
@@ -430,7 +431,10 @@ def _run_simulation_isolated(
             # "simulation_script.py" frames during inspection.
             code = compile(program_text, "simulation_script.py", "exec")
 
-            exec(code, sim_globals)
+            from waldo_commander.setup import using_setup_directory
+
+            with using_setup_directory(setup_directory):
+                exec(code, sim_globals)
 
         except SystemExit as e:
             # A script entry point ends in sys.exit(main()); only a failure
@@ -758,6 +762,8 @@ class PathVisualizer:
         # moves until the script homes.
         initial_homed = robot_state.homed
 
+        from waldo_commander.setup import SetupStore
+
         return (
             program_text,
             initial_joints_rad,
@@ -768,6 +774,7 @@ class PathVisualizer:
             shapes_wire,
             initial_tool,
             initial_homed,
+            str(SetupStore().directory),
             simulate_seconds,
         )
 
