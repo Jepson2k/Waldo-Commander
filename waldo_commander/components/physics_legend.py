@@ -41,7 +41,9 @@ class PhysicsLegend:
             # Bottom-left, clear of the icon rail: the right half of the
             # scene belongs to the control panel, and a key painted
             # underneath it is worse than no key at all.
-            .classes("absolute bottom-4 left-24 z-30 glass rounded-lg px-3 py-2 gap-1")
+            .classes(
+                "absolute bottom-24 left-24 z-30 rounded-lg px-3 py-2 gap-2 bg-neutral-800 text-neutral-100 border border-neutral-600"
+            )
             .style("pointer-events: none;") as root
         ):
             self._root = root
@@ -83,8 +85,8 @@ class PhysicsLegend:
                 f" background: linear-gradient(90deg, {colors[0]}, {colors[1]});"
             )
             with ui.column().classes("gap-0"):
-                ui.label(title).classes("text-xs font-medium leading-none")
-                ui.label(detail).classes("text-[10px] opacity-70 leading-none")
+                ui.label(title).classes("text-xs font-medium leading-tight")
+                ui.label(detail).classes("text-xs text-neutral-300 leading-tight")
         return row
 
     def refresh(self) -> None:

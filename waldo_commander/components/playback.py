@@ -1072,11 +1072,14 @@ class PlaybackController:
         if not self._segment_elements:
             return
         active = waldoctl.commander.programs.active
-        segments = active.dry_run.path_segments if active is not None else []
         step = active.dry_run.playback.current_step if active is not None else 0
         prev = self._last_highlighted_index
         self._last_highlighted_index = step
 
+        # Bounded by the elements themselves: they are built from the
+        # timeline's blocks, which include commands with no planned segment
+        # (a delay between two moves), so a division past the planned count
+        # has an element to restyle and used to be skipped.
         indices_to_update = set()
         if 0 <= prev < len(self._segment_elements):
             indices_to_update.add(prev)
@@ -1085,11 +1088,10 @@ class PlaybackController:
 
         for idx in indices_to_update:
             elem = self._segment_elements[idx]
-            if segments and idx < len(segments):
-                is_current = idx == step
-                opacity = "0.4" if idx < step else "1.0"
-                brightness = "1.4" if is_current else "1.0"
-                elem.style(f"opacity: {opacity}; filter: brightness({brightness});")
+            is_current = idx == step
+            opacity = "0.4" if idx < step else "1.0"
+            brightness = "1.4" if is_current else "1.0"
+            elem.style(f"opacity: {opacity}; filter: brightness({brightness});")
 
         # Update tool marker opacity based on current playback time
         tl = self._timeline

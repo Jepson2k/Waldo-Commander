@@ -29,11 +29,17 @@ from parol6.protocol.wire import StatusResultStruct
 from scipy.spatial.transform import Rotation
 
 from tests.helpers.charuco_render import board_center, render_board_view
-from tests.helpers.wait import simulate_click, wait_for_app_ready
+from tests.helpers.wait import (
+    enable_sim,
+    ensure_robot_ready_for_motion,
+    simulate_click,
+    wait_for_app_ready,
+)
 from waldo_commander.components.handeye_calibration import (
     AUTO_VIEW_DELTAS_DEG,
     STATIONARY_SPEED_DEG_S,
     HandEyeCalibrationPanel,
+    _Move,
 )
 from waldo_commander.services import handeye
 from waldo_commander.services.camera_service import camera_service
@@ -323,7 +329,7 @@ async def test_handeye_panel_workflow(
         assert len(panel._samples) == n_views
 
         # A different board clears the captures, and the panel shows it.
-        squares_x = next(iter(user.find(marker="handeye-board-squares-x").elements))
+        squares_x = next(iter(user.find(marker="handeye-squares-x").elements))
         assert isinstance(squares_x, ui.number)
         squares_x.set_value(spec.squares_x + 1)
         await user.should_see(marker="handeye-board-apply-confirm")
@@ -502,7 +508,7 @@ async def test_handeye_auto_calibration(
             with pytest.raises(ToolError, match="Automatic calibration is moving"):
                 await mcp.call_tool("motion.move_j", {"angles": home_angles})
         spec = panel._spec
-        squares_x = next(iter(user.find(marker="handeye-board-squares-x").elements))
+        squares_x = next(iter(user.find(marker="handeye-squares-x").elements))
         assert isinstance(squares_x, ui.number)
         squares_x.set_value(spec.squares_x + 1)
         await user.should_see("Auto-calibration is running — stop it first")
@@ -703,88 +709,56 @@ async def test_handeye_auto_calibration(
 
 
 @pytest.mark.integration
-async def test_auto_move_stops_a_move_it_cannot_confirm(
-    user: User, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A move still running at its deadline has no known end: the routine
-    stops the robot instead of counting it done and queueing the next view
-    behind it, so the arm halts short of the target with nothing queued."""
-    from waldo_commander.components import handeye_calibration as hp
-
-    await user.open("/")
-    await wait_for_app_ready()
-    client = waldoctl.commander.client
-    assert await client.home(wait=True, timeout=30.0) >= 0
-    angles = await client.angles()
-    assert angles is not None
-    target = [*angles[:5], angles[5] + 40.0]
-    # A 4 s move against a deadline 1 s after dispatch stands in for a
-    # controller held or slowed well past the move's planned duration.
-    monkeypatch.setattr(hp, "AUTO_MIN_MOVE_S", 4.0)
-    monkeypatch.setattr(hp, "AUTO_MOVE_TIMEOUT_MARGIN_S", -3.0)
-
-    outcome = await HandEyeCalibrationPanel()._auto_move(waldoctl.commander, target)
-
-    assert await client.queue() == []
-    await client.wait_motion(timeout=10.0)
-    end = await client.angles()
-    assert end is not None
-    assert end[5] < target[5] - 10.0, "the overrunning move ran on to its target"
-    assert outcome is hp._Move.UNCONFIRMED
-
-
-@pytest.mark.integration
 async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
     """A Stop from anywhere else aborts auto-calibration.
 
-    The controller cancels the command without completing it and without
-    an error, so `wait_command` resolves neither True nor raises — and it
-    stays enabled through a Stop. A run that read the halt as success
-    would capture a view at the halted pose and then drive the arm to the
-    next one, seconds after a human deliberately stopped it.
+    The controller cancels the command without completing it and without an
+    error, so `wait_command` resolves neither True nor raises — and it stays
+    enabled through a Stop. A run that read the halt as success would capture
+    a view at the halted pose and then drive the arm to the next one, seconds
+    after a human deliberately stopped it.
+
+    Driven against the controller: the halt is an ack ladder and a status
+    edge, and a fake that answers both tests the panel against this test's
+    idea of a Stop rather than against the one the arm performs.
     """
     from waldo_commander.components.handeye_calibration import (
         HandEyeCalibrationPanel,
-        _Move,
     )
 
-    panel = HandEyeCalibrationPanel()
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
     commander = waldoctl.commander
+    client = commander.client
+    panel = HandEyeCalibrationPanel()
 
-    class _HaltingClient:
-        """Answers as the controller does through a Stop: the move starts,
-        then the action goes idle with no completion and no error."""
-
-        def __init__(self) -> None:
-            self.moves = 0
-            self.waits = 0
-
-        async def angles(self):
-            return [0.0] * 6
-
-        async def move_j(self, target, duration=None, **kw):
-            self.moves += 1
-            commander.status.action.state = waldoctl.ActionState.EXECUTING
-            return 7
-
-        async def wait_command(self, index, timeout=0.0):
-            self.waits += 1
-            if self.waits >= 2:
-                commander.status.action.state = waldoctl.ActionState.IDLE
-            return False
-
-    client = _HaltingClient()
-    before = commander.status.action.state
+    start = await client.angles()
+    assert start is not None
+    target = list(start)
+    target[0] += 25.0  # long enough at the auto speed to stop it mid-move
+    moving = asyncio.create_task(panel._auto_move(commander, target))
     try:
-        outcome = await panel._auto_move(
-            type("C", (), {"client": client, "status": commander.status})(),
-            [10.0] * 6,
-        )
+        assert await client.wait_status(
+            lambda s: s.action_state == waldoctl.ActionState.EXECUTING, timeout=10
+        ), "the auto move never started"
+        assert await client.stop() > 0
+        outcome = await asyncio.wait_for(moving, 30)
     finally:
-        commander.status.action.state = before
+        if not moving.done():
+            moving.cancel()
+            await asyncio.gather(moving, return_exceptions=True)
+        await client.reset()
 
     assert outcome is _Move.HALTED, "the run must stop, not roll on to the next view"
-    assert client.moves == 1, "no further motion may be commanded after a Stop"
+    halted = await client.angles()
+    assert halted is not None
+    assert abs(halted[0] - target[0]) > 1.0, (
+        "the arm reached the view it was stopped on the way to"
+    )
 
 
 @pytest.mark.integration
@@ -823,29 +797,82 @@ async def test_an_unpopulated_pose_is_never_captured(user: User) -> None:
 
 @pytest.mark.integration
 async def test_clearing_a_board_field_reverts_instead_of_wedging(user: User) -> None:
-    """NiceGUI sets a number's value to None the moment its text is
-    cleared — which is what selecting a field to retype it does. Parsing
-    that raised TypeError past the handler's except, so the revert never
-    ran and the field stayed blank, re-raising on every later edit to any
-    of the five inputs."""
-    from waldo_commander.services import handeye
+    """NiceGUI sets a number's value to None the moment its text is cleared,
+    which is what selecting a field to retype it does. Parsing that raised
+    TypeError past the handler's except, so the revert never ran, the field
+    stayed blank, and every later edit to any of the five inputs raised
+    through it again.
 
-    spec = handeye.BoardSpec(
-        squares_x=5,
-        squares_y=7,
-        square_mm=25.0,
-        marker_mm=18.0,
-        dictionary="DICT_4X4_50",
+    Driven through the panel's own inputs: the bug lives in the handler they
+    fire, so a test that rebuilds the spec itself cannot see it.
+    """
+    from waldo_commander.components.handeye_calibration import (
+        HandEyeCalibrationPanel,
     )
 
-    def num(value, fallback, cast):
-        return fallback if value is None else cast(value)
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    await user.open("/")
+    await wait_for_app_ready()
+    await user.should_see(marker="tab-handeye")
+    user.find(marker="tab-handeye").click()
+    await asyncio.sleep(0)
+    await user.should_see(marker="handeye-board-download")
+    panel = next(p for p in ui_state.plugin_panels if p.id == "handeye")
+    assert isinstance(panel, HandEyeCalibrationPanel)
 
-    rebuilt = handeye.BoardSpec(
-        squares_x=num(None, spec.squares_x, int),
-        squares_y=num(7.0, spec.squares_y, int),
-        square_mm=num(None, spec.square_mm, float),
-        marker_mm=num(18.0, spec.marker_mm, float),
-        dictionary=str(None or spec.dictionary),
+    def field(marker):
+        return next(iter(user.find(marker=marker).elements))
+
+    before = panel._spec
+    field("handeye-squares-x").set_value(None)
+    await asyncio.sleep(0)
+    assert panel._spec == before, "an emptied field means unchanged, not zero"
+
+    # The field the user retypes next still applies — which it could not while
+    # the cleared one left the handler raising on every later edit.
+    field("handeye-square-mm").set_value(before.square_mm + 5.0)
+    await asyncio.sleep(0)
+    assert panel._spec.square_mm == pytest.approx(before.square_mm + 5.0)
+    assert panel._spec.squares_x == before.squares_x
+    applied = panel._spec
+
+    # A board the detector refuses is reverted in the inputs, so what the
+    # fields show is the board being used.
+    field("handeye-marker-mm").set_value(applied.square_mm + 5.0)
+    await asyncio.sleep(0)
+    assert panel._spec == applied, "a refused board must not be adopted"
+    assert field("handeye-marker-mm").value == pytest.approx(applied.marker_mm), (
+        "the refused value is reverted, not left in the field"
     )
-    assert rebuilt == spec, "an emptied field means unchanged, not zero"
+
+
+@pytest.mark.integration
+async def test_auto_move_stops_a_move_it_cannot_confirm(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A move still running at its deadline has no known end: the routine
+    stops the robot instead of counting it done and queueing the next view
+    behind it, so the arm halts short of the target with nothing queued."""
+    from waldo_commander.components import handeye_calibration as hp
+
+    await user.open("/")
+    await wait_for_app_ready()
+    client = waldoctl.commander.client
+    assert await client.home(wait=True, timeout=30.0) >= 0
+    angles = await client.angles()
+    assert angles is not None
+    target = [*angles[:5], angles[5] + 40.0]
+    # A 4 s move against a deadline 1 s after dispatch stands in for a
+    # controller held or slowed well past the move's planned duration.
+    monkeypatch.setattr(hp, "AUTO_MIN_MOVE_S", 4.0)
+    monkeypatch.setattr(hp, "AUTO_MOVE_TIMEOUT_MARGIN_S", -3.0)
+
+    outcome = await HandEyeCalibrationPanel()._auto_move(waldoctl.commander, target)
+
+    assert await client.queue() == []
+    await client.wait_motion(timeout=10.0)
+    end = await client.angles()
+    assert end is not None
+    assert end[5] < target[5] - 10.0, "the overrunning move ran on to its target"
+    assert outcome is hp._Move.UNCONFIRMED

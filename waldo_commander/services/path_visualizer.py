@@ -10,14 +10,15 @@ import asyncio
 import builtins
 import linecache
 import logging
+import multiprocessing
 import os
 import sys
 import threading
 import traceback
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, replace
 from types import ModuleType
-from collections.abc import Callable
 from typing import Any
 import numpy as np
 
@@ -620,23 +621,37 @@ class _PhysicsPool:
 
     def _ensure(self) -> ProcessPoolExecutor:
         if self._pool is None:
-            self._pool = ProcessPoolExecutor(max_workers=1)
+            self._pool = ProcessPoolExecutor(
+                max_workers=1,
+                mp_context=multiprocessing.get_context("spawn"),
+                max_tasks_per_child=1,
+            )
         return self._pool
 
     async def run(self, fn: Callable, args: tuple) -> Any:
         """Run *fn*, abandoning whatever was running before it."""
         self.cancel()
         loop = asyncio.get_running_loop()
-        if _is_test_environment():
-            # A spawn worker cannot beat a test's timeout from cold, and
-            # a test's pool is rebuilt per test anyway. Still tracked, so
-            # `cancel` is not a silent no-op here.
-            future = asyncio.ensure_future(asyncio.to_thread(fn, args))
-        else:
+        try:
             future = loop.run_in_executor(self._ensure(), fn, args)
+        except Exception:
+            self._discard()
+            raise
         self._current = future
         try:
             return await future
+        except asyncio.CancelledError:
+            # wait_for() cancels the caller before its timeout handler can
+            # run; the worker must be terminated while we still own it.
+            if self._current is future:
+                self.cancel()
+            raise
+        except Exception:
+            # A worker that died mid-job leaves its executor refusing every
+            # later submission, so the next pass needs a fresh one.
+            if self._current is future:
+                self._discard()
+            raise
         finally:
             if self._current is future:
                 self._current = None
@@ -649,9 +664,13 @@ class _PhysicsPool:
         with it.
         """
         current, self._current = self._current, None
-        if current is None or current.done():
+        if current is None:
             return
         current.cancel()
+        self._discard()
+
+    def _discard(self) -> None:
+        """Kill the worker and drop its executor; the next run spawns both."""
         pool, self._pool = self._pool, None
         if pool is not None:
             for p in getattr(pool, "_processes", {}).values():
@@ -831,7 +850,6 @@ class PathVisualizer:
             if sim_args is None:
                 simulation_state.notify_changed()
                 return None
-
             # The simulated program always runs in a pool worker, which is
             # discarded afterwards. It mutates process globals — the time
             # module, the collision checker's world, the backend's client
@@ -885,6 +903,11 @@ class PathVisualizer:
                 target_tab = waldoctl.commander.programs.active
 
             if target_tab:
+                # The physics pass refines exactly this plan, seconds later.
+                if result.get("error"):
+                    self._planned_args.pop(target_tab.id, None)
+                else:
+                    self._planned_args[target_tab.id] = sim_args
                 new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
                 new_targets = [ProgramTarget.from_dict(d) for d in result["targets"]]
                 new_tool_actions = result.get("tool_actions", [])

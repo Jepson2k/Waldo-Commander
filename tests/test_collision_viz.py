@@ -391,6 +391,31 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
         "post"
     ]
 
+    # A PROGRAM shape arriving under a drafted name is the same collision:
+    # readback is truth and is adopted wholesale, so the draft has to lose
+    # the name or both layers hold it and `_assign`'s clash check refuses
+    # every later edit, including from handlers that do not catch it.
+    handle.shapes = [post]
+    handle.propose_installation(["post"])
+    assert [s.name for s in handle.installation_draft] == ["post"]
+    # A readback is skipped while a push awaits its ack (it would query the
+    # pre-edit world), so let the proposal's own push land first.
+    for _ in range(200):
+        if not handle._pushes_inflight:
+            break
+        await asyncio.sleep(0.05)
+    assert not handle._pushes_inflight, "the proposal's push never acked"
+
+    async def _program_post() -> ShapeWorld:
+        return ShapeWorld(installation=(), program=(post,))
+
+    monkeypatch.setattr(waldoctl.commander.client, "shapes", _program_post)
+    await handle.refresh_from_backend()
+    assert handle.installation_draft == ()
+    enforced = [s.name for s in handle.enforced_locally]
+    assert enforced.count("post") == 1, f"one layer only, got {enforced}"
+    handle.shapes = [post]  # an edit still goes through rather than clashing
+
     # The monkeypatched readback put `wall` into this process's installation
     # checker; the real backend's readback has to take it back out, or a
     # phantom keep-out sits in the middle of every later test's workspace.
