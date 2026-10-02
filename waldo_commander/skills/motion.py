@@ -20,7 +20,7 @@ async def retract(
     speed: float = 0.2,
     timeout: float = 30.0,
 ) -> int:
-    """Move along positive tool Z and wait for completion.
+    """Back the tool straight out along its own axis.
 
     Check your tool orientation before using this direction as a withdrawal.
     The backend plans and collision-checks the linear move. Returns the completed
@@ -51,7 +51,7 @@ async def approach(
     speed: float = 0.2,
     timeout: float = 30.0,
 ) -> int:
-    """Move to positive target-tool-Z clearance, then linearly to the WRF target.
+    """Come at the target along its own axis: stop short by the clearance, then go straight in.
 
     Both legs pass through the native planner and collision checks. A refused
     leg stops the sequence; this skill does not search for a detour.
@@ -90,7 +90,7 @@ async def park(
     speed: float = 0.2,
     timeout: float = 30.0,
 ) -> int:
-    """Joint-interpolate to a named park pose from the explicitly supplied setup."""
+    """Move to the setup's park pose, joint by joint."""
     validate_motion(speed, timeout)
     target = setup.resolve(name)
     report_progress(f"Moving to {name}", fraction=0.0)
@@ -113,7 +113,7 @@ async def align_tool_axis(
     speed: float = 0.1,
     timeout: float = 30.0,
 ) -> int | None:
-    """Align one tool axis with a WRF direction while retaining the TCP position.
+    """Turn the tool so one of its axes points along a chosen direction, keeping the tip where it is.
 
     Uses the shortest rotation; the antiparallel case rotates about the next
     current tool axis. Returns None when already aligned, otherwise the completed

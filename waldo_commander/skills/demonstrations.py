@@ -74,7 +74,7 @@ async def replay_demonstration(
     replay_gripper: bool = False,
     reconciled_session: bool = False,
 ) -> ReplayResult:
-    """Replay an uninterrupted span, stopping at every observed waypoint.
+    """Replay a recorded motion, stopping at every recorded point.
 
     Each original interval is a minimum duration for its native joint move;
     the active motion profile may lengthen it. Completion settling and command

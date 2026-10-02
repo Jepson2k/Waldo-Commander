@@ -82,7 +82,7 @@ async def transfer(
     speed: float = 0.2,
     timeout: float = 30.0,
 ) -> int:
-    """Approach, close, retract, approach, open, retract with the selected gripper.
+    """Pick at one pose and place at another, approaching each along its axis and backing out after.
 
     Begin with an empty, open tool. Clearance is positive tool Z at each
     declared target, including withdrawal. Every leg uses native
@@ -118,7 +118,7 @@ async def transfer_with_signal(
     closed_fixture: SignalFixture | None = None,
     open_fixture: SignalFixture | None = None,
 ) -> int:
-    """Transfer using a named output for grip/release, with electrical readback.
+    """Pick and place, driving the grip through a named output and checking it reports back.
 
     The output must start at its open level, and that is read and enforced: a
     run that was cancelled after the grip leaves the tool closed on a part, and

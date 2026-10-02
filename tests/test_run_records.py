@@ -176,10 +176,10 @@ if os.environ.get("WALDO_STEP_SESSION"):
     await user.should_see("Export debugging data")
     events_table = next(iter(user.find(marker="run-record-events").elements))
     assert [
-        r["time"] for r in events_table.rows if r["event"] == "command_started"
+        r["time"] for r in events_table.rows if r["event"] == "Command started"
     ] == [2.5]
     summary = next(iter(user.find(marker="run-record-summary").elements))
-    assert summary.text.startswith("completed"), summary.text
+    assert summary.text.startswith("Completed:"), summary.text
     user.find("Close").click()
     assert script_exec.record_runs
     program = waldoctl.commander.programs.active
@@ -282,16 +282,16 @@ if os.environ.get("WALDO_STEP_SESSION"):
     def newest(marker: str):
         return max(user.find(marker=marker).elements, key=lambda e: e.id)
 
-    assert newest("run-record-summary").text.startswith("failed")
+    assert newest("run-record-summary").text.startswith("Failed:")
     events_table = newest("run-record-events")
-    parent_row = next(r for r in events_table.rows if r["event"] == "skill_started")
+    parent_row = next(r for r in events_table.rows if r["event"] == "Skill started")
     _fire_editor_event(events_table, "rowClick", {"row": parent_row})
     detail = [
         e.text
         for e in newest("run-record-detail").descendants()
         if isinstance(e, ui.label)
     ]
-    assert "Local event values" in detail
+    assert "Skill started" in detail
     assert any('"offset": 2.0' in text for text in detail), detail
 
     # The next run is not captured, even if the subprocess inherited a flag.
