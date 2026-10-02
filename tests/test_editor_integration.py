@@ -1210,11 +1210,11 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     assert tab is not None
 
     move_l_line = (
-        "rbt.move_l([150.000, 100.000, 250.000, 0.000, 0.000, 0.000], speed=0.5)"
+        "rbt.move_l([0.000, 280.000, 250.000, 90.000, 0.000, 90.000], speed=0.5)"
     )
     move_c_line = (
-        "rbt.move_c([165.000, 105.000, 255.000, 0.000, 0.000, 0.000], "
-        "[150.000, 130.000, 250.000, 0.000, 0.000, 0.000], speed=0.5)"
+        "rbt.move_c([15.000, 280.000, 255.000, 90.000, 0.000, 90.000], "
+        "[0.000, 300.000, 250.000, 90.000, 0.000, 90.000], speed=0.5)"
     )
     move_rel_line = (
         "rbt.move_l([0.000, 0.000, -20.000, 0.000, 0.000, 0.000], rel=True, speed=0.5)"

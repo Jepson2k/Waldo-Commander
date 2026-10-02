@@ -212,19 +212,14 @@ jobs:
           fetch-depth: 0
 
       # Same branch-matching convention as the pip installs above, resolved
-      # once so the python client and the binary come from one tree.
-      #
-      # The fallback is DERIVED from the `[par6]` extra, never written here.
-      # It used to be the literal `main`, which was right only for as long as
-      # the pin happened to say `@main`: the moment it names a tag, this job
-      # would go on testing par6 main while the package declared something
-      # else, and say nothing. That is the same drift the parol6 derive below
-      # exists to prevent.
+      # once so the python client and the binary come from one tree. Falls
+      # back to the exact [par6] extra pin, so main pushes
+      # exercise the same thing pyproject declares.
       - name: Resolve par6 ref (branch-matching)
         id: par6-ref
         run: |
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          REF="$(sed -n 's#.*Jepson2k/par6\.git@\([^"#]*\).*#\1#p' pyproject.toml | head -1)"
+          REF=$(sed -n 's/.*par6.git@\([^#" ]*\).*/\1/p' pyproject.toml | head -n 1)
           : "${REF:?no par6 pin found in pyproject.toml}"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/Jepson2k/par6.git "$BRANCH" 2>/dev/null | grep -q .; then

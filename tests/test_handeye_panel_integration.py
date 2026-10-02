@@ -26,7 +26,7 @@ import waldoctl
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.testing import User
-from parol6.protocol.wire import StatusResultStruct
+from parol6 import StatusSnapshot
 from scipy.spatial.transform import Rotation
 from waldoctl.setup import Frame, Pose, SetupSnapshot
 from waldo_commander.setup import SetupStore, export_snapshot
@@ -137,7 +137,7 @@ async def _wait_for(condition, timeout: float = 5.0, message: str = "") -> None:
 
 async def _current_pose() -> np.ndarray:
     st = await waldoctl.commander.client.status()
-    assert isinstance(st, StatusResultStruct)
+    assert isinstance(st, StatusSnapshot)
     return np.asarray(st.pose, dtype=np.float64).reshape(4, 4)
 
 
@@ -1085,9 +1085,9 @@ async def test_auto_move_distinguishes_late_completion_from_stop(
 async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
     """A Stop from anywhere else aborts auto-calibration.
 
-    The controller cancels the command without completing it and without an
-    error, so `wait_command` resolves neither True nor raises — and it stays
-    enabled through a Stop. A run that read the halt as success would capture
+    The controller cancels the command without completing it and stays
+    enabled through a Stop. A run that read the cancellation as a rejected
+    view or a successful move would capture
     a view at the halted pose and then drive the arm to the next one, seconds
     after a human deliberately stopped it.
 

@@ -23,6 +23,7 @@ precisely to run this test; letting it skip there would be a silent green.
 """
 
 import contextlib
+import math
 import os
 import shutil
 import socket
@@ -74,6 +75,11 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
             "par6d on PATH (cargo build -p par6d --release)"
         )
     port = _free_udp_port()
+    from waldo_commander.constants import config
+
+    # main() retains parsed CLI overrides between User lifespans. Keep that
+    # override aligned with this test's fresh daemon and client environment.
+    monkeypatch.setitem(config._overrides, "controller_port", port)
     monkeypatch.setenv("WALDO_ROBOT", "par6")
     monkeypatch.setenv("WALDO_CONTROLLER_PORT", str(port))
     # par6's Robot reads its own port var when constructed without kwargs.
@@ -222,10 +228,13 @@ async def test_commander_runs_on_the_par6_runtime(
         # scrub bar plays the commanded record meanwhile.
         from waldo_commander.components.playback import layers_available, playback
         from waldo_commander.services.path_visualizer import path_visualizer
+        from par6 import config as par6_config
 
         program = waldoctl.commander.programs.active
         assert program is not None
-        target = [float(v) for v in status.joints.angles.deg]
+        # The unreferenced simulator can start outside the referenced soft
+        # limits. Plan from the park pose established by home(), not that boot pose.
+        target = [math.degrees(v) for v in par6_config.config().park_pose_rad()]
         target[0] += 5.0
         source = (
             "from par6 import RobotClient\n"
@@ -347,7 +356,6 @@ async def test_commander_runs_on_the_par6_runtime(
             assert {0, 1, 2, 3, 4, 5} <= present, f"scan rows: {table.rows}"
 
         import numpy as np
-        from par6 import config as par6_config
         from waldo_commander.skills import gripper_open, gripper_close, retract
         from waldoctl.setup import Pose
         from par6._par6 import pose_matrix

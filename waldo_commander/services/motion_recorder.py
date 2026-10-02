@@ -1098,19 +1098,16 @@ class MotionRecorder:
 
         # Only record if there was actual movement (> 0.1s)
         if duration > 0.1:
-            # Use wait=False when actions were queued mid-motion so the
-            # tool fires while the arm is still moving on playback.
-            wait = not bool(self._pending_actions)
+            # Tool actions share the motion queue and run after this move.
             if self._active_jog.move_type == "joint":
                 self.record_action(
                     "move_j",
                     angles=self._get_current_angles(),
                     duration=duration,
-                    wait=wait,
                 )
             else:
                 self.record_action(
-                    "move_l", pose=self._get_wrf_pose(), duration=duration, wait=wait
+                    "move_l", pose=self._get_wrf_pose(), duration=duration
                 )
 
             logger.debug(
@@ -1125,7 +1122,7 @@ class MotionRecorder:
                 duration,
             )
 
-        self._flush_pending_actions(self._active_jog.start_time)
+        self._flush_pending_actions()
         self._active_jog = None
 
     def abort_jog(self) -> None:
@@ -1133,23 +1130,15 @@ class MotionRecorder:
         for it, and its motion window closes."""
         jog, self._active_jog = self._active_jog, None
         if jog is not None:
-            self._flush_pending_actions(jog.start_time)
+            self._flush_pending_actions()
 
-    def _flush_pending_actions(self, jog_start_time: float) -> None:
-        """Flush actions queued during a jog, inserting time.sleep delays."""
+    def _flush_pending_actions(self) -> None:
+        """Keep queued actions in order, immediately after the recorded move."""
         if not self._pending_actions:
             return
 
-        last_t = jog_start_time
-        for action_type, params, queued_at in self._pending_actions:
-            delay = queued_at - last_t
-            if delay > 0.05:
-                self._record_action_impl("delay", seconds=delay)
+        for action_type, params, _queued_at in self._pending_actions:
             self._record_action_impl(action_type, **params)
-            last_t = queued_at
-
-        # Track wall time of last flushed action for gap detection
-        self._last_action_wall_time = self._pending_actions[-1][2]
         self._pending_actions.clear()
 
     def current_pose_snippet(self, move_type: str = "cartesian") -> str:
@@ -1330,7 +1319,8 @@ class MotionRecorder:
         command returns and the observer would capture them a second time."""
         with self.owned():
             index = await move
-            record()
+            if index >= 0:
+                record()
             if index >= 0 and is_any_program_recording():
                 await client.wait_command(index, timeout=10.0)
 
