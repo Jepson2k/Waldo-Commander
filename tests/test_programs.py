@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from parol6.client.dry_run_client import DryRunRobotClient
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,14 +36,13 @@ PROGRAMS = sorted(
 def test_program_simulates(script):
     """Motion programs preview; the hardware handshake stops at its observation."""
     program_text = (PROGRAMS_DIR / script).read_text()
-    result = _run_simulation_isolated(
-        program_text,
-        dry_run_client_cls=DryRunRobotClient,
-    )
+    result = _run_simulation_isolated(program_text)
     if script == "cycle_start.py":
         assert result["error"] is not None
         assert "UnresolvedPreview: wait_status" in result["error"]
-        assert result["segments"], "the initial home/standby path should remain visible"
+        assert result["commanded"] is not None and result["commanded"].rows > 0, (
+            "the initial home/standby path should remain visible"
+        )
     else:
         assert result["error"] is None, (
             f"{script} simulation failed:\n{result['error']}"
@@ -62,19 +60,13 @@ def test_preview_mirrors_unhomed_motion_gate():
     )
     move = "rbt.move_j([90.0, -90.0, 180.0, 0.0, 0.0, 170.0], speed=0.5)\n"
 
-    blind = _run_simulation_isolated(
-        template + move,
-        dry_run_client_cls=DryRunRobotClient,
-        initial_homed=False,
-    )
+    blind = _run_simulation_isolated(template + move, initial_homed=False)
     assert blind["error"] is not None and "not homed" in blind["error"], (
         f"unhomed preview must refuse a planned move: {blind['error']!r}"
     )
 
     homed_first = _run_simulation_isolated(
-        template + "rbt.home()\n" + move,
-        dry_run_client_cls=DryRunRobotClient,
-        initial_homed=False,
+        template + "rbt.home()\n" + move, initial_homed=False
     )
     assert homed_first["error"] is None, (
         f"the first move after home() must preview cleanly: {homed_first['error']!r}"
@@ -148,22 +140,18 @@ def test_a_script_that_exits_cleanly_keeps_what_it_drew(ender):
         f"{ender}\n"
         "rbt.move_j([80, -90, 180, 0, 0, 180], speed=0.5, wait=True)\n"
     )
-    result = _run_simulation_isolated(
-        program_text,
-        dry_run_client_cls=DryRunRobotClient,
-    )
+    result = _run_simulation_isolated(program_text)
     assert result["error"] is None, (
         f"a clean {ender} was reported as a failure: {result['error']}"
     )
-    assert result["segments"], f"the move before {ender} was thrown away with the exit"
+    assert result["commanded"] is not None and result["commanded"].rows > 0, (
+        f"the move before {ender} was thrown away with the exit"
+    )
 
 
 def test_a_script_exiting_nonzero_is_reported_as_a_failure():
     """The other half: a non-zero code is the script reporting its own
     failure, and must not be swallowed as a clean end."""
     program_text = "import sys\nsys.exit(3)\n"
-    result = _run_simulation_isolated(
-        program_text,
-        dry_run_client_cls=DryRunRobotClient,
-    )
+    result = _run_simulation_isolated(program_text)
     assert result["error"] and "3" in result["error"], result["error"]

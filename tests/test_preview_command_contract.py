@@ -172,3 +172,33 @@ def test_the_async_preview_does_not_offer_the_sync_clients_run_skill():
 
     with pytest.raises(AttributeError):
         AsyncPathPreviewClient.from_sync(_preview()).run_skill
+
+
+async def test_the_seeded_world_does_not_take_the_first_commands_ordinal():
+    """A preview starts from the live world by applying it before the program
+    runs. The live run never sends that, so the running program's first
+    queued command must still map to its first move, not to the seed."""
+    from nicegui import run
+    from waldoctl import Box
+
+    from waldo_commander.components.script_execution import program_command
+    from waldo_commander.services.path_visualizer import _run_simulation_isolated
+
+    program = (
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "rbt.move_j([80.0, -80.0, 190.0, 10.0, 10.0, 190.0], speed=0.5)\n"
+    )
+    bench = Box(name="bench", x=0.1, y=0.1, z=0.1, pose=(1.0, 1.0, 0.0, 0, 0, 0))
+    result = await run.cpu_bound(
+        _run_simulation_isolated,
+        program,
+        np.radians(HOME_DEG),
+        shapes_wire=[bench.to_wire()],
+    )
+    assert result["error"] is None, result["error"]
+    notes = result["notes"]
+    first = program_command(notes, 0)
+    assert notes[0].method == "set_shapes"
+    assert notes[first].method == "move_j" and first == 1
+    assert next(b for b in result["commanded"].blocks if b.command == first).rows > 0

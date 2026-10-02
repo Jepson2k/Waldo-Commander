@@ -27,6 +27,99 @@ return 'missing';
 @pytest.mark.browser
 @skip_webgl_macos_ci
 class TestCollisionVizScreen:
+    def test_held_object_follows_flange_and_attachment_dialog_renders(
+        self, class_screen
+    ):
+        import asyncio
+        import os
+        from pathlib import Path
+
+        import numpy as np
+        import waldoctl
+        from nicegui import core
+        from selenium.webdriver.support.ui import WebDriverWait
+        from waldoctl import Box
+
+        import parol6.PAROL6_ROBOT as model
+        from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
+        from waldo_commander.state import ui_state
+
+        screen_wait_for_scene_ready(class_screen)
+        assert core.loop is not None
+        local = (0.03, 0.02, 0.25, 0.2, -0.3, 0.4)
+
+        async def prepare():
+            client = waldoctl.commander.client
+            assert await client.simulator(True) == 1
+            assert await client.reset() == 1
+            index = await client.home()
+            assert await client.wait_command(index, timeout=15)
+            index = await client.select_tool("NONE")
+            assert await client.wait_command(index, timeout=5)
+            world = await client.shapes()
+            assert world is not None
+            part = Box(name="held-part", x=0.045, y=0.07, z=0.1).attach(
+                flange_pose=local,
+                epoch=world.attachment_epoch,
+            )
+            assert await client.set_shapes([part]) == 1
+            await waldoctl.commander.scene.refresh_from_backend()
+            return np.radians(await client.angles())
+
+        joints = asyncio.run_coroutine_threadsafe(prepare(), core.loop).result(30)
+        scene = ui_state.urdf_scene
+        assert scene is not None
+
+        def at_pose(q):
+            scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+            scene.set_editing_angles(q.tolist())
+
+        script = """
+        const el = document.querySelector('.nicegui-scene');
+        const c = el && getElement(el);
+        if (!c || !c.objects) return null;
+        for (const o of c.objects.values()) {
+          if (o.mesh && o.mesh.name === 'shape:held-part') {
+            o.mesh.updateWorldMatrix(true, false);
+            return o.mesh.matrixWorld.elements;
+          }
+        }
+        return null;
+        """
+        try:
+            for turn in (0, 0.3):
+                q = joints.copy()
+                q[0] += turn
+                expected = model.robot.fkine(q) @ model._pose_to_matrix(local)
+                run_in_app(lambda: at_pose(q))
+
+                def matches(driver):
+                    actual = driver.execute_script(script)
+                    return actual is not None and np.allclose(
+                        np.asarray(actual).reshape((4, 4), order="F"),
+                        expected,
+                        atol=1e-6,
+                    )
+
+                WebDriverWait(class_screen.selenium, 20).until(matches)
+
+            def show_dialog():
+                with scene.scene:
+                    scene._show_attachment_dialog("held-part")
+
+            run_in_app(show_dialog)
+            class_screen.should_contain("Attach / reconcile held-part")
+            if directory := os.environ.get("WALDO_REVIEW_IMAGE_DIR"):
+                destination = Path(directory) / "held-object-attachment.png"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                class_screen.selenium.save_screenshot(str(destination))
+            class_screen.click("Cancel")
+        finally:
+            asyncio.run_coroutine_threadsafe(
+                waldoctl.commander.client.set_shapes([]), core.loop
+            ).result(10)
+            run_in_app(lambda: scene.set_appearance_mode(RobotAppearanceMode.LIVE))
+
     def _poll_color(
         self, screen, name: str, want: str, timeout: float = 30.0
     ) -> str | None:

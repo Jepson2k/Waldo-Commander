@@ -1,15 +1,15 @@
-"""Browser-level check that a simulated run actually paints.
+"""Browser-level check that a predicted run actually paints.
 
-The achieved path, the contact arrows and the centre-of-mass marker are
+The predicted path, the contact arrows and the centre-of-mass marker are
 three.js geometry: whether they exist in Python says nothing about
 whether anything reaches the canvas. This drives the real render path
-with a record shaped exactly as a backend produces one and asks the
-scene graph what it ended up holding.
+with a commanded/predicted pair shaped exactly as a backend produces
+them and asks the scene graph what it ended up holding.
 
 It also produces the screenshot for these overlays. The installed
 backend here plans and does not simulate, so nothing in the app can
-populate a record on its own; the record is injected, and everything
-downstream of it is the shipping code.
+populate a predicted record on its own; the pair is injected, and
+everything downstream of it is the shipping code.
 """
 
 import time
@@ -21,8 +21,9 @@ import waldoctl
 from tests.helpers.browser_helpers import click_tab, dismiss_dialogs, run_in_app
 
 # Walks the three.js scene for the overlay group and reports what is in
-# it: the achieved polyline (vertex-coloured, so the divergence gradient
-# is real geometry and not a uniform), the contact arrows and the COM.
+# it: the predicted polyline (vertex-coloured, so the following-error
+# gradient is real geometry and not a uniform), the contact arrows and
+# the COM.
 _OVERLAY_JS = """
 // The scene lives on its Vue component; NiceGUI addresses those by the
 // element id its canvas carries.
@@ -52,15 +53,18 @@ return {found: true, lines, meshes, shown, vertexColored, points};
 """
 
 
-def _record(q_rad: np.ndarray, rows: int = 40) -> waldoctl.TickIndex:
-    """A run the way a backend reports one: a TCP path that sweeps
-    forward, a lag that grows along it, and contact for the middle third.
+def _records(
+    q_rad: np.ndarray, rows: int = 40
+) -> tuple[waldoctl.TickIndex, waldoctl.TickIndex]:
+    """A commanded/predicted pair the way a backend reports them: a TCP
+    path that sweeps forward, a lag that grows along it, and contact for
+    the middle third.
 
-    The joints hold at *q_rad* on every row on purpose. Playback teleports
-    the simulated arm to whatever the record says, so a record that moved
-    it would leave it moved for every test after this one — and a pose the
-    planner will not accept turns into a self-collision refusal three
-    tests later. What this checks is the drawing, not the arm.
+    The predicted joints hold at *q_rad* on every row on purpose. Playback
+    teleports the simulated arm to whatever the record says, so a record
+    that moved it would leave it moved for every test after this one — and
+    a pose the planner will not accept turns into a self-collision refusal
+    three tests later. What this checks is the drawing, not the arm.
     """
     t = np.linspace(0.0, 1.0, rows, dtype=np.float32)
     joints = np.tile(np.asarray(q_rad, dtype=np.float32)[:6], (rows, 1))
@@ -81,22 +85,34 @@ def _record(q_rad: np.ndarray, rows: int = 40) -> waldoctl.TickIndex:
     com[:, 0] = 0.10 + t * 0.02
     com[:, 2] = 0.22
 
-    return waldoctl.TickIndex(
-        row_dt_s=0.02,
-        joints_rad=joints.astype(np.float32),
-        commanded_rad=commanded.astype(np.float32),
-        tcp=tcp,
-        tool_closed=np.linspace(0.0, 1.0, rows, dtype=np.float32),
-        tool_gripping=np.zeros(rows, dtype=np.bool_),
-        blocks=(waldoctl.TickBlock(command=0, start_row=0, rows=rows, line_number=1),),
-        objects=(),
-        digest=b"screen-record",
-        channels={
-            "com": com,
-            "contact_pos": np.asarray(pos, dtype=np.float32).reshape(-1, 3),
-            "contact_force": np.asarray(force, dtype=np.float32).reshape(-1, 3),
-            "contact_starts": starts,
-        },
+    blocks = (waldoctl.TickBlock(command=0, start_row=0, rows=rows, line_number=1),)
+    tool_closed = np.linspace(0.0, 1.0, rows, dtype=np.float32)
+    return (
+        waldoctl.TickIndex(
+            row_dt_s=0.02,
+            joints_rad=commanded.astype(np.float32),
+            tcp=tcp,
+            tool_closed=tool_closed,
+            tool_gripping=np.zeros(rows, dtype=np.bool_),
+            blocks=blocks,
+            digest=b"screen-commanded",
+        ),
+        waldoctl.TickIndex(
+            row_dt_s=0.02,
+            joints_rad=joints.astype(np.float32),
+            tcp=tcp,
+            tool_closed=tool_closed,
+            tool_gripping=np.zeros(rows, dtype=np.bool_),
+            blocks=blocks,
+            objects=(),
+            digest=b"screen-predicted",
+            channels={
+                "com": com,
+                "contact_pos": np.asarray(pos, dtype=np.float32).reshape(-1, 3),
+                "contact_force": np.asarray(force, dtype=np.float32).reshape(-1, 3),
+                "contact_starts": starts,
+            },
+        ),
     )
 
 
@@ -113,30 +129,26 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
         view = waldoctl.commander.settings.view
         _saved_view.update({f: getattr(view, f) for f in _VIEW_FLAGS})
         view.paths_visible = True
-        view.divergence_visible = True
+        view.predicted_visible = True
         view.contacts_visible = True
         view.com_visible = True
         program = waldoctl.commander.programs.active
         assert program is not None
-        # A physics pass always follows a planner pass, so a record on
-        # screen always has planned segments beside it.
-        from waldo_commander.state import PathSegment, simulation_state
+        # A predicted pass always answers a plan, so a predicted record on
+        # screen always has the commanded one and its segments beside it.
+        from waldo_commander.services.preview_segments import segments_from_record
+        from waldo_commander.state import simulation_state
 
-        ticks = _record(waldoctl.commander.status.joints.angles.rad)
+        commanded, predicted = _records(waldoctl.commander.status.joints.angles.rad)
 
-        program.dry_run.path_segments = [
-            PathSegment(
-                points=[[float(r[0]), float(r[1]), float(r[2])] for r in ticks.tcp],
-                color="#2196f3",
-                is_valid=True,
-                line_number=1,
-                estimated_duration=ticks.duration_s,
-            )
-        ]
+        program.dry_run.commanded = commanded
+        program.dry_run.commanded_revision = 1
+        program.dry_run.predicted = predicted
+        program.dry_run.predicted_revision = 1
+        program.dry_run.path_segments = segments_from_record(commanded, [])
         program.dry_run.total_steps = 1
-        program.dry_run.ticks = ticks
         simulation_state.notify_changed()
-        return ticks
+        return predicted
 
     ticks = run_in_app(_populate)
 
@@ -148,7 +160,7 @@ def test_a_simulated_run_paints_its_path_contacts_and_com(screen) -> None:
 
 _VIEW_FLAGS = (
     "paths_visible",
-    "divergence_visible",
+    "predicted_visible",
     "contacts_visible",
     "com_visible",
 )
@@ -173,7 +185,10 @@ def _restore() -> None:
 
     program = waldoctl.commander.programs.active
     if program is not None:
-        program.dry_run.ticks = None
+        program.dry_run.commanded = None
+        program.dry_run.commanded_revision = -1
+        program.dry_run.predicted = None
+        program.dry_run.predicted_revision = -1
         program.dry_run.path_segments = []
         program.dry_run.total_steps = 0
         program.dry_run.playback.playback_time = 0.0
@@ -212,8 +227,8 @@ def _check_and_shoot(screen, ticks: waldoctl.TickIndex) -> None:
     assert info is not None, "no three.js scene on the page"
     assert info.get("found"), "the physics overlay group never reached the scene"
     assert info["vertexColored"] >= 1, (
-        f"the achieved path must carry per-vertex colours — a uniform colour "
-        f"shows no divergence at all: {info}"
+        f"the predicted path must carry per-vertex colours — a uniform colour "
+        f"shows no following error at all: {info}"
     )
     assert info["points"] >= 40, f"the path is missing rows: {info}"
     assert info["meshes"] >= 2, f"the per-frame pool was never created: {info}"
