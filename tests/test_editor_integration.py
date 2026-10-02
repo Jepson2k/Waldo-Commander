@@ -1627,6 +1627,7 @@ async def test_a_record_and_a_plan_of_different_lengths_still_build_a_scrub_bar(
     playback.invalidate_timeline()
 
 
+@pytest.mark.integration
 async def test_a_selection_belongs_to_the_tab_it_was_made_in(user: User) -> None:
     """Lines selected in one program must not be what an action on another
     program replaces: switching tabs leaves the new tab with no selection."""

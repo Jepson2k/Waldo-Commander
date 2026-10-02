@@ -82,11 +82,7 @@ class SettingsContent:
         self._variant_container: ui.column | None = None
         self._tcp_offset_container: ui.column | None = None
         self._tcp_pushing = False
-        self._tcp_push_next: tuple[str, dict, OffsetInputs, Client, int] | None = None
-        # Bumped by every tool change. A push carries the epoch it was
-        # queued under, so an edit in flight when the tool changes is
-        # dropped rather than re-applied to the tool that replaced it.
-        self._tool_epoch = 0
+        self._tcp_push_next: tuple[str, dict, OffsetInputs, Client] | None = None
 
     def _load_preferences(self) -> dict:
         """Load persisted preferences from storage."""
@@ -283,6 +279,21 @@ class SettingsContent:
             with page_client:
                 ui.notify(message, color=color)
 
+    async def _read_tcp_offset(self) -> list[float]:
+        """The controller's offset as exactly three floats.
+
+        Both backends answer an unreachable controller with a sentinel
+        rather than an error, and a short or malformed answer would only
+        be noticed later, indexing `offset_mm[0..2]` in
+        `_adopt_tcp_offset` -- outside every `try` here, so the caller's
+        handler never sees it. Validating at the read makes a bad answer a
+        raise that the existing handlers already deal with.
+        """
+        back = [float(b) for b in await self.client.tcp_offset()]
+        if len(back) != 3:
+            raise ValueError(f"tcp_offset() answered {len(back)} values, want 3")
+        return back
+
     async def _push_tcp_offset(
         self,
         tool_key: str,
@@ -295,7 +306,7 @@ class SettingsContent:
         One push runs at a time: overlapping pushes race each other's
         readbacks, and the loser adopts an intermediate value the user has
         already typed past."""
-        self._tcp_push_next = (tool_key, vals, inputs, page_client, self._tool_epoch)
+        self._tcp_push_next = (tool_key, vals, inputs, page_client)
         if self._tcp_pushing:
             return
         self._tcp_pushing = True
@@ -317,14 +328,11 @@ class SettingsContent:
         vals: dict,
         inputs: OffsetInputs,
         page_client: Client,
-        epoch: int,
     ) -> None:
         """Set the offset and adopt what the controller reports back, so the
         GUI's TCP is the one the controller plans with."""
-        if epoch != self._tool_epoch or not page_client.has_socket_connection:
-            # The tool changed while this edit was queued (the controller
-            # zeroed its offset for the new tool, and the old tool's number
-            # would silently restore it), or the page that typed it is gone.
+        if not page_client.has_socket_connection:
+            # The page that typed it is gone.
             return
         x, y, z = (float(vals.get(k, 0) or 0) for k in ("x", "y", "z"))
         back: list[float] = []
@@ -336,7 +344,7 @@ class SettingsContent:
             await self.client.set_tcp_offset(x, y, z)
             _pushed_offset_tools.add(tool_key)
             for _ in range(10):
-                back = [float(b) for b in await self.client.tcp_offset()]
+                back = await self._read_tcp_offset()
                 if all(abs(b - v) <= 1e-3 for b, v in zip(back, (x, y, z))):
                     return
                 await asyncio.sleep(0.1)
@@ -375,7 +383,7 @@ class SettingsContent:
             return
         try:
             tools = await self.client.tools()
-            back = [float(v) for v in await self.client.tcp_offset()]
+            back = await self._read_tcp_offset()
         except Exception as exc:
             logger.debug("tcp_offset readback failed: %s", exc)
             return
@@ -546,7 +554,8 @@ class SettingsContent:
     def _build_tool_section(self) -> None:
         async def _on_tool_change(e):
             tool = e.value
-            self._tool_epoch += 1
+            # The controller zeroes its offset for the new tool, so an edit
+            # queued for the old one must not be sent after the change.
             self._tcp_push_next = None
             vk = self._get_variant_key(tool)
             require_browser_control(context.client.id)
