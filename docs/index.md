@@ -37,9 +37,27 @@ Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[/]** to adjust
   <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/basic_control.mp4" type="video/mp4">
 </video>
 
+### Jogging in the 3D view
+
+Rest the pointer on a link of the arm and that joint's ring appears around it; rest it on the last link or the tool and the gizmo appears at the TCP. One handle shows at a time, and it goes a moment after the pointer leaves it. On a touch screen, tap the link instead; tapping empty space puts the handle away.
+
+- **Rings.** Drag anywhere on a ring to turn its joint. The joint moves in whole steps from where the drag began, stops at its limits, and the label beside the knob shows the joint's value, the change so far and the step, for example `Shoulder  −47.5°  Δ+20.0°  step 5°`. The dots on the ring mark the steps.
+- **Gizmo.** Drag an arrow to move the tool along its own axes, or a ring (in Rotate mode) to turn it about them. Moves snap to whole steps in the tool frame; dots along the dragged axis mark them and a label shows the change.
+
+The step follows the zoom: the further the camera is from what it orbits, the coarser the step.
+
+| Camera distance | Ring step | Gizmo step |
+|---|---|---|
+| over 1.2 m | 5° | 10 mm, 5° |
+| 0.5 – 1.2 m | 1° | 5 mm, 1° |
+| 0.3 – 0.5 m | 0.5° | 1 mm, 0.5° |
+| under 0.3 m | 0.1° | 0.5 mm, 0.1° |
+
+The step field in the control panel is separate: it sets the step of the jog buttons and keys only. The gizmo buttons in the control panel choose Move or Rotate for the gizmo, or Hidden to never show it; the rings still appear. No handle appears while a program runs, while you edit a target, or when there is no robot or simulator to move. While recording, a drag is recorded as one `move_j` (ring) or `move_l` (gizmo) when the arm settles.
+
 ### Connecting Your Robot
 
-In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
+Open **Settings** from the gear in the bottom-left rail and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the footer along the bottom of the window.
 
 - <span style="color: #4caf50">&#9632;</span> Connected to robot hardware
 - <span style="color: #f44336">&#9632;</span> Robot mode but disconnected
@@ -51,7 +69,7 @@ In the control panel, switch to the **Settings** tab and select your hardware co
 
 ### Programming, Recording, and Path Visualization
 
-Write robot programs in Python using the built-in editor with auto-complete for all robot commands. Or jog the robot into position and let the recorder generate `move_j` / `move_l` calls for you — I/O and tool actions are captured too. Right-click in the 3D view to place targets, press **T** to add one at the current pose, or drag existing targets with the gizmo to reposition them.
+Write robot programs in Python using the built-in editor with auto-complete for all robot commands. Or jog the robot into position and let the recorder generate `move_j` / `move_l` calls for you — I/O and tool actions are captured too, and so is motion you guide by hand or send from another client; see [Recording](guides/recording.md). Right-click in the 3D view to place targets, press **T** to add one at the current pose, or drag existing targets with the gizmo to reposition them.
 
 Run programs against the simulator to preview the motion path in 3D. The path traces the TCP position through each move, color-coded by reachability. Execute on hardware when you're ready.
 
@@ -61,7 +79,7 @@ Run programs against the simulator to preview the motion path in 3D. The path tr
 
 ### I/O and Tool Control
 
-Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens in the Settings tab; the 3D model updates to show the attached tool.
+Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens under Settings → Tool; the 3D model updates to show the attached tool.
 
 <video controls width="100%">
   <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/attaching_a_tool.mp4" type="video/mp4">
@@ -71,9 +89,9 @@ Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, sli
 
 An MJPEG camera stream can be displayed in the gripper panel — useful for monitoring pick-and-place or running ML inference on the end-effector view. On Linux, frames pass straight from the kernel to the browser via v4l2 with zero re-encoding. Virtual camera devices work too — pipe a CV pipeline through `pyvirtualcam` and display the annotated feed.
 
-### Hand-Eye Calibration
+### Camera calibration
 
-For a camera mounted on the tool, the **Hand-Eye Calibration** tab solves the camera→TCP transform (eye-in-hand) so camera observations can be mapped into robot coordinates. Download the generated ChArUco board, print it at 100% scale, and fix it in the workspace — tilted roughly 30-45° toward the camera rather than square-on, which conditions the solve much better. Then jog the robot so the camera sees the board from 10–15 poses with varied wrist orientation, capturing a sample at each; detected corners are overlaid on the live feed and a capture is only accepted while the board is detected and the robot is stationary. Solving estimates the camera intrinsics from the same captures and runs `cv2.calibrateHandEye`, reporting reprojection error, AX=XB residuals, and target spread. Saved calibrations are stored per tool and can be visualized as a camera frustum in the 3D scene.
+The **Camera calibration** tab solves where a camera sits, on the tool (camera→TCP) or fixed in the workspace (camera→WRF), so camera observations can be mapped into robot coordinates. It is one flow of three steps, each collapsing to a summary line while another is open: **Board** (choose the placement, download the ChArUco board, print it at 100% scale and fix it, tilted roughly 30–45° toward the camera rather than square-on), **Views** (**Auto-capture** drives the arm through 15 poses with varied wrist orientation and captures the board at each while it is seen and the robot is still; the live view shows the detected corners, and a coverage ring records which directions the board has been seen from and where in the frame, glowing on the gap to fill next; the thumbnails fold out for deleting a flagged view) and **Save** (the solve runs by itself once four views exist — intrinsics from the same views, then `cv2.calibrateHandEye` — and the step header reports a good, usable or poor fit with the reprojection error and target spread; the transform, the residuals and a re-solve with another method sit in the step, and saving writes the calibration into a named setup, from where programs read it).
 
 ---
 
@@ -112,9 +130,13 @@ waldo-commander [options]
 | `WALDO_TRACE` | Enable TRACE-level logging in console and UI logs | off |
 | `WALDO_EXCLUSIVE_START` | Require exclusive controller ownership on start | `1` |
 
-### Settings Panel
+### Status footer
 
-The **Settings** tab in the control panel provides:
+The footer along the bottom of the window shows the connection mode (simulator, connected, disconnected), the robot and its tool, one dot per digital line (lit when high), the TCP pose and speed, and the last action — click it for the history. Its two right-hand buttons open the bottom panel: the warning and error counts open **Diagnostics** (tinted while something landed unseen), and the next button opens the app **Log**.
+
+### Settings
+
+The gear in the bottom-left rail opens the **Settings** dialog, one category per tab:
 
 - **Hardware connection** — auto-detects available ports, or enter a path manually. Refreshes every 10 seconds. Persisted in browser local storage.
 - **Theme** — currently dark only. Light mode is planned for a future update.
@@ -124,7 +146,9 @@ The **Settings** tab in the control panel provides:
     - **On** — always visible as a full translucent shell.
     - **Off** — hidden.
 - **Camera** — select a video device for the gripper panel feed, often used for monitoring pick-and-place or running ML inference on the end-effector view. If you'd like to add annotations to the camera feed, you can do so by processing the raw webcam in your own script and outputting to a virtual camera via pyvirtualcam + v4l2loopback — then just select that virtual device here. On Linux: `sudo apt install v4l2loopback-dkms`.
-- **Tool** — select the active end-effector from the tools the backend provides. See the [PAROL6 tools](https://github.com/Jepson2k/PAROL6-python-API#tools) documentation for the tools available with the default backend. Changing the tool updates the TCP offset for Cartesian calculations, swaps the tool mesh in the 3D view, and re-runs any active simulation. If a tool has variants (e.g. different jaw sets), a variant selector appears. A per-tool TCP offset field lets you fine-tune the tool tip position in mm.
+- **Shortcuts** — every keyboard binding, by category.
+- **Getting started** — the quick-start tour and a link to these guides.
+- **Tool** — select the active end-effector from the tools the backend provides. See the [PAROL6 tools](https://github.com/Jepson2k/PAROL6-python-API#tools) documentation for the tools available with the default backend. Changing the tool updates the TCP offset for Cartesian calculations, swaps the tool mesh in the 3D view, and re-runs any active simulation. If a tool has variants (e.g. different jaw sets), a variant selector appears. Per-tool TCP fields let you fine-tune translation in mm and, on supported backends, intrinsic XYZ orientation in degrees. [Setup → TCP](guides/named-setup.md#tcp-position-calibration-and-orientation-teaching) provides pivot-position calibration and separate orientation teaching.
 
 ### Running on a Remote Machine
 

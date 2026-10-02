@@ -127,7 +127,11 @@ Motion recording lives on the program rather than in a module-level global:
 Custom components are in `waldo_commander/components/`:
 - `editor.py` - Code editor with tabs, script execution
 - `control.py` - Jogging controls, robot mode switching
-- `readout.py` - Joint/position readouts
+- `readout.py` - Status footer: mode, tool, I/O dots, pose, last action, event counts
+- `bottom_panel.py` - Diagnostics and the app log, opened from the footer
+- `diagnostics.py` - Diagnostics content (verdict, loop, drives, events)
+- `settings.py` - Settings dialog, one category per tab
+- `help_menu.py` - Keybindings table, quick-start tour, first-visit dialog
 
 ### Services
 
@@ -164,21 +168,25 @@ Robot communication goes through a `waldoctl.RobotClient` ABC. Each backend (e.g
 - **Prefer NiceGUI native elements** (ui.chip, ui.image, ui.icon, ui.label, ui.row, etc.) over raw HTML (`ui.html`). Only use `ui.html` when NiceGUI doesn't provide an equivalent.
 - **Use `ui.icon`** for Material Icons. Use `ui.icon("img:path")` for custom SVGs. Don't inline SVG content in Python strings.
 - **Keep layouts compact** — avoid unnecessary gaps. Don't add `gap-*` classes unless spacing is actually needed.
-- **Color preference order**: Tailwind or Quasar color classes first, then `oklab()`, then raw hex as last resort.
+- **Colours come from the design tokens** in `waldo_commander/common/theme.py`: a palette per theme plus a few fixed colours, with every other token derived from them. Outside `theme.py`: `text-wc-<token>` / `bg-wc-<token>` classes, `.props("color=wc-<token> text-color=wc-<pair>")` on filled elements, `var(--wc-<token>)` in styles, and `hex_of("<token>")` where Three.js or ECharts need a literal and `linear_rgb("<token>")` for Three.js vertex colours. No hex, `rgba()`, named colours, Quasar palette or semantic names, or palette colour classes in the package's Python, JS, SVG or CSS; `scripts/check_colors.py` enforces this in pre-commit. `ui.notify` keeps Quasar's semantic names.
 
 ## Multi-Repo Versioning & Dev Workflow
 
 ### Repository structure
 
-Three repos with a clear dependency direction:
+Four repos with a clear dependency direction:
 
 ```
-waldoctl (ABC/types) ← parol6 (backend) ← waldo-commander (frontend)
+waldoctl (ABC/types)
+   ├── parol6  (PAROL6 backend, PCrnjak/PAROL6-python-API)
+   └── par6    (PAR6 backend,   Jepson2k/par6)
+            └── waldo-commander (this repo)
 ```
 
-- `waldoctl` — shared interface definitions, installed from git tag in pyproject.toml
-- `parol6` — PAROL6 backend, installed from git tag by CI
-- `waldo-commander` — the frontend, depends on both via git URLs
+- `waldoctl` — shared interface definitions, installed from a git tag
+- `parol6` — PAROL6 backend, installed from a git tag
+- `par6` — PAR6 backend, installed from a git ref (`[par6]` extra)
+- `waldo-commander` — the frontend, depending on those via git URLs
 
 WC also depends on a vendored fork of NiceGUI; see [NiceGUI fork](#nicegui-fork) below.
 
@@ -188,9 +196,9 @@ All packages use semver (`MAJOR.MINOR.PATCH`). Pre-1.0 packages bump minor for b
 
 ### Release workflow (breaking cross-repo changes)
 
-1. Release waldoctl first — bump version in pyproject.toml, merge to main, tag (e.g. `v0.2.0`)
-2. Update parol6's `pyproject.toml` to reference the new waldoctl tag, merge, tag
-3. Update waldo-commander's `pyproject.toml` + CI to reference new tags, merge, tag
+See [RELEASING.md](RELEASING.md) — the order, why CI cannot verify a
+release (branch-matching hides a broken pin), and what a waldoctl bump
+tends to break downstream.
 
 ### Dev workflow (coordinated feature branches)
 

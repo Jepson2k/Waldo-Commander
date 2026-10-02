@@ -10,6 +10,7 @@ import logging
 import re
 
 from nicegui.elements.codemirror.codemirror import CompletionItem
+from waldoctl.setup import SetupSnapshot
 
 from waldo_commander.state import ui_state
 
@@ -131,4 +132,98 @@ def generate_completions_from_commands() -> list[CompletionItem]:
         }
         completions.append(completion)
 
+    from waldoctl.skills import discover_skills
+
+    skills = discover_skills().values()
+    trailing: dict[str, int] = {}
+    for candidate in skills:
+        trailing[getattr(candidate.function, "__name__", "")] = (
+            trailing.get(getattr(candidate.function, "__name__", ""), 0) + 1
+        )
+    for candidate in skills:
+        name = getattr(candidate.function, "__name__", None)
+        if not isinstance(name, str):
+            continue
+        # Two plugins can provide the same function name; an unqualified
+        # completion list would offer them as one entry and insert whichever
+        # was discovered first.
+        label = f"{name} ({candidate.spec.id})" if trailing[name] > 1 else name
+        completions.append(
+            {
+                "label": label,
+                "detail": str(inspect.signature(candidate.function)),
+                "info": f"{candidate.spec.id} · Import from {candidate.function.__module__}. {inspect.getdoc(candidate.function) or ''}",
+                "apply": name,
+                "type": "function",
+            }
+        )
+
     return completions
+
+
+def setup_completions(
+    snapshot: SetupSnapshot, variable: str = "setup"
+) -> list[CompletionItem]:
+    """Completions for the entries of the setup a program loads as *variable*.
+
+    A pose is offered by its reference and by its bare name, which completes
+    to the reference, so typing the name a pose was taught under finds it.
+    """
+    items: list[CompletionItem] = []
+    for name, pose in snapshot.poses.items():
+        reference = f'{variable}.resolve("{name}")'
+        detail = f"pose in {pose.frame}"
+        items.append(
+            {
+                "label": reference,
+                "detail": detail,
+                "type": "variable",
+                "section": "Setup",
+            }
+        )
+        items.append(
+            {
+                "label": name,
+                "apply": reference,
+                "detail": detail,
+                "type": "variable",
+                "section": "Setup",
+            }
+        )
+    for name, frame in snapshot.frames.items():
+        items.append(
+            {
+                "label": f'{variable}.frames["{name}"]',
+                "detail": f"frame in {frame.parent}",
+                "type": "variable",
+                "section": "Setup",
+            }
+        )
+    for name in snapshot.signals:
+        items.append(
+            {
+                "label": f'{variable}.signals["{name}"]',
+                "detail": "signal",
+                "type": "variable",
+                "section": "Setup",
+            }
+        )
+    for name in snapshot.cameras:
+        items.append(
+            {
+                "label": f'{variable}.cameras["{name}"]',
+                "detail": "camera calibration",
+                "type": "variable",
+                "section": "Setup",
+            }
+        )
+    for name, parameter in snapshot.parameters.items():
+        items.append(
+            {
+                "label": f'{variable}.parameters["{name}"].value',
+                "detail": f"{parameter.value!r} {parameter.unit}".strip(),
+                "type": "constant",
+                "section": "Setup",
+            }
+        )
+    return items

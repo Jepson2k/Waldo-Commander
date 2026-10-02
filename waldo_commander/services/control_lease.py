@@ -113,6 +113,7 @@ class ControlLease:
 
     def __init__(self) -> None:
         self._holder: Holder | None = None
+        self.generation = 0
 
     def _live(self, h: Holder, now: float) -> bool:
         if h.channel == BROWSER:
@@ -125,6 +126,7 @@ class ControlLease:
         h = self._holder
         if h is not None and not self._live(h, time.monotonic()):
             self._holder = None
+            self.generation += 1
         return self._holder
 
     def describe(self) -> str:
@@ -143,6 +145,11 @@ class ControlLease:
     def seize(self, channel: str, id: str, label: str) -> None:
         """Take control for ``(channel, id)``. Anyone may seize; the displaced
         holder finds out on its next query / actuation (always visible)."""
+        if self._holder is None or (self._holder.channel, self._holder.id) != (
+            channel,
+            id,
+        ):
+            self.generation += 1
         self._holder = Holder(channel, id, label, time.monotonic())
 
     def touch(self, channel: str, id: str) -> None:
@@ -156,11 +163,13 @@ class ControlLease:
         h = self._holder
         if h is not None and h.channel == channel and h.id == id:
             self._holder = None
+            self.generation += 1
 
     def reset(self) -> None:
         """Drop any holder (used by ``reset_all_state`` between test sessions)."""
         global _control_mode
         self._holder = None
+        self.generation += 1
         _consented_sessions.clear()
         _pending_consent.clear()
         _denied_at.clear()

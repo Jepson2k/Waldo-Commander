@@ -8,8 +8,8 @@ launch.
 
 ## Enable the server
 
-The server is **off by default**. Turn it on in the control panel's **Settings**
-tab under **MCP server**:
+The server is **off by default**. Turn it on under **Settings → Advanced**
+(the gear in the bottom-left rail), **MCP server**:
 
 - **Enabled** — start the server on the next app launch.
 - **Host** — `127.0.0.1` (loopback) by default. Set `0.0.0.0` to expose it on
@@ -60,7 +60,7 @@ the program-side motion API instead of guessing it.
 ## Control modes
 
 You decide how much the LLM can do on its own, from the **AI control mode**
-selector in the control panel's Settings tab, by clicking the mode chip at the
+selector under Settings → Automation, by clicking the mode chip at the
 top of the screen, or by cycling with **Alt+M**. A perimeter glow appears
 whenever an MCP client is connected — faint while you hold control, breathing
 at full strength while the AI is driving — and its color tracks the mode
@@ -83,7 +83,7 @@ holds control) seizes control back for you and halts any motion the AI started.
 
 The `world.*` tools edit the same collision world the 3D scene shows and the
 backend enforces. Every mutation reassigns the scene's program layer, so the
-backend push, the amber "not yet confirmed" styling, program recording and the
+backend push, the pale "not yet confirmed" styling, program recording and the
 local collision checker all apply exactly as they do to a human's edit.
 Mutations need the control lease (changing the enforced world is not
 actuation, so no hardware consent is asked); reads never do. Shapes travel as
@@ -95,7 +95,7 @@ physics]` in metres and radians — or as dicts with the same fields.
 | `world.get` / `world.export` | the world document: installation layer (the floor is one of its shapes), program layer, whether the program layer is confirmed by readback, and the installation proposal |
 | `world.set_shapes`, `world.add_shape`, `world.update_shape`, `world.remove_shape` | edit the program layer (the installation layer is the robot config's and read-only here) |
 | `world.import_world` | apply a world document's program layer; reports whether its installation entries match the live one |
-| `world.library_list` / `library_save` / `library_load` / `library_delete` | the object library — world documents saved beside the programs |
+| `world.library_list` / `library_save` / `library_load` / `library_delete` | the object library — `ShapeWorld` Python modules in `programs/worlds/` |
 | `world.place_object` | drop a one-shape library entry into the layer under a new name and pose, physics intact |
 | `world.propose_installation` / `world.discard_installation_draft` | move program shapes into the installation proposal, or drop them from it |
 | `world.export_installation_toml` | the proposal (or the program layer) as the robot config's `[[installation_shapes]]` TOML |

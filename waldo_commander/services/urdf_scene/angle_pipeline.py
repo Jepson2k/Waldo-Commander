@@ -2,9 +2,11 @@
 
 Owns pre-allocated numpy buffers and delegates to the numba angle_pipeline
 kernel. Call init_buffers() once at startup, then update_urdf_angles() at 50Hz.
+:func:`urdf_to_panel` maps one URDF joint value back to the panel's degrees.
 """
 
 import logging
+import math
 
 import numpy as np
 
@@ -89,13 +91,10 @@ def _init_config() -> None:
 
 def update_urdf_angles(angles_deg: np.ndarray) -> None:
     """Update URDF scene with new joint angles (degrees -> radians)."""
-    global _config_valid
-
     if not ui_state.urdf_scene or len(angles_deg) < ui_state.active_robot.joints.count:
         return
 
-    if not _config_valid:
-        _init_config()
+    _ensure_config()
 
     # Pass numpy array directly to numba pipeline (no copy needed)
     if not angle_pipeline(
@@ -109,3 +108,23 @@ def update_urdf_angles(angles_deg: np.ndarray) -> None:
         return
 
     ui_state.urdf_scene.set_axis_values(_angles_ordered_buffer)
+
+
+def _ensure_config() -> None:
+    if not _config_valid:
+        _init_config()
+
+
+def urdf_to_panel(urdf_index: int, q_rad: float) -> tuple[int, float]:
+    """(controller joint index, panel degrees) for one URDF joint value.
+
+    The exact inverse of what :func:`update_urdf_angles` does to that joint.
+    """
+    _ensure_config()
+    for i in range(len(_urdf_reorder_array)):
+        if _urdf_reorder_array[i] == urdf_index:
+            c = int(_index_mapping_array[i])
+            offset = float(_angle_offsets_array[c])
+            sign = float(_angle_signs_array[c])
+            return c, (math.degrees(q_rad) - offset) * sign
+    return urdf_index, math.degrees(q_rad)

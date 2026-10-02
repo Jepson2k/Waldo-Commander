@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, TYPE_CHECKING
 
@@ -12,6 +13,7 @@ from waldoctl import (
     Panel,
     PathSegment,
     ProgramTarget,
+    RobotError,
     ShapeChange,
     ToolAction,
     ToolSelection,
@@ -69,6 +71,49 @@ class SimulationState(ChangeNotifierMixin):
 # session-wide check is ``services.programs.is_any_program_recording()``.
 
 
+class TorqueTimeSeries:
+    """Rolling per-joint torque history behind the diagnostics chart.
+
+    One timestamp column and one row of joint torques per status tick,
+    measured and external side by side. Readers take the whole series once
+    new rows have arrived; between reads the chart is left alone.
+    """
+
+    __slots__ = ("_ts", "_measured", "_external", "_dirty")
+
+    def __init__(self, max_points: int = 300) -> None:
+        self._ts: deque[float] = deque(maxlen=max_points)
+        self._measured: deque[list[float]] = deque(maxlen=max_points)
+        self._external: deque[list[float]] = deque(maxlen=max_points)
+        self._dirty = False
+
+    def push(self, measured: list[float], external: list[float]) -> None:
+        self._ts.append(time.time())
+        self._measured.append(measured)
+        self._external.append(external)
+        self._dirty = True
+
+    def __len__(self) -> int:
+        """Samples held. Readers consume :meth:`get_series_if_dirty`, which
+        clears the flag, so this is how anything else asks whether samples
+        are arriving at all."""
+        return len(self._ts)
+
+    def get_series_if_dirty(
+        self,
+    ) -> tuple[list[float], list[list[float]], list[list[float]]] | None:
+        if not self._dirty:
+            return None
+        self._dirty = False
+        return list(self._ts), list(self._measured), list(self._external)
+
+    def clear(self) -> None:
+        self._ts.clear()
+        self._measured.clear()
+        self._external.clear()
+        self._dirty = False
+
+
 # Shared state singleton for cross-module access. No fields are bindable
 # (bindable_fields=[]) — the members are numpy arrays / objects read
 # imperatively, and the migrated scalar fields now live on commander.status.*.
@@ -89,12 +134,20 @@ class RobotState(ChangeNotifierMixin):
     # tool_time_series stays here as a WC-internal rolling buffer backing the
     # gripper chart; the rest of the tool/pose/io scalars live on commander.status.*.
     tool_time_series: ToolTimeSeries = field(default_factory=ToolTimeSeries)
+    torque_time_series: TorqueTimeSeries = field(default_factory=TorqueTimeSeries)
     speeds: np.ndarray = field(
         default_factory=lambda: np.zeros(6, dtype=np.float64)
     )  # deg/s
     # All joints homed, from the status stream. Seeds dry-run previews so an
     # unhomed robot's preview mirrors the controller's planned-motion gate.
     homed: bool = True
+    # Last calibration confirmed by Commander. The shared status protocol
+    # does not expose the backend's calibration latch.
+    gripper_calibrated: bool = False
+    controller_session: tuple[int, bool] | None = None
+    # The controller's latched error, or None; self-clearing conditions are
+    # on commander.status.warnings.
+    standing_error: RobotError | None = None
     executing_index: int = -1
     completed_index: int = -1
     _change_listeners: list[Callable[[], None]] = field(
@@ -108,8 +161,12 @@ class RobotState(ChangeNotifierMixin):
         self.io[:] = 0
         self.tool_status = ToolStatus()
         self.tool_time_series.clear()
+        self.torque_time_series.clear()
         self.speeds[:] = 0.0
         self.homed = True
+        self.gripper_calibrated = False
+        self.controller_session = None
+        self.standing_error = None
         self.executing_index = -1
         self.completed_index = -1
 
@@ -159,23 +216,65 @@ class AutomationState:
 class RobotEventLog:
     """Chronological log of robot warnings and errors.
 
-    The banner shows only the *standing* conditions (they self-clear);
-    this keeps what happened, so a warning that flickered while nobody
-    was watching is still discoverable.
+    The banner shows only the *standing* conditions (they self-clear); this
+    keeps what happened, so a warning that flickered while nobody was
+    watching is still discoverable.
+
+    Entries carry the whole structured error rather than a summary line: the
+    cause, the effect and the remedy are the parts that say what to do, and
+    dropping them leaves a log that can only report that something was
+    wrong.
     """
 
-    entries: list[tuple[str, str, str, str]] = field(default_factory=list)
-    """(wall-clock time, severity, message, detail), oldest first."""
+    entries: list[tuple[str, int, str, str, str, str, str]] = field(
+        default_factory=list
+    )
+    """(wall-clock time, code, title, cause, effect, remedy, severity), oldest first."""
     version: int = 0
+    unread_severity: str = ""
+    """The worst severity added since the log was last looked at, or "".
+    Drives the footer's tint; cleared by :meth:`mark_read` when Diagnostics
+    renders the entries."""
+    warnings: int = 0
+    errors: int = 0
     _MAX = 200
 
-    def add(self, severity: str, message: str, detail: str = "") -> None:
-        if self.entries and self.entries[-1][1:] == (severity, message, detail):
+    def add(
+        self,
+        code: int,
+        title: str,
+        cause: str = "",
+        effect: str = "",
+        remedy: str = "",
+        severity: str = "warning",
+    ) -> None:
+        entry = (code, title, cause, effect, remedy, severity)
+        if self.entries and self.entries[-1][1:] == entry:
             return
-        self.entries.append((time.strftime("%H:%M:%S"), severity, message, detail))
+        self.entries.append((time.strftime("%H:%M:%S"), *entry))
         if len(self.entries) > self._MAX:
             del self.entries[: -self._MAX]
+        self._recount()
         self.version += 1
+        if self.unread_severity != "error":
+            self.unread_severity = severity
+
+    def _recount(self) -> None:
+        self.errors = sum(1 for e in self.entries if e[6] == "error")
+        self.warnings = len(self.entries) - self.errors
+
+    def mark_read(self) -> None:
+        # No version bump: the log rendering keys a full rebuild on it, and
+        # the read state is not something that rendering displays.
+        self.unread_severity = ""
+
+    def clear(self) -> None:
+        if self.entries or self.unread_severity:
+            self.entries.clear()
+            self.unread_severity = ""
+            self.warnings = 0
+            self.errors = 0
+            self.version += 1
 
 
 @dataclass
@@ -242,6 +341,12 @@ class UiState:
     response_log: Any = None
     io_page: Any = None
     gripper_page: Any = None
+    diagnostics_page: Any = None
+    settings_content: Any = None
+    bottom_panel: Any = None
+    # Kept so the editor addresses its tab directly instead of hunting the
+    # DOM for a matching icon glyph.
+    _program_tab: Any = None
     _gripper_tab: Any = None
     _build_gripper_content: Any = None
 
@@ -354,6 +459,14 @@ class ReadinessState:
             logger.debug("Readiness: backend done")
             self._check_app_ready()
 
+    def begin_page(self) -> None:
+        """A replacement page must finish building before it is ready."""
+        self._page_done = False
+        self.app_ready.clear()
+        self.app_ready_ts = 0.0
+        self.urdf_scene_ready.clear()
+        self.urdf_scene_ready_ts = 0.0
+
     def mark_page_done(self) -> None:
         """Mark page as ready (call from index_page after setup)."""
         if not self._page_done:
@@ -398,9 +511,11 @@ def reset_all_state() -> None:
     from waldo_commander.services.action_log import action_log_service
     from waldo_commander.services.control_lease import control_lease
     from waldo_commander.services.edit_decisions import clear as clear_edit_decisions
+    from waldo_commander.services.motion_guard import motion_guard
 
     action_log_service.clear()
     control_lease.reset()
+    motion_guard.reset()
     clear_edit_decisions()
     import waldoctl
 

@@ -10,22 +10,17 @@ edge, via the state listener registered in __init__.
 from __future__ import annotations
 
 import html
-import logging
 import re
 
-from nicegui import Client, ui
-from nicegui.elements.codemirror.codemirror import (
-    DecorationSpec,
-    Diagnostic,
-)
+from nicegui import ui
+from nicegui.elements.codemirror.codemirror import Diagnostic
 
 import waldoctl
 
+from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import simulation_state, ui_state
-
-logger = logging.getLogger(__name__)
 
 
 _ERROR_LINE_RE = re.compile(
@@ -48,7 +43,6 @@ class EditorDecorations:
         # Tracked per launching tab so the highlight persists when the user
         # switches away mid-run.
         self._executing_line_by_tab: dict[str, int] = {}
-        self._ui_client: Client | None = None
         self._last_script_running: bool = False
         simulation_state.add_change_listener(self._on_state_change)
 
@@ -67,10 +61,6 @@ class EditorDecorations:
         ``not in`` check (relies on the bound-method equality fix in state.py)."""
         self.cleanup()
         type(self).__init__(self)
-
-    def set_ui_client(self, client: Client | None) -> None:
-        """Store the page client for JS execution from background tasks."""
-        self._ui_client = client
 
     def _on_state_change(self) -> None:
         running = is_any_program_running()
@@ -93,7 +83,7 @@ class EditorDecorations:
         textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
-        specs: list[DecorationSpec] = []
+        specs: list[dict] = []
         if tab_id == waldoctl.commander.programs.active_id:
             flash_lines: set[int] = set()
             for _, lines in self._active_flashes:
@@ -110,9 +100,52 @@ class EditorDecorations:
                 }
             )
         specs.extend(self._diff_decoration_specs(tab_id))
+        specs.extend(self._staged_decoration_specs(tab_id, textarea))
         textarea.decorations[:] = specs
 
-    def _diff_decoration_specs(self, tab_id: str) -> list[DecorationSpec]:
+    @staticmethod
+    def _staged_decoration_specs(tab_id: str, textarea) -> list[dict]:
+        """The lines a recording session wrote and nobody has kept yet, a
+        badge on each captured span saying what it became, and one where a
+        capture still converting will go."""
+        lines = str(textarea.value or "").split("\n")
+        starts = [0]
+        for line in lines:
+            starts.append(starts[-1] + len(line) + 1)
+        specs: list[dict] = [
+            {
+                "kind": "widget",
+                "position": starts[pending.line - 1] + len(lines[pending.line - 1]),
+                "text": "captured · converting…",
+                "class": "cm-staged-badge",
+                "side": 1,
+            }
+            for pending in motion_recorder.pending_captures(tab_id)
+            if 1 <= pending.line <= len(lines)
+        ]
+        session = motion_recorder.session
+        if session is None or session.tab_id != tab_id:
+            return specs
+        for block in session.blocks:
+            first = max(1, block.first_line)
+            last = min(block.last_line, len(lines))
+            specs.extend(
+                {"kind": "line", "line": n, "class": "cm-line-staged"}
+                for n in range(first, last + 1)
+            )
+            if block.kind == "capture" and first <= last:
+                specs.append(
+                    {
+                        "kind": "widget",
+                        "position": starts[first - 1] + len(lines[first - 1]),
+                        "text": block.summary(),
+                        "class": "cm-staged-badge",
+                        "side": 1,
+                    }
+                )
+        return specs
+
+    def _diff_decoration_specs(self, tab_id: str) -> list[dict]:
         """Build decoration specs from this tab's pending LLM edits.
 
         For each pending edit:
@@ -136,17 +169,15 @@ class EditorDecorations:
         tab = waldoctl.commander.programs.get(tab_id)
         if tab is None or not tab.edits.pending:
             return []
-        # CodeMirror document positions are UTF-16 code-unit offsets, so the
-        # widget anchor must accumulate UTF-16 lengths — Python's ``len`` counts
-        # code points, which drifts one unit per astral-plane char (e.g. an
-        # emoji) earlier in the source. Split on LF/CRLF/CR only and count
-        # every break as ONE unit: CodeMirror normalizes documents to "\n"
+        # NiceGUI's decoration API accepts Python str indices and converts
+        # them to CodeMirror's UTF-16 offsets. Split on LF/CRLF/CR only and count
+        # every break as ONE character: CodeMirror normalizes documents to "\n"
         # (a CRLF counted as 2 would drift anchors +1 per preceding line) and,
         # unlike str.splitlines, doesn't break lines on \f/\x85/U+2028.
         line_starts = [0]
         for line in re.split(r"\r\n|\r|\n", tab.source):
-            line_starts.append(line_starts[-1] + len(line.encode("utf-16-le")) // 2 + 1)
-        specs: list[DecorationSpec] = []
+            line_starts.append(line_starts[-1] + len(line) + 1)
+        specs: list[dict] = []
         for edit in tab.edits.pending:
             try:
                 hunks = waldoctl.parse_unified_diff(edit.diff)
@@ -223,9 +254,9 @@ class EditorDecorations:
                         lines.add(cursor + 1)
         return sorted(lines)
 
-    def refresh_diff_overlay(self, tab_id: str) -> None:
-        """Re-render decorations for ``tab_id`` after its pending-edits list
-        changed. Public entry point for the editor's edit-listener wiring."""
+    def refresh_overlays(self, tab_id: str) -> None:
+        """Re-render decorations for ``tab_id`` after its pending edits or its
+        staged recording changed."""
         self._apply_decorations_to_tab(tab_id)
 
     def _apply_active_tab_decorations(self) -> None:
@@ -244,21 +275,22 @@ class EditorDecorations:
         Flashes always target the active tab — both callers
         (``EditorPanel.add_target_code`` and the motion recorder) write to
         the user's current edit surface. When the editor panel is
-        collapsed, flashes the editor tab via JS instead of applying
-        decorations to an off-screen textarea.
+        collapsed, flashes the editor tab instead of applying decorations
+        to an off-screen textarea.
         """
         textarea = ui_state.active_textarea
         if not textarea or not line_numbers:
             return
         if not ui_state.program_panel_visible:
-            self.flash_editor_tab()
+            flash_tab(ui_state._program_tab)
             return
         self._flash_token += 1
         token = self._flash_token
         self._active_flashes.append((token, set(line_numbers)))
         self._apply_active_tab_decorations()
         textarea.reveal_line(max(line_numbers))
-        ui.timer(1.5, lambda t=token: self._expire_flash(t), once=True)
+        with textarea.client:
+            ui.timer(1.5, lambda t=token: self._expire_flash(t), once=True)
 
     def _expire_flash(self, token: int) -> None:
         before = len(self._active_flashes)
@@ -267,34 +299,6 @@ class EditorDecorations:
         ]
         if len(self._active_flashes) != before:
             self._apply_active_tab_decorations()
-
-    def flash_editor_tab(self) -> None:
-        """Flash the editor tab to indicate new content when panel is collapsed."""
-        js_code = """
-        (function() {
-            const tabs = document.querySelectorAll('.q-tab');
-            for (const tab of tabs) {
-                const icon = tab.querySelector('i');
-                if (icon && icon.innerText === 'code') {
-                    tab.classList.add('tab-flash');
-                    setTimeout(() => tab.classList.remove('tab-flash'), 2000);
-                    break;
-                }
-            }
-        })();
-        """
-        try:
-            ui.run_javascript(js_code)
-        except (RuntimeError, AssertionError):
-            # No active client context — fall back to the stored page client;
-            # if none, we're likely in a unit test where the JS hook is moot.
-            if self._ui_client:
-                try:
-                    self._ui_client.run_javascript(js_code)
-                except (RuntimeError, AssertionError):
-                    pass
-            else:
-                logger.debug("Cannot flash editor tab: no client available")
 
     def highlight_executing_line(self, line_number: int, tab_id: str) -> None:
         """Highlight *line_number* on the launching tab; 0 clears it.
@@ -401,29 +405,39 @@ class EditorDecorations:
                     f"<div>Duration: {html.escape(f'{seg.estimated_duration:.2f}s')}</div>"
                 )
             if not seg.is_valid:
-                parts.append('<div style="color:#f87171">Unreachable position</div>')
+                parts.append(
+                    '<div style="color:var(--wc-error)">Unreachable position</div>'
+                )
             if not seg.timing_feasible and seg.estimated_duration is not None:
                 parts.append(
-                    f'<div style="color:#fbbf24">Duration too short (min: {html.escape(f"{seg.estimated_duration:.2f}s")})</div>'
+                    f'<div style="color:var(--wc-warning)">Duration too short (min: {html.escape(f"{seg.estimated_duration:.2f}s")})</div>'
                 )
             tooltips[seg.line_number] = "".join(parts)
 
         textarea._props["line-tooltips"] = tooltips
 
-    def push_target_positions(self, tab_id: str) -> None:
-        """Push current target positions to CM6 line anchors on the
-        simulated tab's textarea for edit tracking."""
-        textarea = ui_state.textareas_by_tab.get(tab_id)
+    def push_line_anchors(
+        self, tab_id: str, *, textarea=None, sim_targets: bool = False
+    ) -> None:
+        """Declare a tab's line anchors: the one writer of them.
+
+        The dry-run targets (re-read after a simulation pass, kept where they
+        are otherwise) together with every line the recorder tracks: its
+        cursor, the lines a session wrote, a selection being re-recorded.
+        Assigning line anchors replaces the whole set, so a writer that
+        declared only its own would drop everyone else's.
+        """
+        textarea = textarea or ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
-        tab = waldoctl.commander.programs.get(tab_id)
-        targets = tab.dry_run.targets if tab is not None else []
-        anchors = {t.id: t.line_number for t in targets if t.line_number > 0}
-        if textarea is ui_state.active_textarea:
-            # A full re-declare would drop the recording insertion cursor;
-            # merging keeps it tracking at its browser-remapped position.
-            anchors.update(motion_recorder.insertion_anchor())
-        textarea.line_anchors = anchors
+        if sim_targets:
+            tab = waldoctl.commander.programs.get(tab_id)
+            targets = tab.dry_run.targets if tab is not None else []
+            base = {t.id: t.line_number for t in targets if t.line_number > 0}
+        else:
+            declared = getattr(textarea, "_props", {}).get("line-anchors") or {}
+            base = {k: v for k, v in dict(declared).items() if not k.startswith("__")}
+        textarea.line_anchors = {**base, **motion_recorder.line_anchors(tab_id)}
 
 
 decorations: EditorDecorations = EditorDecorations()

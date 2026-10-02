@@ -1,16 +1,52 @@
 """Program editor component with script execution and command palette."""
 
+import ast
 import asyncio
 import logging
 import re
+from pathlib import Path
+from collections.abc import Iterator
 from typing import Any, Callable
 
 import waldoctl
-from nicegui import Client, context, ui
+from nicegui import Client, background_tasks, context, ui
+from nicegui.elements.codemirror.codemirror import CompletionItem
 from waldoctl import EditId, Program, ProgramTarget
 
-from waldo_commander.common.theme import get_theme
+from waldo_commander.common.theme import effective_theme
+from waldo_commander.components.editor_decorations import decorations
+from waldo_commander.components.file_operations import FileOperationsMixin
+from waldo_commander.components.log_panel import (
+    LOG_COLLAPSED_VALUE,
+    LOG_MAX_LINES,
+    log_panel,
+)
+from waldo_commander.components.playback import playback
+from waldo_commander.components.script_execution import script_exec
+from waldo_commander.components.simulation_engine import (
+    default_python_snippet,
+    get_home_joints_rad,
+    is_default_script,
+    simulation,
+)
+from waldo_commander.components.skill_library import (
+    SkillStrip,
+    _skill_labels,
+    _summary,
+    menu_skills,
+    selected_tool_preamble,
+    skill_icon,
+    skill_inserter,
+)
 from waldo_commander.constants import default_program_dir
+from waldo_commander.services import edit_decisions
+from waldo_commander.services.command_discovery import (
+    discover_robot_commands,
+    generate_completions_from_commands,
+    setup_completions,
+)
+from waldo_commander.services.control_lease import control_mode
+from waldo_commander.services.motion_recorder import motion_recorder, move_snippet
 from waldo_commander.services.programs import (
     active_cursor_line,
     advance_active_cursor,
@@ -18,34 +54,81 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
-from waldo_commander.services import edit_decisions
-from waldo_commander.services.control_lease import control_mode
-from waldo_commander.services.motion_recorder import motion_recorder, move_snippet
+from waldo_commander.services.python_source import (
+    SetupBinding,
+    loads_setup,
+    preamble_statements,
+    program_setup,
+)
+from waldo_commander.services.skill_library import library
+from waldo_commander.setup import SetupStore, add_save_listener
 from waldo_commander.state import (
     simulation_state,
     ui_state,
 )
-from waldo_commander.services.command_discovery import (
-    discover_robot_commands,
-    generate_completions_from_commands,
-)
-from waldo_commander.components.editor_decorations import decorations
-from waldo_commander.components.log_panel import (
-    LOG_COLLAPSED_VALUE,
-    LOG_MAX_LINES,
-    log_panel,
-)
-from waldo_commander.components.simulation_engine import (
-    default_python_snippet,
-    get_home_joints_rad,
-    is_default_script,
-    simulation,
-)
-from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.playback import playback
-from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
+
+
+MENU_TOOLTIP = 'anchor="center left" self="center right"'
+
+
+def _blocks(node: ast.stmt) -> list[list[ast.stmt]]:
+    """The statement lists nested directly in *node*."""
+    match node:
+        case ast.If() | ast.For() | ast.AsyncFor() | ast.While():
+            return [node.body, node.orelse]
+        case ast.Try() | ast.TryStar():
+            return [
+                node.body,
+                node.orelse,
+                node.finalbody,
+                *(handler.body for handler in node.handlers),
+            ]
+        case (
+            ast.With()
+            | ast.AsyncWith()
+            | ast.FunctionDef()
+            | ast.AsyncFunctionDef()
+            | ast.ClassDef()
+        ):
+            return [node.body]
+        case ast.Match():
+            return [case.body for case in node.cases]
+    return []
+
+
+def _imports_only(node: ast.stmt) -> bool:
+    """An import, or a ``try``/``if`` made of nothing but imports."""
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return True
+    if not isinstance(node, (ast.If, ast.Try)):
+        return False
+    statements = [statement for block in _blocks(node) for statement in block]
+    return any(not isinstance(s, ast.Pass) for s in statements) and all(
+        isinstance(s, ast.Pass) or _imports_only(s) for s in statements
+    )
+
+
+def _selection_imports(
+    body: list[ast.stmt], first: int, last: int
+) -> Iterator[ast.stmt]:
+    """The imports in scope at lines *first* to *last*, for Run selection to
+    copy ahead of them: those at this level (a guarded one with its guard),
+    and those in the blocks the selection sits in. One inside another
+    function, or behind a branch the selection is not in, belongs to that
+    scope, not the selection's."""
+    for node in body:
+        if _imports_only(node):
+            yield node
+            continue
+        for block in _blocks(node):
+            if (
+                block
+                and block[0].lineno <= first
+                and last <= (block[-1].end_lineno or block[-1].lineno)
+            ):
+                yield from _selection_imports(block, first, last)
 
 
 class EditorPanel(FileOperationsMixin):
@@ -63,8 +146,16 @@ class EditorPanel(FileOperationsMixin):
         # buttons (which would mutate the source under the diff).
         self._edit_review_row: ui.row | None = None
         self._toolbar_btns: list[ui.button] = []
-        # (from_line, to_line) of a ranged editor selection, None for a bare cursor.
+        self._file_btns: list[ui.button] = []
+        # (from_line, to_line) of a ranged editor selection, None for a bare
+        # cursor, and the program it was made in.
         self._cursor_selection: tuple[int, int] | None = None
+        self._selection_tab_id: str | None = None
+        # The tab Run selection reuses, so runs do not pile up tabs.
+        self._selection_program_id: str | None = None
+        self._running_selection = False
+        self._run_selection_btn: ui.button | None = None
+        self._shown_capture = None
         # tab_id -> {tab_element, filename_input, dirty_dot, panel, textarea}
         self._tab_widgets: dict[str, dict] = {}
         # tab_id -> pending edit-id .values already seen, so a *newly* proposed
@@ -93,6 +184,8 @@ class EditorPanel(FileOperationsMixin):
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
+
+        self._drop_setup_listener: Callable[[], None] = lambda: None
 
     def _insert_command(self, method_name: str) -> None:
         """Build a snippet for ``method_name`` (pre-filled with the robot's
@@ -279,7 +372,7 @@ class EditorPanel(FileOperationsMixin):
         cursor on a re-teachable move rewrites that step in place (kwargs
         kept); anywhere else the move is inserted as a new line.
         """
-        span = self._cursor_selection
+        span = self.selection()
         if span is not None:
             self._replace_lines_with_pose(*span)
             return
@@ -287,6 +380,96 @@ class EditorPanel(FileOperationsMixin):
             self._reteach_at_cursor()
             return
         motion_recorder.capture_current_pose()
+
+    def selection(self) -> tuple[int, int] | None:
+        """The lines selected in the active program, if any. A selection made
+        in another tab is not this one's."""
+        if self._selection_tab_id != waldoctl.commander.programs.active_id:
+            return None
+        return self._cursor_selection
+
+    async def run_selection(self) -> None:
+        """Run the selected lines live, with the usual pause and stop controls.
+
+        They run as their own small program, beside the program's imports,
+        in a tab kept for the purpose. Back to the program afterwards unless
+        the run failed, so its log stays in view.
+        """
+        import textwrap
+
+        from waldo_commander.services.control_lease import require_browser_control
+
+        commander = waldoctl.commander
+        span = self.selection()
+        origin = commander.programs.active
+        textarea = ui_state.active_textarea
+        if span is None or origin is None or textarea is None:
+            return
+        if self._running_selection or is_any_program_running():
+            ui.notify("Wait for the running program to finish", type="warning")
+            return
+        if not require_browser_control(ui_state.active_client_id):
+            ui.notify("Take browser control before running", type="warning")
+            return
+        if not (commander.status.connected or commander.status.simulator_active):
+            ui.notify("Connect the robot or enable the simulator first", type="warning")
+            return
+        text = str(textarea.value or "")
+        lines = text.split("\n")
+        body = textwrap.dedent("\n".join(lines[span[0] - 1 : span[1]])).strip("\n")
+        try:
+            imports = [
+                textwrap.dedent(ast.get_source_segment(text, node, padded=True) or "")
+                for node in _selection_imports(ast.parse(text).body, *span)
+            ]
+        except SyntaxError:
+            imports = []
+        source = (
+            "\n".join(dict.fromkeys([*imports, *preamble_statements(text, span[0])]))
+            + f"\nfrom {commander.robot.backend_package} import RobotClient\n\n"
+            + "with RobotClient() as rbt:\n"
+            + textwrap.indent(
+                selected_tool_preamble(commander.status.tool) + body + "\n", "    "
+            )
+        )
+        try:
+            compile(source, "selection.py", "exec")
+        except SyntaxError as error:
+            ui.notify(f"Select whole statements to run: {error.msg}", type="warning")
+            return
+
+        self._running_selection = True
+        program = commander.programs.get(self._selection_program_id or "")
+        if program is None:
+            program = commander.programs.new(source=source, filename="selection.py")
+            self._selection_program_id = program.id
+        else:
+            program.source = source
+        commander.programs.switch(program.id)
+        selection_area = ui_state.textareas_by_tab.get(program.id)
+        if selection_area is not None:
+            selection_area.value = source
+        completed = False
+        try:
+            await script_exec.start()
+            handle = script_exec.script_handle
+            if handle is None or not script_exec.is_launching_tab(program.id):
+                return
+            while program.execution.is_running:
+                await asyncio.sleep(0.1)
+            completed = (
+                handle["proc"].returncode == 0 and script_exec.last_exit_code == 0
+            )
+        finally:
+            self._running_selection = False
+            if origin.recording.is_recording:
+                # A run's motion is the lines already in the program, not an
+                # idle wait before the next recorded action.
+                motion_recorder.stamp_action_clock()
+            if (completed or origin.recording.is_recording) and (
+                origin in commander.programs.items
+            ):
+                commander.programs.switch(origin.id)
 
     def _replace_lines_with_pose(self, from_line: int, to_line: int) -> None:
         textarea = ui_state.active_textarea
@@ -299,10 +482,12 @@ class EditorPanel(FileOperationsMixin):
         textarea.set_value("\n".join(lines))
 
     def _update_capture_button(self) -> None:
+        if self._run_selection_btn is not None:
+            self._run_selection_btn.set_enabled(self.selection() is not None)
         tip = ui_state.capture_pose_tooltip
         if tip is None or tip.is_deleted:
             return
-        if self._cursor_selection is not None:
+        if self.selection() is not None:
             tip.set_text(self._CAPTURE_TIP_REPLACE)
             return
         target, blocked = self._reteach_state()
@@ -432,7 +617,10 @@ class EditorPanel(FileOperationsMixin):
                 categories[cat] = []
             categories[cat].append({"key": key, **cmd})
 
-        with ui.menu():
+        # Insertion focuses the editor. Closing the command menus must not
+        # restore focus to the toolbar and steal the snippet's Tab key presses.
+        with ui.menu().props("no-refocus") as commands_menu:
+            self._build_skills_menu(commands_menu)
             for category_name, commands in sorted(categories.items()):
                 # auto_close must stay off so the submenu stays open while navigating.
                 with ui.menu_item(category_name, auto_close=False).classes(
@@ -442,14 +630,17 @@ class EditorPanel(FileOperationsMixin):
                         ui.icon("keyboard_arrow_right")
                     with (
                         ui.menu()
-                        .props('anchor="top end" self="top start" auto-close')
+                        .props(
+                            'anchor="top end" self="top start" auto-close no-refocus'
+                        )
                         .classes("max-h-80 overflow-y-auto")
                     ):
                         for cmd in sorted(commands, key=lambda c: c["title"]):
                             item = ui.menu_item(
                                 cmd["title"],
-                                on_click=lambda e, k=cmd["key"]: self._insert_command(
-                                    k
+                                on_click=lambda e, k=cmd["key"]: (
+                                    commands_menu.close(),
+                                    self._insert_command(k),
                                 ),
                             ).classes("text-sm")
 
@@ -461,14 +652,61 @@ class EditorPanel(FileOperationsMixin):
                                     "max-width: 300px; white-space: pre-wrap;"
                                 )
 
+    def _build_skills_menu(self, commands_menu: ui.menu) -> None:
+        """Skills inserted as a call whose arguments are fields to fill in,
+        drawn in the scene while the cursor is on them."""
+        commander = waldoctl.commander
+        entries, _ = library(commander.robot)
+        keys = menu_skills(entries)
+        if not keys:
+            return
+        labels = _skill_labels(entries)
+        with (
+            ui.menu_item("Skills", auto_close=False)
+            .classes("text-sm font-medium")
+            .mark("editor-skills-menu")
+        ):
+            with ui.item_section().props("side"):
+                ui.icon("keyboard_arrow_right")
+            with ui.menu().props(
+                'anchor="top end" self="top start" auto-close no-refocus'
+            ):
+                for key in keys:
+                    entry = entries[key]
+                    with (
+                        ui.menu_item(
+                            on_click=lambda _, k=key: (
+                                commands_menu.close(),
+                                skill_inserter.insert(commander, k),
+                            )
+                        )
+                        .classes("text-sm")
+                        .mark(f"editor-skill-{key}") as item
+                    ):
+                        with ui.item_section().props("avatar").classes("min-w-0"):
+                            ui.icon(skill_icon(key)).classes("skill-menu-icon")
+                        with ui.item_section():
+                            ui.label(labels[key])
+                        ui.tooltip(entry.unavailable or _summary(entry)).classes(
+                            "text-xs"
+                        ).style("max-width: 300px; white-space: pre-wrap;")
+                    if entry.unavailable:
+                        item.props("disable")
+
     def cleanup(self) -> None:
         """Per-page cleanup — remove listeners and cancel timers registered
         during ``build()``. Idempotent: safe to call from both
         ``_on_disconnect`` and ``_on_shutdown``."""
         waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
         simulation_state.remove_change_listener(self._update_capture_button)
+        motion_recorder.remove_session_listener(self._on_session_changed)
+        self._drop_setup_listener()
+        for widgets in self._tab_widgets.values():
+            if widgets.get("strip") is not None:
+                widgets["strip"].hide()
         ui_state.capture_pose_tooltip = None
         self._cursor_selection = None
+        self._selection_tab_id = None
         # Edit listeners live on the process-global tab.edits notifier; drop
         # them so closures don't accumulate across page (re)builds.
         for tab_id in list(self._tab_widgets):
@@ -542,17 +780,17 @@ class EditorPanel(FileOperationsMixin):
                 "text-lg font-medium mb-2"
             )
             ui.label("Your changes will be lost if you don't save.").classes(
-                "text-sm text-gray-500 mb-4"
+                "text-sm text-wc-text-muted mb-4"
             )
             with ui.row().classes("gap-2 justify-end w-full"):
                 ui.button(
                     "Don't Save",
                     on_click=dont_save,
-                ).props("flat color=negative")
-                ui.button("Cancel", on_click=dlg.close).props("flat")
+                ).props("color=wc-control text-color=wc-error")
+                ui.button("Cancel", on_click=dlg.close).props("flat color=wc-text")
                 ui.button(
                     "Save", on_click=lambda: self._save_tab_and_close(tab, dlg)
-                ).props("color=primary")
+                ).props("color=wc-action text-color=wc-on-bright")
         dlg.open()
 
     def _do_close_tab(self, tab: Program) -> None:
@@ -588,8 +826,13 @@ class EditorPanel(FileOperationsMixin):
         # Drop the LLM-edit listener first, while its reference is still on the
         # widget dict, so it can't fire against half-deleted elements.
         self._unsubscribe_from_edits(tab_id)
+        session = motion_recorder.session
+        if session is not None and session.tab_id == tab_id:
+            motion_recorder.forget_session()
         widgets = self._tab_widgets.pop(tab_id, None)
         if widgets:
+            if widgets.get("strip") is not None:
+                widgets["strip"].hide()
             if widgets.get("tab_element"):
                 widgets["tab_element"].delete()
             if widgets.get("panel"):
@@ -665,7 +908,7 @@ class EditorPanel(FileOperationsMixin):
         widgets = self._tab_widgets.get(tab_id, {})
         ui_state.active_textarea = widgets.get("textarea")
         ui_state.active_filename_input = widgets.get("filename_input")
-        self._refresh_edits_banner(tab_id)
+        self._refresh_header_cluster(tab_id)
 
     def _invalidate_for_tab_switch(self) -> None:
         """Defer expensive path re-rendering after a tab switch.
@@ -722,7 +965,7 @@ class EditorPanel(FileOperationsMixin):
                     # Dirty indicator (orange dot).
                     dirty_dot = (
                         ui.icon("fiber_manual_record", size="xs")
-                        .classes("text-amber-500")
+                        .classes("text-wc-warning")
                         .style("font-size: 8px;")
                     )
                     dirty_dot.bind_visibility_from(tab, "is_dirty", lambda d: d)
@@ -739,8 +982,7 @@ class EditorPanel(FileOperationsMixin):
                         ui.button(
                             icon="close", on_click=lambda _e, t=tab: self._close_tab(t)
                         )
-                        .props("flat round dense size=xs")
-                        .classes("text-white")
+                        .props("flat round dense size=xs color=wc-text")
                         .tooltip("Close tab")
                     )
                     close_btn.mark(f"editor-tab-close-{tab.id}")
@@ -768,7 +1010,7 @@ class EditorPanel(FileOperationsMixin):
                 .style("padding: 0; width: 100%; height: 100%; gap: 0;")
             )
             with panel:
-                completions = generate_completions_from_commands()
+                setup, completions = self._completions(tab.source)
 
                 # Flex-fills the panel and uses CodeMirror's own internal
                 # scrolling; min-h-0 lets it shrink within the fixed height.
@@ -786,16 +1028,18 @@ class EditorPanel(FileOperationsMixin):
                     line_tooltip_html=True,
                 ).classes("w-full flex-1 min-h-0")
 
-                try:
-                    mode = get_theme()
-                    effective = "light" if mode == "light" else "dark"
-                    textarea.theme = "basicLight" if effective == "light" else "oneDark"
-                except (KeyError, ValueError):
-                    textarea.theme = "oneDark"
+                textarea.theme = (
+                    "basicLight" if effective_theme() == "light" else "oneDark"
+                )
+                strip = SkillStrip(tab, textarea)
+                strip.row.move(target_index=0)
 
             self._tab_widgets[tab.id]["panel"] = panel
             self._tab_widgets[tab.id]["textarea"] = textarea
+            self._tab_widgets[tab.id]["strip"] = strip
+            self._tab_widgets[tab.id]["setup"] = setup
             ui_state.textareas_by_tab[tab.id] = textarea
+            motion_recorder.rebind(tab.id)
 
             # Re-teach enablement needs the live anchor mirror, which the
             # browser echoes only after the sim-completion notify has fired.
@@ -804,7 +1048,7 @@ class EditorPanel(FileOperationsMixin):
             # Subscribe to LLM-edit lifecycle so the banner + diff overlay
             # rebuild whenever propose / approve / reject fires.
             self._subscribe_to_edits(tab)
-            self._refresh_edits_banner(tab.id)
+            self._refresh_header_cluster(tab.id)
 
         return panel
 
@@ -815,8 +1059,8 @@ class EditorPanel(FileOperationsMixin):
         can remove it."""
 
         def _on_edits_changed(tab_id: str = tab.id) -> None:
-            self._refresh_edits_banner(tab_id)
-            decorations.refresh_diff_overlay(tab_id)
+            self._refresh_header_cluster(tab_id)
+            decorations.refresh_overlays(tab_id)
             self._on_new_edits(tab_id)
 
         tab.edits.add_change_listener(_on_edits_changed)
@@ -889,12 +1133,12 @@ class EditorPanel(FileOperationsMixin):
         if tab is not None:
             tab.edits.remove_change_listener(listener)
 
-    def _refresh_edits_banner(self, tab_id: str) -> None:
-        """Sync the header row's review cluster with the *active* tab's pending
-        edits. While one is pending the cluster (description + Approve/Reject)
-        swaps in for the toolbar buttons — Open/Save/Insert would mutate the
-        source under the diff. Edits queue up: one is shown at a time and
-        resolving it surfaces the next."""
+    def _refresh_header_cluster(self, tab_id: str) -> None:
+        """Sync the header row's review cluster with the *active* tab: its
+        pending edits, or else the recording take staged in it. While either
+        is under review the cluster swaps in for the toolbar buttons —
+        Open/Save/Insert would change the source under it. Edits queue up:
+        one is shown at a time and resolving it surfaces the next."""
         active_id = waldoctl.commander.programs.active_id
         if active_id is not None and tab_id != active_id:
             return
@@ -903,10 +1147,24 @@ class EditorPanel(FileOperationsMixin):
             return
         tab = waldoctl.commander.programs.get(active_id) if active_id else None
         pending = list(tab.edits.pending) if tab is not None else []
+        session = motion_recorder.session
+        if session is not None and (tab is None or session.tab_id != tab.id):
+            session = None
         row.clear()
-        row.set_visibility(bool(pending))
+        row.set_visibility(bool(pending) or session is not None)
         for btn in self._toolbar_btns:
-            btn.set_visibility(not pending)
+            # Inserting and running lines are part of a take; opening and
+            # saving files are not.
+            btn.set_visibility(
+                not pending and (session is None or btn not in self._file_btns)
+            )
+        if pending:
+            row.classes(remove="staged-take")
+        elif session is not None:
+            row.classes(add="staged-take")
+            with row:
+                self._build_staged_cluster(session)
+            return
         if tab is None or not pending:
             return
         edit = pending[0]
@@ -921,20 +1179,93 @@ class EditorPanel(FileOperationsMixin):
             ).tooltip(label).mark(f"edit-label-{edit.id.value}")
             if len(pending) > 1:
                 ui.label(f"+{len(pending) - 1}").classes(
-                    "text-xs text-grey-6 whitespace-nowrap"
+                    "text-xs text-wc-text-muted whitespace-nowrap"
                 ).tooltip(f"{len(pending) - 1} more edit(s) queued")
             ui.button(
                 icon="check",
                 on_click=lambda _e, eid=edit.id, tid=tab_id: self._approve_edit(
                     tid, eid
                 ),
-            ).props("dense flat color=positive").mark(f"approve-edit-{edit.id.value}")
+            ).props("dense flat color=wc-positive").mark(
+                f"approve-edit-{edit.id.value}"
+            )
             ui.button(
                 icon="close",
                 on_click=lambda _e, eid=edit.id, tid=tab_id: self._reject_edit(
                     tid, eid
                 ),
-            ).props("dense flat color=negative").mark(f"reject-edit-{edit.id.value}")
+            ).props("dense flat color=wc-error").mark(f"reject-edit-{edit.id.value}")
+
+    def _build_staged_cluster(self, session) -> None:
+        """How much a take wrote, a captured span's form, Keep and Undo."""
+        lines = sum(b.last_line - b.first_line + 1 for b in session.blocks)
+        ui.label(
+            f"{lines} line{'s' if lines != 1 else ''}" if lines else "Recording"
+        ).classes("text-xs whitespace-nowrap").tooltip(
+            "Lines this recording wrote, marked until you keep or undo them"
+        ).mark("staged-summary")
+        if session.capture_stopped:
+            ui.label("Capture stopped").classes(
+                "text-xs text-wc-error whitespace-nowrap"
+            ).tooltip(
+                f"Motion from outside Commander is no longer captured: "
+                f"{session.capture_stopped}"
+            ).mark("staged-capture-stopped")
+        block = self._staged_capture_at_cursor(session)
+        self._shown_capture = block
+        if block is not None:
+            mode = (
+                ui.toggle(
+                    {"moves": "Moves", "raw": "Raw"},
+                    value=block.mode,
+                    on_change=lambda e, b=block: motion_recorder.set_capture_mode(
+                        b.id, e.value
+                    ),
+                )
+                .props(
+                    "dense no-caps unelevated size=sm toggle-color=wc-warning-fill toggle-text-color=wc-on-bright"
+                )
+                .classes("staged-capture-mode")
+                .tooltip(
+                    "Keep the captured motion as planned moves, or as the raw "
+                    "recorded points replayed"
+                )
+                .mark("staged-capture-mode")
+            )
+            mode.set_enabled(not block.busy)
+        ui.button("Keep", on_click=motion_recorder.keep).props(
+            "dense flat no-caps color=wc-positive"
+        ).tooltip("Keep the recorded lines").mark("staged-keep")
+        ui.button("Undo", on_click=motion_recorder.undo).props(
+            "dense flat no-caps color=wc-error"
+        ).tooltip("Take the recorded lines out").mark("staged-undo")
+
+    def _staged_capture_at_cursor(self, session):
+        """The captured span the cursor is in, else the last one captured."""
+        captures = [b for b in session.blocks if b.kind == "capture"]
+        if not captures:
+            return None
+        tab = waldoctl.commander.programs.get(session.tab_id)
+        line = tab.dry_run.playback.active_cursor_line if tab is not None else 0
+        return next(
+            (b for b in captures if b.first_line <= line <= b.last_line), captures[-1]
+        )
+
+    def _on_session_changed(self) -> None:
+        active_id = waldoctl.commander.programs.active_id
+        client = self._client
+        if active_id is None or client is None or client.is_deleted:
+            return
+        with client:
+            self._refresh_header_cluster(active_id)
+            decorations.refresh_overlays(active_id)
+
+    def take_selection(self) -> tuple[int, int] | None:
+        """The selected lines, for Record to re-record; the selection is used."""
+        span = self.selection()
+        self._cursor_selection = None
+        self._update_capture_button()
+        return span
 
     def _approve_edit(self, tab_id: str, edit_id: EditId) -> None:
         tab = waldoctl.commander.programs.get(tab_id)
@@ -1000,16 +1331,57 @@ class EditorPanel(FileOperationsMixin):
             for tab_id in list(self._tab_widgets):
                 if tab_id not in live_ids:
                     self._remove_tab_widgets(tab_id)
-            # Follow the active program.
+            # Follow the active program; a tab out of sight draws no skill path.
             active_id = programs.active_id
+            for tab_id, widgets in self._tab_widgets.items():
+                if tab_id != active_id and widgets.get("strip") is not None:
+                    widgets["strip"].hide()
             if active_id and active_id in self._tab_widgets:
                 self.tab_panels_container.set_value(active_id)
                 self.tabs_container.set_value(active_id)
                 widgets = self._tab_widgets[active_id]
                 ui_state.active_textarea = widgets.get("textarea")
                 ui_state.active_filename_input = widgets.get("filename_input")
-                self._refresh_edits_banner(active_id)
+                self._refresh_header_cluster(active_id)
             self._update_capture_button()
+
+    def skill_strip(self, tab_id: str) -> SkillStrip | None:
+        """The strip above *tab_id*'s code that follows the skill call under its cursor."""
+        return self._tab_widgets.get(tab_id, {}).get("strip")
+
+    def hide_skill_strips(self) -> None:
+        """Remove field previews when the program panel is closed."""
+        for widgets in self._tab_widgets.values():
+            if (strip := widgets.get("strip")) is not None:
+                strip.hide()
+
+    @staticmethod
+    def _completions(
+        source: str,
+        line: int | None = None,
+    ) -> tuple[SetupBinding | None, list[CompletionItem]]:
+        """The setup *source* loads and the completions for it: robot commands
+        and skills, and the setup's entries under the name it is loaded as."""
+        setup = program_setup(source, line)
+        completions = generate_completions_from_commands()
+        if setup is not None:
+            variable, name = setup.variable, setup.name
+            try:
+                snapshot = SetupStore(setup.directory).read_literal(name)
+            except (OSError, ValueError) as error:
+                logger.debug("No setup completions from %s: %s", name, error)
+            else:
+                completions += setup_completions(snapshot, variable)
+        return setup, completions
+
+    def _refresh_completions(self, tab_id: str, line: int | None = None) -> None:
+        widgets = self._tab_widgets.get(tab_id)
+        textarea = widgets.get("textarea") if widgets else None
+        if widgets is None or textarea is None:
+            return
+        widgets["setup"], textarea.completions = self._completions(
+            str(textarea.value or ""), line
+        )
 
     def _on_editor_focus(self, tab: Program, e) -> None:
         if e.focused:
@@ -1029,15 +1401,73 @@ class EditorPanel(FileOperationsMixin):
             return
         tab.dry_run.playback.active_cursor_line = e.line
         self._cursor_selection = None if e.empty else (e.from_line, e.to_line)
+        self._selection_tab_id = tab.id
         self._update_capture_button()
+        strip = self.skill_strip(tab.id)
+        if strip is not None:
+            strip.on_cursor(e.line, e.column)
+        widgets = self._tab_widgets.get(tab.id, {})
+        if program_setup(tab.source, e.line) != widgets.get("setup"):
+            self._refresh_completions(tab.id, e.line)
+        session = motion_recorder.session
+        if (
+            session is not None
+            and session.tab_id == tab.id
+            and self._staged_capture_at_cursor(session) is not self._shown_capture
+        ):
+            self._refresh_header_cluster(tab.id)
         if ui_state.urdf_scene and waldoctl.commander.settings.view.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
+
+    def _on_setup_saved(self, directory: Path, name: str, revision: str) -> None:
+        """Re-plan every open program that loads the setup just saved."""
+        client = self._client
+        if client is None:
+            return
+        programs = waldoctl.commander.programs
+        with client:
+            for tab_id, widgets in list(self._tab_widgets.items()):
+                setup = widgets.get("setup")
+                tab = programs.get(tab_id)
+                if (
+                    setup is not None
+                    and setup.name == name
+                    and SetupStore(setup.directory).directory == directory
+                ):
+                    self._refresh_completions(
+                        tab_id, tab.dry_run.playback.active_cursor_line if tab else None
+                    )
+                if widgets.get("strip") is not None:
+                    widgets["strip"].on_setup_saved(directory, name, revision)
+        stale = [p.id for p in programs.items if loads_setup(p.source, name)]
+        if programs.active_id in stale:
+            with client:
+                simulation.schedule_debounced_simulation(tab_id=programs.active_id)
+        # One debounced run is pending at a time, and it belongs to the active
+        # program; the others re-plan in turn now.
+        background = [tab_id for tab_id in stale if tab_id != programs.active_id]
+        if background:
+            background_tasks.create(
+                self._resimulate(background), name="setup-resimulate"
+            )
+
+    @staticmethod
+    async def _resimulate(tab_ids: list[str]) -> None:
+        for tab_id in tab_ids:
+            if waldoctl.commander.programs.get(tab_id) is not None:
+                await simulation.run_simulation(tab_id)
 
     def _on_tab_content_change(self, tab: Program, new_value: str) -> None:
         """Handle content change for a tab."""
         tab.source = new_value
 
         self._update_dirty_dot(tab)
+        widgets = self._tab_widgets.get(tab.id, {})
+        if widgets.get("strip") is not None:
+            widgets["strip"].on_source_changed()
+        line = tab.dry_run.playback.active_cursor_line
+        if "setup" in widgets and program_setup(new_value, line) != widgets["setup"]:
+            self._refresh_completions(tab.id, line)
 
         # Pending LLM-edit decorations are NOT re-pushed here: CodeMirror's
         # decoration StateField maps the pushed specs through the human's
@@ -1057,7 +1487,6 @@ class EditorPanel(FileOperationsMixin):
             ui_client = None
         self._client = ui_client
         self._focused_tab_ids.clear()
-        decorations.set_ui_client(ui_client)
         playback.set_ui_client(ui_client)
         script_exec.set_ui_client(ui_client)
 
@@ -1076,11 +1505,9 @@ class EditorPanel(FileOperationsMixin):
             # instead of forcing a wrap.
             with (
                 ui.row()
-                .classes("w-full items-center gap-2 px-2 no-wrap")
+                .classes("w-full items-center gap-2 px-2 no-wrap editor-header")
                 .style("height: 42px;")
             ):
-                ui.label("Program").classes("text-lg font-medium whitespace-nowrap")
-
                 # Tabs area (horizontal scroll)
                 with (
                     ui.scroll_area()
@@ -1101,7 +1528,7 @@ class EditorPanel(FileOperationsMixin):
                         # New tab button (last element in scrollable area)
                         new_tab_btn = (
                             ui.button(icon="add", on_click=lambda: self._new_tab())
-                            .props("flat dense color=white")
+                            .props("flat dense color=wc-text")
                             .classes("ml-2")
                             .tooltip("New Tab")
                         )
@@ -1116,7 +1543,7 @@ class EditorPanel(FileOperationsMixin):
 
                 open_btn = (
                     ui.button(icon="folder", on_click=self._show_open_dialog)
-                    .props("flat dense color=white")
+                    .props("flat dense color=wc-text")
                     .classes("editor-toolbar-btn")
                     .tooltip("Open")
                 )
@@ -1124,27 +1551,96 @@ class EditorPanel(FileOperationsMixin):
 
                 save_btn = (
                     ui.button(icon="save", on_click=self._show_save_dialog)
-                    .props("flat dense color=white")
+                    .props("flat dense color=wc-text")
                     .classes("editor-toolbar-btn")
                     .tooltip("Save")
                 )
                 save_btn.mark("editor-save-btn")
 
+                # A button that opens a menu below it shows its tooltip to the
+                # left, so the tooltip does not cover the menu's first item.
                 commands_btn = (
                     ui.button(icon="library_add")
-                    .props("flat dense color=white")
+                    .props("flat dense color=wc-text")
                     .classes("editor-toolbar-btn")
-                    .tooltip("Insert Command")
                 )
                 commands_btn.mark("editor-commands-btn")
                 with commands_btn:
+                    ui.tooltip("Insert Command").props(MENU_TOOLTIP)
                     self._build_command_menu()
-                self._toolbar_btns = [open_btn, save_btn, commands_btn]
+
+                more_btn = (
+                    ui.button(icon="more_vert")
+                    .props("flat dense color=wc-text")
+                    .classes("editor-toolbar-btn")
+                    .mark("editor-more-btn")
+                )
+                with more_btn:
+                    ui.tooltip("More program actions").props(MENU_TOOLTIP)
+                with (
+                    more_btn,
+                    ui.menu().props("auto-close").classes("editor-toolbar-menu"),
+                ):
+                    self._run_selection_btn = (
+                        ui.button(
+                            "Run selection",
+                            icon="play_arrow",
+                            on_click=self.run_selection,
+                        )
+                        .props("flat dense no-caps align=left color=wc-text")
+                        .classes("w-full")
+                        .tooltip("Run the selected lines on the robot")
+                        .mark("editor-run-selection")
+                    )
+                    self._run_selection_btn.set_enabled(self.selection() is not None)
+
+                    from waldo_commander.components.run_records import (
+                        show_run_records,
+                    )
+
+                    records_btn = (
+                        ui.button(
+                            "Run history…",
+                            icon="history",
+                            on_click=show_run_records,
+                        )
+                        .props("flat dense no-caps align=left color=wc-text")
+                        .classes("w-full")
+                        .tooltip("What each recorded run did")
+                    )
+                    records_btn.mark("editor-records-btn")
+
+                    from waldo_commander.components.supervised_restart import (
+                        show_supervised_restart,
+                    )
+
+                    restart_btn = (
+                        ui.button(
+                            "Start from a function…",
+                            icon="restart_alt",
+                            on_click=show_supervised_restart,
+                        )
+                        .props("flat dense no-caps align=left color=wc-text")
+                        .classes("w-full")
+                        .tooltip(
+                            "Restart at a chosen function after checking the setup"
+                        )
+                        .mark("editor-restart-btn")
+                    )
+                self._toolbar_btns = [
+                    open_btn,
+                    save_btn,
+                    commands_btn,
+                    more_btn,
+                    records_btn,
+                    restart_btn,
+                ]
+                self._file_btns = [open_btn, save_btn]
 
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(
-                        "flat round dense color=white"
-                    )
+                        "flat round dense color=wc-text"
+                    ).mark("program-panel-close")
 
             # ---- Splitter: Editor (before) | Playbar (separator) | Log (after) ----
             # horizontal=True means vertical stacking (column layout)
@@ -1186,6 +1682,11 @@ class EditorPanel(FileOperationsMixin):
         # Re-teach enablement tracks dry-run results, which refresh through
         # this channel (sim completion, tab switch).
         simulation_state.add_change_listener(self._update_capture_button)
+        # A staged recording is reviewed where a pending edit is.
+        motion_recorder.add_session_listener(self._on_session_changed)
+        # A saved setup changes what the programs that load it do.
+        self._drop_setup_listener()
+        self._drop_setup_listener = add_save_listener(self._on_setup_saved)
 
         # Restore tabs from existing state (page refresh) or create initial tab
         if waldoctl.commander.programs.items:

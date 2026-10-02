@@ -9,14 +9,14 @@ description = "A web interface for controlling robotic arms"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
-  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@be1d73b526883fd4dfbcaf2747814079e9d47ef2",
+  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@0c311a558881f8940bb949e743c2491468bb8bca",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
   "scipy>=1.10",
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.12.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.15.0",
   # <5: OpenCV 5.0 main-modules builds dropped cv2.calibrateHandEye, which
   # the hand-eye calibration panel requires.
   "opencv-python-headless>=4.8,<5",
@@ -53,11 +53,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.7.0"]
-par6 = ["par6 @ git+https://github.com/Jepson2k/par6.git@main#subdirectory=python"]
+parol6 = ["parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.9.0"]
+par6 = ["par6 @ git+https://github.com/Jepson2k/par6.git@v0.8.0#subdirectory=python"]
 v4l2 = ["linuxpy>=0.24"]
 dev = [
-  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.7.0",
+  "parol6 @ git+https://github.com/PCrnjak/PAROL6-python-API.git@v0.9.0",
   "ruff",
   # ty 0.0.74 regressed ParamSpec-typed calls (numba's Dispatcher.__call__
   # stubs): every 2-arg call of a jitted pinokin function reports
@@ -75,10 +75,29 @@ dev = [
 ]
 
 [project.scripts]
+waldo-sim-cases = "waldo_commander.services.simulation_scenarios:main"
 waldo-commander = "waldo_commander.main:main"
+
+[project.entry-points."waldoctl.skills"]
+attach_object = "waldo_commander.skills:attach_object"
+detach_object = "waldo_commander.skills:detach_object"
+replay_demonstration = "waldo_commander.skills:replay_demonstration"
+transfer = "waldo_commander.skills:transfer"
+transfer_with_signal = "waldo_commander.skills:transfer_with_signal"
+locate_board = "waldo_commander.skills:locate_board"
+read_signal = "waldo_commander.skills:read_signal"
+wait_signal = "waldo_commander.skills:wait_signal"
+write_signal = "waldo_commander.skills:write_signal"
+retract = "waldo_commander.skills:retract"
+approach = "waldo_commander.skills:approach"
+park = "waldo_commander.skills:park"
+align_tool_axis = "waldo_commander.skills:align_tool_axis"
+gripper_open = "waldo_commander.skills:gripper_open"
+gripper_close = "waldo_commander.skills:gripper_close"
 
 [project.entry-points."waldoctl.panels"]
 handeye = "waldo_commander.components.handeye_calibration:HandEyeCalibrationPanel"
+setup = "waldo_commander.components.named_setup:NamedSetupPanel"
 
 [tool.setuptools.packages.find]
 where = ["."]

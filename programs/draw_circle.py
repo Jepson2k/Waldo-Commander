@@ -17,7 +17,8 @@ RADIUS = 30
 SPEED = 0.4
 CIRCLE_Y = 340
 ORIENTATION = [90, 0, 90]
-CENTERS = [(0, CIRCLE_Y, 280), (0, CIRCLE_Y, 210), (0, CIRCLE_Y, 140)]
+# Keep the top circle below the wrist-flip boundary, as in the backend example.
+CENTERS = [(0, CIRCLE_Y, 270), (0, CIRCLE_Y, 210), (0, CIRCLE_Y, 140)]
 
 
 def circle_pt(cx, cz, angle_deg):

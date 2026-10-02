@@ -1,8 +1,23 @@
 # Writing Programs
 
+Tool actions (`set_position`, `open`, `close`, `calibrate`, and `release`) share
+the motion queue. A close requested after a move runs after that move, including
+when the move was submitted with `wait=False`. A tool action ends a pending
+blend group. In Commander, stepping waits for each tool action to finish before
+advancing; `tool.stop()` halts the jaws immediately without waiting for arm motion.
+
+Electric gripper `current` is a fraction of the tool's current range, from 0 to
+1. The manual controls show the same value as 0–100%; measured current is still
+shown in mA. Calibrate an electric gripper before moving its jaws. Previews retain
+a calibration confirmed through Commander's Calibrate button. Calibration done
+outside Commander is not exposed by the shared status protocol, so standalone
+programs should include `rbt.tool.calibrate()`.
+
+
 This guide builds a single script from scratch, adding capabilities section by section. By the end you'll have a program that demos joint and Cartesian moves, curved paths, scan patterns, tool control, TCP offset, and precision TRF rotations — a tour of what the robot can do.
 
 For the full method reference, see the [API Reference](api-reference.md).
+For reusable motion functions, see [Python skills](skills.md).
 
 ## Connect and home
 
@@ -40,7 +55,7 @@ rbt.move_j(pose=[100, 340, 334, 90, 0, 90], speed=0.5)
 rbt.move_l([-50, 340, 334, 90, 0, 90], speed=0.5)
 ```
 
-`speed` is normalized 0.0–1.0. You can also use `duration` (seconds) or `accel` (0.0–1.0). Relative moves offset from the current position with `rel=True`, and `frame="TRF"` switches to the Tool Reference Frame for Cartesian moves.
+`speed` and `accel` are fractions of the robot's limits, greater than 0 and at most 1, and both default to 0.5. A `duration` (seconds) times the move instead of `speed`. Relative moves offset from the current position with `rel=True`, and `frame="TRF"` switches to the Tool Reference Frame for Cartesian moves.
 
 <video controls width="100%">
   <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/move_j_vs_move_l.mp4" type="video/mp4">
@@ -151,7 +166,7 @@ rbt.tool.close(speed=1.0)
 rbt.tool.open(speed=1.0)
 ```
 
-Electric grippers accept `speed` and `current` keyword arguments for finer control.
+Electric grippers accept `speed` and `current` keyword arguments for finer control, each a fraction from 0 to 1 (default 0.5); `current` spans the gripper's current range.
 
 ### Pencil pickup
 
@@ -248,7 +263,7 @@ rbt.set_shapes([
 Units are metres and radians, poses are `(x, y, z, rx, ry, rz)`. A plain shape
 is a keep-out: the controller refuses any planned move or jog that would
 collide with it, previews mark the path red, and the scene draws it (slate once
-the backend confirms it, amber until then). `collision=False` makes a visual
+the backend confirms it, a paler slate until then). `collision=False` makes a visual
 marker that is drawn and never enforced. A shape carrying `physics` is also a
 body in the simulator's contact world on backends that have one (par6): a
 fixture without `mass`, a free object with one — the dry run then previews the

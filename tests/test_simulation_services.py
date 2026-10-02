@@ -11,25 +11,26 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 import waldoctl
-
-from waldo_commander.profiles import get_robot
-from waldo_commander.state import (
-    playback_coordination,
-    simulation_state,
-    robot_state,
-    ui_state,
-)
 from parol6.client.dry_run_client import DryRunRobotClient
+from waldoctl import TickIndex, following_error
+
 from tests.helpers.programs import set_active_recording
+from waldo_commander.profiles import get_robot
+from waldo_commander.services.motion_recorder import MotionRecorder
+from waldo_commander.services.path_preview_client import PathPreviewClient
+from waldo_commander.services.path_visualizer import PathVisualizer
+from waldo_commander.services.preview_segments import segments_from_record
 from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
-from waldo_commander.services.path_preview_client import PathPreviewClient
-from waldo_commander.services.motion_recorder import MotionRecorder
-from waldo_commander.services.path_visualizer import PathVisualizer
 from waldo_commander.services.urdf_scene.envelope_renderer import WorkspaceEnvelope
-
+from waldo_commander.state import (
+    playback_coordination,
+    robot_state,
+    simulation_state,
+    ui_state,
+)
 
 # ============================================================================
 # Dry Run Client Tests
@@ -37,106 +38,52 @@ from waldo_commander.services.urdf_scene.envelope_renderer import WorkspaceEnvel
 
 
 class TestDryRunClient:
-    """Tests for dry run simulation client (PathPreviewClient).
+    """The preview client over parol6's dry-run client: every command goes
+    through the real planning pipeline and lands on the plan record."""
 
-    The client delegates to parol6's PathPreviewClient which runs commands
-    through the real command pipeline. No mocking of PAROL6_ROBOT needed.
-    """
+    @staticmethod
+    def _planned(client):
+        client.close()
+        record = client.plan()
+        return record, segments_from_record(record, client.notes)
 
-    @pytest.mark.asyncio
-    async def test_move_joints_creates_path_segment(self):
-        """move_j should create a path segment with joint data."""
-        segments: list[dict] = []
-        targets: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            target_collector=targets,
+    def test_move_joints_records_a_block_the_scene_draws_as_a_segment(self):
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
+        target = [85, -85, 135, 10, 45, 170]
+        index = client.move_j(target, speed=1.0)
+        record, segments = self._planned(client)
+
+        assert index == 0 and client.wait_command(index)
+        block = record.blocks[0]
+        assert block.move_type == "joints" and block.rows >= 2
+        assert record.joints_rad.shape == (record.rows, 6)
+        assert np.degrees(record.joints_rad[block.start_row + block.rows - 1]) == (
+            pytest.approx(target, abs=0.5)
         )
-
-        # Use angles away from singularities (J5 != 0 avoids gimbal lock)
-        client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
-
-        # Verify path segment created in collector
         assert len(segments) == 1
         segment = segments[0]
-        assert segment["is_valid"] is True
-        assert segment["joints"] is not None
-        assert len(segment["joints"]) == 6
-        assert segment["move_type"] == "joints"
-        # Verify full joint trajectory is present for smooth playback
-        assert segment["joint_trajectory"] is not None
-        assert len(segment["joint_trajectory"]) >= 2  # At least start and end
-        assert len(segment["joint_trajectory"][0]) == 6  # 6 joints per waypoint
+        assert segment.is_valid and segment.move_type == "joints"
+        assert segment.command == 0 and segment.rows == block.rows
+        assert segment.estimated_duration == pytest.approx(block.rows * record.row_dt_s)
+        assert not client.target_collector, "no literal source line, no target"
 
-    @pytest.mark.asyncio
-    async def test_move_cartesian_creates_path_segment(self):
-        """move_l should create a path segment with cartesian data."""
-        segments: list[dict] = []
-        targets: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            target_collector=targets,
-        )
+    def test_cartesian_moves_record_a_block_or_are_refused_on_the_record(self):
+        """A reachable move_l is a cartesian block; a target the planner
+        cannot reach is a block with an error and rows the scene draws red —
+        not a crash, and not a silent gap."""
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
+        assert client.move_l([150, 100, 250, 0, 0, 0], speed=1.0) == 0
+        record, segments = self._planned(client)
+        assert record.blocks[0].move_type == "cartesian"
+        assert segments[0].move_type == "cartesian" and segments[0].is_valid
 
-        client.move_l([150, 100, 250, 0, 0, 0], speed=1.0)
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
+        index = client.move_l([9999, 9999, 9999, 0, 0, 0], speed=1.0)
+        record, segments = self._planned(client)
 
-        # Verify segment created
-        assert len(segments) == 1
-        segment = segments[0]
-        assert segment["is_valid"] is True
-        assert segment["move_type"] == "cartesian"
-
-    @pytest.mark.asyncio
-    async def test_move_creates_segment_but_not_target_without_literal_args(self):
-        """Moves without literal list arguments should create segment but not target.
-
-        ProgramTarget objects are only created when the source line has
-        literal list arguments (not variables). When move_j is called
-        directly (not via code parsing), there's no source line to
-        inspect, so no target is created.
-        """
-        segments: list[dict] = []
-        targets: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            target_collector=targets,
-        )
-
-        # Use angles away from singularities (J5 != 0 avoids gimbal lock)
-        client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
-
-        # Verify path segment was created (always created for visualization)
-        assert len(segments) == 1
-        segment = segments[0]
-        assert segment["move_type"] == "joints"
-        assert segment["joints"] is not None
-
-        # Verify NO target was created (no TARGET marker in source)
-        assert len(targets) == 0
-
-    @pytest.mark.asyncio
-    async def test_unreachable_cartesian_creates_error_result(self):
-        """Unreachable cartesian target produces per-pose valid/invalid segments."""
-        segments: list[dict] = []
-        targets: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            target_collector=targets,
-        )
-
-        # Extremely far target — mostly unreachable
-        client.move_l([9999, 9999, 9999, 0, 0, 0], speed=1.0)
-
-        # Per-pose IK diagnostic produces green (valid) + red (invalid) segments
-        assert len(segments) >= 1
-        has_invalid = any(not s["is_valid"] for s in segments)
-        assert has_invalid, (
-            "Expected at least one invalid segment for unreachable target"
-        )
+        assert index < 0 or not client.wait_command(index)
+        assert record.blocks[0].error is not None
+        assert any(not s.is_valid for s in segments)
 
 
 # ============================================================================
@@ -176,8 +123,13 @@ def mock_textarea():
     ui_state.editor_panel = MagicMock()
     old_robot = ui_state.robot
     ui_state.robot = get_robot()
+    # An app test earlier in the session may have left the program tab
+    # selected; with no page here, an inserted line has no editor to flash in.
+    panel_visible = ui_state.program_panel_visible
+    ui_state.program_panel_visible = False
     ensure_active_program()
     yield mock_textarea
+    ui_state.program_panel_visible = panel_visible
     ui_state.editor_panel = None
     ui_state.active_textarea = None
     ui_state.robot = old_robot
@@ -186,8 +138,9 @@ def mock_textarea():
 class TestMotionRecorder:
     """Tests for motion recording functionality (code-insertion API)."""
 
-    def test_capture_current_pose_inserts_code(self, mock_textarea):
-        """capture_current_pose should insert move_l code into editor."""
+    def test_capture_current_pose_inserts_move_l_or_move_j(self, mock_textarea):
+        """capture_current_pose inserts the TCP pose as move_l, or the joint
+        angles as move_j in joints mode."""
         set_robot_pose(150.0, 250.0, 350.0)
 
         recorder = MotionRecorder()
@@ -198,102 +151,56 @@ class TestMotionRecorder:
         assert "speed=" in inserted_code
         assert "accel=" in inserted_code
 
-    def test_capture_current_pose_joints_mode(self, mock_textarea):
-        """capture_current_pose with joints mode should insert move_j code."""
         waldoctl.commander.status.joints.angles.set_deg(
             np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
         )
-
-        recorder = MotionRecorder()
         recorder.capture_current_pose(move_type="joints")
-
-        inserted_code = mock_textarea.value
-        assert "rbt.move_j([10.00, 20.00, 30.00, 40.00, 50.00, 60.00" in inserted_code
+        assert "rbt.move_j([10.00, 20.00, 30.00, 40.00, 50.00, 60.00" in (
+            mock_textarea.value
+        )
 
     def test_toggle_recording_lifecycle(self, mock_textarea):
-        """toggle_recording should toggle recording state on/off."""
+        """Jogs and actions are ignored until toggle_recording starts a
+        session, and the next toggle ends it."""
         recorder = MotionRecorder()
-
-        # Initially not recording
         assert not is_any_program_recording()
 
-        # First toggle starts recording
+        recorder.on_jog_start("joint", "J1+")
+        assert recorder._active_jog is None
+        recorder.on_jog_end()
+        set_active_recording(False)
+        recorder.record_action("home")
+        assert mock_textarea.value == "# Initial code\n"
+
         recorder.toggle_recording()
         assert is_any_program_recording()
 
-        # Second toggle stops recording
         recorder.toggle_recording()
         assert not is_any_program_recording()
 
-    def test_jog_recording_lifecycle(self, mock_textarea):
-        """Test complete jog recording cycle: start sets state, end inserts code."""
-        set_robot_pose(100.0, 200.0, 300.0)
-        waldoctl.commander.status.joints.angles.set_deg(np.zeros(6))
-
-        recorder = MotionRecorder()
-        recorder.toggle_recording()  # Start recording
-
-        # --- Part 1: on_jog_start should set active jog ---
-        recorder.on_jog_start("cartesian", "X+")
-
-        assert recorder._active_jog is not None
-        assert recorder._active_jog.move_type == "cartesian"
-        assert recorder._active_jog.axis_info == "X+"
-
-        # --- Part 2: on_jog_end should insert code ---
-        # Simulate robot movement during jog (need time to pass > 0.1s)
-        time.sleep(0.15)
-        set_robot_pose(150.0, 250.0, 350.0)
-
-        recorder.on_jog_end()
-
-        # Check that code was inserted
-        inserted_code = mock_textarea.value
-        assert "rbt.move_l(" in inserted_code
-
-    def test_jog_events_ignored_when_not_recording(self):
-        """Jog start and end events should be ignored when not recording."""
-
-        recorder = MotionRecorder()
-        mock_textarea = MagicMock()
-        mock_textarea.value = ""
-        ui_state.active_textarea = mock_textarea
-
-        # Not recording - jog start should be ignored
-        recorder.on_jog_start("joint", "J1+")
-        assert recorder._active_jog is None
-
-        # Not recording - jog end should also be ignored
-        recorder.on_jog_end()
-        assert mock_textarea.value == ""
-
-        ui_state.active_textarea = None
-
-    def test_record_action_home_generates_code(self, mock_textarea):
-        """record_action for home should generate home code."""
+    def test_record_action_generates_code(self, mock_textarea):
+        """record_action turns home, I/O and gripper actions into code."""
         recorder = MotionRecorder()
         set_active_recording(True)
 
         recorder.record_action("home")
+        assert "rbt.home()" in mock_textarea.value
 
-        inserted_code = mock_textarea.value
-        assert "rbt.home()" in inserted_code
-
-    def test_record_action_gripper_commands(self, mock_textarea):
-        """record_action for gripper should generate tool access + method calls."""
-        recorder = MotionRecorder()
-        set_active_recording(True)
+        mock_textarea.value = ""
+        recorder.record_action("io", port=1, state=1)
+        assert "rbt.write_io(1, 1)" in mock_textarea.value
 
         # Part 1: Calibrate command
+        mock_textarea.value = ""
         recorder.record_action("gripper", calibrate=True)
         inserted_code = mock_textarea.value
         assert "rbt.tool.calibrate()" in inserted_code
 
         # Part 2: Move command with params (partial position → set_position)
         mock_textarea.value = ""
-        recorder.record_action("gripper", position=0.5, speed=50, current=200)
+        recorder.record_action("gripper", position=0.5, speed=0.5, current=0.3)
         inserted_code = mock_textarea.value
-        assert "rbt.tool.set_position(0.5, speed=50, current=200)" in inserted_code
+        assert "rbt.tool.set_position(0.5, speed=0.5, current=0.3)" in inserted_code
 
         # Part 3: Full open (position=0.0) — always uses set_position
         mock_textarea.value = ""
@@ -306,16 +213,6 @@ class TestMotionRecorder:
         recorder.record_action("gripper", position=1.0)
         inserted_code = mock_textarea.value
         assert "rbt.tool.set_position(1.0)" in inserted_code
-
-    def test_record_action_io(self, mock_textarea):
-        """record_action for io should generate write_io code."""
-        recorder = MotionRecorder()
-        set_active_recording(True)
-
-        recorder.record_action("io", port=1, state=1)
-
-        inserted_code = mock_textarea.value
-        assert "rbt.write_io(1, 1)" in inserted_code
 
     def test_record_set_shapes_prepends_import_unless_truly_imported(
         self, mock_textarea
@@ -363,18 +260,8 @@ class TestMotionRecorder:
         assert "from waldoctl import Box, Physical" in mock_textarea.value
         assert "physics=Physical(" in mock_textarea.value
 
-    def test_record_action_ignored_when_not_recording(self, mock_textarea):
-        """record_action should be ignored when not recording."""
-        recorder = MotionRecorder()
-        set_active_recording(False)
-
-        recorder.record_action("home")
-
-        # Code should not have been inserted (still just initial code)
-        assert mock_textarea.value == "# Initial code\n"
-
     def test_multiple_jogs_insert_multiple_code_lines(self, mock_textarea):
-        """Multiple jog start/end cycles should insert multiple code lines."""
+        """Each cartesian jog start/end cycle while recording inserts a move_l."""
         set_robot_pose(100.0, 100.0, 100.0)
         waldoctl.commander.status.joints.angles.set_deg(np.zeros(6))
 
@@ -395,10 +282,7 @@ class TestMotionRecorder:
 
         recorder.toggle_recording()  # Stop
 
-        # Should have inserted code for both moves
-        inserted_code = mock_textarea.value
-        # Count occurrences of move commands
-        assert inserted_code.count("rbt.move") >= 2
+        assert mock_textarea.value.count("rbt.move_l(") >= 2, mock_textarea.value
 
     def test_stop_recording_ends_active_jog(self, mock_textarea):
         """Stopping recording should end any active jog."""
@@ -424,59 +308,22 @@ class TestMotionRecorder:
 class TestMotionRecorderWaitTimeGaps:
     """Tests for recorder inserting delays after non-blocking moves."""
 
-    def test_wall_time_initialized_on_recording_start(self, mock_textarea):
-        """_last_action_wall_time resets to 0 when recording starts."""
-        recorder = MotionRecorder()
-        recorder._last_action_wall_time = 99.0
-        recorder.toggle_recording()
-        assert recorder._last_action_wall_time == 0.0
-        recorder.toggle_recording()
-
-    def test_wall_time_updated_after_record_action(self, mock_textarea):
-        """_last_action_wall_time is stamped after each recorded action."""
-        recorder = MotionRecorder()
-        recorder.toggle_recording()
-        assert recorder._last_action_wall_time == 0.0
-
-        set_robot_pose(100, 200, 300)
-        recorder.capture_current_pose()
-        assert recorder._last_action_wall_time > 0
-
-        recorder.toggle_recording()
-
-    def test_gap_inserted_between_non_jog_actions(self, mock_textarea):
-        """A time.sleep() is inserted when wall-clock time elapses between actions."""
+    def test_a_wait_between_actions_is_recorded_but_not_before_a_motion(
+        self, mock_textarea
+    ):
+        """Wall time between recorded actions becomes a time.sleep(), except
+        before a motion command."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
 
-        # Record first action
         recorder.record_action("gripper", position=0.5)
-        first_wall = recorder._last_action_wall_time
-        assert first_wall > 0
-
-        # Simulate elapsed time
         time.sleep(0.2)
-
-        # Record second action — should insert a delay
         recorder.record_action("gripper", position=1.0)
-
-        inserted_code = mock_textarea.value
-        assert "time.sleep(" in inserted_code, (
+        assert "time.sleep(" in mock_textarea.value, (
             "Expected time.sleep() to be inserted for gap between actions"
         )
 
-        recorder.toggle_recording()
-
-    def test_no_gap_for_motion_actions(self, mock_textarea):
-        """Motion actions (move_j/move_l) don't get delay inserted before them."""
-        recorder = MotionRecorder()
-        recorder.toggle_recording()
-
-        # Record a gripper action first
-        recorder.record_action("gripper", position=0.5)
         time.sleep(0.2)
-
-        # Record a motion — should NOT get a delay
         set_robot_pose(100, 200, 300)
         recorder.record_action(
             "move_j",
@@ -484,21 +331,18 @@ class TestMotionRecorderWaitTimeGaps:
             speed=0.5,
             accel=0.5,
         )
-
-        inserted_code = mock_textarea.value
-        # time.sleep should NOT appear between gripper and move_j
-        lines = inserted_code.strip().split("\n")
-        # Find the move_j line and check the line before it
-        for i, line in enumerate(lines):
-            if "rbt.move_j" in line and i > 0:
-                assert "time.sleep" not in lines[i - 1], (
-                    "No delay should be inserted before a motion command"
-                )
+        lines = mock_textarea.value.strip().split("\n")
+        moves = [i for i, line in enumerate(lines) if "rbt.move_j" in line and i > 0]
+        assert moves, mock_textarea.value
+        for i in moves:
+            assert "time.sleep" not in lines[i - 1], (
+                "No delay should be inserted before a motion command"
+            )
 
         recorder.toggle_recording()
 
-    def test_flush_sets_wall_time_to_last_pending(self, mock_textarea):
-        """After flushing pending actions, wall time = last pending action time."""
+    def test_queued_tool_is_recorded_after_the_blocking_move(self, mock_textarea):
+        """Queued tools follow the recorded move without artificial overlap."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
 
@@ -509,15 +353,18 @@ class TestMotionRecorderWaitTimeGaps:
         time.sleep(0.1)
         recorder.record_action("gripper", position=0.5)
         assert len(recorder._pending_actions) == 1
-        queued_time = recorder._pending_actions[0][2]
 
         # End the jog — flushes pending actions
         set_robot_pose(200, 200, 300)
         time.sleep(0.1)
         recorder.on_jog_end()
 
-        # Wall time should be set to the queued action's timestamp
-        assert recorder._last_action_wall_time == pytest.approx(queued_time, abs=0.01)
+        code = mock_textarea.value
+        lines = [line.strip() for line in code.splitlines()]
+        move = next(i for i, line in enumerate(lines) if "rbt.move_l(" in line)
+        assert lines[move + 1].startswith("rbt.tool.set_position(0.5")
+        assert "wait=False" not in lines[move]
+        assert "time.sleep" not in code
 
         recorder.toggle_recording()
 
@@ -545,210 +392,20 @@ class TestWorkspaceEnvelope:
         env.reset()
         ui_state.robot = old_robot
 
-    def test_reset_clears_data(self, envelope):
-        """reset should clear all generated data."""
-        envelope.max_reach = 0.65
-        envelope._generated = True
+    def test_generate_sync_finds_the_reach_and_its_tool_offset_radius(self, envelope):
+        """generate_sync computes the arm's reach in-process; once generated,
+        generate() does not start again, and a tool offset of either sign
+        extends the radius by its length."""
+        assert envelope.generate_sync(samples=64) is True  # 2 samples per joint
+        assert 0.3 < envelope.max_reach < 1.0
+        assert envelope.generate(samples=10) is True
 
-        envelope.reset()
-
-        assert envelope.max_reach == 0.0
-        assert envelope._generated is False
-
-    def test_generate_sync_creates_max_reach_with_valid_robot(self, envelope):
-        """generate_sync should calculate max_reach when robot is available.
-
-        This test uses the real PAROL6_ROBOT module since _generate_envelope_cpu_bound
-        imports it directly and mocks don't transfer to separate processes.
-        """
-        # Use generate_sync which runs in-process
-        result = envelope.generate_sync(samples=64)  # 64 = 2^6 for grid sampling
-
-        # With real robot module, should calculate max_reach
-        if result:
-            assert envelope._generated is True
-            assert envelope.max_reach > 0
-            # PAROL6 robot typically has reach around 0.6-0.7 meters
-            assert 0.3 < envelope.max_reach < 1.0
-        else:
-            # Robot module may not be available in test environment
-            assert envelope._generated is False
-
-    def test_generate_skips_if_already_generated(self, envelope):
-        """generate should return True immediately if already generated."""
-        envelope._generated = True
-
-        result = envelope.generate(samples=10)
-
-        assert result is True
-
-    def test_generate_sync_handles_exceptions_gracefully(self, envelope):
-        """generate_sync should catch exceptions without crashing.
-
-        The _generate_envelope_cpu_bound function handles exceptions internally
-        and returns None on failure. generate_sync should handle this gracefully.
-        """
-        # generate_sync uses _generate_envelope_cpu_bound which handles exceptions
-        # If robot module has issues, it should return False without crashing
-        _result = envelope.generate_sync(samples=64)
-
-        # Whether it succeeds depends on robot module availability
-        # The key is it doesn't crash and _generating flag is reset
-        assert envelope._generating is False
-
-    def test_concurrent_generation_prevented(self, envelope):
-        """generate should return True when already generating (indicates in-progress).
-
-        The async generate() returns True when generation is already in progress
-        since starting/in-progress are both valid states for non-blocking generation.
-        """
-        envelope._generating = True
-
-        result = envelope.generate(samples=10)
-
-        # Returns True because generation is in progress (valid state)
-        assert result is True
-
-    @pytest.mark.parametrize(
-        "offset,expected",
-        [
-            (0.05, 0.65),  # Positive offset extends reach
-            (-0.05, 0.65),  # Negative offset uses abs()
-            (0.0, 0.6),  # Zero offset returns base reach
-        ],
-    )
-    def test_get_radius_with_tool_offset(self, envelope, offset, expected):
-        """get_radius_with_tool_offset should add abs(offset) to max_reach."""
-        envelope.max_reach = 0.6  # 600mm base reach
-
-        effective_radius = envelope.get_radius_with_tool_offset(offset)
-
-        assert effective_radius == expected, (
-            f"With offset={offset}, expected {expected}, got {effective_radius}"
+        reach = envelope.max_reach
+        assert envelope.get_radius_with_tool_offset(0.05) == pytest.approx(reach + 0.05)
+        assert envelope.get_radius_with_tool_offset(-0.05) == pytest.approx(
+            reach + 0.05
         )
-
-
-# ============================================================================
-# Editor Auto-Simulation Tests
-# ============================================================================
-
-
-class TestEditorAutoSimulation:
-    """Tests for editor auto-simulation on code change."""
-
-    def test_debounce_defaults(self):
-        """SimulationEngine should have correct debounce defaults."""
-        from waldo_commander.components.simulation_engine import simulation
-
-        assert simulation._debounce_delay == 1.0
-
-    def testschedule_debounced_simulation_creates_timer(self):
-        """schedule_debounced_simulation should create a timer."""
-        from waldo_commander.components.simulation_engine import simulation
-        import waldoctl
-
-        with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
-            mock_timer = MagicMock()
-            mock_ui.timer.return_value = mock_timer
-
-            waldoctl.commander.programs.active_id = "test-tab"
-            simulation._simulation_debounce_timer = None
-
-            simulation.schedule_debounced_simulation()
-
-            mock_ui.timer.assert_called_once()
-            call_args = mock_ui.timer.call_args
-            assert call_args[0][0] == 1.0
-            assert call_args[1]["once"] is True
-
-    def testschedule_debounced_simulation_cancels_previous_timer(self):
-        """Calling schedule_debounced_simulation again should cancel previous timer."""
-        from waldo_commander.components.simulation_engine import simulation
-        import waldoctl
-
-        with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
-            mock_timer1 = MagicMock()
-            mock_timer2 = MagicMock()
-            mock_ui.timer.side_effect = [mock_timer1, mock_timer2]
-
-            waldoctl.commander.programs.active_id = "test-tab"
-            simulation._simulation_debounce_timer = None
-
-            simulation.schedule_debounced_simulation()
-            assert simulation._simulation_debounce_timer == mock_timer1
-
-            simulation.schedule_debounced_simulation()
-            mock_timer1.cancel.assert_called_once_with(with_current_invocation=True)
-            assert simulation._simulation_debounce_timer == mock_timer2
-
-    @pytest.mark.asyncio
-    async def test_run_simulation_calls_path_visualizer(self):
-        """run_simulation should call path_visualizer.update_path_visualization."""
-        from waldo_commander.components.simulation_engine import simulation
-        import waldoctl
-
-        with patch("waldo_commander.components.simulation_engine.ui"):
-            with patch(
-                "waldo_commander.components.simulation_engine.path_visualizer"
-            ) as mock_visualizer:
-                update_called = False
-                update_content = None
-
-                async def mock_update(content, tab_id=None):
-                    nonlocal update_called, update_content
-                    update_called = True
-                    update_content = content
-
-                mock_visualizer.update_path_visualization = mock_update
-
-                mock_textarea = MagicMock()
-                mock_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
-                ui_state.active_textarea = mock_textarea
-                waldoctl.commander.programs.active_id = "tab_under_test"
-                ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
-
-                try:
-                    await simulation.run_simulation()
-                finally:
-                    ui_state.textareas_by_tab.pop("tab_under_test", None)
-                    waldoctl.commander.programs.active_id = None
-                    ui_state.active_textarea = None
-
-                assert update_called is True
-                assert update_content == "rbt.move_j([0,0,0,0,0,0])"
-
-    @pytest.mark.asyncio
-    async def test_run_simulation_empty_content_skips_visualization(self):
-        """run_simulation should skip visualization when content is empty."""
-        from waldo_commander.components.simulation_engine import simulation
-        import waldoctl
-
-        with patch("waldo_commander.components.simulation_engine.ui"):
-            with patch(
-                "waldo_commander.components.simulation_engine.path_visualizer"
-            ) as mock_visualizer:
-                update_called = False
-
-                async def mock_update(content, tab_id=None):
-                    nonlocal update_called
-                    update_called = True
-
-                mock_visualizer.update_path_visualization = mock_update
-
-                mock_textarea = MagicMock()
-                mock_textarea.value = ""
-                ui_state.active_textarea = mock_textarea
-                waldoctl.commander.programs.active_id = "tab_under_test"
-                ui_state.textareas_by_tab["tab_under_test"] = mock_textarea
-
-                try:
-                    await simulation.run_simulation()
-                finally:
-                    ui_state.textareas_by_tab.pop("tab_under_test", None)
-                    waldoctl.commander.programs.active_id = None
-                    ui_state.active_textarea = None
-
-                assert update_called is False
+        assert envelope.get_radius_with_tool_offset(0.0) == reach
 
 
 class TestSimulationCaching:
@@ -787,10 +444,11 @@ class TestSimulationCaching:
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):
         """Simulation results go to tab_id, not active tab (for tab switch during sim)."""
-        from waldo_commander.state import simulation_state
         import waldoctl
         from waldoctl import Program
+
         from waldo_commander.services.path_visualizer import PathVisualizer
+        from waldo_commander.state import simulation_state
 
         # Create two tabs
         tab1 = Program(
@@ -802,19 +460,24 @@ class TestSimulationCaching:
         waldoctl.commander.programs.items = [tab1, tab2]
         waldoctl.commander.programs.active_id = "tab2"  # Active is tab2
 
-        # Under pytest the visualizer always takes the in-process path, so mock
-        # the sim entry point; notify_changed avoids a slot stack error.
+        # The simulation itself runs in a pool worker, so stub the process
+        # boundary rather than the function inside it: this test is about
+        # which tab the result lands in, not about simulating anything.
+        # notify_changed avoids a slot stack error.
+        async def _fake_cpu_bound(_func, _args):
+            return {
+                "segments": [],
+                "targets": [],
+                "truncated": False,
+                "error": None,
+                "total_steps": 0,
+                "final_joints_rad": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            }
+
         with (
             patch(
-                "waldo_commander.services.path_visualizer._run_simulation_isolated",
-                return_value={
-                    "segments": [],
-                    "targets": [],
-                    "truncated": False,
-                    "error": None,
-                    "total_steps": 0,
-                    "final_joints_rad": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-                },
+                "waldo_commander.services.path_visualizer.run.cpu_bound",
+                _fake_cpu_bound,
             ),
             patch.object(simulation_state, "notify_changed"),
         ):
@@ -826,23 +489,36 @@ class TestSimulationCaching:
             assert tab1.dry_run.final_joints_rad == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
             assert tab2.dry_run.final_joints_rad is None
 
-    def test_simulation_returns_final_joints_rad(self):
-        """Simulation result includes final_joints_rad for caching."""
-        from waldo_commander.services.path_visualizer import _run_simulation_isolated
 
-        program = """
-from parol6 import RobotClient
+def test_every_client_a_program_builds_plans_into_one_record():
+    """A program that opens a second client, sync then async, gets one
+    dry run: the second move starts where the first ended and both are on
+    the record, not just the last client's."""
+    from waldo_commander.services.path_visualizer import _run_simulation_isolated
+
+    program = """import asyncio
+from parol6 import AsyncRobotClient, RobotClient
+
 rbt = RobotClient()
-rbt.home()
-"""
-        result = _run_simulation_isolated(
-            program,
-            dry_run_client_cls=DryRunRobotClient,
-        )
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 
-        assert "final_joints_rad" in result
-        if result["final_joints_rad"] is not None:
-            assert len(result["final_joints_rad"]) == 6
+async def main():
+    async with AsyncRobotClient() as other:
+        await other.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+
+asyncio.run(main())
+"""
+    result = _run_simulation_isolated(program)
+    assert result["error"] is None, result["error"]
+    commanded = result["commanded"]
+    notes = result["notes"]
+    moves = [b for b in commanded.blocks if notes[b.command].method == "move_j"]
+    assert [b.line_number for b in moves] == [5, 9]
+    assert all(b.rows > 0 for b in moves)
+    # The editor caches where the program ends.
+    assert np.degrees(result["final_joints_rad"]) == pytest.approx(
+        [90, -90, 180, 0, 0, 180], abs=0.5
+    )
 
 
 class TestPathVisualizerIntegration:
@@ -895,123 +571,148 @@ class TestPathVisualizerIntegration:
         ui_state.robot = old_robot
 
     @pytest.mark.asyncio
-    async def test_visualizer_executes_simple_program(self):
-        """PathVisualizer should execute program and create path segments.
+    async def test_predicted_pass_skipped_after_first_probe_on_parol6(self):
+        """parol6 plans and does not simulate, so its first predicted pass
+        comes back as the plan: the same record, carrying nothing a plant
+        would add. That is the last predicted pass the session runs for it
+        — the next plan is not answered at all, and until a pass lands the
+        predicted record is the commanded one.
 
-        Uses real PAROL6_ROBOT module in subprocess - no mocking needed.
-        Joint targets must be within PAROL6 limits:
-        J1: [-123, 123], J2: [-145, -3.4], J3: [108, 288],
-        J4: [-105, 105], J5: [-90, 90], J6: [0, 360]
-        """
+        A program that draws a random target commands something else on the
+        predicted pass's run, under the same revision, so that prediction
+        answers commands the plan never had: it is dropped, and it settles
+        nothing about the backend."""
+        from waldo_commander.components.playback import layers_available
+
         visualizer = PathVisualizer()
+        dry_run = self._active_dry_run()
+        randomized = (
+            "import random\n"
+            "from parol6 import RobotClient\n"
+            "rbt = RobotClient()\n"
+            "rbt.move_j([85 + random.uniform(-5, 5), -85, 175, 5, 5, 175], speed=1.0)\n"
+        )
+        assert (
+            await visualizer.update_path_visualization(randomized, revision=1) is None
+        )
+        assert dry_run.commanded is not None and dry_run.commanded_revision == 1
+        assert await visualizer.update_physics_simulation("test-tab") is None
+        assert dry_run.predicted is None
+        assert "parol6" not in visualizer._predicted_diverges
 
-        # Valid joint targets within PAROL6 limits
         program = """
+from parol6 import RobotClient
+with RobotClient() as rbt:
+    rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+"""
+        assert await visualizer.update_path_visualization(program, revision=2) is None
+        assert dry_run.commanded is not None and dry_run.commanded_revision == 2
+        assert dry_run.predicted_current is None
+        assert not any(layers_available(dry_run).values())
+
+        assert await visualizer.update_physics_simulation("test-tab") is None
+        assert visualizer._predicted_diverges["parol6"] is False
+        predicted = dry_run.predicted_current
+        assert predicted is not None and predicted.digest == dry_run.commanded.digest
+        assert not any(layers_available(dry_run).values())
+
+        again = program.replace("175]", "180]")
+        assert await visualizer.update_path_visualization(again, revision=3) is None
+        assert dry_run.predicted_current is None, "a new plan retires the old answer"
+        assert await visualizer.update_physics_simulation("test-tab") is None
+        assert dry_run.predicted is None, "the probe is not repeated this session"
+        assert not visualizer.physics_in_flight("test-tab")
+
+    @pytest.mark.asyncio
+    async def test_sys_exit_entry_point_previews(self):
+        """A script ending in ``sys.exit(main())`` previews its motion: exit
+        status 0 is a normal finish, a failure status is the preview's error,
+        and neither exit reaches the app."""
+        visualizer = PathVisualizer()
+        program = """
+import asyncio
+import sys
+
 import parol6
 
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+    return STATUS
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
 """
 
-        await visualizer.update_path_visualization(program)
-
-        # Should have created at least one segment
-        assert len(self._active_dry_run().path_segments) >= 1, (
-            f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
+        error = await visualizer.update_path_visualization(
+            program.replace("STATUS", "0")
         )
+        assert error is None
+        assert len(self._active_dry_run().path_segments) >= 1
+
+        error = await visualizer.update_path_visualization(
+            program.replace("STATUS", "3")
+        )
+        assert error is not None and "status 3" in error
+        assert len(self._active_dry_run().path_segments) >= 1
 
     @pytest.mark.asyncio
-    async def test_visualizer_updates_total_steps(self):
-        """PathVisualizer should update total_steps after simulation."""
-        visualizer = PathVisualizer()
+    async def test_moves_draw_in_metres_and_mark_literal_and_refused_targets(self):
+        """Every planned move draws a segment in metres. A move written with
+        literal coordinates gets a drag-to-edit target; one built from
+        variables draws but has none. A move the backend refuses still marks
+        where it was headed, red, in metres and radians — from its literal or
+        computed pose, but not from joint angles, which name no TCP pose."""
+        import math
 
-        # Valid joint targets within PAROL6 limits
+        visualizer = PathVisualizer()
         program = """
 import parol6
 
 async def main():
+    joints_b = [95, -95, 185, -5, -5, 185]
+    somewhere = [100, 200, 300, 0, 0, 0]
     async with parol6.AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+        await rbt.move_j(joints_b, speed=1.0)
         await rbt.move_j([80, -80, 170, 10, 10, 170], speed=1.0)
-        await rbt.move_j([100, -100, 190, -10, -10, 190], speed=1.0)
+        await rbt.move_l([100, 200, 300, 90, 0, 0], speed=50)
+        await rbt.move_j(pose=[100, 200, 300, 0, 0, 0], speed=50)
+        await rbt.move_j([0, 0, 0, 0, 0, 0], speed=50)
+        await rbt.move_l(somewhere, speed=50)
+
+import asyncio
+asyncio.run(main())
 """
 
-        await visualizer.update_path_visualization(program)
+        def line(fragment: str) -> int:
+            return next(
+                n for n, text in enumerate(program.splitlines(), 1) if fragment in text
+            )
 
-        # Should have 2 segments and total_steps should match
-        assert self._active_dry_run().total_steps == len(
-            self._active_dry_run().path_segments
-        )
+        error = await visualizer.update_path_visualization(program)
+        dry_run = self._active_dry_run()
 
-    @pytest.mark.asyncio
-    async def test_visualizer_joint_coordinates_in_meters(self):
-        """Path segment coordinates should be in meters (not mm).
+        segments = dry_run.path_segments
+        assert {line("[85, -85"), line("joints_b,"), line("[80, -80")} <= {
+            s.line_number for s in segments
+        }, [s.line_number for s in segments]
+        coords = [c for s in segments for point in s.points for c in point[:3]]
+        assert coords and all(abs(c) < 1.0 for c in coords), "segments are in metres"
 
-        Joint moves produce TCP poses via FK. The segment points should be
-        converted from mm to meters for the 3D scene which uses SI units.
-        """
-        visualizer = PathVisualizer()
+        targets = {t.line_number: t for t in dry_run.targets}
+        for literal in (line("[85, -85"), line("[80, -80")):
+            assert targets[literal].id == f"auto_{literal}"
+            assert targets[literal].is_valid
+        assert line("joints_b,") not in targets, "a variable pose is not editable"
 
-        # Valid joint move within PAROL6 limits
-        program = """
-import parol6
-
-async def main():
-    async with parol6.AsyncRobotClient() as rbt:
-        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
-"""
-
-        await visualizer.update_path_visualization(program)
-
-        # Should have created a segment
-        assert len(self._active_dry_run().path_segments) >= 1, (
-            f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
-        )
-
-        # Check that all points are in meters (not mm)
-        # PAROL6 workspace is ~600mm reach, so all coords should be < 1.0m
-        segment = self._active_dry_run().path_segments[-1]
-        end_point = segment.points[-1]  # [x, y, z]
-
-        assert abs(end_point[0]) < 1.0, (
-            f"X coordinate {end_point[0]} appears to be in mm, expected meters"
-        )
-        assert abs(end_point[1]) < 1.0, (
-            f"Y coordinate {end_point[1]} appears to be in mm, expected meters"
-        )
-        assert abs(end_point[2]) < 1.0, (
-            f"Z coordinate {end_point[2]} appears to be in mm, expected meters"
-        )
-
-    @pytest.mark.asyncio
-    async def test_literal_moves_create_targets(self):
-        """Moves with literal coordinates create auto-generated targets for 3D editing."""
-        visualizer = PathVisualizer()
-
-        program = """
-import parol6
-
-async def main():
-    async with parol6.AsyncRobotClient() as rbt:
-        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
-        await rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
-"""
-
-        await visualizer.update_path_visualization(program)
-
-        assert len(self._active_dry_run().path_segments) >= 2, (
-            f"Expected at least 2 segments, got {len(self._active_dry_run().path_segments)}"
-        )
-
-        assert len(self._active_dry_run().targets) == 2, (
-            f"Expected 2 targets (one per literal move), got {len(self._active_dry_run().targets)}. "
-            f"Bug: compile() may not be using 'simulation_script.py' filename for frame inspection."
-        )
-
-        target_ids = [t.id for t in self._active_dry_run().targets]
-        assert all(tid.startswith("auto_") for tid in target_ids), (
-            f"Expected auto-generated target IDs, got {target_ids}"
-        )
+        refused = targets[line("90, 0, 0], speed=50")]
+        assert not refused.is_valid
+        assert refused.pose == pytest.approx([0.1, 0.2, 0.3, math.pi / 2, 0.0, 0.0])
+        assert not targets[line("pose=[100")].is_valid
+        assert not targets[line("somewhere, speed")].is_valid
+        assert line("[0, 0, 0, 0, 0, 0], speed=50") not in targets
+        assert error is not None and f"Line {line('90, 0, 0], speed=50')}" in error
 
     @pytest.mark.asyncio
     async def test_infeasible_duration_marks_segment_not_timing_feasible(self):
@@ -1026,6 +727,9 @@ import parol6
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], duration=0.01)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -1046,39 +750,31 @@ async def main():
             f"Expected estimated_duration > requested 0.01s, got {seg.estimated_duration}"
         )
 
-    @pytest.mark.asyncio
-    async def test_move_with_variables_no_target_created(self):
-        """Moves with variable arguments should visualize but NOT create targets.
-
-        When move commands use variables instead of literal values, the path
-        should still be visualized, but no ProgramTarget is created since
-        the coordinates aren't statically determinable.
-        """
-        visualizer = PathVisualizer()
-
-        # Valid joint targets using variables (not literals)
-        program = """
+        # Blended moves plan as one segment, which takes the time of every
+        # move in the blend, not only the first one's.
+        def blended(first_s: float, second_s: float) -> str:
+            return f"""
 import parol6
 
 async def main():
-    joints_a = [85, -85, 175, 5, 5, 175]
-    joints_b = [95, -95, 185, -5, -5, 185]
     async with parol6.AsyncRobotClient() as rbt:
-        await rbt.move_j(joints_a, speed=1.0)
-        await rbt.move_j(joints_b, speed=1.0)
+        await rbt.move_j([85, -85, 175, 5, 5, 175], duration={first_s}, r=5, wait=False)
+        await rbt.move_j([95, -95, 185, -5, -5, 185], duration={second_s})
+
+import asyncio
+asyncio.run(main())
 """
 
-        await visualizer.update_path_visualization(program)
-
-        # Should have created path segments (visualization still works)
-        assert len(self._active_dry_run().path_segments) >= 2, (
-            f"Expected at least 2 segments, got {len(self._active_dry_run().path_segments)}"
-        )
-
-        # Should NOT have created any targets (variables not inspectable)
-        assert len(self._active_dry_run().targets) == 0, (
-            f"Expected 0 targets (moves use variables), got {len(self._active_dry_run().targets)}"
-        )
+        await visualizer.update_path_visualization(blended(1.0, 1.0))
+        segments = self._active_dry_run().path_segments
+        assert segments and all(s.timing_feasible for s in segments), [
+            (s.line_number, s.estimated_duration, s.requested_duration)
+            for s in segments
+        ]
+        await visualizer.update_path_visualization(blended(0.01, 0.01))
+        assert not all(
+            s.timing_feasible for s in self._active_dry_run().path_segments
+        ), "a blend too short for its moves is still flagged"
 
 
 # ============================================================================
@@ -1087,81 +783,75 @@ async def main():
 
 
 class TestHomeAndCheckpoints:
-    """Tests for home teleport and checkpoint marker creation."""
+    """home() and checkpoint() on the plan record."""
 
-    def test_home_segment_mirrors_referencing_state(self):
-        """home() is tagged checkpoint='home' and ends at the home joints —
-        a planned return move (real duration) when the preview is seeded
-        homed, an instant referencing snap when seeded unhomed."""
+    @staticmethod
+    def _planned(client):
+        client.close()
+        record = client.plan()
+        return record, segments_from_record(record, client.notes)
+
+    def test_home_moves_a_referenced_arm_and_snaps_an_unreferenced_one(self):
+        """A referenced arm homes along a planned move that takes time on the
+        timeline, and the next move starts from home; an unreferenced arm
+        references itself without a move."""
         from parol6.config import HOME_ANGLES_DEG
 
-        home_rad = np.radians(HOME_ANGLES_DEG)
+        from waldo_commander.services.timeline import Timeline
 
-        segments: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-        )
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
         client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.home()
+        record, segments = self._planned(client)
+        assert [s.checkpoint for s in segments] == [None, "home"]
+        home = segments[1]
+        assert home.rows == record.blocks[1].rows > 0
+        assert home.estimated_duration > 0.0
+        assert np.degrees(record.joints_rad[-1]) == pytest.approx(
+            HOME_ANGLES_DEG, abs=0.6
+        )
+        assert client.angles() == pytest.approx(HOME_ANGLES_DEG, abs=0.6)
+        tl = Timeline.from_record(record, segments)
+        assert tl.segment_durations[1] > 0.0
+        assert np.degrees(tl.sample(tl.total_duration).joints) == pytest.approx(
+            HOME_ANGLES_DEG, abs=0.6
+        )
 
-        assert len(segments) == 2
-        home_seg = segments[1]
-        assert home_seg["checkpoint"] == "home"
-        assert home_seg["estimated_duration"] > 0.0
-        assert home_seg["joints"] is not None
-        assert np.allclose(home_seg["joints"], home_rad, atol=0.01)
-
-        segments.clear()
         client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-            initial_homed=False,
+            dry_run_client_cls=DryRunRobotClient, initial_homed=False
         )
         client.home()
+        record, segments = self._planned(client)
+        assert record.rows <= 1, "referencing is a snap, not a move"
+        assert [(s.checkpoint, s.rows) for s in segments] == [("home", record.rows)]
+        assert segments[0].estimated_duration <= record.row_dt_s
+        assert Timeline.from_record(record, segments).total_duration <= record.row_dt_s
+        assert client.angles() == pytest.approx(HOME_ANGLES_DEG, abs=0.6)
 
-        assert len(segments) == 1
-        snap_seg = segments[0]
-        assert snap_seg["checkpoint"] == "home"
-        assert snap_seg["estimated_duration"] == pytest.approx(0.0)
-        assert snap_seg["joints"] is not None
-        assert np.allclose(snap_seg["joints"], home_rad, atol=0.01)
-
-    def test_home_updates_planner_for_subsequent_moves(self):
-        """After home(), subsequent move_j starts from home position."""
-        segments: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
-        )
-
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
         client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.home()
         client.move_j([90, -90, 140, 15, 50, 175], speed=1.0)
-
-        assert len(segments) == 3
-        # Third segment should have a trajectory starting near home
-        third = segments[2]
-        assert third["joint_trajectory"] is not None
-        assert len(third["joint_trajectory"]) >= 2
-
-    def test_checkpoint_creates_zero_width_marker(self):
-        """checkpoint() creates a zero-width segment with the correct label."""
-        segments: list[dict] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
+        record, _ = self._planned(client)
+        third = record.blocks[2]
+        assert third.rows >= 2
+        assert np.degrees(record.joints_rad[third.start_row]) == pytest.approx(
+            HOME_ANGLES_DEG, abs=1.0
         )
 
+    def test_checkpoint_is_a_zero_width_marker(self):
+        client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
         client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.checkpoint("pick_done")
-
+        record, segments = self._planned(client)
         assert len(segments) == 2
-        cp_seg = segments[1]
-        assert cp_seg["checkpoint"] == "pick_done"
-        assert cp_seg["estimated_duration"] == pytest.approx(0.0)
-        assert cp_seg["points"] == []
-        assert cp_seg["move_type"] == "checkpoint"
+        marker = segments[1]
+        assert marker.checkpoint == "pick_done" and marker.move_type == "checkpoint"
+        assert marker.rows == 0 and marker.points == []
+        assert marker.estimated_duration == 0.0
+        assert marker.start_row == record.rows, (
+            "the marker sits where the program stood"
+        )
 
 
 # ============================================================================
@@ -1174,43 +864,16 @@ class TestToolActionTracking:
 
     def test_tool_start_positions_across_calls(self):
         """close() then open() records correct start_positions for each action."""
-        from dataclasses import asdict
-        from waldoctl.tools import LinearMotion
+        from waldo_commander.services.path_visualizer import _tool_metadata
 
-        segments: list[dict] = []
         tool_actions: list = []
-        robot = get_robot("parol6")
-
-        # Build tool metadata registry (same logic as path_visualizer)
-        def _serialize_motions(motion_list):
-            return [
-                {"type": "linear", **asdict(m)}
-                if isinstance(m, LinearMotion)
-                else {"type": "rotary", **asdict(m)}
-                for m in motion_list
-            ]
-
-        tool_meta: dict[str, dict] = {}
-        for spec in robot.tools.available:
-            if spec.key == "NONE":
-                continue
-            base = _serialize_motions(spec.motions) if spec.motions else []
-            variants = {}
-            for v in spec.variants:
-                if v.motions:
-                    variants[v.key] = {"motions": _serialize_motions(v.motions)}
-            if base or variants:
-                tool_meta[spec.key] = {
-                    "motions": base,
-                    "variants": variants,
-                    "activation_type": spec.activation_type.value,
-                }
+        tool_meta = _tool_metadata(get_robot("parol6"))
 
         client = PathPreviewClient(
             dry_run_client_cls=DryRunRobotClient,
-            segment_collector=segments,
             tool_action_collector=tool_actions,
             tool_meta_registry=tool_meta,
+            initial_gripper_calibrated=True,
         )
 
         client.select_tool("SSG-48", "pinch")
@@ -1226,65 +889,6 @@ class TestToolActionTracking:
         # Second action: open — starts closed (1.0), targets open (0.0)
         assert tool_actions[1].start_positions == (1.0,)
         assert tool_actions[1].target_positions == (0.0,)
-
-
-# ============================================================================
-# Teleport Command Tests
-# ============================================================================
-
-
-class TestTeleportCommand:
-    """Tests for TeleportCommand as a streamable motion command."""
-
-    def test_teleport_is_streamable_motion_command(self):
-        from parol6.commands.basic_commands import TeleportCommand
-        from parol6.commands.base import MotionCommand
-
-        assert issubclass(TeleportCommand, MotionCommand)
-        assert TeleportCommand.streamable is True
-
-    def test_teleport_not_in_system_cmd_types(self):
-        from parol6.ack_policy import SYSTEM_CMD_TYPES, FIRE_AND_FORGET
-        from parol6.protocol.wire import CmdType
-
-        assert CmdType.TELEPORT not in SYSTEM_CMD_TYPES
-        assert CmdType.TELEPORT in FIRE_AND_FORGET
-
-    def test_teleport_converts_degrees_to_steps(self):
-        from parol6.commands.basic_commands import TeleportCommand
-        from parol6.protocol.wire import TeleportCmd
-        from parol6.server.state import ControllerState
-
-        angles_deg = [90.0, -45.0, 30.0, 0.0, 60.0, 180.0]
-        cmd = TeleportCommand(TeleportCmd(angles=angles_deg))
-        state = ControllerState()
-        cmd.do_setup(state)
-
-        # Steps should be non-zero for non-zero angles
-        assert cmd._target_steps[0] != 0  # 90 deg
-        assert cmd._target_steps[3] == 0  # 0 deg
-
-    def test_teleport_clears_gripper_command_bits(self):
-        """Teleport with tool_positions must clear Gripper_data_out[3]
-        to prevent the write-frame JIT from re-arming the gripper ramp."""
-        import os
-        from parol6.commands.basic_commands import TeleportCommand
-        from parol6.protocol.wire import TeleportCmd, CommandCode
-        from parol6.server.state import ControllerState
-
-        state = ControllerState()
-        state.Gripper_data_out[3] = 1  # simulate in-flight gripper command
-
-        angles = [0.0] * 6
-        cmd = TeleportCommand(TeleportCmd(angles=angles, tool_positions=[0.5]))
-        cmd.do_setup(state)
-
-        with patch.dict(os.environ, {"PAROL6_FAKE_SERIAL": "1"}):
-            cmd.execute_step(state)
-
-        assert state.Command_out == CommandCode.TELEPORT
-        assert state.Gripper_data_out[3] == 0
-        assert state.tool_teleport_pos == pytest.approx(127.5)
 
 
 # ============================================================================
@@ -1312,54 +916,30 @@ class TestSimPoseOverrideAutoClear:
         program.dry_run.playback.is_active = is_active
         return program
 
-    def test_clears_after_timeout(self):
-        """Override clears once 100ms has passed since the last teleport."""
+    def test_override_clears_only_once_scrubbing_has_stopped(self):
+        """The override clears 100 ms after the last teleport — not while
+        teleports are recent, not during playback, and not when no teleport
+        was ever sent."""
         from waldo_commander.main import _maybe_clear_sim_pose_override
 
-        self._seed_program(is_active=False)
-        playback_coordination.sim_pose_override = True
-        playback_coordination.last_teleport_ts = time.monotonic() - 0.2  # 200ms ago
+        for playing, seconds_ago, clears in (
+            (False, 0.2, True),
+            (False, 0.0, False),
+            (True, 0.2, False),
+            (False, None, False),
+        ):
+            self._seed_program(is_active=playing)
+            playback_coordination.sim_pose_override = True
+            playback_coordination.last_teleport_ts = (
+                0.0 if seconds_ago is None else time.monotonic() - seconds_ago
+            )
 
-        _maybe_clear_sim_pose_override()
+            _maybe_clear_sim_pose_override()
 
-        assert playback_coordination.sim_pose_override is False
-        assert playback_coordination.last_teleport_ts == 0.0
-
-    def test_stays_set_during_active_scrubbing(self):
-        """Override is kept if a teleport was sent recently (<100ms)."""
-        from waldo_commander.main import _maybe_clear_sim_pose_override
-
-        self._seed_program(is_active=False)
-        playback_coordination.sim_pose_override = True
-        playback_coordination.last_teleport_ts = time.monotonic()  # just now
-
-        _maybe_clear_sim_pose_override()
-
-        assert playback_coordination.sim_pose_override is True
-
-    def test_stays_set_during_playback(self):
-        """Override is kept while simulation playback is active."""
-        from waldo_commander.main import _maybe_clear_sim_pose_override
-
-        self._seed_program(is_active=True)
-        playback_coordination.sim_pose_override = True
-        playback_coordination.last_teleport_ts = time.monotonic() - 0.2
-
-        _maybe_clear_sim_pose_override()
-
-        assert playback_coordination.sim_pose_override is True
-
-    def test_no_clear_without_teleport(self):
-        """Override is kept if no teleport was ever sent (ts=0)."""
-        from waldo_commander.main import _maybe_clear_sim_pose_override
-
-        self._seed_program(is_active=False)
-        playback_coordination.sim_pose_override = True
-        playback_coordination.last_teleport_ts = 0.0
-
-        _maybe_clear_sim_pose_override()
-
-        assert playback_coordination.sim_pose_override is True
+            case = (playing, seconds_ago)
+            assert playback_coordination.sim_pose_override is not clears, case
+            if clears:
+                assert playback_coordination.last_teleport_ts == 0.0, case
 
 
 # ============================================================================
@@ -1370,97 +950,73 @@ class TestSimPoseOverrideAutoClear:
 class TestScriptExecutionLifecycle:
     """Tests for ScriptExecutionController subprocess lifecycle."""
 
-    @pytest.mark.asyncio
-    async def test_start_reaps_subprocess_on_late_exception(
-        self, tmp_path, monkeypatch
+    @pytest.mark.integration
+    async def test_start_runs_a_subdir_program_and_reaps_one_whose_ui_fails(
+        self, user, tmp_path, monkeypatch, caplog
     ):
-        """If start() raises *after* run_script succeeds, the subprocess must be killed.
-
-        Without this guarantee, exceptions in the post-run_script section of start()
-        (signal_play, log_panel.expand, task creation) leak a process group.
-        """
+        """A program loaded from a subdirectory runs to completion; a UI
+        failure after launch reaps the child and clears run state."""
+        from tests.helpers.wait import wait_for_app_ready
         from waldo_commander.components import script_execution as se
-        from tests.helpers.programs import ensure_active_program
 
-        # Seed an active program so start() flips real per-program execution
-        # state — without one, is_any_program_running() is vacuously False and
-        # the reset assertions below can't catch a missed cleanup.
-        active_program = ensure_active_program()
-
-        # Long-running script: only `stop_script` (i.e. our cleanup path) can end it.
-        script_path = tmp_path / "long_running.py"
-        script_path.write_text("import time\nwhile True:\n    time.sleep(0.1)\n")
-
-        # Capture the real handle as it's returned by run_script so we can verify
-        # the subprocess gets reaped.
-        captured: dict = {}
-        real_run_script = se.run_script
-
-        async def capturing_run_script(*args, **kwargs):
-            handle = await real_run_script(*args, **kwargs)
-            captured["handle"] = handle
-            return handle
-
-        monkeypatch.setattr(se, "run_script", capturing_run_script)
-
-        # Stub UI-coupled imports so start() doesn't need a NiceGUI client context.
-        fake_client = MagicMock()
-        monkeypatch.setattr(
-            se,
-            "context",
-            type("FakeCtx", (), {"client": fake_client})(),
-        )
-        monkeypatch.setattr(se.ui, "notify", lambda *a, **k: None)
-        monkeypatch.setattr(se.log_panel, "clear", lambda: None)
-        monkeypatch.setattr(se.log_panel, "push", lambda line: None)
-
-        # Force log_panel.expand() to raise — this fires after run_script returns
-        # successfully, exercising the late-exception path.
-        def raise_expand():
-            raise RuntimeError("simulated UI failure after subprocess started")
-
-        monkeypatch.setattr(se.log_panel, "expand", raise_expand)
-
-        # Provide the active-tab widget refs start() reads from.
-        fake_textarea = MagicMock()
-        fake_textarea.value = script_path.read_text()
-        fake_filename_input = MagicMock()
-        fake_filename_input.value = script_path.name
-        ui_state.active_textarea = fake_textarea
-        ui_state.active_filename_input = fake_filename_input
-
-        # run_script reads ui_state.active_robot.backend_package; ensure it's set
-        # (matches the mock_textarea fixture's pattern).
-        old_robot = ui_state.robot
-        ui_state.robot = get_robot()
-
+        await user.open("/")
+        await wait_for_app_ready()
+        active_program = waldoctl.commander.programs.active
+        assert active_program is not None
+        assert ui_state.active_textarea is not None
+        assert ui_state.active_filename_input is not None
         se.script_exec.set_program_dir(tmp_path)
 
+        content = 'print("subdirectory program finished")\n'
+        ui_state.active_textarea.value = content
+        ui_state.active_filename_input.value = "sub/regression.py"
         try:
             await se.script_exec.start()
-
-            # Contract: handle cleared, state reset. Assert the launching
-            # program's own flags were cleared (the reset path ran), not just
-            # the global helper which would pass regardless with no program.
-            assert se.script_exec.script_handle is None
-            assert is_any_program_running() is False
-            assert active_program.execution.is_running is False
-            assert active_program.dry_run.playback.is_playing is False
-
-            # The subprocess must be dead — this is the regression guard.
-            assert "handle" in captured, "run_script did not run; test setup is wrong"
-            proc = captured["handle"]["proc"]
-            # stop_script awaits proc.wait() after termination, so by the time
-            # start()'s except clause returns, returncode must be set.
-            assert proc.returncode is not None, (
-                f"Subprocess was leaked! PID {proc.pid} still running."
-            )
+            await user.should_see("subdirectory program finished", retries=100)
+            deadline = time.monotonic() + 10
+            while se.script_exec.last_exit_code is None and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert se.script_exec.last_exit_code == 0
+            assert not is_any_program_running()
+            written = tmp_path / ".runtime" / "sub" / "regression.py"
+            assert written.read_text(encoding="utf-8") == content
         finally:
-            ui_state.active_textarea = None
-            ui_state.active_filename_input = None
-            ui_state.robot = old_robot
-            # Belt-and-suspenders: if the test ever ran without the fix, ensure
-            # the subprocess is killed so it doesn't leak into the next test.
+            if se.script_exec.script_handle is not None:
+                await se.script_exec.stop()
+
+        ui_state.active_textarea.value = (
+            "import time\nwhile True:\n    time.sleep(0.1)\n"
+        )
+        ui_state.active_filename_input.value = "long_running.py"
+        captured = {}
+        run_script = se.run_script
+        expand = se.log_panel.expand
+
+        async def capture(*args, **kwargs):
+            handle = await run_script(*args, **kwargs)
+            captured["handle"] = handle
+            monkeypatch.setattr(se.log_panel, "expand", fail_expand)
+            return handle
+
+        def fail_expand():
+            monkeypatch.setattr(se.log_panel, "expand", expand)
+            raise RuntimeError("test: UI failed after subprocess started")
+
+        monkeypatch.setattr(se, "run_script", capture)
+        try:
+            await se.script_exec.start()
+            assert "handle" in captured, "subprocess never started"
+            assert captured["handle"]["proc"].returncode is not None
+            assert se.script_exec.script_handle is None
+            assert not active_program.execution.is_running
+            assert not active_program.dry_run.playback.is_playing
+            expected = (
+                "Failed to start script: test: UI failed after subprocess started"
+            )
+            records = caplog.get_records("call")
+            assert any(r.getMessage() == expected for r in records)
+            records[:] = [r for r in records if r.getMessage() != expected]
+        finally:
             handle = captured.get("handle")
             if handle and handle["proc"].returncode is None:
                 from waldo_commander.services.script_runner import stop_script
@@ -1468,79 +1024,30 @@ class TestScriptExecutionLifecycle:
                 await stop_script(handle)
 
     @pytest.mark.asyncio
-    async def test_start_handles_subdir_filename(self, tmp_path, monkeypatch):
-        """Filenames with path separators (from files loaded out of subdirs) must
-        not break start()'s write to ``.runtime/<filename>``.
-
-        Regression: file tree IDs are relative paths (``str(item.relative_to(base))``),
-        so loading ``programs/sub/foo.py`` puts ``"sub/foo.py"`` in the filename
-        input. Pre-fix, ``script_path.write_text`` raised FileNotFoundError because
-        only ``.runtime`` was created, not ``.runtime/sub``.
-        """
-        from waldo_commander.components import script_execution as se
-
-        # Stub run_script so we don't actually launch a subprocess — the bug
-        # is in the file write that happens before run_script is called.
-        async def stub_run_script(*args, **kwargs):
-            raise RuntimeError("stub: stop after file write")
-
-        monkeypatch.setattr(se, "run_script", stub_run_script)
-        monkeypatch.setattr(se.ui, "notify", lambda *a, **k: None)
-        monkeypatch.setattr(se.log_panel, "clear", lambda: None)
-        monkeypatch.setattr(se.log_panel, "push", lambda line: None)
-        monkeypatch.setattr(se.log_panel, "expand", lambda: None)
-
-        fake_textarea = MagicMock()
-        fake_textarea.value = "# subdir regression\n"
-        fake_filename_input = MagicMock()
-        fake_filename_input.value = "sub/regression.py"
-        ui_state.active_textarea = fake_textarea
-        ui_state.active_filename_input = fake_filename_input
-
-        se.script_exec.set_program_dir(tmp_path)
-
-        try:
-            await se.script_exec.start()
-
-            written = tmp_path / ".runtime" / "sub" / "regression.py"
-            assert written.exists(), f"Expected {written} to exist after start() ran"
-            assert written.read_text(encoding="utf-8") == "# subdir regression\n"
-        finally:
-            ui_state.active_textarea = None
-            ui_state.active_filename_input = None
-
-    @pytest.mark.asyncio
     async def test_cleanup_preserves_stepping_ipc_across_page_reload(
         self, tmp_path, monkeypatch
     ):
-        """Per-page ``cleanup()`` must NOT delete the stepping IPC files.
+        """Per-page ``cleanup()`` must NOT close the stepping link or end the
+        run's event watcher.
 
-        Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``
-        which deleted ``/tmp/.parol_control_X`` and ``/tmp/.parol_events_X``.
-        With the subprocess still alive, ``check_should_pause()`` then read
-        the missing control file → defaulted to ``paused=True``. (Nowadays a
-        missing control file makes ``wait_for_step_or_play`` return
-        immediately — free-run, not a hang — but the files must still be
-        preserved for stepping to keep working across reloads.)
+        Regression: pre-fix, ``cleanup()`` called ``cleanup_stepping()``,
+        which tore the session down under a still-running program — the
+        program then ran unmanaged (free-run) for the rest of its life.
 
-        After fix: ``cleanup()`` cancels only the event watcher; the step
-        controller, session id, and IPC files are preserved so the
-        subprocess can keep stepping, and ``set_ui_client`` on the next
-        page rebinds a fresh watcher to the new client.
+        The step controller, session id, link and watcher belong to the run:
+        the program keeps stepping and recording with no page, and the next
+        page's ``set_ui_client`` only says where to show it.
         """
         from waldo_commander.components import script_execution as se
         from waldo_commander.services.stepping_client import GUIStepController
 
         # Simulate "script is running mid-stepping" — initialize a real
-        # step controller (which creates IPC files), then flag the
+        # step controller (which opens the link), then flag the
         # simulation_state so the watcher-restart logic sees it.
         session_id = "test_cross_reload_ipc"
         step_controller = GUIStepController(session_id)
         step_controller.initialize()
-
-        # Sanity: IPC files exist after initialize.
-        assert step_controller._control_file.exists()
-        assert step_controller._event_file.exists()
+        assert step_controller._listener is not None
 
         active_program = waldoctl.commander.programs.active
         if active_program is None:
@@ -1571,28 +1078,26 @@ class TestScriptExecutionLifecycle:
             se.script_exec._event_watcher_task = asyncio.create_task(fake_watcher())
             await watcher_started.wait()
 
+            watcher = se.script_exec._event_watcher_task
             # Per-page disconnect cleanup
             se.script_exec.cleanup()
 
-            await asyncio.sleep(0)  # let the cancellation propagate
-            assert watcher_cancelled.is_set(), "Watcher task was not cancelled"
-            assert se.script_exec._event_watcher_task is None
+            await asyncio.sleep(0)
+            assert not watcher_cancelled.is_set(), "the run's watcher was cancelled"
+            assert se.script_exec._event_watcher_task is watcher
             # Step controller + session preserved across the disconnect.
             assert se.script_exec._step_controller is step_controller
             assert se.script_exec._step_session_id == session_id
-            # IPC files survived.
-            assert step_controller._control_file.exists()
-            assert step_controller._event_file.exists()
+            # The link survived.
+            assert step_controller._listener is not None
 
-            # New page connecting — set_ui_client should rebind a new
-            # watcher because the subprocess is still flagged as running.
+            # A new page connecting is where the same watcher shows the run.
             fake_client = MagicMock()
             se.script_exec.set_ui_client(fake_client)
-            assert se.script_exec._event_watcher_task is not None
-            assert not se.script_exec._event_watcher_task.done()
+            assert se.script_exec._event_watcher_task is watcher
+            assert se.script_exec._ui_client is fake_client
         finally:
-            # Drop the restarted watcher; it polls IPC files we're about
-            # to delete and would otherwise log noisy errors.
+            # Drop the watcher before the link it polls is closed.
             if (
                 se.script_exec._event_watcher_task is not None
                 and not se.script_exec._event_watcher_task.done()
@@ -1644,41 +1149,14 @@ class TestScriptExecutionLifecycle:
 # ============================================================================
 
 
-def test_playback_reset_for_test_clears_listeners():
-    """``PlaybackController.setup_timers()`` runs once per page build and
-    registers both a change-channel and a step-channel listener on
-    ``simulation_state``. ``reset_for_test()`` must call ``cleanup()`` so
-    neither leaks across tests.
-    """
-    from waldo_commander.components.playback import playback
-
-    # Baseline counts after import (decorations/log_panel register in
-    # __init__ and stay registered on the change channel).
-    change_baseline = len(simulation_state._change_listeners)
-    step_baseline = len(simulation_state._step_listeners)
-
-    for _ in range(3):
-        simulation_state.add_change_listener(playback._on_state_change)
-        simulation_state.add_step_listener(playback._on_step_change)
-        playback.reset_for_test()
-
-    assert len(simulation_state._change_listeners) == change_baseline, (
-        f"Change listeners leaked: baseline={change_baseline}, "
-        f"now={len(simulation_state._change_listeners)}"
-    )
-    assert len(simulation_state._step_listeners) == step_baseline, (
-        f"Step listeners leaked: baseline={step_baseline}, "
-        f"now={len(simulation_state._step_listeners)}"
-    )
-
-
 def test_editor_panel_cleanup_removes_playback_listener():
     """Production regression guard: ``EditorPanel.cleanup()`` (now called from
     ``_on_disconnect``) must remove the per-page playback listener so a user
-    reloading the browser tab doesn't leak one listener per reload.
+    reloading the browser tab doesn't leak one listener per reload. It also
+    runs again from ``_on_shutdown``, so a second call must be harmless.
     """
-    from waldo_commander.components.playback import playback
     from waldo_commander.components.editor import EditorPanel
+    from waldo_commander.components.playback import playback
 
     baseline = len(simulation_state._change_listeners)
     simulation_state.add_change_listener(playback._on_state_change)
@@ -1693,19 +1171,8 @@ def test_editor_panel_cleanup_removes_playback_listener():
         f"editor_panel.cleanup() leaked: baseline={baseline}, "
         f"now={len(simulation_state._change_listeners)}"
     )
-
-
-def test_editor_panel_cleanup_is_idempotent():
-    """``_on_disconnect`` fires per-page; ``_on_shutdown`` also calls
-    ``editor_panel.cleanup()``. The composition must tolerate being called
-    twice without raising (Timer.cancel, Task.cancel, and
-    remove_change_listener are all expected idempotent).
-    """
-    from waldo_commander.components.editor import EditorPanel
-
-    panel = EditorPanel()
     panel.cleanup()
-    panel.cleanup()  # second call must not raise
+    assert len(simulation_state._change_listeners) == baseline
 
 
 # ============================================================================
@@ -1718,9 +1185,10 @@ def test_script_output_appends_to_launching_tab_only():
     output_log of the tab that started the script, regardless of which
     tab the user is currently viewing.
     """
-    from waldo_commander.components.script_execution import script_exec
     import waldoctl
     from waldoctl import Program
+
+    from waldo_commander.components.script_execution import script_exec
 
     # Set up two tabs with empty logs.
     tab_a = Program(
@@ -1749,27 +1217,17 @@ def test_script_output_appends_to_launching_tab_only():
     ], "All script output must accumulate in the launching tab's log"
     assert len(tab_b.log.entries) == 0, "Tab B owns its own (empty) log"
 
+    # Once the run is over, post-completion scrubbing falls back to the
+    # active tab instead of staying pinned to the (often hidden) launcher.
+    assert script_exec.launching_tab_id == "tab-a"
+    script_exec._reset_state()
+    assert script_exec.launching_tab_id is None
+
 
 # Note: the legacy ``output_log`` cap test (1000-entry FIFO) was a WC-specific
 # implementation detail tied to ``ui.log(max_lines=1000)``. ``Program.log.entries``
 # is unbounded by design; host applications cap visibly via the widget. The cap
 # may be reintroduced as a host-level concern but isn't part of the public surface.
-
-
-def test_reset_state_clears_launching_tab_id():
-    """``_reset_state`` must clear ``_script_tab_id`` so post-completion
-    scrubbing in ``playback._apply_time`` falls back to the active tab.
-    Otherwise the executing-line highlight stays pinned to the launching
-    tab's textarea (often hidden) after the user switches tabs.
-    """
-    from waldo_commander.components.script_execution import script_exec
-
-    script_exec._script_tab_id = "tab-a"
-    assert script_exec.launching_tab_id == "tab-a"
-
-    script_exec._reset_state()
-
-    assert script_exec.launching_tab_id is None
 
 
 def test_notify_step_changed_only_fires_step_listeners():
@@ -1800,155 +1258,62 @@ def test_notify_step_changed_only_fires_step_listeners():
         simulation_state.remove_step_listener(on_step)
 
 
-class TestObjectTrackPlumbing:
-    """Object motion reported by a preview reaches the segment dicts and the
-    change detection that decides whether to re-render."""
-
-    def test_segments_that_differ_only_in_an_object_landing_do_not_match(self):
-        from waldo_commander.state import PathSegment
-
-        def seg(landing_z: float) -> PathSegment:
-            return PathSegment(
-                points=[[0.3, 0.0, 0.3], [0.4, 0.0, 0.3]],
-                color="#00ff00",
-                is_valid=True,
-                line_number=3,
-                object_tracks=[
-                    {
-                        "name": "block",
-                        "poses": [
-                            [0.3, 0.0, 0.04, 1, 0, 0, 0],
-                            [0.4, 0.0, landing_z, 1, 0, 0, 0],
-                        ],
-                        "carried": False,
-                        "physics": True,
-                    }
-                ],
-            )
-
-        assert PathVisualizer._segments_match([seg(0.04)], [seg(0.04)])
-        assert not PathVisualizer._segments_match([seg(0.04)], [seg(0.30)]), (
-            "a program whose only change is where the block lands must re-render"
-        )
-
-    def test_tracks_ride_segments_and_tool_actions_sliced_like_the_trajectory(self):
-        from unittest.mock import MagicMock
-
-        import numpy as np
-        from waldoctl.results import DryRunResultData, ObjectTrack
-
-        from waldo_commander.services.path_preview_client import PathPreviewClient
-        from waldo_commander.state import ToolAction
-
-        n = 5
-        traj = np.zeros((n, 6))
-        poses = np.zeros((n, 3))
-        poses[:, 0] = np.linspace(0.3, 0.4, n)
-        block = ObjectTrack(
-            name="block",
-            poses=np.column_stack([poses, np.tile([1.0, 0, 0, 0], (n, 1))]),
-            carried=True,
-            physics=True,
-        )
-        stand = ObjectTrack(
-            name="stand",
-            poses=np.array([[0.3, 0, 0.005, 1, 0, 0, 0]]),
-            carried=False,
-            physics=True,
-        )
-        # The last two waypoints are invalid: the run split must slice the
-        # moving track exactly like the joint trajectory and leave the parked
-        # one whole.
-        result = DryRunResultData(
-            tcp_poses=np.column_stack([poses, np.zeros((n, 3))]),
-            end_joints_rad=np.zeros(6),
-            duration=1.0,
-            valid=np.array([True, True, True, False, False]),
-            joint_trajectory_rad=traj,
-            object_tracks=(block, stand),
-        )
-        inner = MagicMock()
-        inner.move_j.return_value = result
-        inner.tool.close.return_value = result
-        # A real client counts the commands it has recorded, and the
-        # preview reads that to map each one back to a source line; a
-        # mock that answers with a mock is not a client.
-        inner.program_length = 0
-        segments: list[dict] = []
-        actions: list[ToolAction] = []
-        client = PathPreviewClient(
-            dry_run_client_cls=MagicMock(return_value=inner),
-            segment_collector=segments,
-            tool_action_collector=actions,
-        )
-        client.move_j([0, 0, 0, 0, 0, 0])
-
-        assert len(segments) == 2
-        for seg in segments:
-            tracks = {t["name"]: t for t in seg["object_tracks"]}
-            assert len(tracks["block"]["poses"]) == len(seg["joint_trajectory"])
-            assert len(tracks["stand"]["poses"]) == 1
-        assert segments[0]["object_tracks"][0]["carried"] is True
-
-
 class TestSimulatedRunPlumbing:
-    """The second pass: a physics record reaching the display.
-
-    parol6 has no plant, so the whole path is gated off for it — that
-    gating is half of what these check. The other half drives the record
-    through the pieces that read it, with a record shaped exactly as a
-    backend produces one.
-    """
+    """The predicted record reaching the display: what the overlay draws
+    from a commanded/predicted pair and when it leaves the scene alone."""
 
     @staticmethod
-    def _ticks(rows: int = 6, joints: int = 6) -> waldoctl.TickIndex:
-        """A record the way a backend reports one: the arm lags its
-        command, and the lag grows along the run."""
+    def _records(rows: int = 6, joints: int = 6) -> tuple[TickIndex, TickIndex]:
+        """A pair the way a backend reports them: the predicted arm lags
+        its command, and the lag grows along the run."""
         t = np.linspace(0.0, 1.0, rows, dtype=np.float32)
         commanded = np.tile(t[:, None], (1, joints))
-        achieved = commanded - np.tile(t[:, None], (1, joints)) * 0.01
+        predicted = commanded - np.tile(t[:, None], (1, joints)) * 0.01
         tcp = np.zeros((rows, 6), dtype=np.float32)
         tcp[:, 0] = 0.3 + t * 0.1
-        return waldoctl.TickIndex(
-            row_dt_s=0.02,
-            joints_rad=achieved.astype(np.float32),
-            commanded_rad=commanded.astype(np.float32),
-            tcp=tcp,
-            tool_closed=np.zeros(rows, dtype=np.float32),
-            tool_gripping=np.zeros(rows, dtype=np.bool_),
-            blocks=(
-                waldoctl.TickBlock(command=0, start_row=0, rows=rows, line_number=3),
-            ),
-            digest=b"same-run",
-        )
+        blocks = (waldoctl.TickBlock(command=0, start_row=0, rows=rows, line_number=3),)
 
-    def test_a_record_reports_its_own_geometry_and_divergence(self):
-        ticks = self._ticks(rows=6)
+        def record(q: np.ndarray, digest: bytes) -> TickIndex:
+            return waldoctl.TickIndex(
+                row_dt_s=0.02,
+                joints_rad=q.astype(np.float32),
+                tcp=tcp,
+                tool_closed=np.zeros(rows, dtype=np.float32),
+                tool_gripping=np.zeros(rows, dtype=np.bool_),
+                blocks=blocks,
+                digest=digest,
+            )
 
-        assert ticks.rows == 6
-        assert ticks.duration_s == pytest.approx(0.12)
+        return record(commanded, b"commanded"), record(predicted, b"predicted")
+
+    def test_a_record_reports_its_geometry_and_a_pair_its_following_error(self):
+        commanded, predicted = self._records(rows=6)
+
+        assert predicted.rows == 6
+        assert predicted.duration_s == pytest.approx(0.12)
         # Time maps to a row, and rows past the end clamp rather than
         # raising: a scrub bar dragged to the far right must land
         # somewhere real.
-        assert ticks.row_at(0.0) == 0
-        assert ticks.row_at(0.05) == 2
-        assert ticks.row_at(99.0) == 5
-        assert ticks.block_at(3) is ticks.blocks[0]
-        assert ticks.block_at(99) is None
+        assert predicted.row_at(0.0) == 0
+        assert predicted.row_at(0.05) == 2
+        assert predicted.row_at(99.0) == 5
+        assert predicted.block_at(3) is predicted.blocks[0]
+        assert predicted.block_at(99) is None
 
-        err = ticks.tracking_error_rad()
+        err = following_error(commanded, predicted)
         assert err.shape == (6,)
         assert err[0] == pytest.approx(0.0)
-        assert err[-1] > err[1], "the divergence must grow along the run"
+        assert err[-1] > err[1], "the following error must grow along the run"
+        assert not following_error(commanded, commanded).any()
 
-    def test_divergence_colors_run_from_on_track_to_diverged(self):
+    def test_following_error_colors_run_from_on_track_to_diverged(self):
         from waldo_commander.services.urdf_scene.physics_overlay import (
-            FULL_DIVERGENCE_RAD,
-            divergence_colors,
+            FULL_FOLLOWING_ERROR_RAD,
+            following_error_colors,
         )
 
-        colors = divergence_colors(
-            np.array([0.0, FULL_DIVERGENCE_RAD / 2, FULL_DIVERGENCE_RAD * 3])
+        colors = following_error_colors(
+            np.array([0.0, FULL_FOLLOWING_ERROR_RAD / 2, FULL_FOLLOWING_ERROR_RAD * 3])
         )
         assert len(colors) == 3
         on_track, half, diverged = colors
@@ -1957,133 +1322,43 @@ class TestSimulatedRunPlumbing:
         assert on_track[1] > on_track[0], "on-track reads green"
         assert diverged[0] > diverged[1], "diverged reads red"
         assert on_track[1] > half[1] > diverged[1]
-        assert diverged == divergence_colors(np.array([FULL_DIVERGENCE_RAD]))[0]
+        assert (
+            diverged == following_error_colors(np.array([FULL_FOLLOWING_ERROR_RAD]))[0]
+        )
 
-    def test_a_backend_without_physics_never_runs_the_second_pass(self):
-        """parol6 plans and does not simulate, so nothing here engages."""
-        robot = get_robot("parol6")
-        assert not robot.has_physics_simulation
-
-        old_robot = ui_state.robot
-        ui_state.robot = robot
-        try:
-            visualizer = PathVisualizer()
-            result = asyncio.run(visualizer.update_physics_simulation(tab_id="nope"))
-        finally:
-            ui_state.robot = old_robot
-        assert result is None
-
-    def test_an_unchanged_record_is_not_redrawn(self):
-        """The flash guard: an identical run repaints nothing.
+    def test_an_unchanged_pair_is_not_redrawn_and_a_prediction_that_is_the_plan_draws_nothing(
+        self,
+    ):
+        """The flash guard: an identical pair repaints nothing.
 
         The backend guarantees a bit-identical record for the same
-        program, so an equal digest means an equal picture — and the
-        overlay must take that as permission to leave the scene alone.
+        program, so equal digests mean an equal picture — and the overlay
+        must take that as permission to leave the scene alone. A
+        predicted record equal to the commanded one shows nothing the
+        commanded path does not already, so nothing is built for it.
         """
         from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
 
+        commanded, predicted = self._records()
         overlay = PhysicsOverlay(MagicMock(scene=None))
         # No live scene: the build is a no-op and nothing is cached, so a
         # later call with a real scene still builds.
-        overlay.render(self._ticks(), show_divergence=True)
+        overlay.render(commanded, predicted, show_predicted=True)
         assert not overlay.is_built
 
-        overlay._digest = b"same-run"
+        overlay._digest = (commanded.digest, predicted.digest)
         overlay._group = object()
-        overlay.render(self._ticks(), show_divergence=True)
-        assert overlay.is_built, "an identical digest must not tear the group down"
+        overlay.render(commanded, predicted, show_predicted=True)
+        assert overlay.is_built, "an identical pair must not tear the group down"
 
-        overlay.render(None, show_divergence=True)
-        assert not overlay.is_built, "no record, no overlay"
+        overlay.render(commanded, commanded, show_predicted=True)
+        assert not overlay.is_built, "a prediction that is the plan draws nothing"
 
-    def test_playback_over_a_record_replays_measured_poses(self):
-        """A timeline built from ticks plays what was measured.
-
-        The planned timeline interpolates between waypoints; this one has
-        the rows, so a pose at time t is the row at time t. The planned
-        segments still supply the line number, which is what keeps the
-        executing-line highlight pointing at the right place.
-        """
-        from waldo_commander.services.timeline import Timeline
-        from waldo_commander.state import PathSegment
-
-        ticks = self._ticks(rows=6)
-        planned = [
-            PathSegment(
-                points=[[0.3, 0.0, 0.2], [0.4, 0.0, 0.2]],
-                color="#00ff00",
-                is_valid=True,
-                line_number=3,
-                joint_trajectory=[[0.0] * 6, [1.0] * 6],
-                estimated_duration=99.0,
-            )
-        ]
-        tl = Timeline.from_ticks(ticks, planned)
-
-        # The run's duration, not the plan's guess at it.
-        assert tl.total_duration == pytest.approx(ticks.duration_s)
-        assert tl.cumulative_times[0] == 0.0
-        assert tl.cumulative_times[-1] == pytest.approx(ticks.duration_s)
-        assert tl._segments[0].line_number == 3
-
-        mid = tl.sample(ticks.duration_s / 2)
-        assert mid.segment_index == 0
-        assert mid.joints is not None
-        row = ticks.row_at(ticks.duration_s / 2)
-        assert mid.joints == pytest.approx(
-            [float(v) for v in ticks.joints_rad[row]], abs=1e-6
-        )
-        # Measured, so it carries the servo lag the plan cannot show.
-        assert mid.joints != pytest.approx(
-            [float(v) for v in ticks.commanded_rad[row]], abs=1e-6
-        )
-
-        end = tl.sample(999.0)
-        assert end.joints == pytest.approx(
-            [float(v) for v in ticks.joints_rad[-1]], abs=1e-6
-        )
-
-    def test_a_block_with_no_planned_segment_still_takes_a_slot(self):
-        """Index density: prev/next steps through commands, so a command
-        the planner drew nothing for cannot vanish from the sequence."""
-        from waldo_commander.services.timeline import Timeline
-
-        ticks = self._ticks(rows=6)
-        ticks.blocks = (
-            waldoctl.TickBlock(command=0, start_row=0, rows=3, line_number=3),
-            waldoctl.TickBlock(command=1, start_row=3, rows=3, line_number=9),
-        )
-        tl = Timeline.from_ticks(ticks, [])
-
-        assert len(tl._segments) == 2
-        assert [s.line_number for s in tl._segments] == [3, 9]
-        assert tl.sample(0.0).segment_index == 0
-        assert tl.sample(ticks.duration_s).segment_index == 1
-
-    def test_the_achieved_path_toggle_works_on_a_record_already_drawn(self):
-        """The toggle is a visibility flip, not a rebuild.
-
-        `render` short-circuits on the digest so an unchanged record is
-        not redrawn — but the toggle has to be read on that path too, or
-        it does nothing at all for as long as the record stays put, while
-        the legend (reading the same flag) hides its row and contradicts
-        the scene.
-        """
-        from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
-
-        overlay = PhysicsOverlay(MagicMock(scene=None))
-        drawn = MagicMock()
         overlay._group = object()
-        overlay._achieved = drawn
-        overlay._digest = b"same-run"
+        overlay.render(commanded, None, show_predicted=True)
+        assert not overlay.is_built, "no predicted record, no overlay"
 
-        overlay.render(self._ticks(), show_divergence=False)
-        drawn.visible.assert_called_with(False)
-        overlay.render(self._ticks(), show_divergence=True)
-        drawn.visible.assert_called_with(True)
-        assert overlay.is_built, "a toggle must not tear the geometry down"
-
-    def test_a_long_run_is_decimated_without_losing_a_divergence_spike(self):
+    def test_a_long_run_is_decimated_without_losing_a_following_error_spike(self):
         """A ten-minute record is 30,000 rows; every one would cross as a
         point triple and a colour triple in one scene command built on the
         event loop. Positions are sampled, but the error is taken as the
@@ -2091,7 +1366,7 @@ class TestSimulatedRunPlumbing:
         whole reason the overlay exists.
         """
         from waldo_commander.services.urdf_scene.physics_overlay import (
-            MAX_ACHIEVED_POINTS,
+            MAX_PREDICTED_POINTS,
             decimate,
         )
 
@@ -2102,7 +1377,7 @@ class TestSimulatedRunPlumbing:
         error[17_000:17_003] = 0.05  # a three-row spike
 
         points, worst = decimate(tcp, error)
-        assert len(points) == len(worst) <= MAX_ACHIEVED_POINTS
+        assert len(points) == len(worst) <= MAX_PREDICTED_POINTS
         assert points[0][0] == pytest.approx(tcp[0][0])
         assert worst.max() == pytest.approx(0.05), (
             "sampling the error would drop a spike shorter than the stride"
@@ -2112,37 +1387,9 @@ class TestSimulatedRunPlumbing:
 
 
 class TestWorldStateRepair:
-    """Two ways the shape layers could be left in a state no edit escapes,
-    and one way the scene lied about the ground."""
-
-    def test_readback_never_leaves_a_name_in_both_layers(self):
-        """Adopting the backend's world drops a proposal it now enforces.
-
-        Readback is truth and is adopted wholesale, so a program shape
-        arriving under a drafted name would leave both layers holding it —
-        and `_assign`'s clash check then refuses every later edit,
-        including from handlers that do not catch it.
-        """
-        from waldoctl.shapes import Box
-
-        from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
-
-        handle = WcSceneHandle()
-        handle._installation_draft = (Box(name="wall", x=1, y=1, z=1),)
-        handle._shapes = []
-
-        # The backend comes back enforcing `wall` in the program layer.
-        handle._installation = ()
-        handle._shapes = [Box(name="wall", x=1, y=1, z=1)]
-        adopted = {s.name for s in handle._installation}
-        adopted |= {s.name for s in handle._shapes}
-        handle._installation_draft = tuple(
-            s for s in handle._installation_draft if s.name not in adopted
-        )
-
-        assert [s.name for s in handle.installation_draft] == []
-        names = [s.name for s in handle.enforced_locally]
-        assert names.count("wall") == 1, f"one layer only, got {names}"
+    """One way the shape layers could be left in a state no edit escapes, and
+    one way the scene lied about the ground. (Readback adopting a drafted name
+    is driven through the real client in test_collision_viz.py.)"""
 
     def test_a_refused_withdrawal_keeps_the_proposal(self):
         """Withdrawing moves both layers at once.

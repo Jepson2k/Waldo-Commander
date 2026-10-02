@@ -2,44 +2,60 @@
 Path visualization service for robot program simulation.
 
 Runs dry-run simulations in isolated subprocesses for safety and non-blocking
-execution. Results are collected and applied to the originating program's
-dry-run in the main process.
+execution. A worker runs the program against the backend's dry-run client
+and brings back the program's records — the *commanded* one, what every
+command tells the arm to do, and on the predicted pass what the arm would
+do — with the host's notes on each command. The main process derives what
+the scene draws from them and applies it to the originating program.
+
+The two passes are paired by the program's revision: the frontend bumps it
+on every change that re-plans, each pass carries the revision it was
+launched for, and a predicted record lands only against the commanded one
+it answers, so a slow pass never draws over a newer plan.
 """
 
 import asyncio
 import builtins
+import contextlib
+import inspect
 import linecache
 import logging
+import multiprocessing
 import os
+import pickle
 import sys
 import threading
 import traceback
+from collections.abc import Callable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, replace
+from pathlib import Path
 from types import ModuleType
-from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 import numpy as np
 
 from nicegui import run
 from nicegui import app as ng_app
 
 import waldoctl
-from waldoctl import LinearMotion, TickIndex
+from waldoctl import CommandNote, LinearMotion, TickIndex
+from waldoctl.skills import UnresolvedPreview
 
+from waldo_commander.services.preview_segments import (
+    index_boundaries,
+    segments_from_record,
+    tool_actions_from_record,
+)
 from waldo_commander.state import (
     robot_state,
     simulation_state,
-    PathSegment,
     ProgramTarget,
     ui_state,
 )
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
-from waldo_commander.common.theme import SceneColors
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
-MAX_PATH_SEGMENTS = 10000
 SIMULATION_TIMEOUT_S = 5.0
 
 #: Simulated seconds a physics pass may cover before it gives up and
@@ -72,63 +88,104 @@ def _warm_worker(backend_package: str = "parol6") -> bool:
     return True
 
 
-def _mark_colliding_segments(
+@contextlib.contextmanager
+def _program_imports(directory: str | None) -> Iterator[None]:
+    """The program's library importable while it runs, as it is when the
+    program runs from there; what it imported from it is dropped after, so
+    a reused worker never answers the next preview with a module since
+    edited."""
+    if directory is None:
+        yield
+        return
+    root = str(Path(directory).resolve())
+    inside = os.path.join(root, "")
+    before = set(sys.modules)
+    sys.path.insert(0, root)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError):
+            sys.path.remove(root)
+        for name in set(sys.modules) - before:
+            spec = getattr(sys.modules[name], "__spec__", None)
+            if spec is None:
+                continue
+            places = [spec.origin, *(spec.submodule_search_locations or [])]
+            if any(p and p.startswith(inside) for p in places):
+                del sys.modules[name]
+
+
+def _mark_colliding_commands(
     robot,
-    segment_dicts: list[dict],
+    record: TickIndex,
     tool_selections: list,
     shape_changes: list,
     shapes_wire: list[tuple] | None,
     initial_tool: tuple[str, str] | None,
-) -> None:
-    """Recolor segment dicts whose joint trajectory collides (self/tool/shape).
+) -> dict[int, int]:
+    """The commands whose rows collide (self/tool/shape), each with the
+    first colliding row of its block.
 
     Runs in the dry-run subprocess against its own checker, replaying BOTH
     boundary streams the dry run recorded — ``select_tool`` and ``set_shapes``
-    — so each segment is checked with the tool attached and the world active
-    at its point in the program (the dry run itself only validates IK). Each
-    hit records its first colliding waypoint in ``collision_step``.
+    — so each command is checked with the tool attached and the world active
+    at its point in the program (the dry run itself only validates IK).
 
-    The checker's tool and program world are restored on exit — the rare
-    in-process fallback shares the live checker.
+    The checker's tool and program world are restored on exit: a caller that
+    runs the simulation in-process rather than through the pool shares the
+    live checker.
     """
+    hits: dict[int, int] = {}
     if not robot.has_collision_checking:
-        return
+        return hits
     from waldoctl import shape_from_wire
 
     # Unconditional — including the EMPTY set: a reused pool worker keeps its
     # process-global checker between runs, so a cleared world must clear it.
     submit_world = [shape_from_wire(*t) for t in shapes_wire or []]
-    robot.apply_shapes(submit_world)
     tool_key, variant = initial_tool or ("NONE", "")
     try:
+        robot.apply_shapes([])
         robot.set_active_tool(tool_key, variant_key=variant or None)
-        # A boundary recorded at segment_index i applies to segments after i.
+        robot.apply_shapes(submit_world)
+        # A boundary recorded on command i applies to the commands after it.
         # Recorded order IS chronological (indexes are non-decreasing) — a sort
         # would reorder same-index back-to-back entries and replay the wrong
         # state.
         tool_bounds = [
-            (ts.segment_index, ts.tool_key, ts.variant_key) for ts in tool_selections
+            (ts.command, ts.tool_key, ts.variant_key) for ts in tool_selections
         ]
-        shape_bounds = [(sc.segment_index, sc.shapes) for sc in shape_changes]
+        shape_bounds = [(sc.command, sc.shapes) for sc in shape_changes]
         ti = si = 0
-        for idx, d in enumerate(segment_dicts):
-            while ti < len(tool_bounds) and tool_bounds[ti][0] < idx:
+        for block in record.blocks:
+            while ti < len(tool_bounds) and tool_bounds[ti][0] < block.command:
                 _, b_tool, b_variant = tool_bounds[ti]
                 robot.set_active_tool(b_tool, variant_key=b_variant or None)
                 ti += 1
-            while si < len(shape_bounds) and shape_bounds[si][0] < idx:
+            while si < len(shape_bounds) and shape_bounds[si][0] < block.command:
                 robot.apply_shapes(list(shape_bounds[si][1]))
                 si += 1
-            jt = d.get("joint_trajectory")
-            if not jt:
+            if block.rows == 0:
                 continue
-            hit = robot.check_trajectory(np.asarray(jt, dtype=np.float64))
+            rows = record.joints_rad[block.start_row : block.start_row + block.rows]
+            hit = robot.check_trajectory(np.asarray(rows, dtype=np.float64))
             if hit >= 0:
-                d["collision_step"] = int(hit)
-                d["color"] = SceneColors.COLLISION_HEX
+                hits[block.command] = int(hit)
     finally:
+        robot.apply_shapes([])
         robot.set_active_tool(tool_key, variant_key=variant or None)
         robot.apply_shapes(submit_world)
+    return hits
+
+
+def _simulation_timeout_s() -> float:
+    """Wall-clock budget for one preview run.
+
+    ``WALDO_SIM_TIMEOUT_S`` raises it where a worker starts cold: on spawn
+    platforms the first preview a worker runs imports the backend before the
+    script does, and that import is not free.
+    """
+    return float(os.environ.get("WALDO_SIM_TIMEOUT_S", SIMULATION_TIMEOUT_S))
 
 
 def _is_test_environment() -> bool:
@@ -147,7 +204,10 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
     the process pool). Each worker process will import the backend package
     once, and subsequent simulations will be fast since workers are reused.
 
-    Skipped in test environments where multiprocessing spawn doesn't work properly.
+    Skipped under pytest: NiceGUI's fixtures reset the pool after every UI
+    test, so warming would pay a full import per test instead of once per
+    session. A test's first preview pays its own worker's import, which
+    ``WALDO_SIM_TIMEOUT_S`` gives it room for.
 
     Args:
         backend_package: Backend package to import in workers (e.g. "parol6")
@@ -172,62 +232,124 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
         await asyncio.gather(*futures)
         logger.info("Process pool workers warmed successfully")
     except Exception as e:
-        logger.warning("Failed to warm process pool workers: %s", e)
+        # Not a warning: every preview runs in a pool worker and there is no
+        # in-process fallback, so workers that never warmed mean each preview
+        # pays the backend import itself, and a pool that is broken rather
+        # than cold (BrokenProcessPool, the plausible one on a small box)
+        # means previews fail outright.
+        logger.error(
+            "Failed to warm process pool workers: %s; previews will import the "
+            "backend per run, and fail entirely if the pool itself is broken",
+            e,
+        )
+
+
+def _tool_metadata(robot: Any) -> dict[str, dict]:
+    """Serializable tool motions for isolated program preview."""
+    tool_meta_registry: dict[str, dict] = {}
+
+    def _serialize_motions(motion_list):
+        return [
+            {"type": "linear", **asdict(m)}
+            if isinstance(m, LinearMotion)
+            else {"type": "rotary", **asdict(m)}
+            for m in motion_list
+        ]
+
+    for spec in robot.tools.available:
+        if spec.key == "NONE":
+            continue
+        try:
+            base_motions = _serialize_motions(spec.motions) if spec.motions else []
+            variants_dict: dict[str, dict] = {}
+            for v in spec.variants:
+                if v.motions:
+                    variants_dict[v.key] = {
+                        "motions": _serialize_motions(v.motions),
+                    }
+            if not base_motions and not variants_dict:
+                continue
+            tool_meta_registry[spec.key] = {
+                "motions": base_motions,
+                "variants": variants_dict,
+                "activation_type": spec.activation_type.value,
+            }
+        except (KeyError, AttributeError):
+            pass
+
+    return tool_meta_registry
 
 
 def _run_simulation_isolated(
     program_text: str,
     initial_joints_rad: np.ndarray | None = None,
-    max_segments: int = MAX_PATH_SEGMENTS,
     backend_package: str = "parol6",
-    dry_run_client_cls: type | None = None,
+    revision: int = 0,
     tool_meta_registry: dict[str, dict] | None = None,
     shapes_wire: list[tuple] | None = None,
     initial_tool: tuple[str, str] | None = None,
     initial_homed: bool = True,
+    setup_directory: str | None = None,
     simulate_seconds: float | None = None,
+    attachment_epoch: int = 0,
+    scenario: dict[str, Any] | None = None,
+    plan_seconds: float | None = None,
+    config_path: str | None = None,
+    program_directory: str | None = None,
+    initial_gripper_calibrated: bool = False,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
 
     This function is designed to be called via run.cpu_bound() for process
-    isolation. It returns serializable results (dicts) rather than modifying
+    isolation. It returns serializable results rather than modifying
     global state.
 
-    The simulation starts with no tool attached. The script must call
-    select_tool() explicitly to configure the correct tool and variant.
+    The simulation starts with the submitted tool and world snapshot.
+    Valid held declarations are bound to the isolated preview's own context.
+    Stale declarations require reconciliation before preview.
 
     Args:
         program_text: The Python program to simulate
         initial_joints_rad: Initial joint angles in radians (robot's current position)
-        max_segments: Maximum path segments to collect (prevents memory exhaustion)
-        backend_package: Backend package name for module shimming
-        dry_run_client_cls: Concrete DryRunRobotClient class for path preview
+        backend_package: Backend package name for module shimming; its
+            ``Robot`` builds the dry-run clients the program runs against
+        revision: The program revision this pass answers, handed back so
+            the caller can pair it with the plan on screen
         tool_meta_registry: Mapping of tool_key → {motions, variants, activation_type}
         simulate_seconds: When set, the program is also RUN — the backend
             drives the same commands through its control loop against a
-            physics plant — and the result carries the tick record under
-            ``ticks``. The value bounds SIMULATED time, so a program that
-            never terminates still comes back. None plans only.
+            physics plant — and the result carries the predicted record.
+            The value bounds SIMULATED time, so a program that never
+            terminates still comes back. None plans only.
+        plan_seconds: Cuts the commanded record to this much simulated
+            time; None keeps all of it.
+        config_path: The backend configuration the dry run loads, where
+            the backend takes one; None leaves the choice to the backend.
+        program_directory: The program library the script imports its
+            neighbours from, as it does when run.
 
     Returns:
         Dict with keys:
-        - segments: List of path segment dicts
-        - targets: List of program target dicts
-        - truncated: Whether results were truncated
+        - revision: the revision handed in
+        - commanded: the commanded record, blocks labelled by line
+        - predicted: the predicted record, or None
+        - notes: one CommandNote per command
+        - targets, tool_actions, tool_selections, shape_changes: what the
+          program declared, boundaries indexed by command
+        - collisions: {command: first colliding row} from the local checker
         - error: Error message if simulation failed, else None
-        - total_steps: Number of segments generated
+        - unresolved: whether the program needs an observation fixture
+        - physics_error: why the predicted pass failed, if it did
+        - final_joints_rad: where the program leaves the arm
     """
     # Collectors local to this subprocess, not shared with the main process.
-    local_segments: list[dict] = []
     local_targets: list[dict] = []
     local_tool_actions: list = []
     local_tool_selections: list = []
     local_shape_changes: list = []
-    # Updated by the client on each motion.
-    final_state: dict[str, Any] = {"joints_rad": None}
-    truncated = False
     error_message: str | None = None
+    unresolved = False
 
     import importlib
 
@@ -236,66 +358,121 @@ def _run_simulation_isolated(
         AsyncPathPreviewClient,
     )
 
-    # Lets us read final state after execution.
-    created_clients: list[PathPreviewClient] = []
+    # The program's one dry-run session: every client it builds, sync or
+    # async, is a view of it, so one record holds all their commands in order.
+    session: list[PathPreviewClient] = []
+    # (module, attribute, original) for every backend client name swapped for
+    # a preview class below, so the thread fallback can put them back.
+    swapped_names: list[tuple[Any, str, Any]] = []
 
     try:
-        # Monkeypatch RobotClient/AsyncRobotClient with preview clients; safe
-        # because this runs in a subprocess.
+        # Swap RobotClient/AsyncRobotClient for preview clients while the
+        # script runs. A pool worker is thrown away afterwards, but tests
+        # call this directly, in-process, so the swap is undone below rather
+        # than left to the worker's exit.
         backend = importlib.import_module(backend_package)
-        assert dry_run_client_cls is not None
 
-        _dr_cls: type = dry_run_client_cls
+        from waldo_commander.profiles import get_robot
+
+        # The backend the program plans against: its own dry-run clients,
+        # which carry it, so a skill's requirements are checked for real.
+        _preview_robot = get_robot(backend_package)
+
+        def _dr_cls(**kwargs: Any) -> Any:
+            if config_path is not None:
+                kwargs["config_path"] = config_path
+            return _preview_robot.create_dry_run_client(**kwargs)
+
+        def seed_world(preview: PathPreviewClient) -> None:
+            from dataclasses import replace
+            from waldoctl import shape_from_wire
+
+            if initial_tool is not None:
+                first_note = len(preview.notes)
+                first_selection = len(preview.tool_selection_collector)
+                preview.select_tool(initial_tool[0], variant_key=initial_tool[1])
+                # select_tool now mints a queue index, but this call initializes
+                # the preview; the live script never issues it. Keep its block
+                # for tool geometry without consuming a live step ordinal.
+                for index in range(first_note, len(preview.notes)):
+                    preview.notes[index] = replace(
+                        preview.notes[index], line_number=0, method="initial_tool"
+                    )
+                for selection in preview.tool_selection_collector[first_selection:]:
+                    selection.line_number = 0
+            shapes = [shape_from_wire(*t) for t in shapes_wire or []]
+            if not shapes:
+                return
+            context = preview._client.shapes()
+            if context is None:
+                raise ValueError("Preview world readback is unavailable")
+            bound = []
+            for shape in shapes:
+                if shape.attachment is not None:
+                    if shape.attachment.epoch != attachment_epoch:
+                        raise ValueError(
+                            "Attachment context is stale; reconcile the scene before preview"
+                        )
+                    shape = replace(
+                        shape,
+                        attachment=replace(
+                            shape.attachment, epoch=context.attachment_epoch
+                        ),
+                    )
+                bound.append(shape)
+            if preview._client.set_shapes(bound) != 1:
+                raise ValueError("Preview world application was not confirmed")
+            # The live run never sends this, so it must not take the ordinal
+            # of the program's first command.
+            preview._attribute_commands(0, method="set_shapes")
+
+        from waldo_commander.profiles import get_robot
+
+        _preview_robot = get_robot(backend_package)
 
         class LocalPathPreviewClient(PathPreviewClient):
+            def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+                return session[0] if session else super().__new__(cls)
+
             def __init__(self, *args: Any, **kwargs: Any):
+                if session:
+                    return
                 super().__init__(
-                    segment_collector=local_segments,
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
                     tool_selection_collector=local_tool_selections,
                     shape_change_collector=local_shape_changes,
                     initial_joints=initial_joints_rad,
                     initial_homed=initial_homed,
+                    initial_gripper_calibrated=initial_gripper_calibrated,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
+                    robot=_preview_robot,
                 )
-                created_clients.append(self)
+                session.append(self)
+                seed_world(self)
 
         class LocalAsyncPathPreviewClient(AsyncPathPreviewClient):
             def __init__(self, *args: Any, **kwargs: Any):
-                self._sync_client = PathPreviewClient(
-                    segment_collector=local_segments,
-                    target_collector=local_targets,
-                    tool_action_collector=local_tool_actions,
-                    tool_selection_collector=local_tool_selections,
-                    shape_change_collector=local_shape_changes,
-                    initial_joints=initial_joints_rad,
-                    initial_homed=initial_homed,
-                    dry_run_client_cls=_dr_cls,
-                    tool_meta_registry=tool_meta_registry,
-                )
-                created_clients.append(self._sync_client)
+                self._sync_client = LocalPathPreviewClient()
 
-        setattr(backend, "RobotClient", LocalPathPreviewClient)
-        setattr(backend, "AsyncRobotClient", LocalAsyncPathPreviewClient)
-        if hasattr(backend, "client"):
-            setattr(backend.client, "RobotClient", LocalPathPreviewClient)
-            setattr(backend.client, "AsyncRobotClient", LocalAsyncPathPreviewClient)
+        for module in (backend, getattr(backend, "client", None)):
+            if module is None:
+                continue
+            for name, preview_cls in (
+                ("RobotClient", LocalPathPreviewClient),
+                ("AsyncRobotClient", LocalAsyncPathPreviewClient),
+            ):
+                swapped_names.append((module, name, getattr(module, name, None)))
+                setattr(module, name, preview_cls)
 
         # Reset this worker's program-layer world to the submit-time truth
         # BEFORE the script runs: a reused pool worker's process-global checker
         # otherwise carries a previous run's shapes into this run's planning
         # guard. Empty included. Installation shapes come from robot config at
         # backend import and are untouched.
-        from waldo_commander.profiles import get_robot
-        from waldoctl import shape_from_wire
-
-        _preview_robot = get_robot(backend_package)
         if _preview_robot.has_collision_checking:
-            _preview_robot.apply_shapes(
-                [shape_from_wire(*t) for t in shapes_wire or []]
-            )
+            _preview_robot.apply_shapes([])
 
         # Inserted into sys.modules so `import time` returns this mock. The
         # mock behavior is scoped to the simulating thread: in the thread
@@ -331,12 +508,12 @@ def _run_simulation_isolated(
                 return getattr(self._real_time, name)
 
             def _elapsed(self) -> float:
-                return max((c.sim_time_s for c in created_clients), default=0.0)
+                return session[0].sim_time_s if session else 0.0
 
             def sleep(self, seconds):
                 if threading.get_ident() != sim_thread_id:
                     return self._real_time.sleep(seconds)
-                for client in created_clients:
+                for client in session:
                     client.record_sleep(seconds)
 
             def time(self):
@@ -369,7 +546,7 @@ def _run_simulation_isolated(
         sys.modules["time"] = mock_time
 
         sim_globals = {
-            "__name__": "__simulation__",
+            "__name__": "__main__",
             "__file__": "simulation_script.py",
             "__builtins__": builtins.__dict__.copy(),
             "print": lambda *args, **kwargs: None,
@@ -394,39 +571,26 @@ def _run_simulation_isolated(
             # "simulation_script.py" frames during inspection.
             code = compile(program_text, "simulation_script.py", "exec")
 
-            exec(code, sim_globals)
+            from waldo_commander.setup import using_setup_directory
 
-            if "main" in sim_globals:
-                main_func = sim_globals["main"]
+            with (
+                using_setup_directory(setup_directory),
+                _program_imports(program_directory),
+            ):
+                exec(code, sim_globals)
 
-                if asyncio.iscoroutinefunction(main_func):
-                    # asyncio.run() works in the normal subprocess context.
-                    try:
-                        coro = main_func()
-                        asyncio.run(coro)
-                    except RuntimeError as e:
-                        if "cannot be called from a running event loop" in str(e):
-                            # The coroutine from asyncio.run() was never awaited;
-                            # close it explicitly to suppress the RuntimeWarning.
-                            coro.close()
-                            # Fallback in-process mode: already inside a running
-                            # loop, so spin up a fresh loop in a thread.
-                            import concurrent.futures
+        except UnresolvedPreview as e:
+            unresolved = True
+            error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
-                            def run_async_in_thread():
-                                return asyncio.run(main_func())
-
-                            with concurrent.futures.ThreadPoolExecutor(
-                                max_workers=1
-                            ) as pool:
-                                future = pool.submit(run_async_in_thread)
-                                future.result(timeout=SIMULATION_TIMEOUT_S)
-                        else:
-                            raise
-
-                elif callable(main_func):
-                    cast(Callable[[], None], main_func)()
-
+        except SystemExit as e:
+            # A script entry point ends in sys.exit(main()); only a failure
+            # status is an error, and the exit must not reach the host.
+            if e.code not in (None, 0):
+                error_message = f"Program exited with status {e.code}"
+        except KeyboardInterrupt:
+            # Not an Exception either, so it would leave the whole preview.
+            error_message = "KeyboardInterrupt: the preview was interrupted"
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
@@ -439,81 +603,125 @@ def _run_simulation_isolated(
     except Exception as e:
         error_message = f"Simulation setup failed: {type(e).__name__}: {e}"
 
-    # Flush pending blend buffers, covering scripts without context managers.
-    for c in created_clients:
-        c.close()
+    finally:
+        # A pool worker is discarded with these swaps in place, but a direct
+        # in-process call shares the app's interpreter, where a client built
+        # from the backend's name after this point has to be the real one
+        # again, even after a BaseException neither except takes.
+        for module, name, original in reversed(swapped_names):
+            if original is None:
+                delattr(module, name)
+            else:
+                setattr(module, name, original)
 
-    if created_clients:
-        last_client = created_clients[-1]
-        if last_client.last_joints_rad is not None:
-            final_state["joints_rad"] = last_client.last_joints_rad
-        for c in created_clients:
-            if c.accumulated_errors:
-                errors_text = "\n".join(c.accumulated_errors)
-                if error_message:
-                    error_message += "\n" + errors_text
-                else:
-                    error_message = errors_text
+    # Close blend holds and note the last commands, covering scripts without
+    # context managers.
+    for c in session:
+        c.close(plan_seconds)
 
-    if len(local_segments) > max_segments:
-        del local_segments[max_segments:]
-        truncated = True
+    for c in session:
+        if c.accumulated_errors:
+            errors_text = "\n".join(c.accumulated_errors)
+            if error_message:
+                error_message += "\n" + errors_text
+            else:
+                error_message = errors_text
 
-    # Collision marking runs here (normally a subprocess) so 1000s of C++
-    # checks never block the UI event loop and mid-script tool selections are
-    # honored. A marking failure must not discard an otherwise-good dry run.
-    try:
-        from waldo_commander.profiles import get_robot
-
-        _mark_colliding_segments(
-            get_robot(backend_package),
-            local_segments,
-            local_tool_selections,
-            local_shape_changes,
-            shapes_wire,
-            initial_tool,
-        )
-    except Exception as e:
-        logger.warning("Preview collision marking failed: %s", e)
-
-    # The second pass, on the client that already planned the program:
-    # it kept the commands, so nothing is re-executed and no script runs
-    # twice. A failure here costs the physics, not the plan.
-    ticks = None
-    if simulate_seconds is not None and created_clients:
-        client = created_clients[-1]
+    # The program's records come off its session: what it commanded, and
+    # — on the predicted pass — what the arm would do, from the same
+    # session, so nothing is re-executed and no script runs twice. A
+    # failure of the predicted pass costs the physics, not the plan.
+    commanded: TickIndex | None = None
+    predicted: TickIndex | None = None
+    notes: list[CommandNote] = []
+    physics_error: str | None = None
+    final_joints_rad: list[float] | None = None
+    collisions: dict[int, int] = {}
+    if session:
+        client = session[0]
+        notes = list(client.notes)
         try:
-            ticks = client._client.simulate(simulate_seconds)
-            ticks = _label_blocks(ticks, client.command_lines)
+            commanded = _portable(client.plan(plan_seconds))
         except Exception as e:
-            logger.warning("Physics simulation failed: %s", e)
+            logger.warning("Reading the commanded record failed: %s", e)
+            error_message = (error_message + "\n" if error_message else "") + (
+                f"{type(e).__name__}: {e}"
+            )
+        if commanded is not None:
+            if commanded.rows:
+                final_joints_rad = commanded.joints_rad[-1].astype(float).tolist()
+            for block in commanded.blocks:
+                if block.error is not None and block.rows == 0:
+                    line = (
+                        notes[block.command].line_number
+                        if block.command < len(notes)
+                        else 0
+                    )
+                    text = f"Line {line}: {block.error}"
+                    if not error_message or text not in error_message:
+                        error_message = (
+                            error_message + "\n" if error_message else ""
+                        ) + text
+            # Collision marking runs here (normally a subprocess) so 1000s
+            # of C++ checks never block the UI event loop and mid-script tool
+            # selections are honored. A marking failure must not discard an
+            # otherwise-good dry run.
+            try:
+                from waldo_commander.profiles import get_robot
+
+                collisions = _mark_colliding_commands(
+                    get_robot(backend_package),
+                    commanded,
+                    local_tool_selections,
+                    local_shape_changes,
+                    shapes_wire,
+                    initial_tool,
+                )
+            except Exception as e:
+                logger.warning("Preview collision marking failed: %s", e)
+        if simulate_seconds is not None and commanded is not None:
+            try:
+                predicted = _portable(
+                    client.simulate(simulate_seconds, scenario=scenario)
+                    if scenario is not None
+                    else client.simulate(simulate_seconds)
+                )
+            except Exception as e:
+                physics_error = f"{type(e).__name__}: {e}"
+                logger.warning("Physics simulation failed: %s", e)
 
     return {
-        "segments": local_segments,
+        "revision": revision,
+        "commanded": commanded,
+        "predicted": predicted,
+        "notes": notes,
         "targets": local_targets,
         "tool_actions": local_tool_actions,
         "tool_selections": local_tool_selections,
-        "truncated": truncated,
+        "shape_changes": local_shape_changes,
+        "collisions": collisions,
         "error": error_message,
-        "total_steps": len(local_segments),
-        "final_joints_rad": final_state.get("joints_rad"),
-        "ticks": ticks,
+        "unresolved": unresolved,
+        "physics_error": physics_error,
+        "final_joints_rad": final_joints_rad,
     }
 
 
-def _label_blocks(ticks: TickIndex, lines: list[int]) -> TickIndex:
-    """Give each simulated block the editor line that produced it.
-
-    The backend numbers its blocks by command; the host is the only one
-    that knows which line each command came from, and every consumer of
-    a simulated row — the executing-line highlight, a diagnostic, a
-    drag-to-edit anchor — asks for the line.
-    """
-    ticks.blocks = tuple(
-        replace(b, line_number=lines[b.command] if b.command < len(lines) else None)
-        for b in ticks.blocks
-    )
-    return ticks
+def _portable(record: TickIndex) -> TickIndex:
+    """The record as it crosses the process boundary: a block's refusal is
+    a backend error object that may not pickle, and then its text is what
+    the host gets."""
+    blocks = []
+    for block in record.blocks:
+        error = block.error
+        if error is not None:
+            try:
+                pickle.loads(pickle.dumps(error))
+            except Exception:
+                error = str(error)
+        blocks.append(replace(block, error=error))
+    record.blocks = tuple(blocks)
+    return record
 
 
 def _run_simulation_packed(args: tuple) -> dict[str, Any]:
@@ -521,22 +729,6 @@ def _run_simulation_packed(args: tuple) -> dict[str, Any]:
     a heterogeneous *args unpack; packing also lets the pool call and the
     in-process fallback share one argument list."""
     return _run_simulation_isolated(*args)
-
-
-def _track_signature(seg: PathSegment) -> tuple:
-    """What a segment's object tracks look like: per object, how many rows,
-    where it lands, and whether that is physics or a guess."""
-    tracks = seg.object_tracks or ()
-    return tuple(
-        (
-            t["name"],
-            len(t["poses"]),
-            tuple(t["poses"][-1]) if t["poses"] else (),
-            bool(t.get("carried")),
-            bool(t.get("physics", True)),
-        )
-        for t in tracks
-    )
 
 
 class _PhysicsPool:
@@ -556,23 +748,37 @@ class _PhysicsPool:
 
     def _ensure(self) -> ProcessPoolExecutor:
         if self._pool is None:
-            self._pool = ProcessPoolExecutor(max_workers=1)
+            self._pool = ProcessPoolExecutor(
+                max_workers=1,
+                mp_context=multiprocessing.get_context("spawn"),
+                max_tasks_per_child=1,
+            )
         return self._pool
 
     async def run(self, fn: Callable, args: tuple) -> Any:
         """Run *fn*, abandoning whatever was running before it."""
         self.cancel()
         loop = asyncio.get_running_loop()
-        if _is_test_environment():
-            # A spawn worker cannot beat a test's timeout from cold, and
-            # a test's pool is rebuilt per test anyway. Still tracked, so
-            # `cancel` is not a silent no-op here.
-            future = asyncio.ensure_future(asyncio.to_thread(fn, args))
-        else:
+        try:
             future = loop.run_in_executor(self._ensure(), fn, args)
+        except Exception:
+            self._discard()
+            raise
         self._current = future
         try:
             return await future
+        except asyncio.CancelledError:
+            # wait_for() cancels the caller before its timeout handler can
+            # run; the worker must be terminated while we still own it.
+            if self._current is future:
+                self.cancel()
+            raise
+        except Exception:
+            # A worker that died mid-job leaves its executor refusing every
+            # later submission, so the next pass needs a fresh one.
+            if self._current is future:
+                self._discard()
+            raise
         finally:
             if self._current is future:
                 self._current = None
@@ -585,9 +791,13 @@ class _PhysicsPool:
         with it.
         """
         current, self._current = self._current, None
-        if current is None or current.done():
+        if current is None:
             return
         current.cancel()
+        self._discard()
+
+    def _discard(self) -> None:
+        """Kill the worker and drop its executor; the next run spawns both."""
         pool, self._pool = self._pool, None
         if pool is not None:
             for p in getattr(pool, "_processes", {}).values():
@@ -608,10 +818,19 @@ class PathVisualizer:
         self._simulation_lock = asyncio.Lock()
         self._simulation_count = 0
         self._physics = _PhysicsPool()
-        # The exact arguments each tab was last PLANNED with. The physics
-        # pass runs seconds later and must refine that plan, not whatever
-        # the world happens to look like by the time it starts.
-        self._planned_args: dict[str, tuple] = {}
+        # The exact arguments each tab was last PLANNED with, and the
+        # revision they answered. The predicted pass runs seconds later and
+        # must answer that plan, not whatever the world happens to look
+        # like by the time it starts.
+        self._planned_args: dict[str, tuple[tuple, int]] = {}
+        # Which tabs have a predicted pass in flight.
+        self._physics_tabs: set[str] = set()
+        # Whether a backend's predicted record has ever differed from its
+        # commanded one, per backend package, for this session. A planner
+        # with no plant hands back the same record twice; after the first
+        # time it does, its predicted pass is not run again. Observed, not
+        # asked: nothing on the wire says what a pass will carry.
+        self._predicted_diverges: dict[str, bool] = {}
 
     def reset_for_test(self) -> None:
         """Rebuild loop-bound state so the next test's event loop starts clean.
@@ -621,37 +840,27 @@ class PathVisualizer:
         test ends leaves this lock acquired against a loop that is about to
         close, so the next test's simulation takes the contended path and
         raises ``bound to a different event loop``.
+
+        What each backend's predicted pass carries is kept: it is learnt
+        once per session, and relearning it would spawn a physics worker in
+        every test that previews.
         """
+        diverges = self._predicted_diverges
         self._physics.shutdown()
         type(self).__init__(self)
+        self._predicted_diverges = diverges
 
-    @staticmethod
-    def _segments_match(old: list[PathSegment], new: list[PathSegment]) -> bool:
-        """Fast check whether two segment lists are visually identical."""
-        if len(old) != len(new):
-            return False
-        for a, b in zip(old, new):
-            if (
-                len(a.points) != len(b.points)
-                or a.color != b.color
-                or a.is_valid != b.is_valid
-                or a.line_number != b.line_number
-            ):
-                return False
-            # First/last point, matching the scene fingerprint.
-            if a.points and b.points:
-                if a.points[0] != b.points[0] or a.points[-1] != b.points[-1]:
-                    return False
-            # Where the objects end up is part of the picture too.
-            if _track_signature(a) != _track_signature(b):
-                return False
-        return True
+    def physics_in_flight(self, tab_id: str | None) -> bool:
+        """Whether a predicted pass is running for *tab_id*."""
+        return tab_id is not None and tab_id in self._physics_tabs
 
     def _simulation_args(
         self,
         program_text: str,
         robot: Any,
+        revision: int = 0,
         simulate_seconds: float | None = None,
+        program_dir: Path | None = None,
     ) -> tuple | None:
         """Everything a preview worker needs, or None when this backend
         cannot preview at all.
@@ -664,56 +873,21 @@ class PathVisualizer:
         # Current robot joint angles seed the simulation's initial position.
         initial_joints_rad: np.ndarray | None = None
         if len(waldoctl.commander.status.joints.angles) >= robot.joints.count:
-            initial_joints_rad = waldoctl.commander.status.joints.angles.rad
+            initial_joints_rad = waldoctl.commander.status.joints.angles.rad.copy()
             logger.debug(
                 "Using current robot joints as initial: %s deg",
                 waldoctl.commander.status.joints.angles.deg,
             )
 
         backend_pkg = robot.backend_package
-        dr_instance = robot.create_dry_run_client()
-        dr_cls = type(dr_instance) if dr_instance is not None else None
-        if dr_cls is None:
+        if robot.create_dry_run_client() is None:
             logger.warning(
                 "Backend %s does not support dry-run simulation", backend_pkg
             )
             simulation_state.notify_changed()
             return None
 
-        # Build serializable tool metadata registry for all tools.
-        # Scripts can call select_tool() to switch tools mid-program, so we
-        # need metadata for every tool — not just the currently active one.
-        # Each entry includes base motions + per-variant motions.
-        tool_meta_registry: dict[str, dict] = {}
-
-        def _serialize_motions(motion_list):
-            return [
-                {"type": "linear", **asdict(m)}
-                if isinstance(m, LinearMotion)
-                else {"type": "rotary", **asdict(m)}
-                for m in motion_list
-            ]
-
-        for spec in robot.tools.available:
-            if spec.key == "NONE":
-                continue
-            try:
-                base_motions = _serialize_motions(spec.motions) if spec.motions else []
-                variants_dict: dict[str, dict] = {}
-                for v in spec.variants:
-                    if v.motions:
-                        variants_dict[v.key] = {
-                            "motions": _serialize_motions(v.motions),
-                        }
-                if not base_motions and not variants_dict:
-                    continue
-                tool_meta_registry[spec.key] = {
-                    "motions": base_motions,
-                    "variants": variants_dict,
-                    "activation_type": spec.activation_type.value,
-                }
-            except (KeyError, AttributeError):
-                pass
+        tool_meta_registry = _tool_metadata(robot)
 
         # Collision-marking inputs: the live shapes (wire form crosses the
         # process boundary) and the live tool as the checker's starting
@@ -734,21 +908,32 @@ class PathVisualizer:
         # moves until the script homes.
         initial_homed = robot_state.homed
 
-        return (
+        from waldo_commander.setup import SetupStore
+
+        bound = inspect.signature(_run_simulation_isolated).bind(
             program_text,
             initial_joints_rad,
-            MAX_PATH_SEGMENTS,
             backend_pkg,
-            dr_cls,
+            revision,
             tool_meta_registry or None,
             shapes_wire,
             initial_tool,
             initial_homed,
+            str(SetupStore().directory),
             simulate_seconds,
+            scene_handle.attachment_epoch if scene_handle is not None else 0,
+            program_directory=None if program_dir is None else str(program_dir),
+            initial_gripper_calibrated=robot_state.gripper_calibrated,
         )
+        bound.apply_defaults()
+        return bound.args
 
     async def update_path_visualization(
-        self, program_text: str, tab_id: str | None = None
+        self,
+        program_text: str,
+        tab_id: str | None = None,
+        revision: int = 0,
+        program_dir: Path | None = None,
     ) -> str | None:
         """
         Run the dry-run simulation for the given program text and update the
@@ -761,6 +946,9 @@ class PathVisualizer:
             program_text: The Python program to simulate
             tab_id: Optional tab ID that triggered this simulation. Results will be
                 stored in this tab. If None, uses active tab.
+            revision: The program revision this plan answers; the predicted
+                pass that follows carries the same one.
+            program_dir: The program library its imports resolve in.
 
         Returns:
             Error message if simulation failed, None otherwise.
@@ -789,42 +977,33 @@ class PathVisualizer:
                     targets_before,
                 )
 
-            sim_args = self._simulation_args(program_text, ui_state.active_robot)
+            sim_args = self._simulation_args(
+                program_text, ui_state.active_robot, revision, program_dir=program_dir
+            )
             if sim_args is None:
                 simulation_state.notify_changed()
                 return None
-            # Tests always simulate in-process: the pool is rebuilt per test
-            # with warm-up disabled, so a cold spawn worker could not meet the
-            # timeout even when submission succeeds. The pool remains a
-            # best-effort optimization elsewhere, with the same in-process
-            # path as fallback.
-            use_pool = run.process_pool is not None and not _is_test_environment()
-            if use_pool:
-                try:
-                    result = await asyncio.wait_for(
-                        run.cpu_bound(_run_simulation_packed, sim_args),
-                        timeout=SIMULATION_TIMEOUT_S
-                        + 2.0,  # Extra buffer for process overhead
-                    )
-                except asyncio.TimeoutError:
-                    logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
-                    return "Simulation timed out"
-                except Exception as e:
-                    logger.warning(
-                        "Subprocess simulation failed (sim_id=%d): %s, using thread",
-                        sim_id,
-                        e,
-                    )
-                    use_pool = False
-            if not use_pool:
-                # A worker thread (not inline) so the event loop keeps running
-                # and the script's own asyncio.run() has no running loop in its
-                # thread — async programs can't be simulated inline at all.
-                try:
-                    result = await asyncio.to_thread(_run_simulation_packed, sim_args)
-                except Exception as e2:
-                    logger.error("Thread simulation failed: %s", e2)
-                    return f"Simulation failed: {e2}"
+            # The simulated program always runs in a pool worker, which is
+            # discarded afterwards. It mutates process globals — the time
+            # module, the collision checker's world, the backend's client
+            # classes — so running it here would leak every one of them into
+            # the app, and a runaway script would be unkillable in a thread.
+            # Without a pool there is no preview, which is the honest answer.
+            if run.process_pool is None:
+                logger.error("No simulation process pool (sim_id=%d)", sim_id)
+                return "Preview unavailable: no simulation process pool"
+            try:
+                result = await asyncio.wait_for(
+                    run.cpu_bound(_run_simulation_packed, sim_args),
+                    # Over the script's own budget, for process overhead.
+                    timeout=_simulation_timeout_s() + 2.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
+                return "Simulation timed out"
+            except Exception as e:
+                logger.error("Subprocess simulation failed (sim_id=%d): %s", sim_id, e)
+                return f"Simulation failed: {e}"
 
             # A None result can happen during shutdown/test teardown.
             if result is None:
@@ -832,21 +1011,15 @@ class PathVisualizer:
                 return "Simulation returned no result"
 
             if result.get("error"):
-                logger.error(
-                    "Simulation error (sim_id=%d): %s", sim_id, result["error"]
-                )
+                report = logger.warning if result.get("unresolved") else logger.error
+                report("Simulation error (sim_id=%d): %s", sim_id, result["error"])
 
-            if result.get("truncated"):
-                logger.warning(
-                    "Simulation truncated to %d segments (sim_id=%d)",
-                    MAX_PATH_SEGMENTS,
-                    sim_id,
-                )
-
+            commanded: TickIndex | None = result.get("commanded")
             logger.info(
-                "Simulation complete (sim_id=%d). Generated %d path segments.",
+                "Simulation complete (sim_id=%d): %d commands, %d rows.",
                 sim_id,
-                len(result["segments"]),
+                len(commanded.blocks) if commanded is not None else 0,
+                commanded.rows if commanded is not None else 0,
             )
 
             # Store results in the originating tab, falling back to the active tab.
@@ -857,39 +1030,47 @@ class PathVisualizer:
                 target_tab = waldoctl.commander.programs.active
 
             if target_tab:
-                new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
-                new_targets = [ProgramTarget.from_dict(d) for d in result["targets"]]
-                new_tool_actions = result.get("tool_actions", [])
-                new_tool_selections = result.get("tool_selections", [])
+                previous = self._planned_args.get(target_tab.id)
+                same_inputs = previous is not None and pickle.dumps(
+                    previous[0]
+                ) == pickle.dumps(sim_args)
+                # The predicted pass answers exactly this plan, seconds
+                # later; a plan that never produced a record leaves nothing
+                # to answer.
+                if commanded is None:
+                    self._planned_args.pop(target_tab.id, None)
+                else:
+                    self._planned_args[target_tab.id] = (sim_args, revision)
+                dry_run = target_tab.dry_run
 
                 # Always store final_joints_rad (used for position-change
-                # detection even when segments are unchanged).
-                target_tab.dry_run.final_joints_rad = result.get("final_joints_rad")
+                # detection even when the plan is unchanged).
+                dry_run.final_joints_rad = result.get("final_joints_rad")
 
-                # Check if results match what's already stored — skip update
-                # to avoid unnecessary scrub bar rebuilds and visual flash.
-                # Don't skip when there's an error: the caller needs the error
-                # string to apply diagnostics even if segments are the same.
-                if self._segments_match(
-                    target_tab.dry_run.path_segments, new_segments
-                ) and not result.get("error"):
+                # An identical record paints an identical picture: skip the
+                # update to avoid a scrub bar rebuild and a visual flash. Not
+                # when there's an error — the caller needs the error string
+                # to apply diagnostics even if the record is the same.
+                if (
+                    commanded is not None
+                    and dry_run.commanded is not None
+                    and commanded.digest
+                    and dry_run.commanded.digest == commanded.digest
+                    and not result.get("error")
+                    and same_inputs
+                ):
+                    # The plan on screen answers this revision too, and so
+                    # does the predicted record that answered it.
+                    if dry_run.predicted_revision == dry_run.commanded_revision:
+                        dry_run.predicted_revision = revision
+                    dry_run.commanded_revision = revision
                     logger.info(
                         "Simulation results unchanged (sim_id=%d), skipping update",
                         sim_id,
                     )
                     return UNCHANGED
 
-                # A new plan retires the physics that refined the old
-                # one: playback locks again until the next pass lands.
-                target_tab.dry_run.ticks = None
-                target_tab.dry_run.ticks_pending = (
-                    ui_state.active_robot.has_physics_simulation
-                )
-                target_tab.dry_run.path_segments = new_segments
-                target_tab.dry_run.targets = new_targets
-                target_tab.dry_run.tool_actions = new_tool_actions
-                target_tab.dry_run.tool_selections = new_tool_selections
-                target_tab.dry_run.total_steps = len(new_segments)
+                self._apply_plan(dry_run, result, revision)
 
                 # Dry-run results live on the target tab; readers go through
                 # ``commander.programs.active.dry_run`` so the WC-side change
@@ -906,26 +1087,58 @@ class PathVisualizer:
 
             return result.get("error")
 
+    @staticmethod
+    def _apply_plan(dry_run: Any, result: dict[str, Any], revision: int) -> None:
+        """Put a commanded record and what the scene draws from it on the
+        program. A new plan retires the predicted record that answered the
+        old one: until the next pass lands, predicted is commanded."""
+        commanded: TickIndex | None = result.get("commanded")
+        notes = list(result.get("notes") or [])
+        tool_actions = list(result.get("tool_actions") or [])
+        tool_selections = list(result.get("tool_selections") or [])
+        shape_changes = list(result.get("shape_changes") or [])
+        targets = [ProgramTarget.from_dict(d) for d in result.get("targets") or []]
+        if commanded is None:
+            segments = []
+        else:
+            segments = segments_from_record(
+                commanded, notes, result.get("collisions") or {}
+            )
+            index_boundaries(segments, tool_selections)
+            index_boundaries(segments, shape_changes)
+            tool_actions = tool_actions_from_record(tool_actions, commanded, segments)
+        dry_run.commanded = commanded
+        dry_run.commanded_revision = revision
+        dry_run.predicted = None
+        dry_run.predicted_revision = -1
+        dry_run.commands = notes
+        dry_run.path_segments = segments
+        dry_run.targets = targets
+        dry_run.tool_actions = tool_actions
+        dry_run.tool_selections = tool_selections
+        dry_run.total_steps = len(segments)
+
     async def update_physics_simulation(self, tab_id: str | None = None) -> str | None:
-        """Run the planned program through the backend's physics.
+        """Run the planned program through the backend's simulation for the
+        predicted record.
 
         The planning pass has already returned by the time this starts,
-        so the user is looking at the ideal trajectory while this fills
-        in what the arm would actually do. Playback and scrubbing stay
-        locked until it lands, because a scrub bar over a half-built
-        record seeks into rows that do not exist.
+        so the user is looking at the commanded path while this fills in
+        what the arm would do. Nothing waits on it: playback scrubs the
+        commanded record meanwhile, and the predicted one takes over when
+        it lands.
 
         It replays the plan's OWN arguments — same program text, same
         world, same tool, same starting pose — rather than rebuilding
         them from live state seconds later. A keep-out added during the
         wait would otherwise make the record describe a different world
-        than the plan on screen, with nothing to notice it.
+        than the plan on screen, with nothing to notice it. The record
+        lands only if the plan it answers is still the one on screen.
 
-        No-ops on a backend with no plant, which is how the app behaved
-        before any backend had one.
+        A backend whose prediction has been seen to be its plan — the same
+        record twice, with nothing a plant would add — is not asked again
+        this session.
         """
-        if not ui_state.active_robot.has_physics_simulation:
-            return None
         tab = (
             waldoctl.commander.programs.get(tab_id)
             if tab_id
@@ -935,10 +1148,19 @@ class PathVisualizer:
             return None
         planned = self._planned_args.get(tab.id)
         if planned is None:
-            return None  # nothing planned to refine
-        args = (*planned[:-1], MAX_SIMULATED_SECONDS)
+            return None  # nothing planned to answer
+        args, revision = planned
+        backend = ui_state.active_robot.backend_package
+        if self._predicted_diverges.get(backend) is False:
+            return None
+        bound = inspect.signature(_run_simulation_isolated).bind(*args)
+        bound.arguments["simulate_seconds"] = MAX_SIMULATED_SECONDS
+        args = bound.args
 
-        tab.dry_run.ticks_pending = True
+        self._physics_tabs.add(tab.id)
+        # The playback bar shows a pass in flight off this set; tell it now
+        # and again when the pass is over, whichever way it ends.
+        simulation_state.notify_changed()
         try:
             result = await asyncio.wait_for(
                 self._physics.run(_run_simulation_packed, args),
@@ -947,34 +1169,53 @@ class PathVisualizer:
         except asyncio.CancelledError:
             # Not an outcome. Superseded work must unwind, not return and
             # let the caller carry on mutating state that has moved on.
-            tab.dry_run.ticks_pending = False
             raise
         except asyncio.TimeoutError:
-            tab.dry_run.ticks_pending = False
             self._physics.cancel()
             logger.warning("Physics simulation timed out; the worker was killed")
             return "Physics simulation timed out"
         except Exception as e:
-            tab.dry_run.ticks_pending = False
             logger.warning("Physics simulation failed: %s", e)
             return str(e)
+        finally:
+            self._physics_tabs.discard(tab.id)
+            simulation_state.notify_changed()
 
-        tab.dry_run.ticks_pending = False
-        ticks = (result or {}).get("ticks")
-        if ticks is None:
-            return (result or {}).get("error")
+        predicted: TickIndex | None = (result or {}).get("predicted")
+        if predicted is None:
+            return (result or {}).get("error") or (result or {}).get("physics_error")
+        dry_run = tab.dry_run
+        if dry_run.commanded_revision != (result or {}).get("revision"):
+            logger.debug("Predicted record answers a superseded plan; dropped")
+            return None
+        commanded = dry_run.commanded
+        # The pass re-runs the program: one that draws random targets, or
+        # reads a setup edited since, commands something else under the
+        # same revision.
+        rerun: TickIndex | None = (result or {}).get("commanded")
+        if commanded is None or rerun is None or rerun.digest != commanded.digest:
+            logger.debug("Predicted record answers other commands than the plan")
+            return None
+        diverges = predicted.digest != commanded.digest or bool(predicted.channels)
+        self._predicted_diverges[backend] = diverges
         # The backend guarantees the same program gives a bit-identical
         # record, so an equal digest means an identical picture and the
         # scene keeps what it has. This is the flash guard.
-        previous = tab.dry_run.ticks
-        if previous is not None and ticks.digest and previous.digest == ticks.digest:
+        previous = dry_run.predicted
+        if (
+            previous is not None
+            and predicted.digest
+            and previous.digest == predicted.digest
+            and dry_run.predicted_revision == dry_run.commanded_revision
+        ):
             return None
-        tab.dry_run.ticks = ticks
+        dry_run.predicted = predicted
+        dry_run.predicted_revision = dry_run.commanded_revision
         logger.info(
             "Physics simulation complete: %d rows over %.2f s (%s)",
-            ticks.rows,
-            ticks.duration_s,
-            ticks.stop,
+            predicted.rows,
+            predicted.duration_s,
+            predicted.stop,
         )
         simulation_state.notify_changed()
         return None
@@ -990,7 +1231,7 @@ class PathVisualizer:
         self._physics.cancel()
 
     def forget_plan(self, tab_id: str) -> None:
-        """Drop a tab's stored plan arguments — there is no plan to refine."""
+        """Drop a tab's stored plan arguments — there is no plan to answer."""
         self._planned_args.pop(tab_id, None)
 
 
