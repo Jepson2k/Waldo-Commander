@@ -1,5 +1,7 @@
 """Unit tests for the simulation timeline engine."""
 
+import math
+
 import pytest
 
 from waldo_commander.services.timeline import (
@@ -385,3 +387,120 @@ class TestGradientBlending:
         g8 = int(result[3:5], 16)
         # Green channel should still be dominant at low blend factor
         assert g8 > r8, f"Green should dominate at low factor, got r={r8} g={g8}"
+
+
+def _track(
+    name: str, poses: list[list[float]], physics: bool = True, carried: bool = False
+) -> dict:
+    return {"name": name, "poses": poses, "carried": carried, "physics": physics}
+
+
+_Q_ID = [1.0, 0.0, 0.0, 0.0]
+_Q_Z90 = [0.7071067811865476, 0.0, 0.0, 0.7071067811865476]
+
+
+class TestObjectTracks:
+    """World objects ride the timeline: held while parked, interpolated while
+    moving, slerped through a turn, and carried through a tool action."""
+
+    def test_objects_hold_before_between_and_after_their_tracks(self):
+        parked = _seg(duration=2.0, joints=[0] * 6)
+        parked.object_tracks = [_track("block", [[0.3, 0.0, 0.04, *_Q_ID]])]
+        carry = _seg(duration=4.0, joints=[0] * 6)
+        carry.object_tracks = [
+            _track(
+                "block",
+                [[0.3, 0.0, 0.04, *_Q_ID], [0.3, 0.0, 0.24, *_Q_Z90]],
+                carried=True,
+            )
+        ]
+        tl = Timeline.from_segments([parked, carry])
+
+        assert tl.sample_objects(0.0)["block"].pose == (0.3, 0.0, 0.04, *_Q_ID)
+        assert tl.sample_objects(1.5)["block"].pose == (0.3, 0.0, 0.04, *_Q_ID)
+        mid = tl.sample_objects(4.0)["block"].pose  # half way through the carry
+        assert mid[:3] == pytest.approx((0.3, 0.0, 0.14))
+        # A slerp half way through a 90 degree yaw is a 45 degree yaw: the
+        # quaternion stays unit length, which a componentwise lerp would not.
+        assert mid[3] == pytest.approx(math.cos(math.pi / 8))
+        assert mid[6] == pytest.approx(math.sin(math.pi / 8))
+        assert sum(c * c for c in mid[3:]) == pytest.approx(1.0)
+        assert tl.sample_objects(99.0)["block"].pose == (0.3, 0.0, 0.24, *_Q_Z90)
+        assert tl.sample_objects(4.0)["block"].physics is True
+
+    def test_tool_action_tracks_span_the_action_and_flag_a_guess(self):
+        seg = _seg(duration=2.0, joints=[0] * 6)
+        drop = ToolAction(
+            tcp_pose=None,
+            motions=[],
+            target_positions=(0.0,),
+            activation_type="gripper",
+            line_number=1,
+            method="open",
+            estimated_duration=1.0,
+            segment_index=0,
+            object_tracks=[
+                _track(
+                    "block",
+                    [[0.3, 0.0, 0.24, *_Q_ID], [0.3, 0.0, 0.04, *_Q_ID]],
+                    physics=False,
+                )
+            ],
+        )
+        tl = Timeline.from_segments([seg], [drop])
+
+        # The release starts when the segment's motion ends and lasts the action.
+        assert tl.sample_objects(2.0)["block"].pose[2] == pytest.approx(0.24)
+        falling = tl.sample_objects(2.5)["block"]
+        assert falling.pose[2] == pytest.approx(0.14)
+        assert falling.physics is False, (
+            "a geometric fallback must be marked as a guess"
+        )
+        assert tl.sample_objects(3.0)["block"].pose[2] == pytest.approx(0.04)
+
+    def test_a_grasp_mid_program_animates_when_it_happens(self):
+        """Regression: tool-action tracks were filed after every segment's,
+        so the monotonicity nudge collapsed a grasp on segment 0 into a
+        zero-width cluster at the end of the program."""
+        approach = _seg(duration=2.0, joints=[0] * 6)
+        approach.object_tracks = [_track("block", [[0.3, 0.0, 0.04, *_Q_ID]])]
+        lift = _seg(duration=4.0, joints=[0] * 6)
+        lift.object_tracks = [
+            _track(
+                "block",
+                [[0.3, 0.0, 0.04, *_Q_ID], [0.3, 0.0, 0.44, *_Q_ID]],
+                carried=True,
+            )
+        ]
+        grasp = ToolAction(
+            tcp_pose=None,
+            motions=[],
+            target_positions=(1.0,),
+            activation_type="gripper",
+            line_number=1,
+            method="close",
+            estimated_duration=1.0,
+            segment_index=0,
+            object_tracks=[
+                _track(
+                    "block",
+                    [[0.3, 0.0, 0.04, *_Q_ID], [0.3, 0.0, 0.06, *_Q_ID]],
+                    carried=True,
+                )
+            ],
+        )
+        tl = Timeline.from_segments([approach, lift], [grasp])
+
+        # approach [0, 2], grasp [2, 3] (blocking, after the segment's
+        # motion), lift [3, 7].
+        assert tl.sample_objects(1.0)["block"].pose[2] == pytest.approx(0.04)
+        assert tl.sample_objects(2.5)["block"].pose[2] == pytest.approx(0.05), (
+            "the grasp must animate while it happens, not after the program"
+        )
+        assert tl.sample_objects(3.0)["block"].pose[2] == pytest.approx(0.06)
+        assert tl.sample_objects(5.0)["block"].pose[2] == pytest.approx(0.24)
+        assert tl.sample_objects(7.0)["block"].pose[2] == pytest.approx(0.44)
+
+    def test_no_tracks_means_no_objects(self):
+        tl = Timeline.from_segments([_seg(duration=1.0, joints=[0] * 6)])
+        assert tl.sample_objects(0.5) == {}

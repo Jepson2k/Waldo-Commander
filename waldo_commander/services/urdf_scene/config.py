@@ -7,6 +7,12 @@ from typing import Callable, Sequence
 
 from waldo_commander.common.theme import SceneColors
 
+#: Render prefix for a shape proposed for the installation layer. Unlike
+#: waldoctl's ``install:``/``shape:``/``tool:``, which are the vocabulary a
+#: backend reports collisions in, this one is the frontend's alone — a
+#: proposal has no backend geometry to be reported as.
+DRAFT_PREFIX = "draft:"
+
 
 class RobotAppearanceMode(Enum):
     """Robot visual appearance modes.
