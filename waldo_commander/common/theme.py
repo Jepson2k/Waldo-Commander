@@ -415,10 +415,8 @@ class SceneColors:
     TOOL_MOVING_SIM_HEX = TOOL_MOVING_HEX
     TOOL_MOVING_EDIT_HEX = FIXED_COLOR["scene-tool-moving-edit"]
 
-    HOVER_HEX = FIXED_COLOR["scene-hover"]
     ENVELOPE_HEX = AXIS_Z_HEX
     TCP_ACTIVE_HEX = AXIS_Z_HEX
-    TCP_INACTIVE_HEX = EDIT_GRAY_HEX
 
 
 _MOVE_TYPE_TOKENS: dict[str, str] = {
