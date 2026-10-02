@@ -130,7 +130,7 @@ class RunRecord:
                                     "homed": status.homed,
                                     "enabled": status.enabled,
                                     "angles_deg": status.angles,
-                                    "speeds_rad_s": status.speeds,
+                                    "speeds_deg_s": status.speeds,
                                     "executing_index": status.executing_index,
                                     "completed_index": status.completed_index,
                                     "scene_epoch": status.scene_epoch,
@@ -237,7 +237,7 @@ _FIELDS = frozenset(
         "accel torque timeout wait r args kwargs angles pose frames poses "
         "parameters signals cameras frame parent schema_version shape mass "
         "collision physics xyz rpy translation rotation index code enabled "
-        "homed angles_deg speeds_rad_s session_id seq mono_time_ns "
+        "homed angles_deg speeds_deg_s session_id seq mono_time_ns "
         "executing_index completed_index scene_epoch collision_active "
         "drive_health link_health temperatures_c currents_ma bus_voltage_v "
         "faults state restarts tx_errors rx_frames installation program "

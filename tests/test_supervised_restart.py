@@ -132,6 +132,12 @@ if __name__ == '__main__':
     before = await client.angles()
     initial_state = await fresh_state(client)
     initial_state.require_ready()
+    # Joint speeds arrive in deg/s: an arm still settling under 0.01 rad/s is
+    # at rest, and one turning at 1 deg/s is not.
+    n = len(initial_state.angles_deg)
+    replace(initial_state, speeds_deg_s=(0.3,) * n).require_ready()
+    with pytest.raises(ValueError, match="Wait for the arm to stop"):
+        replace(initial_state, speeds_deg_s=(1.0,) * n).require_ready()
     user.find(marker="editor-more-btn").click()
     user.find(marker="editor-restart-btn").click()
     await user.should_see("Previous run: failed · same source")

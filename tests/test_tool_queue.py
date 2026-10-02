@@ -253,7 +253,20 @@ async def test_tool_state_reaches_the_preview_and_the_scrubbed_arm(user: User):
 
     client = await _gripper(user)
     try:
+        # A Stop during the panel's calibration cancels it, which is what the
+        # user asked for: nothing reports it as a failed action.
         robot_state.gripper_calibrated = False
+        user.find(marker="btn-tool-action-r").click()
+        assert await wait_until(
+            lambda: waldoctl.commander.status.action.current_name == "tool_action", 5
+        ), "the calibration never started"
+        assert await client.stop() == 1
+        assert await wait_until(
+            lambda: waldoctl.commander.status.action.current_name != "tool_action", 5
+        )
+        assert not robot_state.gripper_calibrated, "the Stop came after calibration"
+        await user.should_not_see("Action failed")
+
         user.find(marker="btn-tool-action-r").click()
         assert await wait_until(lambda: robot_state.gripper_calibrated, 10)
         error = await path_visualizer.update_path_visualization(
