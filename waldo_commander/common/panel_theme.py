@@ -14,6 +14,9 @@ def inject_panel_css() -> None:
 @layer quasar {
   .q-btn--flat.text-primary:not(.text-white),
   .q-btn--outline.text-primary:not(.text-white) { color: #7dd3fc !important; }
+  /* A skill's form opens where the side panels do, clear of the scene, the
+     readout and the E-stop. */
+  .skill-dialog-host > .q-dialog__inner--left { align-items: flex-start !important; padding: 12px 0 12px 58px !important; }
 }
 .task-panel, .overlay-card.task-panel, .task-dialog {
   color: var(--color-neutral-100);
@@ -29,8 +32,10 @@ def inject_panel_css() -> None:
 .task-dialog .q-expansion-item > .q-expansion-item__container > .q-item {
   min-height: 36px; padding: 4px 8px; background: transparent;
 }
-/* A flex column, so a panel capped at the viewport shrinks its plugin's own
-   scroller rather than scrolling the plugin whole, heading and all. */
+/* A flex column with the tab panel's full width (the tab panel starts its
+   children, so without a width a plugin's content shrinks to its widest
+   line), so a panel capped at the viewport shrinks its plugin's own scroller
+   rather than scrolling the plugin whole, heading and all. */
 .plugin-panel-content { display: flex; flex-direction: column; flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; min-width: 0; overflow: auto; overflow-x: hidden; }
 .panel-body { flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; overflow-y: auto; overflow-x: hidden; }
 .panel-heading { font-size: 16px; font-weight: 600; line-height: 24px; }
@@ -73,6 +78,10 @@ def inject_panel_css() -> None:
 .diag-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--color-neutral-400); transition: width .2s linear; }
 .diag-bar-fill.over { background: var(--sem-warning); }
 .diagnostics-view > .panel-body { flex-basis: auto; }
+/* A skill is inserted from a dialog beside the 3D view, labelled by its diagram. */
+.skill-dialog { width: 450px; max-width: calc(100vw - 80px); margin: 0; max-height: calc(100vh - 24px) !important; }
+.skill-detail-icon { width: 42px; height: 30px; font-size: 30px; flex-shrink: 0; }
+.skill-menu-icon { width: 34px; height: 24px; font-size: 24px; }
 .editor-toolbar-menu { min-width: 190px; }
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }

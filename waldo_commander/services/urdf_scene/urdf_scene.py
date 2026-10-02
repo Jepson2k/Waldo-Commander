@@ -321,6 +321,8 @@ class UrdfScene(
         self.simulation_group: Any | None = None
         self.path_group: Any | None = None
         self.targets_group: Any | None = None
+        self.skill_preview_group: Any | None = None
+        self._skill_preview_objects: list[Any] = []
         # What a simulated run measured, over the planned picture.
         self.physics_overlay = PhysicsOverlay(self)
         self._rendered_segments: list[RenderedSegment | None] = []  # indexed by segment
@@ -476,6 +478,10 @@ class UrdfScene(
                         "simulation:targets"
                     ) as targets_grp:
                         self.targets_group = targets_grp
+                    with ui.scene.group().with_name(
+                        "simulation:skill-preview"
+                    ) as skill_preview_grp:
+                        self.skill_preview_group = skill_preview_grp
 
             # Orientation inset (axes gizmo).
             try:
@@ -1367,6 +1373,31 @@ class UrdfScene(
                 for j, obj in enumerate(rs.objects):
                     base = rs.colors[j] if j < len(rs.colors) else ""
                     obj.material(self._glow_color(base))
+
+    def show_skill_preview(
+        self,
+        segments: list[waldoctl.PathSegment],
+        tool_actions: list[waldoctl.ToolAction],
+    ) -> None:
+        """Draw one skill's planned motion, dashed so it never reads as the program's."""
+        self.clear_skill_preview()
+        if self.scene is None or self.skill_preview_group is None:
+            return
+        with self.scene, self.skill_preview_group:
+            for segment in segments:
+                objects, _, _ = self.path_renderer.render_path_segment(
+                    segment, force_dashed=True
+                )
+                self._skill_preview_objects.extend(objects)
+            for action in tool_actions:
+                self._skill_preview_objects.extend(
+                    self.path_renderer.render_tool_action(action)
+                )
+
+    def clear_skill_preview(self) -> None:
+        for obj in self._skill_preview_objects:
+            self._safe_delete(obj)
+        self._skill_preview_objects.clear()
 
     def _clear_path_state(self) -> None:
         """Delete all rendered path objects and reset bookkeeping."""

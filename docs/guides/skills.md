@@ -23,6 +23,38 @@ an async client. Start an async program explicitly with `asyncio.run(main())`,
 just as when running its Python file directly. A function definition by itself
 does not execute, including in preview.
 
+The editor's **Insert Command** menu lists the skills that take a form under
+**Skills**, with their diagrams: approach, retract, park and align tool axis,
+then skills from other packages. Gripper skills are not listed there; the
+Gripper tab drives the gripper live and `rbt.tool` commands are in the same
+menu. Choosing a skill opens its parameters where the side panels open, and
+the 3D view draws its motion as a dashed path from where the arm is now,
+following the values as they are filled in; the robot does not move.
+**Insert** puts an import and a call at the editor's cursor, or at the
+recording cursor while recording. Saved poses and setups are inserted as fixed
+snapshots; saving different setup data later does not change that call. To
+follow saved data on the next run, edit the Python to load it explicitly with
+`load_setup`. The form does not read edited Python back into its fields.
+
+To try a call on the robot, select its lines and choose **Run selection** from
+the editor's **⋮** menu. The selection runs as its own small program with the
+program's imports and the tool the arm carries, with the usual pause and stop
+controls, then the editor returns to the program; after a failed run it stays
+on the run's tab so its log is in view. While recording, the lines are already
+in the program, so the run adds nothing to it.
+
+| Skill | Behavior |
+|---|---|
+| `retract` | Move a positive distance along current tool Z. |
+| `approach` | Move to positive target-tool-Z clearance, then linearly to an explicit WRF `Pose`. |
+| `park` | Joint-interpolate to a named pose in an explicit `SetupSnapshot`. |
+| `align_tool_axis` | Rotate one tool axis toward a WRF direction while keeping the TCP position. Returns `None` if already aligned. |
+| `gripper_open`, `gripper_close` | Command the selected supported gripper and wait for completion. Native calibration requirements still apply. |
+
+Each motion goes through the backend planner and collision checks. Approach
+does not search for a detour. Gripper command completion does not confirm that
+an object was grasped.
+
 ## Write and compose skills
 
 ```python
@@ -63,6 +95,12 @@ withdraw_twice = "mybench.skills:withdraw_twice"
 `waldoctl.skills.discover_skills()` returns skills keyed by stable id. Broken
 plugins are diagnosed and skipped; duplicate ids exclude all conflicting
 providers. A panel may call a skill but the skill does not subclass a panel.
+The decorator's `api_version` defaults to `1`. An incompatible API version is
+refused before execution and shown in the panel's discovery diagnostics. For
+headless discovery, pass a list as `diagnostics=` to collect the same messages.
+Skill function names also appear in editor completion, with their import module.
+Use ordinary Python for arguments that cannot be represented by the panel's
+literal fields, such as image sources or custom resource objects.
 
 ## Preview, stepping and progress
 
