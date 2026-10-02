@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import bisect
+import math
 from dataclasses import dataclass, field
+
+from waldoctl import TickIndex
 
 from waldo_commander.state import PathSegment, ToolAction, ToolSelection
 
@@ -29,12 +32,105 @@ class ToolKeyframe:
 
 
 @dataclass(slots=True)
+class ToolSpan:
+    """One stretch of tool travel, as the scrub bar draws it.
+
+    The timeline reports these rather than leaving consumers to pair
+    keyframes two at a time: a planned timeline emits exactly two per
+    action so the pairing happens to work, but a recorded one derives its
+    keyframes from measured jaw motion and has no such structure.
+    """
+
+    start: float
+    end: float
+    blocking: bool
+    """Whether the arm holds for the whole span (a full-height marker) or
+    the tool moves under a motion already in flight (a mini one)."""
+
+
+@dataclass(slots=True)
 class ToolSelectionKeyframe:
     """Records which tool is active at a given point in the timeline."""
 
     time: float
     tool_key: str
     variant_key: str
+
+
+@dataclass(slots=True)
+class ObjectKeyframe:
+    """One world object's pose at one time: ``[x, y, z, qw, qx, qy, qz]``."""
+
+    time: float
+    pose: tuple[float, ...]
+    physics: bool
+
+
+@dataclass(slots=True)
+class ObjectSample:
+    """A world object's interpolated pose, and whether it was simulated or
+    guessed (the preview's geometric fallback)."""
+
+    pose: tuple[float, ...]
+    physics: bool
+
+
+def _slerp_pose(
+    a: tuple[float, ...], b: tuple[float, ...], frac: float
+) -> tuple[float, ...]:
+    """Interpolate two ``[x, y, z, qw, qx, qy, qz]`` poses: position linearly,
+    orientation along the shorter great-circle arc.
+
+    Hand-rolled rather than ``scipy.spatial.transform.Slerp``: this runs per
+    object per playback frame, and building a ``Rotation`` pair and a
+    ``Slerp`` for a single interpolant costs more than the arithmetic.
+    """
+    pos = tuple(a[i] + (b[i] - a[i]) * frac for i in range(3))
+    q0 = a[3:7]
+    q1 = b[3:7]
+    dot = sum(x * y for x, y in zip(q0, q1))
+    if dot < 0.0:
+        q1 = tuple(-x for x in q1)
+        dot = -dot
+    if dot > 0.9995:
+        q = tuple(x + (y - x) * frac for x, y in zip(q0, q1))
+    else:
+        theta = math.acos(min(1.0, dot))
+        s = math.sin(theta)
+        w0 = math.sin((1.0 - frac) * theta) / s
+        w1 = math.sin(frac * theta) / s
+        q = tuple(w0 * x + w1 * y for x, y in zip(q0, q1))
+    norm = math.sqrt(sum(x * x for x in q)) or 1.0
+    return pos + tuple(x / norm for x in q)
+
+
+def _add_tracks(
+    keyframes: dict[str, list[ObjectKeyframe]],
+    tracks: list[dict] | None,
+    t0: float,
+    duration: float,
+) -> None:
+    """Spread each track's rows evenly over ``[t0, t0 + duration]``; a single
+    row is the object's pose from t0 on. Keyframes stay time-ordered because
+    segments and the actions after them are added in program order."""
+    if not tracks:
+        return
+    for track in tracks:
+        rows = track["poses"]
+        if not rows:
+            continue
+        n = len(rows)
+        physics = bool(track.get("physics", True))
+        kf = keyframes.setdefault(track["name"], [])
+        for k, row in enumerate(rows):
+            t = t0 + (duration * k / (n - 1) if n > 1 else 0.0)
+            if kf and t <= kf[-1].time:
+                t = kf[-1].time + 1e-9
+            kf.append(
+                ObjectKeyframe(
+                    time=t, pose=tuple(float(v) for v in row), physics=physics
+                )
+            )
 
 
 @dataclass(slots=True)
@@ -63,6 +159,27 @@ class Timeline:
     tool_selection_keyframes: list[ToolSelectionKeyframe] = field(default_factory=list)
     _tool_sel_times: list[float] = field(default_factory=list)
     checkpoints: list[Checkpoint] = field(default_factory=list)
+    object_keyframes: dict[str, list[ObjectKeyframe]] = field(default_factory=dict)
+    _object_times: dict[str, list[float]] = field(default_factory=dict)
+    tool_spans: list[ToolSpan] = field(default_factory=list)
+    #: The simulated record this timeline plays, when there is one. With
+    #: it set, poses are read off measured rows instead of interpolated
+    #: between planned waypoints.
+    _ticks: TickIndex | None = None
+
+    @property
+    def segments(self) -> list[PathSegment]:
+        """The segments this timeline is indexed by.
+
+        Not necessarily the program's planned segments: a timeline built
+        from a record is indexed by recorded *commands*, and a `sleep`
+        between two moves is a command with no planned segment of its own.
+        Anything that pairs a segment with a time — the scrub bar, the
+        steppers, the executing-line highlight — has to read them from
+        here, because this is the only object that knows which index space
+        it is in.
+        """
+        return self._segments
 
     @classmethod
     def from_segments(
@@ -101,8 +218,19 @@ class Timeline:
             cum.append(cum[-1] + seg_dur + blocking_gap.get(i, 0.0))
         total = cum[-1] if segments else 0.0
 
+        # Object tracks: a segment's rows span its motion window, a tool
+        # action's rows span the action itself. Collected first and added
+        # in time order below — a grasp on segment 0 must not be filed
+        # after segment 2's motion.
+        obj_spans: list[tuple[float, float, list[dict]]] = [
+            (cum[i], seg_durs[i], seg.object_tracks)
+            for i, seg in enumerate(segments)
+            if seg.object_tracks
+        ]
+
         # Build tool keyframes from actions
         tool_kf: list[ToolKeyframe] = []
+        tool_spans: list[ToolSpan] = []
         if tool_actions:
             n_dof = len(tool_actions[0].target_positions)
             current: tuple[float, ...] = tuple(0.0 for _ in range(n_dof))
@@ -130,10 +258,20 @@ class Timeline:
                 tool_kf.append(ToolKeyframe(time=t, positions=current))
                 current = act.target_positions
                 tool_kf.append(ToolKeyframe(time=t + dur, positions=current))
+                if current != tool_kf[-2].positions:
+                    tool_spans.append(
+                        ToolSpan(start=t, end=t + dur, blocking=act.sleep_offset == 0)
+                    )
+                if act.object_tracks:
+                    obj_spans.append((t, dur, act.object_tracks))
 
             # Extend total duration if tool actions go past last segment
             if tool_kf:
                 total = max(total, tool_kf[-1].time)
+
+        obj_kf: dict[str, list[ObjectKeyframe]] = {}
+        for start, dur, tracks in sorted(obj_spans, key=lambda span: span[0]):
+            _add_tracks(obj_kf, tracks, start, dur)
 
         # Extract checkpoints from segments
         cps: list[Checkpoint] = []
@@ -178,6 +316,127 @@ class Timeline:
             tool_selection_keyframes=sel_kf,
             _tool_sel_times=[k.time for k in sel_kf],
             checkpoints=cps,
+            object_keyframes=obj_kf,
+            _object_times={name: [k.time for k in kf] for name, kf in obj_kf.items()},
+            tool_spans=tool_spans,
+        )
+
+    @classmethod
+    def from_ticks(
+        cls,
+        ticks: TickIndex,
+        segments: list[PathSegment],
+        tool_selections: list[ToolSelection] | None = None,
+    ) -> Timeline:
+        """Build a timeline over a simulated run.
+
+        Rows are evenly spaced in simulated time, so most of the timing
+        machinery that approximated a plan collapses to multiplication:
+        a command's window is its block, and a pose is the row at that
+        instant rather than a guess between two waypoints.
+
+        Segments survive as the chunking unit — one scrub-bar division
+        and one polyline per command, and the same index space the live
+        run's step counter uses — so everything downstream of a segment
+        index keeps working. Each block borrows the planned segment that
+        came from its line, which is what keeps the executing-line
+        highlight pointing at the right place.
+        """
+        dt = ticks.row_dt_s
+        blocks = [b for b in ticks.blocks if b.rows > 0]
+        by_line: dict[int, PathSegment] = {}
+        for seg in segments:
+            by_line.setdefault(seg.line_number, seg)
+
+        cum = [b.start_row * dt for b in blocks] or [0.0]
+        cum.append(ticks.rows * dt)
+        durs = [b.rows * dt for b in blocks]
+        # A block with no planned segment still needs a slot: the index
+        # space has to stay dense or prev/next skips commands.
+        ordered = [
+            by_line.get(b.line_number or -1)
+            or PathSegment(
+                points=[],
+                color="#888888",
+                is_valid=True,
+                line_number=b.line_number or 0,
+            )
+            for b in blocks
+        ]
+
+        obj_kf: dict[str, list[ObjectKeyframe]] = {}
+        for obj in ticks.objects:
+            rows = obj.poses.shape[0]
+            obj_kf[obj.name] = [
+                ObjectKeyframe(
+                    time=i * dt if rows > 1 else 0.0,
+                    pose=tuple(float(v) for v in obj.poses[i]),
+                    physics=True,
+                )
+                for i in range(rows)
+            ]
+
+        # One tool keyframe per row the jaws actually moved on. A tool
+        # that never moves contributes none, and one that does gets the
+        # measured travel rather than a straight ramp between endpoints.
+        # One keyframe pair per stretch of travel, not one per changed
+        # row. At the record's rate a one-second grasp changes on fifty
+        # rows, and the scrub bar reads these two at a time.
+        tool_kf: list[ToolKeyframe] = []
+        tool_spans: list[ToolSpan] = []
+        closed = ticks.tool_closed
+        moving_from: tuple[int, float] | None = None
+        previous = float("nan")
+        for i in range(ticks.rows + 1):
+            v = float(closed[i]) if i < len(closed) else float("nan")
+            moved = v == v and previous == previous and abs(v - previous) >= 1e-4
+            if moved and moving_from is None:
+                moving_from = (i - 1, previous)
+            elif not moved and moving_from is not None:
+                row, start_pos = moving_from
+                tool_kf.append(ToolKeyframe(time=row * dt, positions=(start_pos,)))
+                tool_kf.append(ToolKeyframe(time=(i - 1) * dt, positions=(previous,)))
+                # The arm holds while the jaws travel — that is what the
+                # record shows — so every recorded span blocks.
+                tool_spans.append(
+                    ToolSpan(start=row * dt, end=(i - 1) * dt, blocking=True)
+                )
+                moving_from = None
+            if v == v:
+                previous = v
+
+        sel_kf: list[ToolSelectionKeyframe] = []
+        for sel in tool_selections or []:
+            idx = sel.segment_index
+            t_sel = 0.0 if idx < 0 else cum[min(idx + 1, len(cum) - 1)]
+            sel_kf.append(
+                ToolSelectionKeyframe(
+                    time=t_sel,
+                    tool_key=sel.tool_key,
+                    variant_key=sel.variant_key,
+                )
+            )
+
+        cps = [
+            Checkpoint(time=cum[i] + durs[i], segment_index=i, kind=seg.checkpoint)
+            for i, seg in enumerate(ordered)
+            if seg.checkpoint
+        ]
+
+        return cls(
+            cumulative_times=cum,
+            total_duration=ticks.duration_s,
+            _segments=ordered,
+            segment_durations=durs,
+            tool_keyframes=tool_kf,
+            _tool_times=[k.time for k in tool_kf],
+            tool_selection_keyframes=sel_kf,
+            _tool_sel_times=[k.time for k in sel_kf],
+            checkpoints=cps,
+            object_keyframes=obj_kf,
+            _object_times={name: [k.time for k in kf] for name, kf in obj_kf.items()},
+            tool_spans=tool_spans,
+            _ticks=ticks,
         )
 
     def sample(self, t: float) -> TimelineSample:
@@ -208,7 +467,12 @@ class Timeline:
         fraction = (t - seg_start) / motion_dur if motion_dur > 0 else 1.0
         fraction = max(0.0, min(1.0, fraction))
 
-        joints = self._interpolate_joints(seg, fraction)
+        if self._ticks is not None:
+            # Measured, not interpolated: the row IS where the arm was.
+            row = self._ticks.row_at(t)
+            joints = [float(v) for v in self._ticks.joints_rad[row]]
+        else:
+            joints = self._interpolate_joints(seg, fraction)
 
         return TimelineSample(
             segment_index=idx,
@@ -240,6 +504,27 @@ class Timeline:
         frac = (t - k0.time) / dt
         frac = max(0.0, min(1.0, frac))
         return tuple(a + (b - a) * frac for a, b in zip(k0.positions, k1.positions))
+
+    def sample_objects(self, t: float) -> dict[str, ObjectSample]:
+        """Every tracked object's pose at time t: held before its first and
+        after its last keyframe, interpolated between (orientation slerped)."""
+        out: dict[str, ObjectSample] = {}
+        for name, kf in self.object_keyframes.items():
+            if t <= kf[0].time:
+                out[name] = ObjectSample(kf[0].pose, kf[0].physics)
+                continue
+            if t >= kf[-1].time:
+                out[name] = ObjectSample(kf[-1].pose, kf[-1].physics)
+                continue
+            idx = bisect.bisect_right(self._object_times[name], t) - 1
+            idx = max(0, min(idx, len(kf) - 2))
+            k0 = kf[idx]
+            k1 = kf[idx + 1]
+            dt = k1.time - k0.time
+            frac = (t - k0.time) / dt if dt > 1e-9 else 1.0
+            frac = max(0.0, min(1.0, frac))
+            out[name] = ObjectSample(_slerp_pose(k0.pose, k1.pose, frac), k0.physics)
+        return out
 
     def sample_tool_selection(self, t: float) -> ToolSelectionKeyframe | None:
         """Return the active tool selection at time t.

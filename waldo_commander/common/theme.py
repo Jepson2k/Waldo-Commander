@@ -72,6 +72,9 @@ class SceneColors:
     SHAPE_DRAFT_HEX = "#d9a05b"
     # Installation-layer shape (robot config; not editable from the GUI)
     SHAPE_INSTALL_HEX = "#55606a"
+    # Proposed installation shape: drafted here, enforced only once it is in
+    # the robot config (violet — neither program slate nor installation grey)
+    SHAPE_PROPOSED_HEX = "#8a7bb5"
 
     # Tool body colors (teal family — distinct from arm in every mode)
     TOOL_BODY_HEX = "#2a9d8f"

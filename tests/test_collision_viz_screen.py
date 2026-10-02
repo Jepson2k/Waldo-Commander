@@ -69,6 +69,82 @@ class TestCollisionVizScreen:
                 return last
         return last
 
+    def test_installation_floor_replaces_the_placeholder_disc(
+        self, class_screen
+    ) -> None:
+        """The backend's floor height renders as the ground plane in the
+        browser; the screenshot is the sign-off artifact for that change."""
+        from waldo_commander.state import ui_state
+
+        screen_wait_for_scene_ready(class_screen)
+        assert ui_state.urdf_scene is not None
+        from waldo_commander.common.theme import SceneColors
+
+        want = SceneColors.SHAPE_INSTALL_HEX.lstrip("#")
+
+        def _draw_floor() -> None:
+            from waldoctl import Box, Physical
+
+            scene = ui_state.urdf_scene
+            if scene is not None:
+                scene.render_shapes(
+                    [],
+                    installation=[
+                        Box(
+                            name="floor",
+                            x=6.0,
+                            y=6.0,
+                            z=0.2,
+                            pose=(0.0, 0.0, -0.1, 0, 0, 0),
+                            physics=Physical(),
+                        )
+                    ],
+                )
+
+        run_in_app(_draw_floor)
+        got = self._poll_color(class_screen, "install:floor", want)
+        assert got == want, f"the floor did not render in the browser (got {got})"
+        class_screen.shot("installation_floor", failed=False)
+
+        def _drop_floor() -> None:
+            scene = ui_state.urdf_scene
+            if scene is not None:
+                scene.render_shapes([])
+
+        run_in_app(_drop_floor)
+        gone = self._poll_color(class_screen, "install:floor", "missing")
+        assert gone == "missing", f"the floor object outlived its readback (got {gone})"
+
+    def test_installation_proposal_renders_as_a_ghost(self, class_screen) -> None:
+        """A proposed installation shape reaches the browser in its own
+        colour; the screenshot is the sign-off artifact."""
+        import waldoctl
+        from waldoctl import Box
+        from waldo_commander.common.theme import SceneColors
+
+        screen_wait_for_scene_ready(class_screen)
+        want = SceneColors.SHAPE_PROPOSED_HEX.lstrip("#")
+
+        def _propose() -> None:
+            handle = waldoctl.commander.scene
+            handle.shapes = [
+                Box(name="fence", x=0.6, y=0.05, z=0.4, pose=(0.0, -0.35, 0.2, 0, 0, 0))
+            ]
+            handle.propose_installation(["fence"])
+
+        run_in_app(_propose)
+        try:
+            got = self._poll_color(class_screen, "draft:fence", want)
+            assert got == want, f"the proposal did not render in its colour (got {got})"
+            time.sleep(0.5)  # let three.js draw the frame the shot captures
+            class_screen.shot("installation_proposal", failed=False)
+        finally:
+
+            def _clear() -> None:
+                waldoctl.commander.scene.discard_installation_draft()
+
+            run_in_app(_clear)
+
     def test_shape_renders_and_turns_red_on_collision(self, class_screen) -> None:
         import waldoctl
         from waldoctl import Box

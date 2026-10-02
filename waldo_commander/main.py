@@ -49,6 +49,7 @@ from waldo_commander.components.editor import EditorPanel
 from waldo_commander.components.gripper import GripperPage
 from waldo_commander.components.help_menu import help_menu
 from waldo_commander.components.io import IoPage
+from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
@@ -120,12 +121,27 @@ class _PageState:
     page_client: Client
     connection_notification: ui.notification | None = None
     warning_notification: ui.notification | None = None
-    warning_banner_text: str = ""
     ping_timer: ui.timer | None = None
     last_ping_ok: bool = False
 
 
 _page_state: _PageState | None = None
+
+
+def _state_name(value: object) -> str:
+    """The name of a status enum that waldoctl documents as "enum/str".
+
+    `link_health["state"]` and homing's `(state, phase)` pairs are declared
+    as a backend enum OR a plain string, so `.name` is wrong on half the
+    contract. It also ran on the status tick inside the per-tick handler,
+    which catches and logs at DEBUG -- so a string-reporting backend spun
+    the loop at full rate, and everything after the raise (homing included)
+    was skipped for as long as it stayed connected.
+    """
+    if value is None:
+        return ""
+    name = getattr(value, "name", None)
+    return name if isinstance(name, str) else str(value)
 
 
 def _client_alive(pc: Client) -> bool:
@@ -149,57 +165,32 @@ _ui_metrics = LoopMetrics()
 _startup_complete: asyncio.Event = asyncio.Event()
 
 
-def _update_connection_notification() -> None:
-    """Show or dismiss persistent notification based on robot connection state."""
-    ps = _page_state
-    if ps is None:
-        return
-
-    # Gate on scene-ready (not app_ready) so the banner still works when the
-    # backend never streams a STATUS frame; the scene signal also guarantees
-    # the page is past serialization, so elements are safe to modify.
-    if not readiness_state.urdf_scene_ready.is_set():
-        return
-
-    needs_warning = (
-        not waldoctl.commander.status.simulator_active
-        and not waldoctl.commander.status.connected
-    )
-
-    if needs_warning and ps.connection_notification is None:
-        ps.connection_notification = ui.notification(
-            message="Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
-            type="negative",
-            close_button=True,
-            timeout=0,
-        )
-    elif not needs_warning and ps.connection_notification is not None:
-        ps.connection_notification.dismiss()
-        ps.connection_notification = None
+_NO_CONNECTION_MSG = (
+    "Robot mode requires a hardware connection. "
+    "Connect robot or switch to Simulator mode."
+)
 
 
-def _update_warning_notification() -> None:
-    """Persistent banner while warning-class conditions stand.
+def _sticky_banner(
+    banner: ui.notification | None, msg: str, type_: str
+) -> ui.notification | None:
+    """Keep a dismissable, non-expiring banner in step with ``msg``.
 
-    Same mechanism as the hard-error connection banner, colored as a
-    warning; it leaves when the conditions self-clear. History lives in
-    the Diagnostics tab's event log, which keeps what the banner drops."""
-    ps = _page_state
-    if ps is None or not readiness_state.urdf_scene_ready.is_set():
-        return
-    entries = waldoctl.commander.status.warnings.entries
-    msg = "; ".join(e.title for e in entries)
-    if msg == ps.warning_banner_text:
-        return
-    ps.warning_banner_text = msg
-    banner = ps.warning_notification
+    An empty ``msg`` retires the banner. Returns the banner to hold on to,
+    so the caller owns where it is stored.
+
+    Gated on scene-ready (not app_ready) so a banner still works when the
+    backend never streams a STATUS frame; the scene signal also guarantees
+    the page is past serialization, so elements are safe to modify.
+    """
+    if _page_state is None or not readiness_state.urdf_scene_ready.is_set():
+        return banner
     if banner is not None and banner.is_deleted:
-        banner = ps.warning_notification = None
+        banner = None
     if not msg:
         if banner is not None:
             stale = banner
             stale.dismiss()
-            ps.warning_notification = None
             # The client's dismiss event is what deletes the element; a
             # client that never sends one (the user fixture) needs the
             # fallback, and it has to wait for the dismiss to flush because
@@ -209,16 +200,40 @@ def _update_warning_notification() -> None:
                 lambda: None if stale.is_deleted else stale.delete(),
                 once=True,
             )
-        return
+        return None
     if banner is None:
-        ps.warning_notification = ui.notification(
-            message=msg,
-            type="warning",
-            close_button=True,
-            timeout=0,
-        )
-    else:
+        return ui.notification(message=msg, type=type_, close_button=True, timeout=0)
+    if banner.message != msg:
         banner.message = msg
+    return banner
+
+
+def _update_connection_notification() -> None:
+    """Show or dismiss persistent notification based on robot connection state."""
+    ps = _page_state
+    if ps is None:
+        return
+    offline = (
+        not waldoctl.commander.status.simulator_active
+        and not waldoctl.commander.status.connected
+    )
+    ps.connection_notification = _sticky_banner(
+        ps.connection_notification, _NO_CONNECTION_MSG if offline else "", "negative"
+    )
+
+
+def _update_warning_notification() -> None:
+    """Persistent banner while warning-class conditions stand.
+
+    Same mechanism as the hard-error connection banner, colored as a
+    warning; it leaves when the conditions self-clear. History lives in
+    the Diagnostics tab's event log, which keeps what the banner drops."""
+    ps = _page_state
+    if ps is None:
+        return
+    entries = waldoctl.commander.status.warnings.entries
+    msg = "; ".join(e.title for e in entries)
+    ps.warning_notification = _sticky_banner(ps.warning_notification, msg, "warning")
 
 
 async def initialize_urdf_scene() -> None:
@@ -698,6 +713,19 @@ def _plugin_panel_static_size(p) -> str:
     )
 
 
+def _add_resize_handles(slot: PanelSlot) -> None:
+    """The drag targets a resizable panel needs, for the edges it can grow on.
+
+    A top panel is anchored under the tab bar and grows down and right; a
+    bottom one is anchored at the bottom and grows up and right. Without
+    these divs the panel still carries the `resizable-panel` class and a
+    PanelResize entry, so it advertises drag-resize and cannot be dragged.
+    """
+    vertical = "top" if slot is PanelSlot.LEFT_BOTTOM_TAB else "bottom"
+    for edge in (vertical, "right", "corner"):
+        ui.element("div").classes(f"resize-handle-{edge}")
+
+
 def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
     """Add a built ``ui.tab_panel`` for each discovered plugin panel in *slot*.
 
@@ -724,6 +752,8 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
                         p.build(commander)
                 except Exception as e:
                     logger.warning("Plugin panel %s build failed: %s", p.id, e)
+                if "resizable-panel" in classes:
+                    _add_resize_handles(slot)
 
 
 def _build_left_panels(panels_wrap: ui.element) -> dict:
@@ -786,9 +816,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             "overlay-card program-panel resizable-panel p-0"
         ):
             editor_panel.build(close_callback=close_top_panels)
-            ui.element("div").classes("resize-handle-right")
-            ui.element("div").classes("resize-handle-bottom")
-            ui.element("div").classes("resize-handle-corner")
+            _add_resize_handles(PanelSlot.LEFT_TOP_TAB)
 
         with ui.tab_panel("io").classes("gap-2 overlay-card overflow-hidden"):
             with ui.row().classes("w-full"):
@@ -856,7 +884,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                         ui.button(icon="close", on_click=close_top_panels).props(
                             "flat round dense color=white"
                         )
-                    ui_state.gripper_page = GripperPage(client)
+                    ui_state.gripper_page = GripperPage(
+                        client, is_open=lambda: top_panels.value == "gripper"
+                    )
                     ui_state.gripper_page.build()
 
             ui_state._build_gripper_content = _build_gripper_content
@@ -945,9 +975,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                     "min-height: 200px !important; width: 100% !important; background: rgba(0, 0, 0, 0.65); border-radius: 10px;"
                 )
             )
-            ui.element("div").classes("resize-handle-top")
-            ui.element("div").classes("resize-handle-right")
-            ui.element("div").classes("resize-handle-corner")
+            _add_resize_handles(PanelSlot.LEFT_BOTTOM_TAB)
 
         with ui.tab_panel("settings").classes(
             "overlay-card settings-panel resizable-panel"
@@ -1169,6 +1197,7 @@ def build_page_content() -> None:
         with (
             ui.column().classes("absolute inset-0 z-20").style("pointer-events: none;")
         ):
+            physics_legend.build()
             with (
                 ui.element("div")
                 .classes("panels-wrap absolute inset-0 z-30")
@@ -1859,6 +1888,17 @@ def _home_output_tick() -> None:
         )
 
 
+def _readings_equal(a: list[float], b: list[float]) -> bool:
+    """NaN-tolerant compare for a per-drive reading list.
+
+    A drive that has not answered a register reads NaN every tick, and
+    ``NaN != NaN`` would call that a change and re-fire every binding at the
+    status rate. ``arrays_equal_n`` is not usable here for the same reason,
+    and ``np.array_equal(..., equal_nan=True)`` pays a numpy round-trip on
+    six-element lists at 50 Hz."""
+    return len(a) == len(b) and all(x == y or (x != x and y != y) for x, y in zip(a, b))
+
+
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
     # Shadows of the last-applied jog-enable wire arrays, kept local so each
@@ -1872,6 +1912,7 @@ async def _status_consumer() -> None:
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
     error_shadow: waldoctl.RobotError | None = None
+    malformed_shadow: list[object] = []
     robot_state.standing_error = None
     estop_shadow = 1
     try:
@@ -2017,22 +2058,38 @@ async def _status_consumer() -> None:
                     # buffer list in place.
                     entries = getattr(status, "warnings", None)
                     if entries is not None:
-                        entries = [
-                            e
-                            if isinstance(e, waldoctl.RobotError)
-                            else waldoctl.RobotError.from_wire(e)
-                            for e in entries
-                        ]
+                        malformed: list[object] = []
+                        decoded: list[waldoctl.RobotError] = []
+                        for e in entries:
+                            if isinstance(e, waldoctl.RobotError):
+                                decoded.append(e)
+                                continue
+                            # `from_wire` unpacks exactly six, so an entry
+                            # that is not a 6-tuple raises here -- on the
+                            # status tick, inside the per-tick handler that
+                            # logs at DEBUG. One malformed warning would take
+                            # the rest of the tick with it, every tick, for as
+                            # long as the condition stood. Skip that entry
+                            # instead: the other warnings still reach the log.
+                            try:
+                                decoded.append(waldoctl.RobotError.from_wire(e))
+                            except (TypeError, ValueError):
+                                malformed.append(e)
+                        entries = decoded
+                        if malformed != malformed_shadow:
+                            malformed_shadow = malformed
+                            for bad in malformed:
+                                logger.warning(
+                                    "dropping a malformed warning entry: %r", bad
+                                )
                     if entries is not None and st.warnings.entries != entries:
                         # New conditions go to the durable log; the banner
                         # tracks only the standing (self-clearing) set.
                         prev = set(st.warnings.entries)
                         for e in entries:
                             if e not in prev:
-                                # The wire tuple is
-                                # (command_index, code, title, cause,
-                                #  effect, remedy) — the log keeps all of
-                                # it, since the remedy is the half that
+                                # The log keeps the whole error, not a
+                                # summary line: the remedy is the half that
                                 # says what to do about the condition.
                                 robot_events.add(
                                     code=e.code,
@@ -2074,12 +2131,9 @@ async def _status_consumer() -> None:
                         dh = st.drive_health
                         temps = [float(v) for v in drives.get("temperatures_c", ())]
                         currents = [float(v) for v in drives.get("currents_ma", ())]
-                        # equal_nan: a drive that has not answered a register
-                        # reads NaN every tick, and NaN != NaN would call that
-                        # a change and re-fire every binding at the status rate.
-                        if not np.array_equal(dh.temperatures_c, temps, equal_nan=True):
+                        if not _readings_equal(dh.temperatures_c, temps):
                             dh.temperatures_c = temps
-                        if not np.array_equal(dh.currents_ma, currents, equal_nan=True):
+                        if not _readings_equal(dh.currents_ma, currents):
                             dh.currents_ma = currents
                         volts = drives.get("bus_voltage_v")
                         volts = None if volts is None else float(volts)
@@ -2087,11 +2141,16 @@ async def _status_consumer() -> None:
                             dh.bus_voltage_v = volts
                         # ``faults`` is newer than the pinned waldoctl; on a
                         # release without it the tab degrades to no fault
-                        # reporting rather than failing the whole tick.
+                        # reporting rather than failing the whole tick. The
+                        # type checker resolves ``DriveHealth`` against that
+                        # pin, where the attribute does not exist yet, so the
+                        # access is spelled dynamically to match the guard
+                        # above. Both go back to a plain attribute once the
+                        # pin moves to the release that carries it.
                         if hasattr(dh, "faults"):
                             faults = [tuple(f) for f in drives.get("faults", ())]
-                            if dh.faults != faults:
-                                dh.faults = faults
+                            if getattr(dh, "faults", None) != faults:
+                                setattr(dh, "faults", faults)  # noqa: B010
 
                     loop = getattr(status, "loop_health", None)
                     if loop:
@@ -2108,7 +2167,7 @@ async def _status_consumer() -> None:
                     link = getattr(status, "link_health", None)
                     if link:
                         lh = st.link_health
-                        link_state = link["state"].name
+                        link_state = _state_name(link.get("state"))
                         if lh.state != link_state:
                             lh.state = link_state
                         if lh.restarts != link.get("restarts", 0):
@@ -2133,7 +2192,7 @@ async def _status_consumer() -> None:
                             hm.active = homing_key[0]
                             hm.sequence_step = homing_key[1]
                             hm.joints = [
-                                (state.name, phase.name)
+                                (_state_name(state), _state_name(phase))
                                 for state, phase in homing_key[2]
                             ]
 
