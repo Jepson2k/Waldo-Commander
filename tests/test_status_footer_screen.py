@@ -1,5 +1,5 @@
-"""The status footer stays one row however many I/O lines the backend reports
-or however narrow the window, and the panels above it keep clear of it."""
+"""The desktop footer stays one row; narrow screens keep every readout below
+the existing controls. Panels stay clear of both layouts."""
 
 import asyncio
 
@@ -119,7 +119,7 @@ def test_many_io_lines_keep_the_footer_one_row(screen):
     # launchers, even with a tool named.
     try:
         _select_tool("SSG-48")
-        for width in (1100, 900):
+        for width in (1100, 1000):
             with viewport(screen, width, 768):
                 shown = WebDriverWait(screen.selenium, 10).until(
                     lambda _: (
@@ -180,7 +180,7 @@ def test_bottom_panel_pushes_the_column_up_and_stays_clear_of_the_control_panel(
     )
     assert closed["framedBottom"] < opened["framedBottom"], closed
 
-    # On an 800x480 kiosk the bottom panel gives way, so the column keeps
+    # On a short desktop the bottom panel gives way, so the column keeps
     # room for its playbar and the Stop on it.
     playbar = """
         const box = s => { const e = document.querySelector(s); if (!e || e.offsetParent === null) return null;
@@ -188,7 +188,7 @@ def test_bottom_panel_pushes_the_column_up_and_stays_clear_of_the_control_panel(
         return {panel: box('.bottom-panel'), column: box('.top-panels-container'),
                 playbar: box('.program-panel .bottom-playback-bar'), viewport: innerHeight};
     """
-    with viewport(screen, 800, 480):
+    with viewport(screen, 1000, 480):
         click_tab(screen, "diagnostics")
         kiosk = WebDriverWait(screen.selenium, 10).until(
             lambda _: (g := js(screen, playbar))["panel"]
@@ -263,3 +263,135 @@ def test_on_a_phone_the_controls_clear_the_footer_and_settings_opens(screen):
         WebDriverWait(screen.selenium, 10).until(
             lambda _: not run_in_app(lambda: ui_state.settings_content.dialog.value)
         )
+
+
+@pytest.mark.browser
+def test_controls_only_layout_keeps_all_footer_readings_and_restores_the_editor(
+    screen, tmp_path
+):
+    screen.selenium.set_window_size(1366, 900)
+    screen.open("/")
+    screen_wait_for_scene_ready(screen, timeout_s=60)
+    dismiss_dialogs(screen)
+    click_tab(screen, "program")
+    source = "# Keep this unsaved program across phone orientation changes.\n"
+    run_in_app(lambda: setattr(ui_state.active_textarea, "value", source))
+    panel_id = js(screen, "return document.querySelector('.overlay-br').id")
+    measure = """
+        const visible = e => !!e && !!e.getClientRects().length && e.offsetParent !== null;
+        const box = e => { const r=e.getBoundingClientRect();
+            return {left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height}; };
+        const footer=document.querySelector('.status-footer');
+        const control=document.querySelector('.overlay-br');
+        const readings=[...footer.querySelectorAll('.pose-cell')];
+        const robotName=footer.querySelector('.readout-robot-name');
+        return {footer:box(footer), control:box(control), id:control.id,
+            robotClipped:robotName.scrollWidth > robotName.clientWidth,
+            editor:visible(document.querySelector('.program-panel')),
+            scene:visible(document.querySelector('.nicegui-scene')),
+            readings:readings.map(e=>({visible:visible(e), ...box(e)})),
+            dials:[...control.querySelectorAll('.joint-dial')].map(box),
+            width:innerWidth, height:innerHeight};
+    """
+    for width, height in ((390, 844), (667, 375), (844, 390), (568, 320)):
+        with viewport(screen, width, height, mobile=True):
+            layout = WebDriverWait(screen.selenium, 10).until(
+                lambda _: (g := js(screen, measure))["width"] == width and g
+            )
+            assert not layout["editor"] and not layout["scene"], layout
+            assert len(layout["readings"]) == 7, layout
+            assert not layout["robotClipped"], layout
+            f, c = layout["footer"], layout["control"]
+            assert c["top"] >= 0 and c["bottom"] <= f["top"] + 1, layout
+            assert f["bottom"] <= height and f["left"] >= 0 and f["right"] <= width, (
+                layout
+            )
+            for reading in layout["readings"]:
+                assert reading["visible"], layout
+                assert f["left"] <= reading["left"] < reading["right"] <= f["right"], (
+                    layout
+                )
+                assert f["top"] <= reading["top"] < reading["bottom"] <= f["bottom"], (
+                    layout
+                )
+            assert layout["id"] == panel_id, "resizing rebuilt the controls"
+            assert len(layout["dials"]) == 6, layout
+            assert (
+                max(d["top"] for d in layout["dials"])
+                - min(d["top"] for d in layout["dials"])
+                < 1
+            ), "joint controls must remain in their existing single row"
+            screen.selenium.execute_cdp_cmd(
+                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
+            )
+            WebDriverWait(screen.selenium, 5).until(
+                lambda _: not js(
+                    screen, "return !!document.querySelector('.q-tooltip')"
+                )
+            )
+            screen.selenium.save_screenshot(
+                str(tmp_path / f"footer-{width}x{height}.png")
+            )
+            for name in ("diagnostics", "log"):
+                click_tab(screen, name)
+                panel = js(
+                    screen,
+                    "return document.querySelector('.bottom-panel').getBoundingClientRect().toJSON()",
+                )
+                assert 0 <= panel["left"] < panel["right"] <= width, panel
+                assert 0 <= panel["top"] < panel["bottom"] <= f["top"], panel
+                close_panel(screen, "bottom-panel")
+    with viewport(screen, 1366, 480):
+        restored = WebDriverWait(screen.selenium, 10).until(
+            lambda _: (g := js(screen, measure))["editor"] and g["scene"] and g
+        )
+        assert restored["footer"]["height"] <= 29, restored
+        assert restored["id"] == panel_id
+        assert run_in_app(lambda: ui_state.active_textarea.value) == source
+        screen.selenium.save_screenshot(str(tmp_path / "restored-desktop.png"))
+    with viewport(screen, 390, 844, mobile=True):
+        screen.selenium.refresh()
+        screen_wait_for_scene_ready(screen, timeout_s=60)
+        fresh = WebDriverWait(screen.selenium, 10).until(
+            lambda _: (g := js(screen, measure))["control"]["height"] > 0
+            and all(r["visible"] for r in g["readings"])
+            and g
+        )
+        assert not fresh["scene"] and not fresh["editor"], fresh
+        assert fresh["control"]["bottom"] <= fresh["footer"]["top"] + 1, fresh
+        _select_tool("SSG-48")
+        WebDriverWait(screen.selenium, 10).until(
+            lambda _: js(
+                screen,
+                "return document.querySelector('.footer-tool').textContent.includes('SSG')",
+            )
+        )
+        screen.selenium.save_screenshot(str(tmp_path / "phone-tool-selected.png"))
+        with viewport(screen, 568, 320, mobile=True):
+            small = WebDriverWait(screen.selenium, 10).until(
+                lambda _: (g := js(screen, measure))["width"] == 568
+                and g["control"]["top"] >= 0
+                and g["control"]["bottom"] <= g["footer"]["top"] + 1
+                and g
+            )
+            for reading in small["readings"]:
+                assert reading["visible"], small
+            log = marked_element(screen, "footer-log")
+            screen.selenium.execute_script(
+                "arguments[0].scrollIntoView({block:'nearest'})", log
+            )
+            log.click()
+            WebDriverWait(screen.selenium, 10).until(
+                lambda _: marked_element(screen, "response-log").is_displayed()
+            )
+            close_panel(screen, "bottom-panel")
+            screen.selenium.execute_cdp_cmd(
+                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
+            )
+            WebDriverWait(screen.selenium, 5).until(
+                lambda _: not js(
+                    screen, "return !!document.querySelector('.q-tooltip')"
+                )
+            )
+            screen.selenium.save_screenshot(str(tmp_path / "small-landscape-tool.png"))
+        _select_tool("NONE")
