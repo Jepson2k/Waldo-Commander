@@ -32,6 +32,7 @@ from waldo_commander.services.camera_calibration import (
     CaptureBinding,
     calibration_from_result,
 )
+from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
@@ -1117,6 +1118,10 @@ class HandEyeCalibrationPanel(Panel):
         each pose, return to the start pose, and solve. Runs as a background
         task. A halt (see :class:`_AutoRun`) stops the robot where it is and
         keeps the views taken so far; the run never drives back after one."""
+        with reservation, motion_recorder.owned():
+            await self._auto_run_owned(commander, run)
+
+    async def _auto_run_owned(self, commander: Commander, run: _AutoRun) -> None:
         n = len(AUTO_VIEW_DELTAS_DEG)
         page_client = run.page_client
         captured = 0
@@ -1240,7 +1245,6 @@ class HandEyeCalibrationPanel(Panel):
                     )
         finally:
             remove_listener()
-            reservation.release()
             if self._run is run:
                 self._run = None
             self._set_auto_progress(None)

@@ -11,6 +11,7 @@ from typing import Any, Literal, get_args, get_origin, get_type_hints
 from nicegui import background_tasks, ui
 from waldoctl import Commander
 from waldoctl.camera import CameraCalibration
+from waldoctl.recordings import Demonstration
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.signals import DigitalSignal
 from waldoctl.tools import ToolStatus
@@ -352,6 +353,14 @@ class SkillDialog:
                             "text-caption"
                         ).mark("skill-camera-source")
                         readers[name] = CommanderCameraSource
+                    elif annotation is Demonstration:
+                        ui.label(
+                            "Replays come from recording: press Record, move the arm by hand or from another client, and keep the captured lines Raw. In Python, pass load_demonstration(path)."
+                        ).classes("text-caption")
+                        insert_button.disable()
+                        # Falls through to refresh_source: it is the only writer
+                        # of the snippet and the message.
+                        break
                     elif annotation == LocalizationLimits | None:
                         readers[name] = lambda: None
                         ui.label("Uses default detection limits.").classes(
