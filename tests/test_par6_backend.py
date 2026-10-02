@@ -32,7 +32,7 @@ import pytest
 from nicegui.testing import User
 from waldoctl.discovery import available_backends
 
-from tests.helpers.wait import poll_until, wait_for_app_ready, wait_until
+from tests.helpers.wait import poll_until, wait_for_app_ready
 
 
 def _par6d_binary() -> str | None:
@@ -199,8 +199,9 @@ async def test_commander_runs_on_the_par6_runtime(
         # lands on commander.status for API consumers.
         import asyncio
 
-        await wait_until(lambda: bool(status.controller.mode))
-        assert status.controller.mode, "no controller mode ever arrived"
+        await poll_until(
+            lambda: status.controller.mode, bool, what="a controller mode on the wire"
+        )
 
         # Freedrive reports the arm, not the request. A fresh `par6d --sim`
         # is unreferenced, so the runtime cannot actually release the arm
@@ -314,31 +315,34 @@ async def test_commander_runs_on_the_par6_runtime(
             user.find(marker="tab-par6-drives").click()
             await asyncio.sleep(0)
             await user.should_see(marker="drives-readings")
-            await wait_until(
-                lambda: _text("drives-temp-0").endswith("°C"), timeout_s=10.0
-            )
-            assert _text("drives-temp-0").endswith("°C"), (
-                f"drive 0 never reported a temperature: {_text('drives-temp-0')!r}"
+            await poll_until(
+                lambda: _text("drives-temp-0"),
+                lambda t: t.endswith("°C"),
+                timeout_s=10.0,
+                what="a temperature from drive 0",
             )
 
             ilim = next(iter(user.find(marker="drives-gain-ilim_ma").elements))
-            await wait_until(lambda: bool(ilim.value))
+            await poll_until(
+                lambda: ilim.value, bool, what="the current limit seeded from config"
+            )
             configured = float(ilim.value)
             assert configured > 0, (
                 "the current limit is seeded from the runtime's config"
             )
             ilim.value = configured * 100
             user.find(marker="drives-apply-gains").click()
-            await wait_until(lambda: "ceiling" in _text("drives-gain-note"))
-            assert "ceiling" in _text("drives-gain-note"), (
-                f"the runtime's refusal never reached the form: {_text('drives-gain-note')!r}"
+            await poll_until(
+                lambda: _text("drives-gain-note"),
+                lambda note: "ceiling" in note,
+                what="the runtime's refusal on the form",
             )
 
             # The bus table is the runtime's scan, not a static list: every
             # configured joint answers on a sim bus.
             user.find(marker="drives-rescan").click()
             table = next(iter(user.find(marker="drives-bus-table").elements))
-            await wait_until(lambda: bool(table.rows))
+            await poll_until(lambda: table.rows, bool, what="rows from the bus scan")
             present = {row["node"] for row in table.rows if row["present"] == "yes"}
             assert {0, 1, 2, 3, 4, 5} <= present, f"scan rows: {table.rows}"
 
