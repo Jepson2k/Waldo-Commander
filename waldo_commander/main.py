@@ -2191,6 +2191,7 @@ async def _status_consumer() -> None:
                                 robot_state.completed_index,
                             )
                             control_panel.refresh_joint_enablement()
+                            control_panel.refresh_joint_dials()
                             control_panel.sync_cartesian_button_states()
                             control_panel.sync_gizmo_for_jog_state()
                             if ui_state.gripper_page is not None:
