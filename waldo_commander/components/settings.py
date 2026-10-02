@@ -1,11 +1,13 @@
 """Settings component for serial port, theme, and visualization preferences."""
 
+import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import contextmanager
 
-from nicegui import app as ng_app
-from nicegui import ui
+from nicegui import Client, app as ng_app
+from nicegui import background_tasks, context, ui
+from nicegui.client import ClientConnectionTimeout
 
 import waldoctl
 from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
@@ -20,6 +22,21 @@ from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_
 from waldo_commander.state import automation_state, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
+
+# Trailing-edge window for a TCP offset edit, seconds.
+TCP_EDIT_THROTTLE_S = 0.4
+
+# How long an adopted offset waits for its page's socket, seconds.
+ADOPT_CONNECT_TIMEOUT_S = 5.0
+
+# Tools this app has pushed a TCP offset for since it started. Until then a
+# controller reporting zero may simply never have been told; afterwards a zero
+# is a deliberate clear by whoever set it, and the GUI follows it rather than
+# overwriting it with what the browser remembers.
+_pushed_offset_tools: set[str] = set()
+
+# The X/Y/Z inputs of one tool's TCP offset row.
+OffsetInputs = tuple[ui.number, ui.number, ui.number]
 
 
 def get_available_serial_ports() -> list[str]:
@@ -60,6 +77,12 @@ class SettingsContent:
         self._cam_refresh_timer: ui.timer | None = None
         self._variant_container: ui.column | None = None
         self._tcp_offset_container: ui.column | None = None
+        self._tcp_pushing = False
+        self._tcp_push_next: tuple[str, dict, OffsetInputs, Client, int] | None = None
+        # Bumped by every tool change. A push carries the epoch it was
+        # queued under, so an edit in flight when the tool changes is
+        # dropped rather than re-applied to the tool that replaced it.
+        self._tool_epoch = 0
 
     def _load_preferences(self) -> dict:
         """Load persisted preferences from storage."""
@@ -191,7 +214,7 @@ class SettingsContent:
                 if is_none or not variants:
                     sel.props("disable")
 
-    def _rebuild_tcp_offset(self, tool_key: str) -> None:
+    def _rebuild_tcp_offset(self, tool_key: str, *, tool_changed: bool = False) -> None:
         """Rebuild per-tool TCP offset inputs."""
         assert self._tcp_offset_container is not None
         self._tcp_offset_container.clear()
@@ -199,6 +222,7 @@ class SettingsContent:
         offset = (
             self._get_tcp_offset(tool_key) if not is_none else {"x": 0, "y": 0, "z": 0}
         )
+        page_client = context.client
 
         async def _on_offset_change(_e=None):
             vals = {
@@ -210,28 +234,197 @@ class SettingsContent:
             vk = self._get_variant_key(tool_key)
             self._apply_tool_scene(tool_key, variant_key=vk)
             self._notify_and_resimulate()
+            await self._push_tcp_offset(
+                tool_key, vals, (x_input, y_input, z_input), page_client
+            )
+
+        def _axis_input(axis: str) -> ui.number:
+            return (
+                ui.number(label=axis.upper(), value=offset.get(axis, 0), step=0.5)
+                .style("width: 48px;")
+                .props("dense borderless" + (" disable" if is_none else ""))
+                # Trailing edge only: typing "125" is three edits, and each
+                # one on its own would reach the controller.
+                .on(
+                    "update:model-value",
+                    _on_offset_change,
+                    throttle=TCP_EDIT_THROTTLE_S,
+                    leading_events=False,
+                )
+                .mark(f"tcp-offset-{axis}")
+            )
 
         with self._tcp_offset_container:
             with _setting_row("TCP Offset", "Offset from default TCP (mm)"):
                 with ui.row().classes("gap-1"):
-                    x_input = (
-                        ui.number(label="X", value=offset.get("x", 0), step=0.5)
-                        .style("width: 48px;")
-                        .props("dense borderless" + (" disable" if is_none else ""))
-                        .on("update:model-value", _on_offset_change)
-                    )
-                    y_input = (
-                        ui.number(label="Y", value=offset.get("y", 0), step=0.5)
-                        .style("width: 48px;")
-                        .props("dense borderless" + (" disable" if is_none else ""))
-                        .on("update:model-value", _on_offset_change)
-                    )
-                    z_input = (
-                        ui.number(label="Z", value=offset.get("z", 0), step=0.5)
-                        .style("width: 48px;")
-                        .props("dense borderless" + (" disable" if is_none else ""))
-                        .on("update:model-value", _on_offset_change)
-                    )
+                    x_input = _axis_input("x")
+                    y_input = _axis_input("y")
+                    z_input = _axis_input("z")
+        if not is_none:
+            background_tasks.create(
+                self._reconcile_tcp_offset(
+                    tool_key,
+                    (x_input, y_input, z_input),
+                    page_client,
+                    tool_changed=tool_changed,
+                ),
+                name="tcp-offset-reconcile",
+            )
+
+    @staticmethod
+    def _notify(page_client: Client, message: str, color: str) -> None:
+        """A toast raised from a background task needs its page's slot stack;
+        without one ``ui.notify`` raises and the user is never told."""
+        if page_client.has_socket_connection:
+            with page_client:
+                ui.notify(message, color=color)
+
+    async def _read_tcp_offset(self) -> list[float]:
+        """The controller's offset as exactly three floats.
+
+        Both backends answer an unreachable controller with a sentinel
+        rather than an error, and a short or malformed answer would only
+        be noticed later, indexing `offset_mm[0..2]` in
+        `_adopt_tcp_offset` -- outside every `try` here, so the caller's
+        handler never sees it. Validating at the read makes a bad answer a
+        raise that the existing handlers already deal with.
+        """
+        back = [float(b) for b in await self.client.tcp_offset()]
+        if len(back) != 3:
+            raise ValueError(f"tcp_offset() answered {len(back)} values, want 3")
+        return back
+
+    async def _push_tcp_offset(
+        self,
+        tool_key: str,
+        vals: dict,
+        inputs: OffsetInputs,
+        page_client: Client,
+    ) -> None:
+        """Send the offset to the controller, newest values only.
+
+        One push runs at a time: overlapping pushes race each other's
+        readbacks, and the loser adopts an intermediate value the user has
+        already typed past."""
+        self._tcp_push_next = (tool_key, vals, inputs, page_client, self._tool_epoch)
+        if self._tcp_pushing:
+            return
+        self._tcp_pushing = True
+        try:
+            while self._tcp_push_next is not None:
+                pending = self._tcp_push_next
+                self._tcp_push_next = None
+                await self._send_tcp_offset(*pending)
+        finally:
+            self._tcp_pushing = False
+
+    async def _send_tcp_offset(
+        self,
+        tool_key: str,
+        vals: dict,
+        inputs: OffsetInputs,
+        page_client: Client,
+        epoch: int,
+    ) -> None:
+        """Set the offset and adopt what the controller reports back, so the
+        GUI's TCP is the one the controller plans with."""
+        if epoch != self._tool_epoch:
+            # The tool changed while this edit was queued. The controller
+            # zeroed its offset for the new tool; sending the old tool's
+            # number now would silently restore it.
+            return
+        x, y, z = (float(vals.get(k, 0) or 0) for k in ("x", "y", "z"))
+        back: list[float] = []
+        try:
+            # The return is a bare confirmation on both backends (1 applied,
+            # 0 unconfirmed), not a queue slot to wait on, so the readback is
+            # what says the controller took the value. A backend may answer
+            # the query a tick behind the set, hence the poll.
+            await self.client.set_tcp_offset(x, y, z)
+            _pushed_offset_tools.add(tool_key)
+            for _ in range(10):
+                back = await self._read_tcp_offset()
+                if all(abs(b - v) <= 1e-3 for b, v in zip(back, (x, y, z))):
+                    return
+                await asyncio.sleep(0.1)
+        except Exception as exc:
+            logger.warning("set_tcp_offset(%s, %s, %s) failed: %s", x, y, z, exc)
+            self._notify(page_client, f"TCP offset not applied: {exc}", "negative")
+            return
+        self._notify(
+            page_client,
+            f"Controller reports TCP offset {[round(float(b), 2) for b in back]}",
+            "warning",
+        )
+        await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+
+    async def _reconcile_tcp_offset(
+        self,
+        tool_key: str,
+        inputs: OffsetInputs,
+        page_client: Client,
+        *,
+        tool_changed: bool,
+    ) -> None:
+        """Line the browser's remembered offset up with the controller's.
+
+        The controller's offset is the source of truth wherever it can be
+        someone else's — a program or another client, and a deliberate zero
+        counts. The remembered offset is pushed only where the controller's
+        cannot be: right after a tool change, which resets it, and on a
+        controller reporting nothing that this app has never told."""
+        try:
+            back = await self._read_tcp_offset()
+        except Exception as exc:
+            logger.debug("tcp_offset readback failed: %s", exc)
+            return
+        stored = self._get_tcp_offset(tool_key)
+        mine = [float(stored.get(k, 0) or 0) for k in ("x", "y", "z")]
+        if all(abs(b - m) <= 1e-3 for b, m in zip(back, mine)):
+            return
+        never_told = tool_key not in _pushed_offset_tools and not any(
+            abs(b) > 1e-3 for b in back
+        )
+        if tool_changed or never_told:
+            await self._push_tcp_offset(tool_key, stored, inputs, page_client)
+        else:
+            await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+
+    async def _adopt_tcp_offset(
+        self,
+        tool_key: str,
+        offset_mm: list | tuple,
+        inputs: OffsetInputs,
+        page_client: Client,
+    ) -> None:
+        vals = {
+            "x": float(offset_mm[0]),
+            "y": float(offset_mm[1]),
+            "z": float(offset_mm[2]),
+        }
+        if not page_client.has_socket_connection:
+            # The reconcile that adopts an out-of-band offset is started
+            # while the page is still being built, so its socket is often
+            # not up yet. Dropping the update here would leave the inputs
+            # showing the browser's remembered offset while the controller
+            # plans with another one.
+            try:
+                await page_client.connected(timeout=ADOPT_CONNECT_TIMEOUT_S)
+            except ClientConnectionTimeout:
+                return
+        with page_client:
+            # Written here, beside the inputs it must agree with: ahead of
+            # the connection guard above, a page that went away left the
+            # remembered offset changed and the inputs still showing the old
+            # one, and the next rebuild read back the discrepancy as truth.
+            ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
+            for inp, v in zip(inputs, (vals["x"], vals["y"], vals["z"])):
+                if inp.value != v:
+                    inp.set_value(v)
+            self._apply_tool_scene(
+                tool_key, variant_key=self._get_variant_key(tool_key)
+            )
+            self._notify_and_resimulate()
 
     # ── Section builders ─────────────────────────────────────────────
 
@@ -351,9 +544,13 @@ class SettingsContent:
     def _build_tool_section(self) -> None:
         async def _on_tool_change(e):
             tool = e.value
+            self._tool_epoch += 1
+            self._tcp_push_next = None
             vk = self._get_variant_key(tool)
             try:
-                await self.client.select_tool(tool, variant_key=vk or "")
+                index = await self.client.select_tool(tool, variant_key=vk or "")
+                if isinstance(index, int) and index >= 0:
+                    await self.client.wait_command(index, timeout=5.0)
             except Exception as exc:
                 logger.warning("select_tool(%s) failed: %s", tool, exc)
                 ui.notify(f"Tool change failed: {exc}", color="negative")
@@ -364,7 +561,7 @@ class SettingsContent:
             self._apply_tool_scene(tool, variant_key=vk)
             self._apply_tool_camera(tool)
             self._rebuild_variant_selector(tool)
-            self._rebuild_tcp_offset(tool)
+            self._rebuild_tcp_offset(tool, tool_changed=True)
             self._notify_and_resimulate()
 
         tool_options = {}

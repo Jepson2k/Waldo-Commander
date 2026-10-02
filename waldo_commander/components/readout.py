@@ -94,17 +94,23 @@ _EVENT_ICONS = {
 def _build_event_log_html() -> str:
     """Build HTML for the warnings/errors log entries."""
     parts: list[str] = []
-    for ts, severity, message, detail in reversed(robot_events.entries):
+    for ts, severity, message, detail, remedy in reversed(robot_events.entries):
         icon = _EVENT_ICONS.get(severity, _EVENT_ICONS["warning"])
         tail = (
             f' <span style="color:var(--ctk-muted)">{html_mod.escape(detail)}</span>'
             if detail
             else ""
         )
+        fix = (
+            f'<div style="color:var(--ctk-muted);padding-left:18px">'
+            f"Fix: {html_mod.escape(remedy)}</div>"
+            if remedy
+            else ""
+        )
         parts.append(
             f'<div class="action-log-entry" style="font-size:12px;line-height:1.5">'
             f'{icon} <span style="color:var(--ctk-muted)">{ts}</span> '
-            f"<b>{html_mod.escape(message)}</b>{tail}</div>"
+            f"<b>{html_mod.escape(message)}</b>{tail}{fix}</div>"
         )
     return "".join(parts)
 

@@ -663,13 +663,20 @@ def test_shape_render_pose_matches_enforced_geometry() -> None:
     blocked volume."""
     import numpy as np
 
-    from waldoctl import Cylinder
+    from waldoctl import Box, Cylinder
     from waldo_commander.services.urdf_scene.urdf_scene import _shape_render_pose
 
     # Identity pose: the render rotation is the Y->Z-up correction, not identity.
     pos, rot = _shape_render_pose(Cylinder(name="post", radius=0.05, length=0.5))
     assert pos == (0.0, 0.0, 0.0)
     assert np.allclose(rot, [[1, 0, 0], [0, 0, -1], [0, 1, 0]])
+
+    # A box needs no correction: coal and three.js agree on its axes.
+    pos, rot = _shape_render_pose(
+        Box(name="crate", pose=(0.2, 0.0, 0.1, 0.0, 0.0, 0.0), x=0.1, y=0.1, z=0.2)
+    )
+    assert np.allclose(pos, (0.2, 0.0, 0.1))
+    assert np.allclose(rot, np.eye(3))
 
 
 @pytest.mark.integration

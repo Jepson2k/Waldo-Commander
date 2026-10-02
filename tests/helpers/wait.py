@@ -5,8 +5,9 @@ making tests more reliable and faster.
 """
 
 import asyncio
+import inspect
 import time
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import waldoctl
 from nicegui.testing import User
@@ -295,6 +296,59 @@ async def wait_for_motion_start(
 
     # Continue anyway and let wait_for_motion_stable handle detection
     return False
+
+
+async def poll_until(
+    read: Callable[[], Any],
+    accept: Callable[[Any], bool],
+    timeout_s: float = 5.0,
+    interval: float = 0.1,
+    what: str | Callable[[], str] = "the value",
+) -> Any:
+    """Poll ``read`` until ``accept`` is happy with what it returns.
+
+    The suite's general condition wait: ``read`` may be sync or async, and
+    whatever it returns is what comes back — a marker's text, a client
+    query's answer, a whole row of readings.
+
+    Args:
+        read: Callable returning the value to check (may be a coroutine)
+        accept: Predicate deciding whether the value is the awaited one
+        timeout_s: Maximum time to wait
+        interval: Delay between reads
+        what: Name for the failure message; a callable is evaluated then, so
+            surrounding context can be gathered at the moment of failure
+
+    Returns:
+        The first accepted value
+
+    Raises:
+        AssertionError: If no read is accepted within the timeout
+    """
+    value: Any = None
+    deadline = time.monotonic() + timeout_s
+    while True:
+        value = read()
+        if inspect.isawaitable(value):
+            value = await value
+        if accept(value):
+            return value
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(interval)
+    # The description is there to explain a failure, so it must not be able
+    # to replace one: a callable that raises here would surface its own
+    # traceback and hide both the condition that timed out and the value.
+    if callable(what):
+        try:
+            detail = what()
+        except Exception as exc:
+            detail = f"<description raised {exc!r}>"
+    else:
+        detail = what
+    raise AssertionError(
+        f"{detail} never settled within {timeout_s}s; last read {value!r}"
+    )
 
 
 async def wait_for_value_change(
