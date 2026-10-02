@@ -25,13 +25,13 @@ class Mood(StrEnum):
     HAPPY = "happy"
     """Green: connected to the robot."""
     NEUTRAL = "neutral"
-    """Grey: driving the simulator."""
+    """Amber: driving the simulator."""
     SAD = "sad"
     """Red: robot mode with no robot answering."""
     ALARMED = "alarmed"
     """Red, wide-eyed, flashing antennae: an E-STOP is active."""
     BOOTING = "booting"
-    """Grey with a scanning visor: waiting for the controller."""
+    """Muted grey with a scanning visor: waiting for the controller."""
 
 
 class Light(StrEnum):
@@ -40,7 +40,7 @@ class Light(StrEnum):
     RECORDING = "rec"
     """Red dot on one bulb: the motion recorder is capturing."""
     AGENT = "agent"
-    """Both bulbs glow warm: an AI agent holds control of the arm."""
+    """Both bulbs glow yellow: an AI agent holds control of the arm."""
 
 
 class Reaction(StrEnum):
@@ -69,7 +69,8 @@ class RobotBuddy(ui.element, component="robot_buddy.vue"):
 
         :param mood: resting expression and colour
         :param size: edge length of the square element in pixels
-        :param color: CSS colour overriding the mood's colour
+        :param color: CSS colour overriding the mood's colour, such as a
+            ``var(--wc-...)`` token or ``currentColor`` to take a chip's text colour
         :param interactive: follow the pointer when it comes near, and giggle
             (or get dizzy) when clicked
         :param sleep_after_s: doze off after this long without pointer or

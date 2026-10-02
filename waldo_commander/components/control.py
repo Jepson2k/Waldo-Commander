@@ -55,7 +55,7 @@ from waldo_commander.state import (
 logger = logging.getLogger(__name__)
 
 _ESTOP_BUDDY_PX = 160
-_DIGITAL_ESTOP_COLOR = "var(--q-warning)"
+_DIGITAL_ESTOP_COLOR = "var(--wc-warning)"
 
 # Module-level constants and precompiled regexes: avoid recreating them every frame.
 _AXIS_ORDER = (
@@ -149,8 +149,8 @@ class _EStopManager:
                 .classes("overlay-card gap-4 items-center")
                 .mark("estop-dialog"),
             ):
-                # Red for the hardware button, amber for the software stop,
-                # matching the headline below.
+                # Error red for the hardware button, warning yellow for the
+                # software stop, matching the headline below.
                 RobotBuddy(
                     Mood.ALARMED,
                     size=_ESTOP_BUDDY_PX,

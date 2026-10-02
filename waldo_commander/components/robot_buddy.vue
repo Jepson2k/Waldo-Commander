@@ -41,7 +41,7 @@
                   opacity: e.side === 'R' && eyes === 'wink' ? 0 : 1,
                 }"
               >
-                <circle :cx="e.cx" cy="12" r="1.8" fill="white" />
+                <circle class="bb-cut" :cx="e.cx" cy="12" r="1.8" />
                 <g class="bb-pupil" :style="pupilStyle">
                   <circle
                     :cx="e.cx"
@@ -80,8 +80,8 @@
               <path d="M14.9 10.9 L17.1 13.1 M17.1 10.9 L14.9 13.1" />
             </g>
             <g class="bb-eyes-alt bb-eyes-scan" :style="{ opacity: eyes === 'scan' ? 1 : 0 }">
-              <rect x="5.8" y="11" width="12.4" height="2" rx="1" fill="white" opacity="0.22" />
-              <rect class="bb-scan-bar" x="5.8" y="11" width="2.6" height="2" rx="1" fill="white" />
+              <rect class="bb-cut" x="5.8" y="11" width="12.4" height="2" rx="1" opacity="0.22" />
+              <rect class="bb-scan-bar bb-cut" x="5.8" y="11" width="2.6" height="2" rx="1" />
             </g>
           </g>
 
@@ -798,14 +798,17 @@ export default {
   line-height: 0;
   color: var(--bb-color);
   transition: color 0.6s ease;
+  /* Eyes, mouth and LEDs are cut-outs in the surface behind the buddy, so
+     they read on any body colour; the glass by default. */
+  --bb-cut: var(--wc-glass-end);
   /* Floating glyphs sit on the page, not the body: follow the theme's text. */
-  --bb-glyph: var(--ctk-text, white);
+  --bb-glyph: var(--wc-text);
 }
-.robot-buddy.bb-mood-happy { --bb-color: #4caf50; }
-.robot-buddy.bb-mood-neutral { --bb-color: #888; }
-.robot-buddy.bb-mood-sad { --bb-color: #e53935; }
-.robot-buddy.bb-mood-alarmed { --bb-color: #e53935; }
-.robot-buddy.bb-mood-booting { --bb-color: #888; }
+.robot-buddy.bb-mood-happy { --bb-color: var(--wc-positive); }
+.robot-buddy.bb-mood-neutral { --bb-color: var(--wc-mode-sim); }
+.robot-buddy.bb-mood-sad { --bb-color: var(--wc-error); }
+.robot-buddy.bb-mood-alarmed { --bb-color: var(--wc-error); }
+.robot-buddy.bb-mood-booting { --bb-color: var(--wc-text-muted); }
 
 .robot-buddy svg {
   width: 100%;
@@ -838,18 +841,19 @@ export default {
 .robot-buddy .bb-stroke path,
 .robot-buddy .bb-glyph {
   fill: none;
-  stroke: white;
+  stroke: var(--bb-cut);
   stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 .robot-buddy .bb-eyes-alt.bb-stroke path { stroke-width: 1.1; }
 .robot-buddy .bb-eyes-alt.bb-eyes-x path { stroke-width: 0.75; }
-.robot-buddy .bb-fill { fill: white; stroke: white; stroke-width: 0.4; stroke-linejoin: round; }
-.robot-buddy .bb-gloss { fill: white; opacity: 0.16; }
+.robot-buddy .bb-cut { fill: var(--bb-cut); }
+.robot-buddy .bb-fill { fill: var(--bb-cut); stroke: var(--bb-cut); stroke-width: 0.4; stroke-linejoin: round; }
+.robot-buddy .bb-gloss { fill: var(--wc-on-fill); opacity: 0.16; }
 .robot-buddy .bb-scan-bar { animation: bb-scan 1.1s ease-in-out infinite alternate; }
 
-.robot-buddy .bb-led { fill: white; opacity: 0; }
+.robot-buddy .bb-led { fill: var(--bb-cut); opacity: 0; }
 .robot-buddy .bb-halo { fill: none; stroke: currentColor; stroke-width: 0.35; opacity: 0; }
 .robot-buddy.bb-leds-chase .bb-led { animation: bb-led 1.2s ease-in-out infinite; }
 .robot-buddy.bb-leds-chase .bb-antenna-r .bb-led { animation-delay: 0.6s; }
@@ -863,10 +867,10 @@ export default {
 .robot-buddy.bb-leds-party .bb-antenna-r .bb-led { animation-delay: 0.15s; }
 
 /* Steady lights for standing conditions, big enough to read at chip size:
-   the left bulb turns REC red while recording, both bulbs glow warm while
-   an AI agent drives. */
-.robot-buddy.bb-leds-rec .bb-antenna-l .bb-bulb { fill: oklab(63.7% 0.214 0.101); }
-.robot-buddy.bb-leds-agent .bb-bulb { fill: oklab(67.2% 0.102 0.082); }
+   the left bulb turns record red while recording, both bulbs glow warning
+   yellow while an AI agent drives. */
+.robot-buddy.bb-leds-rec .bb-antenna-l .bb-bulb { fill: var(--wc-record); }
+.robot-buddy.bb-leds-agent .bb-bulb { fill: var(--wc-warning); }
 .robot-buddy.bb-leds-rec .bb-antenna-l .bb-led,
 .robot-buddy.bb-leds-agent .bb-led { animation: bb-glow 2s ease-in-out infinite; }
 @keyframes bb-glow {
@@ -874,7 +878,7 @@ export default {
   50% { opacity: 0; }
 }
 
-.robot-buddy .bb-alert { fill: #ffca28; stroke: rgba(0, 0, 0, 0.35); stroke-width: 0.15; }
+.robot-buddy .bb-alert { fill: var(--wc-warning); stroke: var(--wc-scrim); stroke-width: 0.15; }
 .robot-buddy .bb-glyph { stroke: var(--bb-glyph); stroke-width: 0.45; }
 .robot-buddy .bb-glyph-dot { fill: var(--bb-glyph); }
 .robot-buddy .bb-z { stroke-width: 0.42; opacity: 0; animation: bb-z 2.7s ease-out infinite; }

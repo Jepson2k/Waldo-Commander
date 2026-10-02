@@ -1583,6 +1583,13 @@ html, body {
 .file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 .file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
+/* ========== Robot buddy ========== */
+
+/* On the simulator's amber fill the buddy is drawn in on-bright, so its eyes
+   and mouth cut through to the fill rather than to the glass. */
+.bg-wc-mode-sim .robot-buddy { --bb-cut: var(--wc-mode-sim); }
+
+
 /* ========== Status footer ========== */
 
 .status-footer {
