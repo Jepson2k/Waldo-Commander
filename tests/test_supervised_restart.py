@@ -137,7 +137,17 @@ if __name__ == '__main__':
     await user.should_see("Previous run: failed · same source")
     await user.should_see("Controller ready · simulator", retries=50)
     assert not marker.exists()
+    start_button = next(iter(user.find(marker="restart-start").elements))
+    entry_choice = next(iter(user.find(marker="restart-entry-choice").elements))
+    assert not start_button.enabled, "Start offered before the setup was checked"
     user.find(marker="restart-physical-confirmation").click()
+    assert start_button.enabled
+    # A check covers the entry it was made for; another entry needs its own.
+    with user.client:
+        entry_choice.value = "after_place"
+    assert not start_button.enabled, "a check of one entry authorized another"
+    user.find(marker="restart-physical-confirmation").click()
+    assert start_button.enabled
     from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
 
     control_lease.seize(MCP, "restart-review", "Review MCP")
@@ -153,12 +163,12 @@ if __name__ == '__main__':
     )
     assert control_lease.held_by(BROWSER, ui_state.active_client_id)
     await user.should_see("You've taken control from the AI")
-    assert marker.read_text() == "sync:2\n"
-    assert (await client.angles())[0] == pytest.approx(before[0] + 3, abs=0.1)
+    assert marker.read_text() == "async:2\n"
+    assert (await client.angles())[0] == pytest.approx(before[0] - 3, abs=0.1)
     events = load_record(script_exec.last_record)
     assert any(e["event"] == "restart_selected" for e in events)
     assert any(
-        e["event"] == "entry_returned" and e["method"] == "after_pick" for e in events
+        e["event"] == "entry_returned" and e["method"] == "after_place" for e in events
     )
 
     async def selected(entry, reference):
@@ -170,10 +180,10 @@ if __name__ == '__main__':
 
     script_exec.record_runs = False
     reference = await fresh_state(client)
-    assert await selected("after_place", reference)
+    assert await selected("after_pick", reference)
     await finished()
     assert script_exec.last_exit_code == 0
-    assert marker.read_text() == "sync:2\nasync:2\n"
+    assert marker.read_text() == "async:2\nsync:2\n"
     assert (await client.angles())[0] == pytest.approx(before[0], abs=0.1)
 
     reference = await fresh_state(client)
@@ -185,7 +195,7 @@ if __name__ == '__main__':
                 await asyncio.sleep(0)
         await script_exec.stop()
         assert not await launch
-        assert marker.read_text() == "sync:2\nasync:2\n"
+        assert marker.read_text() == "async:2\nsync:2\n"
     finally:
         if is_any_program_running():
             await script_exec.stop()
@@ -222,7 +232,7 @@ if __name__ == '__main__':
     assert await client.resume() > 0
     await client.reset_state()
     assert not await selected("after_pick", reference)
-    assert marker.read_text() == "sync:2\nasync:2\n"
+    assert marker.read_text() == "async:2\nsync:2\n"
     assert not is_any_program_running()
 
     # A lost queue readback is not an empty queue.

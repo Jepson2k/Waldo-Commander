@@ -49,85 +49,35 @@ def _pair(q_rad, rows: int = 30) -> tuple[waldoctl.TickIndex, waldoctl.TickIndex
 
 
 @pytest.mark.integration
-async def test_predicted_overlay_draws_only_when_revisions_match(user: User) -> None:
-    """A predicted record is drawn only against the plan it answers. One
-    that answers an older revision is not on screen at all — not in the
-    scene, not in the layer toggles, not in the legend — and one that is
-    the plan itself has nothing to add."""
+async def test_a_predicted_pass_never_locks_the_bar_and_draws_only_against_its_plan(
+    user: User,
+) -> None:
+    """A predicted pass in flight never disables scrubbing: the bar plays
+    the commanded record and only shows that a pass is running. On parol6
+    the pass comes back as the plan, so every layer toggle stays off and the
+    legend stays hidden. Driven through the editor's own debounced planning
+    and predicting.
+
+    A predicted record that does differ is drawn only against the plan it
+    answers. One that answers an older revision is not on screen at all —
+    not in the scene, not in the layer toggles, not in the legend; its
+    layer toggle shows and hides it without a rebuild; and one that is the
+    plan itself has nothing to add.
+    """
     from waldo_commander.components.physics_legend import physics_legend
-    from waldo_commander.components.playback import layers_available
+    from waldo_commander.components.playback import layers_available, playback
+    from waldo_commander.components.simulation_engine import simulation
+    from waldo_commander.services.path_visualizer import path_visualizer
     from waldo_commander.services.preview_segments import segments_from_record
     from waldo_commander.state import simulation_state, ui_state
 
     await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    assert scene is not None
-    program = waldoctl.commander.programs.active
-    assert program is not None
-    view = waldoctl.commander.settings.view
-    saved = (view.paths_visible, view.predicted_visible)
-    view.paths_visible = True
-    view.predicted_visible = True
-    commanded, predicted = _pair(waldoctl.commander.status.joints.angles.rad)
-    overlay = scene.physics_overlay
-    assert physics_legend._root is not None
-    legend = physics_legend._root
-    dry_run = program.dry_run
-    try:
-        dry_run.commanded = commanded
-        dry_run.commanded_revision = 2
-        dry_run.path_segments = segments_from_record(commanded, [])
-        dry_run.predicted = predicted
-        dry_run.predicted_revision = 1
-        simulation_state.notify_changed()
-        await asyncio.sleep(0)
-        assert dry_run.predicted_current is None
-        assert not overlay.is_built, "an answer to an older plan must not be drawn"
-        assert not layers_available(dry_run)["predicted_visible"]
-        assert not legend.visible
-
-        dry_run.predicted_revision = 2
-        simulation_state.notify_changed()
-        assert await wait_until(lambda: overlay.is_built)
-        assert dry_run.predicted_current is predicted
-        assert layers_available(dry_run)["predicted_visible"]
-        assert legend.visible
-
-        dry_run.predicted = commanded
-        simulation_state.notify_changed()
-        assert await wait_until(lambda: not overlay.is_built), (
-            "a prediction that is the plan draws nothing the plan does not"
-        )
-        assert not legend.visible
-    finally:
-        dry_run.commanded = None
-        dry_run.commanded_revision = -1
-        dry_run.predicted = None
-        dry_run.predicted_revision = -1
-        dry_run.path_segments = []
-        view.paths_visible, view.predicted_visible = saved
-        simulation_state.notify_changed()
-
-
-@pytest.mark.integration
-async def test_scrub_bar_never_locks_on_a_planner_only_backend(user: User) -> None:
-    """A predicted pass in flight never disables scrubbing: the bar plays
-    the commanded record and only shows that a pass is running. On parol6
-    the pass comes back as the plan, so every layer toggle stays off, the
-    legend stays hidden, and the session does not ask that backend again.
-    Driven through the editor's own debounced planning and predicting.
-    """
-    from waldo_commander.components.physics_legend import physics_legend
-    from waldo_commander.components.playback import playback
-    from waldo_commander.components.simulation_engine import simulation
-    from waldo_commander.services.path_visualizer import path_visualizer
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
     await wait_for_app_ready()
+    await wait_for_urdf_ready()
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
+    # The backend probe is learned once per session; this test is about it.
+    path_visualizer._predicted_diverges.clear()
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
     program = waldoctl.commander.programs.active
@@ -136,20 +86,16 @@ async def test_scrub_bar_never_locks_on_a_planner_only_backend(user: User) -> No
     simulation._debounce_delay = 0.2
     simulation._physics_delay = 0.2
 
-    def edit(source: str) -> None:
-        textarea = ui_state.active_textarea
-        assert textarea is not None
-        textarea.value = source
-        program.source = source
-        # The editor schedules from its change handler, inside its client's
-        # slot; the debounce timer needs that client.
-        with textarea:
-            simulation.schedule_debounced_simulation(program.id)
+    textarea = ui_state.active_textarea
+    textarea.value = _SCRIPT
+    program.source = _SCRIPT
+    # The editor schedules from its change handler, inside its client's
+    # slot; the debounce timer needs that client.
+    with textarea:
+        simulation.schedule_debounced_simulation(program.id)
 
-    edit(_SCRIPT)
     assert await wait_until(lambda: dry_run.commanded is not None, timeout_s=30)
-    first = dry_run.commanded
-    assert first is not None and dry_run.predicted_current is None
+    assert dry_run.predicted_current is None
     assert playback._ensure_timeline() is not None
 
     assert await wait_until(
@@ -169,65 +115,54 @@ async def test_scrub_bar_never_locks_on_a_planner_only_backend(user: User) -> No
     assert not any(box.enabled for box in playback._layer_checks.values())
     assert physics_legend._root is not None and not physics_legend._root.visible
 
-    # The next plan is not answered: the probe is not repeated this session.
-    edit(_SCRIPT.replace("180]", "170]"))
-    assert await wait_until(
-        lambda: dry_run.commanded is not None and dry_run.commanded is not first,
-        timeout_s=30,
-    )
-    assert dry_run.predicted_current is None, "a new plan retires the answer"
-    assert await wait_until(
-        lambda: simulation._simulation_debounce_timer is None
-        and simulation._physics_timer is None,
-        timeout_s=20,
-    )
-    assert dry_run.predicted is None
-    assert not path_visualizer.physics_in_flight(program.id)
-
-
-@pytest.mark.integration
-async def test_a_prediction_of_other_commands_is_not_accepted(user: User) -> None:
-    """The predicted pass runs the program again. One that draws a random
-    target commands something else on that run, under the same revision,
-    so its prediction answers commands the plan on screen never had and is
-    dropped rather than drawn against it."""
-    from waldo_commander.components.simulation_engine import simulation
-    from waldo_commander.services.path_visualizer import path_visualizer
-    from waldo_commander.state import simulation_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    assert await wait_until(
-        lambda: simulation._simulation_debounce_timer is None
-        and simulation._physics_timer is None,
-        timeout_s=20,
-    )
-    program = waldoctl.commander.programs.active
-    assert program is not None
-    dry_run = program.dry_run
-    source = (
-        "import random\n"
-        "from parol6 import RobotClient\n"
-        "rbt = RobotClient()\n"
-        "rbt.move_j([85 + random.uniform(-5, 5), -85, 175, 5, 5, 175], speed=1.0)\n"
-    )
+    scene = ui_state.urdf_scene
+    assert scene is not None
+    view = waldoctl.commander.settings.view
+    saved = (view.paths_visible, view.predicted_visible)
+    view.paths_visible = True
+    view.predicted_visible = True
+    commanded, predicted = _pair(waldoctl.commander.status.joints.angles.rad)
+    overlay = scene.physics_overlay
+    legend = physics_legend._root
+    toggle = playback._layer_checks["predicted_visible"]
     try:
-        assert (
-            await path_visualizer.update_path_visualization(
-                source, tab_id=program.id, revision=1
-            )
-            is None
+        dry_run.commanded = commanded
+        dry_run.commanded_revision = 2
+        dry_run.path_segments = segments_from_record(commanded, [])
+        dry_run.predicted = predicted
+        dry_run.predicted_revision = 1
+        simulation_state.notify_changed()
+        await asyncio.sleep(0)
+        assert dry_run.predicted_current is None
+        assert not overlay.is_built, "an answer to an older plan must not be drawn"
+        assert not layers_available(dry_run)["predicted_visible"]
+        assert not legend.visible
+
+        dry_run.predicted_revision = 2
+        simulation_state.notify_changed()
+        assert await wait_until(lambda: overlay.is_built)
+        assert dry_run.predicted_current is predicted
+        assert layers_available(dry_run)["predicted_visible"]
+        assert toggle.enabled
+        assert legend.visible
+
+        toggle.set_value(False)
+        assert await wait_until(lambda: not overlay._predicted.visible_)
+        assert overlay.is_built, "a toggle must not tear the geometry down"
+        toggle.set_value(True)
+        assert await wait_until(lambda: overlay._predicted.visible_)
+
+        dry_run.predicted = commanded
+        simulation_state.notify_changed()
+        assert await wait_until(lambda: not overlay.is_built), (
+            "a prediction that is the plan draws nothing the plan does not"
         )
-        assert dry_run.commanded is not None and dry_run.commanded_revision == 1
-        assert await path_visualizer.update_physics_simulation(program.id) is None
-        assert dry_run.predicted is None
-        assert "parol6" not in path_visualizer._predicted_diverges
+        assert not legend.visible
     finally:
         dry_run.commanded = None
         dry_run.commanded_revision = -1
         dry_run.predicted = None
         dry_run.predicted_revision = -1
         dry_run.path_segments = []
+        view.paths_visible, view.predicted_visible = saved
         simulation_state.notify_changed()

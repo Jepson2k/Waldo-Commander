@@ -555,11 +555,11 @@ class PlaybackController:
 
     async def step_forward(self, *, control_verified: bool = False) -> None:
         """Step forward one segment."""
+        if not control_verified and not require_browser_control(
+            ui_state.active_client_id
+        ):
+            return
         if is_any_program_running():
-            if not control_verified and not require_browser_control(
-                ui_state.active_client_id
-            ):
-                return
             await script_exec.signal_step()
             logger.debug("Step forward signal sent to script")
         else:
@@ -567,7 +567,9 @@ class PlaybackController:
 
     def step_backward(self) -> None:
         """Step the sim preview back one segment (live stepping is forward-only)."""
-        if not is_any_program_running():
+        if not is_any_program_running() and require_browser_control(
+            ui_state.active_client_id
+        ):
             self._step_sim_preview(-1)
 
     def _step_sim_preview(self, delta: int) -> None:
@@ -812,7 +814,12 @@ class PlaybackController:
             return
         active = waldoctl.commander.programs.active
         is_active = active is not None and active.dry_run.playback.is_active
-        if self._timeline and not self._updating_slider and not is_active:
+        if (
+            self._timeline
+            and not self._updating_slider
+            and not is_active
+            and require_browser_control(ui_state.active_client_id, notify=False)
+        ):
             self._apply_time(float(e.value), update_slider=False)
             # Update snapshot so position-change checker doesn't re-sim after scrub
             self._snapshot_joints()
@@ -955,10 +962,10 @@ class PlaybackController:
         tool_pos: list[float] | None,
         selection: tuple[str, str] | None = None,
     ) -> None:
-        """Send a fire-and-forget teleport to the backend."""
+        """Move the simulated arm to a previewed pose, if this page holds the
+        lease. A scrub claims it first; a preview an MCP session plays leaves
+        the arm, and the lease, with that session."""
         page = ui_state.active_client_id
-        if not require_browser_control(page, notify=False):
-            return
         generation = motion_guard.stop_generation
         lease_generation = control_lease.generation
 

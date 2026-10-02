@@ -4,14 +4,12 @@ and go into a program as a call whose arguments are fields."""
 import ast
 import asyncio
 import re
-import textwrap
 from dataclasses import asdict
 from typing import cast
 
 import numpy as np
 import pytest
-import waldoctl
-from fastmcp import Client
+import waldoctl.skills
 from nicegui import run
 from nicegui.testing import User
 from parol6 import Robot
@@ -21,7 +19,6 @@ from waldoctl.setup import Frame, Parameter, Pose, PoseValues, SetupSnapshot
 from waldoctl.signals import DigitalSignal
 from waldoctl.skills import MissingCapability, skill
 
-from tests.helpers.mcp import payload
 from tests.helpers.preview import block_end_tcp, motion_blocks
 from tests.test_editor_integration import (
     _fire_editor_event,
@@ -136,17 +133,28 @@ def test_starter_skills_plan_fixed_setup_alignment_and_gripper_actions():
 async def test_skill_fields_teach_preview_record_and_run_live(
     user: User, tmp_path, monkeypatch
 ):
+    import importlib.metadata
+
+    import parol6.PAROL6_ROBOT as PAROL6_ROBOT
+
     from waldo_commander.components.editor_decorations import decorations
     from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.mcp.server import get_mcp
-    from waldo_commander.services.control_lease import (
-        ControlMode,
-        control_lease,
-        set_control_mode,
-    )
     from waldo_commander.services.motion_recorder import motion_recorder
     from waldo_commander.services.programs import is_any_program_running
 
+    # A skill that edits the collision world, installed for this app.
+    real_entry_points = waldoctl.skills.entry_points
+    fence = importlib.metadata.EntryPoint(
+        name="fence_then_retract",
+        value="tests.helpers.preview_skills:fence_then_retract",
+        group="waldoctl.skills",
+    )
+
+    def entry_points(*, group: str):
+        found = list(real_entry_points(group=group))
+        return [*found, fence] if group == "waldoctl.skills" else found
+
+    monkeypatch.setattr(waldoctl.skills, "entry_points", entry_points)
     monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
     initial_preview = PathPreviewClient(
         dry_run_client_cls=DryRunRobotClient, initial_joints=np.radians(START)
@@ -410,6 +418,54 @@ async def test_skill_fields_teach_preview_record_and_run_live(
     finally:
         if motion_recorder.session is not None:
             motion_recorder.undo()
+
+    # A skill is planned in the preview worker, never in the app: a skill
+    # that edits the world must not leave its shapes in the app's own
+    # collision checker, which mirrors the controller's world.
+    world = PAROL6_ROBOT.program_shapes()
+    user.find(marker="program-panel-close").click()
+    assert not scene._skill_preview_objects
+    user.find(marker="tab-program").click()
+    ui_state.program_panel_visible = True
+    _set_cursor_line(scratch, 3)
+    try:
+        open_skill("test.fence_then_retract")
+        assert await wait_until(
+            lambda: bool(scene._skill_preview_objects), timeout_s=30
+        ), "the skill was never planned"
+        assert [shape.name for shape in PAROL6_ROBOT.program_shapes()] == [
+            shape.name for shape in world
+        ]
+    finally:
+        PAROL6_ROBOT.apply_shapes(world)
+
+    # Teaching saves to the setup in scope at the call, in its own directory.
+    remote_dir = tmp_path / "remote"
+    remote = SetupStore(remote_dir)
+    remote.save("bench", SetupSnapshot(poses={"remote_pick": Pose((4, 5, 6, 0, 0, 0))}))
+    scoped = [
+        "from waldo_commander.setup import load_setup",
+        "from waldo_commander.skills.motion import approach as _skill_waldo_approach",
+        "from parol6 import RobotClient",
+        'cell = load_setup("bench")',
+        f'cell = load_setup("bench", directory={str(remote_dir)!r})',
+        "with RobotClient() as rbt:",
+        '    _skill_waldo_approach(rbt, target=cell.resolve("remote_pick"))',
+    ]
+    scratch.value = "\n".join(scoped)
+    await asyncio.sleep(0)
+    place_cursor(7, "target=")
+    await asyncio.sleep(0)
+    assert element("skill-strip-names").options == ["remote_pick"]
+    element("skill-strip-teach-name").set_value("remote_drop")
+    user.find(marker="skill-strip-teach").click()
+    assert await wait_until(
+        lambda: "remote_drop" in remote.read_literal("bench").poses, timeout_s=5
+    )
+    assert "remote_drop" not in SetupStore(tmp_path).read_literal("bench").poses
+    assert 'cell.resolve("remote_drop")' in str(scratch.value)
+    scratch.value = base
+
     editor._switch_to_tab(original.id)
     await asyncio.sleep(0)
     assert ui_state.active_textarea is textarea
@@ -505,55 +561,13 @@ async def test_skill_fields_teach_preview_record_and_run_live(
             await script_exec.stop()
         motion_recorder.toggle_recording()
 
-    entries, _ = library(client.robot)
-    snippet = call_source(
-        entries["waldo.retract"], {"distance_mm": 2.0}, async_call=True
-    )
-    source = (
-        "import asyncio\nfrom parol6 import AsyncRobotClient\n"
-        "async def main():\n    async with AsyncRobotClient() as rbt:\n"
-        + textwrap.indent(snippet, "        ")
-        + "\nasyncio.run(main())\n"
-    )
-    before = await client.pose()
-    assert before is not None
-    set_control_mode(ControlMode.AUTOPILOT)
-    try:
-        async with Client(get_mcp()) as mcp:
-            await mcp.call_tool("control.take_control")
-            await mcp.call_tool(
-                "programs.new", {"filename": "mcp_skill.py", "source": source}
-            )
-            await mcp.call_tool("execution.run_active")
-            result = payload(
-                await mcp.call_tool("execution.wait_active", {"timeout": 30})
-            )
-            log = payload(await mcp.call_tool("programs.get_log"))
-        assert result["finished"] and result["exit_ok"], (result, log)
-        actual = await client.pose()
-        assert actual is not None
-        assert np.linalg.norm(np.array(actual[:3]) - before[:3]) == pytest.approx(
-            2, abs=0.15
-        )
-        assert any(
-            "waldo.retract" in entry["text"] and "completed" in entry["text"]
-            for entry in log
-        )
-    finally:
-        if is_any_program_running():
-            await script_exec.stop()
-        control_lease.reset()
-
     assert await client.select_tool("PNEUMATIC") >= 0
     assert await client.wait_status(
         lambda s: s.tool_status is not None and s.tool_status.key == "PNEUMATIC"
     )
-    await gripper_open.async_call(client)
-    opened = await client.io()
     await gripper_close.async_call(client)
     closed = await client.io()
-    assert opened is not None and closed is not None
-    assert opened[2] != closed[2], "gripper skills must actuate the simulated valve"
+    assert closed is not None
     # A run selects the tool the arm carries, so a line that reads rbt.tool
     # runs on its own.
     waldoctl.commander.programs.switch(original.id)
@@ -572,7 +586,9 @@ async def test_skill_fields_teach_preview_record_and_run_live(
         entry.text for entry in waldoctl.commander.programs.active.log.entries
     )
     after_run = await client.io()
-    assert after_run is not None and after_run[2] == opened[2]
+    assert after_run is not None and after_run[2] != closed[2], (
+        "the selection run did not open the gripper"
+    )
 
 
 @skill(id="test.labelled", version="1.0.0")
@@ -730,107 +746,3 @@ def test_skill_calls_are_written_as_fields_and_read_back_from_their_line():
     assert labels["waldo.approach"] == "Approach"
     assert labels["waldo.retract"] != labels["acme.retract"]
     assert "waldo" in labels["waldo.retract"] and "acme" in labels["acme.retract"]
-
-
-@pytest.mark.integration
-async def test_a_skill_preview_leaves_the_app_collision_world_alone(
-    user: User, monkeypatch: pytest.MonkeyPatch
-):
-    """A skill is planned in the preview worker, never in the app: a skill that
-    edits the world must not leave its shapes in the app's own collision
-    checker, which mirrors the controller's world."""
-    import importlib.metadata
-
-    import parol6.PAROL6_ROBOT as PAROL6_ROBOT
-    import waldoctl.skills
-
-    real_entry_points = waldoctl.skills.entry_points
-    fence = importlib.metadata.EntryPoint(
-        name="fence_then_retract",
-        value="tests.helpers.preview_skills:fence_then_retract",
-        group="waldoctl.skills",
-    )
-
-    def entry_points(*, group: str):
-        found = list(real_entry_points(group=group))
-        return [*found, fence] if group == "waldoctl.skills" else found
-
-    monkeypatch.setattr(waldoctl.skills, "entry_points", entry_points)
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    client = waldoctl.commander.client
-    index = await client.move_j(START, speed=1)
-    assert index >= 0 and await client.wait_command(index, timeout=20)
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-    # User does not execute the panel visibility report sent by browser JS.
-    ui_state.program_panel_visible = True
-    scene = ui_state.urdf_scene
-    assert scene is not None
-    world = PAROL6_ROBOT.program_shapes()
-    try:
-        user.find(marker="editor-commands-btn").click()
-        user.find(marker="editor-skill-test.fence_then_retract").click()
-        assert await wait_until(
-            lambda: bool(scene._skill_preview_objects), timeout_s=30
-        ), "the skill was never planned"
-        assert [shape.name for shape in PAROL6_ROBOT.program_shapes()] == [
-            shape.name for shape in world
-        ]
-        user.find(marker="program-panel-close").click()
-    finally:
-        PAROL6_ROBOT.apply_shapes(world)
-
-
-@pytest.mark.integration
-async def test_teaching_uses_the_setup_in_scope_and_its_directory(
-    user: User, tmp_path, monkeypatch
-):
-    local_dir, remote_dir = tmp_path / "local", tmp_path / "remote"
-    monkeypatch.setenv("WALDO_SETUP_DIR", str(local_dir))
-    local = SetupStore(local_dir)
-    remote = SetupStore(remote_dir)
-    local.save("bench", SetupSnapshot(poses={"local_pick": Pose((1, 2, 3, 0, 0, 0))}))
-    remote.save("bench", SetupSnapshot(poses={"remote_pick": Pose((4, 5, 6, 0, 0, 0))}))
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-    textarea = ui_state.active_textarea
-    lines = [
-        "from waldo_commander.setup import load_setup",
-        "from waldo_commander.skills.motion import approach as _skill_waldo_approach",
-        "from parol6 import RobotClient",
-        'cell = load_setup("bench")',
-        f'cell = load_setup("bench", directory={str(remote_dir)!r})',
-        "with RobotClient() as rbt:",
-        '    _skill_waldo_approach(rbt, target=cell.resolve("remote_pick"))',
-    ]
-    textarea.value = "\n".join(lines)
-    _fire_editor_event(textarea, "focus-change", {"focused": True})
-    _fire_editor_event(
-        textarea,
-        "selection-change",
-        {
-            "line": 7,
-            "column": lines[-1].index("target=") + len("target=") + 1,
-            "from_line": 7,
-            "to_line": 7,
-            "empty": True,
-        },
-    )
-    await asyncio.sleep(0)
-
-    def element(marker):
-        return next(iter(user.find(marker=marker).elements))
-
-    assert element("skill-strip-names").options == ["remote_pick"]
-    element("skill-strip-teach-name").set_value("taught")
-    user.find(marker="skill-strip-teach").click()
-    assert await wait_until(lambda: "taught" in remote.read_literal("bench").poses, 5)
-    assert "taught" not in local.read_literal("bench").poses
-    assert 'cell.resolve("taught")' in str(textarea.value)

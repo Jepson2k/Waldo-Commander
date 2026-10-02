@@ -36,103 +36,25 @@ def _classes(user: User, marker: str) -> list[str]:
     return next(iter(user.find(marker=marker).elements)).classes
 
 
-async def _open_diagnostics(user: User) -> None:
-    await user.open("/")
-    await wait_for_app_ready()
-    user.find(marker="footer-events").click()
-    await asyncio.sleep(0)
-    await user.should_see(marker="diagnostics-panel")
-
-
 @pytest.mark.integration
-async def test_only_the_sections_this_backend_can_fill_are_shown(user: User) -> None:
-    """The adaptive contract, on a backend with plenty it cannot report.
-
-    Absence is the message: a Motor bus section reading "not reported" or a
-    torque chart drawing six flat zero lines both claim a measurement that
-    was never taken.
-    """
-    await _open_diagnostics(user)
-
-    # Reported: this backend times its loop, so the tail is real and is
-    # quoted against the budget its target rate implies — a bare
-    # millisecond figure means nothing on its own. The section reveals on
-    # the first frame that carries loop health, so wait for it rather than
-    # reading at the instant the tab opens.
-    await user.should_see(marker="diag-section-loop")
-    await _settle(user, "diag-loop-rate", lambda t: "Hz target" in t)
-    await _settle(user, "diag-loop-p99", lambda t: "budget" in t)
-    assert waldoctl.commander.status.loop_health.measured
-
-    # Not reported: no fieldbus and no torque sensing on this backend.
-    assert not ui_state.active_robot.has_force_torque
-    await user.should_not_see(marker="diag-section-link")
-    await user.should_not_see(marker="diag-section-torques")
-    await user.should_not_see(marker="diag-torque-chart")
-    # And no CAN drives: par6's Drives tab stays out of a parol6 session
-    # even when the par6 package is installed alongside.
-    await user.should_not_see(marker="tab-par6-drives")
-
-
-@pytest.mark.integration
-async def test_drive_faults_appear_without_analog_readings(user: User) -> None:
-    """This backend's drivers report fault flags and no analog registers.
-
-    That combination is the one a temperatures-only availability check gets
-    wrong: the section has to appear on the strength of the faults alone,
-    with the readings it does not have left unknown rather than zeroed.
-    """
-    await _open_diagnostics(user)
-
-    health = waldoctl.commander.status.drive_health
-    await poll_until(
-        lambda: health.faults,
-        bool,
-        timeout_s=8.0,
-        what="per-drive faults from the backend",
-    )
-    assert not health.temperatures_c, "and no analog registers"
-    assert not health.currents_ma
-    assert health.bus_voltage_v is None
-
-    await user.should_see(marker="diag-section-drives")
-    # Healthy drives with nothing analog to show are one line, not a table of
-    # dashes implying broken sensors.
-    await user.should_see(marker="diag-drives-summary")
-    assert _text(user, "diag-drives-summary") == "6 drives · no faults"
-    await user.should_not_see(marker="diag-drive-fault-1")
-    await user.should_not_see(marker="diag-drive-temp-1")
-    await user.should_not_see(marker="diag-drive-supply")
-
-    # A fault opens the table: a fault column and nothing else. The status
-    # loop rewrites the faults on its next tick, so the injected one is read
-    # in the same tick it is drawn; the table stays open once shown.
-    page = ui_state.diagnostics_page
-    health.faults = [("overtemp",)] + [()] * (len(health.faults) - 1)
-    page.update()
-    assert _text(user, "diag-drive-fault-1") == "overtemp"
-    await user.should_see(marker="diag-drive-fault-1")
-    await user.should_see(marker="diag-drives-head-fault")
-    await user.should_not_see(marker="diag-drives-summary")
-    await user.should_not_see(marker="diag-drives-head-temp")
-    await user.should_not_see(marker="diag-drives-head-current")
-
-
-@pytest.mark.integration
-async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
-    user: User,
+async def test_diagnostics_reports_only_what_the_backend_reports(
+    user: User, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Entries from the footer count on a shut panel to a cleared log.
-
-    A one-line strip could only ever show the title, which is the half that
-    does not say what to do about the condition; the panel has room for the
-    cause, the effect and the remedy. And nobody opens a panel they have no
-    reason to open, so an entry that lands behind a shut one has to say so,
-    at the worst severity still unread.
+    """One app start walks the panel from a shut footer button to a status
+    stream that has stopped; the stream is cancelled last because nothing
+    after it would update.
     """
     await user.open("/")
     await wait_for_app_ready()
+    panel = ui_state.bottom_panel
+    assert not panel.visible, "the bottom panel starts hidden"
 
+    # -- The event log announces itself and keeps the whole error. --
+    # A one-line strip could only ever show the title, which is the half that
+    # does not say what to do about the condition; the panel has room for the
+    # cause, the effect and the remedy. And nobody opens a panel they have no
+    # reason to open, so an entry that lands behind a shut one has to say so,
+    # at the worst severity still unread.
     # The log is process-global and nothing resets it between tests.
     robot_events.clear()
     robot_events.add(
@@ -174,6 +96,7 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
 
     user.find(marker="footer-events").click()
     await asyncio.sleep(0)
+    assert panel.visible and panel.tabs.value == "diagnostics"
     await user.should_see(marker="diagnostics-panel")
     for part in (
         "CAN stale",
@@ -195,67 +118,83 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
     assert not robot_events.entries
     await user.should_not_see("CAN stale")
 
+    # -- Only the sections this backend can fill are shown. --
+    # Absence is the message: a Motor bus section reading "not reported" or a
+    # torque chart drawing six flat zero lines both claim a measurement that
+    # was never taken.
+    # Reported: this backend times its loop, so the tail is real and is
+    # quoted against the budget its target rate implies — a bare
+    # millisecond figure means nothing on its own. The section reveals on
+    # the first frame that carries loop health, so wait for it rather than
+    # reading at the instant the tab opens.
+    await user.should_see(marker="diag-section-loop")
+    await _settle(user, "diag-loop-rate", lambda t: "Hz target" in t)
+    await _settle(user, "diag-loop-p99", lambda t: "budget" in t)
+    assert waldoctl.commander.status.loop_health.measured
 
-@pytest.mark.integration
-async def test_a_condition_this_backend_reports_reaches_the_log(
-    user: User, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The log has to cover both channels the status surface splits across.
+    # Not reported: no fieldbus and no torque sensing on this backend.
+    assert not ui_state.active_robot.has_force_torque
+    await user.should_not_see(marker="diag-section-link")
+    await user.should_not_see(marker="diag-section-torques")
+    await user.should_not_see(marker="diag-torque-chart")
+    # And no CAN drives: par6's Drives tab stays out of a parol6 session
+    # even when the par6 package is installed alongside.
+    await user.should_not_see(marker="tab-par6-drives")
 
-    waldoctl routes self-clearing conditions to ``warnings`` and hard
-    latches to the standing error, and a backend is free to use only one of
-    them. This one only ever sets the standing error, so a log wired to
-    ``warnings`` alone stays empty however badly the move goes — which reads
-    as a healthy machine rather than an unasked question.
-    """
-    await user.open("/")
-    await wait_for_app_ready()
-
-    robot_events.clear()
-    # Metres out, against a reach of about half a metre: the controller
-    # cannot plan it and answers with a standing error.
-    await ui_state.control_panel.client.move_l(
-        [5000.0, 5000.0, 5000.0, 180.0, 0.0, 0.0], speed=0.5
-    )
-
-    assert await wait_until(lambda: bool(robot_events.entries), timeout_s=8.0), (
-        "the backend reported a condition and the log never heard about it"
-    )
-    _, code, title, _cause, _effect, remedy, severity = robot_events.entries[0]
-    assert code, "an entry with no code cannot be traced back to the backend"
-    assert title, "an entry with no title says nothing to the operator"
-    assert remedy, "the remedy is the half that says what to do about it"
-    assert severity == "error", "a standing error is counted as one"
-    assert robot_events.errors == 1 and robot_events.warnings == 0
-
-    # A latched error has stopped the backend, and the headline says so in
-    # the backend's own words rather than "Running normally" above the log.
-    user.find(marker="footer-events").click()
-    await asyncio.sleep(0)
-    await _settle(user, "diag-verdict", lambda t: t == f"Stopped — {title}")
-
-    # The refused move is the point of the test, and the controller logs it at
-    # ERROR. Drop just that record so the fixture's blanket ERROR check still
-    # guards everything else.
-    caplog.get_records("call")[:] = [
-        r
-        for r in caplog.get_records("call")
-        if "IK: partial path" not in r.getMessage()
-    ]
-
-
-@pytest.mark.integration
-async def test_the_verdict_names_what_is_wrong(user: User) -> None:
-    """A busy operator reads one line, not a column of numbers.
-
-    Every reading looked the same before: one size, one colour, and no
-    indication of the range it was supposed to sit in. So the panel now
-    answers "is anything wrong" first, and only what is outside its normal
-    range takes any colour.
-    """
-    await _open_diagnostics(user)
+    # -- Drive faults appear without analog readings. --
+    # That combination is the one a temperatures-only availability check gets
+    # wrong: the section has to appear on the strength of the faults alone,
+    # with the readings it does not have left unknown rather than zeroed.
     page = ui_state.diagnostics_page
+    health = waldoctl.commander.status.drive_health
+    joints = ui_state.active_robot.joints.count
+    await wait_until(lambda: bool(health.faults), timeout_s=8.0)
+    assert health.faults, "the backend reports per-drive faults"
+    assert not health.temperatures_c, "and no analog registers"
+    assert not health.currents_ma
+    assert health.bus_voltage_v is None
 
+    await user.should_see(marker="diag-section-drives")
+    # Healthy drives with nothing analog to show are one line, not a table of
+    # dashes implying broken sensors.
+    await user.should_see(marker="diag-drives-summary")
+    assert _text(user, "diag-drives-summary") == "6 drives · no faults"
+    await user.should_not_see(marker="diag-drive-fault-1")
+    await user.should_not_see(marker="diag-drive-temp-1")
+    await user.should_not_see(marker="diag-drive-supply")
+
+    # A fault opens the table: a fault column and nothing else. The status
+    # loop rewrites the faults on its next tick, so the injected one is read
+    # in the same tick it is drawn; the table stays open once shown.
+    health.faults = [("overtemp",)] + [()] * (len(health.faults) - 1)
+    page.update()
+    assert _text(user, "diag-drive-fault-1") == "overtemp"
+    await user.should_see(marker="diag-drive-fault-1")
+    await user.should_see(marker="diag-drives-head-fault")
+    await user.should_not_see(marker="diag-drives-summary")
+    await user.should_not_see(marker="diag-drives-head-temp")
+    await user.should_not_see(marker="diag-drives-head-current")
+
+    # A backend that stops reporting its drives leaves nothing to show, and
+    # the last temperature and fault it sent are no longer true. Written and
+    # read without yielding: the next status frame republishes this
+    # backend's own drive health.
+    health.temperatures_c = [41.0] * joints
+    health.faults = [("overcurrent",)] + [()] * (joints - 1)
+    page.update()
+    assert _text(user, "diag-drive-temp-1") == "41"
+    assert _text(user, "diag-drive-fault-1") == "overcurrent"
+
+    health.temperatures_c = []
+    health.currents_ma = []
+    health.faults = []
+    page.update()
+    assert _text(user, "diag-drive-temp-1") == "—"
+    assert _text(user, "diag-drive-fault-1") == "—"
+
+    # -- The verdict names what is wrong. --
+    # A busy operator reads one line, not a column of numbers, and only what
+    # is outside its normal range takes any colour.
     await _settle(user, "diag-verdict", lambda t: t.startswith("Running"))
     assert _text(user, "diag-estop") == "clear"
     estop = next(iter(user.find(marker="diag-estop").elements))
@@ -299,13 +238,40 @@ async def test_the_verdict_names_what_is_wrong(user: User) -> None:
     page.update()
     assert _text(user, "diag-verdict").startswith("Running")
 
+    # -- A condition this backend reports reaches the log. --
+    # waldoctl routes self-clearing conditions to ``warnings`` and hard
+    # latches to the standing error, and a backend is free to use only one of
+    # them. This one only ever sets the standing error, so a log wired to
+    # ``warnings`` alone stays empty however badly the move goes — which reads
+    # as a healthy machine rather than an unasked question.
+    robot_events.clear()
+    client = ui_state.control_panel.client
+    # Metres out, against a reach of about half a metre: the controller
+    # cannot plan it and answers with a standing error.
+    await client.move_l([5000.0, 5000.0, 5000.0, 180.0, 0.0, 0.0], speed=0.5)
 
-@pytest.mark.integration
-async def test_the_verdict_goes_stale_when_status_stops(user: User) -> None:
-    """Every reading is the last one heard once status stops arriving, and
-    a green "Running normally" over them claims a robot nobody can see."""
-    await _open_diagnostics(user)
+    assert await wait_until(lambda: bool(robot_events.entries), timeout_s=8.0), (
+        "the backend reported a condition and the log never heard about it"
+    )
+    _, code, title, _cause, _effect, remedy, severity = robot_events.entries[0]
+    assert code, "an entry with no code cannot be traced back to the backend"
+    assert title, "an entry with no title says nothing to the operator"
+    assert remedy, "the remedy is the half that says what to do about it"
+    assert severity == "error", "a standing error is counted as one"
+    assert robot_events.errors == 1 and robot_events.warnings == 0
+
+    # A latched error has stopped the backend, and the headline says so in
+    # the backend's own words rather than "Running normally" above the log.
+    await _settle(user, "diag-verdict", lambda t: t == f"Stopped — {title}")
+
+    # -- The verdict goes stale when status stops. --
+    # Every reading is the last one heard once status stops arriving, and a
+    # green "Running normally" over them claims a robot nobody can see.
+    await client.reset_state()
+    await client.reset()
     await _settle(user, "diag-verdict", lambda t: t.startswith("Running"))
+    verdict = next(iter(user.find(marker="diag-verdict").elements))
+    assert "diag-fault" not in verdict.classes
 
     consumer = next(
         t
@@ -317,33 +283,28 @@ async def test_the_verdict_goes_stale_when_status_stops(user: User) -> None:
         await consumer
 
     await _settle(user, "diag-verdict", lambda t: t.startswith("No status for"))
-    verdict = next(iter(user.find(marker="diag-verdict").elements))
     assert "diag-fault" in verdict.classes
 
+    # The footer's other button opens the same panel on the log tab, and the
+    # panel closes.
+    user.find(marker="footer-log").click()
+    await asyncio.sleep(0)
+    assert panel.visible and panel.tabs.value == "log"
+    await user.should_see(marker="response-log")
 
-@pytest.mark.integration
-async def test_drive_readings_that_stop_arriving_read_unknown(user: User) -> None:
-    """A backend that stops reporting its drives leaves nothing to show, and
-    the last temperature and fault it sent are no longer true."""
-    await _open_diagnostics(user)
-    page = ui_state.diagnostics_page
-    health = waldoctl.commander.status.drive_health
-    joints = ui_state.active_robot.joints.count
+    user.find(marker="bottom-panel-close").click()
+    await asyncio.sleep(0)
+    assert not panel.visible
+    await user.should_not_see(marker="response-log")
 
-    # Written and read without yielding: the next status frame republishes
-    # this backend's own drive health.
-    health.temperatures_c = [41.0] * joints
-    health.faults = [("overcurrent",)] + [()] * (joints - 1)
-    page.update()
-    assert _text(user, "diag-drive-temp-1") == "41"
-    assert _text(user, "diag-drive-fault-1") == "overcurrent"
-
-    health.temperatures_c = []
-    health.currents_ma = []
-    health.faults = []
-    page.update()
-    assert _text(user, "diag-drive-temp-1") == "—"
-    assert _text(user, "diag-drive-fault-1") == "—"
+    # The refused move is part of the test, and the controller logs it at
+    # ERROR. Drop just that record so the fixture's blanket ERROR check still
+    # guards everything else.
+    caplog.get_records("call")[:] = [
+        r
+        for r in caplog.get_records("call")
+        if "IK: partial path" not in r.getMessage()
+    ]
 
 
 def test_the_overrun_rate_counts_only_what_this_page_watched() -> None:

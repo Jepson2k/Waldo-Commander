@@ -15,123 +15,62 @@ from tests.helpers.wait import wait_for_urdf_ready
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 
 
+async def _until(cond, message: str) -> None:
+    try:
+        async with asyncio.timeout(10):
+            while not cond():
+                await asyncio.sleep(0.05)
+    except TimeoutError as error:
+        raise AssertionError(message) from error
+
+
 @pytest.mark.integration
-async def test_collision_highlight_tints_reported_links_and_restores(
+async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
     user: User,
 ) -> None:
+    """Reported collisions tint links, shapes and the tool and then restore;
+    shapes draw per layer, re-render as a diff and keep their layer or draft
+    colour through repaints; ``commander.scene.shapes`` feeds the local
+    checker for EDITING and the preview, and is redrawn after a page reload."""
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    import numpy as np
     import waldoctl
+    from waldoctl import Box, Cylinder, Physical
 
     from waldo_commander.common.theme import SceneColors
+    from waldo_commander.services.path_visualizer import _mark_colliding_commands
     from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_urdf_ready()
-
     scene = ui_state.urdf_scene
     assert scene is not None
+    coll = waldoctl.commander.status.collision
+
+    # Controller reports pairs in the display vocabulary: plain URDF link names.
     links = [name for name, meshes in scene._link_to_meshes.items() if meshes]
     assert len(links) >= 2, "need two link meshes to simulate a self-collision"
     a, b = links[0], links[1]
     obj_a, obj_b = scene._link_to_meshes[a][0], scene._link_to_meshes[b][0]
     before_a, before_b = obj_a.color, obj_b.color
     assert before_a != SceneColors.COLLISION_HEX
-
-    # Controller reports pairs in the display vocabulary: plain URDF link names.
-    coll = waldoctl.commander.status.collision
     coll.active = True
     coll.pairs = [(a, b)]
     scene.update_from_robot_state()
     assert obj_a.color == SceneColors.COLLISION_HEX
     assert obj_b.color == SceneColors.COLLISION_HEX
-
-    # Cleared -> restored to the prior (mode) color.
     coll.active = False
     coll.pairs = []
     scene.update_from_robot_state()
     assert obj_a.color == before_a
     assert obj_b.color == before_b
 
-
-@pytest.mark.integration
-async def test_shapes_render_and_can_be_highlighted(user: User) -> None:
-    import waldoctl
-    from waldoctl import Box
-
-    from waldo_commander.common.theme import SceneColors
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-
-    scene = ui_state.urdf_scene
-    assert scene is not None
-    from waldoctl import Cylinder
-
-    scene.render_shapes(
-        [
-            Box(name="wall", x=0.1, y=0.1, z=0.1, pose=(0.3, 0.0, 0.3, 0, 0, 0)),
-            Cylinder(name="post", radius=0.05, length=0.5),
-        ],
-        installation=[Box(name="bench", x=0.4, y=0.4, z=0.05)],
-    )
-    assert "shape:wall" in scene._shape_objects
-    # Installation layer renders under its own namespace and color.
-    bench = scene._shape_objects["install:bench"]
-    assert bench.color == SceneColors.SHAPE_INSTALL_HEX
-    shape_obj = scene._shape_objects["shape:wall"]
-    assert shape_obj.color == SceneColors.SHAPE_HEX
-    # Render wiring applies the Z-up axis correction (three.js is Y-up).
-    assert scene._shape_objects["shape:post"].R == [
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, -1.0],
-        [0.0, 1.0, 0.0],
-    ]
-
-    link = next(name for name, meshes in scene._link_to_meshes.items() if meshes)
-    coll = waldoctl.commander.status.collision
-    coll.pairs = [(link, "shape:wall"), (link, "install:bench")]
-    coll.active = True
-    scene.update_from_robot_state()
-    assert shape_obj.color == SceneColors.COLLISION_HEX
-    assert bench.color == SceneColors.COLLISION_HEX
-    assert scene._link_to_meshes[link][0].color == SceneColors.COLLISION_HEX
-
-    # Mode toggle mid-collision: the arm/tool repaint loops don't touch shape
-    # objects, so set_appearance_mode must repaint them itself — otherwise the
-    # next tick re-snapshots red as the shape's base and it sticks red forever.
-    scene.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
-    assert shape_obj.color == SceneColors.SHAPE_HEX
-    assert bench.color == SceneColors.SHAPE_INSTALL_HEX  # repaint keeps layer color
-    scene.update_from_robot_state()  # still colliding — re-tints from clean base
-    assert shape_obj.color == SceneColors.COLLISION_HEX
-    coll.active = False
-    coll.pairs = []
-    scene.update_from_robot_state()
-    assert shape_obj.color == SceneColors.SHAPE_HEX
-    assert bench.color == SceneColors.SHAPE_INSTALL_HEX
-
-
-@pytest.mark.integration
-async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
-    """The floor a robot stands on is a static installation fixture, not a
-    special case: it draws through the installation layer, tints like any
-    keep-out when the arm reaches it, survives an appearance repaint, and
-    displaces the placeholder disc simply by existing."""
-    import waldoctl
-    from waldoctl import Box, Physical
-
-    from waldo_commander.common.theme import SceneColors
-    from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    assert scene is not None
+    # The floor a robot stands on is an ordinary installation fixture: it
+    # tints like any keep-out, survives a repaint, and displaces the
+    # placeholder disc simply by existing.
     assert scene._floor is not None and scene._floor.visible_
-
-    # What the shipped robot config declares: a wide static box whose top
-    # face is the plane the robot stands on.
     floor_shape = Box(
         name="floor",
         x=6.0,
@@ -149,13 +88,8 @@ async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
     assert not scene._floor.visible_, (
         "a described installation displaces the placeholder disc"
     )
-    # A program keep-out is drawn at the size it declares.
     assert scene._shape_objects["shape:wall"].args[:3] == [0.1, 2.0, 1.0]
-
-    # install:floor is what a backend reports when the arm reaches the floor.
-    link = next(name for name, meshes in scene._link_to_meshes.items() if meshes)
-    coll = waldoctl.commander.status.collision
-    coll.pairs = [(link, "install:floor")]
+    coll.pairs = [(a, "install:floor")]
     coll.active = True
     scene.update_from_robot_state()
     assert floor.color == SceneColors.COLLISION_HEX
@@ -163,15 +97,201 @@ async def test_the_installation_floor_is_an_ordinary_shape(user: User) -> None:
     coll.pairs = []
     scene.update_from_robot_state()
     assert floor.color == SceneColors.SHAPE_INSTALL_HEX
-
     scene.set_appearance_mode(RobotAppearanceMode.EDITING)
     assert floor.color == SceneColors.SHAPE_INSTALL_HEX
     scene.set_appearance_mode(RobotAppearanceMode.LIVE)
-
     # A backend describing no installation gets the placeholder back.
     scene.render_shapes([])
     assert "install:floor" not in scene._shape_objects
     assert scene._floor.visible_
+
+    # Each layer renders under its own namespace and colour.
+    wall = Box(name="wall", x=0.1, y=0.1, z=0.1, pose=(0.3, 0.0, 0.3, 0, 0, 0))
+    post = Cylinder(name="post", radius=0.05, length=0.5)
+    bench = Box(name="bench", x=0.4, y=0.4, z=0.05)
+    scene.render_shapes([wall, post], installation=[bench])
+    bench_obj = scene._shape_objects["install:bench"]
+    assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
+    wall_obj = scene._shape_objects["shape:wall"]
+    assert wall_obj.color == SceneColors.SHAPE_HEX
+    # Render wiring applies the Z-up axis correction (three.js is Y-up).
+    assert scene._shape_objects["shape:post"].R == [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 1.0, 0.0],
+    ]
+    coll.pairs = [(a, "shape:wall"), (a, "install:bench")]
+    coll.active = True
+    scene.update_from_robot_state()
+    assert wall_obj.color == SceneColors.COLLISION_HEX
+    assert bench_obj.color == SceneColors.COLLISION_HEX
+    assert scene._link_to_meshes[a][0].color == SceneColors.COLLISION_HEX
+    # Mode toggle mid-collision: the arm/tool repaint loops don't touch shape
+    # objects, so set_appearance_mode must repaint them itself — otherwise the
+    # next tick re-snapshots red as the shape's base and it sticks red forever.
+    scene.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
+    assert wall_obj.color == SceneColors.SHAPE_HEX
+    assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
+    scene.update_from_robot_state()  # still colliding — re-tints from clean base
+    assert wall_obj.color == SceneColors.COLLISION_HEX
+    coll.active = False
+    coll.pairs = []
+    scene.update_from_robot_state()
+    assert wall_obj.color == SceneColors.SHAPE_HEX
+    assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
+
+    # Re-rendering reconciles against what is drawn: a no-op sends nothing, a
+    # pose-only change moves the same object, a geometry change recreates it
+    # and a dropped shape is deleted — the group persists throughout.
+    group = scene._shapes_group
+    with patch.object(scene.scene.client, "run_javascript") as sent:
+        scene.render_shapes([wall, post], installation=[bench])
+    assert sent.call_count == 0, "an unchanged world must not be re-sent"
+    assert scene._shape_objects["shape:wall"] is wall_obj
+    assert scene._shapes_group is group
+    moved = replace(wall, pose=(0.5, 0.0, 0.3, 0, 0, 0))
+    scene.render_shapes([moved, post], installation=[bench])
+    assert scene._shape_objects["shape:wall"] is wall_obj, "pose-only: same object"
+    assert wall_obj.x == pytest.approx(0.5)
+    bigger = Box(name="wall", x=0.2, y=0.1, z=0.1, pose=moved.pose)
+    scene.render_shapes([bigger], installation=[bench])
+    assert scene._shape_objects["shape:wall"] is not wall_obj, "geometry: recreated"
+    assert wall_obj.id not in scene.scene.objects
+    assert "shape:post" not in scene._shape_objects
+    assert scene._shapes_group is group
+
+    # An UNCONFIRMED program layer stays draft-amber through appearance
+    # repaints; promoting it would show an un-enforced keep-out as enforced.
+    pending = Box(name="pending", x=0.1, y=0.1, z=0.1, pose=(0.4, 0.0, 0.3, 0, 0, 0))
+    scene.render_shapes([pending], draft=True)
+    obj = scene._shape_objects["shape:pending"]
+    assert obj.color == SceneColors.SHAPE_DRAFT_HEX
+    scene.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
+    assert obj.color == SceneColors.SHAPE_DRAFT_HEX, (
+        "repaint promoted an unconfirmed keep-out to the confirmed color"
+    )
+    scene.render_shapes([pending], draft=False)
+    obj = scene._shape_objects["shape:pending"]
+    assert obj.color == SceneColors.SHAPE_HEX
+    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+    assert obj.color == SceneColors.SHAPE_HEX
+
+    # commander.scene.shapes feeds this process's checker: the EDITING pose
+    # tints colliding geometry and the preview marks colliding segments with
+    # no controller round-trip.
+    handle = waldoctl.commander.scene
+    assert handle is not None
+    robot = ui_state.active_robot
+    assert robot.has_collision_checking
+    # A base-encasing box collides at q=0 — deterministic at any test pose.
+    block = Box(name="block", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
+    try:
+        handle.shapes = [block]
+        await _until(
+            lambda: handle.confirmed and not handle._pushes_inflight,
+            "the block was never confirmed",
+        )
+        assert scene._shape_objects["shape:block"].color == SceneColors.SHAPE_HEX
+
+        pairs = robot.colliding_pairs(np.zeros(6))
+        assert pairs, "local checker must see the base-encasing shape"
+        tinted = {n for p in pairs for n in p if not n.startswith("shape:")}
+        link = next(
+            name
+            for name, meshes in scene._link_to_meshes.items()
+            if meshes and name in tinted
+        )
+        scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+        scene.set_editing_angles([0.0] * 6)
+        assert scene._shape_objects["shape:block"].color == SceneColors.COLLISION_HEX
+        assert scene._link_to_meshes[link][0].color == SceneColors.COLLISION_HEX
+
+        # Interactive drag paths (ghost IK / joint ring / TCP ball) must also
+        # refresh the highlight — the status loop is skipped in EDITING.
+        class _GhostIkEvent:
+            args = {"chain_id": "ghost_ik", "angles": [0.3] * 6}
+
+        scene._on_ik_solved(_GhostIkEvent())
+        assert scene._editing_collision_q == tuple(scene._editing_angles)
+
+        # A command whose rows pass through the box is reported with its first
+        # colliding row; a command that owns no rows is never checked. The
+        # passed world is applied explicitly (a reused pool worker's checker
+        # must never inherit a previous run's shapes).
+        q = np.array([[0.0] * 6, [0.1] * 6], dtype=np.float32)
+        record = waldoctl.TickIndex(
+            row_dt_s=0.02,
+            joints_rad=q,
+            tcp=np.zeros((2, 6), dtype=np.float32),
+            tool_closed=np.zeros(2, dtype=np.float32),
+            tool_gripping=np.zeros(2, dtype=np.bool_),
+            blocks=(
+                waldoctl.TickBlock(command=0, start_row=0, rows=2, line_number=1),
+                waldoctl.TickBlock(command=1, start_row=2, rows=0, line_number=2),
+            ),
+        )
+        hits = _mark_colliding_commands(
+            robot, record, [], [], [tuple(block.to_wire())], None
+        )
+        assert hits == {0: 0}
+        scene.set_appearance_mode(RobotAppearanceMode.LIVE)
+
+        # Shapes persist on commander.scene across page loads; the rebuilt
+        # scene must redraw them or the barrier turns invisible while still
+        # enforced. Close the old page first so its heartbeat cannot schedule
+        # a competing reload of the same user.
+        previous_page = user.client
+        assert previous_page is not None
+        for handler in previous_page.disconnect_handlers:
+            previous_page.safe_invoke(handler)
+        previous_page.delete()
+        await user.open("/")
+        await wait_for_urdf_ready()
+        rebuilt = ui_state.urdf_scene
+        assert rebuilt is not None and rebuilt is not scene
+        scene = rebuilt
+        await _until(
+            lambda: "shape:block" in scene._shape_objects,
+            "the rebuilt scene did not redraw the keep-out",
+        )
+        assert scene._shape_objects["shape:block"].color == SceneColors.SHAPE_HEX
+
+        # Clearing shapes re-runs the EDITING highlight: links restore to the
+        # mode base and the shape objects are gone.
+        scene.set_appearance_mode(RobotAppearanceMode.EDITING)
+        scene.set_editing_angles([0.0] * 6)
+        assert scene._link_to_meshes[link][0].color == SceneColors.COLLISION_HEX
+        handle.shapes = []
+        assert scene._link_to_meshes[link][0].color == scene.config.edit_color
+        assert "shape:block" not in scene._shape_objects
+    finally:
+        # The checker is process-global — never leak shapes into other tests.
+        handle.shapes = []
+        current = ui_state.urdf_scene
+        if current is not None:
+            current.set_appearance_mode(RobotAppearanceMode.LIVE)
+        await _until(
+            lambda: handle.confirmed and not handle._pushes_inflight,
+            "the clear was never confirmed",
+        )
+
+    # Gripper engage/disengage repaints tool meshes — an active red tint must
+    # re-apply from the new base instead of being silently cleared.
+    scene.apply_tool_everywhere("SSG-48")
+    assert scene._tool_meshes, "tool meshes must be mapped"
+    mesh = scene._tool_meshes[0]
+    # tool: names tint the attached tool; link partner arrives as a plain name.
+    coll.pairs = [("tool:SSG-48:body", "L5")]
+    coll.active = True
+    scene.update_from_robot_state()
+    assert mesh.color == SceneColors.COLLISION_HEX
+    scene._apply_tool_engaged_color(True)
+    scene.update_from_robot_state()  # still colliding — re-tints from new base
+    assert mesh.color == SceneColors.COLLISION_HEX
+    coll.active = False
+    coll.pairs = []
+    scene.update_from_robot_state()
+    assert mesh.color != SceneColors.COLLISION_HEX  # restored, not stuck red
 
 
 @pytest.mark.integration
@@ -180,9 +300,14 @@ async def test_playback_moves_world_objects_and_restores_their_declared_pose(
 ) -> None:
     """A tracked object follows the preview's pose during playback as a
     pose-only move of the drawn shape, a guessed track is drawn as a ghost,
-    and clearing the override puts the object back where the program says."""
+    scrubbing the dry run moves it along its track, and clearing the override
+    or dropping the timeline puts it back where the program says."""
+    import numpy as np
+    import waldoctl
     from waldoctl import Box, Cylinder
 
+    from waldo_commander.components.playback import playback
+    from waldo_commander.services.preview_segments import segments_from_record
     from waldo_commander.services.timeline import ObjectSample
     from waldo_commander.services.urdf_scene.urdf_scene import (
         _Y_TO_Z_UP,
@@ -251,28 +376,11 @@ async def test_playback_moves_world_objects_and_restores_their_declared_pose(
     assert (block.x, block.z) == (0.2, 0.04)
     assert block.opacity == pytest.approx(SHAPE_OPACITY)
 
-
-@pytest.mark.integration
-async def test_playback_time_drives_world_objects(user: User) -> None:
-    """Scrubbing the dry run moves a tracked object along its track and
-    invalidating the timeline puts it back where the program declares it."""
-    import numpy as np
-    import waldoctl
-    from waldoctl import Box
-
-    from waldo_commander.components.playback import playback
-    from waldo_commander.services.preview_segments import segments_from_record
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    assert scene is not None
+    # Playback time drives the same objects through the predicted record.
     scene.render_shapes(
         [Box(name="block", x=0.04, y=0.04, z=0.06, pose=(0.3, 0.0, 0.04, 0, 0, 0))]
     )
     block = scene._shape_objects["shape:block"]
-
     # Two seconds of lift at the record's rate; the predicted record is the
     # one that knows where the carried block went.
     rows = 101
@@ -468,167 +576,6 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
     assert handle.confirmed and handle.installation == ()
 
 
-@pytest.mark.integration
-async def test_shape_rerender_is_a_diff_not_a_rebuild(user: User) -> None:
-    """Re-rendering reconciles against what is drawn: a no-op sends nothing,
-    a pose-only change moves the same object, a geometry change recreates it
-    and a dropped shape is deleted — the group persists throughout."""
-    from dataclasses import replace
-    from unittest.mock import patch
-
-    from waldoctl import Box, Cylinder
-
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    assert scene is not None
-
-    wall = Box(name="wall", x=0.1, y=0.1, z=0.1, pose=(0.3, 0.0, 0.3, 0, 0, 0))
-    post = Cylinder(name="post", radius=0.05, length=0.5)
-    bench = Box(name="bench", x=0.4, y=0.4, z=0.05)
-    scene.render_shapes([wall, post], installation=[bench])
-    wall_obj = scene._shape_objects["shape:wall"]
-    group = scene._shapes_group
-
-    with patch.object(scene.scene.client, "run_javascript") as sent:
-        scene.render_shapes([wall, post], installation=[bench])
-    assert sent.call_count == 0, "an unchanged world must not be re-sent"
-    assert scene._shape_objects["shape:wall"] is wall_obj
-    assert scene._shapes_group is group
-
-    moved = replace(wall, pose=(0.5, 0.0, 0.3, 0, 0, 0))
-    scene.render_shapes([moved, post], installation=[bench])
-    assert scene._shape_objects["shape:wall"] is wall_obj, "pose-only: same object"
-    assert wall_obj.x == pytest.approx(0.5)
-
-    bigger = Box(name="wall", x=0.2, y=0.1, z=0.1, pose=moved.pose)
-    scene.render_shapes([bigger], installation=[bench])
-    assert scene._shape_objects["shape:wall"] is not wall_obj, "geometry: recreated"
-    assert wall_obj.id not in scene.scene.objects
-    assert "shape:post" not in scene._shape_objects
-    assert scene._shapes_group is group
-
-
-@pytest.mark.integration
-async def test_appearance_repaint_keeps_draft_amber(user: User) -> None:
-    """An UNCONFIRMED program layer must stay draft-amber through appearance
-    repaints (sim toggle / EDITING entry / page-load): pre-fix the repaint
-    promoted it to the confirmed slate, displaying an un-enforced keep-out as
-    controller-enforced."""
-    from waldoctl import Box
-
-    from waldo_commander.common.theme import SceneColors
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-
-    scene = ui_state.urdf_scene
-    assert scene is not None
-    pending = Box(name="pending", x=0.1, y=0.1, z=0.1, pose=(0.4, 0.0, 0.3, 0, 0, 0))
-    scene.render_shapes([pending], draft=True)
-    obj = scene._shape_objects["shape:pending"]
-    assert obj.color == SceneColors.SHAPE_DRAFT_HEX
-
-    scene.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
-    assert obj.color == SceneColors.SHAPE_DRAFT_HEX, (
-        "repaint promoted an unconfirmed keep-out to the confirmed color"
-    )
-
-    # Readback confirmation re-renders; later repaints keep the confirmed slate.
-    scene.render_shapes([pending], draft=False)
-    obj = scene._shape_objects["shape:pending"]
-    assert obj.color == SceneColors.SHAPE_HEX
-    scene.set_appearance_mode(RobotAppearanceMode.LIVE)
-    assert obj.color == SceneColors.SHAPE_HEX
-
-
-@pytest.mark.integration
-async def test_editing_highlight_and_preview_marking_via_local_checker(
-    user: User,
-) -> None:
-    """commander.scene.shapes feeds this process's checker: the EDITING pose
-    tints colliding geometry client-side and the dry-run preview marks
-    colliding segments — no controller round-trip."""
-    import waldoctl
-    from waldoctl import Box
-
-    from waldo_commander.common.theme import SceneColors
-    from waldo_commander.services.path_visualizer import _mark_colliding_commands
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-
-    scene = ui_state.urdf_scene
-    assert scene is not None
-    robot = ui_state.active_robot
-    assert robot.has_collision_checking
-
-    try:
-        # A base-encasing box collides at q=0 — deterministic at any test pose.
-        block = Box(name="block", x=0.6, y=0.6, z=0.6, pose=(0.0, 0.0, 0.1, 0, 0, 0))
-        waldoctl.commander.scene.shapes = [block]
-        import numpy as np
-
-        pairs = robot.colliding_pairs(np.zeros(6))
-        assert pairs, "local checker must see the base-encasing shape"
-        # Pairs arrive in display vocabulary: plain URDF link names.
-        tinted = {n for p in pairs for n in p if not n.startswith("shape:")}
-        link = next(
-            name
-            for name, meshes in scene._link_to_meshes.items()
-            if meshes and name in tinted
-        )
-
-        scene.set_appearance_mode(RobotAppearanceMode.EDITING)
-        scene.set_editing_angles([0.0] * 6)
-        shape_obj = scene._shape_objects["shape:block"]
-        assert shape_obj.color == SceneColors.COLLISION_HEX
-        assert scene._link_to_meshes[link][0].color == SceneColors.COLLISION_HEX
-
-        # Interactive drag paths (ghost IK / joint ring / TCP ball) must also
-        # refresh the highlight — the status loop is skipped in EDITING.
-        class _GhostIkEvent:
-            args = {"chain_id": "ghost_ik", "angles": [0.3] * 6}
-
-        scene._on_ik_solved(_GhostIkEvent())
-        assert scene._editing_collision_q == tuple(scene._editing_angles)
-
-        # Dry-run preview: a command whose rows pass through the box is
-        # reported with its first colliding row; a command that owns no
-        # rows is never checked. (Runs in the dry-run subprocess for real
-        # programs; the function is pure on the record.)
-        q = np.array([[0.0] * 6, [0.1] * 6], dtype=np.float32)
-        record = waldoctl.TickIndex(
-            row_dt_s=0.02,
-            joints_rad=q,
-            tcp=np.zeros((2, 6), dtype=np.float32),
-            tool_closed=np.zeros(2, dtype=np.float32),
-            tool_gripping=np.zeros(2, dtype=np.bool_),
-            blocks=(
-                waldoctl.TickBlock(command=0, start_row=0, rows=2, line_number=1),
-                waldoctl.TickBlock(command=1, start_row=2, rows=0, line_number=2),
-            ),
-        )
-        # The marking applies the passed world explicitly (a reused pool
-        # worker's checker must never inherit a previous run's shapes).
-        hits = _mark_colliding_commands(
-            robot, record, [], [], [tuple(block.to_wire())], None
-        )
-        assert hits == {0: 0}
-    finally:
-        # The checker is process-global — never leak shapes into other tests.
-        waldoctl.commander.scene.shapes = []
-
-    # Clearing shapes re-runs the EDITING highlight: links restore to the mode
-    # base and the shape objects are gone.
-    assert scene._link_to_meshes[link][0].color == scene.config.edit_color
-    assert "shape:block" not in scene._shape_objects
-
-
 def _one_row_record(commands: int):
     """A record with one row per command, for replaying boundaries over."""
     import numpy as np
@@ -647,11 +594,11 @@ def _one_row_record(commands: int):
     )
 
 
-def test_preview_marking_replays_tool_boundaries() -> None:
-    """Commands after a mid-script select_tool are checked with THAT tool, and
-    the checker's tool is restored afterwards (the fallback path shares the
-    live checker)."""
-    from waldoctl import ToolSelection
+def test_preview_marking_replays_tool_and_shape_boundaries() -> None:
+    """Commands after a mid-script select_tool or set_shapes are checked with
+    THAT tool or world, and the checker's submit-time tool and world are
+    restored afterwards (the fallback path shares the live checker)."""
+    from waldoctl import Box, ShapeChange, ToolSelection
 
     from waldo_commander.services.path_visualizer import _mark_colliding_commands
 
@@ -660,15 +607,16 @@ def test_preview_marking_replays_tool_boundaries() -> None:
 
         def __init__(self):
             self.tool = "NONE"
+            self.world: tuple = ()
 
         def apply_shapes(self, shapes):
-            pass
+            self.world = tuple(s.name for s in shapes)
 
         def set_active_tool(self, key, tcp_offset_m=None, variant_key=None):
             self.tool = key
 
         def check_trajectory(self, q):
-            return 0 if self.tool == "SSG-48" else -1
+            return 0 if self.tool == "SSG-48" or "bar" in self.world else -1
 
     # Selection recorded on command 0 -> applies to commands 1 and 2.
     sels = [ToolSelection(tool_key="SSG-48", variant_key="", command=0)]
@@ -693,30 +641,6 @@ def test_preview_marking_replays_tool_boundaries() -> None:
         )
         == {}
     ), "checked with VACUUM, not SSG-48"
-
-
-def test_preview_marking_replays_shape_boundaries() -> None:
-    """Commands after a mid-script set_shapes are checked against THAT world,
-    and the submit-time world is restored afterwards (the fallback path shares
-    the live checker)."""
-    from waldoctl import Box, ShapeChange
-
-    from waldo_commander.services.path_visualizer import _mark_colliding_commands
-
-    class _FakeRobot:
-        has_collision_checking = True
-
-        def __init__(self):
-            self.world: tuple = ()
-
-        def apply_shapes(self, shapes):
-            self.world = tuple(s.name for s in shapes)
-
-        def set_active_tool(self, key, tcp_offset_m=None, variant_key=None):
-            pass
-
-        def check_trajectory(self, q):
-            return 0 if "bar" in self.world else -1
 
     changes = [ShapeChange(shapes=(Box(name="bar", x=0.1, y=0.1, z=0.1),), command=0)]
     robot = _FakeRobot()
@@ -748,136 +672,7 @@ def test_shape_render_pose_matches_enforced_geometry() -> None:
     assert np.allclose(rot, np.eye(3))
 
 
-@pytest.mark.integration
-async def test_engaged_repaint_keeps_collision_highlight(user: User) -> None:
-    """Gripper engage/disengage repaints tool meshes — an active red tint must
-    re-apply from the new base instead of being silently cleared."""
-    import waldoctl
-
-    from waldo_commander.common.theme import SceneColors
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-
-    scene = ui_state.urdf_scene
-    assert scene is not None
-    scene.apply_tool_everywhere("SSG-48")
-    assert scene._tool_meshes, "tool meshes must be mapped"
-    mesh = scene._tool_meshes[0]
-
-    coll = waldoctl.commander.status.collision
-    # tool: names tint the attached tool; link partner arrives as a plain name.
-    coll.pairs = [("tool:SSG-48:body", "L5")]
-    coll.active = True
-    scene.update_from_robot_state()
-    assert mesh.color == SceneColors.COLLISION_HEX
-
-    # Engage mid-collision: repaint must not strand the highlight.
-    scene._apply_tool_engaged_color(True)
-    scene.update_from_robot_state()  # still colliding — re-tints from new base
-    assert mesh.color == SceneColors.COLLISION_HEX
-
-    coll.active = False
-    coll.pairs = []
-    scene.update_from_robot_state()
-    assert mesh.color != SceneColors.COLLISION_HEX  # restored, not stuck red
-
-
-async def test_shape_push_honors_ack_contract(monkeypatch, caplog) -> None:
-    """The push trusts only the ABC return-code contract: 0 (unconfirmed —
-    what the real client returns on timeout; it does NOT raise) leaves the
-    draft unconfirmed and logs the not-enforced warning; 1 adopts readback
-    truth. The stub mirrors the real client's contract exactly."""
-    import logging
-
-    import waldoctl
-    from waldoctl import Box, ShapeWorld
-
-    from waldo_commander.services.urdf_scene import scene_handle as sh
-
-    box = Box(name="A", x=0.1, y=0.1, z=0.1)
-
-    class _Client:
-        code = 0
-        world = ShapeWorld(installation=(), program=(box,))
-
-        async def set_shapes(self, shapes):
-            return self.code
-
-        async def shapes(self):
-            return self.world
-
-    client = _Client()
-    monkeypatch.setattr(sh.ui_state, "robot", waldoctl.commander.robot)
-    # Patch the client on the locator-resolved commander instance — NEVER
-    # monkeypatch `waldoctl.commander` itself: that materializes a module
-    # attribute which permanently shadows the PEP 562 locator on teardown.
-    monkeypatch.setattr(waldoctl.commander, "client", client)
-
-    handle = sh.WcSceneHandle()
-    handle._shapes = [box]
-
-    # Unconfirmed (timeout) → still draft, loudly logged. The setter bumps
-    # the readback gate before scheduling the push; mirror that here.
-    with caplog.at_level(logging.ERROR):
-        handle._pushes_inflight += 1
-        await sh.WcSceneHandle._push_shapes_async(handle, handle._shapes)
-    assert handle.confirmed is False
-    assert any("NOT enforced" in r.message for r in caplog.records)
-
-    # Confirmed → readback adopted, draft cleared.
-    client.code = 1
-    handle._pushes_inflight += 1
-    await sh.WcSceneHandle._push_shapes_async(handle, handle._shapes)
-    assert handle.confirmed is True
-    assert [s.name for s in handle.shapes] == ["A"]
-
-
-async def test_stale_shape_push_never_overwrites_a_newer_one(monkeypatch) -> None:
-    """A push completing after a NEWER assignment must not adopt readback for
-    the stale world — the controller may briefly enforce the old one, but the
-    display must keep tracking the newest request."""
-    import asyncio
-
-    import waldoctl
-    from waldoctl import Box, ShapeWorld
-
-    from waldo_commander.services.urdf_scene import scene_handle as sh
-
-    old = Box(name="old", x=0.1, y=0.1, z=0.1)
-    new = Box(name="new", x=0.1, y=0.1, z=0.1)
-    release = asyncio.Event()
-
-    class _Client:
-        async def set_shapes(self, shapes):
-            await release.wait()  # old push in flight while a new world lands
-            return 1
-
-        async def shapes(self):
-            return ShapeWorld(installation=(), program=(old,))
-
-    monkeypatch.setattr(waldoctl.commander, "client", _Client())
-
-    handle = sh.WcSceneHandle()
-    handle._shapes = [old]
-
-    handle._pushes_inflight += 1  # the setter bumps the gate before scheduling
-    task = asyncio.create_task(
-        sh.WcSceneHandle._push_shapes_async(handle, handle._shapes)
-    )
-    await asyncio.sleep(0)
-    handle._shapes = [new]  # newer assignment supersedes the in-flight push
-    release.set()
-    await task
-    assert [s.name for s in handle.shapes] == ["new"]
-    assert handle.confirmed is False  # stale readback was not adopted
-
-
-@pytest.mark.integration
-async def test_preview_script_set_shapes_real_dispatch_no_stale_world(
-    user: User,
-) -> None:
+def test_preview_script_set_shapes_real_dispatch_no_stale_world() -> None:
     """Two dry runs through the REAL preview runner in one process (= a reused
     pool worker). Run 1's script calls ``set_shapes`` — the pre-fix dispatch
     crashed with ``TypeError: object of type 'method' has no len()``. Run 2
@@ -886,14 +681,9 @@ async def test_preview_script_set_shapes_real_dispatch_no_stale_world(
     import numpy as np
     import parol6
     import parol6.client
+    import waldoctl
 
     from waldo_commander.services.path_visualizer import _run_simulation_isolated
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-
-    robot = ui_state.active_robot
 
     # The runner monkeypatches these for the (normally sub-) process; running
     # it in-process for determinism means restoring them ourselves. Some may
@@ -941,59 +731,19 @@ async def test_preview_script_set_shapes_real_dispatch_no_stale_world(
                     pass
             else:
                 setattr(mod, name, val)
-        robot.apply_shapes([])  # live checker shared in-process — leave it clean
+        # The backend's checker is shared in-process — leave it clean.
+        waldoctl.commander.robot.apply_shapes([])
 
 
 @pytest.mark.integration
-async def test_world_changed_by_program_reaches_display_via_epoch(user: User) -> None:
-    """A world change WC did NOT initiate (a program calling set_shapes on its
-    own client) must reach the display through the full pipeline: controller
-    epoch bump → status broadcast → readback query → render."""
-    import asyncio
-
-    import waldoctl
-    from waldoctl import Box
-
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    handle = waldoctl.commander.scene
-    client = waldoctl.commander.client
-
-    async def _until(cond, what: str) -> None:
-        deadline = asyncio.get_running_loop().time() + 10.0
-        while not cond():
-            assert asyncio.get_running_loop().time() < deadline, what
-            await asyncio.sleep(0.05)
-
-    try:
-        # Straight to the controller — scene_handle never sees this push.
-        assert (
-            await client.set_shapes(
-                [Box(name="prog", x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))]
-            )
-            == 1
-        )
-        await _until(
-            lambda: [s.name for s in handle.shapes] == ["prog"] and handle.confirmed,
-            "epoch-driven readback never adopted the program's world",
-        )
-        assert "shape:prog" in ui_state.urdf_scene._shape_objects
-    finally:
-        assert await client.set_shapes([]) == 1
-        await _until(lambda: handle.shapes == [], "clear never reached display")
-    assert "shape:prog" not in ui_state.urdf_scene._shape_objects
-
-
-@pytest.mark.integration
-async def test_shape_edit_is_acked_and_display_adopts_readback(user: User) -> None:
-    """Full real path: assigning ``commander.scene.shapes`` renders a draft,
-    pushes through the REAL client to the REAL (fake-serial) controller, and
-    flips to confirmed only after the readback query returns the applied
-    world. Pre-fix, the client faked success and nothing ever confirmed."""
-    import asyncio
-
+async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world(
+    user: User, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The program layer travels through the REAL client to the REAL
+    (fake-serial) controller: a world a program sets reaches the display via
+    the epoch readback, an edit is a draft until acked and read back, a lost
+    ack leaves it a draft, and no delayed readback or push can bring back a
+    world a newer edit replaced."""
     import waldoctl
     from waldoctl import Box
 
@@ -1004,161 +754,151 @@ async def test_shape_edit_is_acked_and_display_adopts_readback(user: User) -> No
     await wait_for_urdf_ready()
     scene = ui_state.urdf_scene
     handle = waldoctl.commander.scene
-
-    async def _until_confirmed() -> None:
-        deadline = asyncio.get_running_loop().time() + 10.0
-        while not handle.confirmed:
-            assert asyncio.get_running_loop().time() < deadline, "never confirmed"
-            await asyncio.sleep(0.05)
-
-    try:
-        handle.shapes = [
-            Box(name="rb", x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
-        ]
-        assert handle.confirmed is False  # draft until the controller confirms
-        assert scene._shape_objects["shape:rb"].color == SceneColors.SHAPE_DRAFT_HEX
-
-        await _until_confirmed()
-        assert [s.name for s in handle.shapes] == ["rb"]  # readback truth
-        assert scene._shape_objects["shape:rb"].color == SceneColors.SHAPE_HEX
-    finally:
-        handle.shapes = []
-        await _until_confirmed()
-    assert "shape:rb" not in scene._shape_objects
-
-
-@pytest.mark.integration
-async def test_stale_readback_cannot_resurrect_cleared_shapes(user: User) -> None:
-    """A readback that raced a newer edit is discarded. Pre-fix, a delayed
-    ``shapes()`` response captured before a clear re-adopted the old world and
-    re-rendered a keep-out the controller no longer enforced."""
-    import asyncio
-
-    import waldoctl
-    from waldoctl import Box
-
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    handle = waldoctl.commander.scene
-
-    async def _until(cond, msg: str) -> None:
-        deadline = asyncio.get_running_loop().time() + 10.0
-        while not cond():
-            assert asyncio.get_running_loop().time() < deadline, msg
-            await asyncio.sleep(0.05)
-
     client = waldoctl.commander.client
+    assert scene is not None and handle is not None
+    real_set_shapes = client.set_shapes
     real_shapes = client.shapes
-    release = asyncio.Event()
-    held = asyncio.Event()
+    held_readback, release_readback = asyncio.Event(), asyncio.Event()
+    held_clear, release_clear = asyncio.Event(), asyncio.Event()
+    held_edit, release_edit = asyncio.Event(), asyncio.Event()
 
-    async def _delayed_once():
-        client.shapes = real_shapes  # delay only this one response
-        world = await real_shapes()
-        held.set()
-        await release.wait()
-        return world
+    def _box(name: str) -> Box:
+        return Box(name=name, x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
 
     try:
-        handle.shapes = [
-            Box(name="rb", x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
-        ]
+        # A world WC did NOT initiate (straight to the controller; scene_handle
+        # never sees the push): epoch bump → status broadcast → readback → render.
+        assert await client.set_shapes([_box("prog")]) == 1
+        await _until(
+            lambda: [s.name for s in handle.shapes] == ["prog"] and handle.confirmed,
+            "epoch-driven readback never adopted the program's world",
+        )
+        assert "shape:prog" in scene._shape_objects
+        assert await client.set_shapes([]) == 1
+        await _until(lambda: handle.shapes == [], "clear never reached display")
+        assert "shape:prog" not in scene._shape_objects
+
+        # An edit renders as a draft and flips to confirmed only once the
+        # readback returns the applied world.
+        handle.shapes = [_box("rb")]
+        assert handle.confirmed is False
+        assert scene._shape_objects["shape:rb"].color == SceneColors.SHAPE_DRAFT_HEX
         await _until(lambda: handle.confirmed, "edit never confirmed")
-
-        client.shapes = _delayed_once
-        # Same entry the app uses for epoch-moved readbacks (main.py).
-        stale = asyncio.create_task(handle.refresh_from_backend())
-        await asyncio.wait_for(held.wait(), timeout=5.0)
-
+        assert [s.name for s in handle.shapes] == ["rb"]
+        assert scene._shape_objects["shape:rb"].color == SceneColors.SHAPE_HEX
         handle.shapes = []
         await _until(lambda: handle.confirmed, "clear never confirmed")
         assert "shape:rb" not in scene._shape_objects
 
-        release.set()
+        # The real client answers 0 when no ack arrives (it does not raise):
+        # the edit stays a draft and the push says it is not enforced.
+        async def _unacked(shapes):
+            client.set_shapes = real_set_shapes
+            return 0
+
+        client.set_shapes = _unacked
+        handle.shapes = [_box("lost")]
+        async with asyncio.timeout(5):
+            while handle._pushes_inflight:
+                await asyncio.sleep(0)
+        assert handle.confirmed is False
+        assert scene._shape_objects["shape:lost"].color == SceneColors.SHAPE_DRAFT_HEX
+        records = caplog.get_records("call")
+        assert any("NOT enforced" in r.getMessage() for r in records)
+        records[:] = [r for r in records if "NOT enforced" not in r.getMessage()]
+        handle.shapes = []
+        await _until(
+            lambda: handle.confirmed and not handle._pushes_inflight,
+            "clear after the lost ack never confirmed",
+        )
+
+        # A readback captured before a clear, delivered after it, is discarded
+        # instead of re-adopting a world the controller no longer enforces.
+        handle.shapes = [_box("rb")]
+        await _until(lambda: handle.confirmed, "edit never confirmed")
+
+        async def _delayed_once():
+            client.shapes = real_shapes  # delay only this one response
+            world = await real_shapes()
+            held_readback.set()
+            await release_readback.wait()
+            return world
+
+        client.shapes = _delayed_once
+        # Same entry the app uses for epoch-moved readbacks (main.py).
+        stale = asyncio.create_task(handle.refresh_from_backend())
+        await asyncio.wait_for(held_readback.wait(), timeout=5.0)
+        handle.shapes = []
+        await _until(lambda: handle.confirmed, "clear never confirmed")
+        assert "shape:rb" not in scene._shape_objects
+        release_readback.set()
         await stale
         assert [s.name for s in handle.shapes] == []
         assert "shape:rb" not in scene._shape_objects
-    finally:
-        client.shapes = real_shapes
-        release.set()
-        handle.shapes = []
-        await _until(
-            lambda: handle.confirmed and not handle.shapes, "cleanup never confirmed"
-        )
 
-
-@pytest.mark.integration
-async def test_refresh_during_unacked_clear_does_not_resurrect(user: User) -> None:
-    """The complementary race to the delayed-response one above: a readback
-    that *starts* after a clear's local apply but before its controller ack
-    queries the pre-clear world. Pre-fix it passed the seq guard (it bumped
-    the seq itself), adopted the resurrected world, and the clear's own
-    post-ack refresh then skipped as superseded — leaving a cleared shape
-    rendered and confirmed. Epoch-driven refreshes must wait out in-flight
-    pushes (the push adopts readback itself once acked)."""
-    import asyncio
-
-    import waldoctl
-    from waldoctl import Box
-
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    scene = ui_state.urdf_scene
-    handle = waldoctl.commander.scene
-
-    async def _until(cond, msg: str) -> None:
-        deadline = asyncio.get_running_loop().time() + 10.0
-        while not cond():
-            assert asyncio.get_running_loop().time() < deadline, msg
-            await asyncio.sleep(0.05)
-
-    client = waldoctl.commander.client
-    real_set_shapes = client.set_shapes
-    release = asyncio.Event()
-    held = asyncio.Event()
-
-    async def _held_once(shapes):
-        client.set_shapes = real_set_shapes  # hold only this one push's ack
-        held.set()
-        await release.wait()
-        return await real_set_shapes(shapes)
-
-    try:
-        handle.shapes = [
-            Box(name="ep", x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
-        ]
+        # A readback that *starts* after a clear's local apply but before its
+        # ack queries the pre-clear world; epoch-driven refreshes must wait
+        # out in-flight pushes (the push adopts readback itself once acked).
+        handle.shapes = [_box("ep")]
         await _until(lambda: handle.confirmed, "edit never confirmed")
 
+        async def _held_once(shapes):
+            client.set_shapes = real_set_shapes  # hold only this one push's ack
+            held_clear.set()
+            await release_clear.wait()
+            return await real_set_shapes(shapes)
+
         client.set_shapes = _held_once
-        # The first edit's scene_epoch move lands about now: the watcher's
-        # refresh task (same entry as main.py) is created BEFORE the clear,
-        # so it runs before the clear's push coroutine even starts — the
-        # exact CI interleaving. The controller still reports the pre-clear
-        # world at that point.
+        # The refresh task is created BEFORE the clear, so it runs before the
+        # clear's push coroutine even starts — the exact CI interleaving.
         epoch_refresh = asyncio.create_task(handle.refresh_from_backend())
         handle.shapes = []  # local clear renders immediately; ack held
         await asyncio.wait_for(epoch_refresh, timeout=5.0)
-        await asyncio.wait_for(held.wait(), timeout=5.0)
+        await asyncio.wait_for(held_clear.wait(), timeout=5.0)
         assert "shape:ep" not in scene._shape_objects, (
             "a readback during an un-acked clear resurrected the cleared shape"
         )
-
-        release.set()
+        release_clear.set()
         await _until(
             lambda: handle.confirmed and not handle.shapes, "clear never confirmed"
         )
         assert "shape:ep" not in scene._shape_objects
+
+        # An edit whose push is delayed must not overwrite a newer clear on
+        # the controller.
+        async def _delayed_edit(shapes):
+            if shapes and shapes[0].name == "delayed":
+                held_edit.set()
+                await release_edit.wait()
+            return await real_set_shapes(shapes)
+
+        client.set_shapes = _delayed_edit
+        handle.shapes = [_box("delayed")]
+        await asyncio.wait_for(held_edit.wait(), 5)
+        handle.shapes = []
+        # The clear parks on the lock the held edit owns; wait for it to be
+        # there rather than for a fixed time.
+        await _until(
+            lambda: handle._pushes_inflight >= 2,
+            "the overlapping clear never reached the push lock",
+        )
+        release_edit.set()
+        await _until(
+            lambda: handle._pushes_inflight == 0, "shape requests did not drain"
+        )
+        world = await real_shapes()
+        assert world is not None and not world.program, "older edit overwrote the clear"
     finally:
         client.set_shapes = real_set_shapes
-        release.set()
+        client.shapes = real_shapes
+        for release in (release_readback, release_clear, release_edit):
+            release.set()
         handle.shapes = []
         await _until(
-            lambda: handle.confirmed and not handle.shapes, "cleanup never confirmed"
+            lambda: handle.confirmed
+            and not handle.shapes
+            and handle._pushes_inflight == 0,
+            "cleanup never confirmed",
         )
 
 
@@ -1247,64 +987,3 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     )
     world = await waldoctl.commander.client.shapes()
     assert world is not None and not world.program
-
-
-async def _until(cond, message: str) -> None:
-    import asyncio
-
-    try:
-        async with asyncio.timeout(10):
-            while not cond():
-                await asyncio.sleep(0.05)
-    except TimeoutError as error:
-        raise AssertionError(message) from error
-
-
-@pytest.mark.integration
-async def test_delayed_shape_edit_cannot_overwrite_a_newer_clear(user: User):
-    import asyncio
-
-    import waldoctl
-    from waldoctl import Box
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-    handle = waldoctl.commander.scene
-    client = waldoctl.commander.client
-    assert handle is not None
-    held, release = asyncio.Event(), asyncio.Event()
-    original = client.set_shapes
-
-    async def delayed(shapes):
-        if shapes and shapes[0].name == "delayed":
-            held.set()
-            await release.wait()
-        return await original(shapes)
-
-    client.set_shapes = delayed
-    try:
-        handle.shapes = [
-            Box(name="delayed", x=0.1, y=0.1, z=0.1, pose=(0.9, 0.9, 0.9, 0, 0, 0))
-        ]
-        await asyncio.wait_for(held.wait(), 5)
-        handle.shapes = []
-        # The clear parks on the lock the held edit owns; wait for it to be
-        # there rather than for a fixed time.
-        await _until(
-            lambda: handle._pushes_inflight >= 2,
-            "the overlapping clear never reached the push lock",
-        )
-        release.set()
-        await _until(
-            lambda: handle._pushes_inflight == 0, "shape requests did not drain"
-        )
-        world = await client.shapes()
-        assert world is not None and not world.program, "older edit overwrote the clear"
-    finally:
-        client.set_shapes = original
-        release.set()
-        handle.shapes = []
-        await _until(
-            lambda: handle.confirmed and handle._pushes_inflight == 0,
-            "cleanup did not confirm",
-        )

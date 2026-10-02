@@ -1,12 +1,10 @@
 import argparse
 import asyncio
-import atexit
 import contextlib
 import json
 import logging
 import math
 import os
-import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -1459,38 +1457,6 @@ def _register_handlers() -> None:
 
 
 _register_handlers()
-
-
-def _cleanup_script_processes_sync() -> None:
-    """Synchronously kill any running script subprocess.
-
-    This is called from atexit and signal handlers as a last-resort cleanup.
-    """
-    try:
-        if script_exec.script_handle:
-            proc = script_exec.script_handle.get("proc")
-            if proc and proc.returncode is None:
-                logger.info("Killing orphaned script process (PID: %s)", proc.pid)
-                try:
-                    # On Unix, try to kill the entire process group
-                    if sys.platform != "win32" and proc.pid:
-                        try:
-                            pgid = os.getpgid(proc.pid)
-                            os.killpg(pgid, signal.SIGKILL)
-                            logger.debug("Killed process group %s", pgid)
-                        except (ProcessLookupError, OSError):
-                            proc.kill()
-                    else:
-                        proc.kill()
-                except ProcessLookupError:
-                    pass
-                except Exception as e:
-                    logger.debug("Error killing script process: %s", e)
-    except Exception as e:
-        logger.debug("Error in script cleanup: %s", e)
-
-
-atexit.register(_cleanup_script_processes_sync)
 
 
 def _build_takeover_overlay(message: str) -> None:

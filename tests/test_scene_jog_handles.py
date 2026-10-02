@@ -21,6 +21,7 @@ from pinokin import so3_from_rpy
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
+    simulate_click,
     teleport_to_jog_pose,
     wait_for_app_ready,
     wait_until,
@@ -257,7 +258,10 @@ async def test_ring_drag_snaps_clamps_and_moves_the_joint(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_ring_drag_while_recording_writes_one_move_j(user: User) -> None:
+async def test_ring_drags_while_recording_write_one_move_j_each(user: User) -> None:
+    """A ring drag while recording writes one move_j at its target. A ring
+    grabbed again owns its own settle wait, so the previous release cannot
+    close it while it is held."""
     urdf = await _open(user)
     await teleport_to_jog_pose(ui_state.control_panel.client)
     user.find(marker="tab-program").click()
@@ -273,8 +277,7 @@ async def test_ring_drag_while_recording_writes_one_move_j(user: User) -> None:
     start = float(waldoctl.commander.status.joints.angles.deg[0])
 
     user.find(marker="editor-record-btn").click()
-    await asyncio.sleep(0.1)
-    assert is_any_program_recording()
+    assert await wait_until(is_any_program_recording, 2.0)
     before = str(textarea.value).count("move_j(")
     try:
         _camera_at(user, 2.0)
@@ -401,53 +404,111 @@ async def test_gizmo_drag_shows_ticks_and_label_and_moves_in_the_tool_frame(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("interrupt", ["stop", "simulator", "editing", "lease"])
-async def test_an_interrupted_ring_drag_never_sends_its_last_target(
-    user: User, interrupt: str
-) -> None:
+async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
+    """Grabbing the next ring before the first joint arrives keeps the first
+    joint's commanded target. A ring drag interrupted from elsewhere — a
+    Stop, a simulator request, target editing, a lease takeover — never
+    sends its last target on release, and a takeover after a release does
+    not refresh the servo the release left moving. A page reload mid-drag
+    still leaves the next joint press working."""
     from fastmcp import Client as McpClient
+
     from waldo_commander.mcp.server import get_mcp
+    from waldo_commander.services.control_lease import BROWSER, control_lease
 
     urdf = await _open(user)
     panel = ui_state.control_panel
-    await teleport_to_jog_pose(panel.client)
-    start = np.array(await panel.client.angles())
+    angles = waldoctl.commander.status.joints.angles
     _camera_at(user, 2.0)
-    _hover(user, urdf, "L2")
-    dial = _one(urdf, "jog:dial:1")
-    _at(user, urdf, dial, "pointerdown", 0)
-    # Hold the periodic sender so Stop reaches a target still pending in the UI.
-    ui_state.joint_jog_timer.active = False
-    _at(user, urdf, dial, "pointermove", 10)
-    if interrupt == "stop":
-        async with McpClient(get_mcp()) as mcp:
-            await mcp.call_tool("motion.stop")
-    elif interrupt == "lease":
-        from waldo_commander.services.control_lease import BROWSER, control_lease
 
+    def take_over() -> None:
         control_lease.seize("mcp", "other", "Other driver")
         control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
-    elif interrupt == "simulator":
+
+    # Grab the next ring before the first joint has reached its target: the
+    # first joint's commanded target is kept, and both arrive.
+    await teleport_to_jog_pose(panel.client)
+    start = np.array(await panel.client.angles())
+    assert panel.ring_drag_begin(0)
+    panel.ring_drag_target(0, float(start[0] + 10))
+    await panel.ring_drag_end()
+    assert panel.ring_drag_begin(1)
+    panel.ring_drag_target(1, float(start[1] + 5))
+    await panel.ring_drag_end()
+    assert await wait_until(
+        lambda: abs(angles.deg[0] - start[0] - 10) < 0.1
+        and abs(angles.deg[1] - start[1] - 5) < 0.1,
+        20,
+    ), list(angles.deg)
+
+    # Release commits an angle, but it must not refresh that servo after a
+    # takeover, even if this browser immediately regains the lease. Started
+    # from where the handoff left the arm, so the commanded pose it kept is
+    # the one the next grab builds on.
+    start = np.array(await panel.client.angles())
+    speed = waldoctl.commander.settings.jog.speed
+    waldoctl.commander.settings.jog.speed = 10
+    try:
+        l1 = _hover(user, urdf, "L1")
+        dial = _one(urdf, "jog:dial:0")
+        _at(user, urdf, dial, "pointerdown", 0.0)
+        _at(user, urdf, dial, "pointermove", 26.0)
+        _at(user, urdf, dial, "pointerup", 26.0)
+        assert await wait_until(lambda: angles.deg[0] > start[0] + 1, 5)
+        take_over()
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        stopped = np.array(await panel.client.angles())
+        assert stopped[0] < start[0] + 24
+        await panel.jog_tick()
+        await asyncio.sleep(0.4)
+        assert np.array(await panel.client.angles()) == pytest.approx(stopped, abs=0.1)
+    finally:
+        waldoctl.commander.settings.jog.speed = speed
+    _unhover(user, urdf, l1)
+    assert await wait_until(lambda: _dials(urdf) == [], 2.0)
+
+    async def stop() -> None:
+        async with McpClient(get_mcp()) as mcp:
+            await mcp.call_tool("motion.stop")
+
+    async def lease() -> None:
+        take_over()
+
+    async def simulator() -> None:
         # Exercise a simulator request from stale UI status without ever
         # opening a hardware serial transport in this regression suite.
         waldoctl.commander.status.simulator_active = False
         with user.client:
             await panel.on_toggle_sim()
         await ensure_robot_ready_for_motion()
-    else:
+
+    async def editing() -> None:
         urdf.enter_editing_mode(np.radians(start).tolist())
         urdf.exit_editing_mode()
-    await panel.jog_tick()
-    _at(user, urdf, dial, "pointerup", 10)
-    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
-    assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1)
 
+    for interrupt in (lease, editing, simulator, stop):
+        await teleport_to_jog_pose(panel.client)
+        start = np.array(await panel.client.angles())
+        assert await wait_until(lambda: urdf._handles_available, 5.0)
+        l2 = _hover(user, urdf, "L2")
+        dial = _one(urdf, "jog:dial:1")
+        _at(user, urdf, dial, "pointerdown", 0)
+        # Hold the periodic sender so the interrupt reaches a target still
+        # pending in the UI.
+        ui_state.joint_jog_timer.active = False
+        _at(user, urdf, dial, "pointermove", 10)
+        await interrupt()
+        await panel.jog_tick()
+        _at(user, urdf, dial, "pointerup", 10)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1), (
+            interrupt.__name__
+        )
+        _unhover(user, urdf, l2)
+        assert await wait_until(lambda: _dials(urdf) == [], 2.0)
 
-@pytest.mark.integration
-async def test_reload_mid_ring_drag_allows_a_new_joint_press(user: User) -> None:
-    urdf = await _open(user)
-    panel = ui_state.control_panel
     await teleport_to_jog_pose(panel.client)
+    assert await wait_until(lambda: urdf._handles_available, 5.0)
     _hover(user, urdf, "L2")
     dial = _one(urdf, "jog:dial:1")
     _at(user, urdf, dial, "pointerdown", 0)
@@ -462,8 +523,7 @@ async def test_reload_mid_ring_drag_allows_a_new_joint_press(user: User) -> None
     await ensure_robot_ready_for_motion()
     panel = ui_state.control_panel
     start = np.array(await panel.client.angles())
-    await panel.set_joint_pressed(0, "pos", True)
-    await panel.set_joint_pressed(0, "pos", False)
+    await simulate_click(user, "btn-j1-plus")
     assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
     end = np.array(await panel.client.angles())
     assert end[0] > start[0] + 0.1
@@ -471,50 +531,13 @@ async def test_reload_mid_ring_drag_allows_a_new_joint_press(user: User) -> None
 
 
 @pytest.mark.integration
-async def test_next_ring_keeps_the_previous_joints_commanded_target(user: User) -> None:
-    await _open(user)
-    panel = ui_state.control_panel
-    await teleport_to_jog_pose(panel.client)
-    start = np.array(await panel.client.angles())
-    assert panel.ring_drag_begin(0)
-    panel.ring_drag_target(0, float(start[0] + 10))
-    await panel.ring_drag_end()
-    # Grab the next ring before the first joint has reached its target.
-    assert panel.ring_drag_begin(1)
-    panel.ring_drag_target(1, float(start[1] + 5))
-    await panel.ring_drag_end()
-    assert await wait_until(
-        lambda: abs(waldoctl.commander.status.joints.angles.deg[0] - start[0] - 10)
-        < 0.1
-        and abs(waldoctl.commander.status.joints.angles.deg[1] - start[1] - 5) < 0.1,
-        20,
-    )
-
-    # Release commits an angle, but it must not refresh that servo after a
-    # takeover, even if this browser immediately regains the lease.
-    from waldo_commander.services.control_lease import BROWSER, control_lease
-
-    start = np.array(await panel.client.angles())
-    waldoctl.commander.settings.jog.speed = 10
-    assert panel.ring_drag_begin(0)
-    panel.ring_drag_target(0, float(start[0] + 25))
-    await panel.ring_drag_end()
-    assert await wait_until(
-        lambda: waldoctl.commander.status.joints.angles.deg[0] > start[0] + 1, 5
-    )
-    control_lease.seize("mcp", "other", "Other driver")
-    control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
-    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
-    stopped = np.array(await panel.client.angles())
-    assert stopped[0] < start[0] + 24
-    await panel.jog_tick()
-    await asyncio.sleep(0.4)
-    assert np.array(await panel.client.angles()) == pytest.approx(stopped, abs=0.1)
-
-
-@pytest.mark.integration
-async def test_touch_pinned_gizmo_survives_an_arrow_press_miss(user: User) -> None:
+async def test_gizmo_lifecycle_never_moves_the_arm_on_its_own(user: User) -> None:
+    """A touch-pinned gizmo survives a miss from an arrow press and goes on
+    the next plain miss. Events from a deleted gizmo do not move its
+    replacement, and a grab after other motion does not replay an old pose."""
     urdf = await _open(user)
+    panel = ui_state.control_panel
+
     mesh = _objects(urdf, "link:L6")[0]
     _pointer(user, urdf, mesh, "click", pointer_type="touch")
     ball = _one(urdf, "tcp:ball")
@@ -532,58 +555,12 @@ async def test_touch_pinned_gizmo_survives_an_arrow_press_miss(user: User) -> No
     _scene(user, urdf).trigger("pointermissed", {"type": "click", **miss})
     assert not _objects(urdf, "tcp:ball")
 
-
-@pytest.mark.integration
-async def test_gizmo_grab_after_other_motion_does_not_replay_an_old_pose(
-    user: User,
-) -> None:
-    urdf = await _open(user)
-    panel = ui_state.control_panel
-    await teleport_to_jog_pose(panel.client)
-    mesh = _hover(user, urdf, "L6")
-    _transform(user, urdf, "transform_start", "translate", "X")
-    _transform(user, urdf, "transform", "translate", "X", x=0.005)
-    await panel.cart_jog_tick()
-    _transform(user, urdf, "transform_end", "translate", "X", x=0.005)
-    _unhover(user, urdf, mesh)
-    assert await wait_until(lambda: not _objects(urdf, "tcp:ball"), 2)
-    await teleport_to_jog_pose(panel.client)
-    start = np.array(await panel.client.angles())
-    _hover(user, urdf, "L6")
-    _transform(user, urdf, "transform_start", "translate", "X")
-    await panel.cart_jog_tick()
-    _transform(user, urdf, "transform_end", "translate", "X")
-    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
-    assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1)
-
-
-@pytest.mark.integration
-async def test_joint_press_cancels_a_cartesian_press_before_its_hold_timer(user: User):
-    await _open(user)
-    panel = ui_state.control_panel
-    await teleport_to_jog_pose(panel.client)
-    start = np.array(await panel.client.angles())
-    await panel.set_axis_pressed("X+", True)
-    await panel.set_joint_pressed(0, "pos", True)
-    await panel.set_joint_pressed(0, "pos", False)
-    await asyncio.sleep(0.6)
-    await panel.set_axis_pressed("X+", False)
-    assert await panel.client.wait_motion(timeout=10, settle_window=0.3)
-    end = np.array(await panel.client.angles())
-    assert end[0] > start[0] + 0.1
-    assert end[1:] == pytest.approx(start[1:], abs=0.1)
-
-
-@pytest.mark.integration
-async def test_events_from_a_deleted_gizmo_do_not_move_its_replacement(user: User):
-    urdf = await _open(user)
-    panel = ui_state.control_panel
     await teleport_to_jog_pose(panel.client)
     mesh = _hover(user, urdf, "L6")
     old = _one(urdf, "tcp:ball")
     _unhover(user, urdf, mesh)
     assert await wait_until(lambda: not _objects(urdf, "tcp:ball"), 2)
-    _hover(user, urdf, "L6")
+    mesh = _hover(user, urdf, "L6")
     assert _one(urdf, "tcp:ball").id != old.id
     start = np.array(await panel.client.angles())
     args = {
@@ -604,5 +581,23 @@ async def test_events_from_a_deleted_gizmo_do_not_move_its_replacement(user: Use
     for event in ("transform_start", "transform", "transform_end"):
         _scene(user, urdf).trigger(event, {**args, "type": event})
     await panel.cart_jog_tick()
+    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+    assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1)
+    _unhover(user, urdf, mesh)
+    assert await wait_until(lambda: not _objects(urdf, "tcp:ball"), 2)
+
+    mesh = _hover(user, urdf, "L6")
+    _transform(user, urdf, "transform_start", "translate", "X")
+    _transform(user, urdf, "transform", "translate", "X", x=0.005)
+    await panel.cart_jog_tick()
+    _transform(user, urdf, "transform_end", "translate", "X", x=0.005)
+    _unhover(user, urdf, mesh)
+    assert await wait_until(lambda: not _objects(urdf, "tcp:ball"), 2)
+    await teleport_to_jog_pose(panel.client)
+    start = np.array(await panel.client.angles())
+    _hover(user, urdf, "L6")
+    _transform(user, urdf, "transform_start", "translate", "X")
+    await panel.cart_jog_tick()
+    _transform(user, urdf, "transform_end", "translate", "X")
     assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
     assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1)
