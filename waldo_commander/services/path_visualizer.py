@@ -14,7 +14,8 @@ import os
 import sys
 import threading
 import traceback
-from dataclasses import asdict
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict, replace
 from types import ModuleType
 from collections.abc import Callable
 from typing import Any, cast
@@ -24,7 +25,7 @@ from nicegui import run
 from nicegui import app as ng_app
 
 import waldoctl
-from waldoctl import LinearMotion
+from waldoctl import LinearMotion, TickIndex
 
 from waldo_commander.state import (
     robot_state,
@@ -40,6 +41,17 @@ logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  #
 
 MAX_PATH_SEGMENTS = 10000
 SIMULATION_TIMEOUT_S = 5.0
+
+#: Simulated seconds a physics pass may cover before it gives up and
+#: reports what it has. Ten minutes of robot time is roughly ten seconds
+#: of computing; a program that never terminates would otherwise never
+#: come back.
+MAX_SIMULATED_SECONDS = 600.0
+
+#: Wall-clock ceiling on a physics pass. `MAX_SIMULATED_SECONDS` bounds
+#: only the simulation, which runs after the script returns — a program
+#: that never terminates reaches neither cap without this.
+PHYSICS_TIMEOUT_S = SIMULATION_TIMEOUT_S + 60.0
 
 # Sentinel returned by update_path_visualization when results are unchanged
 UNCHANGED = "__unchanged__"
@@ -173,6 +185,7 @@ def _run_simulation_isolated(
     shapes_wire: list[tuple] | None = None,
     initial_tool: tuple[str, str] | None = None,
     initial_homed: bool = True,
+    simulate_seconds: float | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -191,6 +204,11 @@ def _run_simulation_isolated(
         backend_package: Backend package name for module shimming
         dry_run_client_cls: Concrete DryRunRobotClient class for path preview
         tool_meta_registry: Mapping of tool_key → {motions, variants, activation_type}
+        simulate_seconds: When set, the program is also RUN — the backend
+            drives the same commands through its control loop against a
+            physics plant — and the result carries the tick record under
+            ``ticks``. The value bounds SIMULATED time, so a program that
+            never terminates still comes back. None plans only.
 
     Returns:
         Dict with keys:
@@ -287,7 +305,21 @@ def _run_simulation_isolated(
         sim_thread_id = threading.get_ident()
 
         class MockTimeModule(ModuleType):
-            """Mock time module with no-op sleep for simulation."""
+            """The program's clock, running on simulated time.
+
+            A preview covers a minute of robot time in a fraction of a
+            second, so the host clock answers a different question than
+            the script is asking. Every reader here answers in simulated
+            seconds instead: sleeping advances it, and so does each move,
+            which is what lets ``while time.monotonic() - t0 < 5:``
+            terminate. It used to answer a constant zero, and such a loop
+            spun until the pool timeout killed it.
+
+            Scoped to the simulating thread: in the thread fallback the
+            app's event loop runs concurrently and must keep seeing a
+            real clock (in a pool worker there is one thread, so the
+            scoping costs nothing).
+            """
 
             def __init__(self, real_time_module):
                 super().__init__("time")
@@ -298,39 +330,39 @@ def _run_simulation_isolated(
             def __getattr__(self, name):
                 return getattr(self._real_time, name)
 
+            def _elapsed(self) -> float:
+                return max((c.sim_time_s for c in created_clients), default=0.0)
+
             def sleep(self, seconds):
                 if threading.get_ident() != sim_thread_id:
                     return self._real_time.sleep(seconds)
-                # Only accumulate sleep after non-blocking moves —
-                # after a blocking move the arm is already stationary.
                 for client in created_clients:
-                    if client._last_move_non_blocking:
-                        client._pending_sleep += seconds
+                    client.record_sleep(seconds)
 
             def time(self):
                 if threading.get_ident() != sim_thread_id:
                     return self._real_time.time()
-                return 0.0
+                return self._elapsed()
 
             def monotonic(self):
                 if threading.get_ident() != sim_thread_id:
                     return self._real_time.monotonic()
-                return 0.0
+                return self._elapsed()
 
             def perf_counter(self):
                 if threading.get_ident() != sim_thread_id:
                     return self._real_time.perf_counter()
-                return 0.0
+                return self._elapsed()
 
             def perf_counter_ns(self):
                 if threading.get_ident() != sim_thread_id:
                     return self._real_time.perf_counter_ns()
-                return 0
+                return int(self._elapsed() * 1e9)
 
             def time_ns(self):
                 if threading.get_ident() != sim_thread_id:
                     return self._real_time.time_ns()
-                return 0
+                return int(self._elapsed() * 1e9)
 
         original_time_module = sys.modules.get("time")
         mock_time = MockTimeModule(original_time_module)
@@ -444,6 +476,18 @@ def _run_simulation_isolated(
     except Exception as e:
         logger.warning("Preview collision marking failed: %s", e)
 
+    # The second pass, on the client that already planned the program:
+    # it kept the commands, so nothing is re-executed and no script runs
+    # twice. A failure here costs the physics, not the plan.
+    ticks = None
+    if simulate_seconds is not None and created_clients:
+        client = created_clients[-1]
+        try:
+            ticks = client._client.simulate(simulate_seconds)
+            ticks = _label_blocks(ticks, client.command_lines)
+        except Exception as e:
+            logger.warning("Physics simulation failed: %s", e)
+
     return {
         "segments": local_segments,
         "targets": local_targets,
@@ -453,7 +497,23 @@ def _run_simulation_isolated(
         "error": error_message,
         "total_steps": len(local_segments),
         "final_joints_rad": final_state.get("joints_rad"),
+        "ticks": ticks,
     }
+
+
+def _label_blocks(ticks: TickIndex, lines: list[int]) -> TickIndex:
+    """Give each simulated block the editor line that produced it.
+
+    The backend numbers its blocks by command; the host is the only one
+    that knows which line each command came from, and every consumer of
+    a simulated row — the executing-line highlight, a diagnostic, a
+    drag-to-edit anchor — asks for the line.
+    """
+    ticks.blocks = tuple(
+        replace(b, line_number=lines[b.command] if b.command < len(lines) else None)
+        for b in ticks.blocks
+    )
+    return ticks
 
 
 def _run_simulation_packed(args: tuple) -> dict[str, Any]:
@@ -463,12 +523,95 @@ def _run_simulation_packed(args: tuple) -> dict[str, Any]:
     return _run_simulation_isolated(*args)
 
 
+def _track_signature(seg: PathSegment) -> tuple:
+    """What a segment's object tracks look like: per object, how many rows,
+    where it lands, and whether that is physics or a guess."""
+    tracks = seg.object_tracks or ()
+    return tuple(
+        (
+            t["name"],
+            len(t["poses"]),
+            tuple(t["poses"][-1]) if t["poses"] else (),
+            bool(t.get("carried")),
+            bool(t.get("physics", True)),
+        )
+        for t in tracks
+    )
+
+
+class _PhysicsPool:
+    """One worker, ours to kill.
+
+    The physics pass is seconds of solid CPU, and a superseding edit has
+    to be able to abandon it immediately. NiceGUI's shared pool can be
+    killed but only wholesale — every worker and every other in-flight
+    job with it — so this owns a pool of one instead. Cancelling means
+    killing the process and letting the next submission spawn a fresh
+    one, which costs a backend import and disturbs nothing else.
+    """
+
+    def __init__(self) -> None:
+        self._pool: ProcessPoolExecutor | None = None
+        self._current: asyncio.Future | None = None
+
+    def _ensure(self) -> ProcessPoolExecutor:
+        if self._pool is None:
+            self._pool = ProcessPoolExecutor(max_workers=1)
+        return self._pool
+
+    async def run(self, fn: Callable, args: tuple) -> Any:
+        """Run *fn*, abandoning whatever was running before it."""
+        self.cancel()
+        loop = asyncio.get_running_loop()
+        if _is_test_environment():
+            # A spawn worker cannot beat a test's timeout from cold, and
+            # a test's pool is rebuilt per test anyway. Still tracked, so
+            # `cancel` is not a silent no-op here.
+            future = asyncio.ensure_future(asyncio.to_thread(fn, args))
+        else:
+            future = loop.run_in_executor(self._ensure(), fn, args)
+        self._current = future
+        try:
+            return await future
+        finally:
+            if self._current is future:
+                self._current = None
+
+    def cancel(self) -> None:
+        """Abandon the run in flight, if any.
+
+        A future already executing does not stop when cancelled — the
+        worker keeps burning CPU until it finishes — so the process goes
+        with it.
+        """
+        current, self._current = self._current, None
+        if current is None or current.done():
+            return
+        current.cancel()
+        pool, self._pool = self._pool, None
+        if pool is not None:
+            for p in getattr(pool, "_processes", {}).values():
+                p.kill()
+            pool.shutdown(wait=False)
+
+    def shutdown(self) -> None:
+        self.cancel()
+        pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=False)
+
+
 class PathVisualizer:
     """Visualizes robot path from program simulation."""
 
     def __init__(self):
         self._simulation_lock = asyncio.Lock()
         self._simulation_count = 0
+        self._physics = _PhysicsPool()
+        # The exact arguments each tab was last PLANNED with. The physics
+        # pass runs seconds later and must refine that plan, not whatever
+        # the world happens to look like by the time it starts.
+        self._planned_args: dict[str, tuple] = {}
 
     def reset_for_test(self) -> None:
         """Rebuild loop-bound state so the next test's event loop starts clean.
@@ -479,6 +622,7 @@ class PathVisualizer:
         close, so the next test's simulation takes the contended path and
         raises ``bound to a different event loop``.
         """
+        self._physics.shutdown()
         type(self).__init__(self)
 
     @staticmethod
@@ -498,7 +642,110 @@ class PathVisualizer:
             if a.points and b.points:
                 if a.points[0] != b.points[0] or a.points[-1] != b.points[-1]:
                     return False
+            # Where the objects end up is part of the picture too.
+            if _track_signature(a) != _track_signature(b):
+                return False
         return True
+
+    def _simulation_args(
+        self,
+        program_text: str,
+        robot: Any,
+        simulate_seconds: float | None = None,
+    ) -> tuple | None:
+        """Everything a preview worker needs, or None when this backend
+        cannot preview at all.
+
+        Both passes run the same program against the same world, tool and
+        starting pose — the only difference is whether the worker also
+        simulates — so they are built here once rather than kept in step
+        by hand.
+        """
+        # Current robot joint angles seed the simulation's initial position.
+        initial_joints_rad: np.ndarray | None = None
+        if len(waldoctl.commander.status.joints.angles) >= robot.joints.count:
+            initial_joints_rad = waldoctl.commander.status.joints.angles.rad
+            logger.debug(
+                "Using current robot joints as initial: %s deg",
+                waldoctl.commander.status.joints.angles.deg,
+            )
+
+        backend_pkg = robot.backend_package
+        dr_instance = robot.create_dry_run_client()
+        dr_cls = type(dr_instance) if dr_instance is not None else None
+        if dr_cls is None:
+            logger.warning(
+                "Backend %s does not support dry-run simulation", backend_pkg
+            )
+            simulation_state.notify_changed()
+            return None
+
+        # Build serializable tool metadata registry for all tools.
+        # Scripts can call select_tool() to switch tools mid-program, so we
+        # need metadata for every tool — not just the currently active one.
+        # Each entry includes base motions + per-variant motions.
+        tool_meta_registry: dict[str, dict] = {}
+
+        def _serialize_motions(motion_list):
+            return [
+                {"type": "linear", **asdict(m)}
+                if isinstance(m, LinearMotion)
+                else {"type": "rotary", **asdict(m)}
+                for m in motion_list
+            ]
+
+        for spec in robot.tools.available:
+            if spec.key == "NONE":
+                continue
+            try:
+                base_motions = _serialize_motions(spec.motions) if spec.motions else []
+                variants_dict: dict[str, dict] = {}
+                for v in spec.variants:
+                    if v.motions:
+                        variants_dict[v.key] = {
+                            "motions": _serialize_motions(v.motions),
+                        }
+                if not base_motions and not variants_dict:
+                    continue
+                tool_meta_registry[spec.key] = {
+                    "motions": base_motions,
+                    "variants": variants_dict,
+                    "activation_type": spec.activation_type.value,
+                }
+            except (KeyError, AttributeError):
+                pass
+
+        # Collision-marking inputs: the live shapes (wire form crosses the
+        # process boundary) and the live tool as the checker's starting
+        # state — matching what execution-time guards would use.
+        scene_handle = waldoctl.commander.scene
+        shapes_wire = (
+            [s.to_wire() for s in scene_handle.enforced_locally]
+            if scene_handle is not None
+            else []
+        )
+        live_tool_key = waldoctl.commander.status.tool.key or "NONE"
+        initial_tool = (
+            live_tool_key,
+            ng_app.storage.general.get(f"tool_variant_{live_tool_key}", "") or "",
+        )
+        # Live homed state seeds the preview so it mirrors the controller's
+        # planned-motion gate: an unhomed robot's preview refuses planned
+        # moves until the script homes.
+        initial_homed = robot_state.homed
+
+        return (
+            program_text,
+            initial_joints_rad,
+            MAX_PATH_SEGMENTS,
+            backend_pkg,
+            dr_cls,
+            tool_meta_registry or None,
+            shapes_wire,
+            initial_tool,
+            initial_homed,
+            simulate_seconds,
+        )
 
     async def update_path_visualization(
         self, program_text: str, tab_id: str | None = None
@@ -542,96 +789,10 @@ class PathVisualizer:
                     targets_before,
                 )
 
-            # Current robot joint angles seed the simulation's initial position.
-            initial_joints_rad: np.ndarray | None = None
-            if (
-                len(waldoctl.commander.status.joints.angles)
-                >= ui_state.active_robot.joints.count
-            ):
-                initial_joints_rad = waldoctl.commander.status.joints.angles.rad
-                logger.debug(
-                    "Using current robot joints as initial: %s deg",
-                    waldoctl.commander.status.joints.angles.deg,
-                )
-
-            robot = ui_state.active_robot
-            backend_pkg = robot.backend_package
-            dr_instance = robot.create_dry_run_client()
-            dr_cls = type(dr_instance) if dr_instance is not None else None
-            if dr_cls is None:
-                logger.warning(
-                    "Backend %s does not support dry-run simulation", backend_pkg
-                )
+            sim_args = self._simulation_args(program_text, ui_state.active_robot)
+            if sim_args is None:
                 simulation_state.notify_changed()
                 return None
-
-            # Build serializable tool metadata registry for all tools.
-            # Scripts can call select_tool() to switch tools mid-program, so we
-            # need metadata for every tool — not just the currently active one.
-            # Each entry includes base motions + per-variant motions.
-            tool_meta_registry: dict[str, dict] = {}
-
-            def _serialize_motions(motion_list):
-                return [
-                    {"type": "linear", **asdict(m)}
-                    if isinstance(m, LinearMotion)
-                    else {"type": "rotary", **asdict(m)}
-                    for m in motion_list
-                ]
-
-            for spec in robot.tools.available:
-                if spec.key == "NONE":
-                    continue
-                try:
-                    base_motions = (
-                        _serialize_motions(spec.motions) if spec.motions else []
-                    )
-                    variants_dict: dict[str, dict] = {}
-                    for v in spec.variants:
-                        if v.motions:
-                            variants_dict[v.key] = {
-                                "motions": _serialize_motions(v.motions),
-                            }
-                    if not base_motions and not variants_dict:
-                        continue
-                    tool_meta_registry[spec.key] = {
-                        "motions": base_motions,
-                        "variants": variants_dict,
-                        "activation_type": spec.activation_type.value,
-                    }
-                except (KeyError, AttributeError):
-                    pass
-
-            # Collision-marking inputs: the live shapes (wire form crosses the
-            # process boundary) and the live tool as the checker's starting
-            # state — matching what execution-time guards would use.
-            scene_handle = waldoctl.commander.scene
-            shapes_wire = (
-                [s.to_wire() for s in scene_handle.shapes]
-                if scene_handle is not None
-                else []
-            )
-            live_tool_key = waldoctl.commander.status.tool.key or "NONE"
-            initial_tool = (
-                live_tool_key,
-                ng_app.storage.general.get(f"tool_variant_{live_tool_key}", "") or "",
-            )
-            # Live homed state seeds the preview so it mirrors the controller's
-            # planned-motion gate: an unhomed robot's preview refuses planned
-            # moves until the script homes.
-            initial_homed = robot_state.homed
-
-            sim_args = (
-                program_text,
-                initial_joints_rad,
-                MAX_PATH_SEGMENTS,
-                backend_pkg,
-                dr_cls,
-                tool_meta_registry or None,
-                shapes_wire,
-                initial_tool,
-                initial_homed,
-            )
             # Tests always simulate in-process: the pool is rebuilt per test
             # with warm-up disabled, so a cold spawn worker could not meet the
             # timeout even when submission succeeds. The pool remains a
@@ -718,6 +879,12 @@ class PathVisualizer:
                     )
                     return UNCHANGED
 
+                # A new plan retires the physics that refined the old
+                # one: playback locks again until the next pass lands.
+                target_tab.dry_run.ticks = None
+                target_tab.dry_run.ticks_pending = (
+                    ui_state.active_robot.has_physics_simulation
+                )
                 target_tab.dry_run.path_segments = new_segments
                 target_tab.dry_run.targets = new_targets
                 target_tab.dry_run.tool_actions = new_tool_actions
@@ -738,6 +905,93 @@ class PathVisualizer:
             simulation_state.notify_changed()
 
             return result.get("error")
+
+    async def update_physics_simulation(self, tab_id: str | None = None) -> str | None:
+        """Run the planned program through the backend's physics.
+
+        The planning pass has already returned by the time this starts,
+        so the user is looking at the ideal trajectory while this fills
+        in what the arm would actually do. Playback and scrubbing stay
+        locked until it lands, because a scrub bar over a half-built
+        record seeks into rows that do not exist.
+
+        It replays the plan's OWN arguments — same program text, same
+        world, same tool, same starting pose — rather than rebuilding
+        them from live state seconds later. A keep-out added during the
+        wait would otherwise make the record describe a different world
+        than the plan on screen, with nothing to notice it.
+
+        No-ops on a backend with no plant, which is how the app behaved
+        before any backend had one.
+        """
+        if not ui_state.active_robot.has_physics_simulation:
+            return None
+        tab = (
+            waldoctl.commander.programs.get(tab_id)
+            if tab_id
+            else waldoctl.commander.programs.active
+        )
+        if tab is None:
+            return None
+        planned = self._planned_args.get(tab.id)
+        if planned is None:
+            return None  # nothing planned to refine
+        args = (*planned[:-1], MAX_SIMULATED_SECONDS)
+
+        tab.dry_run.ticks_pending = True
+        try:
+            result = await asyncio.wait_for(
+                self._physics.run(_run_simulation_packed, args),
+                timeout=PHYSICS_TIMEOUT_S,
+            )
+        except asyncio.CancelledError:
+            # Not an outcome. Superseded work must unwind, not return and
+            # let the caller carry on mutating state that has moved on.
+            tab.dry_run.ticks_pending = False
+            raise
+        except asyncio.TimeoutError:
+            tab.dry_run.ticks_pending = False
+            self._physics.cancel()
+            logger.warning("Physics simulation timed out; the worker was killed")
+            return "Physics simulation timed out"
+        except Exception as e:
+            tab.dry_run.ticks_pending = False
+            logger.warning("Physics simulation failed: %s", e)
+            return str(e)
+
+        tab.dry_run.ticks_pending = False
+        ticks = (result or {}).get("ticks")
+        if ticks is None:
+            return (result or {}).get("error")
+        # The backend guarantees the same program gives a bit-identical
+        # record, so an equal digest means an identical picture and the
+        # scene keeps what it has. This is the flash guard.
+        previous = tab.dry_run.ticks
+        if previous is not None and ticks.digest and previous.digest == ticks.digest:
+            return None
+        tab.dry_run.ticks = ticks
+        logger.info(
+            "Physics simulation complete: %d rows over %.2f s (%s)",
+            ticks.rows,
+            ticks.duration_s,
+            ticks.stop,
+        )
+        simulation_state.notify_changed()
+        return None
+
+    def cancel_physics(self) -> None:
+        """Abandon a physics pass in flight — a superseding edit landed.
+
+        Kills the worker and nothing else. This also runs at page
+        teardown, after the host has torn the commander down, so it must
+        not reach for any application state; the pending flag is cleared
+        by whoever set it.
+        """
+        self._physics.cancel()
+
+    def forget_plan(self, tab_id: str) -> None:
+        """Drop a tab's stored plan arguments — there is no plan to refine."""
+        self._planned_args.pop(tab_id, None)
 
 
 path_visualizer = PathVisualizer()

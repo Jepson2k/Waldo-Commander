@@ -317,12 +317,9 @@ def _target2cam_matrix(rvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
 def _hand_eye_inputs(
     samples: list[HandEyeSample],
     intrinsics: IntrinsicsResult,
-    mode: str = "eye_in_hand",
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
-    """Build calibrateHandEye inputs; the single place an eye-to-hand mode
-    would later invert the robot poses."""
-    if mode != "eye_in_hand":
-        raise CalibrationError(f"Unsupported mode {mode!r}")
+    """Build calibrateHandEye inputs for an eye-in-hand camera; the single
+    place an eye-to-hand mode would later invert the robot poses."""
     R_gripper2base = [s.T_base_gripper[:3, :3].copy() for s in samples]
     t_gripper2base = [s.T_base_gripper[:3, 3].copy() for s in samples]
     R_target2cam = [cv2.Rodrigues(r)[0] for r in intrinsics.rvecs]

@@ -24,6 +24,7 @@ import numpy as np
 from nicegui import Client, app as ng_app
 from nicegui import background_tasks, context, run, ui
 from scipy.spatial.transform import Rotation
+import waldoctl
 from waldoctl import Commander, Panel, PanelSlot
 
 from waldo_commander.services import handeye
@@ -76,6 +77,11 @@ AUTO_VIEW_DELTAS_DEG: tuple[tuple[float, float, float, float, float, float], ...
 
 # Autonomous moves are deliberately slow: duration is sized so the fastest
 # joint stays under AUTO_DEG_PER_S. Tests lower these for the simulator.
+#: Largest printable square \[mm\]. The board is rendered at print
+#: resolution, so square size drives the pixel count quadratically; past
+#: this a "download" is a multi-megapixel encode nobody asked for.
+MAX_SQUARE_MM = 100.0
+
 AUTO_DEG_PER_S = 15.0
 AUTO_MIN_MOVE_S = 1.5
 AUTO_MOVE_TIMEOUT_MARGIN_S = 10.0
@@ -229,7 +235,11 @@ class HandEyeCalibrationPanel(Panel):
                     "Squares Y", value=self._spec.squares_y, min=3, max=20, precision=0
                 ).classes("w-20")
                 sq = ui.number(
-                    "Square mm", value=self._spec.square_mm, min=5.0, step=0.5
+                    "Square mm",
+                    value=self._spec.square_mm,
+                    min=5.0,
+                    max=MAX_SQUARE_MM,
+                    step=0.5,
                 ).classes("w-24")
                 mk = ui.number(
                     "Marker mm", value=self._spec.marker_mm, min=3.0, step=0.5
@@ -241,12 +251,26 @@ class HandEyeCalibrationPanel(Panel):
                 ).classes("w-32")
 
             def current_inputs() -> handeye.BoardSpec:
+                """The board the five inputs describe, treating an emptied
+                field as unchanged.
+
+                NiceGUI sets a number's value to None the moment its text
+                is cleared, which is what selecting a field to retype it
+                does. Parsing that raises TypeError, which the caller does
+                not catch, so the revert never runs and the field stays
+                blank — after which every later edit to any of the five
+                re-raises through it.
+                """
+
+                def num(el, fallback, cast):
+                    return fallback if el.value is None else cast(el.value)
+
                 return handeye.BoardSpec(
-                    squares_x=int(sx.value),
-                    squares_y=int(sy.value),
-                    square_mm=float(sq.value),
-                    marker_mm=float(mk.value),
-                    dictionary=str(dic.value),
+                    squares_x=num(sx, self._spec.squares_x, int),
+                    squares_y=num(sy, self._spec.squares_y, int),
+                    square_mm=num(sq, self._spec.square_mm, float),
+                    marker_mm=num(mk, self._spec.marker_mm, float),
+                    dictionary=str(dic.value or self._spec.dictionary),
                 )
 
             def revert_inputs() -> None:
@@ -290,16 +314,25 @@ class HandEyeCalibrationPanel(Panel):
             for el in (sx, sy, sq, mk, dic):
                 el.on_value_change(apply_spec)
 
+            async def download_board() -> None:
+                """Render and encode off the event loop.
+
+                A board is rendered at print resolution, so the PNG runs to
+                megapixels and its encode is long enough to stall every
+                other client for the duration if it runs here.
+                """
+                spec = self._spec
+                data = await run.cpu_bound(handeye.board_png, spec)
+                ui.download(
+                    data,
+                    f"charuco_{spec.squares_x}x{spec.squares_y}"
+                    f"_{spec.square_mm:g}mm_{spec.marker_mm:g}mm"
+                    f"_{spec.dictionary}.png",
+                )
+
             with ui.row().classes("items-center"):
                 ui.button(
-                    "Download board PNG",
-                    icon="download",
-                    on_click=lambda: ui.download(
-                        handeye.board_png(self._spec),
-                        f"charuco_{self._spec.squares_x}x{self._spec.squares_y}"
-                        f"_{self._spec.square_mm:g}mm_{self._spec.marker_mm:g}mm"
-                        f"_{self._spec.dictionary}.png",
-                    ),
+                    "Download board PNG", icon="download", on_click=download_board
                 ).props("outline dense").mark("handeye-board-download")
                 ui.label(
                     "Print at 100% scale, then measure a printed square and "
@@ -545,12 +578,18 @@ class HandEyeCalibrationPanel(Panel):
         except NotImplementedError:
             st = None
         status_pose = getattr(st, "pose", None) if st is not None else None
-        if status_pose is not None:
-            return np.asarray(status_pose, dtype=np.float64).reshape(4, 4)
-        pose = np.asarray(robot_state.pose, dtype=np.float64)
-        if pose.size != 16 or not np.any(pose):
-            return None
-        return pose.reshape(4, 4).copy()
+        for candidate in (status_pose, robot_state.pose):
+            if candidate is None:
+                continue
+            pose = np.asarray(candidate, dtype=np.float64)
+            # All zeros is the uninitialised value, not a pose: the status
+            # cache seeds it that way and only fills it once the arm
+            # reports, so an unplugged robot answers zeros indefinitely.
+            # Storing one as a sample raises "non-positive determinant"
+            # out of the NEXT capture, which is unreadable as a diagnosis.
+            if pose.size == 16 and np.any(pose):
+                return pose.reshape(4, 4).copy()
+        return None
 
     def _on_clear(self) -> None:
         if self._auto_running:
@@ -822,9 +861,20 @@ class HandEyeCalibrationPanel(Panel):
     async def _auto_move(self, commander: Commander, target: list[float]) -> int:
         """Joint move with duration sized so the fastest joint stays under
         :data:`AUTO_DEG_PER_S`; returns the command index, or -1 when the
-        controller rejects the move or the motion errors out. Completion is
-        awaited in slices so Stop takes effect within a slice instead of at
-        the end of the move."""
+        move did not finish where it was asked to. Completion is awaited in
+        slices so Stop takes effect within a slice instead of at the end of
+        the move.
+
+        A Stop from anywhere else — the control panel, an MCP halt, another
+        client — cancels the command without completing it and without an
+        error, so ``wait_command`` resolves neither True nor raises. The
+        action going idle after it ran is the only signal, and it has to end
+        this run: the controller stays enabled through a Stop, so a caller
+        that treated the halt as success would capture a view at the halted
+        pose and then drive the arm to the next one, seconds after a human
+        deliberately stopped it. (``ControlPanel._wait_home`` makes the same
+        distinction for the same reason.)
+        """
         current = await commander.client.angles()
         reference = current if current is not None else target
         span = max(abs(t - c) for t, c in zip(target, reference, strict=True))
@@ -834,11 +884,22 @@ class HandEyeCalibrationPanel(Panel):
             index = await commander.client.move_j(target, duration=duration)
             if index < 0:
                 return -1
+            started = False
             while not await commander.client.wait_command(
                 index, timeout=AUTO_WAIT_SLICE_S
             ):
-                if self._auto_cancel or time.monotonic() > deadline:
-                    break
+                if self._auto_cancel:
+                    return -1
+                state = commander.status.action.state
+                if state == waldoctl.ActionState.EXECUTING:
+                    started = True
+                elif started and state == waldoctl.ActionState.IDLE:
+                    logger.info("Auto-calibration halted: the move was cancelled")
+                    self._auto_cancel = True
+                    return -1
+                if time.monotonic() > deadline:
+                    logger.warning("Auto-calibration move did not complete in time")
+                    return -1
             return index
         except Exception as e:
             logger.warning("Auto-calibration move failed: %s", e)
@@ -994,13 +1055,17 @@ class HandEyeCalibrationPanel(Panel):
             datetime.now(UTC).isoformat(timespec="seconds"),
         )
         ui.notify(f"Calibration saved for tool {tool_key}", color="positive")
-        self._refresh_stored()
+        # Shown for the tool it was SAVED under. The samples fix the tool
+        # at capture time and the selector can move afterwards, so reading
+        # back under the selection would leave a green "saved" toast above
+        # an empty Stored section — indistinguishable from a failed save.
+        self._refresh_stored(tool_key)
 
-    def _refresh_stored(self) -> None:
+    def _refresh_stored(self, tool_key: str | None = None) -> None:
         if self._stored_container is None:
             return
         self._stored_container.clear()
-        tool_key = _selected_tool_key()
+        tool_key = tool_key or _selected_tool_key()
         self._last_stored_tool = tool_key
         stored = ng_app.storage.general.get(f"handeye/{tool_key}")
         self._refresh_stage()
