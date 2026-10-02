@@ -320,3 +320,43 @@ def test_the_overrun_rate_counts_only_what_this_page_watched() -> None:
     # A controller restart starts its count again, and the rate with it.
     assert rate.per_minute(2, now=230.0) is None
     assert rate.per_minute(4, now=290.0) == pytest.approx(2.0)
+
+
+@pytest.mark.integration
+async def test_a_backend_that_answers_nothing_is_not_queried_at_the_status_rate(
+    user: User,
+) -> None:
+    """The boot constants are one query, and a failed one must not become a
+    query per status tick.
+
+    ``_ask_constants`` cleared its own latch on failure, so the very next
+    tick started it again: against a backend that was reachable but
+    answering nothing, the tab queried it for as long as it stayed open, at
+    whatever rate status arrives. The retry backs off now.
+    """
+    from waldo_commander.components.diagnostics import DiagnosticsPage
+
+    await user.open("/")
+    await wait_for_app_ready()
+
+    calls = 0
+
+    class Mute:
+        """Reachable, and answers nothing — the case the latch mishandled."""
+
+        async def loop_stats(self):
+            nonlocal calls
+            calls += 1
+            raise ConnectionError("no answer")
+
+    with user:
+        page = DiagnosticsPage(Mute(), lambda: True)
+        page.build()
+    for _ in range(40):
+        page.update()
+        await asyncio.sleep(0)
+
+    assert calls == 1, (
+        f"a mute backend was queried {calls} times across 40 status ticks; "
+        "the boot-constants query must back off, not re-fire every tick"
+    )

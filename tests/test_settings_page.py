@@ -110,13 +110,17 @@ async def test_settings_dialog_rows_drive_their_settings(user: User) -> None:
     select_el.set_value("PNEUMATIC")
     await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
     await user.should_see("TCP offset")
-    assert await wait_until(lambda: not offset_x_disabled()), (
-        "a fitted tool's offset is editable"
+    await poll_until(
+        offset_x_disabled,
+        lambda disabled: not disabled,
+        what="a fitted tool's offset editable",
     )
     select_el.set_value("NONE")
     await wait_for_tool_key("NONE", timeout_s=5.0)
-    assert await wait_until(lambda: not offset_x_disabled()), (
-        "the bare flange must support a TCP correction"
+    await poll_until(
+        offset_x_disabled,
+        lambda disabled: not disabled,
+        what="the bare flange's TCP correction editable",
     )
 
     user.find(marker="settings-close").click()

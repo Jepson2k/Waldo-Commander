@@ -84,7 +84,12 @@ async def test_limits_disable_the_directions_that_would_pass_them(user: User) ->
             1 for v in frame.can_jog_neg if not v
         )
 
-    await wait_until(lambda: _disabled_count() > 0, timeout_s=10.0)
+    await poll_until(
+        _disabled_count,
+        lambda n: n > 0,
+        timeout_s=10.0,
+        what="a disabled cartesian jog direction",
+    )
 
     wrf = waldoctl.commander.status.pose.cart_jog.by_frame.get("WRF")
     assert wrf is not None, "cart_jog should have WRF frame"
