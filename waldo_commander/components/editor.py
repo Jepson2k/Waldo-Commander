@@ -13,7 +13,29 @@ from nicegui import Client, background_tasks, context, ui
 from waldoctl import EditId, Program, ProgramTarget
 
 from waldo_commander.common.theme import get_theme
+from waldo_commander.components.editor_decorations import decorations
+from waldo_commander.components.file_operations import FileOperationsMixin
+from waldo_commander.components.log_panel import (
+    LOG_COLLAPSED_VALUE,
+    LOG_MAX_LINES,
+    log_panel,
+)
+from waldo_commander.components.playback import playback
+from waldo_commander.components.script_execution import script_exec
+from waldo_commander.components.simulation_engine import (
+    default_python_snippet,
+    get_home_joints_rad,
+    is_default_script,
+    simulation,
+)
 from waldo_commander.constants import default_program_dir
+from waldo_commander.services import edit_decisions
+from waldo_commander.services.command_discovery import (
+    discover_robot_commands,
+    generate_completions_from_commands,
+)
+from waldo_commander.services.control_lease import control_mode
+from waldo_commander.services.motion_recorder import motion_recorder, move_snippet
 from waldo_commander.services.programs import (
     active_cursor_line,
     advance_active_cursor,
@@ -21,34 +43,12 @@ from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
 )
-from waldo_commander.services import edit_decisions
-from waldo_commander.services.control_lease import control_mode
-from waldo_commander.services.motion_recorder import motion_recorder, move_snippet
 from waldo_commander.services.python_source import loads_setup
 from waldo_commander.setup import add_save_listener
 from waldo_commander.state import (
     simulation_state,
     ui_state,
 )
-from waldo_commander.services.command_discovery import (
-    discover_robot_commands,
-    generate_completions_from_commands,
-)
-from waldo_commander.components.editor_decorations import decorations
-from waldo_commander.components.log_panel import (
-    LOG_COLLAPSED_VALUE,
-    LOG_MAX_LINES,
-    log_panel,
-)
-from waldo_commander.components.simulation_engine import (
-    default_python_snippet,
-    get_home_joints_rad,
-    is_default_script,
-    simulation,
-)
-from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.playback import playback
-from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -1500,7 +1500,31 @@ class EditorPanel(FileOperationsMixin):
                         .mark("editor-run-selection")
                     )
                     self._run_selection_btn.set_enabled(self.selection() is not None)
-                self._toolbar_btns = [open_btn, save_btn, commands_btn, more_btn]
+
+                    from waldo_commander.components.run_records import (
+                        show_run_records,
+                    )
+
+                    records_btn = (
+                        ui.button(
+                            "Run records",
+                            icon="bug_report",
+                            on_click=show_run_records,
+                        )
+                        .props("flat dense no-caps align=left color=white")
+                        .classes("w-full")
+                        .tooltip(
+                            "What recent runs did, and exporting it for a bug report"
+                        )
+                    )
+                    records_btn.mark("editor-records-btn")
+                self._toolbar_btns = [
+                    open_btn,
+                    save_btn,
+                    commands_btn,
+                    more_btn,
+                    records_btn,
+                ]
                 self._file_btns = [open_btn, save_btn]
 
                 if close_callback:
