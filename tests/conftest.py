@@ -962,6 +962,8 @@ async def controller_reset(
         ) as client:
             await client.reset_state()
             await client.reset()
+            assert await client.resume() == 1
+            assert await client.set_execution_speed(1) == 1
             # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
             # Use short timeouts since simulator homing is instant
             await client.home(wait=True, timeout=10.0)

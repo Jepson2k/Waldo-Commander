@@ -10,6 +10,7 @@ These are unit tests for the IPC components.
 
 import json
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -279,8 +280,8 @@ class TestSteppingClientWrapper:
 
         result = wrapper.move_j([0, 0, 0, 0, 0, 0])
 
-        mock_client.move_j.assert_called_once_with([0, 0, 0, 0, 0, 0])
-        mock_client.wait_command.assert_called_once_with(42)
+        mock_client.move_j.assert_called_once_with([0, 0, 0, 0, 0, 0], wait=False)
+        mock_client.wait_command.assert_called_once_with(42, timeout=0.1)
         assert result == 42
 
         # Verify events were emitted
@@ -341,7 +342,7 @@ class TestSteppingClientWrapper:
         result = wrapper.move_j([0, 0, 0, 0, 0, 0], r=15, wait=False)
         assert result == 7
         assert mock_client.move_j.call_args.kwargs["r"] == 0.0
-        mock_client.wait_command.assert_called_with(7)
+        mock_client.wait_command.assert_called_with(7, timeout=0.1)
 
         controller.signal_step()
         wrapper.move_j([1, 1, 1, 1, 1, 1], r=15, wait=False)
@@ -366,6 +367,39 @@ class TestSteppingClientWrapper:
             ("complete", "move_j"),
         ]
         assert wrapper._in_blend is False
+
+    @pytest.mark.timeout(30)
+    def test_unbounded_wait_still_ends_when_the_plan_is_empty(
+        self, tmp_path, monkeypatch
+    ):
+        """Without an explicit deadline the wait is sized by the controller's
+        queued motion; a command it reports nothing left to play for, and
+        never completes, times out after the grace period rather than never."""
+        import time
+
+        from waldo_commander.services import completion_budget
+        from waldo_commander.services.stepping_client import (
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr(completion_budget, "PLAN_GRACE_S", 0.3)
+        control_file = tmp_path / ".parol_control_test_grace"
+        control_file.write_text(json.dumps({"paused": False, "step_signal": 0}))
+        client = MagicMock()
+        client.wait_command = MagicMock(return_value=False)
+        client.wait_status = MagicMock(return_value=False)
+        client.error = MagicMock(return_value=None)
+        client.status = MagicMock(
+            return_value=SimpleNamespace(
+                queued_duration=0.0, completed_index=-1, executing_index=-1
+            )
+        )
+        wrapper = SteppingClientWrapper(client, StepIO("test_grace"))
+        started = time.monotonic()
+        assert wrapper.wait_command(5) is False
+        assert time.monotonic() - started < 3.0
 
     def test_stop_reaches_controller_while_a_blend_group_is_pending(
         self, tmp_path, monkeypatch, session_controller
@@ -436,6 +470,68 @@ class TestSteppingClientWrapper:
             ("complete", "move_j"),
         ]
 
+    def test_a_paused_jog_is_held_until_play(
+        self, tmp_path, monkeypatch, session_controller
+    ):
+        """Streamed motion obeys a managed Pause: a jog issued while paused
+        never reaches the controller until Play releases it."""
+        import threading
+        import time
+
+        from parol6 import RobotClient
+
+        from tests.conftest import _get_test_ports
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_jog_hold")
+        controller.initialize()
+        controller.signal_play()
+        controller.signal_pause()
+        port, _ = _get_test_ports()
+        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+            client.simulator(True)
+            client.reset()
+            assert client.home(wait=True, timeout=10.0) >= 0
+            start = client.angles()
+            assert start is not None
+            wrapper = SteppingClientWrapper(client, StepIO("test_jog_hold"))
+            errors: list[BaseException] = []
+
+            def jog() -> None:
+                try:
+                    wrapper.jog_j(0, speed=0.5, duration=0.5)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            jogger = threading.Thread(target=jog, daemon=True)
+            jogger.start()
+            # Being held is an absence of motion, so it is watched over a window.
+            window_end = time.monotonic() + 1.0
+            while time.monotonic() < window_end:
+                assert jogger.is_alive(), "a jog issued while paused was dispatched"
+                angles = client.angles()
+                assert angles is not None and abs(angles[0] - start[0]) < 0.05, (
+                    "the arm moved while the program was paused"
+                )
+                time.sleep(0.05)
+
+            controller.signal_play()
+            jogger.join(timeout=5.0)
+            assert not jogger.is_alive(), "Play did not release the held jog"
+            assert errors == []
+            deadline = time.monotonic() + 3.0
+            while True:
+                angles = client.angles()
+                if angles is not None and abs(angles[0] - start[0]) > 0.5:
+                    break
+                assert time.monotonic() < deadline, "the released jog never moved J1"
+                time.sleep(0.05)
+
     def test_paused_jog_holds_until_a_step_is_granted(
         self, tmp_path, monkeypatch, session_controller
     ):
@@ -456,8 +552,12 @@ class TestSteppingClientWrapper:
         )
 
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        # One session per program, as Commander runs them: a step granted to
+        # one is not a grant to the next.
         controller = GUIStepController("test_jog")
         controller.initialize()
+        async_controller = GUIStepController("test_jog_async")
+        async_controller.initialize()
         port, _ = _get_test_ports()
         with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
             client.simulator(True)
@@ -477,19 +577,60 @@ class TestSteppingClientWrapper:
             async with AsyncRobotClient(
                 host="127.0.0.1", port=port, timeout=5.0
             ) as client:
-                wrapper = AsyncSteppingClientWrapper(client, StepIO("test_jog"))
+                wrapper = AsyncSteppingClientWrapper(client, StepIO("test_jog_async"))
                 task = asyncio.ensure_future(wrapper.jog_j(0, -0.2, 0.1))
                 await asyncio.sleep(0.5)
                 assert not task.done(), "a paused program must hold after a jog"
-                controller.signal_step()
+                async_controller.signal_step()
                 await asyncio.wait_for(task, timeout=2.0)
 
         asyncio.run(async_jog())
 
-        events = json.loads((tmp_path / ".parol_events_test_jog").read_text())
-        assert [(e["event"], e["method"]) for e in events["events"]] == [
-            ("start", "jog_j"),
-            ("complete", "jog_j"),
-            ("start", "jog_j"),
-            ("complete", "jog_j"),
-        ]
+        for session in ("test_jog", "test_jog_async"):
+            events = json.loads((tmp_path / f".parol_events_{session}").read_text())
+            assert [(e["event"], e["method"]) for e in events["events"]] == [
+                ("start", "jog_j"),
+                ("complete", "jog_j"),
+            ]
+
+    def test_an_earlier_blend_member_keeps_its_own_deadline(
+        self, tmp_path, monkeypatch, session_controller
+    ):
+        """Closing a blend group enforces every member's timeout=, not only
+        the last one's: an earlier member's overrun raises and stops the arm."""
+        import time
+
+        from parol6 import RobotClient
+
+        from tests.conftest import _get_test_ports
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_blend_deadline")
+        controller.initialize()
+        controller.signal_play()
+        port, _ = _get_test_ports()
+        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+            client.simulator(True)
+            client.reset()
+            assert client.home(wait=True, timeout=10.0) >= 0
+            home = client.angles()
+            assert home is not None
+            away = [a + 10.0 for a in home]
+            wrapper = SteppingClientWrapper(client, StepIO("test_blend_deadline"))
+            started = time.monotonic()
+            assert wrapper.move_j(away, duration=4.0, r=15, timeout=0.5) >= 0
+            assert wrapper.move_j(home, duration=0.5, r=15) >= 0
+            with pytest.raises(TimeoutError):
+                wrapper.move_j(home, duration=0.5)
+            assert time.monotonic() - started < 2.5, (
+                "the first member's deadline was not enforced"
+            )
+            deadline = time.monotonic() + 3.0
+            while not (client.queue() == [] and client.is_robot_stopped()):
+                assert time.monotonic() < deadline, "controller did not stop"
+                time.sleep(0.05)
