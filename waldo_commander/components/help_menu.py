@@ -1,4 +1,7 @@
-"""Help menu component with keybindings and quick start tutorial."""
+"""Keybindings table and quick-start tour: the Settings dialog's Shortcuts and
+Getting started categories, and the first-visit dialog."""
+
+from collections.abc import Callable
 
 from nicegui import app as ng_app, ui
 
@@ -6,92 +9,14 @@ from waldo_commander.services.keybindings import keybindings_manager
 
 
 class HelpMenu:
-    """Help dialog with vertical tabs for keybindings and quick start tutorial."""
+    """The keybindings table, the quick-start stepper and the first-visit dialog."""
 
     FIRST_VISIT_KEY = "parol_first_visit_shown"
     SAFETY_ACKNOWLEDGED_KEY = "parol_safety_acknowledged"
 
     def __init__(self) -> None:
         self._dialog: ui.dialog | None = None
-        self._stepper: ui.stepper | None = None
-        self._keybindings_container: ui.element | None = None
         self._safety_accepted: ui.checkbox | None = None
-
-    def show_help_dialog(self) -> None:
-        """Show the main help dialog with vertical tabs."""
-        if self._dialog:
-            self._dialog.delete()
-            self._dialog = None
-
-        self._dialog = ui.dialog().classes("help-dialog").mark("help-dialog")
-
-        with self._dialog:
-            with ui.card().classes("overlay-card help-dialog-card p-0 overflow-hidden"):
-                with ui.row().classes("gap-0"):
-                    with ui.column().classes("help-tabs-column shrink-0"):
-                        with (
-                            ui.tabs()
-                            .props("vertical dense")
-                            .classes("help-vertical-tabs") as tabs
-                        ):
-                            keybindings_tab = (
-                                ui.tab(name="keybindings", label="", icon="keyboard")
-                                .classes("help-tab")
-                                .tooltip("Keybindings")
-                                .mark("tab-keybindings")
-                            )
-                            quickstart_tab = (
-                                ui.tab(name="quickstart", label="", icon="school")
-                                .classes("help-tab")
-                                .tooltip("Quick Start")
-                                .mark("tab-quickstart")
-                            )
-
-                    with ui.column().classes("flex-1 gap-0 overflow-hidden"):
-                        with (
-                            ui.row()
-                            .classes("w-full items-center px-4 py-2 shrink-0")
-                            .style("border-bottom: 1px solid var(--wc-glass-border);")
-                        ):
-                            ui.label("Help").classes("text-lg font-medium")
-                            ui.space()
-                            with (
-                                ui.link(
-                                    "",
-                                    "https://jepson2k.github.io/Waldo-Commander/",
-                                    new_tab=True,
-                                )
-                                .classes("text-wc-text-muted")
-                                .tooltip("View tutorials online")
-                            ):
-                                ui.icon("open_in_new", size="sm")
-                            ui.button(icon="close", on_click=self._dialog.close).props(
-                                "flat round dense color=wc-text"
-                            )
-
-                        with (
-                            ui.tab_panels(tabs, value=quickstart_tab)
-                            .classes("w-full overflow-hidden")
-                            .props(
-                                "animated transition-prev=slide-up transition-next=slide-down"
-                            )
-                        ):
-                            with ui.tab_panel(keybindings_tab).classes("p-0"):
-                                with (
-                                    ui.scroll_area()
-                                    .classes("w-full")
-                                    .style("max-height: 80vh;")
-                                ):
-                                    self._build_keybindings_content()
-
-                            with (
-                                ui.tab_panel(quickstart_tab)
-                                .classes("p-0")
-                                .style("width: 720px; height: 700px; max-height: 85vh;")
-                            ):
-                                self._build_quickstart_stepper()
-
-        self._dialog.open()
 
     def _build_keybindings_content(self) -> None:
         """Build the keybindings table content."""
@@ -180,12 +105,16 @@ class HelpMenu:
         "https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets"
     )
 
-    def _build_quickstart_stepper(self, include_safety_step: bool = False) -> None:
-        """Build quick start stepper with tutorial videos.
+    def _build_quickstart_stepper(
+        self,
+        include_safety_step: bool = False,
+        on_finish: Callable[[], None] | None = None,
+    ) -> None:
+        """Build the quick-start stepper with its tutorial videos.
 
-        Args:
-            include_safety_step: If True, prepend a safety acknowledgment step.
-                                 Used for first-time visit dialog only.
+        ``include_safety_step`` prepends the safety acknowledgment (first visit
+        only); ``on_finish`` runs after Finish marks the tour seen, in place of
+        closing the first-visit dialog.
         """
         # Descriptions mirror docs/index.md to keep the in-app tutorial and public docs in sync.
         steps = [
@@ -201,7 +130,7 @@ class HelpMenu:
             {
                 "title": "Connecting Your Robot",
                 "description": """
-                    Open the **Settings** tab in the bottom-left tab bar and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
+                    Open **Settings** from the gear in the bottom-left rail and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the footer.
 
                     - <span style="color: var(--wc-positive)">■</span> Connected to robot hardware
                     - <span style="color: var(--wc-error)">■</span> Robot mode but disconnected
@@ -221,7 +150,7 @@ class HelpMenu:
             {
                 "title": "I/O and Tool Control",
                 "description": """
-                    Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens in the **Settings** tab; the 3D model updates to show the attached tool.
+                    Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens under **Settings → Tool**; the 3D model updates to show the attached tool.
                 """,
                 "video": "attaching_a_tool.mp4",
             },
@@ -233,8 +162,7 @@ class HelpMenu:
                 .props(
                     "vertical header-nav flat active-color=wc-text done-color=wc-text-muted"
                 )
-                .classes("p-0")
-                .style("width: 700px;") as self._stepper
+                .classes("p-0 w-full") as stepper
             ):
                 if include_safety_step:
                     with ui.step("Safety Notice").classes("gap-2").mark("safety-step"):
@@ -265,7 +193,7 @@ class HelpMenu:
                                 "I have read and accept responsibility"
                             ).classes("mr-4")
                             next_btn = ui.button(
-                                "Continue", on_click=self._stepper.next
+                                "Continue", on_click=stepper.next
                             ).props("color=wc-action text-color=wc-on-bright")
                             next_btn.bind_enabled_from(self._safety_accepted, "value")
 
@@ -281,7 +209,7 @@ class HelpMenu:
                     with ui.step(step["title"]).classes("gap-2"):
                         ui.video(f"{self._TUTORIALS_URL}/{step['video']}").classes(
                             "w-full rounded-lg"
-                        ).props('preload="metadata"').style("max-height: 360px;")
+                        ).props('preload="none"').style("max-height: 360px;")
 
                         # sanitize=False: content is a hardcoded literal whose inline status-marker
                         # color spans DOMPurify would otherwise strip.
@@ -291,22 +219,25 @@ class HelpMenu:
 
                         with ui.stepper_navigation():
                             if i < len(steps) - 1:
-                                ui.button("Next", on_click=self._stepper.next).props(
+                                ui.button("Next", on_click=stepper.next).props(
                                     "color=wc-action text-color=wc-on-bright"
                                 )
                             else:
-                                ui.button("Finish", on_click=self._on_finish).props(
-                                    "color=wc-action text-color=wc-on-bright"
-                                )
-                            if i > 0:
                                 ui.button(
-                                    "Back", on_click=self._stepper.previous
-                                ).props("flat color=wc-text")
+                                    "Finish",
+                                    on_click=lambda: self._on_finish(on_finish),
+                                ).props("color=wc-action text-color=wc-on-bright")
+                            if i > 0:
+                                ui.button("Back", on_click=stepper.previous).props(
+                                    "flat color=wc-text"
+                                )
 
-    def _on_finish(self) -> None:
-        """Handle finish button click - mark tutorial complete and close dialog."""
+    def _on_finish(self, on_finish: Callable[[], None] | None) -> None:
+        """Mark the tour seen, then hand over or close the first-visit dialog."""
         ng_app.storage.general[self.FIRST_VISIT_KEY] = True
-        if self._dialog:
+        if on_finish is not None:
+            on_finish()
+        elif self._dialog:
             self._dialog.close()
 
     def check_first_visit(self) -> None:

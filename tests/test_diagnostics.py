@@ -1,4 +1,4 @@
-"""The Diagnostics tab shows what this backend reports, and omits the rest.
+"""Diagnostics shows what this backend reports, and omits the rest.
 
 Backends differ enormously in what they can say about themselves. A fixed
 layout serves the richest one and leaves everything else showing a column
@@ -16,7 +16,6 @@ import contextlib
 
 import pytest
 import waldoctl
-from nicegui import ui
 from nicegui.testing import User
 
 from tests.helpers.wait import poll_until, wait_for_app_ready, wait_until
@@ -33,10 +32,14 @@ async def _settle(user: User, marker: str, predicate) -> str:
     )
 
 
+def _classes(user: User, marker: str) -> list[str]:
+    return next(iter(user.find(marker=marker).elements)).classes
+
+
 async def _open_diagnostics(user: User) -> None:
     await user.open("/")
     await wait_for_app_ready()
-    user.find(marker="tab-diagnostics").click()
+    user.find(marker="footer-events").click()
     await asyncio.sleep(0)
     await user.should_see(marker="diagnostics-panel")
 
@@ -93,33 +96,45 @@ async def test_drive_faults_appear_without_analog_readings(user: User) -> None:
     assert health.bus_voltage_v is None
 
     await user.should_see(marker="diag-section-drives")
-    # Fault bits and no analog registers: a fault column and nothing else,
-    # rather than °C and mA columns of dashes implying broken sensors.
-    await user.should_see(marker="diag-drives-head-fault")
-    await user.should_not_see(marker="diag-drives-head-temp")
-    await user.should_not_see(marker="diag-drives-head-current")
+    # Healthy drives with nothing analog to show are one line, not a table of
+    # dashes implying broken sensors.
+    await user.should_see(marker="diag-drives-summary")
+    assert _text(user, "diag-drives-summary") == "6 drives · no faults"
+    await user.should_not_see(marker="diag-drive-fault-1")
     await user.should_not_see(marker="diag-drive-temp-1")
     await user.should_not_see(marker="diag-drive-supply")
-    assert _text(user, "diag-drive-fault-1") == "—", "a healthy drive lists no faults"
+
+    # A fault opens the table: a fault column and nothing else. The status
+    # loop rewrites the faults on its next tick, so the injected one is read
+    # in the same tick it is drawn; the table stays open once shown.
+    page = ui_state.diagnostics_page
+    health.faults = [("overtemp",)] + [()] * (len(health.faults) - 1)
+    page.update()
+    assert _text(user, "diag-drive-fault-1") == "overtemp"
+    await user.should_see(marker="diag-drive-fault-1")
+    await user.should_see(marker="diag-drives-head-fault")
+    await user.should_not_see(marker="diag-drives-summary")
+    await user.should_not_see(marker="diag-drives-head-temp")
+    await user.should_not_see(marker="diag-drives-head-current")
 
 
 @pytest.mark.integration
 async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
     user: User,
 ) -> None:
-    """One warning, from the badge on a shut tab to a cleared log.
+    """Entries from the footer count on a shut panel to a cleared log.
 
     A one-line strip could only ever show the title, which is the half that
-    does not say what to do about the condition; the tab has room for the
-    cause, the effect and the remedy. And nobody opens a tab they have no
-    reason to open, so an entry that lands behind a shut one has to say so.
+    does not say what to do about the condition; the panel has room for the
+    cause, the effect and the remedy. And nobody opens a panel they have no
+    reason to open, so an entry that lands behind a shut one has to say so,
+    at the worst severity still unread.
     """
     await user.open("/")
     await wait_for_app_ready()
 
-    # The log is process-global and nothing resets it between tests, so the
-    # count is read against whatever earlier warnings left behind.
-    unread_before = robot_events.unread
+    # The log is process-global and nothing resets it between tests.
+    robot_events.clear()
     robot_events.add(
         code=60,
         title="CAN stale",
@@ -127,10 +142,37 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
         effect="motion refused",
         remedy="check the bus wiring",
     )
-    assert robot_events.unread == unread_before + 1
-    await user.should_see(marker="diag-unread-badge", retries=30)
+    assert robot_events.unread_severity == "warning"
+    await poll_until(
+        lambda: _text(user, "footer-warnings"),
+        lambda t: t == "1",
+        timeout_s=3.0,
+        what="the footer's warning count",
+    )
+    assert _text(user, "footer-errors") == "0"
+    assert await wait_until(
+        lambda: "unread-warning" in _classes(user, "footer-events")
+    ), "an unseen entry tints the footer button"
 
-    user.find(marker="tab-diagnostics").click()
+    robot_events.add(code=61, title="Bus off", severity="error")
+    assert await wait_until(
+        lambda: "unread-error" in _classes(user, "footer-events")
+    ), "an unseen error tints it red"
+    robot_events.add(code=62, title="CAN stale again")
+    # The counts and the tint refresh in the same binding pass.
+    await poll_until(
+        lambda: _text(user, "footer-warnings"),
+        lambda t: t == "2",
+        timeout_s=3.0,
+        what="the second warning",
+    )
+    classes = _classes(user, "footer-events")
+    assert "unread-error" in classes and "unread-warning" not in classes, (
+        "a warning after an unseen error must not hide the error",
+        classes,
+    )
+
+    user.find(marker="footer-events").click()
     await asyncio.sleep(0)
     await user.should_see(marker="diagnostics-panel")
     for part in (
@@ -140,11 +182,13 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
         "check the bus wiring",
     ):
         await user.should_see(part)
-    await poll_until(
-        lambda: robot_events.unread,
-        lambda unread: unread == 0,
-        what="the log marked read by rendering it to an open tab",
+    assert await wait_until(lambda: robot_events.unread_severity == ""), (
+        "rendering the log to an open panel is what marks it read"
     )
+    assert await wait_until(
+        lambda: not {"unread-warning", "unread-error"}
+        & set(_classes(user, "footer-events"))
+    ), "and the tint goes with it"
 
     user.find(marker="diag-clear-events").click()
     await asyncio.sleep(0)
@@ -177,14 +221,16 @@ async def test_a_condition_this_backend_reports_reaches_the_log(
     assert await wait_until(lambda: bool(robot_events.entries), timeout_s=8.0), (
         "the backend reported a condition and the log never heard about it"
     )
-    _, code, title, _cause, _effect, remedy = robot_events.entries[0]
+    _, code, title, _cause, _effect, remedy, severity = robot_events.entries[0]
     assert code, "an entry with no code cannot be traced back to the backend"
     assert title, "an entry with no title says nothing to the operator"
     assert remedy, "the remedy is the half that says what to do about it"
+    assert severity == "error", "a standing error is counted as one"
+    assert robot_events.errors == 1 and robot_events.warnings == 0
 
     # A latched error has stopped the backend, and the headline says so in
     # the backend's own words rather than "Running normally" above the log.
-    user.find(marker="tab-diagnostics").click()
+    user.find(marker="footer-events").click()
     await asyncio.sleep(0)
     await _settle(user, "diag-verdict", lambda t: t == f"Stopped — {title}")
 
@@ -216,9 +262,10 @@ async def test_the_verdict_names_what_is_wrong(user: User) -> None:
     assert "diag-fault" not in estop.classes, "a healthy reading carries no colour"
 
     # estop == 0 is the chain broken, matching the controller wire format.
+    # Read synchronous rendering before yielding to the live status consumer,
+    # which replaces these injected fields with the simulator's next frame.
     waldoctl.commander.status.io.estop = 0
     page.update()
-    await asyncio.sleep(0)
 
     assert _text(user, "diag-verdict") == "Stopped — e-stop pressed", (
         "the headline has to say what is wrong, not just that something is"
@@ -228,7 +275,6 @@ async def test_the_verdict_names_what_is_wrong(user: User) -> None:
 
     waldoctl.commander.status.io.estop = 1
     page.update()
-    await asyncio.sleep(0)
     assert _text(user, "diag-verdict").startswith("Running"), "and it clears again"
 
     # The backend's own warnings come first: they name the condition, where
@@ -343,9 +389,7 @@ async def test_a_backend_that_answers_nothing_is_not_queried_at_the_status_rate(
             raise ConnectionError("no answer")
 
     with user:
-        with ui.tabs():
-            tab = ui.tab("diagnostics-probe")
-        page = DiagnosticsPage(Mute(), lambda: True, tab)
+        page = DiagnosticsPage(Mute(), lambda: True)
         page.build()
     for _ in range(40):
         page.update()

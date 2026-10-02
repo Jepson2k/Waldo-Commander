@@ -39,7 +39,7 @@ Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[/]** to adjust
 
 ### Connecting Your Robot
 
-Open the **Settings** tab in the bottom-left tab bar and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
+Open **Settings** from the gear in the bottom-left rail and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the footer along the bottom of the window.
 
 - <span style="color: #4caf50">&#9632;</span> Connected to robot hardware
 - <span style="color: #f44336">&#9632;</span> Robot mode but disconnected
@@ -61,7 +61,7 @@ Run programs against the simulator to preview the motion path in 3D. The path tr
 
 ### I/O and Tool Control
 
-Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens in the Settings tab; the 3D model updates to show the attached tool.
+Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens under Settings → Tool; the 3D model updates to show the attached tool.
 
 <video controls width="100%">
   <source src="https://github.com/Jepson2k/Waldo-Commander/releases/download/docs-assets/attaching_a_tool.mp4" type="video/mp4">
@@ -112,9 +112,13 @@ waldo-commander [options]
 | `WALDO_TRACE` | Enable TRACE-level logging in console and UI logs | off |
 | `WALDO_EXCLUSIVE_START` | Require exclusive controller ownership on start | `1` |
 
-### Settings Panel
+### Status footer
 
-The **Settings** tab in the bottom-left tab bar provides:
+The footer along the bottom of the window shows the connection mode (simulator, connected, disconnected), the robot and its tool, one dot per digital line (lit when high), the TCP pose and speed, and the last action — click it for the history. Its two right-hand buttons open the bottom panel: the warning and error counts open **Diagnostics** (tinted while something landed unseen), and the next button opens the app **Log**.
+
+### Settings
+
+The gear in the bottom-left rail opens the **Settings** dialog, one category per tab:
 
 - **Hardware connection** — auto-detects available ports, or enter a path manually. Refreshes every 10 seconds. Persisted in browser local storage.
 - **Theme** — currently dark only. Light mode is planned for a future update.
@@ -124,6 +128,8 @@ The **Settings** tab in the bottom-left tab bar provides:
     - **On** — always visible as a full translucent shell.
     - **Off** — hidden.
 - **Camera** — select a video device for the gripper panel feed, often used for monitoring pick-and-place or running ML inference on the end-effector view. If you'd like to add annotations to the camera feed, you can do so by processing the raw webcam in your own script and outputting to a virtual camera via pyvirtualcam + v4l2loopback — then just select that virtual device here. On Linux: `sudo apt install v4l2loopback-dkms`.
+- **Shortcuts** — every keyboard binding, by category.
+- **Getting started** — the quick-start tour and a link to these guides.
 - **Tool** — select the active end-effector from the tools the backend provides. See the [PAROL6 tools](https://github.com/Jepson2k/PAROL6-python-API#tools) documentation for the tools available with the default backend. Changing the tool updates the TCP offset for Cartesian calculations, swaps the tool mesh in the 3D view, and re-runs any active simulation. If a tool has variants (e.g. different jaw sets), a variant selector appears. Per-tool TCP fields let you fine-tune translation in mm and, on supported backends, intrinsic XYZ orientation in degrees. [Setup → TCP](guides/named-setup.md#tcp-position-calibration-and-orientation-teaching) provides pivot-position calibration and separate orientation teaching.
 
 ### Running on a Remote Machine
