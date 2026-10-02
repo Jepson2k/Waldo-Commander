@@ -9,6 +9,10 @@ count stops, and a Stop between two moves leaves no trace in its status.
 The reservation lets one autonomous owner (a program, automatic calibration)
 drive at a time; everything else that moves the robot refuses while it is
 held. Stopping never needs the reservation.
+
+A panel write that awaits between its checks and its command (a status frame,
+a readback) sends through :meth:`MotionGuard.guarded`, so a Stop or a change
+of control during that await keeps the command from going out.
 """
 
 from __future__ import annotations
@@ -17,7 +21,12 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
+
+from waldoctl import RobotClient
+from waldoctl.commands import CommandKind, command_table
+
+from waldo_commander.services.control_lease import BROWSER, control_lease
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +35,19 @@ CALIBRATION = "Automatic calibration"
 
 STOP_TIMEOUT_S = 3.0
 
+_ACTUATING = frozenset(
+    name
+    for name, spec in command_table().items()
+    if spec.kind in (CommandKind.MOTION, CommandKind.QUEUED, CommandKind.SYSTEM)
+)
+
 
 class MotionBusy(RuntimeError):
     """Another owner holds the robot."""
+
+
+class MotionHalted(RuntimeError):
+    """A stop or a change of control ended an operation before its next command."""
 
 
 class Reservation:
@@ -121,8 +140,48 @@ class MotionGuard:
             return None
         return f"{self._reservation.owner} is moving the robot"
 
+    def guarded(self, client: RobotClient, page_id: str | None) -> RobotClient:
+        """``client`` for one operation started by ``page_id``.
+
+        Its motion, queued and system calls raise :class:`MotionHalted` once
+        the robot has been stopped or control has changed hands since this
+        call; reads, waits and stops pass straight through.
+        """
+        return cast(RobotClient, _GuardedClient(self, client, page_id))
+
     def reset(self) -> None:
         self._reservation = None
+
+
+class _GuardedClient:
+    def __init__(self, guard: MotionGuard, client: Any, page_id: str | None) -> None:
+        self._guard = guard
+        self._client = client
+        self._page_id = page_id
+        self._generation = guard.stop_generation
+        self._holder = control_lease.holder()
+
+    def _halted(self) -> str | None:
+        if self._guard.stop_generation != self._generation:
+            return "The robot was stopped"
+        if control_lease.holder() is not self._holder or (
+            self._page_id is not None
+            and not control_lease.held_by(BROWSER, self._page_id)
+        ):
+            return "Control of the robot changed hands"
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._client, name)
+        if name not in _ACTUATING:
+            return attr
+
+        async def checked(*args: Any, **kwargs: Any) -> Any:
+            if (reason := self._halted()) is not None:
+                raise MotionHalted(f"{reason}; nothing more was sent")
+            return await attr(*args, **kwargs)
+
+        return checked
 
 
 motion_guard = MotionGuard()
