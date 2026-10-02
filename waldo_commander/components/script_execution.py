@@ -22,6 +22,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
+from dataclasses import asdict
 
 from nicegui import Client, background_tasks, context, ui
 
@@ -33,6 +34,7 @@ from waldo_commander.services.script_runner import (
     run_script,
     stop_script,
 )
+from waldo_commander.services.control_lease import control_lease
 from waldo_commander.services.motion_guard import (
     PROGRAM,
     MotionBusy,
@@ -41,6 +43,12 @@ from waldo_commander.services.motion_guard import (
 )
 from waldo_commander.services.stepping_client import GUIStepController
 from waldo_commander.services.run_records import RunRecord
+from waldo_commander.services.supervised_restart import (
+    RestartState,
+    discover_entries,
+    fresh_state,
+    source_digest,
+)
 from waldo_commander.services.programs import is_any_program_running
 import waldoctl
 from waldoctl import CommandNote, LogEntry
@@ -51,6 +59,11 @@ from waldo_commander.state import playback_coordination, simulation_state, ui_st
 logger = logging.getLogger(__name__)
 
 _COMMANDS = command_table()
+
+
+def _lessee() -> tuple[str, str] | None:
+    holder = control_lease.holder()
+    return None if holder is None else (holder.channel, holder.id)
 
 
 def program_command(notes: Sequence[CommandNote], ordinal: int) -> int:
@@ -94,22 +107,41 @@ class ScriptExecutionController:
         # before any run) — lets execution.wait_active report success/crash.
         self.last_exit_code: int | None = None
         self._execution_control_lock = asyncio.Lock()
-        self._stop_unconfirmed = False
         self.record_runs = False
         self.active_record: RunRecord | None = None
         self.last_record: Path | None = None
+        self.last_run_source_digest: str | None = None
+        self.last_outcome: str | None = None
+        self._launch_task: asyncio.Task | None = None
+        self._cancel_launch_from_stop = False
+        self._stop_unconfirmed = False
         # Held from start() until the run is over, so nothing else drives
         # the robot while a program does.
         self._reservation: Reservation | None = None
+        # Bumped by every start(), so a Stop resets only the run it stopped.
+        self._run = 0
+        self._restart_run = False
+
+    @property
+    def active(self) -> bool:
+        """A program is launching, running, or waiting on a confirmed Stop:
+        it has to be stopped before the robot changes mode."""
+        return (
+            self._launch_task is not None
+            or self._stop_unconfirmed
+            or is_any_program_running()
+        )
+
+    @property
+    def program_dir(self) -> Path | None:
+        """The program library a launched program imports its neighbours from."""
+        return self._program_dir
 
     def cleanup(self) -> None:
-        """Per-page cleanup — cancel the event watcher bound to this page.
-        Does NOT touch ``script_handle`` OR the stepping IPC: the
-        subprocess outlives the page (``_on_shutdown`` reaps it), and the
-        step controller / IPC files are preserved so the subprocess can
-        keep stepping. The next page's ``set_ui_client`` rebinds the
-        watcher to the new client."""
-        self._cancel_watcher()
+        """Per-page cleanup. The run outlives the page: its subprocess,
+        stepping link and event watcher are untouched (``_on_shutdown`` reaps
+        them), and only UI output stops until the next ``set_ui_client``."""
+        self._ui_client = None
 
     def reset_for_test(self) -> None:
         """Restore field defaults by replaying ``__init__`` on this instance.
@@ -124,19 +156,6 @@ class ScriptExecutionController:
 
     def set_ui_client(self, client: Client | None) -> None:
         self._ui_client = client
-        # If a stepping subprocess outlived the previous page, its IPC
-        # files and step controller were preserved by ``cleanup()`` (see
-        # docstring). Rebind the event watcher to the new client so step
-        # progress resumes on this page.
-        if (
-            client is not None
-            and is_any_program_running()
-            and self._step_controller is not None
-            and (self._event_watcher_task is None or self._event_watcher_task.done())
-        ):
-            self._event_watcher_task = asyncio.create_task(
-                self._watch_script_events(client)
-            )
 
     def is_launching_tab(self, tab_id: str) -> bool:
         """True if this tab launched the currently running script."""
@@ -179,12 +198,19 @@ class ScriptExecutionController:
 
     async def toggle(self) -> None:
         """Toggle start/stop based on current state."""
-        if is_any_program_running():
+        if self.active:
             await self.stop()
         else:
             await self.start()
 
-    async def start(self, paused: bool = False) -> None:
+    async def start(
+        self,
+        paused: bool = False,
+        *,
+        restart_entry: str | None = None,
+        restart_reference: RestartState | None = None,
+        reviewed_source_digest: str | None = None,
+    ) -> bool:
         """Start the current editor content as a Python subprocess.
 
         With ``paused``, the stepping control file is left in its initial
@@ -194,14 +220,33 @@ class ScriptExecutionController:
         """
         if is_any_program_running():
             ui.notify("Script already running", color="warning")
-            return
+            return False
+        # A restart reads the controller's state before anything is marked
+        # running; the launch is reserved here so nothing else starts, and
+        # Stop can cancel it, in the meantime.
+        if self._launch_task is not None:
+            ui.notify("Script already starting", color="warning")
+            return False
+        if self._stop_unconfirmed:
+            ui.notify(
+                "Controller stop is unconfirmed. Retry Program Stop first.",
+                color="negative",
+            )
+            return False
         try:
             self._reservation = motion_guard.reserve(PROGRAM)
         except MotionBusy as e:
             ui.notify(str(e), color="warning")
-            return
+            return False
 
-        self.last_exit_code = None
+        self._launch_task = asyncio.current_task()
+        self._cancel_launch_from_stop = False
+        self._run += 1
+        self._restart_run = restart_entry is not None
+        lessee = _lessee()
+        # Stop is offered from here: the launch may read the controller
+        # for seconds before anything counts as running.
+        simulation_state.notify_changed()
         resumed = False
         try:
             filename_input = ui_state.active_filename_input
@@ -213,6 +258,29 @@ class ScriptExecutionController:
 
             textarea = ui_state.active_textarea
             content = textarea.value if textarea else ""
+            # Taken with the content: a tab switch while the controller is
+            # read must not attach this run to another program.
+            launching_tab = waldoctl.commander.programs.active
+            if restart_entry is not None:
+                if (
+                    restart_reference is None
+                    or source_digest(content) != reviewed_source_digest
+                ):
+                    raise ValueError(
+                        "Review this program and the physical setup before restarting"
+                    )
+                if restart_entry not in {
+                    entry.name for entry in discover_entries(content)
+                }:
+                    raise ValueError(
+                        "The selected function can no longer be started on its own"
+                    )
+                # Refuse before anything of the interrupted run is wiped: its
+                # log, outcome and record are what the operator reviews next.
+                restart_state = await fresh_state(waldoctl.commander.client)
+                restart_state.require_ready()
+                restart_state.require_same_setup(restart_reference)
+            self.last_exit_code = None
             assert self._program_dir is not None, "program_dir not set"
             runtime_dir = self._program_dir / ".runtime"
             script_path = runtime_dir / filename
@@ -224,7 +292,6 @@ class ScriptExecutionController:
 
             # Remember the launching tab so output is appended to its log
             # even after the user switches tabs while the script runs.
-            launching_tab = waldoctl.commander.programs.active
             self._script_tab_id = launching_tab.id if launching_tab else None
             if launching_tab is not None:
                 launching_tab.log.clear()
@@ -235,6 +302,10 @@ class ScriptExecutionController:
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))
             script_config["env"]["WALDO_RECORD_VALUES"] = "0"
+            script_config["env"]["WALDO_RESTART_ENTRY"] = restart_entry or ""
+            script_config["env"]["WALDO_PROGRAM_DIR"] = str(self._program_dir)
+            self.last_run_source_digest = source_digest(content)
+            self.last_outcome = "running"
             if self.record_runs:
                 try:
                     self.active_record = RunRecord(
@@ -250,10 +321,12 @@ class ScriptExecutionController:
             ui_client = self._ui_client or context.client
 
             def on_stdout(line: str) -> None:
-                self._record_line(line, ui_client)
+                self._record_line(line, self._ui_client or ui_client)
 
             def on_stderr(line: str) -> None:
-                self._record_line(f"[ERR] {line}", ui_client, stream="stderr")
+                self._record_line(
+                    f"[ERR] {line}", self._ui_client or ui_client, stream="stderr"
+                )
 
             self._step_session_id = uuid.uuid4().hex[:8]
             self._step_controller = GUIStepController(self._step_session_id)
@@ -271,6 +344,27 @@ class ScriptExecutionController:
                 raise RuntimeError("the controller still has queued motion")
             if launching_tab is not None:
                 launching_tab.execution.is_running = True
+            if restart_entry is not None:
+                assert restart_reference is not None
+                # Read again: the review above is seconds old by now.
+                restart_state = await fresh_state(waldoctl.commander.client)
+                restart_state.require_ready()
+                restart_state.require_same_setup(restart_reference)
+                if self.active_record:
+                    self.active_record.append(
+                        {
+                            "event": "restart_selected",
+                            # The same key the bootstrap's entry_started uses,
+                            # so the export keeps the entry name instead of
+                            # dropping it as an unknown field.
+                            "method": restart_entry,
+                            "snapshot": asdict(restart_state),
+                        }
+                    )
+            if _lessee() != lessee:
+                raise PermissionError(
+                    "Control changed hands while the program was starting"
+                )
             resumed = True
             if await client.resume(timeout=3.0) <= 0:
                 raise TimeoutError("Controller resume was not confirmed")
@@ -295,7 +389,7 @@ class ScriptExecutionController:
             log_panel.expand()
 
             self._event_watcher_task = asyncio.create_task(
-                self._watch_script_events(ui_client)
+                self._watch_script_events(ui_client, self._run)
             )
 
             handle = self.script_handle
@@ -305,10 +399,23 @@ class ScriptExecutionController:
 
             ui.notify(f"Started script: {filename}", color="positive")
             logger.info("Started script: %s", filename)
+            return True
 
+        except asyncio.CancelledError:
+            if self.script_handle is not None:
+                await stop_script(self.script_handle)
+                self.script_handle = None
+            if self._cancel_launch_from_stop:
+                return False
+            self._finish_record("interrupted")
+            self._reset_state()
+            raise
         except Exception as e:
             ui.notify(f"Failed to start script: {e}", color="negative")
-            logger.error("Failed to start script: %s", e)
+            if restart_entry is not None and isinstance(e, ValueError):
+                logger.warning("Restart refused: %s", e)
+            else:
+                logger.error("Failed to start script: %s", e)
             # Reap the subprocess if run_script succeeded before the exception
             # — otherwise the process group outlives the failed start.
             leaked_handle = self.script_handle
@@ -326,21 +433,35 @@ class ScriptExecutionController:
                     await self._confirm_controller_stop()
                 except Exception as stop_error:
                     self._report_unconfirmed_stop(stop_error)
-                    return
+                    return False
             self._finish_record("start_failed")
             self._reset_state()
+            return False
+        finally:
+            self._launch_task = None
+            simulation_state.notify_changed()
 
     async def stop(self) -> None:
-        """Terminate the program, then cancel its native motion and queue."""
-        if not is_any_program_running() or (
-            self.script_handle is None and not self._stop_unconfirmed
+        """Terminate the program, then cancel its native motion and queue.
+
+        Allowed while a previous Stop is unconfirmed, which it retries; it
+        resets only the run it stopped."""
+        if not (
+            self._launch_task is not None
+            or self._stop_unconfirmed
+            or (is_any_program_running() and self.script_handle is not None)
         ):
             ui.notify("No script running", color="warning")
             return
 
         motion_guard.note_stop("program stop")
+        run = self._run
         handle = self.script_handle
         try:
+            if self._launch_task is not None:
+                self._cancel_launch_from_stop = True
+                self._launch_task.cancel()
+                await asyncio.gather(self._launch_task, return_exceptions=True)
             handle = self.script_handle
             self.script_handle = None
             self._cancel_watcher()
@@ -362,13 +483,17 @@ class ScriptExecutionController:
             ui.notify("Script stopped", color="warning")
             logger.info("Script stopped by user")
         except Exception as error:
-            self.script_handle = handle
-            self._report_unconfirmed_stop(error)
+            if self._run == run:
+                self.script_handle = handle
+                self._report_unconfirmed_stop(error)
             raise
         else:
-            self._finish_record("stopped")
-            self._reset_state()
-            self._refresh_tcp()
+            if self._run == run:
+                self._finish_record("stopped")
+                self._reset_state()
+                self._refresh_tcp()
+        finally:
+            self._cancel_launch_from_stop = False
 
     async def _confirm_controller_stop(self) -> None:
         if not await motion_guard.stop_robot(waldoctl.commander.client, "program stop"):
@@ -376,6 +501,7 @@ class ScriptExecutionController:
 
     def _report_unconfirmed_stop(self, error: Exception) -> None:
         self._stop_unconfirmed = True
+        simulation_state.notify_changed()
         ui.notify(
             "Controller stop is unconfirmed. Retry Program Stop before starting another run.",
             color="negative",
@@ -455,7 +581,9 @@ class ScriptExecutionController:
                 progress = f" ({fraction:.0%})" if fraction is not None else ""
                 detail = f": {message}" if message else ""
                 self._record_line(f"{method} {phase}{progress}{detail}", ui_client)
-            elif event_type in ("start", "complete"):
+            # A restarted entry's ordinals are not the full program's plan,
+            # so they would highlight the wrong lines.
+            elif event_type in ("start", "complete") and not self._restart_run:
                 with ui_client:
                     if running_tab is not None:
                         pb = running_tab.dry_run.playback
@@ -468,12 +596,16 @@ class ScriptExecutionController:
                         "Script event: %s completed (command %d)", method, command
                     )
 
-    async def _watch_script_events(self, ui_client: Client) -> None:
-        """Poll for script events and publish step transitions to simulation_state."""
+    async def _watch_script_events(self, ui_client: Client, run: int) -> None:
+        """Poll for script events and publish step transitions to simulation_state.
+
+        Owned by the run, not the page: it records events and holds step
+        mode while no page is connected, showing them on whichever page is.
+        """
         watcher_crashed = False
         try:
             while is_any_program_running() and self._step_controller:
-                self._consume_script_events(ui_client)
+                self._consume_script_events(self._ui_client or ui_client)
                 async with self._execution_control_lock:
                     if (
                         self._step_controller
@@ -492,8 +624,8 @@ class ScriptExecutionController:
             logger.error("Error in event watcher: %s", e)
             watcher_crashed = True
         finally:
-            if watcher_crashed and is_any_program_running():
-                with ui_client:
+            if watcher_crashed and is_any_program_running() and self._run == run:
+                with self._ui_client or ui_client:
                     # Losing managed control cannot leave an untracked process
                     # feeding the motion queue. stop() reaps it before clearing state.
                     try:
@@ -520,13 +652,24 @@ class ScriptExecutionController:
             if self.script_handle is not handle:
                 return
             self.last_exit_code = rc
-            self._consume_script_events(ui_client)
+            # The program's last events may still be on the link's reader
+            # threads; they are queued once its links reach their end.
+            controller = self._step_controller
+            if controller is not None and not await asyncio.to_thread(
+                controller.join_links, 1.0
+            ):
+                logger.warning("Stepping link still open after the program exited")
+                if self.active_record:
+                    self.active_record.append(
+                        {"event": "events_lost", "reason": "link open after exit"}
+                    )
+            self._consume_script_events(self._ui_client or ui_client)
         except Exception as error:
             monitor_failed = True
             logger.error("Error monitoring script process: %s", error)
         if self.script_handle is not handle:
             return
-        with ui_client:
+        with self._ui_client or ui_client:
             self._cancel_watcher()
             if rc != 0 or monitor_failed:
                 try:
@@ -544,6 +687,8 @@ class ScriptExecutionController:
                 self._refresh_tcp()
 
     def _finish_record(self, outcome: str, exit_code: int | None = None) -> None:
+        if self.last_outcome == "running":
+            self.last_outcome = outcome
         if self.active_record is not None:
             self.active_record.finish(outcome, exit_code)
             self.active_record = None
@@ -579,9 +724,7 @@ class ScriptExecutionController:
             self._reservation = None
 
     def _cancel_watcher(self) -> None:
-        """Cancel the event watcher task without touching step IPC state.
-        Used by per-page cleanup so the subprocess can keep stepping while
-        no page is connected."""
+        """Cancel the event watcher task without touching step IPC state."""
         if (
             self._event_watcher_task
             and not self._event_watcher_task.done()

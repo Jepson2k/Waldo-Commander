@@ -1,13 +1,11 @@
 """Saving a setup includes pending edits across tabs without partial writes."""
 
-import json
-
 import pytest
 from nicegui import ui
 from waldoctl.setup import Frame, Parameter, Pose, SetupSnapshot
 
 from tests.helpers.wait import wait_for_app_ready
-from waldo_commander.setup import SetupStore
+from waldo_commander.setup import SetupStore, export_snapshot
 
 
 @pytest.mark.integration
@@ -100,7 +98,7 @@ async def test_save_confirms_before_overwriting_unloaded_or_changed_setup(
     # Another process rewrites the file under an edit: Merge keeps both sides.
     field("setup-frame-x").set_value(30)
     theirs = store.load("bench").with_parameter("speed", Parameter(5.0, "mm/s"))
-    (tmp_path / "bench.json").write_text(json.dumps(theirs.to_dict()))
+    (tmp_path / "bench.py").write_text(export_snapshot(theirs))
     user.find(marker="setup-save").click()
     await user.should_see(marker="setup-replace-merge")
     assert store.load("bench") == theirs

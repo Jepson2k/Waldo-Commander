@@ -2094,8 +2094,8 @@ class ControlPanel:
     async def on_toggle_sim(self) -> None:
         """Toggle between robot and simulator modes and update URDF appearance."""
         try:
-            # Stop any running user script before mode switch (safety)
-            if is_any_program_running():
+            # Stop any running or launching user script before mode switch (safety)
+            if script_exec.active:
                 logger.info("Stopping running script before mode switch")
                 try:
                     await script_exec.stop()

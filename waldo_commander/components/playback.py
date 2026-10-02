@@ -1184,7 +1184,7 @@ class PlaybackController:
                     self.play_btn_tooltip.text = "Play (Space)"
 
         if self.stop_btn:
-            self.stop_btn.set_visibility(script_running)
+            self.stop_btn.set_visibility(script_exec.active)
 
         total_steps = active.dry_run.total_steps if active is not None else 0
         has_steps = total_steps > 0

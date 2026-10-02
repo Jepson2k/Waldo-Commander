@@ -21,6 +21,7 @@ from waldoctl import LogEntry
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.playback import playback
+from waldo_commander.components.script_execution import script_exec
 from waldo_commander.services.path_visualizer import UNCHANGED, path_visualizer
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import (
@@ -181,7 +182,10 @@ class SimulationEngine:
             loading.visible = True
         try:
             error = await path_visualizer.update_path_visualization(
-                content, tab_id=tab_id, revision=revision
+                content,
+                tab_id=tab_id,
+                revision=revision,
+                program_dir=script_exec.program_dir,
             )
         finally:
             if loading:

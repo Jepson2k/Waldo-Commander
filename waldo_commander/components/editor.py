@@ -1518,12 +1518,29 @@ class EditorPanel(FileOperationsMixin):
                         )
                     )
                     records_btn.mark("editor-records-btn")
+
+                    from waldo_commander.components.supervised_restart import (
+                        show_supervised_restart,
+                    )
+
+                    restart_btn = (
+                        ui.button(
+                            "Supervised restart",
+                            icon="restart_alt",
+                            on_click=show_supervised_restart,
+                        )
+                        .props("flat dense no-caps align=left color=white")
+                        .classes("w-full")
+                        .tooltip("Restart a stopped program from a chosen entry")
+                        .mark("editor-restart-btn")
+                    )
                 self._toolbar_btns = [
                     open_btn,
                     save_btn,
                     commands_btn,
                     more_btn,
                     records_btn,
+                    restart_btn,
                 ]
                 self._file_btns = [open_btn, save_btn]
 

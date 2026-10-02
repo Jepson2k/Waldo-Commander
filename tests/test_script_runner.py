@@ -209,8 +209,12 @@ async def test_bootstrap_endpoint_injection(tmp_path: Path) -> None:
     import os
 
     from waldo_commander.services import stepping_bootstrap
+    from waldo_commander.services.stepping_client import GUIStepController
 
     bootstrap = Path(stepping_bootstrap.__file__)
+    # A managed program needs its GUI's end of the stepping link to start.
+    gui = GUIStepController("endpoint-test")
+    gui.initialize()
 
     async def run_case(script: str, env_overrides: dict[str, str]) -> tuple:
         script_path = tmp_path / "endpoint_case.py"
@@ -235,23 +239,26 @@ async def test_bootstrap_endpoint_injection(tmp_path: Path) -> None:
         return proc.returncode, stdout.decode(), stderr.decode()
 
     bare = 'from parol6 import RobotClient\nrbt = RobotClient()\nprint("EP", rbt.host, rbt.port)\n'
-    code, out, err = await run_case(bare, {})
-    assert code == 0, err
-    assert "EP 127.0.0.1 6001" in out, out
+    try:
+        code, out, err = await run_case(bare, {})
+        assert code == 0, err
+        assert "EP 127.0.0.1 6001" in out, out
 
-    explicit_port = 'from parol6 import RobotClient\nrbt = RobotClient(port=7001)\nprint("EP", rbt.host, rbt.port)\n'
-    code, out, err = await run_case(explicit_port, {})
-    assert code == 0, err
-    assert "EP 127.0.0.1 7001" in out, out
+        explicit_port = 'from parol6 import RobotClient\nrbt = RobotClient(port=7001)\nprint("EP", rbt.host, rbt.port)\n'
+        code, out, err = await run_case(explicit_port, {})
+        assert code == 0, err
+        assert "EP 127.0.0.1 7001" in out, out
 
-    explicit_host = 'from parol6 import RobotClient\nrbt = RobotClient(host="10.0.0.5")\nprint("EP", rbt.host, rbt.port)\n'
-    code, out, err = await run_case(explicit_host, {})
-    assert code == 0, err
-    assert "EP 10.0.0.5 5001" in out, (
-        f"an explicit host must keep the backend's default port: {out}"
-    )
+        explicit_host = 'from parol6 import RobotClient\nrbt = RobotClient(host="10.0.0.5")\nprint("EP", rbt.host, rbt.port)\n'
+        code, out, err = await run_case(explicit_host, {})
+        assert code == 0, err
+        assert "EP 10.0.0.5 5001" in out, (
+            f"an explicit host must keep the backend's default port: {out}"
+        )
 
-    code, out, err = await run_case(bare, {"WALDO_CONTROLLER_PORT": "nonsense"})
-    assert code == 0, f"invalid port must not crash the program: {err}"
-    assert "EP 127.0.0.1 5001" in out, out
-    assert "Ignoring invalid WALDO_CONTROLLER_PORT" in err
+        code, out, err = await run_case(bare, {"WALDO_CONTROLLER_PORT": "nonsense"})
+        assert code == 0, f"invalid port must not crash the program: {err}"
+        assert "EP 127.0.0.1 5001" in out, out
+        assert "Ignoring invalid WALDO_CONTROLLER_PORT" in err
+    finally:
+        gui.cleanup()

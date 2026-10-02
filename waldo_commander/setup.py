@@ -1,5 +1,8 @@
 """Named setup storage for panels and standalone Python programs.
 
+A named setup is a Python module in ``programs/setups/`` holding one
+``SetupSnapshot`` literal, written by the Setup panel and imported by
+``load_setup`` (or by the program itself: ``from setups.bench import setup``).
 ``load_setup`` returns an immutable snapshot. Later saves affect subsequent
 loads, never a snapshot already held by a running program.
 """
@@ -20,6 +23,8 @@ from pathlib import Path
 from pprint import pformat
 
 from waldoctl.setup import SetupSnapshot, validate_name
+
+from waldo_commander.constants import default_program_dir
 
 logger = logging.getLogger(__name__)
 
@@ -91,23 +96,35 @@ def using_setup_directory(directory: str | Path | None) -> Iterator[None]:
 
 
 class SetupStore:
+    """Named setups as Python modules in `programs/setups/`.
+
+    Teaching in the Setup panel writes `setups/<name>.py` — ordinary Python
+    holding one `SetupSnapshot` literal — the same way the recorder writes
+    programs, so a setup is copied, diffed and versioned like the program
+    that uses it, and a program may simply `from setups.bench import setup`.
+    `load_setup(name)` imports that module. Setups saved as JSON by earlier
+    releases are converted to modules on first use.
+    """
+
     def __init__(self, directory: str | Path | None = None) -> None:
         selected = directory if directory is not None else _directory.get()
         if selected is None:
-            selected = (
-                os.environ.get("WALDO_SETUP_DIR")
-                or Path.home() / ".waldo-commander" / "setups"
+            selected = os.environ.get("WALDO_SETUP_DIR") or (
+                default_program_dir() / "setups"
             )
         self.directory = Path(selected).expanduser().resolve()
+        self._convert_legacy_json(self.directory)
+        if directory is None and _directory.get() is None:
+            self._convert_legacy_json(_legacy_home_dir())
 
     def _path(self, name: str) -> Path:
-        return self.directory / f"{validate_name(name)}.json"
+        return self.directory / f"{validate_name(name)}.py"
 
     def names(self) -> list[str]:
         if not self.directory.exists():
             return []
         names = []
-        for path in self.directory.glob("*.json"):
+        for path in self.directory.glob("*.py"):
             try:
                 names.append(validate_name(path.stem))
             except ValueError:
@@ -125,10 +142,13 @@ class SetupStore:
         return snapshot
 
     def read(self, name: str) -> tuple[SetupSnapshot, str]:
-        """The saved snapshot and its revision, the SHA-256 of the file."""
-        data = self._path(name).read_bytes()
-        snapshot = SetupSnapshot.from_dict(json.loads(data.decode("utf-8")))
-        return snapshot, hashlib.sha256(data).hexdigest()
+        """The saved snapshot and its revision, the SHA-256 of the module
+        source that was executed for it."""
+        path = self._path(name)
+        if not path.is_file():
+            raise FileNotFoundError(f"No setup module {path}")
+        data = path.read_bytes()
+        return _import_snapshot(path, data), hashlib.sha256(data).hexdigest()
 
     def revision(self, name: str) -> str | None:
         """The SHA-256 of the saved file, or None when there is none."""
@@ -140,24 +160,11 @@ class SetupStore:
     def save(self, name: str, snapshot: SetupSnapshot) -> str:
         """Write *snapshot* under *name* and return its new revision."""
         destination = self._path(name)
-        # Bytes, not text: a platform newline translation would make the file
-        # differ from the revision reported here.
         data = (
-            json.dumps(snapshot.to_dict(), indent=2, allow_nan=False) + "\n"
+            f'"""Named setup {name!r}, written by the Setup panel; edit freely."""\n\n'
+            + export_snapshot(snapshot)
         ).encode("utf-8")
-        self.directory.mkdir(parents=True, exist_ok=True)
-        # Readers see either complete revision, including during subprocess loads.
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{name}-", suffix=".tmp", dir=self.directory
-        )
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, destination)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
+        write_atomic(destination, data)
         revision = hashlib.sha256(data).hexdigest()
         for listener in list(_save_listeners):
             try:
@@ -165,6 +172,78 @@ class SetupStore:
             except Exception:
                 logger.exception("Setup save listener failed")
         return revision
+
+    def _convert_legacy_json(self, root: Path) -> None:
+        """A `.json` setup from an earlier release, here or in the old
+        `~/.waldo-commander/setups` store, becomes a module in this directory;
+        the JSON goes once the module is on disk, so deleting the setup later
+        does not resurrect it."""
+        if not root.exists():
+            return
+        for legacy in root.glob("*.json"):
+            try:
+                name = validate_name(legacy.stem)
+            except ValueError:
+                continue
+            if self._path(name).exists():
+                continue
+            try:
+                snapshot = SetupSnapshot.from_dict(
+                    json.loads(legacy.read_text(encoding="utf-8"))
+                )
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                logger.warning("Legacy setup %s not converted: %s", legacy.name, error)
+                continue
+            self.save(name, snapshot)
+            legacy.unlink()
+
+
+def _legacy_home_dir() -> Path:
+    return Path.home() / ".waldo-commander" / "setups"
+
+
+def _import_snapshot(path: Path, source: bytes) -> SetupSnapshot:
+    """Execute a setup module's *source* in its own namespace and take its
+    `setup`.
+
+    Compiled from source each time: the import system's bytecode cache is
+    keyed on the source's mtime and size, so a re-teach within the same
+    second could read back the previous values.
+    """
+    namespace: dict[str, object] = {
+        "__name__": f"setups.{path.stem}",
+        "__file__": str(path),
+    }
+    try:
+        exec(compile(source.decode("utf-8"), str(path), "exec"), namespace)
+    except Exception as error:
+        raise ValueError(
+            f"Setup module {path.name} failed to import: {error}"
+        ) from error
+    snapshot = namespace.get("setup")
+    if not isinstance(snapshot, SetupSnapshot):
+        raise ValueError(
+            f"Setup module {path.name} must define `setup = SetupSnapshot(...)`"
+        )
+    return snapshot
+
+
+def write_atomic(path: Path, data: bytes) -> None:
+    """Readers see either complete revision, including a preview subprocess
+    importing the module mid-save. Bytes, so no newline translation makes
+    the file differ from the revision reported for it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.stem}-", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def load_setup(name: str, *, directory: str | Path | None = None) -> SetupSnapshot:

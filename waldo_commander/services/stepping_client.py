@@ -4,19 +4,24 @@ Stepping client wrapper for GUI-controlled script execution.
 Provides a wrapper around RobotClient that:
 1. Emits events for each motion command (start/complete)
 2. Optionally pauses after each command for stepping through scripts
-3. Communicates with GUI via file-based IPC
+3. Talks to the GUI over one duplex pipe (`multiprocessing.connection`:
+   a named pipe on Windows, a Unix socket file elsewhere)
 
 Cross-platform compatible (Windows, macOS, Linux).
 """
 
 import asyncio
+import contextlib
 import inspect
-import json
-import os
 import logging
+import os
+import queue
+import socket
+import sys
 import tempfile
 import threading
 import time
+from multiprocessing.connection import Client, Connection, Listener
 from pathlib import Path
 from typing import Any, Callable
 from collections.abc import Awaitable, Coroutine
@@ -28,6 +33,8 @@ from waldoctl.commands import CommandKind, command_table
 
 from .command_records import recorded_method
 from .completion_budget import CompletionBudget, PlanWatchdog, current_budget
+
+logger = logging.getLogger(__name__)
 
 R = TypeVar("R")
 
@@ -86,32 +93,17 @@ def _nonblocking(method: Callable, kwargs: dict) -> tuple[dict, float | None]:
     return kwargs, timeout
 
 
-def _atomic_write(path: Path, data: dict) -> None:
-    # Event payloads can contain opted-in recording values. mkstemp makes
-    # them private from creation, before either process sees the new file.
-    descriptor, name = tempfile.mkstemp(
-        prefix=path.name + ".", suffix=".tmp", dir=path.parent
-    )
-    temp_path = Path(name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(data, stream, indent=2)
-        os.replace(temp_path, path)
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-
-def _read_control(control_file: Path) -> dict:
-    """Read control file, return defaults if not exists or parse error."""
-    try:
-        return json.loads(control_file.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {"paused": True, "step_signal": 0, "step_acked": 0}
-
-
 def _is_blended(kwargs: dict) -> bool:
     """Check if motion kwargs specify a blend radius."""
     return float(kwargs.get("r", 0)) > 0
+
+
+def _step_address(session_id: str) -> str:
+    """The listener address for one stepping session: a named pipe on Windows,
+    an owner-only socket file in the temp directory elsewhere."""
+    if sys.platform == "win32":
+        return rf"\\.\pipe\waldo-step-{session_id}"
+    return str(Path(tempfile.gettempdir()) / f".waldo-step-{session_id}")
 
 
 def _require_stop_ack(name: str, result: Any) -> None:
@@ -125,29 +117,109 @@ def _require_stop_ack(name: str, result: Any) -> None:
         )
 
 
-class StepIO:
-    """
-    File-based IPC for stepping control between script subprocess and GUI.
+def _step_authkey(session_id: str) -> bytes:
+    return f"waldo-step-{session_id}".encode()
 
-    Uses two files:
-    - Control file (GUI -> Script): Contains paused flag and step signals
-    - Event file (Script -> GUI): Contains command start/complete events
+
+class SteppingLinkLost(ConnectionError):
+    """The Commander managing this program went away mid-run."""
+
+
+_CONTROL_DEFAULT: dict[str, Any] = {
+    "paused": True,
+    "step_signal": 0,
+    "pause_elapsed": 0.0,
+    "pause_started": None,
+}
+
+
+class StepIO:
+    """The program side of the stepping link.
+
+    One duplex pipe to the GUI (`multiprocessing.connection`; a named pipe
+    on Windows, a Unix socket file elsewhere). Down come control states —
+    paused, granted steps, the pause clock; up go command/skill events and
+    the program's waiting state. Nothing is polled from disk: a control
+    change wakes a waiting program, and an event is in the GUI's queue the
+    moment it is sent. A program run without a GUI (`from_env` → None) is
+    never held. One whose GUI cannot be reached does not start, and one
+    whose GUI goes away stops at its next gate (`SteppingLinkLost`): a
+    managed program never runs on unmanaged.
     """
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
-        self._temp_dir = Path(tempfile.gettempdir())
-        self._control_file = self._temp_dir / f".parol_control_{session_id}"
-        self._event_file = self._temp_dir / f".parol_events_{session_id}"
-        self._ack_file = self._temp_dir / f".parol_ack_{session_id}"
         self._issued = 0
         self._last_step_acked = 0
         self.capture_values = os.environ.get("WALDO_RECORD_VALUES") == "1"
-        self._event_lock = threading.Lock()
-        self._events = self._read_events()
+        self._send_lock = threading.Lock()
+        self._cond = threading.Condition()
+        self._control: dict[str, Any] = dict(_CONTROL_DEFAULT)
+        self._connected = False
+        self._conn: Connection | None = None
+        self._first_control = threading.Event()
+        try:
+            self._conn = Client(
+                _step_address(session_id), authkey=_step_authkey(session_id)
+            )
+        except (OSError, EOFError) as error:
+            raise ConnectionError(
+                f"Stepping link {session_id} to Commander is unavailable: {error}"
+            ) from error
+        self._connected = True
+        threading.Thread(
+            target=self._receive, name=f"step-io-{session_id}", daemon=True
+        ).start()
+        # The GUI's current control state arrives first; a program must not
+        # judge pause/play from the default before it has.
+        self._first_control.wait(2.0)
+
+    def _receive(self) -> None:
+        assert self._conn is not None
+        try:
+            while True:
+                message = self._conn.recv()
+                if isinstance(message, dict) and message.get("type") == "control":
+                    with self._cond:
+                        self._control = {
+                            k: v for k, v in message.items() if k != "type"
+                        }
+                        self._cond.notify_all()
+                    self._first_control.set()
+        except (EOFError, OSError):
+            pass
+        finally:
+            with self._cond:
+                self._connected = False
+                self._cond.notify_all()
+            self._first_control.set()
+
+    def _send(self, message: dict) -> None:
+        if not self._connected or self._conn is None:
+            return
+        try:
+            with self._send_lock:
+                self._conn.send(message)
+        except (OSError, ValueError):
+            # The call in hand goes ahead; the next gate finds the link lost.
+            logging.getLogger(__name__).exception("Could not reach the stepping GUI")
+            with self._cond:
+                self._connected = False
+                self._cond.notify_all()
+
+    def _snapshot(self) -> dict[str, Any]:
+        with self._cond:
+            return dict(self._control)
+
+    def require_link(self) -> None:
+        """Raise once the GUI managing this program is gone."""
+        if not self._connected:
+            raise SteppingLinkLost(
+                f"Stepping link {self.session_id} to Commander was lost"
+            )
 
     def active_time(self) -> float:
-        control = _read_control(self._control_file)
+        control = self._snapshot()
         now = time.monotonic()
         paused = control.get("pause_elapsed", 0.0)
         started = control.get("pause_started")
@@ -156,12 +228,14 @@ class StepIO:
         return now - paused
 
     def hold_requested(self) -> bool:
-        return _read_control(self._control_file).get("pause_started") is not None
+        self.require_link()
+        return self._snapshot().get("pause_started") is not None
 
     def wait_until_resumed(self, check: Callable[[], None]) -> None:
         while self.hold_requested():
             check()
-            time.sleep(0.05)
+            with self._cond:
+                self._cond.wait(0.05)
 
     async def wait_until_resumed_async(
         self, check: Callable[[], Awaitable[None]]
@@ -172,22 +246,11 @@ class StepIO:
 
     @classmethod
     def from_env(cls) -> "StepIO | None":
-        """
-        Create StepIO from environment variables.
-        Returns None if WALDO_STEP_SESSION is not set.
-        """
+        """The link named by WALDO_STEP_SESSION, or None outside a managed run."""
         session_id = os.environ.get("WALDO_STEP_SESSION")
         if not session_id:
             return None
         return cls(session_id)
-
-    def _read_events(self) -> list[dict]:
-        """Read events from event file."""
-        try:
-            data = json.loads(self._event_file.read_text())
-            return data.get("events", [])
-        except (json.JSONDecodeError, OSError):
-            return []
 
     def issue(self) -> int:
         """The ordinal of the queued command about to be issued: how many
@@ -201,71 +264,54 @@ class StepIO:
     def emit_event(
         self, event_type: str, method: str, *, command: int = -1, **extra: Any
     ) -> None:
-        """
-        Emit an event to the event file.
+        """Publish one command/skill event to the GUI (start, complete, …).
 
-        Args:
-            event_type: "start" or "complete"
-            method: Name of the motion method
-            command: Ordinal of the queued command the event is about; a
-                blend group's events carry its head's
-            **extra: Additional event data
+        ``command`` is the ordinal of the queued command the event is
+        about; a blend group's events carry its head's.
         """
-        with self._event_lock:
-            events = self._events
-            sequence = events[-1].get("sequence", len(events)) + 1 if events else 1
-            events.append(
-                {
-                    "event": event_type,
-                    "method": method,
-                    "command": command,
-                    "ts": time.time(),
-                    "mono_ns": time.monotonic_ns(),
-                    "active_s": self.active_time(),
-                    "sequence": sequence,
-                    **extra,
-                }
-            )
-            # Keep unpublished events for the next flush if a reader or virus
-            # scanner temporarily prevents replacing the file on Windows.
-            self._events = events[-256:]
-            try:
-                _atomic_write(self._event_file, {"events": self._events})
-            except OSError:
-                # Diagnostics cannot change whether a command executes.
-                logging.getLogger(__name__).exception("Could not record command event")
+        self._send(
+            {
+                "type": "event",
+                "event": event_type,
+                "method": method,
+                "command": command,
+                "ts": time.time(),
+                "mono_ns": time.monotonic_ns(),
+                "active_s": self.active_time(),
+                **extra,
+            }
+        )
 
     def check_should_pause(self) -> bool:
-        """Check if the script should pause (paused flag is true)."""
-        control = _read_control(self._control_file)
-        return control.get("paused", True)
+        """Whether the GUI holds the program between commands (step mode)."""
+        self.require_link()
+        return self._snapshot().get("paused", True)
 
     def _step_released(self) -> bool:
-        """One poll of the control file. True when the script may proceed:
-        play mode, a granted step, or the control file is gone (the session
-        is no longer GUI-controlled, so blocking would hang the script)."""
-        if not self._control_file.exists():
-            return True
-        control = _read_control(self._control_file)
+        """True when the program may proceed: play mode or a granted step."""
+        self.require_link()
+        control = self._snapshot()
         if not control.get("paused", True):
             return True
         step_signal = control.get("step_signal", 0)
-        if step_signal > _read_control(self._ack_file).get("step_acked", 0):
-            self._ack_step(control, step_signal)
+        if step_signal > self._last_step_acked:
+            self._last_step_acked = step_signal
+            self._set_waiting(False)
             return True
         return False
 
     def wait_for_step_or_play(
         self, poll_interval: float = 0.05, *, check: Callable[[], None] | None = None
     ) -> None:
-        """Block until the GUI signals step or play. No timeout: paused
-        means paused until the operator says otherwise."""
+        """Block until the GUI signals step or play. No timeout: paused means
+        paused until the operator says otherwise; `check` runs every interval."""
         self._set_waiting(True)
         try:
             while not self._step_released():
                 if check is not None:
                     check()
-                time.sleep(poll_interval)
+                with self._cond:
+                    self._cond.wait(poll_interval)
         finally:
             self._set_waiting(False)
 
@@ -285,16 +331,9 @@ class StepIO:
         finally:
             self._set_waiting(False)
 
-    def _ack_step(self, control: dict, step_signal: int) -> None:
-        """Only the GUI writes control; a child acknowledgement cannot undo Pause."""
-        self._last_step_acked = step_signal
-        self._set_waiting(False)
-
     def _set_waiting(self, waiting: bool) -> None:
-        if not self._control_file.exists():
-            return
-        _atomic_write(
-            self._ack_file, {"step_acked": self._last_step_acked, "waiting": waiting}
+        self._send(
+            {"type": "waiting", "waiting": waiting, "step_acked": self._last_step_acked}
         )
 
 
@@ -345,6 +384,24 @@ class SteppingClientWrapper:
         self._blend_head: int = -1
         self._last_blend_index: int = -1
         self._blend_waits: list[tuple[int, CompletionBudget]] = []
+        self._lost_link_stopped = False
+
+    @contextlib.contextmanager
+    def _managed(self):
+        """Stop the arm before a lost link ends the program: nothing else
+        will once its Commander is gone."""
+        try:
+            yield
+        except SteppingLinkLost:
+            if not self._lost_link_stopped:
+                self._lost_link_stopped = True
+                self._close_group()
+                try:
+                    if self._wrapped.stop() <= 0:
+                        logger.error("Stop after losing Commander was not confirmed")
+                except Exception:
+                    logger.exception("Stop after losing Commander failed")
+            raise
 
     def _open_group(self, name: str) -> None:
         """Count this blend member; the first one opens the group, and its
@@ -377,6 +434,8 @@ class SteppingClientWrapper:
         try:
             if not self.wait_command(index, timeout=None):
                 raise TimeoutError(f"Command {index} completion was not confirmed")
+        except SteppingLinkLost:
+            raise
         except Exception:
             if self._wrapped.stop() <= 0:
                 raise RuntimeError(
@@ -385,6 +444,7 @@ class SteppingClientWrapper:
             raise
 
     def _check_health(self) -> Any:
+        self._step_io.require_link()
         status = self._wrapped.status()
         if status is None:
             raise ConnectionError("Controller unavailable during managed pause")
@@ -399,7 +459,8 @@ class SteppingClientWrapper:
 
     def wait_command(self, command_index: int, timeout: float | None = None) -> bool:
         try:
-            result = self._wait_command_active(command_index, timeout)
+            with self._managed():
+                result = self._wait_command_active(command_index, timeout)
         except BaseException as error:
             if self._step_io.capture_values:
                 self._step_io.emit_event(
@@ -447,17 +508,19 @@ class SteppingClientWrapper:
         if not self._in_blend:
             return
         head = self._blend_head
-        try:
-            # Each member keeps the deadline it was dispatched with; indices
-            # complete in order, so waiting on the earlier ones costs nothing.
-            for index, budget in self._blend_waits:
-                token = current_budget.set(budget)
-                try:
-                    self._wait_completed(index)
-                finally:
-                    current_budget.reset(token)
-        finally:
-            self._close_group()
+        with self._managed():
+            try:
+                # Each member keeps the deadline it was dispatched with;
+                # indices complete in order, so waiting on the earlier ones
+                # costs nothing.
+                for index, budget in self._blend_waits:
+                    token = current_budget.set(budget)
+                    try:
+                        self._wait_completed(index)
+                    finally:
+                        current_budget.reset(token)
+            finally:
+                self._close_group()
         self._step_io.emit_event("complete", "blend_group", command=head)
 
     def _flush_blend(self) -> None:
@@ -465,8 +528,9 @@ class SteppingClientWrapper:
         if not self._in_blend:
             return
         self.finalize()
-        if self._step_io.check_should_pause():
-            self._step_io.wait_for_step_or_play(check=self._check_health)
+        with self._managed():
+            if self._step_io.check_should_pause():
+                self._step_io.wait_for_step_or_play(check=self._check_health)
 
     def _discard_blend(self) -> None:
         """Close a pending blend group without waiting: the controller has
@@ -547,8 +611,9 @@ class SteppingClientWrapper:
             budget.bind(self._wrapped, self._step_io.active_time)
             token = current_budget.set(budget)
             try:
-                self._step_io.wait_until_resumed(self._check_health)
-                return execute(*args, **kwargs)
+                with self._managed():
+                    self._step_io.wait_until_resumed(self._check_health)
+                    return execute(*args, **kwargs)
             finally:
                 current_budget.reset(token)
 
@@ -635,14 +700,37 @@ class AsyncSteppingClientWrapper:
         self._blend_head: int = -1
         self._last_blend_index: int = -1
         self._blend_waits: list[tuple[int, CompletionBudget]] = []
+        self._lost_link_stopped = False
 
     _open_group = SteppingClientWrapper._open_group
     _close_group = SteppingClientWrapper._close_group
+
+    @contextlib.asynccontextmanager
+    async def _managed(self):
+        """Stop the arm before a lost link ends the program: nothing else
+        will once its Commander is gone."""
+        try:
+            yield
+        except SteppingLinkLost:
+            if not self._lost_link_stopped:
+                self._lost_link_stopped = True
+                self._close_group()
+                try:
+                    async with asyncio.timeout(3.0):
+                        if await self._wrapped.stop() <= 0:
+                            logger.error(
+                                "Stop after losing Commander was not confirmed"
+                            )
+                except Exception:
+                    logger.exception("Stop after losing Commander failed")
+            raise
 
     async def _wait_completed(self, index: int) -> None:
         try:
             if not await self.wait_command(index, timeout=None):
                 raise TimeoutError(f"Command {index} completion was not confirmed")
+        except SteppingLinkLost:
+            raise
         except Exception:
             async with asyncio.timeout(3.0):
                 if await self._wrapped.stop() <= 0:
@@ -652,6 +740,7 @@ class AsyncSteppingClientWrapper:
             raise
 
     async def _check_health(self) -> Any:
+        self._step_io.require_link()
         status = await self._wrapped.status()
         if status is None:
             raise ConnectionError("Controller unavailable during managed pause")
@@ -670,7 +759,8 @@ class AsyncSteppingClientWrapper:
         self, command_index: int, timeout: float | None = None
     ) -> bool:
         try:
-            result = await self._wait_command_active(command_index, timeout)
+            async with self._managed():
+                result = await self._wait_command_active(command_index, timeout)
         except BaseException as error:
             if self._step_io.capture_values:
                 self._step_io.emit_event(
@@ -717,23 +807,27 @@ class AsyncSteppingClientWrapper:
         if not self._in_blend:
             return
         head = self._blend_head
-        try:
-            for index, budget in self._blend_waits:
-                token = current_budget.set(budget)
-                try:
-                    await self._wait_completed(index)
-                finally:
-                    current_budget.reset(token)
-        finally:
-            self._close_group()
+        async with self._managed():
+            try:
+                for index, budget in self._blend_waits:
+                    token = current_budget.set(budget)
+                    try:
+                        await self._wait_completed(index)
+                    finally:
+                        current_budget.reset(token)
+            finally:
+                self._close_group()
         self._step_io.emit_event("complete", "blend_group", command=head)
 
     async def _flush_blend(self) -> None:
         if not self._in_blend:
             return
         await self.finalize()
-        if self._step_io.check_should_pause():
-            await self._step_io.wait_for_step_or_play_async(check=self._check_health)
+        async with self._managed():
+            if self._step_io.check_should_pause():
+                await self._step_io.wait_for_step_or_play_async(
+                    check=self._check_health
+                )
 
     def _discard_blend(self) -> None:
         if not self._in_blend:
@@ -804,8 +898,9 @@ class AsyncSteppingClientWrapper:
             budget.bind(self._wrapped, self._step_io.active_time)
             token = current_budget.set(budget)
             try:
-                await self._step_io.wait_until_resumed_async(self._check_health)
-                return await execute(*args, **kwargs)
+                async with self._managed():
+                    await self._step_io.wait_until_resumed_async(self._check_health)
+                    return await execute(*args, **kwargs)
             finally:
                 current_budget.reset(token)
 
@@ -854,67 +949,156 @@ class AsyncSteppingClientWrapper:
         return wrapper
 
 
+def _shutdown(conn: Connection) -> None:
+    """Close a link so a reader blocked in `recv` on either side wakes with
+    EOF: on Unix the fd is a socket and needs `shutdown`, a bare `close`
+    leaves the peer waiting for as long as our own reader is blocked."""
+    if sys.platform != "win32":
+        try:
+            probe = socket.socket(fileno=conn.fileno())
+            try:
+                probe.shutdown(socket.SHUT_RDWR)
+            finally:
+                probe.detach()
+        except OSError:
+            pass
+    try:
+        conn.close()
+    except OSError:
+        pass  # the reader that woke on EOF closed it first
+
+
 class GUIStepController:
-    """
-    GUI-side controller for stepping.
-    Used by the GUI to control script execution via IPC files.
-    """
+    """The GUI side of the stepping link: listens for the program (every
+    client it constructs — a program may hold a sync and an async client),
+    sends control states to all of them, queues the events they publish."""
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
-        self._temp_dir = Path(tempfile.gettempdir())
-        self._control_file = self._temp_dir / f".parol_control_{session_id}"
-        self._event_file = self._temp_dir / f".parol_events_{session_id}"
-        self._ack_file = self._temp_dir / f".parol_ack_{session_id}"
-        self._last_event_count = 0
+        self._listener: Listener | None = None
+        self._conns: list[Connection] = []
+        self._lock = threading.Lock()
+        self._control: dict[str, Any] = dict(_CONTROL_DEFAULT)
+        self._events: queue.SimpleQueue[dict] = queue.SimpleQueue()
+        self._waiting: dict[int, bool] = {}
+        self._step_acked = 0
+        self._closed = False
+        self._accept_thread: threading.Thread | None = None
+        self._serve_threads: list[threading.Thread] = []
 
     def initialize(self) -> None:
-        """Initialize control file with default state (paused=True)."""
-        _atomic_write(
-            self._control_file,
-            {
-                "paused": True,
-                "step_signal": 0,
-                "step_acked": 0,
-                "pause_elapsed": 0.0,
-                "pause_started": None,
-            },
+        """Open the listener; a program connects when it constructs StepIO."""
+        address = _step_address(self.session_id)
+        if sys.platform != "win32":
+            Path(address).unlink(missing_ok=True)
+        self._listener = Listener(address, authkey=_step_authkey(self.session_id))
+        if sys.platform != "win32":
+            os.chmod(address, 0o600)
+        self._accept_thread = threading.Thread(
+            target=self._accept, name=f"step-gui-{self.session_id}", daemon=True
         )
-        _atomic_write(self._event_file, {"events": []})
-        _atomic_write(self._ack_file, {"step_acked": 0, "waiting": False})
+        self._accept_thread.start()
+
+    def _accept(self) -> None:
+        listener = self._listener
+        assert listener is not None
+        while True:
+            try:
+                conn = listener.accept()
+            except (OSError, EOFError):
+                return
+            with self._lock:
+                if self._closed:
+                    conn.close()
+                    return
+                # Under the lock, so a Pause published meanwhile reaches this
+                # program after its initial state, never beneath it.
+                try:
+                    conn.send({"type": "control", **self._control})
+                except (OSError, ValueError):
+                    conn.close()
+                    continue
+                self._conns.append(conn)
+                serve = threading.Thread(
+                    target=self._serve,
+                    args=(conn,),
+                    name=f"step-gui-{self.session_id}-rx",
+                    daemon=True,
+                )
+                self._serve_threads.append(serve)
+            serve.start()
+
+    def _serve(self, conn: Connection) -> None:
+        key = id(conn)
+        try:
+            while True:
+                message = conn.recv()
+                if not isinstance(message, dict):
+                    continue
+                if message.get("type") == "event":
+                    self._events.put({k: v for k, v in message.items() if k != "type"})
+                elif message.get("type") == "waiting":
+                    with self._lock:
+                        self._waiting[key] = bool(message.get("waiting", False))
+                        self._step_acked = max(
+                            self._step_acked, int(message.get("step_acked", 0))
+                        )
+        except (EOFError, OSError):
+            pass
+        finally:
+            self._drop(conn)
+
+    def _drop(self, conn: Connection) -> None:
+        with self._lock:
+            self._waiting.pop(id(conn), None)
+            if conn in self._conns:
+                self._conns.remove(conn)
+        try:
+            conn.close()
+        except OSError:
+            pass  # cleanup() already shut it down under the reader
+
+    def _publish(self) -> None:
+        for conn in list(self._conns):
+            try:
+                conn.send({"type": "control", **self._control})
+            except (OSError, ValueError):
+                logger.debug(
+                    "Stepping link %s: a program client went away", self.session_id
+                )
 
     def waiting_for_step(self) -> bool:
-        control = _read_control(self._control_file)
-        ack = _read_control(self._ack_file)
-        return bool(
-            control.get("paused", True)
-            and control.get("pause_started") is None
-            and ack.get("waiting", False)
-            and control.get("step_signal", 0) <= ack.get("step_acked", 0)
-        )
+        """A program client sits at a step boundary with nothing granted."""
+        with self._lock:
+            return bool(
+                self._control["paused"]
+                and self._control["pause_started"] is None
+                and any(self._waiting.values())
+                and self._control["step_signal"] <= self._step_acked
+            )
 
     def signal_step(self) -> None:
-        """Signal the script to execute one command then pause."""
-        control = _read_control(self._control_file)
-        self._resume_clock(control)
-        control["paused"] = True
-        control["step_signal"] = control.get("step_signal", 0) + 1
-        _atomic_write(self._control_file, control)
+        """Let the program execute one command, then hold again."""
+        with self._lock:
+            self._resume_clock(self._control)
+            self._control["paused"] = True
+            self._control["step_signal"] += 1
+            self._publish()
 
     def signal_play(self) -> None:
-        """Signal the script to continue without pausing (play mode)."""
-        control = _read_control(self._control_file)
-        self._resume_clock(control)
-        control["paused"] = False
-        _atomic_write(self._control_file, control)
+        """Let the program run without holding between commands."""
+        with self._lock:
+            self._resume_clock(self._control)
+            self._control["paused"] = False
+            self._publish()
 
     def signal_pause(self) -> None:
         """Hold instrumented calls and suspend their completion budgets."""
-        control = _read_control(self._control_file)
-        control["paused"] = True
-        if control.get("pause_started") is None:
-            control["pause_started"] = time.monotonic()
-        _atomic_write(self._control_file, control)
+        with self._lock:
+            self._control["paused"] = True
+            if self._control["pause_started"] is None:
+                self._control["pause_started"] = time.monotonic()
+            self._publish()
 
     @staticmethod
     def _resume_clock(control: dict) -> None:
@@ -926,35 +1110,54 @@ class GUIStepController:
             control["pause_started"] = None
 
     def poll_events(self) -> list[dict]:
-        """
-        Poll for new events from the script.
-        Returns list of new events since last poll.
-        """
+        """Every event published since the last call, in order, none lost."""
+        events = []
+        while True:
+            try:
+                events.append(self._events.get_nowait())
+            except queue.Empty:
+                return events
+
+    def join_links(self, timeout: float) -> bool:
+        """Wait for every program link to reach its end, so its last events
+        are queued; False when one is still open at *timeout*."""
+        deadline = time.monotonic() + timeout
+        with self._lock:
+            threads = list(self._serve_threads)
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in threads)
+
+    def _knock(self) -> None:
         try:
-            data = json.loads(self._event_file.read_text())
-            events = data.get("events", [])
-            new_events = [
-                e for e in events if e.get("sequence", 0) > self._last_event_count
-            ]
-            if new_events:
-                missed = new_events[0]["sequence"] - self._last_event_count - 1
-                self._last_event_count = new_events[-1]["sequence"]
-                if missed:
-                    new_events.insert(0, {"event": "events_lost", "count": missed})
-            return new_events
-        except (json.JSONDecodeError, OSError):
-            return []
+            Client(
+                _step_address(self.session_id),
+                authkey=_step_authkey(self.session_id),
+            ).close()
+        except (OSError, EOFError):
+            pass  # the listener is already gone
 
     def cleanup(self) -> None:
-        """Remove IPC files."""
-        try:
-            if self._control_file.exists():
-                self._control_file.unlink()
-        except OSError:
-            pass
-        try:
-            if self._event_file.exists():
-                self._event_file.unlink()
-        except OSError:
-            pass
-        self._ack_file.unlink(missing_ok=True)
+        """Close the link and end its listener; a program still running
+        stops at its next command."""
+        with self._lock:
+            self._closed = True
+            conns, self._conns = list(self._conns), []
+            self._waiting.clear()
+        for conn in conns:
+            _shutdown(conn)
+        accept, self._accept_thread = self._accept_thread, None
+        if accept is not None and accept.is_alive():
+            # Closing a listener does not wake a thread blocked in accept();
+            # a connection does, and the loop then sees the link closed.
+            threading.Thread(
+                target=self._knock,
+                name=f"step-gui-{self.session_id}-knock",
+                daemon=True,
+            ).start()
+            accept.join(timeout=1.0)
+        if self._listener is not None:
+            self._listener.close()
+            self._listener = None
+        if sys.platform != "win32":
+            Path(_step_address(self.session_id)).unlink(missing_ok=True)
