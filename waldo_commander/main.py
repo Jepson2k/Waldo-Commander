@@ -53,6 +53,7 @@ from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.readout import ReadoutPanel
+from waldo_commander.components.settings import SettingsContent
 from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
 from waldo_commander.components.diagnostics import DiagnosticsPage
 from waldo_commander.numba_pipelines import (
@@ -78,6 +79,7 @@ from waldo_commander.services.control_lease import (
     control_lease,
     restore_control_mode,
 )
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
 from waldo_commander.services import startup_mode
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
@@ -230,7 +232,7 @@ def _update_warning_notification() -> None:
     if ps is None:
         return
     entries = waldoctl.commander.status.warnings.entries
-    msg = "; ".join(str(e[2]) for e in entries)
+    msg = "; ".join(e.title for e in entries)
     ps.warning_notification = _sticky_banner(ps.warning_notification, msg, "warning")
 
 
@@ -297,10 +299,6 @@ async def initialize_urdf_scene() -> None:
     if ui_state.urdf_scene.scene:
         scene: ui.scene = ui_state.urdf_scene.scene
         scene._props["grid"] = (10, 100)
-        # Fill parent container (absolute canvas).
-        scene.classes(remove="h-[66vh]").style(
-            "width: 100%; height: 100%; margin: 0; display: block;"
-        )
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
 
         # World coordinate frame at origin (fixed).
@@ -674,7 +672,10 @@ def _plugin_panel_size(p) -> dict:
     """PanelResize entry for a plugin panel that opts into drag-resizing
     (waldoctl ``Panel.resizable``), or {} otherwise. The JS module supplies
     floor minima, so the size attributes are optional refinements. getattr
-    keeps this working against waldoctl versions predating the attributes."""
+    keeps this working against waldoctl versions predating the attributes.
+
+    A resizable plugin panel is as tall as its content until the user drags
+    its height."""
     if not getattr(p, "resizable", False):
         return {}
     entry = {
@@ -693,6 +694,7 @@ def _plugin_panel_size(p) -> dict:
     )
     entry["selector"] = f"{container} .{p.id}-panel"
     entry["group"] = group
+    entry["fit"] = True
     return entry
 
 
@@ -741,12 +743,13 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
             elif css := _plugin_panel_static_size(p):
                 classes = sized
                 style = css
-            with ui.tab_panel(p.id).classes(classes).style(style):
+            with ui.tab_panel(p.id).classes(f"{classes} task-panel").style(style):
                 # A third-party plugin's build() must not blank the whole page;
                 # leave an empty-but-valid tab panel on failure (mirrors the
                 # init guard in _discover_plugin_panels).
                 try:
-                    p.build(commander)
+                    with ui.element("div").classes("plugin-panel-content"):
+                        p.build(commander)
                 except Exception as e:
                     logger.warning("Plugin panel %s build failed: %s", p.id, e)
                 if "resizable-panel" in classes:
@@ -888,7 +891,10 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
 
             ui_state._build_gripper_content = _build_gripper_content
 
-        with ui.tab_panel("diagnostics").classes("gap-2 overlay-card overflow-hidden"):
+        with ui.tab_panel("diagnostics").classes(
+            "gap-2 overlay-card task-panel diagnostics-view diagnostics-panel "
+            "resizable-panel overflow-hidden"
+        ):
             with ui.row().classes("w-full items-center"):
                 ui.label("Diagnostics").classes("text-lg font-medium")
                 ui.space()
@@ -900,7 +906,11 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                 is_open=lambda: side_tabs.value == "diagnostics",
                 tab=diagnostics_tab,
             )
-            ui_state.diagnostics_page.build()
+            with ui.column().classes("panel-body gap-0"):
+                ui_state.diagnostics_page.build()
+            ui.element("div").classes("resize-handle-right")
+            ui.element("div").classes("resize-handle-bottom")
+            ui.element("div").classes("resize-handle-corner")
 
         _add_plugin_tab_panels(PanelSlot.LEFT_TOP_TAB, commander)
 
@@ -926,6 +936,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         resp_tab = ui.tab(name="response", label="", icon="article")
         resp_tab.tooltip("Log")
         resp_tab.mark("tab-log")
+        settings_tab = ui.tab(name="settings", label="", icon="tune")
+        settings_tab.tooltip("Settings")
+        settings_tab.mark("tab-settings")
         help_tab = ui.tab(name="help", label="", icon="help_outline")
         help_tab.tooltip("Help")
         help_tab.mark("tab-help")
@@ -963,6 +976,24 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                 )
             )
             _add_resize_handles(PanelSlot.LEFT_BOTTOM_TAB)
+
+        with ui.tab_panel("settings").classes(
+            "overlay-card settings-panel resizable-panel"
+        ):
+            with ui.row().classes("w-full"):
+                ui.label("Settings").classes("text-lg font-medium")
+                ui.space()
+                ui.button(icon="close", on_click=close_bottom_panels).props(
+                    "flat round dense color=white"
+                )
+            with ui.column().classes("settings-content"):
+                ui_state.settings_content = SettingsContent(client)
+                ui_state.settings_content.build_embedded(
+                    ai_control_section=control_panel._build_control_mode_selector
+                )
+            ui.element("div").classes("resize-handle-top")
+            ui.element("div").classes("resize-handle-right")
+            ui.element("div").classes("resize-handle-corner")
 
         _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
 
@@ -1043,7 +1074,7 @@ def _setup_panel_persistence(refs: dict) -> None:
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_TOP_TAB
                     }
-                    bottom_valid = {"response", "help"} | {
+                    bottom_valid = {"response", "settings", "help"} | {
                         p.id
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_BOTTOM_TAB
@@ -1424,6 +1455,8 @@ def _register_handlers() -> None:
 
         if control_panel is not None:
             control_panel.cleanup()
+        if ui_state.settings_content is not None:
+            ui_state.settings_content.cleanup()
         if ui_state.gripper_page is not None:
             ui_state.gripper_page.cleanup()
         if editor_panel is not None:
@@ -1800,6 +1833,7 @@ def _cycle_start_tick(page_client: Client | None) -> None:
         and cur == 1
         and time.monotonic() - a._cycle_last_fire >= CYCLE_START_DEBOUNCE_S
         and not is_any_program_running()
+        and motion_guard.owner is None
         and robot_state.homed
         and (st.connected or st.simulator_active)
         and io.estop == 1
@@ -1877,6 +1911,10 @@ async def _status_consumer() -> None:
     torques_shadow: np.ndarray | None = None
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
+    error_shadow: waldoctl.RobotError | None = None
+    malformed_shadow: list[object] = []
+    robot_state.standing_error = None
+    estop_shadow = 1
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1911,6 +1949,12 @@ async def _status_consumer() -> None:
                         st.joints.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io
+                    # The physical E-stop halts the controller without any
+                    # Commander stop path running; tell motion sources.
+                    estop_now = int(robot_state.io[-1])
+                    if estop_shadow == 1 and estop_now == 0:
+                        motion_guard.note_stop("physical E-stop")
+                    estop_shadow = estop_now
                     if not playback_coordination.sim_pose_override:
                         robot_state.tool_status = status.tool_status
 
@@ -2013,39 +2057,74 @@ async def _status_consumer() -> None:
                     # compare, copy on change — the decoder refills the
                     # buffer list in place.
                     entries = getattr(status, "warnings", None)
+                    if entries is not None:
+                        malformed: list[object] = []
+                        decoded: list[waldoctl.RobotError] = []
+                        for e in entries:
+                            if isinstance(e, waldoctl.RobotError):
+                                decoded.append(e)
+                                continue
+                            # `from_wire` unpacks exactly six, so an entry
+                            # that is not a 6-tuple raises here -- on the
+                            # status tick, inside the per-tick handler that
+                            # logs at DEBUG. One malformed warning would take
+                            # the rest of the tick with it, every tick, for as
+                            # long as the condition stood. Skip that entry
+                            # instead: the other warnings still reach the log.
+                            try:
+                                decoded.append(waldoctl.RobotError.from_wire(e))
+                            except (TypeError, ValueError):
+                                malformed.append(e)
+                        entries = decoded
+                        if malformed != malformed_shadow:
+                            malformed_shadow = malformed
+                            for bad in malformed:
+                                logger.warning(
+                                    "dropping a malformed warning entry: %r", bad
+                                )
                     if entries is not None and st.warnings.entries != entries:
                         # New conditions go to the durable log; the banner
                         # tracks only the standing (self-clearing) set.
-                        prev = {tuple(e) for e in st.warnings.entries}
+                        prev = set(st.warnings.entries)
                         for e in entries:
-                            if tuple(e) not in prev:
+                            if e not in prev:
                                 # The log keeps the whole error, not a
                                 # summary line: the remedy is the half that
                                 # says what to do about the condition.
-                                #
-                                # `from_wire` unpacks exactly six, so an
-                                # entry that is not a 6-tuple raises here --
-                                # on the status tick, inside the per-tick
-                                # handler that logs at DEBUG. One malformed
-                                # warning would take the rest of the tick
-                                # with it, every tick, for as long as the
-                                # condition stood. Skip that entry instead:
-                                # the other warnings still reach the log.
-                                try:
-                                    err = waldoctl.RobotError.from_wire(e)
-                                except (TypeError, ValueError):
-                                    logger.warning(
-                                        "dropping a malformed warning entry: %r", e
-                                    )
-                                    continue
                                 robot_events.add(
-                                    code=err.code,
-                                    title=err.title,
-                                    cause=err.cause,
-                                    effect=err.effect,
-                                    remedy=err.remedy,
+                                    code=e.code,
+                                    title=e.title,
+                                    cause=e.cause,
+                                    effect=e.effect,
+                                    remedy=e.remedy,
                                 )
                         st.warnings.entries = list(entries)
+
+                    # The standing error is the other half of the condition
+                    # surface: waldoctl routes self-clearing conditions to
+                    # `warnings` and hard latches here, and a backend is free to
+                    # use only one of the two. parol6 never fills `warnings`, so
+                    # reading only that channel dropped its entire error
+                    # vocabulary -- unreachable targets, queue overflow, gripper
+                    # timeouts, self-collision -- before it reached the log.
+                    # Edge-triggered: a standing error repeats every tick, and
+                    # clearing then recurring is a genuine second occurrence.
+                    standing = getattr(status, "error", None)
+                    if standing is not None and not isinstance(
+                        standing, waldoctl.RobotError
+                    ):
+                        standing = waldoctl.RobotError.from_wire(standing)
+                    if standing != error_shadow:
+                        error_shadow = standing
+                        robot_state.standing_error = standing
+                        if standing is not None:
+                            robot_events.add(
+                                code=standing.code,
+                                title=standing.title,
+                                cause=standing.cause,
+                                effect=standing.effect,
+                                remedy=standing.remedy,
+                            )
 
                     drives = getattr(status, "drive_health", None)
                     if drives:

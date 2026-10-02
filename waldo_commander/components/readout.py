@@ -6,9 +6,8 @@ import random
 from enum import Enum
 from pathlib import Path
 
-from nicegui import ui
-
 import waldoctl
+from nicegui import ui
 from waldoctl import ActionStatus
 
 from waldo_commander.common.theme import IO_COLOR_OFF, IO_COLOR_ON
@@ -130,6 +129,7 @@ class ReadoutPanel:
         self._tool_label: ui.label | None = None
         self._tool_separator: ui.label | None = None
         self._io_chips: list[ui.chip] = []
+        self._io_container: ui.row | None = None
 
         # Action log elements
         self._action_scroll_area: ui.scroll_area | None = None
@@ -141,6 +141,40 @@ class ReadoutPanel:
         self._last_tool_key: str | None = None
         self._last_io_inputs: list[int] | None = None
         self._last_io_outputs: list[int] | None = None
+
+    def _build_io_chips(self) -> None:
+        """Fill the I/O strip with one chip per digital line.
+
+        The strip is a bounded block at the header's right edge: parol6 has
+        four lines, but a backend that takes its I/O from config can report
+        many more, so the chips wrap into rows inside the block and get
+        smaller as the count grows rather than widening the panel or taking
+        a line of their own.
+        """
+        if self._io_container is None:
+            return
+        self._io_container.clear()
+        self._io_chips = []
+        io = waldoctl.commander.status.io
+        lines = [("DI", "Digital Input", i) for i in range(len(io.inputs))]
+        lines += [("DO", "Digital Output", i) for i in range(len(io.outputs))]
+        # Past a handful the prefix drops to one letter; tooltips keep the
+        # full name either way.
+        terse = len(lines) > 8
+        size = "xs" if terse else "sm"
+        if len(lines) > 16:
+            self._io_container.classes(add="io-chips-dense")
+        else:
+            self._io_container.classes(remove="io-chips-dense")
+        with self._io_container:
+            for prefix, description, i in lines:
+                label = f"{prefix[-1] if terse else prefix}{i + 1}"
+                self._io_chips.append(
+                    ui.chip(label, color=IO_COLOR_OFF)
+                    .props(f"dense size={size}")
+                    .style("box-shadow: none;")
+                    .tooltip(f"{description} {i + 1}")
+                )
 
     def update_conn_io(self) -> None:
         """Update connection face and IO status. Called from status consumer."""
@@ -187,7 +221,14 @@ class ReadoutPanel:
             self._last_tool_key = tool_key
             if self._tool_chip is not None and self._tool_label is not None:
                 if tool_key and tool_key != "NONE":
-                    self._tool_label.text = tool_key
+                    try:
+                        name = ui_state.active_robot.tools[
+                            tool_key
+                        ].display_name.replace("_", " ")
+                    except KeyError:
+                        name = tool_key.replace("_", " ")
+                    self._tool_label.text = name
+                    self._tool_label._props["title"] = tool_key
                     self._tool_chip.set_visibility(True)
                     if self._tool_separator is not None:
                         self._tool_separator.set_visibility(True)
@@ -196,10 +237,17 @@ class ReadoutPanel:
                     if self._tool_separator is not None:
                         self._tool_separator.set_visibility(False)
 
-        if self._io_chips:
+        if self._io_container is not None:
             io = waldoctl.commander.status.io
             inputs = io.inputs
             outputs = io.outputs
+            # A backend can report a different line count than the one the
+            # chips were built for — par6 takes both from its config, so the
+            # first frame may not match what was on screen a moment ago.
+            if len(inputs) + len(outputs) != len(self._io_chips):
+                self._build_io_chips()
+                self._last_io_inputs = None
+                self._last_io_outputs = None
             if inputs != self._last_io_inputs or outputs != self._last_io_outputs:
                 self._last_io_inputs = list(inputs)
                 self._last_io_outputs = list(outputs)
@@ -240,11 +288,13 @@ class ReadoutPanel:
 
     def build(self, anchor: str = "tl") -> None:
         """Render the top-left readout panel as an overlay card."""
-        with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor}"):
+        with ui.card().classes(
+            f"overlay-panel overlay-card readout-panel overlay-{anchor}"
+        ):
             with ui.column().classes("gap-1"):
                 with (
                     ui.row()
-                    .classes("items-center w-full no-wrap gap-2")
+                    .classes("readout-header items-center w-full no-wrap gap-2")
                     .style("margin: -10px 0 0 -10px; width: calc(100% + 12px);")
                 ):
                     _init_face = (
@@ -282,7 +332,7 @@ class ReadoutPanel:
                             )
                         self._backend_label = (
                             ui.label(ui_state.active_robot.name)
-                            .classes("text-lg font-medium ml-2")
+                            .classes("text-lg font-medium ml-2 readout-robot-name")
                             .style("text-shadow: 0 1px 1px rgba(0,0,0,0.4);")
                         )
                     self._tool_separator = (
@@ -294,35 +344,18 @@ class ReadoutPanel:
                     self._tool_chip = (
                         ui.chip()
                         .props("dense")
-                        .classes("text-lg font-medium")
-                        .style("box-shadow: none; margin: 0;")
+                        .classes("text-sm font-medium min-w-0")
+                        .style("box-shadow: none; margin: 0; max-width: 170px;")
                     )
                     self._tool_chip.set_visibility(False)
                     self._tool_label: ui.label | None = None
                     with self._tool_chip:
-                        self._tool_label = ui.label("").classes("text-lg font-medium")
+                        self._tool_label = ui.label("").classes(
+                            "text-sm font-medium truncate"
+                        )
                     ui.space()
-                    with ui.row().classes("gap-0 no-wrap"):
-                        self._io_chips = []
-                        _io_init = waldoctl.commander.status.io
-                        for i in range(len(_io_init.inputs)):
-                            chip = (
-                                ui.chip(f"DI{i + 1}", color=IO_COLOR_OFF)
-                                .props("dense size=sm")
-                                .classes("text-xs")
-                                .style("box-shadow: none;")
-                                .tooltip(f"Digital Input {i + 1}")
-                            )
-                            self._io_chips.append(chip)
-                        for i in range(len(_io_init.outputs)):
-                            chip = (
-                                ui.chip(f"DO{i + 1}", color=IO_COLOR_OFF)
-                                .props("dense size=sm")
-                                .classes("text-xs")
-                                .style("box-shadow: none;")
-                                .tooltip(f"Digital Output {i + 1}")
-                            )
-                            self._io_chips.append(chip)
+                    self._io_container = ui.row().classes("io-chips")
+                    self._build_io_chips()
 
                 with ui.row().classes("items-center justify-between w-full no-wrap"):
                     with ui.row().classes("items-center gap-1 no-wrap"):

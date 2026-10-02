@@ -23,6 +23,7 @@ theme:
 nav:
   - Home: index.md
   - Writing Programs: guides/writing-programs.md
+  - Python Skills: guides/skills.md
   - AI Control (MCP): guides/mcp.md
   - API Reference: guides/api-reference.md
   - Backend Development: guides/backend-development.md

@@ -111,9 +111,11 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
         "Envelope should be generated before testing visibility"
     )
 
+    # The Settings tab is an icon in the bottom-left bar, so it is addressed
+    # by its glyph rather than by a text label it no longer carries.
     settings_tab = WebDriverWait(screen.selenium, 5).until(
         EC.element_to_be_clickable(
-            (By.XPATH, "//*[contains(@class, 'q-tab')]//*[text()='Settings']")
+            (By.XPATH, "//*[text()='tune']/ancestor::*[contains(@class, 'q-tab')][1]")
         )
     )
     settings_tab.click()
@@ -123,9 +125,9 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
         """
         const labels = document.querySelectorAll('*');
         for (const label of labels) {
-            if (label.textContent.includes('Workspace Envelope') &&
+            if (label.textContent.includes('Workspace envelope') &&
                 !label.textContent.includes('Show reachable')) {
-                const row = label.closest('.row');
+                const row = label.closest('.settings-row');
                 if (row) {
                     const select = row.querySelector('.q-select');
                     if (select) select.click();

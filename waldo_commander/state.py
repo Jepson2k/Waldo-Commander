@@ -13,6 +13,7 @@ from waldoctl import (
     Panel,
     PathSegment,
     ProgramTarget,
+    RobotError,
     ShapeChange,
     ToolAction,
     ToolSelection,
@@ -140,6 +141,9 @@ class RobotState(ChangeNotifierMixin):
     # All joints homed, from the status stream. Seeds dry-run previews so an
     # unhomed robot's preview mirrors the controller's planned-motion gate.
     homed: bool = True
+    # The controller's latched error, or None; self-clearing conditions are
+    # on commander.status.warnings.
+    standing_error: RobotError | None = None
     executing_index: int = -1
     completed_index: int = -1
     _change_listeners: list[Callable[[], None]] = field(
@@ -156,6 +160,7 @@ class RobotState(ChangeNotifierMixin):
         self.torque_time_series.clear()
         self.speeds[:] = 0.0
         self.homed = True
+        self.standing_error = None
         self.executing_index = -1
         self.completed_index = -1
 
@@ -317,6 +322,7 @@ class UiState:
     io_page: Any = None
     gripper_page: Any = None
     diagnostics_page: Any = None
+    settings_content: Any = None
     # Kept so the editor addresses its tab directly instead of hunting the
     # DOM for a matching icon glyph.
     _program_tab: Any = None
@@ -476,9 +482,11 @@ def reset_all_state() -> None:
     from waldo_commander.services.action_log import action_log_service
     from waldo_commander.services.control_lease import control_lease
     from waldo_commander.services.edit_decisions import clear as clear_edit_decisions
+    from waldo_commander.services.motion_guard import motion_guard
 
     action_log_service.clear()
     control_lease.reset()
+    motion_guard.reset()
     clear_edit_decisions()
     import waldoctl
 

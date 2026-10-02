@@ -476,10 +476,11 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
     },
     "constraints": {
         "viewportMarginX": 80,
-        "viewportMarginY": 20,
+        "viewportMarginY": 24,
         "containerPadding": 20,
         "bottomOffset": 12,
         "totalMargin": 36,
+        "defaultsClearOf": [".readout-panel"],
     },
     "stateClasses": {
         "coupled": "coupled",
@@ -489,6 +490,8 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "selector": ".top-panels-container .program-panel",
             "minWidth": 450,
             "minHeight": 300,
+            "defaultWidth": 680,
+            "defaultHeight": 480,
             "group": "top",
         },
         "response": {
@@ -496,6 +499,22 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
             "minWidth": 300,
             "minHeight": 100,
             "group": "bottom",
+        },
+        "settings": {
+            "selector": ".bottom-panels-container .settings-panel",
+            "minWidth": 400,
+            "minHeight": 320,
+            "defaultWidth": 440,
+            "fit": True,
+            "group": "bottom",
+        },
+        "diagnostics": {
+            "selector": ".top-panels-container .diagnostics-panel",
+            "minWidth": 420,
+            "minHeight": 300,
+            "defaultWidth": 560,
+            "fit": True,
+            "group": "top",
         },
         "gripper": {
             "selector": ".top-panels-container .gripper-panel",
@@ -584,6 +603,9 @@ _RESIZE_HANDLE_CSS = _generate_resize_handle_css()
 
 def inject_layout_css() -> None:
     """Injects the app's layout and component CSS previously embedded in main.py."""
+    from waldo_commander.common.panel_theme import inject_panel_css
+
+    inject_panel_css()
     ui.add_css(
         """
 /* Prevent full-page scrollbar flash globally */
@@ -612,11 +634,11 @@ html, body {
 }
 
 /* Axis/TCP colors */
-.tcp-x  { color: var(--axis-x); }
+.tcp-x  { color: #fda4af; }
 .tcp-rx { color: var(--axis-rx); }
-.tcp-y  { color: var(--axis-y); }
+.tcp-y  { color: #86efac; }
 .tcp-ry { color: var(--axis-ry); }
-.tcp-z  { color: var(--axis-z); }
+.tcp-z  { color: #93c5fd; }
 .tcp-rz { color: var(--axis-rz); }
 
 
@@ -916,6 +938,11 @@ body.body--light .wc-mode-autopilot  { --mode-accent-text: var(--color-violet-70
 .bottom-panels-container { bottom: 12px; }
 
 .resizable-panel { overflow: hidden !important; }
+
+/* A panel whose container carries no inline height (no dragged size yet) is as
+   tall as its content. This keeps it inside the viewport; the flex chain under
+   it (min-height: 0, overflow: auto) scrolls at the cap. */
+.left-panels-container > .q-panel > .resizable-panel { max-height: calc(100vh - 24px); }
 
 /* Panel content is interactive when visible */
 .left-panels-container .overlay-card { pointer-events: auto; }

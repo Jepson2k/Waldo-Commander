@@ -2,9 +2,8 @@ import logging
 import time
 from collections.abc import Callable
 
-from nicegui import ui
-
 import waldoctl
+from nicegui import ui
 from waldoctl import (
     ElectricGripperTool,
     GripperTool,
@@ -286,44 +285,26 @@ class GripperPage:
         )
         current_limit = waldoctl.commander.settings.gripper.current
 
-        if result is not None:
-            timestamps, positions, currents = result
-            ts_ms = [t * 1000 for t in timestamps]
-            self._combined_chart.run_chart_method(  # ty: ignore[unresolved-attribute]
-                "setOption",
-                {
-                    "series": [
-                        {
-                            "data": [
-                                [t, round(p * 100, 1)] for t, p in zip(ts_ms, positions)
-                            ],
-                            "markLine": _make_mark_line(
-                                target_pos_pct, _CLR_POS, "target"
-                            ),
-                        },
-                        {
-                            "data": [[t, round(c, 1)] for t, c in zip(ts_ms, currents)],
-                            "markLine": _make_mark_line(
-                                current_limit, _CLR_CUR, "limit"
-                            ),
-                        },
-                    ]
-                },
+        chart = self._combined_chart
+        if chart is None:
+            return
+        with chart.props.suspend_updates():
+            if result is not None:
+                timestamps, positions, currents = result
+                ts_ms = [t * 1000 for t in timestamps]
+                chart.options["series"][0]["data"] = [
+                    [t, round(p * 100, 1)] for t, p in zip(ts_ms, positions)
+                ]
+                chart.options["series"][1]["data"] = [
+                    [t, round(c, 1)] for t, c in zip(ts_ms, currents)
+                ]
+            chart.options["series"][0]["markLine"] = _make_mark_line(
+                target_pos_pct, _CLR_POS, "target"
             )
-        else:
-            self._combined_chart.run_chart_method(  # ty: ignore[unresolved-attribute]
-                "setOption",
-                {
-                    "series": [
-                        {
-                            "markLine": _make_mark_line(
-                                target_pos_pct, _CLR_POS, "target"
-                            )
-                        },
-                        {"markLine": _make_mark_line(current_limit, _CLR_CUR, "limit")},
-                    ]
-                },
+            chart.options["series"][1]["markLine"] = _make_mark_line(
+                current_limit, _CLR_CUR, "limit"
             )
+        chart.run_chart_method("setOption", {"series": chart.options["series"]})
 
     def set_target_position(self, position: float) -> None:
         """Set target position and update the slider. Called by control panel actions."""

@@ -12,13 +12,14 @@ against the real par6 runtime in ``test_par6_backend.py``.
 """
 
 import asyncio
+import contextlib
 
 import pytest
 import waldoctl
 from nicegui import ui
 from nicegui.testing import User
 
-from tests.helpers.wait import poll_until, wait_for_app_ready
+from tests.helpers.wait import poll_until, wait_for_app_ready, wait_until
 from waldo_commander.state import robot_events, ui_state
 
 
@@ -149,6 +150,169 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
     await asyncio.sleep(0)
     assert not robot_events.entries
     await user.should_not_see("CAN stale")
+
+
+@pytest.mark.integration
+async def test_a_condition_this_backend_reports_reaches_the_log(
+    user: User, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log has to cover both channels the status surface splits across.
+
+    waldoctl routes self-clearing conditions to ``warnings`` and hard
+    latches to the standing error, and a backend is free to use only one of
+    them. This one only ever sets the standing error, so a log wired to
+    ``warnings`` alone stays empty however badly the move goes — which reads
+    as a healthy machine rather than an unasked question.
+    """
+    await user.open("/")
+    await wait_for_app_ready()
+
+    robot_events.clear()
+    # Metres out, against a reach of about half a metre: the controller
+    # cannot plan it and answers with a standing error.
+    await ui_state.control_panel.client.move_l(
+        [5000.0, 5000.0, 5000.0, 180.0, 0.0, 0.0], speed=0.5
+    )
+
+    assert await wait_until(lambda: bool(robot_events.entries), timeout_s=8.0), (
+        "the backend reported a condition and the log never heard about it"
+    )
+    _, code, title, _cause, _effect, remedy = robot_events.entries[0]
+    assert code, "an entry with no code cannot be traced back to the backend"
+    assert title, "an entry with no title says nothing to the operator"
+    assert remedy, "the remedy is the half that says what to do about it"
+
+    # A latched error has stopped the backend, and the headline says so in
+    # the backend's own words rather than "Running normally" above the log.
+    user.find(marker="tab-diagnostics").click()
+    await asyncio.sleep(0)
+    await _settle(user, "diag-verdict", lambda t: t == f"Stopped — {title}")
+
+    # The refused move is the point of the test, and the controller logs it at
+    # ERROR. Drop just that record so the fixture's blanket ERROR check still
+    # guards everything else.
+    caplog.get_records("call")[:] = [
+        r
+        for r in caplog.get_records("call")
+        if "IK: partial path" not in r.getMessage()
+    ]
+
+
+@pytest.mark.integration
+async def test_the_verdict_names_what_is_wrong(user: User) -> None:
+    """A busy operator reads one line, not a column of numbers.
+
+    Every reading looked the same before: one size, one colour, and no
+    indication of the range it was supposed to sit in. So the panel now
+    answers "is anything wrong" first, and only what is outside its normal
+    range takes any colour.
+    """
+    await _open_diagnostics(user)
+    page = ui_state.diagnostics_page
+
+    await _settle(user, "diag-verdict", lambda t: t.startswith("Running"))
+    assert _text(user, "diag-estop") == "clear"
+    estop = next(iter(user.find(marker="diag-estop").elements))
+    assert "diag-fault" not in estop.classes, "a healthy reading carries no colour"
+
+    # estop == 0 is the chain broken, matching the controller wire format.
+    waldoctl.commander.status.io.estop = 0
+    page.update()
+    await asyncio.sleep(0)
+
+    assert _text(user, "diag-verdict") == "Stopped — e-stop pressed", (
+        "the headline has to say what is wrong, not just that something is"
+    )
+    assert _text(user, "diag-estop") == "pressed"
+    assert "diag-fault" in estop.classes, "and the row that caused it is the one lit"
+
+    waldoctl.commander.status.io.estop = 1
+    page.update()
+    await asyncio.sleep(0)
+    assert _text(user, "diag-verdict").startswith("Running"), "and it clears again"
+
+    # The backend's own warnings come first: they name the condition, where
+    # an inferred reading only names a symptom. Read back before yielding,
+    # since the next status frame republishes this backend's empty list.
+    status = waldoctl.commander.status
+    status.warnings.entries = [
+        waldoctl.RobotError(-1, 60, "Gripper slow to answer", "", "", "")
+    ]
+    page.update()
+    assert _text(user, "diag-verdict") == "Running degraded — Gripper slow to answer"
+    status.warnings.entries = []
+
+    # A CAN bus that is error-passive still carries traffic: degraded, not
+    # stopped, however the backend spells the state.
+    status.link_health.state = "ERROR_PASSIVE"
+    page.update()
+    assert _text(user, "diag-verdict").startswith("Running degraded")
+    link = next(iter(user.find(marker="diag-link-state").elements))
+    assert "diag-warn" in link.classes
+    status.link_health.state = ""
+    page.update()
+    assert _text(user, "diag-verdict").startswith("Running")
+
+
+@pytest.mark.integration
+async def test_the_verdict_goes_stale_when_status_stops(user: User) -> None:
+    """Every reading is the last one heard once status stops arriving, and
+    a green "Running normally" over them claims a robot nobody can see."""
+    await _open_diagnostics(user)
+    await _settle(user, "diag-verdict", lambda t: t.startswith("Running"))
+
+    consumer = next(
+        t
+        for t in asyncio.all_tasks()
+        if getattr(t.get_coro(), "__qualname__", "") == "_status_consumer"
+    )
+    consumer.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await consumer
+
+    await _settle(user, "diag-verdict", lambda t: t.startswith("No status for"))
+    verdict = next(iter(user.find(marker="diag-verdict").elements))
+    assert "diag-fault" in verdict.classes
+
+
+@pytest.mark.integration
+async def test_drive_readings_that_stop_arriving_read_unknown(user: User) -> None:
+    """A backend that stops reporting its drives leaves nothing to show, and
+    the last temperature and fault it sent are no longer true."""
+    await _open_diagnostics(user)
+    page = ui_state.diagnostics_page
+    health = waldoctl.commander.status.drive_health
+    joints = ui_state.active_robot.joints.count
+
+    # Written and read without yielding: the next status frame republishes
+    # this backend's own drive health.
+    health.temperatures_c = [41.0] * joints
+    health.faults = [("overcurrent",)] + [()] * (joints - 1)
+    page.update()
+    assert _text(user, "diag-drive-temp-1") == "41"
+    assert _text(user, "diag-drive-fault-1") == "overcurrent"
+
+    health.temperatures_c = []
+    health.currents_ma = []
+    health.faults = []
+    page.update()
+    assert _text(user, "diag-drive-temp-1") == "—"
+    assert _text(user, "diag-drive-fault-1") == "—"
+
+
+def test_the_overrun_rate_counts_only_what_this_page_watched() -> None:
+    """The controller's count runs from its own boot; a page that opens an
+    hour later and divides that total by its own age reports a rate that
+    never happened."""
+    from waldo_commander.components.diagnostics import _OverrunRate
+
+    rate = _OverrunRate()
+    assert rate.per_minute(500, now=100.0) is None, "one sample is no rate"
+    assert rate.per_minute(500, now=160.0) == 0.0
+    assert rate.per_minute(503, now=220.0) == pytest.approx(1.5)
+    # A controller restart starts its count again, and the rate with it.
+    assert rate.per_minute(2, now=230.0) is None
+    assert rate.per_minute(4, now=290.0) == pytest.approx(2.0)
 
 
 @pytest.mark.integration

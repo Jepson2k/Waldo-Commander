@@ -14,7 +14,7 @@ import time
 
 import pytest
 import waldoctl
-from nicegui import app as ng_app, ui
+from nicegui import app as ng_app
 from nicegui.testing import User
 
 from tests.helpers.wait import enable_sim, wait_for_app_ready
@@ -76,7 +76,7 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     assert not is_any_program_running()
     assert script_exec.last_exit_code is None
 
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
     user.find(marker="switch-cycle-start").click()
@@ -179,7 +179,7 @@ async def test_home_output_tracks_home_pose(
     try:
         # Robot sits at the home pose (per-test reset homes it): enabling the
         # switch is the first ON transition, observed via the controller echo.
-        settings_tab = user.find(kind=ui.tab, content="Settings")
+        settings_tab = user.find(marker="tab-settings")
         settings_tab.click()
         await asyncio.sleep(0)
         user.find(marker="switch-home-output").click()
@@ -231,7 +231,7 @@ async def test_automation_settings_round_trip_storage(user: User) -> None:
     await user.open("/")
     await wait_for_app_ready()
 
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 

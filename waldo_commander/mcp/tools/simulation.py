@@ -18,6 +18,7 @@ from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.mcp.tools.control import require_actuation, require_control
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import ui_state
 
@@ -54,6 +55,7 @@ async def set_simulator(enabled: bool) -> dict:
         # background task, which has none of its own).
         with _page_client():
             await script_exec.stop()
+    motion_guard.note_stop("simulator switch")
     await client.simulator(enabled)
     waldoctl.commander.status.simulator_active = enabled
     await client.reset()

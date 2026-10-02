@@ -64,6 +64,20 @@ def main() -> None:
 
     step_io = StepIO(session_id)
 
+    from waldoctl.skills import SkillEvent, observe_skills
+
+    def record_skill(event: SkillEvent) -> None:
+        step_io.emit_event(
+            f"skill_{event.phase}",
+            event.skill.id,
+            invocation_id=event.invocation_id,
+            parent_id=event.parent_id,
+            version=event.skill.version,
+            message=event.message,
+            fraction=event.fraction,
+            stop_confirmed=event.stop_confirmed,
+        )
+
     # Set by the GUI process.
     backend_package = os.environ.get("WALDO_BACKEND_PACKAGE", "parol6")
 
@@ -141,7 +155,8 @@ def main() -> None:
     try:
         # Compile with the script's filename for proper tracebacks.
         code = compile(script_code, str(script_path), "exec")
-        exec(code, script_globals)
+        with observe_skills(record_skill):
+            exec(code, script_globals)
         # Bare-construction scripts never hit __exit__: barrier any queued
         # blended moves so the process doesn't exit while the arm still runs.
         for wrapper in created_wrappers:

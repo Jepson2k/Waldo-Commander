@@ -197,6 +197,9 @@ async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], duration=2.0)
         await rbt.move_j([95, -95, 185, -5, -5, 185], duration=2.0)
+
+import asyncio
+asyncio.run(main())
 """
 
 

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 from nicegui.testing import User
-from nicegui import ui, app as ng_app
+from nicegui import app as ng_app
 from typing import Any
 
 from waldo_commander.state import ui_state
@@ -12,6 +12,7 @@ from tests.helpers.wait import (
     poll_until,
     wait_for_app_ready,
     wait_for_tool_key,
+    wait_until,
 )
 
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
@@ -28,19 +29,20 @@ async def test_settings_tab_accessible(user: User) -> None:
     await user.open("/")
     await wait_for_app_ready()
 
-    # Settings is embedded in the control panel (bottom-left HUD)
-    # The control panel has tabs: "Joint Jog", "Cartesian Jog", "Settings"
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
-    # Verify the Settings tab panel is now showing by checking for expected content
-    # The Serial Port section should be visible
-    await user.should_see("Serial Port")
-    await user.should_see("Show Route")
-    await user.should_see("Theme")
+    # Rows from the first group and the last, so the whole panel is present
+    # rather than just the part above a fold.
+    await user.should_see("Serial port")
+    await user.should_see("Show route")
     await user.should_see("Tool")
     await user.should_see("Select end effector tool")
+    # Grouped, most-reached-for first: the port an operator sets before
+    # anything else works leads, and the restart-scoped settings come last.
+    await user.should_see(marker="settings-group-connection")
+    await user.should_see(marker="settings-group-advanced")
 
 
 @pytest.mark.integration
@@ -54,12 +56,11 @@ async def test_serial_port_select_exists(user: User) -> None:
     await wait_for_app_ready()
 
     # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
-    # Find the serial port select - it has label="Port"
-    port_select = user.find(kind=ui.select, content="Port")
+    port_select = user.find(marker="select-serial-port")
     assert port_select is not None, "Serial port select should exist in Settings"
 
 
@@ -72,7 +73,7 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
     await wait_for_app_ready()
 
     # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -98,7 +99,7 @@ async def test_workspace_envelope_mode_changes(user: User) -> None:
     await wait_for_app_ready()
 
     # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -141,7 +142,7 @@ async def test_tool_selection_changes_tool(user: User) -> None:
     await wait_for_app_ready()
 
     # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -177,7 +178,7 @@ async def test_variant_selector_appears_for_tools_with_variants(user: User) -> N
     await user.open("/")
     await wait_for_app_ready()
 
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -208,7 +209,7 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     await user.open("/")
     await wait_for_app_ready()
 
-    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
 
@@ -223,7 +224,7 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     # PNEUMATIC — offset inputs should appear with X/Y/Z fields
     select_el.set_value("PNEUMATIC")
     await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
-    await user.should_see("TCP Offset")
+    await user.should_see("TCP offset")
     await poll_until(
         offset_x_disabled,
         lambda disabled: not disabled,
@@ -256,7 +257,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
     await wait_for_app_ready()
     client = ui_state.control_panel.client
 
-    user.find(kind=ui.tab, content="Settings").click()
+    user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
     tool_select = user.find(marker="select-tool")
 
@@ -288,7 +289,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
 
     try:
         await select_tool("PNEUMATIC")
-        await user.should_see("TCP Offset")
+        await user.should_see("TCP offset")
         # The client-side edit event, as NiceGUI names it: the element's own
         # listener adopts the value, the page's listener pushes it.
         user.find(marker="tcp-offset-x").trigger("update:modelValue", 12.5)
@@ -309,9 +310,9 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         ui_state.active_client_id = None
         await user.open("/")
         await wait_for_app_ready()
-        user.find(kind=ui.tab, content="Settings").click()
+        user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
-        await user.should_see("TCP Offset")
+        await user.should_see("TCP offset")
         await poll_until(
             lambda: offset_x().value,
             lambda shown: shown == 1.0,
@@ -327,16 +328,139 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         await client.select_tool("NONE")
 
 
-@pytest.mark.integration
-async def test_theme_selection_exists(user: User) -> None:
-    """Test that theme toggle exists and has expected options."""
+async def _reconciled() -> None:
+    """Wait for every page's offset reconcile to finish, pushes included."""
+    from nicegui import background_tasks
+
+    assert await wait_until(
+        lambda: not any(
+            t.get_name() == "tcp-offset-reconcile"
+            for t in background_tasks.running_tasks
+        ),
+        timeout_s=10.0,
+    ), "the TCP offset reconcile never finished"
+
+
+async def _reopen(user: User) -> None:
+    # The old tab's disconnect clears the active slot before the reload.
+    ui_state.active_client_id = None
     await user.open("/")
     await wait_for_app_ready()
 
-    # Navigate to Settings tab
-    settings_tab = user.find(kind=ui.tab, content="Settings")
-    settings_tab.click()
-    await asyncio.sleep(0)
 
-    # The theme toggle should exist
-    await user.should_see("Theme")
+@pytest.mark.integration
+async def test_opening_a_page_never_pushes_an_offset_under_an_ai_holder(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page load carries no human intent to drive. With an AI session
+    holding control, the browser's remembered offset must not replace the
+    controller's, even on a controller this app has never told: the AI plans
+    its Cartesian moves with the TCP it has."""
+    from waldo_commander.components import settings
+    from waldo_commander.services.control_lease import MCP, control_lease
+
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    monkeypatch.setattr(settings, "_pushed_offset_tools", set())
+    try:
+        index = await client.select_tool("PNEUMATIC")
+        assert await client.wait_command(index, timeout=5.0)
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        app_storage.general["selected_tool"] = "PNEUMATIC"
+        app_storage.general["tcp_offset_PNEUMATIC"] = {"x": 5.0, "y": 0.0, "z": 0.0}
+        control_lease.seize(MCP, "settings-review", "AI")
+
+        await _reopen(user)
+        await _reconciled()
+
+        assert [float(v) for v in await client.tcp_offset()] == [0.0, 0.0, 0.0]
+        assert control_lease.held_by(MCP, "settings-review")
+    finally:
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        await client.select_tool("NONE")
+
+
+@pytest.mark.integration
+async def test_another_tools_offset_is_not_adopted(user: User) -> None:
+    """The controller's offset belongs to the tool it carries. A page that
+    remembers a different tool must not file that offset under its own."""
+    await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    try:
+        index = await client.select_tool("SSG-48")
+        assert await client.wait_command(index, timeout=5.0)
+        await client.set_tcp_offset(1.0, 2.0, 3.0)
+        await poll_until(
+            client.tcp_offset,
+            lambda got: [float(v) for v in got] == [1.0, 2.0, 3.0],
+            what="the SSG-48 offset on the controller",
+        )
+        app_storage.general["selected_tool"] = "PNEUMATIC"
+        app_storage.general["tcp_offset_PNEUMATIC"] = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        await _reopen(user)
+        await _reconciled()
+
+        assert app_storage.general["tcp_offset_PNEUMATIC"] == {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+        }
+        assert [float(v) for v in await client.tcp_offset()] == [1.0, 2.0, 3.0]
+    finally:
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        await client.select_tool("NONE")
+
+
+@pytest.mark.integration
+async def test_an_edit_queued_when_the_page_goes_is_dropped(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Edits go out one at a time, newest last. One still waiting when its
+    page disconnects has nobody left to see it land, so it never does."""
+    page = await user.open("/")
+    await wait_for_app_ready()
+    client = ui_state.control_panel.client
+    content = ui_state.settings_content
+    assert content is not None
+
+    user.find(marker="tab-settings").click()
+    await asyncio.sleep(0)
+    replaced = next(iter(user.find(marker="tcp-offset-x").elements))
+    next(iter(user.find(marker="select-tool").elements)).set_value("PNEUMATIC")
+    await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
+    await poll_until(
+        lambda: next(iter(user.find(marker="tcp-offset-x").elements)),
+        lambda el: el is not replaced,
+        what="the offset inputs rebuilt for PNEUMATIC",
+    )
+    await _reconciled()
+
+    gate = asyncio.Event()
+    real_set = client.set_tcp_offset
+
+    async def held_set(x: float = 0, y: float = 0, z: float = 0) -> int:
+        await gate.wait()
+        return await real_set(x, y, z)
+
+    monkeypatch.setattr(client, "set_tcp_offset", held_set)
+    try:
+        user.find(marker="tcp-offset-x").trigger("update:modelValue", 5.0)
+        assert await wait_until(lambda: content._tcp_pushing), "the first edit went out"
+        user.find(marker="tcp-offset-x").trigger("update:modelValue", 7.0)
+        assert await wait_until(lambda: content._tcp_push_next is not None), (
+            "the second edit waits behind the first"
+        )
+
+        page.handle_disconnect(next(iter(page._socket_to_document_id)))
+        gate.set()
+        assert await wait_until(lambda: not content._tcp_pushing), (
+            "the push loop never finished"
+        )
+        assert [float(v) for v in await client.tcp_offset()] == [5.0, 0.0, 0.0]
+    finally:
+        gate.set()
+        await client.set_tcp_offset(0.0, 0.0, 0.0)
+        await client.select_tool("NONE")

@@ -39,7 +39,7 @@ Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[/]** to adjust
 
 ### Connecting Your Robot
 
-In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
+Open the **Settings** tab in the bottom-left tab bar and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
 
 - <span style="color: #4caf50">&#9632;</span> Connected to robot hardware
 - <span style="color: #f44336">&#9632;</span> Robot mode but disconnected
@@ -114,7 +114,7 @@ waldo-commander [options]
 
 ### Settings Panel
 
-The **Settings** tab in the control panel provides:
+The **Settings** tab in the bottom-left tab bar provides:
 
 - **Hardware connection** — auto-detects available ports, or enter a path manually. Refreshes every 10 seconds. Persisted in browser local storage.
 - **Theme** — currently dark only. Light mode is planned for a future update.
