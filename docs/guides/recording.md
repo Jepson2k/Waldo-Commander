@@ -4,8 +4,10 @@ The editor's **Record** button turns what you do with the arm into Python in
 the open program. While it is on, every action taken through Commander is
 written below the recording cursor as it happens: jogs become `move_j` and
 `move_l` calls, gripper and I/O actions become their commands, a skill
-inserted from the **Insert Command** menu becomes its call, and the time you
-wait between actions becomes a delay. Selecting that call and choosing **Run
+inserted from the **Insert Command** menu becomes its call (with the imports
+and setup load it needs at the top of the program, part of the same take),
+and the time you wait between actions becomes a delay. Filling in the
+call's fields does not count as waiting. Selecting that call and choosing **Run
 selection** runs it live without writing it again.
 
 Motion that Commander did not command is recorded too. On an arm that can be

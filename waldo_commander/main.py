@@ -816,6 +816,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             top_panels.value = None
             panels_wrap.classes(remove="column-open")
             ui_state.program_panel_visible = False
+            editor_panel.hide_skill_strips()
             ui.run_javascript("PanelResize.onTabChange('top', '')")
 
         with ui.tab_panel("program").classes(
@@ -907,6 +908,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             if panel.get("fullHeight"):
                 panels_wrap.classes(add="column-open")
             else:
+                editor_panel.hide_skill_strips()
                 panels_wrap.classes(remove="column-open")
 
         side_tabs.on("update:model-value", update_top_layout)

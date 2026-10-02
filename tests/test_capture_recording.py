@@ -137,18 +137,17 @@ async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
             lambda: _capture(motion_recorder.session) is not None, timeout_s=20
         )
         recording = _capture(motion_recorder.session).recording
-        mark = len(str(textarea.value).rstrip("\n"))
         user.find(marker="editor-commands-btn").click()
         user.find(marker="editor-skill-waldo.retract").click()
         await asyncio.sleep(0)
-        element("skill-arg-distance_mm").set_value(2)
-        user.find(marker="skill-insert").click()
-        await asyncio.sleep(0)
+        lines = str(textarea.value).split("\n")
         call = next(
             number
-            for number, line in enumerate(str(textarea.value).split("\n"), start=1)
+            for number, line in enumerate(lines, start=1)
             if "_skill_waldo_retract(rbt," in line
         )
+        lines[call - 1] = lines[call - 1].replace("distance_mm=30.0", "distance_mm=2.0")
+        textarea.value = "\n".join(lines)
         _set_selection(textarea, call, call)
         await asyncio.sleep(0)
         user.find(marker="editor-run-selection").click()
@@ -159,7 +158,9 @@ async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
                 await asyncio.sleep(0.05)
         assert waldoctl.commander.programs.active is program
         await asyncio.sleep(1.0)
-        tail = str(textarea.value)[mark:]
+        # The skill's import went in at the top; what follows the call is
+        # what the take wrote after it.
+        tail = "\n".join(str(textarea.value).split("\n")[call - 1 :])
         assert tail.count("_skill_waldo_retract(rbt,") == 1, tail
         assert "rbt.move_l(" not in tail and "rbt.move_j(" not in tail, tail
         kinds = [b.kind for b in motion_recorder.session.blocks]

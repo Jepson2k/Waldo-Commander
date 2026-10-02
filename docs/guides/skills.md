@@ -32,23 +32,47 @@ an async client. Start an async program explicitly with `asyncio.run(main())`,
 just as when running its Python file directly. A function definition by itself
 does not execute, including in preview.
 
-The editor's **Insert Command** menu lists the skills that take a form under
-**Skills**, with their diagrams: approach, retract, park and align tool axis,
-then skills from other packages. Gripper skills are not listed there; the
-Gripper tab drives the gripper live and `rbt.tool` commands are in the same
-menu. Choosing a skill opens its parameters where the side panels open, and
-the 3D view draws its motion as a dashed path from where the arm is now,
-following the values as they are filled in; the robot does not move.
-**Insert** puts an import and a call at the editor's cursor, or at the
-recording cursor while recording. Saved poses and setups are inserted as fixed
-snapshots; saving different setup data later does not change that call. To
-follow saved data on the next run, edit the Python to load it explicitly with
-`load_setup`. The form does not read edited Python back into its fields.
+The editor's **Insert Command** menu lists skills under **Skills**, with
+their diagrams: approach, retract, park, align tool axis, the transfers and
+board localization, then skills from other packages. Gripper and signal
+skills are not listed there; the Gripper and I/O tabs drive those live, and
+the `rbt.tool` commands are in the same menu.
+
+Choosing a skill writes its call at the editor's cursor, or at the recording
+cursor while recording, with every argument as a field. The first field is
+selected; **Tab** and **Shift+Tab** move between the fields and **Escape**
+leaves them. The code is the form: what you type in a field is the argument.
+
+```python
+_skill_waldo_transfer(rbt, pick=setup.resolve("pick"), place=setup.resolve("place"), clearance_mm=30.0, speed=0.2, timeout=30.0)
+```
+
+Arguments that come from a [named setup](named-setup.md) refer to it by name
+(`setup.resolve("pick")`, `setup.signals["grip"]`, `setup.cameras["overhead"]`),
+so the call follows the setup when a pose is taught again. A field starts on
+the entry named like the argument, or on the setup's first entry of that kind.
+The imports and the `setup = load_setup("bench")` line the call needs go in at
+the top of the program, once: a program that loads a setup keeps it, and one
+that does not loads the setup saved most recently (`bench` before any is
+saved). Inside an `async def`, the call is written as
+`await ….async_call(rbt, …)`.
+
+While the cursor is on a skill call, a strip above the code names the skill
+and the field the cursor is in, with its unit, and the 3D view draws the
+call's motion as a dashed path from where the arm is now, following the text
+as it changes; the robot does not move. When the planner refuses the call
+from the current pose, the strip says why. For a pose, signal or camera
+field, the strip lists that kind of entry in the program's setup, and choosing
+one writes its reference into the field. **Teach now** saves where the arm is
+now to the program's setup under the name beside it, in the chosen frame, and
+writes its reference into the field; **New frame** saves a frame where the arm
+is now, to teach poses in. The setup's poses, frames, signals, cameras and
+parameters also complete as you type.
 
 To try a call on the robot, select its lines and choose **Run selection** from
 the editor's **⋮** menu. The selection runs as its own small program with the
-program's imports and the tool the arm carries, with the usual pause and stop
-controls, then the editor returns to the program; after a failed run it stays
+program's imports and setup loads and the tool the arm carries, with the usual
+pause and stop controls, then the editor returns to the program; after a failed run it stays
 on the run's tab so its log is in view. While recording, the lines are already
 in the program, so the run adds nothing to it.
 
@@ -109,8 +133,9 @@ The decorator's `api_version` defaults to `1`. An incompatible API version is
 refused before execution and shown in the panel's discovery diagnostics. For
 headless discovery, pass a list as `diagnostics=` to collect the same messages.
 Skill function names also appear in editor completion, with their import module.
-Use ordinary Python for arguments that cannot be represented by the panel's
-literal fields, such as image sources or custom resource objects.
+A field holds any Python expression, such as an image source or a custom
+resource object; the path preview reads only fixed values and setup entries,
+and says so for anything else.
 
 ## Preview, stepping and progress
 

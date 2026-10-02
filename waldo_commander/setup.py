@@ -9,6 +9,7 @@ loads, never a snapshot already held by a running program.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import hashlib
 import json
@@ -27,6 +28,9 @@ from waldoctl.setup import SetupSnapshot, validate_name
 from waldo_commander.constants import default_program_dir
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SETUP_NAME = "bench"
+_last_saved: str | None = None
 
 _directory: ContextVar[Path | None] = ContextVar("waldo_setup_directory", default=None)
 _load_observer: ContextVar[Callable[[str, SetupSnapshot], None] | None] = ContextVar(
@@ -131,6 +135,40 @@ class SetupStore:
                 continue
         return sorted(names)
 
+    def read_literal(self, name: str) -> SetupSnapshot:
+        """Read a saved snapshot for editor inspection without executing Python.
+
+        Programs may execute arbitrary setup modules, but editor fields only
+        understand the literal ``SetupSnapshot.from_dict`` format we write.
+        """
+        path = self._path(name)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            assignments = [
+                node
+                for node in tree.body
+                if isinstance(node, ast.Assign)
+                and any(
+                    isinstance(t, ast.Name) and t.id == "setup" for t in node.targets
+                )
+            ]
+            if len(assignments) != 1:
+                raise ValueError("Expected one literal setup assignment")
+            value = assignments[0].value
+            if not (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Attribute)
+                and isinstance(value.func.value, ast.Name)
+                and value.func.value.id == "SetupSnapshot"
+                and value.func.attr == "from_dict"
+                and len(value.args) == 1
+                and not value.keywords
+            ):
+                raise ValueError("Expected SetupSnapshot.from_dict with literal data")
+            return SetupSnapshot.from_dict(ast.literal_eval(value.args[0]))
+        except (SyntaxError, TypeError, KeyError, ValueError) as error:
+            raise ValueError(f"Setup {name!r} is not literal data: {error}") from error
+
     def load(self, name: str) -> SetupSnapshot:
         snapshot = self.read(name)[0]
         observer = _load_observer.get()
@@ -166,6 +204,8 @@ class SetupStore:
         ).encode("utf-8")
         write_atomic(destination, data)
         revision = hashlib.sha256(data).hexdigest()
+        global _last_saved
+        _last_saved = name
         for listener in list(_save_listeners):
             try:
                 listener(self.directory, name, revision)
@@ -257,3 +297,8 @@ def export_snapshot(snapshot: SetupSnapshot, *, variable: str = "setup") -> str:
     if not variable.isidentifier() or keyword.iskeyword(variable):
         raise ValueError("Snapshot variable must be a Python identifier")
     return f"from waldoctl.setup import SetupSnapshot\n\n{variable} = SetupSnapshot.from_dict({pformat(snapshot.to_dict(), sort_dicts=True)})\n"
+
+
+def last_saved_name() -> str | None:
+    """The setup this process saved most recently."""
+    return _last_saved

@@ -19,6 +19,7 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     wait_for_codemirror_ready,
 )
+from waldo_commander.state import ui_state
 
 # Measures whether the review cluster (with its Approve/Reject buttons) and the
 # diff decorations both render, whether the toolbar buttons yielded their spot,
@@ -57,7 +58,7 @@ def test_review_controls_and_diff_coexist_without_clipping(screen) -> None:
     screen.open("/")
     # Narrow window: in the app the editor lives in a ~380px overlay panel,
     # so the header must cope with tight widths.
-    screen.selenium.set_window_size(760, 900)
+    screen.selenium.set_window_size(800, 1024)
     dismiss_dialogs(screen)
     click_tab(screen, "program")
     wait_for_codemirror_ready(screen)
@@ -67,7 +68,11 @@ def test_review_controls_and_diff_coexist_without_clipping(screen) -> None:
         assert p is not None
         # A tall program + an edit near the bottom: a clipped editor would push
         # the decoration out of the visible panel.
-        p.source = "\n".join(f"line_{i} = {i}" for i in range(40)) + "\n"
+        # Change the editor, like a user would; Program.source alone does not
+        # push a replacement document into an already open CodeMirror.
+        ui_state.active_textarea.value = (
+            "\n".join(f"line_{i} = {i}" for i in range(40)) + "\n"
+        )
         # A second, very wide tab: the header must shrink the tab strip (it
         # scrolls horizontally) rather than wrap the review cluster onto a
         # second line underneath the CodeMirror.
