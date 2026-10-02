@@ -1449,3 +1449,94 @@ async def test_manual_inserts_follow_cursor(user: User) -> None:
     with textarea.client:
         editor._insert_command("delay")
     assert textarea.value.splitlines()[2] == "    time.sleep(1.0)"
+
+
+@pytest.mark.integration
+async def test_a_record_and_a_plan_of_different_lengths_still_build_a_scrub_bar(
+    user: User,
+) -> None:
+    """The scrub bar is built from the timeline's own segments.
+
+    A record does not have one block per planned segment: a `time.sleep`
+    between two moves is a third command with no plan segment of its own,
+    and a run that hits its budget stops with segments left over. Reading
+    the timeline's times at a *planned* segment's index therefore paints
+    the wrong window, or walks off the end — and the rebuild clears the
+    bar before it throws, so a single miss leaves it permanently empty.
+    """
+    import numpy as np
+    import waldoctl
+
+    from waldo_commander.components.playback import playback
+    from waldo_commander.state import PathSegment
+
+    await user.open("/")
+    await wait_for_app_ready()
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    def record(blocks: int, rows_each: int = 4) -> waldoctl.TickIndex:
+        rows = blocks * rows_each
+        q = np.zeros((rows, 6), dtype=np.float32)
+        return waldoctl.TickIndex(
+            row_dt_s=0.02,
+            joints_rad=q,
+            commanded_rad=q.copy(),
+            tcp=np.zeros((rows, 6), dtype=np.float32),
+            tool_closed=np.zeros(rows, dtype=np.float32),
+            tool_gripping=np.zeros(rows, dtype=np.bool_),
+            blocks=tuple(
+                waldoctl.TickBlock(
+                    command=i,
+                    start_row=i * rows_each,
+                    rows=rows_each,
+                    line_number=3 + i,
+                )
+                for i in range(blocks)
+            ),
+        )
+
+    def plan(n: int) -> list[PathSegment]:
+        return [
+            PathSegment(
+                points=[[0.3, 0.0, 0.2], [0.4, 0.0, 0.2]],
+                color="#00ff00",
+                is_valid=True,
+                line_number=3 + i,
+                estimated_duration=0.5,
+            )
+            for i in range(n)
+        ]
+
+    program = waldoctl.commander.programs.active
+    assert program is not None
+
+    # More blocks than segments: a sleep between two moves.
+    # Then fewer: a run that stopped on its budget.
+    for blocks, segments in ((3, 2), (1, 3)):
+        program.dry_run.path_segments = plan(segments)
+        program.dry_run.total_steps = segments
+        program.dry_run.ticks = record(blocks)
+        playback.invalidate_timeline()
+        assert playback._scrub_container is not None, "scrub bar not built"
+        # The public entry defers onto a timer for NiceGUI's benefit; the
+        # body is what indexes, and it is what this is about.
+        playback._do_update_scrub_segments()
+
+        tl = playback._ensure_timeline()
+        assert tl is not None
+        assert len(tl.segments) == len(tl.segment_durations) == blocks
+        assert len(tl.cumulative_times) == blocks + 1
+        divisions = len(playback._segment_elements)
+        assert divisions == blocks, (
+            f"{blocks} recorded commands must give {blocks} scrub divisions, "
+            f"got {divisions} — the bar is indexing the plan, not the record"
+        )
+        # And the highlight follows the record's own line numbers.
+        sample = tl.sample(tl.total_duration)
+        assert tl.segments[sample.segment_index].line_number == 3 + blocks - 1
+
+    program.dry_run.ticks = None
+    program.dry_run.path_segments = []
+    program.dry_run.total_steps = 0
+    playback.invalidate_timeline()

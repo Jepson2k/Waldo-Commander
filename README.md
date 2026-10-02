@@ -41,4 +41,5 @@ For connecting hardware, platform-specific setup, and configuration, see [Gettin
 
 ## License
 
-See [LICENSE](LICENSE).
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for the attribution notices
+redistributors must preserve.

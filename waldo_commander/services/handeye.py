@@ -14,7 +14,7 @@ OpenCV produces downstream is already in mm.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, cast
 
@@ -99,6 +99,11 @@ class BoardSpec:
             )
         if self.dictionary not in ARUCO_DICTIONARIES:
             raise CalibrationError(f"Unknown ArUco dictionary {self.dictionary!r}")
+
+
+def _hand_eye_solver() -> Callable[..., tuple[np.ndarray, np.ndarray]]:
+    """``cv2.calibrateHandEye``, which the OpenCV stubs do not declare."""
+    return cast(Any, cv2).calibrateHandEye
 
 
 def _require_charuco_api() -> None:
@@ -312,12 +317,9 @@ def _target2cam_matrix(rvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
 def _hand_eye_inputs(
     samples: list[HandEyeSample],
     intrinsics: IntrinsicsResult,
-    mode: str = "eye_in_hand",
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
-    """Build calibrateHandEye inputs; the single place an eye-to-hand mode
-    would later invert the robot poses."""
-    if mode != "eye_in_hand":
-        raise CalibrationError(f"Unsupported mode {mode!r}")
+    """Build calibrateHandEye inputs for an eye-in-hand camera; the single
+    place an eye-to-hand mode would later invert the robot poses."""
     R_gripper2base = [s.T_base_gripper[:3, :3].copy() for s in samples]
     t_gripper2base = [s.T_base_gripper[:3, 3].copy() for s in samples]
     R_target2cam = [cv2.Rodrigues(r)[0] for r in intrinsics.rvecs]
@@ -357,7 +359,7 @@ def solve_hand_eye(
 
     R_g2b, t_g2b, R_t2c, t_t2c = _hand_eye_inputs(samples, intrinsics)
     try:
-        R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
+        R_cam2gripper, t_cam2gripper = _hand_eye_solver()(
             R_g2b, t_g2b, R_t2c, t_t2c, method=HAND_EYE_METHODS[method]
         )
     except cv2.error as exc:

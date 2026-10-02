@@ -5,13 +5,14 @@ import math
 import re
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, fields as _dc_fields
+from dataclasses import dataclass
 
 import numpy as np
 
 from nicegui import app as ng_app
 
 import waldoctl
+from waldoctl.shapes import param_names
 
 from waldo_commander.services.programs import (
     active_cursor_line,
@@ -27,9 +28,6 @@ from waldo_commander.services.command_discovery import discover_robot_commands
 
 logger = logging.getLogger(__name__)
 
-# ShapeBase's non-geometry fields — everything else on a Shape is a dimension
-# constructor kwarg.
-_SHAPE_COMMON_FIELDS = ("name", "pose", "collision", "margin")
 _SHAPE_DEFAULT_POSE = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 _SELECT_TOOL_RE = re.compile(r"^\s*rbt\.\s*select_tool\s*\(")
@@ -42,16 +40,16 @@ _RECORD_ANCHOR_ID = "__recording_insert__"
 def _shape_to_code(s) -> str:
     """One waldoctl Shape as a constructor call, omitting default fields."""
     parts = [f"name={s.name!r}"]
-    for f in _dc_fields(s):
-        if f.name in _SHAPE_COMMON_FIELDS:
-            continue
-        parts.append(f"{f.name}={getattr(s, f.name)!r}")
+    for p in param_names(type(s)):
+        parts.append(f"{p}={getattr(s, p)!r}")
     if tuple(s.pose) != _SHAPE_DEFAULT_POSE:
         parts.append(f"pose={tuple(s.pose)!r}")
     if not s.collision:
         parts.append("collision=False")
     if s.margin is not None:
         parts.append(f"margin={s.margin!r}")
+    if s.physics is not None:
+        parts.append(f"physics={s.physics!r}")
     return f"{type(s).__name__}({', '.join(parts)})"
 
 
@@ -509,9 +507,10 @@ class MotionRecorder:
                 else ""
             )
             imported = _imported_waldoctl_names(text)
-            missing = sorted(
-                {type(s).__name__ for s in shapes if type(s).__name__ not in imported}
-            )
+            names = {type(s).__name__ for s in shapes}
+            if any(s.physics is not None for s in shapes):
+                names.add("Physical")  # _shape_to_code emits it by repr
+            missing = sorted(names - imported)
             if missing:
                 snippet = f"from waldoctl import {', '.join(missing)}\n{snippet}"
             return snippet

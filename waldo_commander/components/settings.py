@@ -98,6 +98,11 @@ class SettingsContent:
             "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
             "jog_invert_x": bool(ng_app.storage.general.get("jog_invert_x", False)),
             "jog_invert_y": bool(ng_app.storage.general.get("jog_invert_y", False)),
+            "show_divergence": bool(
+                ng_app.storage.general.get("show_divergence", True)
+            ),
+            "show_contacts": bool(ng_app.storage.general.get("show_contacts", False)),
+            "show_com": bool(ng_app.storage.general.get("show_com", False)),
         }
 
     def _refresh_serial_ports(self) -> None:
@@ -270,6 +275,21 @@ class SettingsContent:
             with page_client:
                 ui.notify(message, color=color)
 
+    async def _read_tcp_offset(self) -> list[float]:
+        """The controller's offset as exactly three floats.
+
+        Both backends answer an unreachable controller with a sentinel
+        rather than an error, and a short or malformed answer would only
+        be noticed later, indexing `offset_mm[0..2]` in
+        `_adopt_tcp_offset` -- outside every `try` here, so the caller's
+        handler never sees it. Validating at the read makes a bad answer a
+        raise that the existing handlers already deal with.
+        """
+        back = [float(b) for b in await self.client.tcp_offset()]
+        if len(back) != 3:
+            raise ValueError(f"tcp_offset() answered {len(back)} values, want 3")
+        return back
+
     async def _push_tcp_offset(
         self,
         tool_key: str,
@@ -313,7 +333,7 @@ class SettingsContent:
             await self.client.set_tcp_offset(x, y, z)
             _pushed_offset_tools.add(tool_key)
             for _ in range(10):
-                back = [float(b) for b in await self.client.tcp_offset()]
+                back = await self._read_tcp_offset()
                 if all(abs(b - v) <= 1e-3 for b, v in zip(back, (x, y, z))):
                     return
                 await asyncio.sleep(0.1)
@@ -344,7 +364,7 @@ class SettingsContent:
         cannot be: right after a tool change, which resets it, and on a
         controller reporting nothing that this app has never told."""
         try:
-            back = [float(v) for v in await self.client.tcp_offset()]
+            back = await self._read_tcp_offset()
         except Exception as exc:
             logger.debug("tcp_offset readback failed: %s", exc)
             return
@@ -372,7 +392,6 @@ class SettingsContent:
             "y": float(offset_mm[1]),
             "z": float(offset_mm[2]),
         }
-        ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
         if not page_client.has_socket_connection:
             # The reconcile that adopts an out-of-band offset is started
             # while the page is still being built, so its socket is often
@@ -384,6 +403,11 @@ class SettingsContent:
             except ClientConnectionTimeout:
                 return
         with page_client:
+            # Written here, beside the inputs it must agree with: ahead of
+            # the connection guard above, a page that went away left the
+            # remembered offset changed and the inputs still showing the old
+            # one, and the next rebuild read back the discrepancy as truth.
+            ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
             for inp, v in zip(inputs, (vals["x"], vals["y"], vals["z"])):
                 if inp.value != v:
                     inp.set_value(v)
@@ -444,6 +468,52 @@ class SettingsContent:
             ).props("dense").mark("switch-show-route")
 
         waldoctl.commander.settings.view.paths_visible = prefs["show_route"]
+
+    def _build_physics_overlays(self, prefs: dict) -> None:
+        """What the simulated run measured, drawn over the scene.
+
+        Only meaningful on a backend that simulates; the section says so
+        rather than hiding, because "my robot has no physics" is worth
+        knowing and a hidden control is not.
+        """
+        view = waldoctl.commander.settings.view
+        simulates = ui_state.active_robot.has_physics_simulation
+
+        def toggle(label: str, hint: str, key: str, attr: str, marker: str) -> None:
+            async def _on_change(e):
+                setattr(view, attr, bool(e.value))
+                ng_app.storage.general[key] = bool(e.value)
+                simulation_state.notify_changed()
+
+            with _setting_row(
+                label, hint if simulates else f"{hint} (this robot has no physics)"
+            ):
+                ui.switch(value=prefs[key], on_change=_on_change).props("dense").mark(
+                    marker
+                ).set_enabled(simulates)
+            setattr(view, attr, prefs[key])
+
+        toggle(
+            "Achieved Path",
+            "Draw where the arm ends up beside where it is aimed",
+            "show_divergence",
+            "divergence_visible",
+            "switch-show-divergence",
+        )
+        toggle(
+            "Contacts",
+            "Contact points and the forces through them",
+            "show_contacts",
+            "contacts_visible",
+            "switch-show-contacts",
+        )
+        toggle(
+            "Centre of Mass",
+            "The scene's centre of mass and its drop line",
+            "show_com",
+            "com_visible",
+            "switch-show-com",
+        )
 
     def _build_envelope(self, prefs: dict) -> None:
         async def _on_envelope_mode_change(e):
@@ -981,6 +1051,7 @@ class SettingsContent:
             lambda: self._build_serial_port(prefs),
             lambda: self._build_show_route(prefs),
             lambda: self._build_envelope(prefs),
+            lambda: self._build_physics_overlays(prefs),
             self._build_tool_section,
             self._build_camera,
             lambda: self._build_motion_profile(prefs),

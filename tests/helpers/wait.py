@@ -336,7 +336,16 @@ async def poll_until(
         if time.monotonic() >= deadline:
             break
         await asyncio.sleep(interval)
-    detail = what() if callable(what) else what
+    # The description is there to explain a failure, so it must not be able
+    # to replace one: a callable that raises here would surface its own
+    # traceback and hide both the condition that timed out and the value.
+    if callable(what):
+        try:
+            detail = what()
+        except Exception as exc:
+            detail = f"<description raised {exc!r}>"
+    else:
+        detail = what
     raise AssertionError(
         f"{detail} never settled within {timeout_s}s; last read {value!r}"
     )
