@@ -11,6 +11,7 @@ from typing import Any, Literal, get_args, get_origin, get_type_hints
 from nicegui import background_tasks, ui
 from waldoctl import Commander
 from waldoctl.setup import Pose, SetupSnapshot
+from waldoctl.signals import DigitalSignal
 from waldoctl.tools import ToolStatus
 
 from waldo_commander.services.skill_library import (
@@ -307,7 +308,8 @@ class SkillDialog:
                 store = SetupStore()
                 names = store.names()
                 needs_setup = any(
-                    t in (Pose, SetupSnapshot) for t in annotations.values()
+                    t in (Pose, SetupSnapshot, DigitalSignal)
+                    for t in annotations.values()
                 )
                 shared_setup = (
                     ui.select(names, label="Setup", value=names[0] if names else None)
@@ -326,7 +328,11 @@ class SkillDialog:
                     override_fields = ui.column().classes("w-full gap-2")
                 overrides.classes("col-span-2")
                 overrides.set_visibility(
-                    sum(t in (Pose, SetupSnapshot) for t in annotations.values()) > 1
+                    sum(
+                        t in (Pose, SetupSnapshot, DigitalSignal)
+                        for t in annotations.values()
+                    )
+                    > 1
                 )
                 for name, parameter in candidate.parameters.items():
                     annotation = annotations.get(name, parameter.annotation)
@@ -338,6 +344,7 @@ class SkillDialog:
                     if annotation in (
                         Pose,
                         SetupSnapshot,
+                        DigitalSignal,
                     ):
                         with override_fields:
                             setup = (
@@ -361,6 +368,7 @@ class SkillDialog:
                         else:
                             resource = {
                                 Pose: "pose",
+                                DigitalSignal: "signal",
                             }[annotation]
                             pose = (
                                 ui.select([], label=_label(name))
@@ -380,7 +388,11 @@ class SkillDialog:
                                         selected_store,
                                         setup_widget.value or shared_setup.value,
                                     )
-                                    options = list(snapshot.poses)
+                                    options = list(
+                                        snapshot.poses
+                                        if kind is Pose
+                                        else snapshot.signals
+                                    )
                                     pose_widget.set_options(
                                         options, value=options[0] if options else None
                                     )
@@ -405,6 +417,11 @@ class SkillDialog:
                                         ),
                                         p.value,
                                     )
+                                    if kind is Pose
+                                    else _loaded(
+                                        selected_store,
+                                        s.value or shared_setup.value,
+                                    ).signals[p.value]
                                 )
                             )
                             set_poses()
