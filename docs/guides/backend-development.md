@@ -337,7 +337,7 @@ The 3D viewer interpolates joint angles at the browser's frame rate, but the sou
 `RobotClient` methods that include `Category:` and `Example:` sections in their docstrings appear in the editor's auto-complete palette. Follow this format in your client's docstrings to get easy editor integration:
 
 ```python
-async def move_j(self, target, *, speed=0.0, **kwargs):
+async def move_j(self, target, *, speed=0.5, **kwargs):
     """Joint-space move.
 
     Category: Motion

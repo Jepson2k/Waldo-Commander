@@ -111,7 +111,7 @@ class _Config:
 
 
 # Default 3D scene camera position
-DEFAULT_CAMERA = dict(x=0.3, y=0.3, z=0.22, look_at_z=0.22)
+DEFAULT_CAMERA = dict(x=0.45, y=0.45, z=0.38, look_at_z=0.2)
 
 # Gripper camera feed resolution
 CAMERA_FEED_W = 640
@@ -129,10 +129,16 @@ CLICK_HOLD_THRESHOLD_S: float = 0.15
 # unmistakably deliberate.
 HOME_LONG_PRESS_S: float = 0.8
 
+# Live charts redraw from their whole history, and a trace only visibly moves
+# a few times a second — far slower than status ticks arrive.
+CHART_PUSH_INTERVAL_S: float = 0.1
+
 # Core panel tab ids a plugin panel may never claim. Lives here (not main.py)
 # so components can import it without importing main — importing main from a
 # component re-executes it under screen tests (main runs via runpy there) and
 # re-registers "/" with a handler whose panel globals were never initialized.
-RESERVED_TAB_IDS = frozenset({"program", "io", "gripper", "response", "log", "help"})
+RESERVED_TAB_IDS = frozenset(
+    {"program", "io", "gripper", "diagnostics", "response", "log", "settings", "help"}
+)
 
 config = _Config()

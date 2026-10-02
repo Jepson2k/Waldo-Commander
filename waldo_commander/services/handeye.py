@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, cast
+from typing import Literal, Any, cast
 
 import cv2
 import numpy as np
@@ -42,6 +42,7 @@ AXIS_MIN_ROTATION_DEG = 3.0
 # cv2.calibrateHandEye can return a non-orthonormal or left-handed rotation
 # without raising; the solve is garbage whenever it does.
 RIGID_TOL = 1e-4
+_AXIS_BLOCK_ROWS = 256
 
 HAND_EYE_METHODS: dict[str, int] = {
     "PARK": cv2.CALIB_HAND_EYE_PARK,
@@ -99,6 +100,16 @@ class BoardSpec:
             )
         if self.dictionary not in ARUCO_DICTIONARIES:
             raise CalibrationError(f"Unknown ArUco dictionary {self.dictionary!r}")
+        # A ChArUco board carries a marker in every other square.
+        markers = self.squares_x * self.squares_y // 2
+        available = cv2.aruco.getPredefinedDictionary(
+            ARUCO_DICTIONARIES[self.dictionary]
+        ).bytesList.shape[0]
+        if markers > available:
+            raise CalibrationError(
+                f"A {self.squares_x}x{self.squares_y} board needs {markers} "
+                f"markers; {self.dictionary} has only {available}"
+            )
 
 
 def _hand_eye_solver() -> Callable[..., tuple[np.ndarray, np.ndarray]]:
@@ -192,6 +203,176 @@ class HandEyeSample:
     T_base_gripper: np.ndarray  # (4, 4) float64, translation mm; TCP pose from status
     detection: Detection
     timestamp: float
+    thumbnail: bytes | None = None  # small JPEG of the captured frame
+    cells: frozenset[int] = frozenset()  # view_cells at capture
+    tilt: str | None = None  # view_tilt at capture
+
+
+# Where each view came from, for the coverage ring: the frame as a 3x3 grid
+# of cells, and the direction the camera views the board from as one of eight
+# 45-degree sectors, named from the camera's image (x right, y down).
+TILT_MIN_DEG = 5.0
+# Corners this close to one line (the spread across it over the spread along
+# it) fix no tilt: IPPE returns NaN or an arbitrary rotation for them.
+COLLINEAR_RATIO = 0.02
+SECTORS: tuple[str, ...] = (
+    "right",
+    "down-right",
+    "down",
+    "down-left",
+    "left",
+    "up-left",
+    "up",
+    "up-right",
+)
+CELLS: tuple[str, ...] = (
+    "top-left",
+    "top",
+    "top-right",
+    "left",
+    "centre",
+    "right",
+    "bottom-left",
+    "bottom",
+    "bottom-right",
+)
+# Which gap to fill first: opposite directions before neighbours, and the
+# frame's corners (where distortion is largest) before its edges and centre.
+_SECTOR_PRIORITY = (
+    "up",
+    "down",
+    "left",
+    "right",
+    "up-left",
+    "down-right",
+    "up-right",
+    "down-left",
+)
+_CELL_PRIORITY = (
+    "top-left",
+    "bottom-right",
+    "top-right",
+    "bottom-left",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "centre",
+)
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """How the captured views spread over the frame and around the board."""
+
+    cells: tuple[int, ...]  # views per cell, CELLS order
+    sectors: tuple[int, ...]  # views per tilt sector, SECTORS order
+    next_sector: str | None  # the empty sector to fill first; None when none is empty
+    next_cell: str | None
+
+
+def view_cells(detection: Detection, image_size: tuple[int, int]) -> frozenset[int]:
+    """Cells of the 3x3 frame grid holding a detected corner."""
+    w, h = image_size
+    points = detection.corners.reshape(-1, 2)
+    col = np.clip(np.floor(points[:, 0] * 3.0 / w), 0, 2).astype(int)
+    row = np.clip(np.floor(points[:, 1] * 3.0 / h), 0, 2).astype(int)
+    return frozenset((row * 3 + col).tolist())
+
+
+def view_tilt(
+    detection: Detection, board: cv2.aruco.CharucoBoard, image_size: tuple[int, int]
+) -> str | None:
+    """The side the camera views the board from, as a sector name, or None
+    within ``TILT_MIN_DEG`` of straight on or when the corners fix no tilt.
+
+    Solved against a nominal camera matrix (focal length = the frame's long
+    side) because no intrinsics exist before the solve: a wrong focal length
+    biases the tilt magnitude but leaves its direction intact.
+    """
+    obj, img = board.matchImagePoints(
+        cast("Sequence[cv2.typing.MatLike]", detection.corners), detection.ids
+    )
+    if obj is None or img is None or len(obj) < 4:
+        return None
+    points = np.asarray(img, dtype=np.float64).reshape(-1, 2)
+    if not np.all(np.isfinite(points)):
+        return None
+    spread = np.linalg.svd(points - points.mean(axis=0), compute_uv=False)
+    if spread[1] <= COLLINEAR_RATIO * spread[0]:
+        return None
+    w, h = image_size
+    f = float(max(w, h))
+    K = np.array([[f, 0.0, w / 2.0], [0.0, f, h / 2.0], [0.0, 0.0, 1.0]])
+    ok, rvec, _tvec = cv2.solvePnP(
+        np.asarray(obj, dtype=np.float64),
+        points,
+        K,
+        np.zeros(5),
+        flags=cv2.SOLVEPNP_IPPE,
+    )
+    if not ok or not np.all(np.isfinite(rvec)) or not np.all(np.isfinite(_tvec)):
+        return None
+    zx, zy, zz = (float(v) for v in cv2.Rodrigues(rvec)[0][:, 2])
+    if math.degrees(math.acos(min(abs(zz), 1.0))) < TILT_MIN_DEG:
+        return None
+    if zz < 0:
+        zx, zy = -zx, -zy
+    return SECTORS[round(math.degrees(math.atan2(zy, zx)) / 45.0) % 8]
+
+
+def analyse_view(
+    image_bgr: np.ndarray, detector: cv2.aruco.CharucoDetector
+) -> tuple[Detection, frozenset[int], str | None] | None:
+    """The board in a frame with the cells and tilt it was seen from, or None
+    when no board is found."""
+    detection = detect_board(image_bgr, detector)
+    if detection is None:
+        return None
+    size = detection.image_size
+    return (
+        detection,
+        view_cells(detection, size),
+        view_tilt(detection, detector.getBoard(), size),
+    )
+
+
+def coverage(samples: Sequence[HandEyeSample]) -> Coverage:
+    """Per-cell and per-sector view counts from what each sample stored at
+    capture."""
+    cells = [0] * len(CELLS)
+    sectors = [0] * len(SECTORS)
+    for s in samples:
+        for c in s.cells:
+            cells[c] += 1
+        if s.tilt is not None:
+            sectors[SECTORS.index(s.tilt)] += 1
+    return Coverage(
+        cells=tuple(cells),
+        sectors=tuple(sectors),
+        next_sector=next(
+            (n for n in _SECTOR_PRIORITY if sectors[SECTORS.index(n)] == 0), None
+        ),
+        next_cell=next((n for n in _CELL_PRIORITY if cells[CELLS.index(n)] == 0), None),
+    )
+
+
+THUMBNAIL_WIDTH_PX = 160
+
+
+def thumbnail_jpeg(frame: np.ndarray) -> bytes:
+    """A view's picture at a size a panel can hold fifteen of."""
+    height, width = frame.shape[:2]
+    scale = THUMBNAIL_WIDTH_PX / max(width, 1)
+    small = cv2.resize(
+        frame,
+        (THUMBNAIL_WIDTH_PX, max(int(height * scale), 1)),
+        interpolation=cv2.INTER_AREA,
+    )
+    ok, encoded = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+    if not ok:
+        raise CalibrationError("Could not encode the view thumbnail")
+    return encoded.tobytes()
 
 
 @dataclass
@@ -207,13 +388,14 @@ class IntrinsicsResult:
 
 @dataclass
 class HandEyeResult:
-    T_cam2gripper: np.ndarray  # (4, 4) float64, translation mm
+    T_camera_parent: np.ndarray  # camera → TCP (tool) or WRF (fixed), mm
     method: str
     rot_residual_deg: tuple[float, float]  # (mean, max) over motion pairs
     trans_residual_mm: tuple[float, float]
     target_spread_mm: float
     intrinsics: IntrinsicsResult
     n_views: int
+    mount: Literal["tool", "fixed"] = "tool"
 
 
 def _matched_points(
@@ -287,24 +469,27 @@ def motion_diversity(poses: list[np.ndarray]) -> tuple[float, float]:
     ``AXIS_MIN_ROTATION_DEG`` contribute an axis, so the second value is 0.0
     when fewer than two such rotations exist.
     """
-    angles: list[float] = []
-    axes: list[np.ndarray] = []
-    for i in range(len(poses)):
-        for j in range(i + 1, len(poses)):
-            R_rel = poses[i][:3, :3].T @ poses[j][:3, :3]
-            rotvec = Rotation.from_matrix(R_rel).as_rotvec()
-            angle = float(np.linalg.norm(rotvec))
-            angles.append(math.degrees(angle))
-            if math.degrees(angle) >= AXIS_MIN_ROTATION_DEG:
-                axes.append(rotvec / angle)
-    if not angles:
+    if len(poses) < 2:
         return 0.0, 0.0
-    max_axis_angle = 0.0
-    for i in range(len(axes)):
-        for j in range(i + 1, len(axes)):
-            cosang = float(np.clip(abs(np.dot(axes[i], axes[j])), 0.0, 1.0))
-            max_axis_angle = max(max_axis_angle, math.degrees(math.acos(cosang)))
-    return max(angles), max_axis_angle
+    rotations = np.stack([p[:3, :3] for p in poses])
+    i, j = np.triu_indices(len(poses), 1)
+    rotvecs = Rotation.from_matrix(
+        np.swapaxes(rotations[i], 1, 2) @ rotations[j]
+    ).as_rotvec()
+    angles = np.linalg.norm(rotvecs, axis=1)
+    moving = np.degrees(angles) >= AXIS_MIN_ROTATION_DEG
+    axes = rotvecs[moving] / angles[moving, None]
+    # The widest pair of axes has the smallest |cos|. The pairs grow with the
+    # square of the views, so their Gram matrix is taken a block of rows at a
+    # time, with each axis's pairing with itself masked out.
+    min_cos = 1.0
+    for start in range(0, len(axes), _AXIS_BLOCK_ROWS):
+        block = np.abs(axes[start : start + _AXIS_BLOCK_ROWS] @ axes.T)
+        rows = np.arange(len(block))
+        block[rows, start + rows] = np.inf
+        min_cos = min(min_cos, float(block.min()))
+    max_rotation = math.degrees(float(angles.max()))
+    return max_rotation, math.degrees(math.acos(max(min_cos, 0.0)))
 
 
 def _target2cam_matrix(rvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
@@ -333,7 +518,17 @@ def solve_hand_eye(
     *,
     method: str = "PARK",
     intrinsics: IntrinsicsResult | None = None,
+    mount: Literal["tool", "fixed"] = "tool",
 ) -> HandEyeResult:
+    if mount not in {"tool", "fixed"}:
+        raise CalibrationError("Camera mount must be tool or fixed")
+    if mount == "fixed":
+        # inv(T_base_tcp) @ T_base_camera @ T_camera_board is the fixed
+        # board-to-TCP transform, so the same AX=XB solve applies.
+        samples = [
+            HandEyeSample(np.linalg.inv(s.T_base_gripper), s.detection, s.timestamp)
+            for s in samples
+        ]
     if method not in HAND_EYE_METHODS:
         raise CalibrationError(f"Unknown hand-eye method {method!r}")
     if len(samples) < MIN_SAMPLES:
@@ -409,7 +604,8 @@ def solve_hand_eye(
     target_spread = float(np.mean(np.std(target_positions, axis=0)))
 
     return HandEyeResult(
-        T_cam2gripper=X,
+        T_camera_parent=X,
+        mount=mount,
         method=method,
         rot_residual_deg=(float(np.mean(rot_errs)), float(np.max(rot_errs))),
         trans_residual_mm=(float(np.mean(trans_errs)), float(np.max(trans_errs))),
@@ -435,6 +631,10 @@ def to_storage_dict(
     tcp_offset: dict[str, float],
     timestamp: str,
 ) -> dict[str, Any]:
+    if result.mount != "tool":
+        raise CalibrationError(
+            "Per-tool hand-eye storage cannot represent a fixed camera"
+        )
     return {
         "version": 1,
         "tool_key": tool_key,
@@ -444,7 +644,7 @@ def to_storage_dict(
         "camera_matrix": result.intrinsics.camera_matrix.ravel().tolist(),
         "dist_coeffs": result.intrinsics.dist_coeffs.ravel().tolist(),
         "reproj_rms_px": result.intrinsics.reproj_rms_px,
-        "T_cam2gripper_mm": result.T_cam2gripper.ravel().tolist(),
+        "T_cam2gripper_mm": result.T_camera_parent.ravel().tolist(),
         "method": result.method,
         "rot_residual_deg": {
             "mean": result.rot_residual_deg[0],

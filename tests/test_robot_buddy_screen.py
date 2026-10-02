@@ -17,7 +17,7 @@ from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import dismiss_dialogs, js
 
-CHIP = ".q-chip .robot-buddy"
+CHIP = ".status-footer .robot-buddy"
 DIALOG = ".q-dialog .robot-buddy"
 
 
@@ -75,15 +75,15 @@ def test_chip_buddy_greets_watches_the_pointer_and_answers_pokes(screen) -> None
         screen,
         "return !!document.querySelector(arguments[0] + '.bb-mood-neutral');",
         CHIP,
-    ), "the simulator's buddy is the grey one"
+    ), "the simulator's buddy wears the neutral mood"
 
-    # Pointer down and to the left of the chip: the pupils follow it.
+    # Pointer up and to the right of the footer's chip: the pupils follow it.
     chip = screen.selenium.find_element(By.CSS_SELECTOR, CHIP)
-    ActionChains(screen.selenium).move_to_element_with_offset(chip, -200, 150).perform()
+    ActionChains(screen.selenium).move_to_element_with_offset(chip, 200, -150).perform()
     _wait(
-        lambda: _pupil_offset(screen)[0] < -0.3 and _pupil_offset(screen)[1] > 0.2,
+        lambda: _pupil_offset(screen)[0] > 0.3 and _pupil_offset(screen)[1] < -0.2,
         timeout=3.0,
-        what="the pupils to look down-left at the pointer",
+        what="the pupils to look up-right at the pointer",
     )
 
     # One poke giggles; a flurry makes it dizzy.
@@ -103,7 +103,7 @@ def test_chip_buddy_greets_watches_the_pointer_and_answers_pokes(screen) -> None
     )
 
     # E-STOP: the chip sounds the alarm and the dialog brings a big one.
-    ActionChains(screen.selenium).move_by_offset(-400, 300).perform()
+    ActionChains(screen.selenium).move_by_offset(400, -300).perform()
     ActionChains(screen.selenium).send_keys(Keys.ESCAPE).perform()
     _wait(
         lambda: js(

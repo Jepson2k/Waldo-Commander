@@ -1,4 +1,4 @@
-"""Verify that all programs/ scripts simulate without errors.
+"""Verify that shipped programs preview or explain a required observation.
 
 Runs each program through the path visualizer's dry-run simulation
 (the same code path used when viewing scripts in the editor).
@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from parol6.client.dry_run_client import DryRunRobotClient
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,13 +34,19 @@ PROGRAMS = sorted(
 
 @pytest.mark.parametrize("script", PROGRAMS)
 def test_program_simulates(script):
-    """Each program should simulate without errors in the path visualizer."""
+    """Motion programs preview; the hardware handshake stops at its observation."""
     program_text = (PROGRAMS_DIR / script).read_text()
-    result = _run_simulation_isolated(
-        program_text,
-        dry_run_client_cls=DryRunRobotClient,
-    )
-    assert result["error"] is None, f"{script} simulation failed:\n{result['error']}"
+    result = _run_simulation_isolated(program_text)
+    if script == "cycle_start.py":
+        assert result["error"] is not None
+        assert "UnresolvedPreview: wait_status" in result["error"]
+        assert result["commanded"] is not None and result["commanded"].rows > 0, (
+            "the initial home/standby path should remain visible"
+        )
+    else:
+        assert result["error"] is None, (
+            f"{script} simulation failed:\n{result['error']}"
+        )
 
 
 def test_preview_mirrors_unhomed_motion_gate():
@@ -55,19 +60,13 @@ def test_preview_mirrors_unhomed_motion_gate():
     )
     move = "rbt.move_j([90.0, -90.0, 180.0, 0.0, 0.0, 170.0], speed=0.5)\n"
 
-    blind = _run_simulation_isolated(
-        template + move,
-        dry_run_client_cls=DryRunRobotClient,
-        initial_homed=False,
-    )
+    blind = _run_simulation_isolated(template + move, initial_homed=False)
     assert blind["error"] is not None and "not homed" in blind["error"], (
         f"unhomed preview must refuse a planned move: {blind['error']!r}"
     )
 
     homed_first = _run_simulation_isolated(
-        template + "rbt.home()\n" + move,
-        dry_run_client_cls=DryRunRobotClient,
-        initial_homed=False,
+        template + "rbt.home()\n" + move, initial_homed=False
     )
     assert homed_first["error"] is None, (
         f"the first move after home() must preview cleanly: {homed_first['error']!r}"
@@ -122,3 +121,37 @@ def test_insert_below_line_matches_indentation():
     text = "a()\n\nb()\n"
     new, _, _ = insert_below_line(text, "x()", 2)
     assert new.split("\n")[2] == "x()"
+
+
+@pytest.mark.parametrize("ender", ["sys.exit()", "exit()", "quit()", "sys.exit(0)"])
+def test_a_script_that_exits_cleanly_keeps_what_it_drew(ender):
+    """`sys.exit()` and the `exit()`/`quit()` builtins raise SystemExit,
+    which is not an `Exception` -- it passed both handlers in the worker and
+    left the whole preview, throwing away every segment collected before it.
+
+    A script that ends by exiting cleanly has ended, not failed.
+    """
+    program_text = (
+        "import sys\n"
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "rbt.home()\n"
+        "rbt.move_j([90, -90, 180, 0, 0, 180], speed=0.5, wait=True)\n"
+        f"{ender}\n"
+        "rbt.move_j([80, -90, 180, 0, 0, 180], speed=0.5, wait=True)\n"
+    )
+    result = _run_simulation_isolated(program_text)
+    assert result["error"] is None, (
+        f"a clean {ender} was reported as a failure: {result['error']}"
+    )
+    assert result["commanded"] is not None and result["commanded"].rows > 0, (
+        f"the move before {ender} was thrown away with the exit"
+    )
+
+
+def test_a_script_exiting_nonzero_is_reported_as_a_failure():
+    """The other half: a non-zero code is the script reporting its own
+    failure, and must not be swallowed as a clean end."""
+    program_text = "import sys\nsys.exit(3)\n"
+    result = _run_simulation_isolated(program_text)
+    assert result["error"] and "3" in result["error"], result["error"]

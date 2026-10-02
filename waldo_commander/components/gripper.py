@@ -1,26 +1,30 @@
+import asyncio
 import logging
 import time
 from collections.abc import Callable
 
-from nicegui import ui
-
 import waldoctl
+from nicegui import background_tasks, ui
 from waldoctl import (
     ElectricGripperTool,
     GripperTool,
     RobotClient,
 )
 
-from waldo_commander.constants import config
+from waldo_commander.common.panel_theme import chart_grid, chart_text
+from waldo_commander.common.theme import css, hex_of
+from waldo_commander.constants import CHART_PUSH_INTERVAL_S, config
 from waldo_commander.services.camera_service import camera_service
-from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.services.control_lease import (
+    control_lease,
+    require_browser_control,
+)
 from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.services.motion_guard import motion_guard
+from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import robot_state, ui_state
 
 logger = logging.getLogger(__name__)
-
-_CLR_POS = "#2dd4bf"  # teal-400
-_CLR_CUR = "#fbbf24"  # amber-400
 
 
 def _make_mark_line(value: float, color: str, name: str) -> dict:
@@ -36,22 +40,39 @@ def _make_mark_line(value: float, color: str, name: str) -> dict:
 
 # Tool state dot colors (by ToolStatus.state int)
 _STATE_DOTS: dict[int, tuple[str, str]] = {
-    0: ("var(--ctk-muted)", "Off"),
-    1: ("var(--color-sky-400)", "Idle"),
-    2: ("var(--color-emerald-400)", "Active"),
-    3: ("var(--color-red-400)", "Error"),
+    0: (css("text-muted"), "Off"),
+    1: (css("info"), "Idle"),
+    2: (css("positive"), "Active"),
+    3: (css("error"), "Error"),
 }
 
 
 class GripperPage:
     """Gripper tab page — camera, time series, status, and controls."""
 
-    def __init__(self, client: RobotClient) -> None:
+    def __init__(
+        self, client: RobotClient, is_open: Callable[[], bool] = lambda: True
+    ) -> None:
         self.client = client
+        self._clr_pos = hex_of("measure-position")
+        self._clr_cur = hex_of("measure-current")
+        # The diagnostics tab has had this from the start; this one did not,
+        # so its chart pushed its whole history into a hidden element on
+        # every status tick, for as long as the app ran.
+        self._is_open = is_open
         self._last_current_tool_key: str | None = None
         self._current_range_listener: Callable | None = None
+        self._current_range: tuple[int, int] = (0, 0)
         self._slider_drag_ts: float = 0.0
-        self._last_slider_send: float = 0.0
+        self._slider_task: asyncio.Task | None = None
+        self._pending_position: float | None = None
+        self._slider_final = False
+        self._gesture_has_value = False
+        self._finished_slider_targets: list[float] = []
+        self._slider_cancelled = False
+        self._slider_context: tuple | None = None
+        self._last_final_position: float | None = None
+        self._page_client = None
         self._last_lease_block_notify: float = 0.0
         self._user_dragging: bool = False
         self._target_initialized: bool = False
@@ -77,7 +98,13 @@ class GripperPage:
         control doesn't stack dozens of identical warnings per gesture."""
         now = time.monotonic()
         should_notify = now - self._last_lease_block_notify > 3.0
-        ok = require_browser_control(ui_state.active_client_id, notify=should_notify)
+        ok = (
+            self._page_client is not None
+            and self._page_client.id == ui_state.active_client_id
+            and motion_guard.owner is None
+            and not is_any_program_running()
+            and require_browser_control(ui_state.active_client_id, notify=should_notify)
+        )
         if not ok and should_notify:
             self._last_lease_block_notify = now
         return ok
@@ -98,10 +125,16 @@ class GripperPage:
                     spd_kwargs["speed"] = (
                         waldoctl.commander.settings.gripper.speed / 100.0
                     )
-                if self._cur_slider:
-                    spd_kwargs["current"] = int(self._cur_slider.value)
-            await tool.set_position(position, **spd_kwargs)
-            motion_recorder.record_action("gripper", position=position, **spd_kwargs)
+                spd_kwargs["current"] = (
+                    waldoctl.commander.settings.gripper.current / 100.0
+                )
+            await motion_recorder.owned_tool_move(
+                self.client,
+                tool.set_position(position, **spd_kwargs),
+                lambda: motion_recorder.record_action(
+                    "gripper", position=position, **spd_kwargs
+                ),
+            )
         except Exception as e:
             logger.error("Gripper %s failed: %s", label.lower(), e)
             ui.notify(f"{label} failed: {e}", color="negative")
@@ -109,6 +142,11 @@ class GripperPage:
     # ---- Build ----
 
     def build(self) -> None:
+        self._page_client = ui.context.client
+        self._page_client.on_disconnect(self._cancel_slider)
+        self._drop_stop_listener = motion_guard.add_stop_listener(
+            lambda *_: self._cancel_slider()
+        )
         self._pos_slider: ui.slider | None = None
         self._cur_slider: ui.slider | None = None
         self._combined_chart: ui.echart | None = None
@@ -128,13 +166,12 @@ class GripperPage:
         self._current_max: float = 0.0
         # Defer markLine-only changes to the next update_chart tick to avoid competing update() calls.
         self._mark_lines_dirty: bool = False
+        self._chart_pushed_at: float = 0.0
 
-        _tile = "bg-neutral-800 p-2 rounded"
+        _tile = "well p-2"
         with ui.column().classes("w-full gap-2"):
             self._camera_card = (
-                ui.card()
-                .props("flat")
-                .classes("w-full p-0 overflow-hidden rounded bg-neutral-800")
+                ui.card().props("flat").classes("w-full p-0 overflow-hidden well")
             )
             with self._camera_card:
                 self._camera_image = (
@@ -162,20 +199,22 @@ class GripperPage:
     # ---- Combined dual-axis chart ----
 
     def _build_chart(self) -> None:
+        clr_pos, clr_cur = self._clr_pos, self._clr_cur
+        clr_axis = chart_text()
         y_axis_left: dict = {
             "type": "value",
             "name": "%",
-            "nameTextStyle": {"fontSize": 11, "color": _CLR_POS},
-            "axisLabel": {"fontSize": 11, "color": _CLR_POS},
-            "splitLine": {"lineStyle": {"color": "rgba(128,128,128,0.15)"}},
+            "nameTextStyle": {"fontSize": 11, "color": clr_axis},
+            "axisLabel": {"fontSize": 11, "color": clr_axis},
+            "splitLine": {"lineStyle": {"color": chart_grid()}},
             "min": 0,
             "max": 100,
         }
         y_axis_right: dict = {
             "type": "value",
             "name": "mA",
-            "nameTextStyle": {"fontSize": 11, "color": _CLR_CUR},
-            "axisLabel": {"fontSize": 11, "color": _CLR_CUR},
+            "nameTextStyle": {"fontSize": 11, "color": clr_axis},
+            "axisLabel": {"fontSize": 11, "color": clr_axis},
             "splitLine": {"show": False},
             "min": 0,
         }
@@ -188,7 +227,6 @@ class GripperPage:
                     "animation": True,
                     "animationDuration": 50,
                     "animationEasing": "linear",
-                    "renderer": "svg",
                     "grid": {
                         "top": 24,
                         "right": 48,
@@ -200,7 +238,7 @@ class GripperPage:
                         "data": ["Position", "Current"],
                         "top": 0,
                         "left": 40,
-                        "textStyle": {"fontSize": 11, "color": "var(--ctk-text)"},
+                        "textStyle": {"fontSize": 11, "color": hex_of("text")},
                         "itemWidth": 12,
                         "itemHeight": 8,
                     },
@@ -219,9 +257,9 @@ class GripperPage:
                             "yAxisIndex": 0,
                             "showSymbol": False,
                             "smooth": True,
-                            "lineStyle": {"width": 1.5, "color": _CLR_POS},
-                            "itemStyle": {"color": _CLR_POS},
-                            "markLine": _make_mark_line(0, _CLR_POS, "target"),
+                            "lineStyle": {"width": 1.5, "color": clr_pos},
+                            "itemStyle": {"color": clr_pos},
+                            "markLine": _make_mark_line(0, clr_pos, "target"),
                             "data": [],
                         },
                         {
@@ -230,13 +268,16 @@ class GripperPage:
                             "yAxisIndex": 1,
                             "showSymbol": False,
                             "smooth": True,
-                            "lineStyle": {"width": 1.5, "color": _CLR_CUR},
-                            "itemStyle": {"color": _CLR_CUR},
-                            "markLine": _make_mark_line(0, _CLR_CUR, "limit"),
+                            "lineStyle": {"width": 1.5, "color": clr_cur},
+                            "itemStyle": {"color": clr_cur},
+                            "markLine": _make_mark_line(0, clr_cur, "limit"),
                             "data": [],
                         },
                     ],
-                }
+                },
+                # The legend's colour is a CSS variable, which only a DOM
+                # element resolves — a canvas fillStyle ignores it.
+                renderer="svg",
             )
             .classes("w-full")
             .style("height: 100px;")
@@ -259,66 +300,61 @@ class GripperPage:
         return True
 
     def update_chart(self) -> None:
+        if not self._is_open():
+            return
         if not self._ensure_chart_built():
+            return
+        now = time.monotonic()
+        if now - self._chart_pushed_at < CHART_PUSH_INTERVAL_S:
             return
         result = robot_state.tool_time_series.get_series_if_dirty()
         if result is None and not self._mark_lines_dirty:
             return
+        self._chart_pushed_at = now
         self._mark_lines_dirty = False
 
         target_pos_pct = round(
             waldoctl.commander.settings.gripper.target_position * 100, 1
         )
-        current_limit = waldoctl.commander.settings.gripper.current
+        # The chart plots measured mA; the setting is a percent of the range.
+        lo, hi = self._current_range
+        current_limit = lo + waldoctl.commander.settings.gripper.current / 100.0 * (
+            hi - lo
+        )
+        clr_pos, clr_cur = self._clr_pos, self._clr_cur
 
-        if result is not None:
-            timestamps, positions, currents = result
-            ts_ms = [t * 1000 for t in timestamps]
-            self._combined_chart.run_chart_method(  # ty: ignore[unresolved-attribute]
-                "setOption",
-                {
-                    "series": [
-                        {
-                            "data": [
-                                [t, round(p * 100, 1)] for t, p in zip(ts_ms, positions)
-                            ],
-                            "markLine": _make_mark_line(
-                                target_pos_pct, _CLR_POS, "target"
-                            ),
-                        },
-                        {
-                            "data": [[t, round(c, 1)] for t, c in zip(ts_ms, currents)],
-                            "markLine": _make_mark_line(
-                                current_limit, _CLR_CUR, "limit"
-                            ),
-                        },
-                    ]
-                },
+        chart = self._combined_chart
+        if chart is None:
+            return
+        with chart.props.suspend_updates():
+            if result is not None:
+                timestamps, positions, currents = result
+                ts_ms = [t * 1000 for t in timestamps]
+                chart.options["series"][0]["data"] = [
+                    [t, round(p * 100, 1)] for t, p in zip(ts_ms, positions)
+                ]
+                chart.options["series"][1]["data"] = [
+                    [t, round(c, 1)] for t, c in zip(ts_ms, currents)
+                ]
+            chart.options["series"][0]["markLine"] = _make_mark_line(
+                target_pos_pct, clr_pos, "target"
             )
-        else:
-            self._combined_chart.run_chart_method(  # ty: ignore[unresolved-attribute]
-                "setOption",
-                {
-                    "series": [
-                        {
-                            "markLine": _make_mark_line(
-                                target_pos_pct, _CLR_POS, "target"
-                            )
-                        },
-                        {"markLine": _make_mark_line(current_limit, _CLR_CUR, "limit")},
-                    ]
-                },
+            chart.options["series"][1]["markLine"] = _make_mark_line(
+                current_limit, clr_cur, "limit"
             )
+        chart.run_chart_method("setOption", {"series": chart.options["series"]})
 
     def set_target_position(self, position: float) -> None:
         """Set target position and update the slider. Called by control panel actions."""
+        self._target_initialized = True
         waldoctl.commander.settings.gripper.target_position = position
         if self._pos_slider is not None:
             self._pos_slider.set_value(round(position * 100))
         self._update_mark_lines()
 
     def set_target_current(self, current: int) -> None:
-        """Set target current and update the slider. Called by control panel adjust."""
+        """Set the target current (percent) and update the slider. Called by
+        control panel adjust."""
         waldoctl.commander.settings.gripper.current = current
         if self._cur_slider is not None:
             self._cur_slider.set_value(current)
@@ -330,52 +366,195 @@ class GripperPage:
 
     # ---- Live slider ----
 
+    def _input_context(self) -> tuple:
+        return (
+            motion_guard.stop_generation,
+            ui_state.active_client_id,
+            waldoctl.commander.status.simulator_active,
+            waldoctl.commander.status.tool.key,
+            waldoctl.commander.status.tool.variant_key,
+            control_lease.generation,
+        )
+
+    def _cancel_slider(self) -> None:
+        self._slider_cancelled = True
+        self._user_dragging = False
+        self._pending_position = None
+        self._finished_slider_targets.clear()
+        self._slider_context = None
+        if self._slider_task is not None:
+            self._slider_task.cancel()
+            self._slider_task = None
+
     def _on_slider_pan(self, e) -> None:
-        """Track user drag state via Quasar pan event (not fired on programmatic changes)."""
+        if self._pos_slider is None:
+            return
         self._user_dragging = e.args in ("start", True)
+        if self._user_dragging:
+            if not self._can_actuate():
+                self._cancel_slider()
+                return
+            self._slider_cancelled = False
+            self._slider_final = False
+            self._last_final_position = None
+            self._slider_context = self._input_context()
+            # Quasar updates its value before emitting pan start.
+            self._queue_position(float(self._pos_slider.value))
+        elif self._slider_context is not None:
+            self._slider_final = True
+            self._queue_position(float(self._pos_slider.value))
 
-    async def _on_slider_drag(self, e) -> None:
-        """Throttled handler for continuous slider drag — streams position at jog rate."""
-        if not self._user_dragging:
+    def _on_slider_drag(self, e) -> None:
+        if self._user_dragging or self._slider_context is not None:
+            self._queue_position(float(e.value))
+
+    def _on_slider_change(self, e) -> None:
+        # change is also emitted by keyboard/click input, without a pan.
+        if self._slider_cancelled:
             return
+        value = float(e.args)
+        if self._slider_context is None:
+            if not self._can_actuate():
+                return
+            if self._last_final_position == value / 100.0:
+                return
+            self._slider_context = self._input_context()
+        self._user_dragging = False
+        self._slider_final = True
+        self._queue_position(value)
+
+    def _on_slider_input_start(self) -> None:
+        if (
+            self._slider_context is not None
+            and self._slider_context != self._input_context()
+        ):
+            self._cancel_slider()
+        if not self._can_actuate():
+            return
+        # Seal the preceding endpoint before this pointer/keyboard event can
+        # update the value. The previous command may still be completing.
+        if self._slider_context is not None and self._slider_final:
+            self._finished_slider_targets.append(
+                waldoctl.commander.settings.gripper.target_position
+            )
+            self._pending_position = None
+            self._gesture_has_value = False
+        # Only a fresh physical interaction can re-arm a cancelled gesture.
+        self._slider_cancelled = False
+
+    def _queue_position(self, value: float) -> None:
+        if self._slider_context != self._input_context() or not self._can_actuate():
+            self._cancel_slider()
+            return
+        position = max(0.0, min(1.0, value / 100.0))
+        self._target_initialized = True
+        waldoctl.commander.settings.gripper.target_position = position
+        self._pending_position = position
+        self._gesture_has_value = True
         self._slider_drag_ts = time.monotonic()
-        now = self._slider_drag_ts
-        if now - self._last_slider_send < self._slider_interval:
-            return
-        self._last_slider_send = now
-        # Gate before mutating: don't move the target_position setting / mark
-        # lines when an MCP session holds the lease and the action is refused.
-        if not self._can_actuate():
-            return
-        value = e.value
-        pos = value / 100.0
-        waldoctl.commander.settings.gripper.target_position = pos
         self._update_mark_lines()
-        await self._grip_set(pos, "Set")
+        if self._slider_task is None:
+            self._slider_task = background_tasks.create(self._drain_positions())
 
-    async def _on_current_slider_change(self, e) -> None:
-        """Sync current slider value to commander.settings.gripper.current, update markLine, and send to gripper."""
-        value = e.value
-        waldoctl.commander.settings.gripper.current = int(value)
+    async def _drain_positions(self) -> None:
+        """One queued command at a time; retain the latest unsent target.
+
+        Keep the observer's owned window across the entire gesture, then
+        record only its final accepted target. A trailing Quasar update may
+        arrive up to 50 ms after pan end.
+        """
+        task = asyncio.current_task()
+        last_position = None
+        last_kwargs: dict = {}
+        try:
+            with motion_recorder.owned():
+                while self._slider_context is not None:
+                    await asyncio.sleep(self._slider_interval)
+                    if (
+                        self._slider_context != self._input_context()
+                        or not self._can_actuate()
+                    ):
+                        self._slider_cancelled = True
+                        return
+                    finished = bool(self._finished_slider_targets)
+                    if finished:
+                        position = self._finished_slider_targets.pop(0)
+                    else:
+                        position, self._pending_position = self._pending_position, None
+                    if position is not None and position != last_position:
+                        tool = self._get_active_gripper()
+                        if tool is None:
+                            return
+                        kwargs = {}
+                        if isinstance(tool, ElectricGripperTool):
+                            settings = waldoctl.commander.settings
+                            kwargs = {
+                                "speed": (
+                                    settings.jog.speed
+                                    if settings.gripper.speed_sync
+                                    else settings.gripper.speed
+                                )
+                                / 100.0,
+                                "current": settings.gripper.current / 100.0,
+                            }
+                        index = await tool.set_position(position, **kwargs)
+                        if index < 0 or not await self.client.wait_command(
+                            index, timeout=10.0
+                        ):
+                            return
+                        last_position, last_kwargs = position, kwargs
+                    if (
+                        finished
+                        and self._slider_context == self._input_context()
+                        and self._can_actuate()
+                    ):
+                        motion_recorder.record_action(
+                            "gripper", position=last_position, **last_kwargs
+                        )
+                    if (
+                        self._slider_final
+                        and not self._finished_slider_targets
+                        and self._pending_position is None
+                        and time.monotonic() - self._slider_drag_ts >= 0.06
+                    ):
+                        if (
+                            self._gesture_has_value
+                            and last_position is not None
+                            and self._slider_context == self._input_context()
+                            and self._can_actuate()
+                        ):
+                            motion_recorder.record_action(
+                                "gripper", position=last_position, **last_kwargs
+                            )
+                            self._last_final_position = last_position
+                        return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Gripper slider failed: %s", exc)
+        finally:
+            if self._slider_task is task:
+                self._slider_task = None
+                self._slider_context = None
+                self._pending_position = None
+                self._finished_slider_targets.clear()
+                self._user_dragging = False
+
+    def _on_current_slider_change(self, e) -> None:
+        waldoctl.commander.settings.gripper.current = int(e.value)
         self._mark_lines_dirty = True
-        if not self._user_dragging:
-            return
-        if not self._can_actuate():
-            return
-        tool = self._get_active_gripper()
-        if isinstance(tool, ElectricGripperTool):
-            try:
-                await tool.set_position(
-                    waldoctl.commander.settings.gripper.target_position,
-                    current=int(value),
-                )
-            except Exception as exc:
-                logger.debug("Current limit update failed: %s", exc)
+
+    async def _on_current_slider_commit(self, _e) -> None:
+        await self._grip_set(
+            waldoctl.commander.settings.gripper.target_position, "Set current"
+        )
 
     # ---- Status updates (called from status consumer) ----
 
     def update_status(self) -> None:
         """Update all status fields from robot_state. Called from status consumer."""
+        if not self._is_open():
+            return
         if self._camera_card is not None:
             cam_active = camera_service.active
             self._camera_card.set_visibility(cam_active)
@@ -415,19 +594,17 @@ class GripperPage:
         s = ts.state
         color, label = _STATE_DOTS.get(s, _STATE_DOTS[0])
         if self._state_dot is not None:
-            self._state_dot.style(f"font-size: 10px; color: {color};")
+            self._state_dot.style(f"color: {color};")
         if self._state_label is not None:
             self._state_label.text = label
 
         if self._part_dot is not None:
-            part_color = (
-                "var(--color-emerald-400)" if ts.part_detected else "var(--ctk-muted)"
-            )
-            self._part_dot.style(f"font-size: 10px; color: {part_color};")
+            part_color = css("positive") if ts.part_detected else css("text-muted")
+            self._part_dot.style(f"color: {part_color};")
 
         if self._engaged_dot is not None:
-            eng_color = "var(--color-emerald-400)" if ts.engaged else "var(--ctk-muted)"
-            self._engaged_dot.style(f"font-size: 10px; color: {eng_color};")
+            eng_color = css("positive") if ts.engaged else css("text-muted")
+            self._engaged_dot.style(f"color: {eng_color};")
 
         if self._fault_label is not None:
             if ts.fault_code != 0:
@@ -438,21 +615,23 @@ class GripperPage:
 
     # ---- Status + Controls ----
     def _build_status_column(self) -> None:
-        _lbl = "text-xs text-[var(--ctk-muted)]"
-        _dot_s = "font-size: 10px;"
+        _lbl = "wc-caption text-wc-text-muted"
+        _dot_size = "10px"
 
         with ui.grid(columns="auto auto 3.5rem").classes(
             "gap-x-1 gap-y-1 items-center"
         ):
             ui.label("State").classes(_lbl)
-            self._state_dot = ui.icon("circle").style(
-                f"{_dot_s} color: var(--ctk-muted);"
+            self._state_dot = ui.icon("circle", size=_dot_size).style(
+                f"color: {css('text-muted')};"
             )
             self._state_label = ui.label("Off").classes("text-xs")
 
             # Project the first DOF of the bindable ``positions`` tuple for single-axis gripper display.
             ui.label("Position").classes(_lbl)
-            ui.icon("circle").style(f"{_dot_s} color: {_CLR_POS};")
+            ui.icon("circle", size=_dot_size).style(
+                f"color: {css('measure-position')};"
+            )
             (
                 ui.label("0 %")
                 .classes("text-sm font-medium")
@@ -465,7 +644,7 @@ class GripperPage:
 
             # Project the first channel of the bindable ``channels`` tuple.
             ui.label("Current").classes(_lbl)
-            ui.icon("circle").style(f"{_dot_s} color: {_CLR_CUR};")
+            ui.icon("circle", size=_dot_size).style(f"color: {css('measure-current')};")
             (
                 ui.label("0 mA")
                 .classes("text-sm")
@@ -477,19 +656,19 @@ class GripperPage:
             )
 
             ui.label("Part").classes(_lbl)
-            self._part_dot = ui.icon("circle").style(
-                f"{_dot_s} color: var(--ctk-muted);"
+            self._part_dot = ui.icon("circle", size=_dot_size).style(
+                f"color: {css('text-muted')};"
             )
             ui.label()
 
             ui.label("Engaged").classes(_lbl)
-            self._engaged_dot = ui.icon("circle").style(
-                f"{_dot_s} color: var(--ctk-muted);"
+            self._engaged_dot = ui.icon("circle", size=_dot_size).style(
+                f"color: {css('text-muted')};"
             )
             ui.label()
 
             self._fault_label = ui.label("").classes(
-                "text-xs text-[var(--color-red-400)] col-span-3"
+                "wc-caption text-wc-error col-span-3"
             )
             self._fault_label.set_visibility(False)
 
@@ -506,11 +685,15 @@ class GripperPage:
         self._slider_interval = config.webapp_control_interval_s
 
         # Target-only slider: seeded from feedback, then tracks the target.
-        ui.label("Pos").classes("text-xs text-[var(--ctk-muted)]")
+        ui.label("Pos").classes("wc-caption text-wc-text-muted")
         self._pos_slider = (
             ui.slider(min=0, max=100, value=0, step=1)
             .on_value_change(self._on_slider_drag)
             .on("pan", self._on_slider_pan)
+            .on("change", self._on_slider_change)
+            .on("pointerdown", self._on_slider_input_start)
+            .on("keydown", self._on_slider_input_start)
+            .mark("gripper-position")
         )
         pos_input = ui.number(min=0, max=100, step=1, value=0).props("dense borderless")
         pos_input.bind_value_from(self._pos_slider, "value")
@@ -519,21 +702,24 @@ class GripperPage:
         def _electric_visible(k: str) -> bool:
             return k != "NONE" and self._is_electric()
 
-        ui.label("mA").classes("text-xs text-[var(--ctk-muted)]").bind_visibility_from(
+        ui.label("Current %").classes(
+            "wc-caption text-wc-text-muted"
+        ).bind_visibility_from(
             waldoctl.commander.status.tool,
             "key",
             backward=_electric_visible,
         )
+        cur_pct = waldoctl.commander.settings.gripper.current
         self._cur_slider = (
-            ui.slider(min=0, max=1000, value=500, step=10)
-            .on("pan", self._on_slider_pan)
+            ui.slider(min=0, max=100, value=cur_pct, step=1)
+            .on("change", self._on_current_slider_commit)
             .on_value_change(self._on_current_slider_change)
         ).bind_visibility_from(
             waldoctl.commander.status.tool,
             "key",
             backward=_electric_visible,
         )
-        cur_input = ui.number(min=0, max=1000, step=10, value=500).props(
+        cur_input = ui.number(min=0, max=100, step=1, value=cur_pct).props(
             "dense borderless"
         )
         cur_input.bind_value_from(self._cur_slider, "value")
@@ -544,27 +730,20 @@ class GripperPage:
         )
 
         def _update_current_range() -> None:
-            if self._cur_slider is None:
-                return
             if waldoctl.commander.status.tool.key == self._last_current_tool_key:
                 return
             self._last_current_tool_key = waldoctl.commander.status.tool.key
             tool = self._get_active_gripper()
             if isinstance(tool, ElectricGripperTool):
-                lo, hi = tool.current_range
-                self._cur_slider._props["min"] = lo
-                self._cur_slider._props["max"] = hi
-                cur_input._props["min"] = lo
-                cur_input._props["max"] = hi
-                self._cur_slider.value = min(lo + 80, hi)
-                self._cur_slider.update()
+                self._current_range = tool.current_range
+                self._mark_lines_dirty = True
 
         self._current_range_listener = _update_current_range
         robot_state.add_change_listener(_update_current_range)
         _update_current_range()  # apply immediately if tool already set
 
     def _build_speed_section(self) -> None:
-        ui.label("Speed").classes("text-xs text-[var(--ctk-muted)] pt-2")
+        ui.label("Speed").classes("wc-caption text-wc-text-muted pt-2")
         with ui.row().classes("col-span-2 w-full items-center gap-2 no-wrap pt-2"):
             (
                 ui.switch("Sync", value=waldoctl.commander.settings.gripper.speed_sync)
@@ -578,7 +757,7 @@ class GripperPage:
                     waldoctl.commander.settings.jog, "speed", backward=lambda v: f"{v}%"
                 )
                 .bind_visibility_from(waldoctl.commander.settings.gripper, "speed_sync")
-                .classes("text-xs text-[var(--ctk-muted)]")
+                .classes("wc-caption text-wc-text-muted")
             )
             # Independent: slider
             (
@@ -601,5 +780,8 @@ class GripperPage:
 
     def cleanup(self) -> None:
         """Remove listeners when panel is destroyed."""
+        self._cancel_slider()
+        if hasattr(self, "_drop_stop_listener"):
+            self._drop_stop_listener()
         if self._current_range_listener is not None:
             robot_state.remove_change_listener(self._current_range_listener)

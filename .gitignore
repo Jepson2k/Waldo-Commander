@@ -22,10 +22,12 @@ site/
 
 # Local development directories
 PAROL6-Desktop-robot-arm/
-PAROL6-python-API/
-par6/
+/PAROL6-python-API
+/par6
 Spectral-Micro-BLDC-controller/
-nicegui/
+/nicegui
 pinokin/
 /tools/
-waldoctl/
+/waldoctl
+# embedded checkout, not part of this repo
+recap/

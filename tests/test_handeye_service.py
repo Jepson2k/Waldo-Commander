@@ -8,6 +8,7 @@ calibrateHandEye) recovers it.
 from __future__ import annotations
 
 import math
+import time
 
 import cv2
 import numpy as np
@@ -56,9 +57,9 @@ def _samples(n_views: int = 12) -> list[handeye.HandEyeSample]:
 def test_solve_recovers_known_transform():
     result = handeye.solve_hand_eye(_samples(), SPEC, method="PARK")
 
-    R_err = result.T_cam2gripper[:3, :3].T @ X_TRUE[:3, :3]
+    R_err = result.T_camera_parent[:3, :3].T @ X_TRUE[:3, :3]
     rot_err_deg = math.degrees(np.linalg.norm(Rotation.from_matrix(R_err).as_rotvec()))
-    trans_err_mm = float(np.linalg.norm(result.T_cam2gripper[:3, 3] - X_TRUE[:3, 3]))
+    trans_err_mm = float(np.linalg.norm(result.T_camera_parent[:3, 3] - X_TRUE[:3, 3]))
     assert rot_err_deg < 0.5, f"rotation off by {rot_err_deg:.3f} deg"
     assert trans_err_mm < 2.0, f"translation off by {trans_err_mm:.3f} mm"
 
@@ -75,7 +76,7 @@ def test_solve_recovers_known_transform():
         result, SPEC, "NONE", {"x": 0.0, "y": 0.0, "z": 0.0}, "2026-01-01T00:00:00Z"
     )
     restored = handeye.from_storage_dict(stored)
-    np.testing.assert_allclose(restored["T_cam2gripper"], result.T_cam2gripper)
+    np.testing.assert_allclose(restored["T_cam2gripper"], result.T_camera_parent)
     assert restored["n_samples"] == result.n_views
 
 
@@ -150,9 +151,9 @@ def test_solve_rejections():
         azimuths=(0.0, 90.0, 180.0, 270.0),
     )
     try:
-        R_flipped = handeye.solve_hand_eye(flipped, SPEC, method="PARK").T_cam2gripper[
-            :3, :3
-        ]
+        R_flipped = handeye.solve_hand_eye(
+            flipped, SPEC, method="PARK"
+        ).T_camera_parent[:3, :3]
     except handeye.CalibrationError as e:
         assert "non-rigid" in str(e), f"unexpected rejection: {e}"
     else:
@@ -187,6 +188,103 @@ def test_solve_rejections():
 
 
 @pytest.mark.unit
+def test_view_coverage(monkeypatch):
+    """Where a view came from — the frame cells its corners land in and the
+    side the camera saw the board from — and what a set of views still lacks."""
+    detector = handeye.make_detector(SPEC)
+
+    def rendered(
+        tilt_deg: float, azimuth_deg: float
+    ) -> tuple[handeye.Detection, frozenset[int], str | None]:
+        image = render_board_view(
+            SPEC,
+            K_TRUE,
+            look_at_target_pose(SPEC, 450.0, tilt_deg, azimuth_deg, 0.0),
+            IMAGE_SIZE,
+        )
+        analysis = handeye.analyse_view(image, detector)
+        assert analysis is not None
+        return analysis
+
+    # At roll 0 the camera axes align with the board's, so a camera displaced
+    # toward the board's -x sees it from image-left, toward -y from above.
+    left, left_cells, left_tilt = rendered(25.0, 180.0)
+    assert left_tilt == "left"
+    assert left_cells == handeye.view_cells(left, IMAGE_SIZE)
+    assert rendered(25.0, 270.0)[2] == "up"
+    assert rendered(25.0, 45.0)[2] == "down-right"
+    assert rendered(0.0, 0.0)[2] is None
+    assert rendered(3.0, 90.0)[2] is None
+    blank = np.full((IMAGE_SIZE[1], IMAGE_SIZE[0], 3), 255, np.uint8)
+    assert handeye.analyse_view(blank, detector) is None
+
+    # One inner column of corners lies on a line, which fixes no tilt.
+    in_column = left.ids.ravel() % (SPEC.squares_x - 1) == 1
+    column = handeye.Detection(
+        left.corners[in_column], left.ids[in_column], IMAGE_SIZE, left.n_markers
+    )
+    assert len(column.corners) >= 4, "the column must reach the pose solve"
+    assert handeye.view_tilt(column, detector.getBoard(), IMAGE_SIZE) is None
+
+    for value in (0.0, float("nan"), float("inf")):
+        collapsed = handeye.Detection(
+            np.full_like(left.corners, value), left.ids, IMAGE_SIZE, left.n_markers
+        )
+        assert handeye.view_tilt(collapsed, detector.getBoard(), IMAGE_SIZE) is None
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            cv2, "solvePnP", lambda *a, **kw: (True, np.zeros(3), np.full(3, np.nan))
+        )
+        assert handeye.view_tilt(left, detector.getBoard(), IMAGE_SIZE) is None
+
+    def box(x0: float, y0: float, x1: float, y1: float) -> handeye.Detection:
+        xs, ys = np.meshgrid(np.linspace(x0, x1, 4), np.linspace(y0, y1, 4))
+        corners = np.stack([xs.ravel(), ys.ravel()], axis=1).reshape(-1, 1, 2)
+        return handeye.Detection(
+            corners.astype(np.float32),
+            np.arange(len(corners), dtype=np.int32).reshape(-1, 1),
+            IMAGE_SIZE,
+            0,
+        )
+
+    assert handeye.view_cells(box(10, 10, 100, 100), IMAGE_SIZE) == {0}
+    assert handeye.view_cells(box(10, 10, 630, 100), IMAGE_SIZE) == {0, 1, 2}
+    assert handeye.view_cells(box(250, 200, 400, 300), IMAGE_SIZE) == {4}
+    assert handeye.view_cells(box(639.0, 479.0, 639.9, 479.9), IMAGE_SIZE) == {8}
+
+    T = np.eye(4)
+    cov = handeye.coverage(
+        [
+            handeye.HandEyeSample(
+                T, box(10, 10, 100, 100), 0.0, cells=frozenset({0}), tilt="left"
+            ),
+            handeye.HandEyeSample(
+                T, box(250, 200, 400, 300), 1.0, cells=frozenset({4, 7}), tilt="up"
+            ),
+            handeye.HandEyeSample(T, left, 2.0, cells=frozenset({1, 4}), tilt=None),
+        ]
+    )
+    assert cov.sectors[handeye.SECTORS.index("left")] == 1
+    assert cov.sectors[handeye.SECTORS.index("up")] == 1
+    assert sum(cov.sectors) == 2
+    assert (cov.cells[0], cov.cells[1], cov.cells[4], cov.cells[7]) == (1, 1, 2, 1)
+    # The gaps to fill first: the opposite of what is covered, and a corner
+    # of the frame before its edges.
+    assert cov.next_sector == "down"
+    assert cov.next_cell == "bottom-right"
+
+    full = handeye.coverage(
+        [
+            handeye.HandEyeSample(
+                T, box(10, 10, 100, 100), 0.0, cells=frozenset(range(9)), tilt=sector
+            )
+            for sector in handeye.SECTORS
+        ]
+    )
+    assert full.next_sector is None and full.next_cell is None
+
+
+@pytest.mark.unit
 def test_board_png_roundtrip():
     png = handeye.board_png(SPEC, dpi=150)
     image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
@@ -194,3 +292,132 @@ def test_board_png_roundtrip():
     detection = handeye.detect_board(image, handeye.make_detector(SPEC))
     assert detection is not None
     assert len(detection.corners) == (SPEC.squares_x - 1) * (SPEC.squares_y - 1)
+
+
+def test_fixed_camera_and_saved_measurement_import():
+    from waldoctl.setup import SetupSnapshot, TcpCalibration
+    from waldo_commander.services.camera_calibration import (
+        CaptureBinding,
+        calibration_from_result,
+        import_saved_handeye,
+    )
+
+    # The same rendered observations describe a board on the tool when robot
+    # poses are inverted. Ground truth then becomes camera→WRF.
+    samples = _samples()
+    fixed_samples = [
+        handeye.HandEyeSample(np.linalg.inv(s.T_base_gripper), s.detection, s.timestamp)
+        for s in samples
+    ]
+    result = handeye.solve_hand_eye(fixed_samples, SPEC, mount="fixed")
+    np.testing.assert_allclose(result.T_camera_parent[:3, 3], X_TRUE[:3, 3], atol=2.0)
+    np.testing.assert_allclose(
+        result.T_camera_parent[:3, :3], X_TRUE[:3, :3], atol=0.01
+    )
+    binding = CaptureBinding(
+        "camera-A", "session", "parol6", TcpCalibration((0, 0, 0, 0, 0, 0), "MSG")
+    )
+    setup = SetupSnapshot()
+    calibration = calibration_from_result(result, SPEC, binding, setup)
+    world = calibration.world_pose(
+        setup, camera_id="camera-A", image_size=IMAGE_SIZE, backend="parol6"
+    )
+    np.testing.assert_allclose(world.matrix(), result.T_camera_parent, atol=1e-8)
+
+    tool_result = handeye.solve_hand_eye(samples, SPEC)
+    stored = handeye.to_storage_dict(
+        tool_result, SPEC, "MSG", {"x": 0, "y": 0, "z": 0}, "2025-01-01T00:00:00Z"
+    )
+    imported = import_saved_handeye(
+        stored,
+        camera_id="camera-A",
+        image_size=IMAGE_SIZE,
+        backend="parol6",
+        tool=binding.tool,
+    )
+    np.testing.assert_allclose(
+        imported.pose.matrix(), tool_result.T_camera_parent, atol=1e-8
+    )
+    assert imported.calibrated_at == "2025-01-01T00:00:00Z"
+    assert imported.quality.sample_count == len(samples)
+    for image_size, tool, message in (
+        ((1280, 960), binding.tool, "resolution"),
+        (IMAGE_SIZE, TcpCalibration((0, 0, 0, 0, 0, 1), "MSG"), "TCP"),
+        (IMAGE_SIZE, TcpCalibration((0, 0, 0, 0, 0, 0), "NONE"), "tool"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            import_saved_handeye(
+                stored,
+                camera_id="camera-A",
+                image_size=image_size,
+                backend="parol6",
+                tool=tool,
+            )
+
+
+@pytest.mark.unit
+def test_board_must_fit_its_dictionary():
+    """A 11x10 board needs 55 markers and DICT_4X4_50 has 50: the spec is
+    refused up front instead of failing when the board is printed."""
+    too_big = handeye.BoardSpec(squares_x=11, squares_y=10, dictionary="DICT_4X4_50")
+    with pytest.raises(handeye.CalibrationError, match="55 markers"):
+        handeye.make_detector(too_big)
+    with pytest.raises(handeye.CalibrationError, match="55 markers"):
+        handeye.board_png(too_big)
+
+    largest = handeye.BoardSpec(squares_x=10, squares_y=10, dictionary="DICT_4X4_50")
+    assert (
+        cv2.imdecode(
+            np.frombuffer(handeye.board_png(largest, dpi=72), np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        is not None
+    )
+
+
+def _brute_force_diversity(poses: list[np.ndarray]) -> tuple[float, float]:
+    angles: list[float] = []
+    axes: list[np.ndarray] = []
+    for i in range(len(poses)):
+        for j in range(i + 1, len(poses)):
+            rotvec = Rotation.from_matrix(
+                poses[i][:3, :3].T @ poses[j][:3, :3]
+            ).as_rotvec()
+            angle = float(np.linalg.norm(rotvec))
+            angles.append(math.degrees(angle))
+            if math.degrees(angle) >= handeye.AXIS_MIN_ROTATION_DEG:
+                axes.append(rotvec / angle)
+    if not angles:
+        return 0.0, 0.0
+    widest = 0.0
+    for i in range(len(axes)):
+        for j in range(i + 1, len(axes)):
+            cos = float(np.clip(abs(np.dot(axes[i], axes[j])), 0.0, 1.0))
+            widest = max(widest, math.degrees(math.acos(cos)))
+    return max(angles), widest
+
+
+@pytest.mark.unit
+def test_motion_diversity_stays_quick_as_views_pile_up():
+    """Views accumulate across runs and the panel refreshes the diversity
+    line on the UI loop: sixty views take well under a second, with the same
+    answer as comparing every pair of relative rotations one by one."""
+    rng = np.random.default_rng(11)
+
+    def poses(n: int) -> list[np.ndarray]:
+        out = []
+        for rotvec_deg in rng.normal(0.0, 25.0, (n, 3)):
+            T = np.eye(4)
+            T[:3, :3] = Rotation.from_rotvec(np.radians(rotvec_deg)).as_matrix()
+            out.append(T)
+        return out
+
+    for sample in (poses(8), [poses(1)[0]] * 3, poses(1), []):
+        assert handeye.motion_diversity(sample) == pytest.approx(
+            _brute_force_diversity(sample), rel=1e-9, abs=1e-6
+        )
+
+    many = poses(60)
+    started = time.perf_counter()
+    handeye.motion_diversity(many)
+    assert time.perf_counter() - started < 1.0

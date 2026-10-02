@@ -62,8 +62,10 @@ class WcSceneHandle:
         self._installation: tuple[Shape, ...] = ()
         self._installation_draft: tuple[Shape, ...] = ()
         self._confirmed = False
+        self._attachment_epoch = 0
         self._refresh_seq = 0
         self._pushes_inflight = 0
+        self._push_lock = asyncio.Lock()
 
     @property
     def shapes(self) -> list[Shape]:
@@ -82,6 +84,10 @@ class WcSceneHandle:
         missing = sorted(wanted - {s.name for s in moving})
         if missing:
             raise ValueError(f"no program-layer shape(s) named {missing}")
+        if any(s.attachment is not None for s in moving):
+            raise ValueError(
+                "detach held geometry before proposing installation shapes"
+            )
         self._assign(
             [s for s in self._shapes if s.name not in wanted],
             (*self._installation_draft, *moving),
@@ -124,6 +130,17 @@ class WcSceneHandle:
     def confirmed(self) -> bool:
         """Whether the displayed program layer matches backend readback."""
         return self._confirmed
+
+    @property
+    def attachments_valid(self) -> bool:
+        return all(
+            s.attachment is None or s.attachment.epoch == self._attachment_epoch
+            for s in self._shapes
+        )
+
+    @property
+    def attachment_epoch(self) -> int:
+        return self._attachment_epoch
 
     @shapes.setter
     def shapes(self, value: list[Shape]) -> None:
@@ -179,6 +196,7 @@ class WcSceneHandle:
                 installation=self._installation,
                 draft=not self._confirmed,
                 installation_draft=self._installation_draft,
+                attachment_epoch=self._attachment_epoch,
             )
         except Exception:
             logger.exception("Keep-out shape render failed (still enforced)")
@@ -225,24 +243,27 @@ class WcSceneHandle:
         """
         err: Exception | None = None
         try:
-            try:
-                code = await waldoctl.commander.client.set_shapes(shapes)
-            except NotImplementedError:
-                return  # backend without shape support — local render only
-            except Exception as e:
-                code = -1
-                err = e
-            if shapes is not self._shapes:
-                return  # superseded by a newer assignment
-            if code > 0:
-                await self._adopt_backend_world()
-                return
-            logger.error(
-                "set_shapes push unconfirmed (code=%s%s) — displayed keep-outs are "
-                "NOT enforced by the controller until readback confirms",
-                code,
-                f": {err}" if err is not None else "",
-            )
+            async with self._push_lock:
+                if shapes is not self._shapes:
+                    return
+                try:
+                    code = await waldoctl.commander.client.set_shapes(shapes)
+                except NotImplementedError:
+                    return  # backend without shape support — local render only
+                except Exception as e:
+                    code = -1
+                    err = e
+                if shapes is not self._shapes:
+                    return  # superseded by a newer assignment
+                if code > 0:
+                    await self._adopt_backend_world()
+                    return
+                logger.error(
+                    "set_shapes push unconfirmed (code=%s%s) — displayed keep-outs are "
+                    "NOT enforced by the controller until readback confirms",
+                    code,
+                    f": {err}" if err is not None else "",
+                )
         finally:
             self._pushes_inflight -= 1
 
@@ -276,6 +297,7 @@ class WcSceneHandle:
         if seq != self._refresh_seq:
             return  # superseded by a newer edit or readback — that one adopts
         self._installation = tuple(world.installation)
+        self._attachment_epoch = world.attachment_epoch
         self._shapes = list(world.program)
         self._confirmed = True
         # A proposal the backend now enforces is no longer a proposal. By

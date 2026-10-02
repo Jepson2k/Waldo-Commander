@@ -18,6 +18,7 @@ from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.mcp.tools.control import require_actuation, require_control
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import ui_state
 
@@ -43,17 +44,18 @@ def _page_client():
 async def set_simulator(enabled: bool) -> dict:
     """Switch the controller between simulator and real-hardware mode.
 
-    Mirrors the GUI's robot/sim toggle: stops any running script first (safety),
-    flips the backend, and re-enables. A mode switch, not an actuation — needs
-    only the control lease.
+    Mirrors the GUI's robot/sim toggle: stops any running or launching script
+    first (safety), flips the backend, and re-enables. A mode switch, not an
+    actuation — needs only the control lease.
     """
     require_control()
     client = waldoctl.commander.client
-    if is_any_program_running():
+    if script_exec.active:
         # stop()'s ui.notify needs a client context (this runs in the MCP
         # background task, which has none of its own).
         with _page_client():
             await script_exec.stop()
+    motion_guard.note_stop("simulator switch")
     await client.simulator(enabled)
     waldoctl.commander.status.simulator_active = enabled
     await client.reset()
@@ -100,5 +102,5 @@ async def step() -> dict:
     """Step forward one segment (mirrors the GUI step button)."""
     require_actuation("step the timeline forward")
     with _page_client():
-        playback.step_forward()
+        await playback.step_forward(control_verified=True)
     return await get_mode()

@@ -23,15 +23,17 @@ precisely to run this test; letting it skip there would be a silent green.
 """
 
 import contextlib
+import math
 import os
 import shutil
 import socket
+from importlib.metadata import entry_points
 
 import pytest
 from nicegui.testing import User
 from waldoctl.discovery import available_backends
 
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import poll_until, wait_for_app_ready
 
 
 def _par6d_binary() -> str | None:
@@ -73,6 +75,11 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
             "par6d on PATH (cargo build -p par6d --release)"
         )
     port = _free_udp_port()
+    from waldo_commander.constants import config
+
+    # main() retains parsed CLI overrides between User lifespans. Keep that
+    # override aligned with this test's fresh daemon and client environment.
+    monkeypatch.setitem(config._overrides, "controller_port", port)
     monkeypatch.setenv("WALDO_ROBOT", "par6")
     monkeypatch.setenv("WALDO_CONTROLLER_PORT", str(port))
     # par6's Robot reads its own port var when constructed without kwargs.
@@ -85,7 +92,9 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @requires_par6
 @pytest.mark.integration
-async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) -> None:
+async def test_commander_runs_on_the_par6_runtime(
+    par6_env: None, user: User, monkeypatch, tmp_path
+) -> None:
     """The app boots on par6 and its status pipeline carries live runtime data.
 
     ``start_controller`` finds nothing at the target port, so par6's Robot
@@ -114,10 +123,79 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         assert status.simulator_active, "par6d --sim should report simulator_active"
         assert len(status.joints.angles.deg) == robot.joints.count == 6
 
+        from par6.client import AsyncRobotClient
+        from waldo_commander.components.playback import playback
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            async with AsyncRobotClient(
+                host="127.0.0.1",
+                port=_free_udp_port(),
+                timeout=0.1,
+                status_transport="unicast",
+                status_port=occupied.getsockname()[1],
+            ) as unavailable:
+                with monkeypatch.context() as patch:
+                    patch.setattr(waldoctl.commander, "client", unavailable)
+                    patch.setattr(playback, "_uses_live_speed", lambda: True)
+                    await playback._refresh_execution_speed()
+                    assert playback._execution_speed is None
+                    assert (
+                        playback._speed_tooltip.text
+                        == "Execution speed readback unavailable"
+                    )
+        with monkeypatch.context() as patch:
+            patch.setattr(playback, "_uses_live_speed", lambda: True)
+            await playback._refresh_execution_speed()
+            assert playback._execution_speed is not None
+            assert "selected" in playback._speed_tooltip.text
+
         # The app sizes its IO buffer from the backend's pin counts and then
         # writes decoded frames straight in, so agreement here is what keeps
         # the status pipeline from throwing on every frame.
         assert len(robot_state.io) == robot.digital_inputs + robot.digital_outputs + 1
+
+        from waldoctl.signals import DigitalSignal
+        from waldo_commander.skills.signals import (
+            read_signal,
+            wait_signal,
+            write_signal,
+        )
+
+        signal = DigitalSignal(
+            "par6", "output", 0, robot.digital_inputs, robot.digital_outputs
+        )
+        client = waldoctl.commander.client
+        before_io = await client.io(timeout=2)
+        assert before_io is not None
+        try:
+            observation = await write_signal.async_call(client, signal, True)
+            assert observation.value and observation.source == "controller"
+            assert (await read_signal.async_call(client, signal)).value
+            result = await wait_signal.async_call(client, signal, False, timeout=0.2)
+            assert (
+                result.outcome == "timeout"
+                and result.observation is not None
+                and result.observation.value
+            )
+            user.find(marker="tab-setup").click()
+            from nicegui import ui
+
+            user.find(kind=ui.tab, content="Signals").click()
+
+            def element(marker):
+                return next(iter(user.find(marker=marker).elements))
+
+            element("signal-direction").set_value("output")
+            user.find(marker="signal-read").click()
+            await user.should_see("Observed logical value: True", retries=30)
+            user.find(marker="signal-write").click()
+            await user.should_see(
+                "Controller reports logical output: False", retries=30
+            )
+            assert (await client.io(timeout=2))[robot.digital_inputs] == 0
+        finally:
+            await client.write_io(0, before_io[robot.digital_inputs], timeout=2)
 
         # UI actually rendered against this backend.
         await user.should_see(marker="btn-estop")
@@ -127,11 +205,9 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         # lands on commander.status for API consumers.
         import asyncio
 
-        for _ in range(50):
-            if status.controller.mode:
-                break
-            await asyncio.sleep(0.1)
-        assert status.controller.mode, "no controller mode ever arrived"
+        await poll_until(
+            lambda: status.controller.mode, bool, what="a controller mode on the wire"
+        )
 
         # Freedrive reports the arm, not the request. A fresh `par6d --sim`
         # is unreferenced, so the runtime cannot actually release the arm
@@ -146,9 +222,589 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         assert not status.controller.freedrive, (
             "an unreferenced arm reported itself back-driveable"
         )
+
+        # The predicted pass answers the plan the editor adopted: a planned
+        # program yields a predicted record, and nothing waits on it — the
+        # scrub bar plays the commanded record meanwhile.
+        from waldo_commander.components.playback import layers_available, playback
+        from waldo_commander.services.path_visualizer import path_visualizer
+        from par6 import config as par6_config
+
+        program = waldoctl.commander.programs.active
+        assert program is not None
+        # The unreferenced simulator can start outside the referenced soft
+        # limits. Plan from the park pose established by home(), not that boot pose.
+        target = [math.degrees(v) for v in par6_config.config().park_pose_rad()]
+        target[0] += 5.0
+        source = (
+            "from par6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    rbt.home()\n"
+            f"    rbt.move_j({target!r}, speed=0.5)\n"
+        )
+        assert (
+            await path_visualizer.update_path_visualization(source, program.id) is None
+        )
+        assert program.dry_run.path_segments, "the planning pass produced no path"
+        assert program.dry_run.predicted_current is None, (
+            "predicted is commanded until the pass lands"
+        )
+        assert playback._scrub_slider is not None and playback._scrub_slider.enabled
+        assert await path_visualizer.update_physics_simulation(program.id) is None
+        predicted = program.dry_run.predicted_current
+        assert predicted is not None, "the predicted pass never ran"
+        assert "setpoint_rad" in predicted.channels
+        assert layers_available(program.dry_run)["predicted_visible"]
+        playback.refresh_layers()
+        assert playback._layer_checks["predicted_visible"].enabled
+        assert playback._scrub_slider.enabled
+
+        # Diagnostics off the wire, all of it from the status broadcast:
+        # the loop's tail, the drives' readings, and the torque series the
+        # chart draws.
+        user.find(marker="footer-events").click()
+        await asyncio.sleep(0)
+        await user.should_see(marker="diagnostics-panel")
+        # A section reveals on the first status tick that finds it reportable,
+        # and only while the tab is open — so wait for the reveal, not the
+        # panel.
+        await user.should_see(marker="diag-section-drives", retries=50)
+        await user.should_see(marker="diag-section-loop", retries=50)
+
+        def _text(marker: str) -> str:
+            return next(iter(user.find(marker=marker).elements)).text
+
+        temps = await poll_until(
+            lambda: [_text(f"diag-drive-temp-{j}") for j in range(1, 7)],
+            lambda t: all(v != "—" for v in t),
+            timeout_s=10.0,
+            what=lambda: (
+                f"drive temperatures on STATUS (note: {_text('diag-drives-note')!r})"
+            ),
+        )
+        assert all(float(t) > 0 for t in temps), f"drive temperatures read {temps}"
+        assert status.drive_health.bus_voltage_v is not None
+        assert _text("diag-drive-supply").endswith(" V")
+        # The tool drive answers a temperature but no current, and an
+        # unanswered register must read as unknown rather than as zero.
+        assert _text("diag-drive-current-7") == "—"
+
+        await poll_until(
+            lambda: _text("diag-loop-p99"),
+            lambda t: "budget" in t,
+            timeout_s=10.0,
+            what="the loop tail",
+        )
+        assert status.loop_health.measured
+        assert _text("diag-loop-rate").endswith("Hz target")
+        # The chart's own feed. The page consumes the dirty flag on every
+        # status tick, so ask the buffer how many samples it holds rather
+        # than racing it for a dirty read.
+        await poll_until(
+            lambda: len(robot_state.torque_time_series),
+            bool,
+            timeout_s=5.0,
+            interval=0.05,
+            what="joint torques reaching the chart",
+        )
+
+        # Backend branches without the optional Drives plugin still exercise
+        # the complete runtime/status path above. A declared but broken plugin
+        # must fail the UI checks below, rather than disappear from coverage.
+        if any(
+            ep.name == "par6-drives" for ep in entry_points(group="waldoctl.panels")
+        ):
+            # par6's own Drives tab, mounted through the generic plugin path and
+            # admitted by its applies_to(). Its readings are the same STATUS the
+            # Diagnostics tab reads, keyed by the config's node ids; its tuning
+            # form is seeded from the runtime's stored config, and a write the
+            # runtime refuses is shown on the form rather than swallowed — that
+            # refusal is the ceiling a bench tool cannot enforce.
+            await user.should_see(marker="tab-par6-drives")
+            user.find(marker="tab-par6-drives").click()
+            await asyncio.sleep(0)
+            await user.should_see(marker="drives-readings")
+            await poll_until(
+                lambda: _text("drives-temp-0"),
+                lambda t: t.endswith("°C"),
+                timeout_s=10.0,
+                what="a temperature from drive 0",
+            )
+
+            ilim = next(iter(user.find(marker="drives-gain-ilim_ma").elements))
+            await poll_until(
+                lambda: ilim.value, bool, what="the current limit seeded from config"
+            )
+            configured = float(ilim.value)
+            assert configured > 0, (
+                "the current limit is seeded from the runtime's config"
+            )
+            ilim.value = configured * 100
+            user.find(marker="drives-apply-gains").click()
+            await poll_until(
+                lambda: _text("drives-gain-note"),
+                lambda note: "ceiling" in note,
+                what="the runtime's refusal on the form",
+            )
+
+            # The bus table is the runtime's scan, not a static list: every
+            # configured joint answers on a sim bus.
+            user.find(marker="drives-rescan").click()
+            table = next(iter(user.find(marker="drives-bus-table").elements))
+            await poll_until(lambda: table.rows, bool, what="rows from the bus scan")
+            present = {row["node"] for row in table.rows if row["present"] == "yes"}
+            assert {0, 1, 2, 3, 4, 5} <= present, f"scan rows: {table.rows}"
+
+        import numpy as np
+        from waldo_commander.skills import gripper_open, gripper_close, retract
+        from waldoctl.setup import Pose
+        from par6._par6 import pose_matrix
+
+        mixed = Pose((0, 0, 0, 37, 25, -28))
+        assert mixed.matrix() == pytest.approx(
+            np.asarray(
+                pose_matrix([0, 0, 0], np.radians(mixed.values[3:]).tolist())
+            ).reshape(4, 4)
+        ), "shared setup rotation must match PAR6's native pose conversion"
+
+        client = waldoctl.commander.client
+        park = np.degrees(par6_config.config().park_pose_rad()).tolist()
+        await client.reset()
+        async with asyncio.timeout(20):
+            while True:
+                await client.teleport(park)
+                if await client.wait_status(
+                    lambda s: s.homed and np.allclose(s.angles, park, atol=0.5),
+                    timeout=0.5,
+                ):
+                    break
+        before = await client.pose()
+        assert before is not None
+        native = await client.status()
+        assert native is not None
+        assert Pose(tuple(before)).matrix()[:3, :3] == pytest.approx(
+            np.asarray(native.pose).reshape(4, 4)[:3, :3], abs=0.01
+        ), "setup pose rotations must agree with the native PAR6 transform"
+        await retract.async_call(client, distance_mm=10, speed=0.2)
+        after = await client.pose()
+        assert after is not None
+        assert np.linalg.norm(np.array(after[:3]) - before[:3]) == pytest.approx(
+            10, abs=1.0
+        )
+        assert await client.select_tool(par6_config.fitted_tool_key()) >= 0
+        index = await client.tool.calibrate()
+        assert await client.wait_command(index, timeout=15)
+        await gripper_close.async_call(client)
+        assert await client.wait_status(
+            lambda s: (
+                s.tool_status is not None
+                and bool(s.tool_status.positions)
+                and s.tool_status.positions[0] > 0.9
+            ),
+            timeout=5,
+        )
+        await gripper_open.async_call(client)
+        assert await client.wait_status(
+            lambda s: (
+                s.tool_status is not None
+                and bool(s.tool_status.positions)
+                and s.tool_status.positions[0] < 0.1
+            ),
+            timeout=5,
+        )
+        from nicegui import ui
+
+        user.find(marker="tab-setup").click()
+        user.find(kind=ui.tab, content="TCP").click()
+        user.find(marker="tcp-calibration-read").click()
+        await user.should_see(
+            "Read the controller's applied TCP transform.", retries=50
+        )
+        correction = (4.0, -2.0, 20.0, 12.0, -18.0, 7.0)
+        for axis, value in zip(("x", "y", "z", "roll", "pitch", "yaw"), correction):
+            next(iter(user.find(marker=f"tcp-calibration-{axis}").elements)).set_value(
+                value
+            )
+        user.find(marker="tcp-calibration-apply").click()
+        await user.should_see(
+            "Controller confirmed the displayed TCP transform.", retries=100
+        )
+        assert await client.tcp_transform() == pytest.approx(correction)
+        angles = await client.angles()
+        pose = await client.pose()
+        assert angles is not None and pose is not None
+        fk = robot.fk(np.radians(angles), np.empty(6))
+        local = Pose(tuple([*(fk[:3] * 1000), *np.degrees(fk[3:])])).matrix()
+        applied = Pose(tuple(pose)).matrix()
+        assert local[:3, 3] == pytest.approx(applied[:3, 3], abs=0.1)
+        assert local[:3, :3] == pytest.approx(applied[:3, :3], abs=0.003)
+
+        from dataclasses import replace
+        from tests.test_vision import localization_scene
+        from tests.test_handeye_panel_integration import _FrameBackend, _jpeg
+        from waldo_commander.services import camera_service as camera_module
+        from waldo_commander.camera_sources import CommanderCameraSource
+        from waldo_commander.services.camera_session import CameraSession
+        from waldo_commander.services.tcp_calibration import observe_tcp
+        from waldo_commander.skills import locate_board
+        from waldoctl.setup import TcpCalibration
+
+        monkeypatch.setattr(camera_module, "LinuxpyBackend", _FrameBackend)
+        monkeypatch.setattr(camera_module, "OpenCVBackend", _FrameBackend)
+        camera = camera_module.camera_service
+        calibration, setup, image, expected = localization_scene()
+        _FrameBackend.holder["jpeg"] = _jpeg(image)
+        session = CameraSession(camera.next_snapshot)
+        try:
+            camera.start(0)
+            observation = await observe_tcp(client)
+            tool = TcpCalibration(
+                observation.applied,
+                observation.binding.tool_key,
+                observation.binding.variant_key,
+            )
+            tcp_wrf = observation.nominal_tool.matrix() @ tool.matrix()
+            calibration = replace(
+                calibration,
+                camera_id=camera.camera_id,
+                backend="par6",
+                mount="tool",
+                pose=Pose.from_matrix(
+                    np.linalg.inv(tcp_wrf) @ calibration.pose.matrix(), frame="TCP"
+                ),
+                tool=tool,
+                reference_wrf=None,
+            )
+            env = await session.start()
+            source = CommanderCameraSource(
+                env["WALDO_CAMERA_ENDPOINT"], env["WALDO_CAMERA_TOKEN"]
+            )
+            localized = await locate_board.async_call(
+                client, calibration, source, setup, timeout_s=3
+            )
+            assert localized.outcome == "found", localized
+            assert localized.pose.matrix()[:3, 3] == pytest.approx(
+                expected[:3, 3], abs=2
+            )
+        finally:
+            await session.close()
+            camera.stop()
+
+        from waldo_commander.patterns import (
+            PatternProgress,
+            grid_poses,
+            load_progress,
+            save_progress,
+        )
+        from waldo_commander.skills import transfer
+
+        index = await client.move_j([0, -60, 150, 0, 45, 180], speed=0.3)
+        assert await client.wait_command(index, timeout=15)
+        pick = Pose(tuple(await client.pose()))
+        places = grid_poses(pick, rows=1, columns=2, pitch_x_mm=1, pitch_y_mm=0)
+        progress = PatternProgress.for_poses(places)
+        expected_place = places[1].matrix()
+        expected_place[:3, 3] += 2 * expected_place[:3, 2]
+        expected_pose = np.asarray(Pose.from_matrix(expected_place).values)
+        expected_pose[:3] /= 1000
+        expected_pose[3:] = np.radians(expected_pose[3:])
+        expected_joints = robot.ik(expected_pose, np.radians(await client.angles()))
+        assert expected_joints.success, expected_joints
+        config_info = await client.config_info()
+        assert config_info is not None
+        tolerance = config_info["motion"]["settle_tolerance_rad"]
+        await transfer.async_call(
+            client, pick=pick, place=places[1], clearance_mm=2, speed=0.3
+        )
+        # Native completion is a joint-space tolerance; a fixed sub-mm TCP
+        # assertion would promise accuracy the controller does not require.
+        # The preview workflow separately checks the exact planned clearance.
+        await poll_until(
+            client.angles,
+            lambda angles: (
+                angles is not None
+                and np.allclose(
+                    np.radians(angles), expected_joints.q, atol=tolerance, rtol=0
+                )
+            ),
+            timeout_s=5,
+            what=f"the final transfer joints to settle within {tolerance} rad of {expected_joints.q}",
+        )
+        assert await client.wait_status(
+            lambda s: (
+                bool(s.tool_status.positions) and s.tool_status.positions[0] < 0.1
+            ),
+            timeout=3,
+        )
+        progress = progress.mark(1)
+        path = tmp_path / "tray-progress.json"
+        assert save_progress(path, progress, client=client)
+        assert load_progress(path, places).pending() == (0,)
+
+        from waldo_commander.components.script_execution import script_exec
+        from waldo_commander.services.run_records import load_record
+        from waldo_commander.services.supervised_restart import (
+            fresh_state,
+            source_digest,
+        )
+
+        monkeypatch.setenv("WALDO_RUN_RECORD_DIR", str(tmp_path / "run-records"))
+        script_exec.record_runs = True
+
+        user.find(marker="tab-program").click()
+        await asyncio.sleep(0)
+        ui_state.active_textarea.value = (
+            "from par6 import RobotClient\n"
+            "def after_stop():\n"
+            "    with RobotClient() as rbt:\n"
+            "        rbt.delay(0.01)\n"
+            "if __name__ == '__main__':\n"
+            "    with RobotClient() as rbt:\n"
+            "        index = rbt.delay(60)\n        rbt.wait_command(index, timeout=90)\n"
+        )
+        try:
+            await script_exec.start()
+            program = waldoctl.commander.programs.active
+            handle = script_exec.script_handle
+            assert program is not None and handle is not None
+            await poll_until(
+                client.queue_state,
+                lambda q: q is not None and q.executing_index >= 0,
+                timeout_s=25,
+                what=lambda: (
+                    "native program start; log="
+                    + "\n".join(entry.text for entry in program.log.entries)
+                ),
+            )
+            # The command lasts longer than one wait_command polling window.
+            # A timeout must not emit a completed step or advance the program.
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(12):
+                    while not program.dry_run.playback.executing_step_at_end:
+                        await asyncio.sleep(0.05)
+            assert handle["proc"].returncode is None
+            await script_exec.stop()
+            assert script_exec.last_record is not None
+            run_events = load_record(script_exec.last_record)
+            assert run_events[-1]["outcome"] == "stopped"
+            assert any(
+                e["event"] == "command_started" and e["arguments"].get("seconds") == 60
+                for e in run_events
+            )
+            assert not any(e["event"] == "command_completed" for e in run_events)
+            assert any(
+                e["event"] == "status"
+                and e["snapshot"]["seq"] > 0
+                and e["snapshot"]["session_id"] > 0
+                for e in run_events
+            )
+            assert any(
+                e["event"] == "controller_context" and e["method"] == "shapes"
+                for e in run_events
+            )
+            await poll_until(
+                client.queue_state,
+                lambda q: q is not None and q.executing_index < 0,
+                timeout_s=3,
+                what="the stopped native queue",
+            )
+            index = await client.delay(0.01)
+            assert await client.wait_command(index, timeout=3), (
+                "Stop must clear the previous program's native queue"
+            )
+            for _ in range(6):
+                reference = await fresh_state(client)
+                assert await script_exec.start(
+                    restart_entry="after_stop",
+                    restart_reference=reference,
+                    reviewed_source_digest=source_digest(
+                        ui_state.active_textarea.value
+                    ),
+                )
+                async with asyncio.timeout(15):
+                    while script_exec.script_handle is not None:
+                        await asyncio.sleep(0.05)
+                assert script_exec.last_exit_code == 0, "\n".join(
+                    entry.text for entry in program.log.entries
+                )
+                assert any(
+                    e["event"] == "entry_returned" and e["method"] == "after_stop"
+                    for e in load_record(script_exec.last_record)
+                )
+        finally:
+            if script_exec.script_handle is not None:
+                await script_exec.stop()
+
+        from waldo_commander.demonstrations import (
+            load_demonstration,
+            record_demonstration,
+            save_demonstration,
+        )
+
+        recording = await record_demonstration(client, duration_s=0.3)
+        assert recording.backend == "par6" and len(recording.samples) >= 2
+        assert recording.tcp_transform == pytest.approx(correction)
+        recording_path = tmp_path / "par6-demonstration.json"
+        save_demonstration(recording_path, recording)
+        assert load_demonstration(recording_path) == recording
+        from waldo_commander.skills import replay_demonstration
+
+        replayed = await replay_demonstration.async_call(client, recording)
+        assert replayed.completed_samples == len(recording.samples)
+        assert await client.angles() == pytest.approx(
+            recording.samples[-1].joints_deg, abs=0.5
+        )
+
+        from waldoctl import Sphere
+        from nicegui import run
+        from waldo_commander.skills import attach_object, detach_object
+        from waldo_commander.services.path_visualizer import _run_simulation_isolated
+
+        original_world = await client.shapes()
+        assert original_world is not None
+        part = Sphere(name="held-part", radius=0.01, pose=(1, 1, 1, 0, 0, 0))
+        assert await client.set_shapes([*original_world.program, part]) == 1
+        held = await attach_object.async_call(
+            client,
+            name="held-part",
+            flange_pose=(0, 0, 0.3, 0, 0, 0),
+        )
+        world = await client.shapes()
+        assert world is not None and world.attachments_valid
+        assert held in world.program
+        await waldoctl.commander.scene.refresh_from_backend()
+        scene = ui_state.urdf_scene
+        assert scene is not None
+        async with asyncio.timeout(3):
+            while "shape:held-part" not in scene._shape_objects:
+                await asyncio.sleep(0.01)
+        assert (
+            scene._shape_objects["shape:held-part"].parent
+            is scene.joint_groups["gripper_JOINT"]
+        )
+        source = (
+            "from par6 import RobotClient\n"
+            "from waldo_commander.skills import detach_object\n"
+            "with RobotClient() as rbt:\n"
+            "    assert rbt.shapes().attachments_valid\n"
+            "    detach_object(rbt, name='held-part', world_pose=(1, 1, 1, 0, 0, 0))\n"
+            "    assert all(s.attachment is None for s in rbt.shapes().program)\n"
+        )
+        preview = await run.cpu_bound(
+            _run_simulation_isolated,
+            source,
+            np.radians(await client.angles()),
+            backend_package="par6",
+            shapes_wire=[s.to_wire() for s in world.program],
+            attachment_epoch=world.attachment_epoch,
+        )
+        assert preview["error"] is None, preview["error"]
+        assert (await client.shapes()).program == world.program
+        await detach_object.async_call(
+            client, name="held-part", world_pose=(1, 1, 1, 0, 0, 0)
+        )
+        assert await client.set_shapes(list(original_world.program)) == 1
+
+        from waldo_commander.services.path_visualizer import PathVisualizer
+
+        await waldoctl.commander.scene.refresh_from_backend()
+        visualizer = PathVisualizer()
+        physics_source = (
+            "from par6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    rbt.delay(0.2)\n"
+        )
+        try:
+            assert await visualizer.update_path_visualization(physics_source) is None
+            program = waldoctl.commander.programs.active
+            assert program is not None
+            assert await visualizer.update_physics_simulation() is None
+            predicted = program.dry_run.predicted_current
+            assert predicted is not None, "the editor must produce a predicted record"
+            assert predicted.rows > 1 and predicted.duration_s >= 0.2
+            assert str(predicted.stop) == "completed"
+        finally:
+            visualizer.cancel_physics()
+
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)
         if robot is not None:
             with contextlib.suppress(Exception):
                 robot.stop()
+
+
+@requires_par6
+@pytest.mark.integration
+@pytest.mark.parametrize("asynchronous", [True, False])
+async def test_native_managed_timeout_cancels_the_accepted_move(
+    par6_env, user, asynchronous
+):
+    import asyncio
+    from uuid import uuid4
+    import numpy as np
+    import waldoctl
+    from par6 import RobotClient
+    from waldo_commander.constants import config
+    from waldo_commander.services.stepping_client import (
+        AsyncSteppingClientWrapper,
+        SteppingClientWrapper,
+        GUIStepController,
+        StepIO,
+    )
+    from waldo_commander.state import ui_state
+
+    controller = GUIStepController(uuid4().hex)
+    controller.initialize()
+    controller.signal_play()
+    task = None
+    try:
+        await user.open("/")
+        await wait_for_app_ready(timeout_s=60)
+        client = waldoctl.commander.client
+        park = [0, -120, 150, 0, 0, 180]
+        await client.reset()
+        async with asyncio.timeout(10):
+            while True:
+                await client.teleport(park)
+                if await client.wait_status(
+                    lambda s: s.homed and np.allclose(s.angles, park, atol=0.5),
+                    timeout=0.5,
+                ):
+                    break
+        target = list(park)
+        target[0] += 4
+
+        def sync_move():
+            with RobotClient(
+                host=config.controller_host, port=config.controller_port
+            ) as native:
+                wrapped = SteppingClientWrapper(native, StepIO(controller.session_id))
+                wrapped.move_j(target, duration=5, timeout=0.75)
+
+        if asynchronous:
+            managed = AsyncSteppingClientWrapper(client, StepIO(controller.session_id))
+            task = asyncio.create_task(managed.move_j(target, duration=5, timeout=0.75))
+        else:
+            task = asyncio.create_task(asyncio.to_thread(sync_move))
+        await poll_until(
+            client.queue_state,
+            lambda q: q.executing_index >= 0,
+            timeout_s=3,
+            what="accepted native move",
+        )
+        with pytest.raises(TimeoutError):
+            await task
+        queue = await client.queue_state()
+        assert queue.executing_index < 0 and not queue.queue, (
+            "timed-out managed move kept executing"
+        )
+        followup = await client.delay(0.01)
+        assert await client.wait_command(followup, timeout=3)
+    finally:
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        controller.cleanup()
+        robot = getattr(ui_state, "robot", None)
+        if robot is not None:
+            robot.stop()

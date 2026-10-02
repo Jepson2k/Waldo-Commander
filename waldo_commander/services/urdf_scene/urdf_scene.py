@@ -17,48 +17,48 @@ import asyncio
 import logging
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple, Sequence
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from dataclasses import dataclass
-
 import numpy as np
-from scipy.spatial.transform import Rotation
-from nicegui import ui, app
-from nicegui.elements.scene.scene_object3d import Object3D
-
 import waldoctl
-from waldoctl import LinearMotion, RotaryMotion, MeshRole, PartMotion
+from nicegui import app, ui
+from nicegui.elements.scene.scene_object3d import Object3D
+from scipy.spatial.transform import Rotation
+from waldoctl import LinearMotion, MeshRole, PartMotion, RotaryMotion
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, TOOL_PREFIX, pose_matrix
 
 from waldo_commander.common.logging_config import TRACE_ENABLED, TraceLogger
 from waldo_commander.common.theme import (
-    PathColors,
     SceneColors,
     get_color_for_move_type,
+    hex_of,
 )
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
 from waldo_commander.services.programs import active_cursor_line
 from waldo_commander.services.timeline import ObjectSample
 from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
 from waldo_commander.services.urdf_scene.scene_batch import batch_scene
-from waldo_commander.state import simulation_state, robot_state, ui_state
+from waldo_commander.state import robot_state, simulation_state, ui_state
 
 from .config import DRAFT_PREFIX, RobotAppearanceMode, ToolPose, UrdfSceneConfig
+from .editing_mixin import EditingMixin
+from .envelope_renderer import EnvelopeRenderer
+from .jog_handles_mixin import JogHandlesMixin
+from .objects import Floor, Stl, StudioLights
 from .loader import (
-    load_urdf,
-    resolve_meshes_dir,
     get_transl_and_rpy,
+    load_urdf,
+    normalize_axis,
+    resolve_meshes_dir,
     rot_joint,
     transl_joint,
-    normalize_axis,
 )
-from .editing_mixin import EditingMixin
-from .tcp_controls_mixin import TCPControlsMixin
-from .envelope_renderer import EnvelopeRenderer
 from .path_renderer import PathRenderer
+from .tcp_controls_mixin import TCPControlsMixin
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
@@ -138,6 +138,12 @@ def _lerp_hex(c1: tuple[int, int, int], c2: tuple[int, int, int], factor: float)
     g = int(c1[1] + (c2[1] - c1[1]) * factor + 0.5)
     b = int(c1[2] + (c2[2] - c1[2]) * factor + 0.5)
     return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _hex_rgb(hex_color: str) -> tuple[int, int, int]:
+    """A ``#rrggbb`` colour as 0-255 ints for :func:`_lerp_hex`."""
+    h = hex_color.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
 class RenderedSegment(NamedTuple):
@@ -248,6 +254,7 @@ def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
 class UrdfScene(
     EditingMixin,
     TCPControlsMixin,
+    JogHandlesMixin,
     EnvelopeRenderer,
 ):
     """Load a URDF file as a NiceGUI Scene
@@ -256,6 +263,7 @@ class UrdfScene(
     - Render URDF meshes (STL) using NiceGUI scene
     - Set individual/all joint axis values to animate the model
     - Add interactive Cartesian gizmo (translate arrows + rotation rings)
+    - Reveal a jog ring per joint, or the gizmo, when the pointer rests on the arm
     - Visual parenting to WRF (world) or TRF (tool/end-effector) frame
     - TCP offset/orientation updates on tool change
     - Configurable tool pose handling via injection (no hard dependencies)
@@ -295,6 +303,9 @@ class UrdfScene(
 
         # Scene-related state
         self.joint_groups: dict[str, Any] = {}
+        # Each joint's static frame (its origin in the parent link), which
+        # does not turn with the joint: the joint's ring is drawn in it.
+        self.joint_frame_groups: dict[str, Any] = {}
         self.joint_pos_limits: dict[str, dict[str, float | None]] = {}
         self.joint_trafos: dict = {}
         self.scene: Any | None = None
@@ -323,6 +334,8 @@ class UrdfScene(
         self.targets_group: Any | None = None
         # What a simulated run measured, over the planned picture.
         self.physics_overlay = PhysicsOverlay(self)
+        self.skill_preview_group: Any | None = None
+        self._skill_preview_objects: list[Any] = []
         self._rendered_segments: list[RenderedSegment | None] = []  # indexed by segment
         self._line_to_segments: dict[
             int, list[int]
@@ -360,7 +373,7 @@ class UrdfScene(
         # geometry (arm links, tool meshes, user shapes) can be tinted red.
         self._link_to_meshes: dict[str, list[Any]] = {}
         self._shape_objects: dict[str, Any] = {}
-        self._ground_disc: Object3D | None = None
+        self._floor: Object3D | None = None
         self._drawn: dict[str, _Drawn] = {}
         self._shapes_group: Any | None = None
         self._colliding_meshes: set[Any] = set()  # objects currently tinted red
@@ -386,6 +399,7 @@ class UrdfScene(
         self._init_editing_state()
         self._init_shape_editing()
         self._init_tcp_controls_state()
+        self._init_jog_handles_state()
         self._init_envelope_state()
         self.path_renderer = PathRenderer()
 
@@ -413,17 +427,15 @@ class UrdfScene(
             self.context_menu = ui.context_menu()
             # Clear on hide so it doesn't auto-show with stale content.
             self.context_menu.on("hide", lambda: self.context_menu.clear())
-            # Polar grid sized to robot's approximate workspace (~536mm reach).
-            default_radius = 0.55  # meters
+            reach = self._chain_reach()
             with (
                 ui.scene(
                     grid=False,
-                    polar_grid=(default_radius, 12, 6),  # (radius, sectors, rings)
                     raycaster_threshold=0.005,
                     background_color=background_color,
                     # White ~0.2-opacity halo at 1.5x footprint, matching the
                     # original feature-branch hoverable() visuals.
-                    hover_color="#ffffff",
+                    hover_color=hex_of("scene-hover"),
                     hover_opacity=0.2,
                     hover_scale=1.5,
                     on_click=self._handle_scene_click,
@@ -434,18 +446,24 @@ class UrdfScene(
                         "contextmenu",
                     ],
                 )
-                .classes("w-full h-[66vh]")
+                # ui.scene sizes its canvas once, shortly after mount, from
+                # whatever height this element resolves to at that instant, and
+                # never observes it again. So the height has to be definite in
+                # the first payload: an arbitrary Tailwind value would still be
+                # queued for a browser-side JIT build by then, and a later style
+                # patch would land after the measurement.
+                .classes("w-full h-full")
+                .style("margin: 0; display: block;")
                 .on_transform_end(self._handle_transform_event) as self.scene
             ):
-                # Placeholder ground for contrast with the background, shown
-                # until a backend reports where its installation floor is.
-                self._ground_disc = (
-                    ui.scene.cylinder(
-                        default_radius, default_radius, 0.001, radial_segments=64
-                    )
-                    .material(self.config.ground_color, opacity=0.5)
-                    .rotate(math.pi / 2, 0, 0)
+                # The floor stands in until a backend describes where its
+                # installation floor is. The lights replace the fork's flat
+                # defaults, which _configure_renderer removes at init.
+                self._floor = Floor(
+                    reach, 12, 6, self.config.ground_color, self.config.grid_color
                 )
+                StudioLights(reach * 1.6)
+                self.scene.on("init", self._configure_renderer)
 
                 self._plot_stls(
                     self.urdf_model.base_link, scale=self._stl_scale, material=material
@@ -469,6 +487,10 @@ class UrdfScene(
                         "simulation:targets"
                     ) as targets_grp:
                         self.targets_group = targets_grp
+                    with ui.scene.group().with_name(
+                        "simulation:skill-preview"
+                    ) as skill_preview_grp:
+                        self.skill_preview_group = skill_preview_grp
 
             # Orientation inset (axes gizmo).
             try:
@@ -491,6 +513,7 @@ class UrdfScene(
             self.scene.on_transform_start(self._handle_transform_start)
             # Continuous events drive live ghost robot updates.
             self.scene.on_transform(self._handle_transform_continuous)
+            self._register_hover_sources()
 
     def _handle_transform_continuous(self, e) -> None:
         """Handle continuous transform events for TCP ball and joint controls.
@@ -513,11 +536,16 @@ class UrdfScene(
     def _handle_transform_start(self, e) -> None:
         """Handle TransformControls transform_start events to manage orbit and mutex."""
         object_name = getattr(e, "object_name", "") or ""
+        if object_name in ("tcp:ball", "tcp:jog_ball", "ghost:tcp_ball") and (
+            self._tcp_ball is None or e.object_id != self._tcp_ball.id
+        ):
+            return
         if object_name in ("tcp:ball", "ghost:tcp_ball"):
             # Disable orbit controls for the duration of the TCP drag.
             if self.scene:
                 self.scene.set_orbit_enabled(False)
             self._tcp_ball_dragging = True
+            self._begin_gizmo_marks(e)
             if self._appearance_mode == RobotAppearanceMode.EDITING:
                 # Suspend joint controls during TCP ball manipulation in editing mode.
                 if not self._joint_controls_suspended:
@@ -548,12 +576,17 @@ class UrdfScene(
         """
         object_name = getattr(e, "object_name", "") or ""
         event_type = getattr(e, "type", "")
+        if object_name in ("tcp:ball", "tcp:jog_ball", "ghost:tcp_ball") and (
+            self._tcp_ball is None or e.object_id != self._tcp_ball.id
+        ):
+            return
 
         # Unified TCP ball: on transform_end re-enable orbit and joint controls.
         if object_name in ("tcp:ball", "ghost:tcp_ball"):
             if event_type == "transform_end":
                 self._tcp_ball_dragging = False
                 self._tcp_drag_start_rot_deg = None
+                self._end_gizmo_marks(e)
                 if self.scene:
                     self.scene.set_orbit_enabled(True)
                 if self._joint_controls_suspended:
@@ -572,6 +605,7 @@ class UrdfScene(
                             logger.error(
                                 "TCP cartesian move end callback error: %s", err
                             )
+                self._settle_hover()
             return
 
         # Legacy jog ball names.
@@ -627,7 +661,7 @@ class UrdfScene(
                     if target.is_valid != is_valid:
                         target.is_valid = is_valid
                         new_color = (
-                            PathColors.INVALID
+                            hex_of("path-invalid")
                             if not is_valid
                             else get_color_for_move_type(target.move_type)
                         )
@@ -738,6 +772,9 @@ class UrdfScene(
         if not self.scene:
             return
         with batch_scene(self.scene):
+            # The view settings change on this channel too (the gizmo's Hidden
+            # among them, e.g. from MCP).
+            self.refresh_handles()
             self._do_update_simulation_view_body()
 
     def _do_update_simulation_view_body(self) -> None:
@@ -757,12 +794,14 @@ class UrdfScene(
 
         active = waldoctl.commander.programs.active
         view = waldoctl.commander.settings.view
-        # The achieved path, where a run measured one. Its own group, so
-        # a rebuild never disturbs the planned-path diff below, and keyed
-        # on the record's digest so an identical run is left alone.
+        # The predicted path, where a pass produced one that differs from
+        # the commanded path. Its own group, so a rebuild never disturbs
+        # the commanded-path diff below, and keyed on both records'
+        # digests so an identical pair is left alone.
         self.physics_overlay.render(
-            active.dry_run.ticks if active is not None else None,
-            show_divergence=view.divergence_visible,
+            active.dry_run.commanded if active is not None else None,
+            active.dry_run.predicted_current if active is not None else None,
+            show_predicted=view.predicted_visible,
         )
         if active is not None:
             all_segments = active.dry_run.path_segments
@@ -1052,14 +1091,14 @@ class UrdfScene(
             if seg.points:
                 first_line = seg.line_number
                 first_pos = seg.points[-1]
-                first_color = get_color_for_move_type(seg.move_type)
+                first_color = seg.color
                 first_seg_idx = first_cmd_idx
         if last_cmd_idx >= 0 and last_cmd_idx < len(segments):
             seg = segments[last_cmd_idx]
             if seg.points:
                 last_line = seg.line_number
                 last_pos = seg.points[-1]
-                last_color = get_color_for_move_type(seg.move_type)
+                last_color = seg.color
                 last_seg_idx = last_cmd_idx
 
         target_by_line: dict[int, Any] = {}
@@ -1151,7 +1190,7 @@ class UrdfScene(
             active_ids.add(target.id)
             shape = shape_for_line(target.line_number)
             color = (
-                PathColors.INVALID
+                hex_of("path-invalid")
                 if not target.is_valid
                 else get_color_for_move_type(target.move_type)
             )
@@ -1262,11 +1301,6 @@ class UrdfScene(
         b = int(b + (255 - b) * factor)
         return f"#{r:02x}{g:02x}{b:02x}"
 
-    _INVALID_RGB = (
-        int(PathColors.INVALID.lstrip("#")[0:2], 16),
-        int(PathColors.INVALID.lstrip("#")[2:4], 16),
-        int(PathColors.INVALID.lstrip("#")[4:6], 16),
-    )
     _BLEND_RANGE = 1.0  # number of segments over which to fade toward red
 
     def _gradient_colors(self, segments, seg_index) -> list[str] | None:
@@ -1300,8 +1334,8 @@ class UrdfScene(
         if dist_before > rng and dist_after > rng:
             return None
 
-        h = seg.color.lstrip("#")
-        rgb1 = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+        rgb1 = _hex_rgb(seg.color)
+        invalid_rgb = _hex_rgb(hex_of("path-invalid"))
 
         colors = []
         for j in range(n_pairs):
@@ -1315,7 +1349,7 @@ class UrdfScene(
             factor = factor**3.0  # steep ramp — stays green, only red near boundary
 
             if factor > 0.001:
-                colors.append(_lerp_hex(rgb1, self._INVALID_RGB, factor))
+                colors.append(_lerp_hex(rgb1, invalid_rgb, factor))
             else:
                 colors.append(seg.color)
 
@@ -1360,6 +1394,31 @@ class UrdfScene(
                 for j, obj in enumerate(rs.objects):
                     base = rs.colors[j] if j < len(rs.colors) else ""
                     obj.material(self._glow_color(base))
+
+    def show_skill_preview(
+        self,
+        segments: list[waldoctl.PathSegment],
+        tool_actions: list[waldoctl.ToolAction],
+    ) -> None:
+        """Draw one skill's planned motion, dashed so it never reads as the program's."""
+        self.clear_skill_preview()
+        if self.scene is None or self.skill_preview_group is None:
+            return
+        with self.scene, self.skill_preview_group:
+            for segment in segments:
+                objects, _, _ = self.path_renderer.render_path_segment(
+                    segment, force_dashed=True
+                )
+                self._skill_preview_objects.extend(objects)
+            for action in tool_actions:
+                self._skill_preview_objects.extend(
+                    self.path_renderer.render_tool_action(action)
+                )
+
+    def clear_skill_preview(self) -> None:
+        for obj in self._skill_preview_objects:
+            self._safe_delete(obj)
+        self._skill_preview_objects.clear()
 
     def _clear_path_state(self) -> None:
         """Delete all rendered path objects and reset bookkeeping."""
@@ -1465,6 +1524,7 @@ class UrdfScene(
             else:
                 lo, hi = 0, n_rendered  # first update — touch all items
 
+            tool_hex = hex_of("path-tool-action")
             for ri in self._rendered_tool_actions:
                 if ri is None or not ri.objects or ri.segment_index < 0:
                     continue
@@ -1472,7 +1532,7 @@ class UrdfScene(
                     continue
                 opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
                 for obj in ri.objects:
-                    obj.material(PathColors.TOOL_ACTION, opacity)
+                    obj.material(tool_hex, opacity)
 
             for ri in self._rendered_waypoints:
                 if ri is None or not ri.objects or ri.segment_index < 0:
@@ -1605,6 +1665,7 @@ class UrdfScene(
         installation=(),
         draft=False,
         installation_draft=(),
+        attachment_epoch=0,
     ) -> None:
         """Draw the keep-out shapes by layer and map them for highlighting.
 
@@ -1615,7 +1676,7 @@ class UrdfScene(
         that changes nothing, and the group is created once, so a dragged
         object survives the readback that confirms its new pose.
 
-        ``shapes`` is the program layer — amber while ``draft`` (not yet
+        ``shapes`` is the program layer — pale slate while ``draft`` (not yet
         confirmed by backend readback), slate once confirmed. ``installation``
         shapes come from the backend's robot config and render in their own
         muted color; they are never draft — the floor is one of them, an
@@ -1634,19 +1695,22 @@ class UrdfScene(
             (SHAPE_PREFIX, shapes, program_hex),
         ):
             for s in layer:
-                desired[f"{prefix}{s.name}"] = (s, color, SHAPE_OPACITY)
+                shape_color = (
+                    SceneColors.SHAPE_DRAFT_HEX
+                    if s.attachment is not None
+                    and s.attachment.epoch != attachment_epoch
+                    else color
+                )
+                desired[f"{prefix}{s.name}"] = (s, shape_color, SHAPE_OPACITY)
         changed = False
         with batch_scene(self.scene):
-            # The disc is a placeholder for a backend that describes no
+            # The floor is a placeholder for a backend that describes no
             # ground. A declared floor replaces it — but an installation
-            # of a table and nothing else does not, and hiding the disc
+            # of a table and nothing else does not, and hiding the floor
             # for that leaves the table floating in the void.
-            show_disc = not any(_is_ground(s) for s in installation)
-            if (
-                self._ground_disc is not None
-                and self._ground_disc.visible_ != show_disc
-            ):
-                self._ground_disc.visible(show_disc)
+            show_floor = not any(_is_ground(s) for s in installation)
+            if self._floor is not None and self._floor.visible_ != show_floor:
+                self._floor.visible(show_floor)
             with self.scene:
                 for key in [k for k in self._shape_objects if k not in desired]:
                     self._forget_shape_object(key)
@@ -1655,7 +1719,7 @@ class UrdfScene(
                     self._shapes_group = self.scene.group().with_name("shapes")
                 with self._shapes_group:
                     for key, (s, color, opacity) in desired.items():
-                        geometry = (s.kind, tuple(s.params()))
+                        geometry = (s.kind, tuple(s.params()), s.attachment is not None)
                         pose = tuple(s.pose)
                         obj = self._shape_objects.get(key)
                         last = self._drawn.get(key)
@@ -1663,7 +1727,30 @@ class UrdfScene(
                             self._forget_shape_object(key)
                             obj = None
                         if obj is None:
-                            obj = self._make_shape_object(s)
+                            parent = (
+                                self.last_actuated_group
+                                if s.attachment is not None
+                                else self._shapes_group
+                            )
+                            if parent is None:
+                                # A readback can be adopted before the URDF's
+                                # joint groups exist (a reconnect racing the
+                                # model load). Draw the held shape in the world
+                                # group for now rather than abandoning the rest
+                                # of the render: the next render, with the
+                                # flange group in place, reparents it.
+                                logger.warning(
+                                    "No flange group yet for held shape %s; drawing "
+                                    "it in the world group until the model loads",
+                                    s.name,
+                                )
+                                parent = self._shapes_group
+                            if parent is None:
+                                raise ValueError(
+                                    "No shape group is available to draw into"
+                                )
+                            with parent:
+                                obj = self._make_shape_object(s)
                             if obj is None:
                                 continue
                             obj.with_name(key)
@@ -1730,22 +1817,19 @@ class UrdfScene(
         if not self.scene:
             return
         with batch_scene(self.scene):
+            active = {self._object_entry(name)[0] for name in poses or {}}
+            for key, drawn in self._drawn.items():
+                if not drawn.overridden or key in active:
+                    continue
+                was_guess = drawn.guess
+                drawn.overridden, drawn.guess, drawn.placed_pose = False, False, None
+                obj = self._shape_objects.get(key)
+                if obj is None:
+                    continue
+                obj.move(*drawn.declared_pose[0]).rotate_R(drawn.declared_pose[1])
+                if was_guess:
+                    self._paint_shape(obj, key)
             if poses is None:
-                for key, drawn in self._drawn.items():
-                    if not drawn.overridden:
-                        continue
-                    was_guess = drawn.guess
-                    drawn.overridden, drawn.guess, drawn.placed_pose = (
-                        False,
-                        False,
-                        None,
-                    )
-                    obj = self._shape_objects.get(key)
-                    if obj is None:
-                        continue
-                    obj.move(*drawn.declared_pose[0]).rotate_R(drawn.declared_pose[1])
-                    if was_guess:
-                        self._paint_shape(obj, key)
                 return
             for name, sample in poses.items():
                 key, drawn = self._object_entry(name)
@@ -1831,12 +1915,15 @@ class UrdfScene(
         if not self.scene:
             return
 
+        n = min(len(val), len(self._joint_q))
+        self._joint_q[:n] = val[:n]
         with batch_scene(self.scene):
             for joint_name, q in zip(self.joint_names, val):
                 joint_TF = self.joint_trafos[joint_name]
                 joint_i = self.joint_groups[joint_name]
                 t, r = joint_TF(q)
                 joint_i.move(*t).rotate(*r)
+            self._follow_dial()
 
     def _apply_joint_angles(self, angles_rad: list[float]) -> None:
         """Apply joint angles to the main robot joint groups.
@@ -2025,12 +2112,7 @@ class UrdfScene(
                     role = mesh_spec.role
 
                     url = self._stl_to_url(filename)
-                    obj = (
-                        ui.scene.stl(url)
-                        .scale(self._stl_scale)
-                        .move(*origin)
-                        .rotate(*rpy)
-                    )
+                    obj = Stl(url).scale(self._stl_scale).move(*origin).rotate(*rpy)
                     is_moving = role in motion_roles
                     color = moving_color if is_moving else body_color
                     if color is not None:
@@ -2235,11 +2317,12 @@ class UrdfScene(
         """Recursively add joint and child link to scene."""
         t, r = get_transl_and_rpy(joint.origin)
         # Static transform from parent link to this joint frame.
-        with ui.scene.group().move(*t).rotate(*r):
+        with ui.scene.group().move(*t).rotate(*r) as joint_frame:
             # Inner group carries the dynamic joint value (q).
             with ui.scene.group() as joint_trafo:
                 if joint.joint_type != "fixed":
                     self.joint_groups[joint.name] = joint_trafo
+                    self.joint_frame_groups[joint.name] = joint_frame
 
                     if joint.joint_type == "prismatic":
                         self.joint_trafos[joint.name] = lambda q, axis=joint.axis: (
@@ -2300,17 +2383,37 @@ class UrdfScene(
                             self._draw_scene_cos(scale=0.05)
 
     def _plot_stls(self, link, scale: float = 1, material=None):
-        """Add all visual STLs from a link to the scene."""
+        """Add URDF meshes and primitives, retaining their visual transforms."""
         for visual in link.visuals:
-            obj = ui.scene.stl(
-                self._stl_to_url(visual.geometry.geometry.filename)
-            ).scale(scale)
-            if visual.origin is not None:
-                t, r = get_transl_and_rpy(visual.origin)
-                if any(v != 0 for v in t):
-                    obj.move(*t)
-                if any(v != 0 for v in r):
-                    obj.rotate(*r)
+            geometry = visual.geometry
+            rotation = np.eye(3)
+            if geometry.mesh is not None:
+                obj = Stl(self._stl_to_url(geometry.mesh.filename))
+                mesh_scale = geometry.mesh.scale
+                if mesh_scale is not None:
+                    obj.scale(*(float(v) * scale for v in mesh_scale))
+                else:
+                    obj.scale(scale)
+            elif geometry.sphere is not None:
+                obj = ui.scene.sphere(geometry.sphere.radius).scale(scale)
+            elif geometry.box is not None:
+                obj = ui.scene.box(*geometry.box.size).scale(scale)
+            elif geometry.cylinder is not None:
+                cylinder = geometry.cylinder
+                obj = ui.scene.cylinder(
+                    cylinder.radius,
+                    cylinder.radius,
+                    cylinder.length,
+                    radial_segments=32,
+                ).scale(scale)
+                rotation = _Y_TO_Z_UP
+            else:
+                logger.warning("Unsupported URDF visual on link %s", link.name)
+                continue
+            origin = visual.origin if visual.origin is not None else np.eye(4)
+            obj.with_name(f"link:{link.name}")
+            obj.move(*origin[:3, 3])
+            obj.rotate_R((origin[:3, :3] @ rotation).tolist())
             if material is not None:
                 obj.material(material)
             # Tracked for simulator appearance changes.
@@ -2318,8 +2421,75 @@ class UrdfScene(
             # Tracked by link name so reported colliding links can be tinted red.
             self._link_to_meshes.setdefault(link.name, []).append(obj)
 
+    def _chain_reach(self) -> float:
+        """Reach of the fully stretched joint chain from the base link, in metres."""
+        by_parent: dict[str, list[Any]] = {}
+        for j in self.urdf_model.joints:
+            by_parent.setdefault(j.parent, []).append(j)
+
+        def walk(link_name: str) -> float:
+            best = 0.0
+            for j in by_parent.get(link_name, []):
+                t, _ = get_transl_and_rpy(j.origin)
+                best = max(best, math.hypot(*map(float, t)) + walk(j.child))
+            return best
+
+        return walk(self.urdf_model.base_link.name)
+
+    def _configure_renderer(self) -> None:
+        """Swap the fork's flat default lights for ours, cast shadows and fog the distance.
+
+        No tone mapping, so unlit token colours render as their hex. The fog
+        starts past the floor's edge wherever the camera is, and the shadow
+        map redraws only when a shadow caster moves, appears or hides.
+        Runs on every scene init, so a remount after WebGL context loss gets it again.
+        """
+        if self.scene is None:
+            return
+        bg = self.config.background_color
+        reach = self._chain_reach()
+        ui.run_javascript(
+            f"""
+            import("nicegui-scene").then(({{ THREE }}) => {{
+              const view = getElement({self.scene.id});
+              view.scene.children.filter((o) => o.isLight).forEach((o) => view.scene.remove(o));
+              view.renderer.toneMapping = THREE.NoToneMapping;
+              const shadows = view.renderer.shadowMap;
+              shadows.enabled = true;
+              shadows.type = THREE.PCFShadowMap;
+              shadows.autoUpdate = false;
+              shadows.needsUpdate = true;
+              const fog = new THREE.Fog("{bg}", 0, 1);
+              view.scene.fog = fog;
+              let casters = 0;
+              let lastCasters = NaN;
+              const sumCaster = (o) => {{
+                if (!o.castShadow) return;
+                casters += o.id;
+                const e = o.matrixWorld.elements;
+                for (let i = 0; i < 16; i++) casters += e[i] * (i + 1);
+              }};
+              view.scene.onBeforeRender = (renderer, scene, camera) => {{
+                fog.near = camera.position.length() + {reach * 1.5:.3f};
+                fog.far = fog.near + {reach * 3:.3f};
+                casters = 0;
+                scene.traverseVisible(sumCaster);
+                if (casters !== lastCasters) {{
+                  lastCasters = casters;
+                  shadows.needsUpdate = true;
+                }}
+              }};
+              view.resize();
+            }});
+            """
+        )
+
     def _stl_to_url(self, stl_path: str) -> str:
-        """Convert STL file path to URL, preferring _simplified variants if they exist."""
+        """Convert an STL path from the URDF to its static URL, preferring a _simplified variant.
+
+        The simplified meshes load in a fraction of the time and, with the
+        crease-aware normals the loader computes, shade the same as the full ones.
+        """
         if stl_path.startswith("file://"):
             parsed = urlparse(stl_path)
             stl_path = url2pathname(parsed.path)
@@ -2334,16 +2504,10 @@ class UrdfScene(
         else:
             rel_path = stl_full
 
-        # Prefer a _simplified variant (e.g. part.STL -> part_simplified.stl),
-        # trying both the original extension case and lowercase .stl.
         for ext in [rel_path.suffix, ".stl"]:
-            simplified_name = rel_path.stem + "_simplified" + ext
-            simplified_path = rel_path.with_name(simplified_name)
-            full_simplified = self.meshes_dir / simplified_path
-
-            if full_simplified.exists():
+            simplified_path = rel_path.with_name(rel_path.stem + "_simplified" + ext)
+            if (self.meshes_dir / simplified_path).exists():
                 rel_path = simplified_path
-                logger.debug("Using simplified mesh: %s", simplified_path)
                 break
 
         return os.path.join(self.meshes_url, str(rel_path).replace("\\", "/"))

@@ -1,23 +1,21 @@
 import argparse
 import asyncio
-import atexit
 import contextlib
 import json
 import logging
 import math
 import os
-import signal
 import sys
 import time
 from dataclasses import dataclass
 from importlib.resources import files as pkg_files
 from pathlib import Path
 
-
 import numpy as np
-from nicegui import Client, app as ng_app, background_tasks, ui
-from pinokin import arrays_equal_n
 import waldoctl
+from nicegui import Client, background_tasks, ui
+from nicegui import app as ng_app
+from pinokin import arrays_equal_n
 from waldoctl import (
     Commander,
     FrameJogAvailability,
@@ -32,18 +30,19 @@ from waldoctl import (
 )
 
 from waldo_commander.common.logging_config import (
+    TRACE,
     attach_ui_log,
     configure_logging,
-    TRACE,
 )
 from waldo_commander.common.loop_timer import LoopMetrics, format_hz_summary
 from waldo_commander.common.theme import (
     apply_theme,
+    hex_of,
     inject_layout_css,
-    is_dark_theme,
     PANEL_RESIZE_CONFIG,
     SceneColors,
 )
+from waldo_commander.components.bottom_panel import BottomPanel
 from waldo_commander.components.control import ControlPanel
 from waldo_commander.components.editor import EditorPanel
 from waldo_commander.components.gripper import GripperPage
@@ -51,45 +50,55 @@ from waldo_commander.components.help_menu import help_menu
 from waldo_commander.components.io import IoPage
 from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
+from waldo_commander.components.readout import StatusFooter
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.readout import ReadoutPanel
 from waldo_commander.components.robot_buddy import Mood, RobotBuddy
-from waldo_commander.constants import config, DEFAULT_CAMERA, RESERVED_TAB_IDS
+from waldo_commander.components.settings import (
+    adopt_applied_tcp,
+    refresh_applied_tcp,
+)
+from waldo_commander.constants import DEFAULT_CAMERA, RESERVED_TAB_IDS, config
+from waldo_commander.mcp import start_mcp_server, stop_mcp_server
+from waldo_commander.services.tcp_calibration import read_applied_tcp
+from waldo_commander.components.settings import SettingsContent
 from waldo_commander.numba_pipelines import (
     pose_extraction_pipeline,
     warmup_pipelines,
 )
 from waldo_commander.profiles import get_robot
-from waldo_commander.services.camera_service import camera_service
-from waldo_commander.services.path_visualizer import warm_process_pool
-from waldo_commander.services.urdf_scene import (
-    UrdfScene,
-    UrdfSceneConfig,
-    ToolPose,
-    init_angle_buffers,
-    update_urdf_angles,
-)
-from waldo_commander.mcp import start_mcp_server, stop_mcp_server
-from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
+from waldo_commander.services import startup_mode
 from waldo_commander.services.action_log import action_log_service
+from waldo_commander.services.camera_service import (
+    camera_service,
+    register_camera_routes,
+)
 from waldo_commander.services.control_lease import (
     BROWSER,
     browser_claim_if_unheld,
     control_lease,
     restore_control_mode,
 )
+from waldo_commander.services.motion_guard import motion_guard
+from waldo_commander.services.path_visualizer import warm_process_pool
 from waldo_commander.services.programs import EditorPrograms, is_any_program_running
-from waldo_commander.services import startup_mode
+from waldo_commander.services.urdf_scene import (
+    ToolPose,
+    UrdfScene,
+    UrdfSceneConfig,
+    init_angle_buffers,
+    update_urdf_angles,
+)
 from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
+from waldo_commander.services.urdf_scene.scene_handle import WcSceneHandle
 from waldo_commander.state import (
     automation_state,
-    robot_state,
     controller_state,
-    ui_state,
-    readiness_state,
-    playback_coordination,
     global_phase_timer,
+    playback_coordination,
+    readiness_state,
     robot_events,
+    robot_state,
+    ui_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,7 +117,7 @@ _shutting_down: bool = False
 
 # Assigned in main(), None until then.
 control_panel: ControlPanel = None  # ty: ignore[invalid-assignment]
-readout_panel: ReadoutPanel = None  # ty: ignore[invalid-assignment]
+readout_panel: StatusFooter = None  # ty: ignore[invalid-assignment]
 editor_panel: EditorPanel = None  # ty: ignore[invalid-assignment]
 
 
@@ -119,12 +128,27 @@ class _PageState:
     page_client: Client
     connection_notification: ui.notification | None = None
     warning_notification: ui.notification | None = None
-    warning_banner_text: str = ""
     ping_timer: ui.timer | None = None
     last_ping_ok: bool = False
 
 
 _page_state: _PageState | None = None
+
+
+def _state_name(value: object) -> str:
+    """The name of a status enum that waldoctl documents as "enum/str".
+
+    `link_health["state"]` and homing's `(state, phase)` pairs are declared
+    as a backend enum OR a plain string, so `.name` is wrong on half the
+    contract. It also ran on the status tick inside the per-tick handler,
+    which catches and logs at DEBUG -- so a string-reporting backend spun
+    the loop at full rate, and everything after the raise (homing included)
+    was skipped for as long as it stayed connected.
+    """
+    if value is None:
+        return ""
+    name = getattr(value, "name", None)
+    return name if isinstance(name, str) else str(value)
 
 
 def _client_alive(pc: Client) -> bool:
@@ -148,33 +172,67 @@ _ui_metrics = LoopMetrics()
 _startup_complete: asyncio.Event = asyncio.Event()
 
 
+_NO_CONNECTION_MSG = (
+    "Robot mode requires a hardware connection. "
+    "Connect robot or switch to Simulator mode."
+)
+
+
+def _sticky_banner(
+    banner: ui.notification | None,
+    msg: str,
+    type_: str,
+    text_color: str | None = None,
+) -> ui.notification | None:
+    """Keep a dismissable, non-expiring banner in step with ``msg``.
+
+    An empty ``msg`` retires the banner. Returns the banner to hold on to,
+    so the caller owns where it is stored.
+
+    Gated on scene-ready (not app_ready) so a banner still works when the
+    backend never streams a STATUS frame; the scene signal also guarantees
+    the page is past serialization, so elements are safe to modify.
+    """
+    if _page_state is None or not readiness_state.urdf_scene_ready.is_set():
+        return banner
+    if banner is not None and banner.is_deleted:
+        banner = None
+    if not msg:
+        if banner is not None:
+            stale = banner
+            stale.dismiss()
+            # The client's dismiss event is what deletes the element; a
+            # client that never sends one (the user fixture) needs the
+            # fallback, and it has to wait for the dismiss to flush because
+            # the outbox sends deletions ahead of method calls.
+            ui.timer(
+                0.1,
+                lambda: None if stale.is_deleted else stale.delete(),
+                once=True,
+            )
+        return None
+    if banner is None:
+        extra = {"textColor": text_color} if text_color else {}
+        return ui.notification(
+            message=msg, type=type_, close_button=True, timeout=0, **extra
+        )
+    if banner.message != msg:
+        banner.message = msg
+    return banner
+
+
 def _update_connection_notification() -> None:
     """Show or dismiss persistent notification based on robot connection state."""
     ps = _page_state
     if ps is None:
         return
-
-    # Gate on scene-ready (not app_ready) so the banner still works when the
-    # backend never streams a STATUS frame; the scene signal also guarantees
-    # the page is past serialization, so elements are safe to modify.
-    if not readiness_state.urdf_scene_ready.is_set():
-        return
-
-    needs_warning = (
+    offline = (
         not waldoctl.commander.status.simulator_active
         and not waldoctl.commander.status.connected
     )
-
-    if needs_warning and ps.connection_notification is None:
-        ps.connection_notification = ui.notification(
-            message="Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
-            type="negative",
-            close_button=True,
-            timeout=0,
-        )
-    elif not needs_warning and ps.connection_notification is not None:
-        ps.connection_notification.dismiss()
-        ps.connection_notification = None
+    ps.connection_notification = _sticky_banner(
+        ps.connection_notification, _NO_CONNECTION_MSG if offline else "", "negative"
+    )
 
 
 def _update_warning_notification() -> None:
@@ -182,30 +240,15 @@ def _update_warning_notification() -> None:
 
     Same mechanism as the hard-error connection banner, colored as a
     warning; it leaves when the conditions self-clear. History lives in
-    the warnings/errors log under the movement log."""
+    the Diagnostics tab's event log, which keeps what the banner drops."""
     ps = _page_state
-    if ps is None or not readiness_state.urdf_scene_ready.is_set():
+    if ps is None:
         return
     entries = waldoctl.commander.status.warnings.entries
-    msg = "; ".join(str(e[2]) for e in entries)
-    if msg == ps.warning_banner_text:
-        return
-    if ps.warning_notification is not None:
-        ps.warning_notification.dismiss()
-        # dismiss() only tells the client; the server element normally
-        # deletes itself on the client's dismiss event, which never comes
-        # without a real browser.
-        if not ps.warning_notification.is_deleted:
-            ps.warning_notification.delete()
-        ps.warning_notification = None
-    if msg:
-        ps.warning_notification = ui.notification(
-            message=msg,
-            type="warning",
-            close_button=True,
-            timeout=0,
-        )
-    ps.warning_banner_text = msg
+    msg = "; ".join(e.title for e in entries)
+    ps.warning_notification = _sticky_banner(
+        ps.warning_notification, msg, "warning", text_color="wc-on-fill"
+    )
 
 
 async def initialize_urdf_scene() -> None:
@@ -214,13 +257,8 @@ async def initialize_urdf_scene() -> None:
     urdf_path = Path(robot.urdf_path)
     mesh_dir = Path(robot.mesh_dir)
 
-    is_dark = is_dark_theme()
-    bg_color = (
-        SceneColors.BACKGROUND_DARK_HEX if is_dark else SceneColors.BACKGROUND_LIGHT_HEX
-    )
-    material_color = (
-        SceneColors.MATERIAL_DARK_HEX if is_dark else SceneColors.MATERIAL_LIGHT_HEX
-    )
+    bg_color = hex_of("scene-bg")
+    material_color = hex_of("scene-arm")
 
     # Create tool pose resolver from robot tools
     def tool_pose_resolver(
@@ -258,23 +296,19 @@ async def initialize_urdf_scene() -> None:
         material=scene_config.material,
         background_color=scene_config.background_color,
     )
+    if ui_state.urdf_scene.scene:
+        _attach_scene_framing(ui_state.urdf_scene.scene)
 
     # Align TCP and load tool mesh from the controller's active tool.
     try:
-        result = await client.tools()
-        if result and result.tool:
-            vk = ng_app.storage.general.get(f"tool_variant_{result.tool}")
-            ui_state.urdf_scene.apply_tool_everywhere(result.tool, variant_key=vk)
+        adopt_applied_tcp(await read_applied_tcp(client))
+    except (ValueError, TimeoutError, OSError) as e:
+        logger.debug("TCP scene initialization deferred: %s", e)
     except Exception as e:
         logger.error("Failed to sync TCP tool pose: %s", e)
 
     if ui_state.urdf_scene.scene:
         scene: ui.scene = ui_state.urdf_scene.scene
-        scene._props["grid"] = (10, 100)
-        # Fill parent container (absolute canvas).
-        scene.classes(remove="h-[66vh]").style(
-            "width: 100%; height: 100%; margin: 0; display: block;"
-        )
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
 
         # World coordinate frame at origin (fixed).
@@ -295,14 +329,8 @@ async def initialize_urdf_scene() -> None:
 
     readiness_state.signal_urdf_scene_ready()
 
-    # Settings page may have built before the scene was ready.
-    stored_tool = ng_app.storage.general.get("selected_tool")
-    if stored_tool and stored_tool != "NONE" and ui_state.urdf_scene:
-        vk = ng_app.storage.general.get(f"tool_variant_{stored_tool}")
-        ui_state.urdf_scene.apply_tool_everywhere(stored_tool, variant_key=vk)
-    else:
-        # Gizmo sync needs fresh FK even without a tool change.
-        ui_state.urdf_scene.invalidate_fk_cache()
+    # A new scene needs fresh FK even when the controller tool is unchanged.
+    ui_state.urdf_scene.invalidate_fk_cache()
 
     # Generate the workspace hull with the correct tool offset (after tool applied).
     if not os.environ.get("WALDO_SKIP_ENVELOPE") and not workspace_envelope.is_ready:
@@ -322,6 +350,15 @@ async def initialize_urdf_scene() -> None:
     # Scene wasn't ready earlier, so apply simulator appearance now.
     if waldoctl.commander.status.simulator_active:
         ui_state.urdf_scene.set_simulator_appearance(True)
+
+
+def _attach_scene_framing(scene: ui.scene) -> None:
+    """Frame the camera on the part of the view the column and footer leave clear.
+
+    Registered before the page yields, so it catches the first init; a remount
+    after WebGL context loss inits again with a new camera.
+    """
+    scene.on("init", lambda: ui.run_javascript(f"SceneFraming.attach({scene.id})"))
 
 
 async def start_controller(com_port: str | None) -> None:
@@ -459,6 +496,7 @@ async def check_ping() -> None:
                 scene_handle = waldoctl.commander.scene
                 if scene_handle is not None:
                     asyncio.create_task(scene_handle.refresh_from_backend())
+                asyncio.create_task(refresh_applied_tcp(client))
         ps.last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
@@ -487,6 +525,8 @@ async def check_ping() -> None:
     # that the consumer cannot, since they read
     # waldoctl.commander.status.connected directly.
     waldoctl.commander.status.connected = ps.last_ping_ok
+    if not ps.last_ping_ok and not waldoctl.commander.status.simulator_active:
+        robot_state.gripper_calibrated = False
     _update_connection_notification()
     if readout_panel is not None:
         readout_panel.update_conn_io()
@@ -554,8 +594,9 @@ def update_ui_from_status() -> None:
     # readouts that bind through a backward function.
     ts = robot_state.tool_status
     pub_tool = waldoctl.commander.status.tool
-    tool_key_changed = ts.key != pub_tool.key
+    tool_key_changed = ts.key != pub_tool.key or ts.variant_key != pub_tool.variant_key
     pub_tool.key = ts.key
+    pub_tool.variant_key = ts.variant_key
     pub_tool.positions = ts.positions
     pub_tool.engaged = ts.engaged
     pub_tool.part_detected = ts.part_detected
@@ -589,8 +630,6 @@ def update_ui_from_status() -> None:
 
     _update_connection_notification()
     _update_warning_notification()
-    if readout_panel is not None:
-        readout_panel.update_event_log()
     if control_panel is not None:
         control_panel.sync_freedrive_visual()
     if tool_key_changed:
@@ -650,7 +689,10 @@ def _plugin_panel_size(p) -> dict:
     """PanelResize entry for a plugin panel that opts into drag-resizing
     (waldoctl ``Panel.resizable``), or {} otherwise. The JS module supplies
     floor minima, so the size attributes are optional refinements. getattr
-    keeps this working against waldoctl versions predating the attributes."""
+    keeps this working against waldoctl versions predating the attributes.
+
+    A resizable plugin panel is as tall as its content until the user drags
+    its height."""
     if not getattr(p, "resizable", False):
         return {}
     entry = {
@@ -669,6 +711,7 @@ def _plugin_panel_size(p) -> dict:
     )
     entry["selector"] = f"{container} .{p.id}-panel"
     entry["group"] = group
+    entry["fit"] = True
     return entry
 
 
@@ -717,12 +760,13 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
             elif css := _plugin_panel_static_size(p):
                 classes = sized
                 style = css
-            with ui.tab_panel(p.id).classes(classes).style(style):
+            with ui.tab_panel(p.id).classes(f"{classes} task-panel").style(style):
                 # A third-party plugin's build() must not blank the whole page;
                 # leave an empty-but-valid tab panel on failure (mirrors the
                 # init guard in _discover_plugin_panels).
                 try:
-                    p.build(commander)
+                    with ui.element("div").classes("plugin-panel-content"):
+                        p.build(commander)
                 except Exception as e:
                     logger.warning("Plugin panel %s build failed: %s", p.id, e)
                 if "resizable-panel" in classes:
@@ -730,7 +774,8 @@ def _add_plugin_tab_panels(slot: PanelSlot, commander: Commander) -> None:
 
 
 def _build_left_panels(panels_wrap: ui.element) -> dict:
-    """Build top (program/io/gripper) and bottom (log/help) panel groups.
+    """Build the top rail (program/io/gripper + plugins), the bottom rail (gear
+    + plugin tabs) and the Settings dialog the gear opens.
 
     Returns a dict of references needed by _setup_panel_persistence().
     """
@@ -740,10 +785,11 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
     with (
         ui.tabs()
         .props("vertical")
-        .classes("side-tab-bar absolute left-0 top-0 z-40") as side_tabs
+        .classes("side-tab-bar absolute left-0 top-0") as side_tabs
     ):
         program_tab = ui.tab(name="program", label="", icon="code")
         program_tab.mark("tab-program")
+        ui_state._program_tab = program_tab
         io_tab = ui.tab(name="io", label="", icon="settings_input_component")
         io_tab.mark("tab-io")
         gripper_tab = ui.tab(name="gripper", label="")
@@ -763,28 +809,30 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         .props(
             "vertical animated transition-prev=slide-right transition-next=slide-right"
         )
-        .classes("left-panels-container top-panels-container z-30") as top_panels
+        .classes("left-panels-container top-panels-container") as top_panels
     ):
 
         def close_top_panels():
             side_tabs.value = None
             top_panels.value = None
-            panels_wrap.classes(remove="coupled")
+            panels_wrap.classes(remove="column-open")
             ui_state.program_panel_visible = False
+            editor_panel.hide_skill_strips()
             ui.run_javascript("PanelResize.onTabChange('top', '')")
 
         with ui.tab_panel("program").classes(
             "overlay-card program-panel resizable-panel p-0"
         ):
             editor_panel.build(close_callback=close_top_panels)
-            _add_resize_handles(PanelSlot.LEFT_TOP_TAB)
+            # The column is full height; only its right edge is dragged.
+            ui.element("div").classes("resize-handle-right")
 
         with ui.tab_panel("io").classes("gap-2 overlay-card overflow-hidden"):
             with ui.row().classes("w-full"):
                 ui.label("I/O").classes("text-lg font-medium")
                 ui.space()
                 ui.button(icon="close", on_click=close_top_panels).props(
-                    "flat round dense color=white"
+                    "flat round dense color=wc-text"
                 )
             ui_state.io_page = IoPage(client)
             ui_state.io_page.build()
@@ -813,7 +861,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                             .classes("text-lg font-medium")
                         )
                         gripper_features_label = ui.label("").classes(
-                            "text-xs text-[var(--ctk-muted)]"
+                            "wc-caption text-wc-text-muted"
                         )
 
                         def _update_features(k: str) -> str:
@@ -843,9 +891,11 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                         )
                         ui.space()
                         ui.button(icon="close", on_click=close_top_panels).props(
-                            "flat round dense color=white"
+                            "flat round dense color=wc-text"
                         )
-                    ui_state.gripper_page = GripperPage(client)
+                    ui_state.gripper_page = GripperPage(
+                        client, is_open=lambda: top_panels.value == "gripper"
+                    )
                     ui_state.gripper_page.build()
 
             ui_state._build_gripper_content = _build_gripper_content
@@ -855,6 +905,12 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
             ui_state.program_panel_visible = new_tab == "program"
+            panel = PANEL_RESIZE_CONFIG["panels"].get(new_tab, {})
+            if panel.get("fullHeight"):
+                panels_wrap.classes(add="column-open")
+            else:
+                editor_panel.hide_skill_strips()
+                panels_wrap.classes(remove="column-open")
 
         side_tabs.on("update:model-value", update_top_layout)
 
@@ -865,64 +921,36 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
         side_tabs.on("update:model-value", handle_tab_change)
         ui_state.program_panel_visible = side_tabs.value == "program"
 
-    # ---- Bottom tab bar ----
-    with (
-        ui.tabs(value=None)
-        .props("vertical")
-        .classes("side-tab-bar absolute bottom-0 left-0 z-50") as bottom_tabs
-    ):
-        resp_tab = ui.tab(name="response", label="", icon="article")
-        resp_tab.tooltip("Log")
-        resp_tab.mark("tab-log")
-        help_tab = ui.tab(name="help", label="", icon="help_outline")
-        help_tab.tooltip("Help")
-        help_tab.mark("tab-help")
+    # ---- Settings dialog, opened from the gear ----
+    ui_state.settings_content = SettingsContent(client)
+    ui_state.settings_content.build_dialog(
+        ai_control_section=control_panel._build_control_mode_selector,
+        help_menu=help_menu,
+    )
 
-        _add_plugin_tabs(PanelSlot.LEFT_BOTTOM_TAB)
+    # ---- Bottom rail: plugin tabs (if any) over the gear ----
+    has_bottom_plugins = any(
+        p.slot is PanelSlot.LEFT_BOTTOM_TAB for p in ui_state.plugin_panels
+    )
+    with ui.element("div").classes("side-tab-bar bottom-rail absolute bottom-0 left-0"):
+        with ui.tabs(value=None).props("vertical") as bottom_tabs:
+            _add_plugin_tabs(PanelSlot.LEFT_BOTTOM_TAB)
+        bottom_tabs.set_visibility(has_bottom_plugins)
+        (
+            ui.button(icon="tune", on_click=ui_state.settings_content.open)
+            .props("flat dense color=wc-text")
+            .classes("rail-gear")
+            .tooltip("Settings")
+            .mark("tab-settings")
+        )
 
-    # ---- Bottom panels container ----
+    # ---- Bottom panels container (plugins only) ----
     with (
         ui.tab_panels(bottom_tabs, value=None)
         .props("vertical animated transition-prev=slide-up transition-next=slide-down")
         .classes("left-panels-container bottom-panels-container") as bottom_panels
     ):
-
-        def close_bottom_panels():
-            bottom_tabs.value = None
-            bottom_panels.value = None
-            panels_wrap.classes(remove="coupled")
-            ui.run_javascript("PanelResize.onTabChange('bottom', '')")
-
-        with ui.tab_panel("response").classes(
-            "overlay-card response-panel resizable-panel"
-        ):
-            with ui.row().classes("w-full"):
-                ui.label("Log").classes("text-lg font-medium")
-                ui.space()
-                ui.button(icon="close", on_click=close_bottom_panels).props(
-                    "flat round dense color=white"
-                )
-            ui_state.response_log = (
-                ui.log(max_lines=1000)
-                .classes("w-full h-full")
-                .classes("no-x-scroll")
-                .style(
-                    "min-height: 200px !important; width: 100% !important; background: rgba(0, 0, 0, 0.65); border-radius: 10px;"
-                )
-            )
-            _add_resize_handles(PanelSlot.LEFT_BOTTOM_TAB)
-
         _add_plugin_tab_panels(PanelSlot.LEFT_BOTTOM_TAB, commander)
-
-        def update_bottom_layout():
-            is_open = bool(bottom_tabs.value)
-            top_is_resizable = side_tabs.value == "program"
-            if is_open and top_is_resizable:
-                panels_wrap.classes(add="coupled")
-            else:
-                panels_wrap.classes(remove="coupled")
-
-        bottom_tabs.on("update:model-value", lambda _: update_bottom_layout())
 
         def handle_bottom_tab_change(e):
             to_tab = e.args or ""
@@ -930,24 +958,12 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
 
         bottom_tabs.on("update:model-value", handle_bottom_tab_change)
 
-        help_tab.on("click", lambda: help_menu.show_help_dialog())
-
-        def _on_bottom_value_change(e):
-            if e.args == "help":
-                bottom_tabs.value = (
-                    "response" if bottom_panels.value == "response" else None
-                )
-
-        bottom_tabs.on("update:model-value", _on_bottom_value_change)
-        update_bottom_layout()
-
     return {
         "side_tabs": side_tabs,
         "top_panels": top_panels,
         "bottom_tabs": bottom_tabs,
         "bottom_panels": bottom_panels,
         "update_top_layout": update_top_layout,
-        "update_bottom_layout": update_bottom_layout,
     }
 
 
@@ -958,7 +974,7 @@ def _setup_panel_persistence(refs: dict) -> None:
     bottom_tabs = refs["bottom_tabs"]
     bottom_panels = refs["bottom_panels"]
     update_top_layout = refs["update_top_layout"]
-    update_bottom_layout = refs["update_bottom_layout"]
+    bottom_panel = refs["bottom_panel"]
 
     resize_config = {
         **PANEL_RESIZE_CONFIG,
@@ -980,7 +996,11 @@ def _setup_panel_persistence(refs: dict) -> None:
     async def restore_active_tabs():
         with ui_client:
             try:
-                saved_tabs = await ui.run_javascript("PanelResize.getActiveTabs()")
+                # The page is still loading the scene, which can hold the
+                # answer past the default second.
+                saved_tabs = await ui.run_javascript(
+                    "PanelResize.getActiveTabs()", timeout=10.0
+                )
                 if saved_tabs:
                     # A persisted tab id can name a plugin that's since been
                     # disabled / uninstalled; restoring it would select a tab
@@ -991,7 +1011,7 @@ def _setup_panel_persistence(refs: dict) -> None:
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_TOP_TAB
                     }
-                    bottom_valid = {"response", "help"} | {
+                    bottom_valid = {
                         p.id
                         for p in ui_state.plugin_panels
                         if p.slot is PanelSlot.LEFT_BOTTOM_TAB
@@ -1015,11 +1035,12 @@ def _setup_panel_persistence(refs: dict) -> None:
                             bottom_tab = None
                         bottom_tabs.value = bottom_tab
                         bottom_panels.value = bottom_tab
-                        update_bottom_layout()
                         if bottom_tab:
                             ui.run_javascript(
                                 f"PanelResize.onTabChange('bottom', '{bottom_tab}')"
                             )
+                    if saved_tabs.get("panel") in ("diagnostics", "log"):
+                        bottom_panel.open(saved_tabs["panel"])
                     logger.debug("Restored active tabs: %s", saved_tabs)
             except Exception as e:
                 logger.debug("Could not restore active tabs: %s", e)
@@ -1032,9 +1053,12 @@ def build_page_content() -> None:
     """Build the Move page UI."""
 
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
+    ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
 
-    with ui.column().classes("relative w-screen h-screen overflow-hidden gap-0"):
-        with ui.column().classes("absolute inset-0 z-0"):
+    with ui.column().classes(
+        "commander-workspace relative w-screen h-screen overflow-hidden gap-0"
+    ):
+        with ui.column().classes("commander-scene absolute inset-0 z-0"):
 
             async def _init():
                 try:
@@ -1063,8 +1087,9 @@ def build_page_content() -> None:
                     hw_now = False
                 waldoctl.commander.status.connected = hw_now
 
-                control_panel.update_robot_btn_visual()
-                readout_panel.update_conn_io()
+                # Paint the arm for the mode the backend reports, not just the
+                # button: a page that boots straight into the simulator gets amber.
+                control_panel.sync_sim_mode_visuals()
 
                 # Enable gripper tab if a tool is already active
                 if (
@@ -1088,39 +1113,39 @@ def build_page_content() -> None:
             ui.timer(0.05, _init, once=True)
 
         # Loading overlay — matches scene background, visible until backend is ready
-        is_dark = is_dark_theme()
-        bg = (
-            SceneColors.BACKGROUND_DARK_HEX
-            if is_dark
-            else SceneColors.BACKGROUND_LIGHT_HEX
-        )
         with (
             ui.column()
-            .classes("absolute inset-0 z-10 items-center justify-center gap-4")
+            .classes("absolute inset-0 items-center justify-center gap-4")
             .style(
-                f"background: {bg}; transition: opacity 0.4s ease;"
+                f"background: {hex_of('scene-bg')}; z-index: var(--wc-z-loading);"
+                " transition: opacity 0.4s ease;"
             ) as scene_loading_overlay
         ):
             loading_buddy = RobotBuddy(Mood.BOOTING, size=96).mark("loading-buddy")
-            loading_status = ui.label("Connecting to controller...").style(
-                "color: grey; font-size: 0.9rem;"
+            loading_status = ui.label("Connecting to controller...").classes(
+                "wc-body text-wc-text-muted"
             )
 
         # Overlay panels and HUD elements.
         with (
-            ui.column().classes("absolute inset-0 z-20").style("pointer-events: none;")
+            ui.column()
+            .classes("workspace-overlays absolute inset-0")
+            .style("pointer-events: none;")
         ):
             physics_legend.build()
             with (
                 ui.element("div")
-                .classes("panels-wrap absolute inset-0 z-30")
+                .classes("panels-wrap absolute inset-0")
                 .style("pointer-events: none;") as panels_wrap
             ):
                 panel_refs = _build_left_panels(panels_wrap)
 
-        readout_panel.build("tr")
-        control_panel.build("br")
+        readout_panel.build()
+        bottom_panel = BottomPanel(client, attention=readout_panel.events_button)
+        bottom_panel.build()
+        control_panel.build()
 
+        panel_refs["bottom_panel"] = bottom_panel
         _setup_panel_persistence(panel_refs)
 
     from waldo_commander.services.keybindings import setup_keybindings
@@ -1232,6 +1257,7 @@ def _register_handlers() -> None:
     Skip registration if NiceGUI is already started (e.g., during test reruns
     when NiceGUI didn't fully reset between tests).
     """
+    register_camera_routes()
     if ng_app.is_started:
         return
 
@@ -1368,6 +1394,8 @@ def _register_handlers() -> None:
 
         if control_panel is not None:
             control_panel.cleanup()
+        if ui_state.settings_content is not None:
+            ui_state.settings_content.cleanup()
         if ui_state.gripper_page is not None:
             ui_state.gripper_page.cleanup()
         if editor_panel is not None:
@@ -1428,38 +1456,6 @@ def _register_handlers() -> None:
 _register_handlers()
 
 
-def _cleanup_script_processes_sync() -> None:
-    """Synchronously kill any running script subprocess.
-
-    This is called from atexit and signal handlers as a last-resort cleanup.
-    """
-    try:
-        if script_exec.script_handle:
-            proc = script_exec.script_handle.get("proc")
-            if proc and proc.returncode is None:
-                logger.info("Killing orphaned script process (PID: %s)", proc.pid)
-                try:
-                    # On Unix, try to kill the entire process group
-                    if sys.platform != "win32" and proc.pid:
-                        try:
-                            pgid = os.getpgid(proc.pid)
-                            os.killpg(pgid, signal.SIGKILL)
-                            logger.debug("Killed process group %s", pgid)
-                        except (ProcessLookupError, OSError):
-                            proc.kill()
-                    else:
-                        proc.kill()
-                except ProcessLookupError:
-                    pass
-                except Exception as e:
-                    logger.debug("Error killing script process: %s", e)
-    except Exception as e:
-        logger.debug("Error in script cleanup: %s", e)
-
-
-atexit.register(_cleanup_script_processes_sync)
-
-
 def _build_takeover_overlay(message: str) -> None:
     """Render the takeover overlay: scrim + glass card + wandering sad robot.
 
@@ -1475,8 +1471,10 @@ def _build_takeover_overlay(message: str) -> None:
         return
     c._waldo_overlay_shown = True  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
 
-    with ui.column().classes(
-        "fixed inset-0 z-[9999] items-center justify-center bg-black/60"
+    with (
+        ui.column()
+        .classes("fixed inset-0 items-center justify-center")
+        .style("z-index: var(--wc-z-capsule); background: var(--wc-scrim);")
     ):
         # Moping buddy — a sibling of the card, wandering the viewport and
         # bouncing off its edges and the card.
@@ -1486,14 +1484,14 @@ def _build_takeover_overlay(message: str) -> None:
             "overlay-card takeover-card items-center max-w-sm p-8"
         ):
             ui.label("Waldo Commander").classes("text-xl font-semibold")
-            ui.label(message).classes("text-sm text-center opacity-90")
+            ui.label(message).classes("text-sm text-center")
 
             def _take_over() -> None:
                 ui_state.active_client_id = None
                 ui.navigate.reload()
 
             ui.button("Take over", on_click=_take_over).props(
-                "color=primary unelevated rounded"
+                "color=wc-action unelevated rounded text-color=wc-on-bright"
             ).classes("mt-2")
 
 
@@ -1547,13 +1545,14 @@ async def index_page():
         # active tab eventually closes.
         # Theme + layout CSS must be applied here too so the .takeover-*
         # classes (defined in theme.py) actually exist on shadow pages.
-        apply_theme("dark")
+        apply_theme()
         inject_layout_css()
         _build_takeover_overlay("Session active in another tab")
         ui.timer(interval=1.0, callback=check_ping, active=True)
         return
 
-    apply_theme("dark")
+    readiness_state.begin_page()
+    apply_theme()
     ui.query(".nicegui-content").classes("p-0")
     inject_layout_css()
 
@@ -1598,7 +1597,8 @@ async def index_page():
     # Mark page as ready for tests
     async def _mark_page_done():
         await asyncio.sleep(0)  # Yield to event loop to ensure timers are wired
-        readiness_state.mark_page_done()
+        if ui_state.active_client_id == this_client.id:
+            readiness_state.mark_page_done()
 
     asyncio.create_task(_mark_page_done())
 
@@ -1714,6 +1714,7 @@ def _cycle_start_tick(page_client: Client | None) -> None:
         and cur == 1
         and time.monotonic() - a._cycle_last_fire >= CYCLE_START_DEBOUNCE_S
         and not is_any_program_running()
+        and motion_guard.owner is None
         and robot_state.homed
         and (st.connected or st.simulator_active)
         and io.estop == 1
@@ -1768,6 +1769,17 @@ def _home_output_tick() -> None:
         )
 
 
+def _readings_equal(a: list[float], b: list[float]) -> bool:
+    """NaN-tolerant compare for a per-drive reading list.
+
+    A drive that has not answered a register reads NaN every tick, and
+    ``NaN != NaN`` would call that a change and re-fire every binding at the
+    status rate. ``arrays_equal_n`` is not usable here for the same reason,
+    and ``np.array_equal(..., equal_nan=True)`` pays a numpy round-trip on
+    six-element lists at 50 Hz."""
+    return len(a) == len(b) and all(x == y or (x != x and y != y) for x, y in zip(a, b))
+
+
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
     # Shadows of the last-applied jog-enable wire arrays, kept local so each
@@ -1780,6 +1792,10 @@ async def _status_consumer() -> None:
     torques_shadow: np.ndarray | None = None
     torques_ext_shadow: np.ndarray | None = None
     homing_shadow: tuple | None = None
+    error_shadow: waldoctl.RobotError | None = None
+    malformed_shadow: list[object] = []
+    robot_state.standing_error = None
+    estop_shadow = 1
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
@@ -1814,12 +1830,25 @@ async def _status_consumer() -> None:
                         st.joints.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io
+                    # The physical E-stop halts the controller without any
+                    # Commander stop path running; tell motion sources.
+                    estop_now = int(robot_state.io[-1])
+                    if estop_shadow == 1 and estop_now == 0:
+                        motion_guard.note_stop("physical E-stop")
+                    estop_shadow = estop_now
                     if not playback_coordination.sim_pose_override:
                         robot_state.tool_status = status.tool_status
 
-                    # Speeds arrive as rad/s from backend — convert to deg/s for display
-                    np.rad2deg(status.speeds, out=robot_state.speeds)
+                    # robot_state.speeds doubles as the shadow, so the bindable
+                    # list is rebuilt only while a joint's speed changes.
+                    if not arrays_equal_n(status.speeds, robot_state.speeds):
+                        robot_state.speeds[:] = status.speeds
+                        st.joints.speeds = robot_state.speeds.tolist()
                     robot_state.homed = status.homed
+                    session = (status.session_id, status.simulator_active)
+                    if robot_state.controller_session != session or not status.homed:
+                        robot_state.gripper_calibrated = False
+                    robot_state.controller_session = session
                     pose = st.pose
                     pose.tcp_speed = 0.3 * status.tcp_speed + 0.7 * pose.tcp_speed
 
@@ -1916,23 +1945,118 @@ async def _status_consumer() -> None:
                     # compare, copy on change — the decoder refills the
                     # buffer list in place.
                     entries = getattr(status, "warnings", None)
+                    if entries is not None:
+                        malformed: list[object] = []
+                        decoded: list[waldoctl.RobotError] = []
+                        for e in entries:
+                            if isinstance(e, waldoctl.RobotError):
+                                decoded.append(e)
+                                continue
+                            # `from_wire` unpacks exactly six, so an entry
+                            # that is not a 6-tuple raises here -- on the
+                            # status tick, inside the per-tick handler that
+                            # logs at DEBUG. One malformed warning would take
+                            # the rest of the tick with it, every tick, for as
+                            # long as the condition stood. Skip that entry
+                            # instead: the other warnings still reach the log.
+                            try:
+                                decoded.append(waldoctl.RobotError.from_wire(e))
+                            except (TypeError, ValueError):
+                                malformed.append(e)
+                        entries = decoded
+                        if malformed != malformed_shadow:
+                            malformed_shadow = malformed
+                            for bad in malformed:
+                                logger.warning(
+                                    "dropping a malformed warning entry: %r", bad
+                                )
                     if entries is not None and st.warnings.entries != entries:
                         # New conditions go to the durable log; the banner
                         # tracks only the standing (self-clearing) set.
-                        prev = {tuple(e) for e in st.warnings.entries}
+                        prev = set(st.warnings.entries)
                         for e in entries:
-                            if tuple(e) not in prev:
+                            if e not in prev:
+                                # The log keeps the whole error, not a
+                                # summary line: the remedy is the half that
+                                # says what to do about the condition.
                                 robot_events.add(
-                                    str(e[4]) if len(e) > 4 else "warning",
-                                    str(e[2]) if len(e) > 2 else str(e),
-                                    str(e[3]) if len(e) > 3 else "",
+                                    code=e.code,
+                                    title=e.title,
+                                    cause=e.cause,
+                                    effect=e.effect,
+                                    remedy=e.remedy,
                                 )
                         st.warnings.entries = list(entries)
+
+                    # The standing error is the other half of the condition
+                    # surface: waldoctl routes self-clearing conditions to
+                    # `warnings` and hard latches here, and a backend is free to
+                    # use only one of the two. parol6 never fills `warnings`, so
+                    # reading only that channel dropped its entire error
+                    # vocabulary -- unreachable targets, queue overflow, gripper
+                    # timeouts, self-collision -- before it reached the log.
+                    # Edge-triggered: a standing error repeats every tick, and
+                    # clearing then recurring is a genuine second occurrence.
+                    standing = getattr(status, "error", None)
+                    if standing is not None and not isinstance(
+                        standing, waldoctl.RobotError
+                    ):
+                        standing = waldoctl.RobotError.from_wire(standing)
+                    if standing != error_shadow:
+                        error_shadow = standing
+                        robot_state.standing_error = standing
+                        if standing is not None:
+                            robot_events.add(
+                                code=standing.code,
+                                title=standing.title,
+                                cause=standing.cause,
+                                effect=standing.effect,
+                                remedy=standing.remedy,
+                                severity="error",
+                            )
+
+                    drives = getattr(status, "drive_health", None)
+                    if drives:
+                        dh = st.drive_health
+                        temps = [float(v) for v in drives.get("temperatures_c", ())]
+                        currents = [float(v) for v in drives.get("currents_ma", ())]
+                        if not _readings_equal(dh.temperatures_c, temps):
+                            dh.temperatures_c = temps
+                        if not _readings_equal(dh.currents_ma, currents):
+                            dh.currents_ma = currents
+                        volts = drives.get("bus_voltage_v")
+                        volts = None if volts is None else float(volts)
+                        if dh.bus_voltage_v != volts:
+                            dh.bus_voltage_v = volts
+                        # ``faults`` is newer than the pinned waldoctl; on a
+                        # release without it the tab degrades to no fault
+                        # reporting rather than failing the whole tick. The
+                        # type checker resolves ``DriveHealth`` against that
+                        # pin, where the attribute does not exist yet, so the
+                        # access is spelled dynamically to match the guard
+                        # above. Both go back to a plain attribute once the
+                        # pin moves to the release that carries it.
+                        if hasattr(dh, "faults"):
+                            faults = [tuple(f) for f in drives.get("faults", ())]
+                            if getattr(dh, "faults", None) != faults:
+                                setattr(dh, "faults", faults)  # noqa: B010
+
+                    loop = getattr(status, "loop_health", None)
+                    if loop:
+                        lh_loop = st.loop_health
+                        p99 = float(loop.get("p99_period_s", 0.0))
+                        overruns = int(loop.get("overruns", 0))
+                        if lh_loop.p99_period_s != p99:
+                            lh_loop.p99_period_s = p99
+                        if lh_loop.overruns != overruns:
+                            lh_loop.overruns = overruns
+                        if not lh_loop.measured:
+                            lh_loop.measured = True
 
                     link = getattr(status, "link_health", None)
                     if link:
                         lh = st.link_health
-                        link_state = link["state"].name
+                        link_state = _state_name(link.get("state"))
                         if lh.state != link_state:
                             lh.state = link_state
                         if lh.restarts != link.get("restarts", 0):
@@ -1957,7 +2081,7 @@ async def _status_consumer() -> None:
                             hm.active = homing_key[0]
                             hm.sequence_step = homing_key[1]
                             hm.joints = [
-                                (state.name, phase.name)
+                                (_state_name(state), _state_name(phase))
                                 for state, phase in homing_key[2]
                             ]
 
@@ -1993,6 +2117,20 @@ async def _status_consumer() -> None:
                     _automation_tick(pc)
 
                     if pc is not None:
+                        # The chart this series feeds only exists on a
+                        # connected page. The lists are the ones already
+                        # published above, so a sample costs no allocation.
+                        # Only where the backend measures torque: pushing
+                        # zeros would draw a flat line that reads as a
+                        # healthy reading.
+                        if (
+                            torques is not None
+                            and ui_state.active_robot.has_force_torque
+                        ):
+                            robot_state.torque_time_series.push(
+                                joints.torques,
+                                joints.torques_ext if torques_ext is not None else [],
+                            )
                         with pc:
                             update_ui_from_status()
 
@@ -2005,11 +2143,14 @@ async def _status_consumer() -> None:
                                 robot_state.completed_index,
                             )
                             control_panel.refresh_joint_enablement()
+                            control_panel.refresh_joint_dials()
                             control_panel.sync_cartesian_button_states()
                             control_panel.sync_gizmo_for_jog_state()
                             if ui_state.gripper_page is not None:
                                 ui_state.gripper_page.update_chart()
                                 ui_state.gripper_page.update_status()
+                            if ui_state.diagnostics_page is not None:
+                                ui_state.diagnostics_page.update()
 
             except Exception as e:
                 logger.debug("Status consumer parse error: %s", e)
@@ -2128,7 +2269,7 @@ def main():
         host=config.controller_host, port=config.controller_port, timeout=5.0
     )
     control_panel = ControlPanel(client)
-    readout_panel = ReadoutPanel()
+    readout_panel = StatusFooter()
     editor_panel = EditorPanel()
     # Store panels in ui_state for cross-module access
     ui_state.control_panel = control_panel
@@ -2151,10 +2292,12 @@ def main():
     )
     waldoctl._set_commander(commander)
 
-    # Seed the IO buffers so consumers (readout chips, e-stop monitor) see
-    # the right list lengths before the first STATUS broadcast arrives.
+    # Seed the IO and joint-speed lists so consumers (readout chips, e-stop
+    # monitor, status.get_joints) see the right list lengths before the first
+    # STATUS broadcast arrives.
     commander.status.io.inputs = [0] * robot.digital_inputs
     commander.status.io.outputs = [0] * robot.digital_outputs
+    commander.status.joints.speeds = [0.0] * robot.joints.count
 
     # Seed per-frame cart_jog availability so the cartesian-button sync code
     # has a frame_av to read on the first tick (before STATUS arrives).

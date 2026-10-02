@@ -5,61 +5,112 @@ import asyncio
 import pytest
 from nicegui.testing import User
 
+from tests.helpers.editor_events import (
+    _fire_editor_event,
+    _set_cursor_line,
+    _set_selection,
+)
 from tests.helpers.wait import (
-    wait_for_app_ready,
     enable_sim,
     ensure_robot_ready_for_motion,
     simulate_click,
+    wait_for_app_ready,
     wait_for_motion_stable,
     wait_for_motion_start,
+    wait_until,
 )
 from waldo_commander.services.programs import (
-    is_any_program_recording,
     is_any_program_running,
 )
 
 
 @pytest.mark.integration
-async def test_program_tab_visible(user: User) -> None:
-    """Test that the program editor tab is visible."""
+async def test_editor_controls_and_tabs(user: User) -> None:
+    """The program tab opens the editor and its controls: the log chevron
+    flips, the commands menu lists skills, an edit marks the tab dirty, and
+    a tab opens and closes by button. Another tab covers the panel and the
+    program tab brings it back."""
+    import waldoctl
+
+    from waldo_commander.components.log_panel import log_panel
+    from waldo_commander.state import ui_state
+
     await user.open("/")
     await user.should_see(marker="tab-program")
-
-
-@pytest.mark.integration
-async def test_open_program_tab(user: User) -> None:
-    """Test opening the program editor tab via click."""
-    await user.open("/")
     await wait_for_app_ready()
 
-    # Click program tab
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
+    for marker in (
+        "editor-play-btn",
+        "editor-record-btn",
+        "editor-log-toggle",
+        "editor-new-tab-btn",
+        "editor-save-btn",
+        "editor-open-btn",
+        "editor-commands-btn",
+    ):
+        await user.should_see(marker=marker)
+    editor = ui_state.editor_panel
+    assert editor is not None
 
-    # Editor buttons should now be visible
+    # The chevron points down to expand and up to collapse.
+    assert log_panel._log_expanded is False
+    log_toggle_btn = log_panel.log_toggle_btn
+    assert log_toggle_btn is not None
+    assert log_toggle_btn._props.get("icon") == "expand_more"
+    user.find(marker="editor-log-toggle").click()
+    await asyncio.sleep(0.1)
+    assert log_panel._log_expanded is True
+    assert log_toggle_btn._props.get("icon") == "expand_less"
+    user.find(marker="editor-log-toggle").click()
+    await asyncio.sleep(0.1)
+    assert log_panel._log_expanded is False
+    assert log_toggle_btn._props.get("icon") == "expand_more"
+
+    user.find(marker="editor-commands-btn").click()
+    await asyncio.sleep(0)
+    assert user.find(marker="editor-skill-waldo.retract").elements
+
+    tab = waldoctl.commander.programs.active
+    assert tab is not None and tab.is_dirty is False
+    dirty_dot = editor._tab_widgets[tab.id]["dirty_dot"]
+    assert dirty_dot.visible is False
+    textarea = ui_state.active_textarea
+    assert textarea is not None
+    textarea.value = str(textarea.value) + "\n# Modified"
+    assert tab.is_dirty is True
+    assert await wait_until(lambda: dirty_dot.visible, timeout_s=2), (
+        "an edit must show the dirty dot"
+    )
+
+    initial = len(waldoctl.commander.programs.items)
+    user.find(marker="editor-new-tab-btn").click()
+    await asyncio.sleep(0)
+    assert len(waldoctl.commander.programs.items) == initial + 1
+    new_tab = waldoctl.commander.programs.active
+    assert new_tab is not None and new_tab.id != tab.id
+    user.find(marker=f"editor-tab-close-{new_tab.id}").click()
+    # Close is deferred through ui.timer(0).
+    assert await wait_until(
+        lambda: len(waldoctl.commander.programs.items) == initial, timeout_s=4
+    ), "closing the tab did not remove it"
+    assert waldoctl.commander.programs.get(new_tab.id) is None
+
+    user.find(marker="tab-io").click()
+    await asyncio.sleep(0.1)
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
     await user.should_see(marker="editor-play-btn")
-    await user.should_see(marker="editor-new-tab-btn")
-    # Verify all control buttons are visible
-    await user.should_see(marker="editor-play-btn")
-    await user.should_see(marker="editor-record-btn")
-    await user.should_see(marker="editor-log-toggle")
-    await user.should_see(marker="editor-new-tab-btn")
-    await user.should_see(marker="editor-save-btn")
-    await user.should_see(marker="editor-open-btn")
-    await user.should_see(marker="editor-commands-btn")
 
 
 @pytest.mark.integration
 async def test_run_button_toggles(user: User) -> None:
-    """Test that the run button toggles between play and pause icons.
+    """Play runs the program, shows Stop and fires the program's own step
+    channel (``Playback.add_step_listener``) on the start edge; a second
+    press pauses without ending the run."""
+    import waldoctl
 
-    When play is clicked:
-    - Play button icon changes from play_arrow to pause
-    - Stop button becomes visible
-
-    When paused:
-    - Play button icon changes back to play_arrow
-    """
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -72,62 +123,11 @@ async def test_run_button_toggles(user: User) -> None:
     editor = ui_state.editor_panel
     assert editor is not None, "Editor panel should exist"
     assert is_any_program_running() is False, "Script should not be running initially"
-
-    # Initially: play button visible, stop button hidden
-    play_btn = user.find(marker="editor-play-btn")
-    assert play_btn is not None
-    assert editor.playback.play_btn is not None, "Play button reference should exist"
-
-    # Stop button should be hidden initially
     stop_btn = editor.playback.stop_btn
     assert stop_btn is not None, "Stop button reference should exist"
     assert stop_btn.visible is False, "Stop button should be hidden initially"
 
-    # Click play - should start script
-    play_btn.click()
-    await asyncio.sleep(0.3)
-
-    # Script should now be running
-    assert is_any_program_running() is True, (
-        "Script should be running after clicking play"
-    )
-
-    # Stop button should now be visible
-    assert stop_btn.visible is True, "Stop button should be visible when script running"
-
-    # Click play again to pause (not stop)
-    play_btn.click()
-    await asyncio.sleep(0.2)
-
-    # Script still running but paused
-    assert is_any_program_running() is True, "Script should still be running (paused)"
-
-    # Stop the script for cleanup
-    stop_btn_element = user.find(marker="editor-stop-btn")
-    stop_btn_element.click()
-    await asyncio.sleep(0.2)
-
-
-@pytest.mark.integration
-async def test_program_playback_step_channel_fires_during_run(user: User) -> None:
-    """The per-program step channel (waldoctl ``Playback.add_step_listener``)
-    fires during a real script run: the host drives it whenever the
-    ``executing_step_*`` fields advance, so a plugin can track this program's
-    steps without listening to the global stream."""
-    import waldoctl
-
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-    assert ui_state.editor_panel is not None
-
-    programs = waldoctl.commander.programs
-    program = programs.get(programs.active_id)
+    program = waldoctl.commander.programs.active
     assert program is not None
     fired = 0
 
@@ -136,502 +136,28 @@ async def test_program_playback_step_channel_fires_during_run(user: User) -> Non
         fired += 1
 
     program.dry_run.playback.add_step_listener(_on_step)
+    play_btn = user.find(marker="editor-play-btn")
     try:
-        user.find(marker="editor-play-btn").click()
-        for _ in range(200):  # the watcher polls at 20Hz; fires on script start
-            if fired:
-                break
-            await asyncio.sleep(0.05)
-        assert fired > 0, "per-program step channel never fired during the run"
+        play_btn.click()
+        assert await wait_until(is_any_program_running, timeout_s=10), (
+            "Script should be running after clicking play"
+        )
+        assert stop_btn.visible is True, "Stop button should be visible when running"
+        assert await wait_until(lambda: fired > 0, timeout_s=10), (
+            "per-program step channel never fired during the run"
+        )
+
+        # A second press pauses: the run goes on, held.
+        play_btn.click()
+        await asyncio.sleep(0.2)
+        assert is_any_program_running() is True, (
+            "Script should still be running (paused)"
+        )
     finally:
         program.dry_run.playback.remove_step_listener(_on_step)
         if is_any_program_running():
             user.find(marker="editor-stop-btn").click()
-            await asyncio.sleep(0.2)
-
-
-@pytest.mark.integration
-async def test_log_toggle_expands_log(user: User) -> None:
-    """Test that the log toggle button expands/collapses the log panel.
-
-    The chevron icon should flip direction:
-    - expand_more (down chevron) when collapsed - "show more"
-    - expand_less (up chevron) when expanded - "collapse"
-    """
-    from waldo_commander.components.log_panel import log_panel
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    editor = ui_state.editor_panel
-    assert editor is not None, "Editor panel should exist"
-
-    # Initially log should be collapsed with expand_more icon (down chevron)
-    assert log_panel._log_expanded is False, "Log should be collapsed initially"
-    log_toggle_btn = log_panel.log_toggle_btn
-    assert log_toggle_btn is not None, "Log toggle button should exist"
-
-    # Check initial chevron icon is expand_more (down = "show more")
-    initial_props = log_toggle_btn._props.get("icon", "")
-    assert initial_props == "expand_more", (
-        f"Initial icon should be expand_more, got {initial_props}"
-    )
-
-    # Click log toggle to expand
-    log_toggle = user.find(marker="editor-log-toggle")
-    log_toggle.click()
-    await asyncio.sleep(0.1)
-
-    # Log should now be expanded with expand_less icon (up chevron)
-    assert log_panel._log_expanded is True, "Log should be expanded after click"
-    expanded_props = log_toggle_btn._props.get("icon", "")
-    assert expanded_props == "expand_less", (
-        f"Expanded icon should be expand_less, got {expanded_props}"
-    )
-
-    # Click again to collapse
-    log_toggle.click()
-    await asyncio.sleep(0.1)
-
-    # Should be back to collapsed with expand_more icon
-    assert log_panel._log_expanded is False, (
-        "Log should be collapsed after second click"
-    )
-    collapsed_props = log_toggle_btn._props.get("icon", "")
-    assert collapsed_props == "expand_more", (
-        f"Collapsed icon should be expand_more, got {collapsed_props}"
-    )
-
-
-@pytest.mark.integration
-async def test_commands_button_clickable(user: User) -> None:
-    """Test that clicking the commands button doesn't error."""
-    await user.open("/")
-    await wait_for_app_ready()
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    commands_btn = user.find(marker="editor-commands-btn")
-    commands_btn.click()
-    await asyncio.sleep(0)
-
-    # Should not throw errors
-    await user.should_see(marker="editor-commands-btn")
-
-
-@pytest.mark.integration
-async def test_record_button_toggles(user: User) -> None:
-    """Test that the record button toggles recording and changes appearance.
-
-    When recording starts:
-    - is_any_program_recording() becomes True
-    - Button color changes from negative (red) to warning (amber)
-
-    When recording stops:
-    - is_any_program_recording() becomes False
-    - Button color changes back to negative (red)
-    """
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    editor = ui_state.editor_panel
-    assert editor is not None, "Editor panel should exist"
-
-    # Initially not recording with red color
-    assert not is_any_program_recording()
-    record_btn_ref = editor.playback.record_btn
-    assert record_btn_ref is not None, "Record button reference should exist"
-    initial_color = record_btn_ref._props.get("color", "")
-    assert initial_color == "negative", (
-        f"Initial color should be negative (red), got {initial_color}"
-    )
-
-    # Click record to start
-    record_btn = user.find(marker="editor-record-btn")
-    record_btn.click()
-    await asyncio.sleep(0.1)
-
-    assert is_any_program_recording(), "Expected recording to start"
-    recording_color = record_btn_ref._props.get("color", "")
-    assert recording_color == "warning", (
-        f"Recording color should be warning (amber), got {recording_color}"
-    )
-
-    # Click again to stop
-    record_btn.click()
-    await asyncio.sleep(0.1)
-
-    assert not is_any_program_recording(), "Expected recording to stop"
-    stopped_color = record_btn_ref._props.get("color", "")
-    assert stopped_color == "negative", (
-        f"Stopped color should be negative (red), got {stopped_color}"
-    )
-
-
-@pytest.mark.integration
-async def test_recording_notification_appears_and_disappears(
-    user: User,
-) -> None:
-    """Test that a pulsating recording notification appears at the top of the screen.
-
-    When recording starts:
-    - A notification with "Recording" text appears at the top
-    - The notification has the recording-notification CSS class for z-index and animation
-
-    When recording stops:
-    - The notification is dismissed
-    """
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    editor = ui_state.editor_panel
-    assert editor is not None, "Editor panel should exist"
-
-    # Initially no recording notification
-    assert not is_any_program_recording()
-    assert editor.playback._recording_notification is None
-
-    # Click record to start
-    record_btn = user.find(marker="editor-record-btn")
-    record_btn.click()
-    await asyncio.sleep(0.1)
-
-    # Recording notification should appear
-    assert is_any_program_recording()
-    assert editor.playback._recording_notification is not None, (
-        "Recording notification should exist"
-    )
-    await user.should_see("Recording")
-
-    # Click again to stop
-    record_btn.click()
-    await asyncio.sleep(0.1)
-
-    # Recording notification should be dismissed
-    assert not is_any_program_recording()
-    assert editor.playback._recording_notification is None, (
-        "Recording notification should be dismissed"
-    )
-
-
-@pytest.mark.integration
-async def test_panel_can_be_reopened(user: User) -> None:
-    """Test that the editor panel can be closed and reopened.
-
-    The panel is closed by switching to a different tab (IO, Gripper, etc).
-    When reopened, the play button should be visible again.
-    """
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Open editor by clicking program tab
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    # Panel should be visible (play button is shown)
-    await user.should_see(marker="editor-play-btn")
-
-    # Close by switching to IO tab (same tab group as program)
-    user.find(marker="tab-io").click()
-    await asyncio.sleep(0.1)
-
-    # Reopen program panel
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    # Panel should be visible again
-    await user.should_see(marker="editor-play-btn")
-
-
-@pytest.mark.integration
-async def test_dirty_icon_appears_after_editing(user: User) -> None:
-    """Test that the dirty icon (amber dot) appears after editing content.
-
-    When tab content is modified from its saved state, a dirty indicator
-    should become visible to show unsaved changes.
-    """
-    from waldo_commander.state import ui_state
-    import waldoctl
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    editor = ui_state.editor_panel
-    assert editor is not None, "Editor panel should exist"
-
-    # Get active tab
-    tab = waldoctl.commander.programs.active
-    assert tab is not None, "Active tab should exist"
-
-    # Initially tab should not be dirty (content == saved_content)
-    assert tab.is_dirty is False, "Tab should not be dirty initially"
-
-    # Get dirty dot widget
-    widgets = editor._tab_widgets.get(tab.id, {})
-    dirty_dot = widgets.get("dirty_dot")
-    assert dirty_dot is not None, "Dirty dot widget should exist"
-
-    # Modify the content directly (simulating editor change)
-    tab.source = tab.source + "\n# Modified"
-
-    # Tab should now be dirty (is_dirty is a computed property)
-    assert tab.is_dirty is True, "Tab should be dirty after modification"
-
-    # Manually update dirty dot visibility as the UI binding would
-    dirty_dot.set_visibility(tab.is_dirty)
-
-    # Dirty dot should be visible
-    assert dirty_dot.visible is True, "Dirty dot should be visible after modification"
-
-
-@pytest.mark.integration
-async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
-    """Test that tabs maintain their own path_segments and targets.
-
-    Each ``Program`` owns its own ``dry_run.path_segments`` / ``targets``
-    list directly — writers update the owning tab's dry-run, and switching
-    tabs simply re-points readers to the new active program. There is no
-    longer a global ``simulation_state`` mirror to drive the per-tab copy.
-    """
-    from waldo_commander.state import ui_state
-    import waldoctl
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    editor = ui_state.editor_panel
-    assert editor is not None, "Editor panel should exist"
-
-    # Get first tab
-    tab1 = waldoctl.commander.programs.active
-    assert tab1 is not None, "First tab should exist"
-
-    # Write fake simulation results directly into tab1's dry-run
-    tab1.dry_run.path_segments = [{"fake": "segment1"}]  # type: ignore[list-item]
-    tab1.dry_run.targets = [{"fake": "target1"}]  # type: ignore[list-item]
-
-    # Create a second tab — its dry-run starts empty
-    user.find(marker="editor-new-tab-btn").click()
-    await asyncio.sleep(0.1)
-
-    tab2 = waldoctl.commander.programs.active
-    assert tab2 is not None, "Second tab should exist"
-    assert tab2.id != tab1.id, "Should be on new tab"
-    assert tab2.dry_run.path_segments == [], "New tab should have empty path_segments"
-    assert tab2.dry_run.targets == [], "New tab should have empty targets"
-
-    # Write fake simulation results into tab2's dry-run
-    tab2.dry_run.path_segments = [{"fake": "segment2"}]  # type: ignore[list-item]
-    tab2.dry_run.targets = [{"fake": "target2"}]  # type: ignore[list-item]
-
-    # Tab1's data should still be preserved — no shared state to clobber
-    assert tab1.dry_run.path_segments == [{"fake": "segment1"}], (
-        "Tab1's data should be preserved while editing tab2"
-    )
-    assert tab1.dry_run.targets == [{"fake": "target1"}], (
-        "Tab1's data should be preserved while editing tab2"
-    )
-
-
-@pytest.mark.integration
-async def test_create_and_remove_tab(user: User) -> None:
-    """Test creating a new tab and then removing it.
-
-    Creating a tab should increase the tab count.
-    Closing a tab should decrease the tab count.
-    """
-    from waldo_commander.state import ui_state
-    import waldoctl
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    editor = ui_state.editor_panel
-    assert editor is not None, "Editor panel should exist"
-
-    # Get initial tab count
-    initial_count = len(waldoctl.commander.programs.items)
-    assert initial_count >= 1, "Should have at least one initial tab"
-
-    # Create a new tab
-    user.find(marker="editor-new-tab-btn").click()
-    await asyncio.sleep(0)
-
-    # Verify new tab was created
-    assert len(waldoctl.commander.programs.items) == initial_count + 1, (
-        f"Expected {initial_count + 1} tabs after creating new"
-    )
-
-    # Get the new tab (should be active)
-    new_tab = waldoctl.commander.programs.active
-    assert new_tab is not None, "New tab should be active"
-    new_tab_id = new_tab.id
-
-    # Close the new tab using the close button
-    close_btn = user.find(marker=f"editor-tab-close-{new_tab_id}")
-    close_btn.click()
-    # Close is deferred via ui.timer(0) - poll until tab is removed
-    # CI environments need more time for the timer callback to execute
-    for _ in range(40):
-        await asyncio.sleep(0.1)
-        if len(waldoctl.commander.programs.items) == initial_count:
-            break
-
-    # Verify tab was removed
-    assert len(waldoctl.commander.programs.items) == initial_count, (
-        f"Expected {initial_count} tabs after closing"
-    )
-
-    # Verify the closed tab no longer exists
-    assert waldoctl.commander.programs.get(new_tab_id) is None, (
-        "Closed tab should no longer exist"
-    )
-
-
-@pytest.mark.integration
-async def test_external_program_mutation_renders(user: User) -> None:
-    """A program mutation made OUTSIDE any page action — exactly what an MCP
-    ``programs.*`` tool does — must render in the editor. The reconciler builds
-    the tab widget on ``new``/``open``, follows ``switch``, and tears the widget
-    down on ``close``, with no GUI button involved.
-    """
-    from waldo_commander.state import ui_state
-    import waldoctl
-
-    await user.open("/")
-    await wait_for_app_ready()
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    editor = ui_state.editor_panel
-    assert editor is not None
-
-    initial = len(waldoctl.commander.programs.items)
-
-    # new(): no GUI button, no _new_tab() — the reconciler builds the widget.
-    prog = waldoctl.commander.programs.new(source="print('ext')\n", filename="ext.py")
-    await asyncio.sleep(0)
-    assert len(waldoctl.commander.programs.items) == initial + 1
-    await user.should_see(marker=f"editor-tab-{prog.id}")
-
-    # switch(): the active tab follows.
-    waldoctl.commander.programs.switch(prog.id)
-    await asyncio.sleep(0)
-    assert waldoctl.commander.programs.active_id == prog.id
-    assert editor.tabs_container.value == prog.id
-
-    # open(): reads a file from disk into a rendered, non-dirty tab.
-    path = editor.PROGRAM_DIR / "opened_externally.py"
-    path.write_text("print('opened')\n", encoding="utf-8")
-    opened = waldoctl.commander.programs.open(str(path))
-    await asyncio.sleep(0)
-    await user.should_see(marker=f"editor-tab-{opened.id}")
-    assert opened.file_path == str(path)
-    assert not opened.is_dirty
-
-    # close(): the widget is torn down.
-    waldoctl.commander.programs.close(prog.id)
-    await asyncio.sleep(0)
-    assert waldoctl.commander.programs.get(prog.id) is None
-    await user.should_not_see(marker=f"editor-tab-{prog.id}")
-
-
-@pytest.mark.integration
-async def test_step_button_enabled_after_simulation(user: User) -> None:
-    """Test that the step button is visible and enabled after simulation.
-
-    After simulation populates steps:
-    - Step button becomes visible
-    - Step button is not disabled
-    - Play button starts simulation playback (not script execution)
-    """
-    from waldo_commander.state import ui_state
-    import waldoctl
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    editor = ui_state.editor_panel
-    assert editor is not None, "Editor panel should exist"
-
-    # Step button should be hidden before simulation
-    assert editor.playback.next_btn is not None, "Step button reference should exist"
-    assert editor.playback.next_btn.visible is False, (
-        "Step button should be hidden before simulation"
-    )
-
-    # Set script with move commands to generate simulation steps
-    tab = waldoctl.commander.programs.active
-    assert tab is not None
-    test_script = """from parol6 import RobotClient
-rbt = RobotClient()
-rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
-rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
-"""
-    ui_state.active_textarea.value = test_script
-    tab.source = test_script
-
-    # Run simulation to populate steps
-    from waldo_commander.components.simulation_engine import simulation as _sim
-
-    await _sim.run_simulation()
-    await asyncio.sleep(0.1)
-
-    # Step button should be visible after simulation
-    assert editor.playback.next_btn.visible is True, (
-        "Step button should be visible when simulation has steps"
-    )
-    assert editor.playback.next_btn._props.get("disable") is not True, (
-        "Step button should be enabled"
-    )
-    _active_for_steps = waldoctl.commander.programs.active
-    assert _active_for_steps is not None, "An active program should exist"
-    assert _active_for_steps.dry_run.total_steps > 0, "Should have simulation steps"
-
-    # Play should start sim playback, not script execution
-    await editor.playback.toggle_play()
-    await asyncio.sleep(0.1)
-    assert _active_for_steps.dry_run.playback.is_active is True, (
-        "Play should start simulation playback when steps exist"
-    )
-    assert is_any_program_running() is False, (
-        "Script should not be running during sim playback"
-    )
-
-    # Pause sim playback
-    await editor.playback.toggle_play()
-    await asyncio.sleep(0)
-    assert _active_for_steps.dry_run.playback.is_active is False
+            await wait_until(lambda: not is_any_program_running(), timeout_s=10)
 
 
 _THREE_MOVE_SCRIPT = """from parol6 import RobotClient
@@ -641,15 +167,21 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
 rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
 """
 
+_SLEEP_SCRIPT = """from parol6 import RobotClient
+import time
+rbt = RobotClient()
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+time.sleep(0.5)
+rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
+"""
 
-async def _open_simulated_three_move_program(
-    user: User, script: str = _THREE_MOVE_SCRIPT
-):
-    """Open the editor, load a three-move program, and dry-run simulate it.
-    Returns ``(editor, tab)`` once the playback timeline is built."""
-    from waldo_commander.components.simulation_engine import simulation as _sim
-    from waldo_commander.state import ui_state
+
+async def _open_program_tab(user: User):
+    """Open the editor on its active program with the simulator ready.
+    Returns ``(editor, tab)``."""
     import waldoctl
+
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -664,6 +196,15 @@ async def _open_simulated_three_move_program(
     tab = waldoctl.commander.programs.active
     assert tab is not None
     assert ui_state.active_textarea is not None
+    return editor, tab
+
+
+async def _simulate(editor, tab, script: str) -> None:
+    """Load *script* into the tab and dry-run simulate it, up to a built
+    playback timeline."""
+    from waldo_commander.components.simulation_engine import simulation as _sim
+    from waldo_commander.state import ui_state
+
     ui_state.active_textarea.value = script
     tab.source = script
 
@@ -676,7 +217,26 @@ async def _open_simulated_three_move_program(
     # The timeline is lazy — built on the first playback interaction. Build it
     # up front exactly as pressing any step control would.
     assert editor.playback._ensure_timeline() is not None, "timeline build failed"
+
+
+async def _open_simulated_three_move_program(
+    user: User, script: str = _THREE_MOVE_SCRIPT
+):
+    """Open the editor, load a three-move program, and dry-run simulate it.
+    Returns ``(editor, tab)`` once the playback timeline is built."""
+    editor, tab = await _open_program_tab(user)
+    await _simulate(editor, tab, script)
     return editor, tab
+
+
+def _move_commands(tab) -> list[int]:
+    """The program indices of the plan's moves, in order: what a live run
+    reports as ``executing_command`` for the k-th move. Program indices
+    count every command the backend queued, the preview's own tool and
+    world setup included, so they are read off the record, never assumed."""
+    record = tab.dry_run.commanded
+    assert record is not None
+    return [b.command for b in record.blocks if b.move_type is not None]
 
 
 async def _wait_j1_near(target: float, timeout_s: float = 3.0) -> None:
@@ -703,6 +263,8 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
     command. While the program runs, the sim Previous-step button is hidden
     (live stepping is forward-only); it reappears after the run stops.
     """
+    import waldoctl
+
     editor, tab = await _open_simulated_three_move_program(user)
 
     prev_btn = editor.playback.prev_btn
@@ -710,16 +272,17 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
     assert prev_btn.visible is True, "prev button should be visible when idle"
 
     pb = tab.dry_run.playback
+    moves = _move_commands(tab)
 
     async def wait_step_complete(step: int, timeout_s: float) -> None:
         interval = 0.05
         for _ in range(int(timeout_s / interval)):
-            if pb.executing_step_index == step and pb.executing_step_at_end:
+            if pb.executing_command == step and pb.executing_step_at_end:
                 return
             await asyncio.sleep(interval)
         tail = [entry.text for entry in tab.log.entries[-5:]]
         raise TimeoutError(
-            f"step {step} never completed: index={pb.executing_step_index}, "
+            f"step {step} never completed: index={pb.executing_command}, "
             f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
             f"log tail={tail}"
         )
@@ -727,7 +290,7 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
     try:
         # First press from idle: subprocess starts paused, runs command #1 only.
         user.find(marker="editor-step-program").click()
-        await wait_step_complete(0, timeout_s=30.0)
+        await wait_step_complete(moves[0], timeout_s=30.0)
 
         assert pb.is_playing is False, "paused start must not enter play mode"
         assert prev_btn.visible is False, "prev button must hide during a live run"
@@ -736,12 +299,29 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
         # Exactly one command: even given time to continue, the script must
         # still be blocked on command #1.
         await asyncio.sleep(0.5)
-        assert pb.executing_step_index == 0, "paused start ran more than one command"
+        assert pb.executing_command == moves[0], (
+            "paused start ran more than one command"
+        )
         assert is_any_program_running() is True, "program must be paused, not finished"
+
+        # A preview scrub must not reposition the controller while Python owns it,
+        # including between steps when the native queue is idle.
+        timeline = editor.playback._timeline
+        assert timeline is not None
+        slider = next(iter(user.find(marker="editor-scrub-slider").elements))
+        with slider.client:
+            slider.set_value(timeline.total_duration)
+        await asyncio.sleep(0)
+        teleport = editor.playback._teleport_task
+        if teleport is not None:
+            await teleport
+        assert not await waldoctl.commander.client.wait_status(
+            lambda s: abs(s.angles[0] - 85.0) > 1.0, timeout=1
+        ), "preview scrubbing moved the controller during a paused Python run"
 
         # Second press while running-paused: exactly one more command.
         user.find(marker="editor-step-program").click()
-        await wait_step_complete(1, timeout_s=15.0)
+        await wait_step_complete(moves[1], timeout_s=15.0)
         assert pb.is_playing is False
         await _wait_j1_near(95.0)
         assert is_any_program_running() is True, "still paused after the second step"
@@ -755,6 +335,119 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
 
     assert is_any_program_running() is False
     assert prev_btn.visible is True, "prev button should reappear after the run"
+
+
+_WITHDRAW_TWICE = """from waldoctl.client import RobotClient as Client
+from waldoctl.skills import skill
+from waldo_commander.skills import retract
+
+@skill(id="test.withdraw_twice", version="1.0.0")
+async def withdraw_twice(rbt: Client):
+    await retract.async_call(rbt, distance_mm=2.0)
+    await retract.async_call(rbt, distance_mm=2.0)
+"""
+
+_WITHDRAW_SYNC = (
+    _WITHDRAW_TWICE
+    + """
+from parol6 import RobotClient
+with RobotClient() as rbt:
+    rbt.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
+    withdraw_twice(rbt)
+"""
+)
+
+_WITHDRAW_ASYNC = (
+    _WITHDRAW_TWICE
+    + """
+import asyncio
+from parol6 import AsyncRobotClient
+async def main():
+    async with AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
+        await withdraw_twice.async_call(rbt)
+asyncio.run(main())
+"""
+)
+
+
+@pytest.mark.integration
+async def test_nested_imported_skill_keeps_preview_and_gui_steps(user: User) -> None:
+    """A skill a program defines and calls steps one inner motion per press,
+    from a sync program (through the wrapper's ``run_skill``) and from an
+    async one alike, and its progress and completion reach the program log."""
+    import numpy as np
+    import waldoctl
+
+    editor, tab = await _open_program_tab(user)
+    pb = tab.dry_run.playback
+
+    async def wait_step(step: int) -> None:
+        async with asyncio.timeout(30):
+            while pb.executing_command != step or not pb.executing_step_at_end:
+                await asyncio.sleep(0.05)
+
+    for body in (_WITHDRAW_SYNC, _WITHDRAW_ASYNC):
+        await _simulate(editor, tab, body)
+        assert tab.dry_run.total_steps == 3
+        moves = _move_commands(tab)
+        earlier = list(tab.log.entries)
+
+        def logged(text: str) -> bool:
+            return any(
+                text in entry.text
+                for entry in tab.log.entries
+                if not any(entry is seen for seen in earlier)
+            )
+
+        # A launch refuses while the controller holds queued commands, and
+        # the preview fits the program's tool through the queue.
+        client = waldoctl.commander.client
+        async with asyncio.timeout(10):
+            while await client.queue():
+                await asyncio.sleep(0.05)
+        try:
+            user.find(marker="editor-step-program").click()
+            # The launch resets the executing command, so the last run's
+            # final step cannot be mistaken for this one's first.
+            assert await wait_until(is_any_program_running, timeout_s=30)
+            await wait_step(moves[0])
+            first = await waldoctl.commander.client.pose()
+            assert first is not None
+
+            user.find(marker="editor-step-program").click()
+            await wait_step(moves[1])
+            second = await waldoctl.commander.client.pose()
+            assert second is not None
+            assert np.linalg.norm(np.array(second[:3]) - first[:3]) == pytest.approx(
+                2.0, abs=0.3
+            )
+            assert is_any_program_running() and not pb.is_playing
+
+            user.find(marker="editor-step-program").click()
+            await wait_step(moves[2])
+            third = await waldoctl.commander.client.pose()
+            assert third is not None
+            assert np.linalg.norm(np.array(third[:3]) - second[:3]) == pytest.approx(
+                2.0, abs=0.3
+            )
+            assert is_any_program_running() and not pb.is_playing
+            assert logged("waldo.retract progress (0%): Moving along tool Z"), (
+                "skill progress must reach the program log through subprocess events"
+            )
+            user.find(marker="editor-play-btn").click()
+            async with asyncio.timeout(15):
+                while is_any_program_running():
+                    await asyncio.sleep(0.05)
+            assert logged("test.withdraw_twice completed"), (
+                "terminal skill events must survive subprocess cleanup"
+            )
+        finally:
+            if is_any_program_running():
+                user.find(marker="editor-stop-btn").click()
+                async with asyncio.timeout(10):
+                    while is_any_program_running():
+                        await asyncio.sleep(0.05)
 
 
 _BLENDED_SCRIPT = """from parol6 import RobotClient
@@ -808,11 +501,13 @@ async def test_step_program_blended_moves_run_one_per_press(user: User) -> None:
         await wait_controller_j1(95.0)
         assert is_any_program_running() is True, "still paused after the second member"
 
-        # Third press: the non-blended move closes the group (step 1 in the
-        # timeline, which renders the blend pair as one segment).
+        # Third press: the non-blended move closes the group, whose events
+        # carry the head's command; its own events carry command 2.
         user.find(marker="editor-step-program").click()
         await wait_controller_j1(90.0)
-        assert tab.dry_run.playback.executing_step_index == 1
+        assert tab.dry_run.playback.executing_command == _move_commands(tab)[2], (
+            "the closing move is the program's third move"
+        )
         assert is_any_program_running() is True
 
         # Play resumes normal execution through to completion.
@@ -831,80 +526,52 @@ async def test_step_program_blended_moves_run_one_per_press(user: User) -> None:
                 await asyncio.sleep(0.1)
 
 
-_ASYNC_THREE_MOVE_SCRIPT = """import asyncio
-from parol6 import AsyncRobotClient
-
-async def main():
-    async with AsyncRobotClient() as rbt:
-        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
-        await rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
-        await rbt.move_j([90, -90, 180, 0, 0, 180], speed=1.0)
-
-asyncio.run(main())
-"""
-
-
 @pytest.mark.integration
-async def test_step_program_async_client_runs_one_per_press(user: User) -> None:
-    """Async programs step exactly like sync ones: the bootstrap wraps
-    AsyncRobotClient too, so each press runs one command and the pause holds.
+async def test_simulated_program_steps_highlights_and_plays_its_preview(
+    user: User,
+) -> None:
+    """Once a program is simulated, Step shows and is enabled; the cursor's
+    move glows in the scene until the cursor leaves it; Previous scrubs back
+    one segment and clamps at step 0, disabled there, its enabled state
+    following slider scrubs; and Play plays the preview, not the script."""
+    from waldo_commander.state import ui_state
 
-    Without the async wrapper the client is unpatched: the program free-runs
-    with no step events and completes on the first press.
-    """
-    editor, tab = await _open_simulated_three_move_program(
-        user, script=_ASYNC_THREE_MOVE_SCRIPT
-    )
-    pb = tab.dry_run.playback
-
-    async def wait_step_complete(step: int, timeout_s: float) -> None:
-        interval = 0.05
-        for _ in range(int(timeout_s / interval)):
-            if pb.executing_step_index == step and pb.executing_step_at_end:
-                return
-            await asyncio.sleep(interval)
-        tail = [entry.text for entry in tab.log.entries[-5:]]
-        raise TimeoutError(
-            f"step {step} never completed: index={pb.executing_step_index}, "
-            f"at_end={pb.executing_step_at_end}, running={is_any_program_running()}, "
-            f"log tail={tail}"
-        )
-
-    try:
-        user.find(marker="editor-step-program").click()
-        await wait_step_complete(0, timeout_s=30.0)
-        await _wait_j1_near(85.0)
-
-        await asyncio.sleep(0.5)
-        assert pb.executing_step_index == 0, "paused start ran more than one command"
-        assert is_any_program_running() is True, "program must be paused, not finished"
-
-        user.find(marker="editor-step-program").click()
-        await wait_step_complete(1, timeout_s=15.0)
-        await _wait_j1_near(95.0)
-        assert is_any_program_running() is True, "still paused after the second step"
-    finally:
-        if is_any_program_running():
-            user.find(marker="editor-stop-btn").click()
-            for _ in range(50):
-                if not is_any_program_running():
-                    break
-                await asyncio.sleep(0.1)
-
-    assert is_any_program_running() is False
-
-
-@pytest.mark.integration
-async def test_prev_step_scrubs_sim_preview_back(user: User) -> None:
-    """The Previous-step button scrubs the sim preview back one segment and
-    clamps at step 0.
-
-    Disabled at step 0; after Next it becomes enabled and a press moves
-    ``current_step``/``playback_time`` back. Its enabled state tracks slider
-    scrubs, and a racing press at step 0 clamps instead of going negative.
-    """
-    editor, tab = await _open_simulated_three_move_program(user)
+    editor, tab = await _open_program_tab(user)
     pbc = editor.playback
+    assert pbc.next_btn is not None, "Step button reference should exist"
+    assert pbc.next_btn.visible is False, (
+        "Step button should be hidden before simulation"
+    )
+    await _simulate(editor, tab, _THREE_MOVE_SCRIPT)
+    assert pbc.next_btn.visible is True, "Step button should show once there are steps"
+    assert pbc.next_btn._props.get("disable") is not True, "Step should be enabled"
+    assert tab.dry_run.total_steps > 0
+
+    scene = ui_state.urdf_scene
+    textarea = ui_state.active_textarea
+    assert scene is not None and textarea is not None
+
+    def line_colors(line: int) -> list:
+        return [
+            obj.color
+            for i in scene._line_to_segments.get(line, ())
+            if i < len(scene._rendered_segments)
+            and scene._rendered_segments[i] is not None
+            for obj in scene._rendered_segments[i].objects
+        ]
+
+    assert await wait_until(lambda: bool(line_colors(3)), timeout_s=10), (
+        "the first move's path was never drawn"
+    )
+    plain = line_colors(3)
+    _set_cursor_line(textarea, 3)
+    assert await wait_until(
+        lambda: any(a != b for a, b in zip(line_colors(3), plain)), timeout_s=5
+    ), "the move under the cursor does not glow"
+    _set_cursor_line(textarea, 1)
+    assert await wait_until(lambda: line_colors(3) == plain, timeout_s=5), (
+        "the glow stays after the cursor leaves the move"
+    )
 
     prev_btn = pbc.prev_btn
     assert prev_btn is not None
@@ -948,108 +615,17 @@ async def test_prev_step_scrubs_sim_preview_back(user: User) -> None:
     assert tab.dry_run.playback.current_step == 0
     assert tab.dry_run.playback.playback_time == 0.0
 
-
-@pytest.mark.integration
-async def test_simulation_creates_targets_for_literal_moves(
-    user: User,
-) -> None:
-    """Test that simulation creates targets for move commands with literal args.
-
-    After simulation, moves with literal coordinates get auto-generated targets
-    tracked by the CM6 StateField for interactive 3D editing. No markers are
-    added to the user's source code.
-    """
-    from waldo_commander.state import ui_state
-    import waldoctl
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    editor = ui_state.editor_panel
-    assert editor is not None, "Editor panel should exist"
-
-    tab = waldoctl.commander.programs.active
-    assert tab is not None, "Active tab should exist"
-
-    test_script = """from parol6 import RobotClient
-rbt = RobotClient()
-rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
-"""
-    assert ui_state.active_textarea is not None
-    ui_state.active_textarea.value = test_script
-    tab.source = test_script
-
-    from waldo_commander.components.simulation_engine import simulation as _sim
-
-    await _sim.run_simulation()
+    await pbc.toggle_play()
     await asyncio.sleep(0.1)
-
-    _active = waldoctl.commander.programs.active
-    _targets = _active.dry_run.targets if _active is not None else []
-    assert len(_targets) >= 1, f"Expected at least 1 target, got {len(_targets)}"
-
-    # Target ID should be auto-generated (no UUID markers)
-    target = _targets[0]
-    assert target.id.startswith("auto_"), f"Expected auto-generated ID, got {target.id}"
-    assert target.line_number > 0, "Target should have a valid line number"
-
-    # Source code should NOT contain any TARGET markers
-    updated_content = ui_state.active_textarea.value
-    assert "# TARGET:" not in updated_content, (
-        "Source code should not contain TARGET markers"
+    assert tab.dry_run.playback.is_active is True, (
+        "Play should start simulation playback when steps exist"
     )
-
-
-def _fire_editor_event(textarea, event_type: str, args: dict) -> None:
-    """Drive a CodeMirror event through the element's real event listener —
-    the same path a browser event takes. ``Element.on`` stores listener types
-    camelCased, so kebab-case names are converted before matching."""
-    from nicegui.helpers import event_type_to_camel_case
-
-    wanted = event_type_to_camel_case(event_type)
-    listener = next(
-        (
-            listener
-            for listener in textarea._event_listeners.values()
-            if listener.type == wanted
-        ),
-        None,
+    assert is_any_program_running() is False, (
+        "Script should not be running during sim playback"
     )
-    assert listener is not None, f"no {event_type} listener registered"
-    with textarea.client:
-        textarea._handle_event({"listener_id": listener.id, "args": args})
-
-
-def _set_cursor_line(textarea, line: int) -> None:
-    """Place the cursor like a user click: focus, then a selection change.
-    Focus first — the editor only trusts selection-changes on a focused tab
-    (unfocused ones are echoes of programmatic value updates)."""
-    _fire_editor_event(textarea, "focus-change", {"focused": True})
-    _fire_editor_event(
-        textarea,
-        "selection-change",
-        {"line": line, "column": 1, "from_line": line, "to_line": line, "empty": True},
-    )
-
-
-def _set_selection(textarea, from_line: int, to_line: int) -> None:
-    """Select a line range like a user drag (head at the selection end)."""
-    _fire_editor_event(textarea, "focus-change", {"focused": True})
-    _fire_editor_event(
-        textarea,
-        "selection-change",
-        {
-            "line": to_line,
-            "column": 1,
-            "from_line": from_line,
-            "to_line": to_line,
-            "empty": False,
-        },
-    )
+    await pbc.toggle_play()
+    await asyncio.sleep(0)
+    assert tab.dry_run.playback.is_active is False
 
 
 @pytest.mark.integration
@@ -1082,11 +658,11 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
     assert tab is not None
 
     move_l_line = (
-        "rbt.move_l([150.000, 100.000, 250.000, 0.000, 0.000, 0.000], speed=0.5)"
+        "rbt.move_l([0.000, 280.000, 250.000, 90.000, 0.000, 90.000], speed=0.5)"
     )
     move_c_line = (
-        "rbt.move_c([165.000, 105.000, 255.000, 0.000, 0.000, 0.000], "
-        "[150.000, 130.000, 250.000, 0.000, 0.000, 0.000], speed=0.5)"
+        "rbt.move_c([15.000, 280.000, 255.000, 90.000, 0.000, 90.000], "
+        "[0.000, 300.000, 250.000, 90.000, 0.000, 90.000], speed=0.5)"
     )
     move_rel_line = (
         "rbt.move_l([0.000, 0.000, -20.000, 0.000, 0.000, 0.000], rel=True, speed=0.5)"
@@ -1112,6 +688,9 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
         f"Expected targets at lines 4-7, got {sorted(targets_by_line)}"
     )
     assert targets_by_line[6].move_type == "smooth_arc"
+    # Targets are tracked beside the source, never marked in it.
+    assert all(t.id.startswith("auto_") for t in tab.dry_run.targets)
+    assert "# TARGET:" not in str(textarea.value)
 
     # The browser echoes declared anchors back via "anchor-positions"; the
     # user fixture has no JS, so replay that echo through the real event.
@@ -1239,151 +818,19 @@ async def test_capture_pose_reteaches_replaces_and_inserts(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_recorded_steps_insert_below_cursor(user: User) -> None:
-    """Recording with the cursor mid-file inserts every step directly below
-    the cursor line in chronological order, without moving the user's cursor
-    and without touching the surrounding lines."""
-    import waldoctl
-    from waldo_commander.services.motion_recorder import motion_recorder
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-
-    tab = waldoctl.commander.programs.active
-    assert tab is not None
-    textarea = ui_state.active_textarea
-    assert textarea is not None
-
-    textarea.value = "# step one\n# step two\n# step three\n# step four\n"
-
-    _set_cursor_line(textarea, 2)
-    assert tab.dry_run.playback.active_cursor_line == 2
-
-    # No simulation end position to match -> the start anchor is inserted.
-    tab.dry_run.final_joints_rad = None
-
-    user.find(marker="editor-record-btn").click()
-    await asyncio.sleep(0.1)
-    assert is_any_program_recording()
-
-    user.find(marker="editor-capture-pose").click()
-    await asyncio.sleep(0)
-    motion_recorder.record_action("io", port=1, state=1)
-
-    user.find(marker="editor-record-btn").click()
-    await asyncio.sleep(0.1)
-    assert not is_any_program_recording()
-
-    lines = textarea.value.splitlines()
-    assert lines[:2] == ["# step one", "# step two"], "lines above cursor intact"
-    tail = lines.index("# step three")
-    assert lines[tail:] == ["# step three", "# step four"], (
-        "original tail stays below every recorded step"
-    )
-    inserted = lines[2:tail]
-    assert inserted and inserted[0].startswith("rbt."), (
-        "recorded code lands directly below the cursor line"
-    )
-    anchor_idx = next(
-        (i for i, ln in enumerate(inserted) if "Recording start position" in ln), None
-    )
-    move_idx = next(
-        (i for i, ln in enumerate(inserted) if ln.startswith("rbt.move_l(")), None
-    )
-    io_idx = next(
-        (i for i, ln in enumerate(inserted) if ln == "rbt.write_io(1, 1)"), None
-    )
-    assert anchor_idx is not None, f"anchor not recorded: {inserted}"
-    assert move_idx is not None, f"captured pose not recorded: {inserted}"
-    assert io_idx is not None, f"io action not recorded: {inserted}"
-    assert anchor_idx < move_idx < io_idx, "steps stay in chronological order"
-    assert tab.dry_run.playback.active_cursor_line == 2, (
-        "recording must not move the user's cursor"
-    )
-
-
-@pytest.mark.integration
-async def test_recording_cursor_tracks_user_edits(user: User) -> None:
-    """User edits during a recording session shift the insertion cursor with
-    the code: the browser remaps the session's line anchor and the recorder
-    reads the echoed position back, so recorded steps keep landing at the
-    taught spot instead of a stale line number."""
-    import waldoctl
-    from waldo_commander.services.motion_recorder import (
-        _RECORD_ANCHOR_ID,
-        motion_recorder,
-    )
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-
-    user.find(marker="tab-program").click()
-    await asyncio.sleep(0)
-    tab = waldoctl.commander.programs.active
-    textarea = ui_state.active_textarea
-    assert tab is not None and textarea is not None
-
-    textarea.value = "# head\n# taught spot\n# tail\n"
-    _set_cursor_line(textarea, 2)
-    tab.dry_run.final_joints_rad = None
-
-    user.find(marker="editor-record-btn").click()
-    await asyncio.sleep(0.1)
-    assert is_any_program_recording()
-    tracked = textarea._props["line-anchors"].get(_RECORD_ANCHOR_ID)
-    assert tracked, "session cursor must be declared as a line anchor"
-
-    # The user types two lines at the top mid-session; the browser remaps the
-    # anchor and echoes the shifted position (replayed here — the user
-    # fixture runs no JS).
-    textarea.value = "# note 1\n# note 2\n" + str(textarea.value)
-    _fire_editor_event(
-        textarea,
-        "anchor-positions",
-        {
-            "anchors": {
-                **textarea._props["line-anchors"],
-                _RECORD_ANCHOR_ID: tracked + 2,
-            }
-        },
-    )
-
-    motion_recorder.record_action("io", port=1, state=1)
-
-    user.find(marker="editor-record-btn").click()
-    await asyncio.sleep(0.1)
-    assert not is_any_program_recording()
-
-    lines = textarea.value.splitlines()
-    io_idx = lines.index("rbt.write_io(1, 1)")
-    assert io_idx == tracked + 2, (
-        f"recorded step must land below the shifted anchor line: {lines}"
-    )
-    assert lines.index("# tail") > io_idx, "original tail stays below the step"
-    assert _RECORD_ANCHOR_ID not in textarea._props["line-anchors"], (
-        "stopping the session must retract its anchor"
-    )
-
-
-@pytest.mark.integration
 async def test_manual_inserts_follow_cursor(user: User) -> None:
     """Palette, gizmo, and capture-pose inserts land below the cursor line and
     consecutive inserts stay in order; with the cursor unset or on the last
-    line they append at EOF exactly as before."""
+    line they append at EOF. A selection stays with the tab it was made in."""
     import waldoctl
+
     from waldo_commander.components.editor_decorations import decorations
     from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
+    await ensure_robot_ready_for_motion()
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -1450,93 +897,141 @@ async def test_manual_inserts_follow_cursor(user: User) -> None:
         editor._insert_command("delay")
     assert textarea.value.splitlines()[2] == "    time.sleep(1.0)"
 
+    # A selection belongs to the tab it was made in: switching tabs leaves
+    # the new tab with none, so capture inserts instead of replacing lines.
+    textarea.value = "a = 1\nb = 2\nc = 3\n"
+    _set_selection(textarea, 2, 3)
+    user.find(marker="editor-new-tab-btn").click()
+    await asyncio.sleep(0.1)
+    second = waldoctl.commander.programs.active
+    assert second is not None and second is not tab
+    other = ui_state.active_textarea
+    other.value = "x = 1\ny = 2\nz = 3\n"
+    await asyncio.sleep(0)
+    user.find(marker="editor-capture-pose").click()
+    await asyncio.sleep(0.1)
+    lines = str(other.value).split("\n")
+    assert lines[:3] == ["x = 1", "y = 2", "z = 3"], (
+        f"the other tab's selection replaced this tab's lines: {other.value!r}"
+    )
+    assert any(line.startswith("rbt.move_") for line in lines), other.value
+
 
 @pytest.mark.integration
-async def test_a_record_and_a_plan_of_different_lengths_still_build_a_scrub_bar(
-    user: User,
-) -> None:
-    """The scrub bar is built from the timeline's own segments.
-
-    A record does not have one block per planned segment: a `time.sleep`
-    between two moves is a third command with no plan segment of its own,
-    and a run that hits its budget stops with segments left over. Reading
-    the timeline's times at a *planned* segment's index therefore paints
-    the wrong window, or walks off the end — and the rebuild clears the
-    bar before it throws, so a single miss leaves it permanently empty.
-    """
-    import numpy as np
+async def test_live_run_highlight_follows_program_command(user: User) -> None:
+    """A sleep between two moves owns a scrub division of its own. The
+    stepping wrapper numbers the queued commands it runs; the host resolves
+    that number to the program command the preview drew. The sleep is a
+    command on the plan the wrapper never sees, so counting positions would
+    put the second move's highlight on the sleep's division and line."""
     import waldoctl
 
-    from waldo_commander.components.playback import playback
-    from waldo_commander.state import PathSegment
+    from waldo_commander.components.editor_decorations import decorations
+
+    editor, tab = await _open_simulated_three_move_program(user, _SLEEP_SCRIPT)
+    segments = tab.dry_run.path_segments
+    assert [s.move_type for s in segments] == ["joints", "sleep", "joints"]
+
+    # A delay owns time on the commanded record: the scrub bar gives it a
+    # division of its own and the timeline holds the arm through it.
+    playback = editor.playback
+    record = tab.dry_run.commanded
+    assert record is not None
+    assert [b.line_number for b in record.blocks if b.rows] == [4, 5, 6]
+    playback._do_update_scrub_segments()
+    tl = playback._ensure_timeline()
+    assert tl is not None
+    assert [s.move_type for s in tl.segments] == ["joints", "sleep", "joints"]
+    assert tl.segments[1].line_number == 5
+    assert tl.segment_durations[1] == pytest.approx(0.5, abs=record.row_dt_s)
+    assert len(playback._segment_elements) == 3, (
+        "the bar must index the record's commands, a sleep included"
+    )
+    held = tl.sample(tl.cumulative_times[1] + 0.25)
+    assert held.segment_index == 1
+    assert held.joints == pytest.approx(tl.sample(tl.cumulative_times[1]).joints)
+
+    pb = tab.dry_run.playback
+    moves = _move_commands(tab)
+
+    async def wait_complete(command: int) -> None:
+        async with asyncio.timeout(30):
+            while not (pb.executing_command == command and pb.executing_step_at_end):
+                await asyncio.sleep(0.05)
+
+    try:
+        user.find(marker="editor-step-program").click()
+        await wait_complete(moves[0])
+        assert pb.current_step == 0
+        assert decorations._executing_line_by_tab.get(tab.id) == 4
+
+        # The sleep runs on its own; the next grant runs the second move.
+        user.find(marker="editor-step-program").click()
+        await wait_complete(moves[1])
+        assert pb.current_step == 2, (
+            "the highlight must land on the move, not the sleep"
+        )
+        assert decorations._executing_line_by_tab.get(tab.id) == 6
+        assert editor.playback._exec_step_index == 2
+    finally:
+        if is_any_program_running():
+            await editor.playback.toggle_play()
+        async with asyncio.timeout(30):
+            while is_any_program_running():
+                await asyncio.sleep(0.1)
+    assert waldoctl.commander.programs.active is tab
+
+
+@pytest.mark.integration
+async def test_run_selection_brings_the_imports_in_its_scope(
+    user: User,
+) -> None:
+    """A selection runs beside the imports in its scope: the program's own and
+    those of the block it sits in, where an inserted skill puts its import.
+    One in another function belongs to that function, and a guarded one keeps
+    its guard."""
+    import waldoctl
+
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
+    await enable_sim(user)
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
-
-    def record(blocks: int, rows_each: int = 4) -> waldoctl.TickIndex:
-        rows = blocks * rows_each
-        q = np.zeros((rows, 6), dtype=np.float32)
-        return waldoctl.TickIndex(
-            row_dt_s=0.02,
-            joints_rad=q,
-            commanded_rad=q.copy(),
-            tcp=np.zeros((rows, 6), dtype=np.float32),
-            tool_closed=np.zeros(rows, dtype=np.float32),
-            tool_gripping=np.zeros(rows, dtype=np.bool_),
-            blocks=tuple(
-                waldoctl.TickBlock(
-                    command=i,
-                    start_row=i * rows_each,
-                    rows=rows_each,
-                    line_number=3 + i,
-                )
-                for i in range(blocks)
-            ),
-        )
-
-    def plan(n: int) -> list[PathSegment]:
-        return [
-            PathSegment(
-                points=[[0.3, 0.0, 0.2], [0.4, 0.0, 0.2]],
-                color="#00ff00",
-                is_valid=True,
-                line_number=3 + i,
-                estimated_duration=0.5,
-            )
-            for i in range(n)
-        ]
-
-    program = waldoctl.commander.programs.active
-    assert program is not None
-
-    # More blocks than segments: a sleep between two moves.
-    # Then fewer: a run that stopped on its budget.
-    for blocks, segments in ((3, 2), (1, 3)):
-        program.dry_run.path_segments = plan(segments)
-        program.dry_run.total_steps = segments
-        program.dry_run.ticks = record(blocks)
-        playback.invalidate_timeline()
-        assert playback._scrub_container is not None, "scrub bar not built"
-        # The public entry defers onto a timer for NiceGUI's benefit; the
-        # body is what indexes, and it is what this is about.
-        playback._do_update_scrub_segments()
-
-        tl = playback._ensure_timeline()
-        assert tl is not None
-        assert len(tl.segments) == len(tl.segment_durations) == blocks
-        assert len(tl.cumulative_times) == blocks + 1
-        divisions = len(playback._segment_elements)
-        assert divisions == blocks, (
-            f"{blocks} recorded commands must give {blocks} scrub divisions, "
-            f"got {divisions} — the bar is indexing the plan, not the record"
-        )
-        # And the highlight follows the record's own line numbers.
-        sample = tl.sample(tl.total_duration)
-        assert tl.segments[sample.segment_index].line_number == 3 + blocks - 1
-
-    program.dry_run.ticks = None
-    program.dry_run.path_segments = []
-    program.dry_run.total_steps = 0
-    playback.invalidate_timeline()
+    editor = ui_state.editor_panel
+    textarea = ui_state.active_textarea
+    assert editor is not None and textarea is not None
+    textarea.value = (
+        "import math\n"
+        "from typing import TYPE_CHECKING\n"
+        "from parol6 import RobotClient\n"
+        "if TYPE_CHECKING:\n"
+        "    import no_such_typing_module\n"
+        "try:\n"
+        "    import no_such_fast_json as json\n"
+        "except ImportError:\n"
+        "    import json\n"
+        "\n"
+        "\n"
+        "def optional():\n"
+        "    import no_such_module_in_a_def\n"
+        "\n"
+        "\n"
+        "with RobotClient() as rbt:\n"
+        "    from math import tau\n"
+        "    assert json.dumps(math.sqrt(4)) == '2.0' and tau > 6\n"
+    )
+    await asyncio.sleep(0)
+    _set_selection(textarea, 18, 18)
+    await asyncio.sleep(0)
+    user.find(marker="editor-run-selection").click()
+    async with asyncio.timeout(30):
+        while script_exec.last_exit_code is None:
+            await asyncio.sleep(0.05)
+    run = waldoctl.commander.programs.get(editor._selection_program_id or "")
+    assert run is not None
+    assert script_exec.last_exit_code == 0, "\n".join(
+        entry.text for entry in run.log.entries
+    )

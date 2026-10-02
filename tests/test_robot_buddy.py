@@ -14,7 +14,7 @@ from collections.abc import Callable
 import pytest
 import waldoctl
 from fastmcp import Client
-from nicegui import app as ng_app, ui
+from nicegui import app as ng_app
 from nicegui.testing import User
 
 from tests.helpers.wait import (
@@ -55,7 +55,7 @@ async def _wait_for(condition: Callable[[], bool], timeout: float = 10.0) -> boo
 
 @pytest.mark.integration
 async def test_chip_buddy_follows_estop_and_watches_the_arm_move(user: User) -> None:
-    """Grey in the simulator, alarmed for as long as an E-STOP is latched
+    """Neutral in the simulator, alarmed for as long as an E-STOP is latched
     (with its own alarmed buddy in the dialog), and focused on the arm
     while it moves."""
     await user.open("/")
@@ -125,15 +125,14 @@ async def test_chip_buddy_reacts_to_how_programs_end_and_to_new_warnings(
     assert chip.last_reaction == Reaction.CELEBRATE
     assert await _wait_for(lambda: not chip.busy)
 
-    # Guarded so only the real run crashes: the editor's path preview
-    # executes the same source under ``__name__ == "__simulation__"``.
-    crash = "if __name__ == '__main__':\n    raise RuntimeError('boom')\n"
-    assert await run(crash) != 0
+    assert await run("raise RuntimeError('boom')\n") != 0
     assert chip.last_reaction == Reaction.OOPS
 
     # The fake-serial backend reports no warnings of its own; add one the
-    # way the status consumer does when a new condition arrives.
-    robot_events.add("warning", "Control loop degraded", "p99 over band")
+    # way the status consumer does when a new condition arrives. The log is
+    # process-global, and an entry repeating the last one is not news.
+    robot_events.clear()
+    robot_events.add(code=70, title="Control loop degraded", cause="p99 over band")
     assert await _wait_for(lambda: chip.last_reaction == Reaction.STARTLE)
 
 
@@ -233,7 +232,7 @@ async def test_chip_buddy_dozes_only_in_the_simulator_and_calms_on_request(
 
     try:
         assert not chip.calm
-        user.find(kind=ui.tab, content="Settings").click()
+        user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         user.find(marker="switch-calm-buddy").click()
         assert await _wait_for(lambda: chip.calm)

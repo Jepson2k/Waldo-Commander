@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Sequence
 
-from waldo_commander.common.theme import SceneColors
+from waldo_commander.common.theme import SceneColors, hex_of
 
 #: Render prefix for a shape proposed for the installation layer. Unlike
 #: waldoctl's ``install:``/``shape:``/``tool:``, which are the vocabulary a
@@ -69,15 +69,17 @@ class UrdfSceneConfig:
     Signature: ``(tool_key, variant_key) -> ToolPose | None``.
     """
 
-    # Colors from theme.py SceneColors
-    material: str = SceneColors.MATERIAL_DARK_HEX
+    material: str = field(default_factory=lambda: hex_of("scene-arm"))
     """Default material color for robot meshes."""
 
-    background_color: str = SceneColors.BACKGROUND_DARK_HEX
+    background_color: str = field(default_factory=lambda: hex_of("scene-bg"))
     """Scene background color."""
 
-    ground_color: str = SceneColors.GROUND_DARK_HEX
+    ground_color: str = field(default_factory=lambda: hex_of("scene-ground"))
     """Ground plane color (contrasts with background)."""
+
+    grid_color: str = field(default_factory=lambda: hex_of("scene-grid"))
+    """Floor grid line color."""
 
     sim_color: str = SceneColors.SIM_AMBER_HEX
     """Color for robot in simulator mode (amber ghost)."""

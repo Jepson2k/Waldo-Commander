@@ -30,13 +30,13 @@ async def get_pose() -> dict:
 
 @mcp.tool(name="status.get_joints")
 async def get_joints() -> dict:
-    """Current joint angles (deg + rad), joint speeds (rad/s), and per-joint
+    """Current joint angles (deg + rad), joint speeds (deg/s), and per-joint
     jog availability."""
     j = waldoctl.commander.status.joints
     return {
         "angles_deg": list(j.angles.deg),
         "angles_rad": list(j.angles.rad),
-        "speeds_rad_s": list(j.speeds),
+        "speeds_deg_s": list(j.speeds),
         "can_jog_pos": list(j.can_jog_pos),
         "can_jog_neg": list(j.can_jog_neg),
     }

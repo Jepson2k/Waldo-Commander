@@ -1,13 +1,13 @@
-"""The key to the physics overlays.
+"""The key to the predicted overlays.
 
-A picture whose magnitudes are unstated lies. The achieved path is
-coloured by tracking error and contact arrows are scaled by force, and
+A picture whose magnitudes are unstated lies. The predicted path is
+coloured by following error and contact arrows are scaled by force, and
 neither number is guessable from the scene — a millimetre of sag drawn
 at its true size is invisible, and an arrow whose length means nothing
 in particular reads as though it did. So the scale is written down.
 
-Shown only while a record is on screen and something is drawn from it.
-Nothing here exists on a backend that does not simulate.
+Shown only while a predicted record that differs from the commanded one
+is on screen, row by row for what that record carries.
 """
 
 from __future__ import annotations
@@ -17,13 +17,15 @@ import math
 import waldoctl
 from nicegui import ui
 
+from waldo_commander.common.theme import hex_of
+from waldo_commander.components.playback import layers_available
 from waldo_commander.services.urdf_scene.physics_overlay import (
     FORCE_SCALE_M_PER_N,
-    FULL_DIVERGENCE_RAD,
+    FULL_FOLLOWING_ERROR_RAD,
 )
 from waldo_commander.state import simulation_state
 
-_TRACKING_DEG = math.degrees(FULL_DIVERGENCE_RAD)
+_TRACKING_DEG = math.degrees(FULL_FOLLOWING_ERROR_RAD)
 _ARROW_CM_PER_N = FORCE_SCALE_M_PER_N * 100.0
 
 
@@ -41,24 +43,24 @@ class PhysicsLegend:
             # Bottom-left, clear of the icon rail: the right half of the
             # scene belongs to the control panel, and a key painted
             # underneath it is worse than no key at all.
-            .classes("absolute bottom-4 left-24 z-30 glass rounded-lg px-3 py-2 gap-1")
-            .style("pointer-events: none;") as root
+            .classes("absolute bottom-24 left-24 rounded-lg px-3 py-2 gap-2 glass")
+            .style("pointer-events: none; z-index: var(--wc-z-cards);") as root
         ):
             self._root = root
             self._rows = [
                 (
                     self._swatch_row(
-                        "Achieved path",
-                        f"green on target, red at {_TRACKING_DEG:.1f}° of error",
-                        ("#59d973", "#f25940"),
+                        "Predicted path",
+                        f"green on its command, red at {_TRACKING_DEG:.1f}° of error",
+                        (hex_of("physics-on-track"), hex_of("physics-diverged")),
                     ),
-                    "divergence_visible",
+                    "predicted_visible",
                 ),
                 (
                     self._swatch_row(
                         "Contact force",
                         f"arrow length {_ARROW_CM_PER_N:.1f} cm per newton",
-                        ("#ff5d5d", "#ff5d5d"),
+                        (hex_of("physics-contact"), hex_of("physics-contact")),
                     ),
                     "contacts_visible",
                 ),
@@ -66,7 +68,7 @@ class PhysicsLegend:
                     self._swatch_row(
                         "Centre of mass",
                         "of the whole simulated scene",
-                        ("#ffd166", "#ffd166"),
+                        (hex_of("physics-com"), hex_of("physics-com")),
                     ),
                     "com_visible",
                 ),
@@ -83,8 +85,8 @@ class PhysicsLegend:
                 f" background: linear-gradient(90deg, {colors[0]}, {colors[1]});"
             )
             with ui.column().classes("gap-0"):
-                ui.label(title).classes("text-xs font-medium leading-none")
-                ui.label(detail).classes("text-[10px] opacity-70 leading-none")
+                ui.label(title).classes("wc-label leading-none")
+                ui.label(detail).classes("wc-micro text-wc-text-muted leading-none")
         return row
 
     def refresh(self) -> None:
@@ -92,11 +94,11 @@ class PhysicsLegend:
         if self._root is None:
             return
         active = waldoctl.commander.programs.active
-        has_record = active is not None and active.dry_run.ticks is not None
+        available = layers_available(active.dry_run if active is not None else None)
         view = waldoctl.commander.settings.view
         shown = 0
         for row, flag in self._rows:
-            on = has_record and getattr(view, flag)
+            on = available.get(flag, False) and getattr(view, flag)
             row.set_visibility(on)
             shown += int(on)
         self._root.set_visibility(shown > 0)

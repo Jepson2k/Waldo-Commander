@@ -10,13 +10,24 @@ import time
 import numpy as np
 import waldoctl
 from nicegui import Client, ui, context
+from nicegui import app as ng_app
 
-from waldo_commander.common.theme import PathColors
+from waldo_commander.common.theme import hex_of
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    control_lease,
+    require_browser_control,
+)
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.services.path_visualizer import path_visualizer
+from waldo_commander.services.preview_segments import (
+    command_segments,
+    preceding_segment,
+)
 from waldo_commander.services.timeline import Timeline
 from waldo_commander.services.programs import (
     is_any_program_recording,
@@ -40,6 +51,37 @@ def _line_of(segments, index: int) -> int:
     return 0
 
 
+#: The playback bar's layer toggles: the view flag each drives, its label
+#: and its marker.
+_LAYERS = (
+    ("predicted_visible", "Predicted path", "layer-predicted"),
+    ("contacts_visible", "Contacts", "layer-contacts"),
+    ("com_visible", "Centre of mass", "layer-com"),
+)
+_LAYER_PREFS = "preview_layers"
+_SPEED_FILL = "color=wc-control text-color=wc-text"
+
+
+def layers_available(dry_run) -> dict[str, bool]:
+    """Which layers the program's predicted record can draw, keyed by the
+    view flag that shows each: the predicted path only where it differs
+    from the commanded one, contacts and the centre of mass only when the
+    record carries those channels. A predicted record answering an older
+    plan than the one on screen counts as none."""
+    none = {flag: False for flag, _, _ in _LAYERS}
+    if dry_run is None or dry_run.commanded is None:
+        return none
+    predicted = dry_run.predicted_current
+    if predicted is None:
+        return none
+    return {
+        "predicted_visible": predicted.rows > 1
+        and predicted.digest != dry_run.commanded.digest,
+        "contacts_visible": "contact_starts" in predicted.channels,
+        "com_visible": "com" in predicted.channels,
+    }
+
+
 class PlaybackController:
     """Owns the bottom playback bar UI and all simulation/script playback logic."""
 
@@ -55,18 +97,27 @@ class PlaybackController:
         self._checkpoint_markers: list[ui.element] = []
         self._tool_markers: list[ui.element] = []
         self.speed_fab: ui.fab | None = None
+        self._layers_button: ui.button | None = None
+        self._speed_2x: ui.fab_action | None = None
+        self._speed_tooltip: ui.tooltip | None = None
+        self._speed_query_pending = False
         self._scrub_slider: ui.slider | None = None
         self._sim_loading_progress: ui.element | None = None
         self._sim_timer: ui.timer | None = None
         self._timeline: Timeline | None = None
         self._updating_slider: bool = False
         self._last_tick_time: float = 0.0
-        self._exec_start_time: float = 0.0
+        self._exec_last_time: float = 0.0
+        self._exec_elapsed: float = 0.0
+        self._execution_speed: waldoctl.ExecutionSpeed | None = None
+        self._execution_speed_at: float = 0.0
         self._exec_step_index: int = -1
         self._teleport_task: asyncio.Task | None = None
         self._last_highlighted_index: int = -1
         self._last_slider_update: float = 0.0  # throttle slider visual updates
         self._last_tool_selection: tuple[str, str] | None = None
+        self._layer_checks: dict[str, ui.checkbox] = {}
+        self._physics_busy: ui.spinner | None = None
 
         # The record button and its tooltip live in the playback bar, so
         # PlaybackController owns them. The notification reference is kept
@@ -79,7 +130,7 @@ class PlaybackController:
         # Edge-detection state for the simulation_state change listener.
         # Mirrors EditorDecorations._on_state_change / LogPanelController._on_state_change.
         self._last_script_running: bool = False
-        self._last_executing_step_index: int = -1
+        self._last_executing_command: int = -1
         self._last_executing_step_at_end: bool = False
 
     def set_ui_client(self, client: Client | None) -> None:
@@ -103,15 +154,9 @@ class PlaybackController:
     def build_bar(self) -> None:
         """Build the bottom playback bar with controls.
 
-        Order: Play | Stop | Step program | Prev | Next | Slider | Speed FAB |
-        Record | Capture | Log toggle
+        Order: Play | Stop | Step program | Prev | Next | Slider | Layers |
+        Speed FAB | Record | Capture | Log toggle
         """
-        # A fresh page has no physics pass in flight — teardown killed the
-        # worker — but `ticks_pending` outlives the client on the program,
-        # and a page loaded mid-pass would otherwise show controls that
-        # nothing is ever going to re-enable.
-        for program in waldoctl.commander.programs.items:
-            program.dry_run.ticks_pending = False
         with (
             ui.row()
             .classes("w-full items-center gap-2 bottom-playback-bar")
@@ -119,14 +164,14 @@ class PlaybackController:
         ):
             self.play_btn = ui.button(
                 icon="play_arrow", on_click=self.toggle_play
-            ).props("round dense color=positive unelevated")
+            ).props("round dense color=wc-run unelevated text-color=wc-on-bright")
             with self.play_btn:
                 self.play_btn_tooltip = ui.tooltip("Play (Space)")
             self.play_btn.mark("editor-play-btn")
 
             self.stop_btn = (
                 ui.button(icon="stop", on_click=script_exec.stop)
-                .props("round dense color=negative unelevated")
+                .props("round dense color=wc-control text-color=wc-error unelevated")
                 .tooltip("Stop")
             )
             self.stop_btn.mark("editor-stop-btn")
@@ -134,14 +179,14 @@ class PlaybackController:
 
             self.step_program_btn = (
                 ui.button(icon="sym_o_step_over", on_click=self.step_program)
-                .props("round dense flat color=white")
+                .props("round dense flat color=wc-text")
                 .tooltip("Step program")
             )
             self.step_program_btn.mark("editor-step-program")
 
             self.prev_btn = (
                 ui.button(icon="skip_previous", on_click=self.step_backward)
-                .props("round dense flat color=white")
+                .props("round dense flat color=wc-text")
                 .tooltip("Previous step")
             )
             self.prev_btn.mark("editor-step-prev")
@@ -149,7 +194,7 @@ class PlaybackController:
 
             self.next_btn = (
                 ui.button(icon="skip_next", on_click=self.step_forward)
-                .props("round dense flat color=white")
+                .props("round dense flat color=wc-text")
                 .tooltip("Next step (N)")
             )
             self.next_btn.mark("editor-step-next")
@@ -162,10 +207,11 @@ class PlaybackController:
                 ):
                     self._scrub_container = (
                         ui.row()
-                        .classes("absolute rounded-lg overflow-hidden gap-0")
+                        .classes(
+                            "absolute rounded-lg overflow-hidden gap-0 scrub-track"
+                        )
                         .style(
-                            "background: rgba(128, 128, 128, 0.2);"
-                            " inset: 0; top: 0; left: 0; right: 0; bottom: 0;"
+                            "inset: 0; top: 0; left: 0; right: 0; bottom: 0;"
                             " position: absolute;"
                         )
                     )
@@ -173,7 +219,7 @@ class PlaybackController:
                     self._sim_loading_progress = (
                         ui.linear_progress(show_value=False)
                         .classes("absolute")
-                        .props("indeterminate rounded color=primary")
+                        .props("indeterminate rounded color=wc-progress")
                         .style("position: absolute; inset: 0; height: 100%;")
                     )
                     self._sim_loading_progress.visible = False
@@ -187,8 +233,8 @@ class PlaybackController:
                         )
                         .classes("absolute timeline-slider")
                         .props(
-                            "color=grey-8 thumb-color=grey-9"
-                            " label label-color=grey-9 label-text-color=white"
+                            "color=wc-control thumb-color=wc-text text-color=wc-text"
+                            " label label-color=wc-control label-text-color=wc-text"
                             ' label-value="0:00.0 / 0:00.0"'
                             " thumb-path='M 9.75 5 C 9.75 4 10.25 4 10.25 5"
                             " L 10.25 15 C 10.25 16 9.75 16 9.75 15 Z'"
@@ -197,30 +243,47 @@ class PlaybackController:
                     )
                     self._scrub_slider.mark("editor-scrub-slider")
 
-            # Speed FAB (simulator only).
+            self._physics_busy = ui.spinner(size="xs").props("color=wc-text-muted")
+            with self._physics_busy:
+                ui.tooltip("Predicting the run")
+            self._physics_busy.mark("physics-busy")
+            self._physics_busy.set_visibility(False)
+            self._build_layers_menu()
+
             with (
-                ui.fab(icon="1x_mobiledata", color="amber", direction="up")
-                .props("dense unelevated round size=sm")
-                .tooltip("Playback Speed") as speed_fab
+                ui.fab(icon="1x_mobiledata", direction="up")
+                .props("dense flat round size=sm color=wc-text")
+                .tooltip("Playback Speed")
+                .mark("editor-speed") as speed_fab
             ):
                 self.speed_fab = speed_fab
-                speed_fab.visible = waldoctl.commander.status.simulator_active
+                self._speed_tooltip = ui.tooltip("Playback Speed").props(
+                    f'target="#c{speed_fab.id}"'
+                )
                 ui.fab_action(
                     "sym_o_speed_0_5x",
                     on_click=lambda: self._set_speed(0.5),
-                )
+                ).props(_SPEED_FILL).mark("editor-speed-half")
                 ui.fab_action(
                     "1x_mobiledata",
                     on_click=lambda: self._set_speed(1.0),
+                ).props(_SPEED_FILL).mark("editor-speed-normal")
+                self._speed_2x = (
+                    ui.fab_action(
+                        "sym_o_speed_2x",
+                        on_click=lambda: self._set_speed(2.0),
+                    )
+                    .props(_SPEED_FILL)
+                    .mark("editor-speed-double")
                 )
-                ui.fab_action(
-                    "sym_o_speed_2x",
-                    on_click=lambda: self._set_speed(2.0),
-                )
+            ui.timer(0.5, self._refresh_execution_speed)
+            self.sync_mode()
 
-            self.record_btn = ui.button(
-                icon="fiber_manual_record", on_click=self._toggle_recording
-            ).props("round dense color=negative unelevated")
+            self.record_btn = (
+                ui.button(icon="fiber_manual_record", on_click=self._toggle_recording)
+                .props("round dense color=wc-control unelevated text-color=wc-text")
+                .classes("record-btn")
+            )
             with self.record_btn:
                 self._record_btn_tooltip = ui.tooltip("Start Recording")
             self.record_btn.mark("editor-record-btn")
@@ -228,7 +291,7 @@ class PlaybackController:
             capture_btn = ui.button(
                 icon="camera_alt",
                 on_click=lambda: ui_state.editor_panel.capture_pose_at_cursor(),
-            ).props("round dense unelevated")
+            ).props("round dense color=wc-control unelevated text-color=wc-text")
             with capture_btn:
                 capture_tooltip = ui.tooltip("Capture Current Pose")
             capture_btn.mark("editor-capture-pose")
@@ -236,17 +299,114 @@ class PlaybackController:
 
             log_panel.build_toggle_button()
 
+    def _build_layers_menu(self) -> None:
+        """The program's view layers: a menu of toggles that the predicted
+        record enables as it carries the data for them. The choices
+        persist across sessions; what is drawable does not."""
+        view = waldoctl.commander.settings.view
+        stored = ng_app.storage.general.get(_LAYER_PREFS, {})
+        for flag, _, _ in _LAYERS:
+            if flag in stored:
+                setattr(view, flag, bool(stored[flag]))
+        self._layer_checks = {}
+        with ui.button(icon="layers").props("round dense flat color=wc-text") as button:
+            with ui.menu():
+                with ui.column().classes("p-2 gap-0"):
+                    for flag, label, mark in _LAYERS:
+                        checkbox = (
+                            ui.checkbox(
+                                label,
+                                on_change=lambda e, flag=flag: self._set_layer(
+                                    flag, bool(e.value)
+                                ),
+                            )
+                            .bind_value(view, flag)
+                            .props("dense")
+                        )
+                        checkbox.mark(mark)
+                        self._layer_checks[flag] = checkbox
+        button.mark("preview-layers")
+        self._layers_button = button
+        self.refresh_layers()
+
+    def _set_layer(self, flag: str, on: bool) -> None:
+        """Persist a layer choice and repaint what it shows: the whole-run
+        overlay through the scene's view update, the per-frame
+        annotations at the instant playback is on."""
+        stored = dict(ng_app.storage.general.get(_LAYER_PREFS, {}))
+        stored[flag] = on
+        ng_app.storage.general[_LAYER_PREFS] = stored
+        simulation_state.notify_changed()
+        active = waldoctl.commander.programs.active
+        scene = ui_state.urdf_scene
+        tl = self._timeline
+        if flag == "predicted_visible" or scene is None or active is None or not tl:
+            return
+        predicted = active.dry_run.predicted_current
+        if predicted is None:
+            return
+        view = waldoctl.commander.settings.view
+        scene.physics_overlay.update_frame(
+            predicted,
+            tl.predicted_row(active.dry_run.playback.playback_time),
+            show_contacts=view.contacts_visible,
+            show_com=view.com_visible,
+        )
+
+    def refresh_layers(self) -> None:
+        """Enable each layer toggle for the data the active program's
+        predicted record carries, and show the busy spinner while a pass
+        that could add some is running. Nothing else waits on that pass:
+        the bar keeps playing the commanded record."""
+        active = waldoctl.commander.programs.active
+        available = layers_available(active.dry_run if active is not None else None)
+        for flag, checkbox in self._layer_checks.items():
+            checkbox.set_enabled(available[flag])
+        busy = path_visualizer.physics_in_flight(waldoctl.commander.programs.active_id)
+        if self._physics_busy is not None:
+            self._physics_busy.set_visibility(busy)
+        # A menu of choices that are all disabled reads as something missing.
+        if self._layers_button is not None:
+            self._layers_button.set_visibility(any(available.values()) or busy)
+
     # ---- Recording lifecycle ----
 
     def _toggle_recording(self) -> None:
-        """Toggle motion recording on/off and update the record button visual."""
-        motion_recorder.toggle_recording()
-        if is_any_program_recording():
-            if self.record_btn:
-                self.record_btn.props("color=warning")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Stop Recording"
-            self.set_enabled(False)
+        """Start or stop recording. Started with lines selected, the take
+        re-records them."""
+        try:
+            motion_recorder.ui_client = self._ui_client or context.client
+        except RuntimeError:
+            motion_recorder.ui_client = self._ui_client
+        editor = ui_state.editor_panel
+        selection = (
+            editor.take_selection()
+            if editor is not None and not is_any_program_recording()
+            else None
+        )
+        motion_recorder.toggle_recording(replace=selection)
+        self._sync_recording_ui()
+
+    def _sync_recording_ui(self) -> None:
+        """The Record button, the play controls and the Recording notice
+        follow whether anything is recording, however it started or stopped
+        (Keep and Undo stop it too)."""
+        recording = is_any_program_recording()
+        if self.record_btn:
+            if recording:
+                self.record_btn.classes(add="recording").props(
+                    "color=wc-record text-color=wc-on-fill"
+                )
+            else:
+                self.record_btn.classes(remove="recording").props(
+                    "color=wc-control text-color=wc-text"
+                )
+        if self._record_btn_tooltip:
+            self._record_btn_tooltip.text = (
+                "Stop Recording" if recording else "Start Recording"
+            )
+        self.set_enabled(not recording)
+        if recording and self._recording_notification is None:
             try:
                 ui_client = self._ui_client or context.client
                 with ui_client:
@@ -261,20 +421,14 @@ class PlaybackController:
                     )
             except RuntimeError:
                 pass
-        else:
-            if self.record_btn:
-                self.record_btn.props("color=negative")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Start Recording"
-            self.set_enabled(True)
-            if self._recording_notification is not None:
-                try:
-                    client = self._ui_client or context.client
-                    with client:
-                        self._recording_notification.dismiss()
-                except RuntimeError:
-                    pass
-                self._recording_notification = None
+        elif not recording and self._recording_notification is not None:
+            try:
+                client = self._ui_client or context.client
+                with client:
+                    self._recording_notification.dismiss()
+            except RuntimeError:
+                pass
+            self._recording_notification = None
         # Recording toggles don't fire the state channel; reconcile the
         # step buttons' recording lockout here.
         self.update_play_button()
@@ -287,23 +441,23 @@ class PlaybackController:
         self._last_script_running = is_any_program_running()
         active = waldoctl.commander.programs.active
         if active is not None:
-            self._last_executing_step_index = (
-                active.dry_run.playback.executing_step_index
-            )
+            self._last_executing_command = active.dry_run.playback.executing_command
             self._last_executing_step_at_end = (
                 active.dry_run.playback.executing_step_at_end
             )
         else:
-            self._last_executing_step_index = -1
+            self._last_executing_command = -1
             self._last_executing_step_at_end = False
         simulation_state.add_change_listener(self._on_state_change)
         simulation_state.add_step_listener(self._on_step_change)
         self._sim_timer = ui.timer(1.0 / 50, self._sim_playback_tick, active=False)
+        motion_recorder.add_session_listener(self._sync_recording_ui)
 
     def cleanup(self) -> None:
         """Remove listeners and cancel any async tasks owned by this controller."""
         simulation_state.remove_change_listener(self._on_state_change)
         simulation_state.remove_step_listener(self._on_step_change)
+        motion_recorder.remove_session_listener(self._sync_recording_ui)
         if self._teleport_task and not self._teleport_task.done():
             self._teleport_task.cancel()
             self._teleport_task = None
@@ -316,6 +470,7 @@ class PlaybackController:
         if active is not None:
             active.dry_run.playback.playback_time = 0.0
         self.update_scrub_segments()
+        self.refresh_layers()
 
     # ---- Public actions ----
 
@@ -328,23 +483,32 @@ class PlaybackController:
             return waldoctl.commander.programs.get(script_exec.launching_tab_id)
         return waldoctl.commander.programs.active
 
-    def set_script_playing(self, playing: bool) -> None:
+    async def set_script_playing(self, playing: bool) -> None:
         """Pause/resume the running script AND mirror it into the play program's
         playback state + the simulation change channel. Every pause/resume path
         — the GUI play button and the MCP ``execution.pause/resume`` tools —
         must go through here, or the play button desyncs from the subprocess."""
         prog = self._play_program()
-        if playing:
-            script_exec.signal_play()
-            if prog is not None:
-                prog.dry_run.playback.is_playing = True
-            logger.debug("Script playing")
-        else:
-            script_exec.signal_pause()
-            if prog is not None:
-                prog.dry_run.playback.is_playing = False
-            logger.debug("Script paused")
-        simulation_state.notify_changed()
+        try:
+            if playing:
+                await script_exec.signal_play()
+                if prog is not None:
+                    prog.dry_run.playback.is_playing = True
+                logger.debug("Script playing")
+            else:
+                try:
+                    await script_exec.signal_pause()
+                    logger.debug("Script paused")
+                finally:
+                    # The subprocess is held before the controller's pause is
+                    # requested, so the button has to show a held program even
+                    # when that request goes unconfirmed -- otherwise it offers
+                    # to pause a program that is already stopped at its next
+                    # command.
+                    if prog is not None:
+                        prog.dry_run.playback.is_playing = False
+        finally:
+            simulation_state.notify_changed()
 
     async def toggle_play(self, *, control_verified: bool = False) -> None:
         """Toggle play/pause for script execution or simulation playback.
@@ -358,9 +522,13 @@ class PlaybackController:
         active = waldoctl.commander.programs.active
         if is_any_program_running():
             prog = self._play_program()
-            self.set_script_playing(
-                not (prog is not None and prog.dry_run.playback.is_playing)
-            )
+            playing = not (prog is not None and prog.dry_run.playback.is_playing)
+            if (
+                not playing
+                or control_verified
+                or require_browser_control(ui_state.active_client_id)
+            ):
+                await self.set_script_playing(playing)
         elif waldoctl.commander.status.simulator_active and (
             active is not None and active.dry_run.total_steps > 0
         ):
@@ -382,23 +550,30 @@ class PlaybackController:
         if is_any_program_running():
             prog = self._play_program()
             if prog is not None and not prog.dry_run.playback.is_playing:
-                script_exec.signal_step()
+                if require_browser_control(ui_state.active_client_id):
+                    await script_exec.signal_step()
         elif waldoctl.commander.programs.active is not None and require_browser_control(
             ui_state.active_client_id
         ):
             await script_exec.start(paused=True)
 
-    def step_forward(self) -> None:
+    async def step_forward(self, *, control_verified: bool = False) -> None:
         """Step forward one segment."""
+        if not control_verified and not require_browser_control(
+            ui_state.active_client_id
+        ):
+            return
         if is_any_program_running():
-            script_exec.signal_step()
+            await script_exec.signal_step()
             logger.debug("Step forward signal sent to script")
         else:
             self._step_sim_preview(1)
 
     def step_backward(self) -> None:
         """Step the sim preview back one segment (live stepping is forward-only)."""
-        if not is_any_program_running():
+        if not is_any_program_running() and require_browser_control(
+            ui_state.active_client_id
+        ):
             self._step_sim_preview(-1)
 
     def _step_sim_preview(self, delta: int) -> None:
@@ -422,7 +597,15 @@ class PlaybackController:
             else:
                 self._scrub_slider.props("readonly")
         if self.speed_fab:
-            self.speed_fab.visible = waldoctl.commander.status.simulator_active
+            live = self._uses_live_speed()
+            if self._speed_2x:
+                self._speed_2x.visible = not live
+            if not live:
+                active = waldoctl.commander.programs.active
+                value = active.dry_run.playback.playback_speed if active else 1.0
+                self._show_speed(value)
+                if self._speed_tooltip:
+                    self._speed_tooltip.text = "Preview playback speed"
 
     # ---- Bridge API (called by EditorPanel) ----
 
@@ -493,6 +676,7 @@ class PlaybackController:
 
         # Always refresh play-button visuals; the call is idempotent.
         self.update_play_button()
+        self.refresh_layers()
 
     def _on_step_change(self) -> None:
         """React to step-lifecycle events on the dedicated step channel.
@@ -505,26 +689,29 @@ class PlaybackController:
         # Step events belong to the launching program (see _play_program).
         active = self._play_program()
         if active is not None:
-            step = active.dry_run.playback.executing_step_index
+            command = active.dry_run.playback.executing_command
             at_end = active.dry_run.playback.executing_step_at_end
         else:
-            step = -1
+            command = -1
             at_end = False
 
         if (
             running
-            and step >= 0
+            and active is not None
+            and command >= 0
             and (
-                step != self._last_executing_step_index
+                command != self._last_executing_command
                 or at_end != self._last_executing_step_at_end
             )
         ):
+            step = self._segment_of(active, command)
+            active.dry_run.playback.current_step = max(step, 0)
             if at_end:
-                self._handle_step_complete(step)
+                self._handle_step_complete(active, command, step)
             else:
-                self._handle_step_start(step)
+                self._handle_step_start(active, command, step)
 
-        self._last_executing_step_index = step
+        self._last_executing_command = command
         self._last_executing_step_at_end = at_end
 
         # Play-button visuals can change on step edges (e.g. enabling
@@ -533,45 +720,68 @@ class PlaybackController:
 
     def _handle_script_start_edge(self) -> None:
         """Cancel sim playback and prep the scrub slider for script-driven mode."""
+        if self._teleport_task and not self._teleport_task.done():
+            self._teleport_task.cancel()
+            self._teleport_task = None
         # Tear down any in-progress sim playback before the script takes over.
         active = waldoctl.commander.programs.active
         if active is not None and active.dry_run.playback.is_active:
             self._pause_sim_playback()
         if active is not None:
             active.dry_run.playback.playback_time = 0.0
+        self.invalidate_timeline()
+        self._execution_speed = None
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
 
-    def _handle_step_start(self, step: int) -> None:
-        """Script reported segment start: advance UI to segment-start position."""
+    @staticmethod
+    def _segment_of(program, command: int) -> int:
+        """The index of the segment drawing program *command*: the first it
+        owns, else the last one before it — a command that draws nothing,
+        such as a write to an output between two moves, is shown at the
+        move it follows. -1 without segments."""
+        segments = program.dry_run.path_segments
+        step = command_segments(segments).get(command)
+        if step is None:
+            step = preceding_segment(segments, command)
+        return step
+
+    @staticmethod
+    def _line_for(program, command: int, step: int) -> int:
+        """The editor line to highlight for program *command*: the line the
+        preview noted it on, else its segment's."""
+        notes = program.dry_run.commands
+        if 0 <= command < len(notes) and notes[command].line_number:
+            return notes[command].line_number
+        return _line_of(program.dry_run.path_segments, step)
+
+    def _handle_step_start(self, program, command: int, step: int) -> None:
+        """Script reported a command start: advance UI to its segment's start."""
         self._exec_step_index = step
-        self._exec_start_time = time.monotonic()
+        self._exec_last_time = time.monotonic()
+        self._exec_elapsed = 0.0
         self._ensure_timeline()
         if self._sim_timer:
             self._sim_timer.active = True
         self._highlight_current_segment()
         tab_id = script_exec.launching_tab_id
         if tab_id is not None:
-            # A live run counts PLANNED segments; the script's step index
-            # is into that list, not into whatever the timeline holds.
-            tab = waldoctl.commander.programs.get(tab_id)
-            planned = tab.dry_run.path_segments if tab is not None else []
-            decorations.highlight_executing_line(_line_of(planned, step), tab_id)
+            decorations.highlight_executing_line(
+                self._line_for(program, command, step), tab_id
+            )
 
-    def _handle_step_complete(self, step: int) -> None:
-        """Script reported segment end: snap slider to segment end."""
+    def _handle_step_complete(self, program, command: int, step: int) -> None:
+        """Script reported a command end: snap slider to its segment's end."""
         self._highlight_current_segment()
         tab_id = script_exec.launching_tab_id
         if tab_id is not None:
-            # A live run counts PLANNED segments; the script's step index
-            # is into that list, not into whatever the timeline holds.
-            tab = waldoctl.commander.programs.get(tab_id)
-            planned = tab.dry_run.path_segments if tab is not None else []
-            decorations.highlight_executing_line(_line_of(planned, step), tab_id)
-        if self._timeline and self._scrub_slider:
+            decorations.highlight_executing_line(
+                self._line_for(program, command, step), tab_id
+            )
+        if self._timeline and self._scrub_slider and step >= 0:
             end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
             t = self._timeline.cumulative_times[end_idx]
-            self._scrub_slider.value = t
+            self._set_slider_time(t)
             text = self._format_time(t, self._timeline.total_duration)
             self._scrub_slider.props(f'label-value="{text}"')
 
@@ -585,17 +795,33 @@ class PlaybackController:
             # Snap slider to timeline end so the user sees the final position.
             if self._timeline:
                 t = self._timeline.total_duration
-                self._scrub_slider.value = t
+                self._set_slider_time(t)
                 text = self._format_time(t, t)
                 self._scrub_slider.props(f'label-value="{text}"')
 
     # ---- Scrub / slider ----
 
+    def _set_slider_time(self, t: float) -> None:
+        if self._scrub_slider is None:
+            return
+        self._updating_slider = True
+        try:
+            self._scrub_slider.value = t
+        finally:
+            self._updating_slider = False
+
     def _on_scrub_change(self, e) -> None:
         """Handle scrub slider value change (user interaction only, not programmatic)."""
+        if is_any_program_running():
+            return
         active = waldoctl.commander.programs.active
         is_active = active is not None and active.dry_run.playback.is_active
-        if self._timeline and not self._updating_slider and not is_active:
+        if (
+            self._timeline
+            and not self._updating_slider
+            and not is_active
+            and require_browser_control(ui_state.active_client_id, notify=False)
+        ):
             self._apply_time(float(e.value), update_slider=False)
             # Update snapshot so position-change checker doesn't re-sim after scrub
             self._snapshot_joints()
@@ -608,6 +834,8 @@ class PlaybackController:
             update_slider: If False, skip programmatic slider update (caller
                 already has the right value, e.g. during user scrubbing).
         """
+        if is_any_program_running():
+            return
         tl = self._timeline
         if not tl:
             return
@@ -625,6 +853,13 @@ class PlaybackController:
 
             # Sample tool position once (used for both teleport and URDF animation)
             tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
+            selection = tl.sample_tool_selection(t)
+            tool_key = (
+                selection.tool_key if selection else waldoctl.commander.status.tool.key
+            )
+            motions = ui_state.active_robot.tools[tool_key or "NONE"].motions
+            if not motions or len(tool_pos) != len(motions):
+                tool_pos = ()
 
             if (
                 sample.joints
@@ -644,24 +879,26 @@ class PlaybackController:
                         self._teleport(
                             waldoctl.commander.status.joints.angles.deg.tolist(),
                             list(tool_pos) if tool_pos else None,
+                            (selection.tool_key, selection.variant_key)
+                            if selection
+                            else None,
                         )
                     )
 
-            if tl.object_keyframes and ui_state.urdf_scene:
+            predicted = tl.predicted
+            if predicted is not None and predicted.objects and ui_state.urdf_scene:
                 ui_state.urdf_scene.set_object_poses(tl.sample_objects(t))
 
-            # Physics annotations for this instant, inside the same batch
-            # so contacts and the arm land in one frame.
-            if ui_state.urdf_scene is not None and _apply_active is not None:
-                ticks = _apply_active.dry_run.ticks
-                if ticks is not None:
-                    view = waldoctl.commander.settings.view
-                    ui_state.urdf_scene.physics_overlay.update_frame(
-                        ticks,
-                        ticks.row_at(t),
-                        show_contacts=view.contacts_visible,
-                        show_com=view.com_visible,
-                    )
+            # The predicted record's annotations for this instant, inside
+            # the same batch so contacts and the arm land in one frame.
+            if ui_state.urdf_scene is not None and predicted is not None:
+                view = waldoctl.commander.settings.view
+                ui_state.urdf_scene.physics_overlay.update_frame(
+                    predicted,
+                    tl.predicted_row(t),
+                    show_contacts=view.contacts_visible,
+                    show_com=view.com_visible,
+                )
 
             if (
                 _apply_active is not None
@@ -697,14 +934,6 @@ class PlaybackController:
                         ui_state.urdf_scene.apply_tool_everywhere(
                             sel.tool_key, variant_key=sel.variant_key or None
                         )
-                        # Sync to controller so readout reflects tool TCP
-                        if ui_state.control_panel and ui_state.control_panel.client:
-                            asyncio.create_task(
-                                ui_state.control_panel.client.select_tool(
-                                    sel.tool_key,
-                                    variant_key=sel.variant_key or "",
-                                )
-                            )
 
             # Drive tool animation from timeline keyframes
             if (
@@ -721,9 +950,7 @@ class PlaybackController:
                 # Throttle slider updates to ~10Hz to reduce WebSocket churn
                 if (now - self._last_slider_update) >= 0.09:
                     self._last_slider_update = now
-                    self._updating_slider = True
-                    self._scrub_slider.value = t
-                    self._updating_slider = False
+                    self._set_slider_time(t)
                     text = self._format_time(t, tl.total_duration)
                     self._scrub_slider.props(f'label-value="{text}"')
             elif not update_slider and self._scrub_slider is not None:
@@ -732,10 +959,40 @@ class PlaybackController:
                 self._scrub_slider.props(f'label-value="{text}"')
 
     @staticmethod
-    async def _teleport(joints_deg: list[float], tool_pos: list[float] | None) -> None:
-        """Send a fire-and-forget teleport to the backend."""
+    async def _teleport(
+        joints_deg: list[float],
+        tool_pos: list[float] | None,
+        selection: tuple[str, str] | None = None,
+    ) -> None:
+        """Move the simulated arm to a previewed pose, if this page holds the
+        lease. A scrub claims it first; a preview an MCP session plays leaves
+        the arm, and the lease, with that session."""
+        page = ui_state.active_client_id
+        generation = motion_guard.stop_generation
+        lease_generation = control_lease.generation
+
+        def allowed() -> bool:
+            return (
+                not is_any_program_running()
+                and waldoctl.commander.status.simulator_active
+                and page == ui_state.active_client_id
+                and generation == motion_guard.stop_generation
+                and lease_generation == control_lease.generation
+                and control_lease.held_by(BROWSER, page or "")
+            )
+
+        if not allowed() or ui_state.control_panel is None:
+            return
         try:
-            await ui_state.control_panel.client.teleport(
+            client = ui_state.control_panel.client
+            tool = waldoctl.commander.status.tool
+            if selection is not None and selection != (tool.key, tool.variant_key):
+                index = await client.select_tool(selection[0], variant_key=selection[1])
+                if index < 0 or not await client.wait_command(index, timeout=5.0):
+                    return
+            if not allowed():
+                return
+            await client.teleport(
                 joints_deg,
                 tool_positions=tool_pos,
             )
@@ -759,29 +1016,24 @@ class PlaybackController:
     # ---- Simulation playback engine ----
 
     def _ensure_timeline(self) -> Timeline | None:
-        """Build or return cached timeline from current path segments."""
-        active = waldoctl.commander.programs.active
-        if active is None or not active.dry_run.path_segments:
+        """Build or return the cached timeline over the program's records.
+
+        The commanded record is the axis; the predicted record, when it
+        answers the plan on screen, supplies the poses played back.
+        """
+        active = self._play_program()
+        commanded = active.dry_run.commanded if active is not None else None
+        if active is None or commanded is None or not active.dry_run.path_segments:
             if self._timeline is not None:
                 self.invalidate_timeline()
             return None
         if self._timeline is None:
-            ticks = active.dry_run.ticks
-            if ticks is not None and ticks.rows > 1:
-                # Play back what the arm did. The planned segments still
-                # supply the line numbers and the checkpoints; the poses,
-                # the timing and the objects come from the record.
-                self._timeline = Timeline.from_ticks(
-                    ticks,
-                    active.dry_run.path_segments,
-                    tool_selections=active.dry_run.tool_selections or None,
-                )
-            else:
-                self._timeline = Timeline.from_segments(
-                    active.dry_run.path_segments,
-                    active.dry_run.tool_actions or None,
-                    tool_selections=active.dry_run.tool_selections or None,
-                )
+            self._timeline = Timeline.from_record(
+                commanded,
+                active.dry_run.path_segments,
+                predicted=active.dry_run.predicted_current,
+                tool_selections=active.dry_run.tool_selections or None,
+            )
             active.dry_run.total_duration = self._timeline.total_duration
             if self._scrub_slider is not None:
                 self._scrub_slider.props(f"max={self._timeline.total_duration}")
@@ -861,8 +1113,14 @@ class PlaybackController:
         self._apply_time(t, active=active)
 
     def _script_slider_tick(self) -> None:
-        """Advance slider smoothly during real script execution."""
+        """Estimate progress from confirmed speed until a completion event."""
         assert self._timeline is not None
+        now = time.monotonic()
+        dt = max(0.0, now - self._exec_last_time)
+        self._exec_last_time = now
+        program = self._play_program()
+        if program is None or program.dry_run.playback.executing_step_at_end:
+            return
         step = self._exec_step_index
         times = self._timeline.cumulative_times
         if step < 0 or step >= len(times) - 1:
@@ -871,13 +1129,20 @@ class PlaybackController:
         seg_dur = times[step + 1] - seg_start
         if seg_dur <= 0:
             return
-        elapsed = time.monotonic() - self._exec_start_time
-        frac = min(elapsed / seg_dur, 1.0)
+        state = self._execution_speed
+        if state is None or now - self._execution_speed_at > 2.0:
+            return
+        motion_duration = self._timeline.segment_durations[step]
+        rate = (
+            state.applied_scale
+            if self._exec_elapsed < motion_duration
+            else float(state.target_scale > 0)
+        )
+        self._exec_elapsed += dt * rate
+        frac = min(self._exec_elapsed / seg_dur, 1.0)
         t = seg_start + frac * seg_dur
         if self._scrub_slider is not None:
-            self._updating_slider = True
-            self._scrub_slider.value = t
-            self._updating_slider = False
+            self._set_slider_time(t)
             text = self._format_time(t, self._timeline.total_duration)
             self._scrub_slider.props(f'label-value="{text}"')
 
@@ -889,14 +1154,75 @@ class PlaybackController:
         2.0: "sym_o_speed_2x",
     }
 
-    def _set_speed(self, value: float) -> None:
-        """Set playback speed and update FAB icon to match."""
+    @staticmethod
+    def _uses_live_speed() -> bool:
+        return (
+            is_any_program_running() or not waldoctl.commander.status.simulator_active
+        )
+
+    async def _refresh_execution_speed(self) -> None:
+        self.sync_mode()
+        if self._speed_query_pending or not self._uses_live_speed():
+            return
+        self._speed_query_pending = True
+        try:
+            state = await waldoctl.commander.client.execution_speed(timeout=1.0)
+            if not self._uses_live_speed():
+                return
+            if self._timeline is not None and self._exec_step_index >= 0:
+                self._script_slider_tick()
+            self._execution_speed = state
+            self._execution_speed_at = time.monotonic()
+            self._show_speed(state.resume_scale)
+            if self._speed_tooltip:
+                prefix = (
+                    "Paused" if state.paused else f"Applied {state.applied_scale:.0%}"
+                )
+                self._speed_tooltip.text = (
+                    f"Execution: {state.resume_scale:.0%} selected · {prefix}"
+                )
+        except (
+            TimeoutError,
+            ConnectionError,
+            RuntimeError,
+            waldoctl.RobotError,
+        ) as exc:
+            logger.debug("Execution speed readback unavailable: %s", exc)
+            self._execution_speed = None
+            if self._speed_tooltip:
+                self._speed_tooltip.text = "Execution speed readback unavailable"
+        finally:
+            self._speed_query_pending = False
+
+    async def _set_speed(self, value: float) -> None:
+        """Set preview timing or request a confirmed backend execution scale."""
+        if self._uses_live_speed():
+            if value > 1:
+                ui.notify("2× is available for preview playback", color="warning")
+                return
+            if not require_browser_control(ui_state.active_client_id):
+                return
+            if (
+                await waldoctl.commander.client.set_execution_speed(value, timeout=3.0)
+                <= 0
+            ):
+                ui.notify("Execution speed change was not confirmed", color="warning")
+                return
+            await self._refresh_execution_speed()
+            return
         active = waldoctl.commander.programs.active
         if active is not None:
             active.dry_run.playback.playback_speed = value
-        if self.speed_fab:
-            icon = self._SPEED_ICONS.get(value, "1x_mobiledata")
-            self.speed_fab.props(f'icon="{icon}"')
+        self._show_speed(value)
+
+    def _show_speed(self, value: float) -> None:
+        """Full speed is the resting state and stays quiet; the chip shows as
+        on only while the program runs slower or faster than written."""
+        if self.speed_fab is None:
+            return
+        self.speed_fab.props(f'icon="{self._SPEED_ICONS.get(value, "speed")}"')
+        written = abs(value - 1.0) < 1e-6
+        self.speed_fab.props("color=wc-text" if written else "color=wc-action-text")
 
     # ---- Play button state ----
 
@@ -904,7 +1230,6 @@ class PlaybackController:
         """Update play/pause button icon and stop/step button visibility."""
         script_running = is_any_program_running()
         active = waldoctl.commander.programs.active
-        self.sync_physics_pending()
         play_prog = self._play_program()
         play_is_playing = (
             play_prog.dry_run.playback.is_playing if play_prog is not None else False
@@ -915,16 +1240,16 @@ class PlaybackController:
         if self.play_btn:
             playing = (script_running and play_is_playing) or active_is_active
             if playing:
-                self.play_btn.props("icon=pause color=warning")
+                self.play_btn.props("icon=pause")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Pause (Space)"
             else:
-                self.play_btn.props("icon=play_arrow color=positive")
+                self.play_btn.props("icon=play_arrow")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Play (Space)"
 
         if self.stop_btn:
-            self.stop_btn.set_visibility(script_running)
+            self.stop_btn.set_visibility(script_exec.active)
 
         total_steps = active.dry_run.total_steps if active is not None else 0
         has_steps = total_steps > 0
@@ -944,23 +1269,6 @@ class PlaybackController:
         if self.step_program_btn:
             can_step = not play_is_playing if script_running else active is not None
             self.step_program_btn.set_enabled(not recording and can_step)
-
-    def sync_physics_pending(self) -> None:
-        """Lock playback while a physics pass is still building the record.
-
-        Scrubbing into a run that does not exist yet would seek to rows
-        that have not been computed, so the controls wait and the scrub
-        bar says why. On a backend that cannot simulate this is never
-        pending and nothing here does anything.
-        """
-        active = waldoctl.commander.programs.active
-        pending = active is not None and active.dry_run.ticks_pending
-        if self._sim_loading_progress is not None:
-            self._sim_loading_progress.visible = pending
-        if self._scrub_slider is not None:
-            self._scrub_slider.set_enabled(not pending)
-        if self.play_btn is not None:
-            self.play_btn.set_enabled(not pending)
 
     # ---- Scrub bar segments ----
 
@@ -999,14 +1307,16 @@ class PlaybackController:
         step = active.dry_run.playback.current_step
         cum = tl.cumulative_times
         seg_durs = tl.segment_durations
+        fallback_hex = hex_of("path-cartesian")
+        checkpoint_hex = hex_of("path-checkpoint")
+        tool_hex = hex_of("path-tool-action")
 
         with self._scrub_container:
-            # One division per segment the TIMELINE is indexed by — which
-            # is the recorded commands when a run is being replayed, and
-            # the planned segments otherwise. Indexing the plan against a
-            # record's times paints the wrong windows and walks off the end.
+            # One division per segment the timeline is indexed by: every
+            # command that owns rows of the commanded record, a delay
+            # between two moves included.
             for idx, segment in enumerate(tl.segments):
-                color = segment.color or PathColors.CARTESIAN
+                color = segment.color or fallback_hex
                 is_current = idx == step
                 left_pct = cum[idx] / total_dur * 100
                 width_pct = seg_durs[idx] / total_dur * 100
@@ -1032,7 +1342,7 @@ class PlaybackController:
                     .style(
                         f"left: {left_pct:.2f}%; top: 50%; width: 8px; height: 8px;"
                         f" transform: translate(-50%, -50%) rotate(45deg);"
-                        f" background: {PathColors.CHECKPOINT};"
+                        f" background: {checkpoint_hex};"
                         f" z-index: 1; pointer-events: none;"
                     )
                 )
@@ -1054,7 +1364,7 @@ class PlaybackController:
                     .style(
                         f"left: {left_pct:.2f}%; top: {top}; height: {height};"
                         f" width: {max(width_pct, 0.5):.2f}%;"
-                        f" background: {PathColors.TOOL_ACTION}; opacity: 0.7;"
+                        f" background: {tool_hex}; opacity: 0.7;"
                         f" z-index: 1; pointer-events: none;"
                         f" border-radius: {radius};"
                     )
@@ -1072,11 +1382,14 @@ class PlaybackController:
         if not self._segment_elements:
             return
         active = waldoctl.commander.programs.active
-        segments = active.dry_run.path_segments if active is not None else []
         step = active.dry_run.playback.current_step if active is not None else 0
         prev = self._last_highlighted_index
         self._last_highlighted_index = step
 
+        # Bounded by the elements themselves: they are built from the
+        # timeline's blocks, which include commands with no planned segment
+        # (a delay between two moves), so a division past the planned count
+        # has an element to restyle and used to be skipped.
         indices_to_update = set()
         if 0 <= prev < len(self._segment_elements):
             indices_to_update.add(prev)
@@ -1085,11 +1398,10 @@ class PlaybackController:
 
         for idx in indices_to_update:
             elem = self._segment_elements[idx]
-            if segments and idx < len(segments):
-                is_current = idx == step
-                opacity = "0.4" if idx < step else "1.0"
-                brightness = "1.4" if is_current else "1.0"
-                elem.style(f"opacity: {opacity}; filter: brightness({brightness});")
+            is_current = idx == step
+            opacity = "0.4" if idx < step else "1.0"
+            brightness = "1.4" if is_current else "1.0"
+            elem.style(f"opacity: {opacity}; filter: brightness({brightness});")
 
         # Update tool marker opacity based on current playback time
         tl = self._timeline

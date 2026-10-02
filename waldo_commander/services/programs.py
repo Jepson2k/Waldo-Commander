@@ -154,6 +154,14 @@ def advance_active_cursor(line: int) -> None:
         dry_run.playback.active_cursor_line = line
 
 
+def shift_active_cursor(after_line: int, delta: int) -> None:
+    """Keep the tracked cursor on its text when *delta* lines go in below
+    1-indexed *after_line*. An unset cursor stays unset."""
+    dry_run = active_dry_run()
+    if dry_run is not None and dry_run.playback.active_cursor_line > after_line:
+        dry_run.playback.active_cursor_line += delta
+
+
 def _indent_unit(lines: list[str]) -> str:
     """Indent step used by the file: the first indented line's leading
     whitespace (tabs win), defaulting to 4 spaces."""
@@ -163,6 +171,26 @@ def _indent_unit(lines: list[str]) -> str:
             ws = line[: len(line) - len(stripped)]
             return "\t" if ws.startswith("\t") else " " * len(ws)
     return "    "
+
+
+def replace_lines(
+    text: str, first_line: int, last_line: int, snippet: str
+) -> tuple[str, int, int]:
+    """Replace 1-indexed *first_line*..*last_line* of *text* with *snippet*,
+    or delete them when it is empty, keeping the first line's indentation.
+
+    Returns ``(new_text, first_line, inserted_line_count)``.
+    """
+    lines = text.split("\n")
+    first_line = max(1, first_line)
+    last_line = min(max(first_line, last_line), len(lines))
+    anchor = lines[first_line - 1]
+    prefix = anchor[: len(anchor) - len(anchor.lstrip(" \t"))]
+    replacement = (
+        [prefix + ln if ln else ln for ln in snippet.split("\n")] if snippet else []
+    )
+    new_lines = lines[: first_line - 1] + replacement + lines[last_line:]
+    return "\n".join(new_lines), first_line, len(replacement)
 
 
 def insert_below_line(text: str, snippet: str, after_line: int) -> tuple[str, int, int]:

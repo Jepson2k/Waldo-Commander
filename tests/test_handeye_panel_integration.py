@@ -8,14 +8,16 @@ save flow must recover that transform.
 The MSG gripper is the tool under calibration — it has the built-in camera
 mount, making it the primary hand-eye use case. It is selected through the
 settings UI so the tool TCP switch and per-tool camera plumbing both engage,
-and the solved transform is camera→MSG-TCP, stored under ``handeye/MSG``.
+and the solved transform is camera→MSG-TCP, saved in a named setup.
 """
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import contextlib
-from typing import ClassVar
+from collections.abc import Awaitable, Callable
+from typing import Any, ClassVar
 
 import cv2
 import numpy as np
@@ -24,18 +26,31 @@ import waldoctl
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.testing import User
-from parol6.protocol.wire import StatusResultStruct
+from parol6 import StatusSnapshot
 from scipy.spatial.transform import Rotation
+from waldoctl.setup import Frame, Pose, SetupSnapshot
+from waldo_commander.setup import SetupStore, export_snapshot
+from waldo_commander.camera import CameraUnavailable
 
 from tests.helpers.charuco_render import board_center, render_board_view
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import (
+    enable_sim,
+    ensure_robot_ready_for_motion,
+    poll_until,
+    simulate_click,
+    wait_for_app_ready,
+)
 from waldo_commander.components.handeye_calibration import (
     AUTO_VIEW_DELTAS_DEG,
+    TARGET_VIEWS,
     STATIONARY_SPEED_DEG_S,
     HandEyeCalibrationPanel,
+    _CaptureRefused,
+    _Move,
 )
 from waldo_commander.services import handeye
 from waldo_commander.services.camera_service import camera_service
+from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
 from waldo_commander.state import robot_state, ui_state
 
 IMAGE_SIZE = (1280, 960)
@@ -123,19 +138,50 @@ async def _wait_for(condition, timeout: float = 5.0, message: str = "") -> None:
 
 async def _current_pose() -> np.ndarray:
     st = await waldoctl.commander.client.status()
-    assert isinstance(st, StatusResultStruct)
+    assert isinstance(st, StatusSnapshot)
     return np.asarray(st.pose, dtype=np.float64).reshape(4, 4)
+
+
+def _assert_recovered(found: np.ndarray, expected: np.ndarray) -> None:
+    """This guards the capture/solve plumbing; solver accuracy under ideal
+    orbit geometry is covered by test_handeye_service. The FOV-limited tilts
+    here leave depth marginally observable, so the solve amplifies tiny
+    pose/corner differences between runs — the bounds only need to separate
+    "recovered the mount" from garbage."""
+    trans_err = float(np.linalg.norm(found[:3, 3] - expected[:3, 3]))
+    rot_err = np.degrees(
+        np.linalg.norm(
+            Rotation.from_matrix(found[:3, :3].T @ expected[:3, :3]).as_rotvec()
+        )
+    )
+    assert trans_err < 30.0, f"translation off by {trans_err:.1f} mm"
+    assert rot_err < 3.0, f"rotation off by {rot_err:.2f} deg"
+
+
+def _ancestors(element: ui.element) -> list[ui.element]:
+    chain: list[ui.element] = []
+    while element.parent_slot is not None:
+        element = element.parent_slot.parent
+        chain.append(element)
+    return chain
 
 
 @pytest.mark.integration
 async def test_handeye_panel_workflow(
-    user: User, monkeypatch: pytest.MonkeyPatch
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    """The camera on the tool is captured, solved, saved and checked through
+    the panel, survives a page rebuild, and refuses a view without a board.
+    Then a fixed camera is calibrated from the same session: its solve, its
+    save against a reference frame, and the check that notices that frame
+    moving. A board change clears the views, and a cleared board field
+    reverts instead of wedging the inputs."""
     from waldo_commander.services import camera_service as cam_module
 
     monkeypatch.setattr(cam_module, "LinuxpyBackend", _FrameBackend)
     monkeypatch.setattr(cam_module, "OpenCVBackend", _FrameBackend)
     _FrameBackend.holder["jpeg"] = _blank_jpeg()
+    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
     ui_state.plugin_panels = []
     ui_state._started_panel_ids = set()
 
@@ -146,7 +192,7 @@ async def test_handeye_panel_workflow(
         # The camera rides the MSG gripper's built-in mount. Select MSG
         # through the settings UI so the TCP switch and per-tool camera
         # plumbing both engage.
-        user.find(kind=ui.tab, content="Settings").click()
+        user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         tool_select = next(iter(user.find(marker="select-tool").elements))
         assert isinstance(tool_select, ui.select)
@@ -169,13 +215,20 @@ async def test_handeye_panel_workflow(
         panel = next(p for p in ui_state.plugin_panels if p.id == "handeye")
         assert isinstance(panel, HandEyeCalibrationPanel)
         spec = panel._spec
+        reference_setup = SetupSnapshot().with_frame(
+            "stand", Frame((100, 50, 0, 0, 0, 30))
+        )
+        SetupStore(tmp_path).save("bench", reference_setup)
+        assert panel._data_editor is not None
+        panel._data_editor.reference.set_value("stand")
 
-        # Progressive disclosure: with no camera active, only the board
-        # section and the hint are shown — capture and solve stay hidden.
-        assert panel._samples_section is not None
-        assert panel._solve_section is not None
-        assert not panel._samples_section.visible
-        assert not panel._solve_section.visible
+        def element(marker: str) -> ui.element:
+            return next(iter(user.find(marker=marker).elements))
+
+        # One step is open at a time: with no camera active it is the board,
+        # and the views and the save stay folded to their header lines.
+        assert not panel._step_bodies["views"].visible
+        assert not panel._step_bodies["save"].visible
 
         # When the installed parol6 declares MSG's built-in camera mount, the
         # panel points at the device assignment instead of the generic hint.
@@ -193,14 +246,12 @@ async def test_handeye_panel_workflow(
             lambda: camera_service.active,
             message="MSG tool camera did not start",
         )
-        # The detection timer reveals the capture stage once the camera runs.
+        # The detection timer opens the Views step once the camera runs.
         await _wait_for(
-            lambda: (
-                panel._samples_section is not None and panel._samples_section.visible
-            ),
-            message="capture stage did not appear after camera start",
+            lambda: panel._step_bodies["views"].visible,
+            message="the views step did not open after camera start",
         )
-        assert not panel._solve_section.visible
+        assert not panel._step_bodies["save"].visible
 
         client = waldoctl.commander.client
         # Earlier suite tests share this controller and may leave the arm
@@ -223,15 +274,36 @@ async def test_handeye_panel_workflow(
         Tz = np.eye(4)
         Tz[:3, 3] = (0.0, 0.0, 650.0)
         T_base_target = T0 @ X_TRUE @ Tz @ Rx @ Tc
+        fixed_camera = T0 @ X_TRUE
+        tool_board = X_TRUE @ Tz @ Rx @ Tc
 
-        for i, deltas in enumerate(VIEW_DELTAS_DEG):
-            target = [a + d for a, d in zip(home_angles, deltas, strict=True)]
-            assert (
-                await client.move_j(target, duration=0.8, wait=True, timeout=15.0) >= 0
-            )
-
+        async def capture_view(i: int, *, fixed: bool = False) -> bytes:
+            """Move to pose ``i``, serve its rendered board, and capture the
+            way the auto run does; returns the served frame. A fixed camera
+            sees the board on the tool, and its views teleport the arm:
+            reaching the poses is the tool sweep's subject."""
+            target = [
+                a + d for a, d in zip(home_angles, VIEW_DELTAS_DEG[i], strict=True)
+            ]
+            if fixed:
+                await client.teleport(target)
+                await poll_until(
+                    client.angles,
+                    lambda now: now is not None
+                    and max(abs(a - t) for a, t in zip(now, target)) < 0.05,
+                    what=f"the arm at view {i}",
+                )
+            else:
+                assert (
+                    await client.move_j(target, duration=0.8, wait=True, timeout=15.0)
+                    >= 0
+                )
             T_i = await _current_pose()
-            T_cam_target = np.linalg.inv(T_i @ X_TRUE) @ T_base_target
+            T_cam_target = (
+                np.linalg.inv(fixed_camera) @ T_i @ tool_board
+                if fixed
+                else np.linalg.inv(T_i @ X_TRUE) @ T_base_target
+            )
             rendered = render_board_view(spec, K_TRUE, T_cam_target, IMAGE_SIZE)
             assert (
                 handeye.detect_board(rendered, handeye.make_detector(spec)) is not None
@@ -239,7 +311,7 @@ async def test_handeye_panel_workflow(
             frame = _jpeg(rendered)
             _FrameBackend.holder["jpeg"] = frame
             await _wait_for(
-                lambda f=frame: camera_service.get_latest_frame() == f,
+                lambda: camera_service.get_latest_frame() == frame,
                 message="camera loop did not pick up the rendered frame",
             )
             await _wait_for(
@@ -256,50 +328,220 @@ async def test_handeye_panel_workflow(
                 message=f"view {i}: detect tick did not report the board",
             )
             await user.should_see("Board detected")
+            n_before = len(panel._samples)
+            await panel._capture_sample()
+            assert len(panel._samples) == n_before + 1
+            return frame
 
-            user.find(marker="handeye-capture").click()
-            await _wait_for(
-                lambda n=i + 1: len(panel._samples) == n,
-                message=f"capture {i + 1} did not register",
-            )
         n_views = len(VIEW_DELTAS_DEG)
-        await user.should_see(f"{n_views} samples")
-        # Enough samples to solve — the solve stage is revealed.
-        assert panel._solve_section.visible
+        for i in range(n_views - 1):
+            await capture_view(i)
+            if i == 0:
+                # The ring records where the view came from and glows on the
+                # gap to fill next, with the same advice as text.
+                sample = panel._samples[0]
+                assert sample.tilt is not None, (
+                    "a board pitched 40° is never straight on"
+                )
+                sector = handeye.SECTORS.index(sample.tilt)
+                assert "cov-1" in element(f"handeye-coverage-sector-{sector}").classes
+                assert sample.cells and all(
+                    "cov-1" in element(f"handeye-coverage-cell-{c}").classes
+                    for c in sample.cells
+                )
+                cov = handeye.coverage(panel._samples)
+                assert cov.next_sector is not None
+                glowing = [
+                    k
+                    for k in range(len(handeye.SECTORS))
+                    if "handeye-coverage-next"
+                    in element(f"handeye-coverage-sector-{k}").classes
+                ]
+                assert glowing == [handeye.SECTORS.index(cov.next_sector)]
+                assert cov.sectors[glowing[0]] == 0
+                hint = element("handeye-diversity").text
+                assert hint.startswith("View the board from"), hint
+                await user.should_see(f"1 of {TARGET_VIEWS} views")
+            if i + 1 == handeye.MIN_SAMPLES:
+                # The fourth view starts the solve by itself; nothing to press.
+                # These first four rotate almost only about the optical axis,
+                # so the outcome may be the solver's refusal — which is the
+                # solve having run, reported on the Save header.
+                await _wait_for(
+                    lambda: panel._result is not None or panel._solve_error is not None,
+                    timeout=30.0,
+                    message="no automatic solve after the fourth view",
+                )
+                summary = element("handeye-step-summary-save").text
+                assert summary and not summary.startswith("needs"), summary
+        assert len(panel._samples) == n_views - 1
+        await _wait_for(
+            lambda: panel._result is not None and panel._result.n_views == n_views - 1,
+            timeout=30.0,
+            message="the fourteen-view set did not solve",
+        )
 
-        user.find(marker="handeye-solve").click()
-        await _wait_for(lambda: panel._result is not None, timeout=30.0)
-        await user.should_see("Camera → TCP transform")
+        # A view the fit cannot explain is pointed out after the next
+        # automatic solve, so the operator knows which one to recapture
+        # rather than which number got worse.
+        bad = panel._samples[2]
+        noise = np.random.default_rng(0).uniform(
+            -15.0, 15.0, bad.detection.corners.shape
+        )
+        panel._samples[2] = replace(
+            bad,
+            detection=replace(
+                bad.detection,
+                corners=(bad.detection.corners + noise).astype(np.float32),
+            ),
+        )
+        frame = await capture_view(n_views - 1)
+        await _wait_for(
+            lambda: panel._result is not None and panel._result.n_views == n_views,
+            timeout=30.0,
+            message="the fifteenth view did not re-solve",
+        )
+        await user.should_see(f"{n_views} of {TARGET_VIEWS} views")
+        flagged = panel._view_flags()
+        assert flagged.get(2, ("", ""))[0] == "error", flagged
+        # The flagged view is deleted from the thumbnails folded under the
+        # Views step, and the smaller set solves again by itself.
+        expand = element("handeye-views-expand")
+        assert isinstance(expand, ui.expansion)
+        expand.open()
+        tile = element("handeye-sample-del-2").parent_slot.parent
+        assert "handeye-view-error" in tile.classes
+        assert expand in _ancestors(tile), "the thumbnails live in the expansion"
+        user.find(marker="handeye-sample-del-2").click()
+        await _wait_for(lambda: len(panel._samples) == n_views - 1)
+        n_views -= 1
+        assert panel._result is None, "deleting a view invalidates the solve"
+        await _wait_for(
+            lambda: panel._result is not None
+            and len(panel._result.intrinsics.per_view_errors) == n_views,
+            timeout=30.0,
+            message="the set did not re-solve after the deletion",
+        )
+        assert "error" not in {kind for kind, _ in panel._view_flags().values()}
 
         result = panel._result
         assert result is not None
-        trans_err = float(np.linalg.norm(result.T_cam2gripper[:3, 3] - X_TRUE[:3, 3]))
-        rot_err = np.degrees(
-            np.linalg.norm(
-                Rotation.from_matrix(
-                    result.T_cam2gripper[:3, :3].T @ X_TRUE[:3, :3]
-                ).as_rotvec()
-            )
-        )
-        # This test guards the capture/solve plumbing; solver accuracy under
-        # ideal orbit geometry is covered by test_handeye_service. The
-        # FOV-limited tilts here leave depth marginally observable, so the
-        # solve amplifies tiny pose/corner differences between runs — the
-        # bounds only need to separate "recovered the mount" from garbage.
-        assert trans_err < 30.0, f"translation off by {trans_err:.1f} mm"
-        assert rot_err < 3.0, f"rotation off by {rot_err:.2f} deg"
+        _assert_recovered(result.T_camera_parent, X_TRUE)
 
-        user.find(marker="handeye-save").click()
+        # The Save step holds the transform; its header carries the verdict.
+        user.find(marker="handeye-step-save").click()
         await asyncio.sleep(0)
-        stored = ng_app.storage.general.get("handeye/MSG")
-        assert stored is not None
-        assert stored["tool_key"] == "MSG"
-        assert panel._stored_section is not None and panel._stored_section.visible
-        np.testing.assert_allclose(
-            np.asarray(stored["T_cam2gripper_mm"]).reshape(4, 4),
-            result.T_cam2gripper,
+        assert panel._step_bodies["save"].visible
+        assert not panel._step_bodies["views"].visible
+        await user.should_see("Camera → TCP transform")
+        summary = element("handeye-step-summary-save").text
+        assert summary.startswith(("good fit", "usable fit", "poor fit")), summary
+        # A Setup save that lands while the camera is being measured must
+        # survive: the calibration joins the setup as it is by then.
+        editor = panel._data_editor
+        measure = editor.measurement
+        store = SetupStore(tmp_path)
+
+        async def measure_while_setup_changes(setup, reference):
+            calibration = await measure(setup, reference)
+            store.save(
+                "bench",
+                store.load("bench").with_pose("taught", Pose((1, 2, 3, 0, 0, 0))),
+            )
+            return calibration
+
+        editor.measurement = measure_while_setup_changes
+        user.find(marker="handeye-save").click()
+        await user.should_see("Saved bench/camera", retries=50)
+        saved = SetupStore(tmp_path).load("bench")
+        assert "taught" in saved.poses, (
+            "the camera save wrote over a pose taught while it measured"
         )
-        assert stored["n_samples"] == n_views
+        calibration = saved.cameras["camera"]
+        np.testing.assert_allclose(
+            calibration.pose.matrix(), result.T_camera_parent, atol=1e-8
+        )
+        assert calibration.quality.sample_count == n_views
+        exported = {}
+        exec(export_snapshot(saved), exported)
+        np.testing.assert_allclose(
+            exported["setup"].cameras["camera"].pose.matrix(),
+            calibration.pose.matrix(),
+            atol=1e-8,
+        )
+        save_button = panel._save_btn
+        assert save_button is not None and panel._saved
+        editor.measurement = measure
+
+        # Another solve is a measurement nobody saved yet.
+        user.find(marker="handeye-step-save").click()
+        await asyncio.sleep(0)
+        user.find(marker="handeye-solve").click()
+        await _wait_for(
+            lambda: panel._result is not None and panel._result is not result,
+            timeout=30.0,
+        )
+        assert not panel._saved, "a new solve still reads as saved"
+        assert "handeye-step-done" not in element("handeye-step-save").classes
+        assert save_button.enabled
+        # A solve that fails leaves nothing to save.
+        good = panel._samples[0]
+        panel._samples[0] = replace(
+            good, detection=replace(good.detection, image_size=(1, 1))
+        )
+        user.find(marker="handeye-solve").click()
+        await _wait_for(
+            lambda: not save_button.enabled,
+            timeout=30.0,
+            message="a failed solve left Save enabled",
+        )
+        panel._samples[0] = good
+        user.find(marker="handeye-step-save").click()
+        await asyncio.sleep(0)
+        user.find(marker="camera-load").click()
+        await user.should_see("Bindings match:", retries=50)
+        user.find(marker="camera-export").click()
+
+        original = handeye.to_storage_dict(
+            result, spec, "MSG", {"x": 0, "y": 0, "z": 0}, "2025-01-01T00:00:00Z"
+        )
+        ng_app.storage.general["handeye/MSG"] = original
+        panel._data_editor.confirm.set_value(True)
+        user.find(marker="camera-import").click()
+        await user.should_see("Imported measurement:", retries=50)
+        imported = SetupStore(tmp_path).load("bench").cameras["camera"]
+        assert imported.calibrated_at == "2025-01-01T00:00:00Z"
+        np.testing.assert_allclose(
+            imported.pose.matrix(), result.T_camera_parent, atol=1e-8
+        )
+        assert ng_app.storage.general["handeye/MSG"] == original
+
+        # A page rebuild (reload, second tab) must not restart the camera: a
+        # new capture session would refuse every later capture as "changed".
+        session = camera_service.snapshot().session_id
+        ui_state.active_client_id = None
+        await user.open("/")
+        await wait_for_app_ready()
+        user.find(marker="tab-handeye").click()
+        await asyncio.sleep(0)
+        assert camera_service.snapshot().session_id == session, (
+            "rebuilding the page restarted the camera"
+        )
+        assert next(p for p in ui_state.plugin_panels if p.id == "handeye") is panel
+        await _wait_for(
+            lambda: (panel._last_status_text or "").startswith("Board detected"),
+            timeout=15.0,
+            message="detect tick did not report the board after the reload",
+        )
+        await panel._capture_sample()
+        n_views += 1
+        assert len(panel._samples) == n_views
+        # The rebuilt panel solves the enlarged set by itself too.
+        await _wait_for(
+            lambda: panel._result is not None and panel._result.n_views == n_views,
+            timeout=30.0,
+            message="no automatic solve after the reload",
+        )
 
         # Without a detectable board the capture path stays gated.
         blank = _blank_jpeg()
@@ -316,9 +558,123 @@ async def test_handeye_panel_workflow(
             message="detect tick did not clear the board",
         )
         await user.should_see("No board detected")
-        user.find(marker="handeye-capture").click()
-        await asyncio.sleep(0.2)
+        with pytest.raises(_CaptureRefused):
+            await panel._capture_sample()
         assert len(panel._samples) == n_views
+
+        # A fixed camera: the placement changes only once the views are
+        # cleared, and the same session's frames then show the board riding
+        # the tool.
+        await enable_sim(user)
+        user.find(marker="handeye-clear").click()
+        await asyncio.sleep(0)
+        assert not panel._samples
+        user.find(marker="handeye-step-board").click()
+        await asyncio.sleep(0)
+        next(iter(user.find(marker="camera-mount").elements)).set_value("fixed")
+        await asyncio.sleep(0)
+        assert panel._mount == "fixed"
+        user.find(marker="handeye-step-views").click()
+        await asyncio.sleep(0)
+        for i in range(len(VIEW_DELTAS_DEG)):
+            frame = await capture_view(i, fixed=True)
+        n_views = len(VIEW_DELTAS_DEG)
+        await _wait_for(
+            lambda: panel._result is not None and panel._result.n_views == n_views,
+            timeout=30.0,
+            message="the fixed-camera views did not solve",
+        )
+        fixed_result = panel._result
+        assert fixed_result is not None
+        _assert_recovered(fixed_result.T_camera_parent, fixed_camera)
+
+        user.find(marker="handeye-step-save").click()
+        await asyncio.sleep(0)
+        await user.should_see("Camera → WRF transform")
+        # A fixed camera is saved relative to the setup's reference frame
+        # (the check above put the tool calibration's WRF there).
+        editor = panel._data_editor
+        editor.reference.set_value("stand")
+        user.find(marker="handeye-save").click()
+        await _wait_for(
+            lambda: editor.message.text.startswith("Saved bench/camera: fixed camera"),
+            timeout=15.0,
+            message="the fixed-camera calibration was not saved",
+        )
+        saved = SetupStore(tmp_path).load("bench")
+        calibration = saved.cameras["camera"]
+        np.testing.assert_allclose(
+            saved.frame_matrix("stand") @ calibration.pose.matrix(),
+            fixed_result.T_camera_parent,
+            atol=1e-8,
+        )
+        assert calibration.quality.sample_count == n_views
+
+        SetupStore(tmp_path).save(
+            "bench", saved.with_frame("stand", Frame((101, 50, 0, 0, 0, 30)))
+        )
+        # A capture gap must not mask a changed setup once frames resume.
+        _FrameBackend.holder["jpeg"] = b""
+
+        def frame_is_stale() -> bool:
+            try:
+                camera_service.snapshot()
+            except CameraUnavailable:
+                return True
+            return False
+
+        await _wait_for(
+            frame_is_stale, message="camera did not observe the capture gap"
+        )
+        user.find(marker="camera-load").click()
+        await asyncio.sleep(0)
+        _FrameBackend.holder["jpeg"] = frame
+        try:
+            await user.should_see("Camera reference frame changed", retries=50)
+        except AssertionError as error:
+            error.add_note(f"Calibration check reported: {editor.message.text}")
+            raise
+
+        # A different board clears the captures, and the panel shows it.
+        user.find(marker="handeye-step-board").click()
+        await asyncio.sleep(0)
+        squares_x = next(iter(user.find(marker="handeye-squares-x").elements))
+        assert isinstance(squares_x, ui.number)
+        squares_x.set_value(spec.squares_x + 1)
+        await user.should_see(marker="handeye-board-apply-confirm")
+        user.find(marker="handeye-board-apply-confirm").click()
+        await _wait_for(
+            lambda: not panel._samples, message="the board change kept the samples"
+        )
+        await _wait_for(
+            lambda: panel._sample_count is not None
+            and panel._sample_count.text.startswith("0 of "),
+            message="the sample count still shows the cleared captures",
+        )
+
+        # NiceGUI sets a number's value to None the moment its text is
+        # cleared, which is what selecting a field to retype it does. Parsing
+        # that raised TypeError past the handler's except, so the revert never
+        # ran, the field stayed blank, and every later edit to any of the
+        # five inputs raised through it again.
+        before = panel._spec
+        element("handeye-squares-x").set_value(None)
+        await asyncio.sleep(0)
+        assert panel._spec == before, "an emptied field means unchanged, not zero"
+        # The field the user retypes next still applies.
+        element("handeye-square-mm").set_value(before.square_mm + 5.0)
+        await asyncio.sleep(0)
+        assert panel._spec.square_mm == pytest.approx(before.square_mm + 5.0)
+        assert panel._spec.squares_x == before.squares_x
+        applied = panel._spec
+        # A board the detector refuses is reverted in the inputs, so what the
+        # fields show is the board being used.
+        element("handeye-marker-mm").set_value(applied.square_mm + 5.0)
+        await asyncio.sleep(0)
+        assert panel._spec == applied, "a refused board must not be adopted"
+        assert element("handeye-marker-mm").value == pytest.approx(applied.marker_mm), (
+            "the refused value is reverted, not left in the field"
+        )
     except BaseException:
         import traceback
 
@@ -335,18 +691,29 @@ async def test_handeye_panel_workflow(
 # runs ~30 simulated moves plus a solve — well past the 90 s global budget.
 # Trimming the pose set would cost exactly what the test is for: proving the
 # built-in poses are collision-safe end to end and calibrate unattended.
-@pytest.mark.timeout(420)
+@pytest.mark.timeout(480)
 async def test_handeye_auto_calibration(
     user: User, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Auto-calibrate drives the robot through the built-in pose set on its
     own: confirm the dialog, then the routine moves, captures and solves
     unattended, tries to drive back to the start pose, and leaves saving to
-    the user. A second run checks that Stop cancels cleanly, keeping the
-    extra samples without re-solving.
+    the user. While it runs it holds the robot: a program, a jog, an MCP move
+    and a board edit are all refused, and it will not start under a running
+    program. Stop cancels a second run cleanly, keeping the extra samples
+    without re-solving, and says so when the controller never acknowledges.
+
+    Then short runs are interrupted while they capture a view away from
+    their start pose — by an MCP stop, an MCP take-over, and the page going
+    away. Each one stops where it is and keeps its views; none drives back.
     """
+    from fastmcp import Client as McpClient
+    from fastmcp.exceptions import ToolError
+
     from waldo_commander.components import handeye_calibration as hp
+    from waldo_commander.mcp.server import get_mcp
     from waldo_commander.services import camera_service as cam_module
+    from waldo_commander.services.programs import is_any_program_running
 
     monkeypatch.setattr(cam_module, "LinuxpyBackend", _LiveBoardBackend)
     monkeypatch.setattr(cam_module, "OpenCVBackend", _LiveBoardBackend)
@@ -366,7 +733,7 @@ async def test_handeye_auto_calibration(
         await user.open("/")
         await wait_for_app_ready()
 
-        user.find(kind=ui.tab, content="Settings").click()
+        user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         tool_select = next(iter(user.find(marker="select-tool").elements))
         assert isinstance(tool_select, ui.select)
@@ -420,10 +787,85 @@ async def test_handeye_auto_calibration(
             )
 
         await wait_board_detected()
+        # One dropped frame during the run is retried, not fatal.
+        real_next_snapshot = camera_service.next_snapshot
+        drops: list[str] = []
+
+        async def flaky_next_snapshot(**kwargs):
+            if not drops:
+                drops.append("dropped")
+                raise CameraUnavailable(
+                    "No new camera frame arrived before the deadline"
+                )
+            return await real_next_snapshot(**kwargs)
+
+        monkeypatch.setattr(camera_service, "next_snapshot", flaky_next_snapshot)
+
+        # A running program holds the robot, so calibration will not start.
+        user.find(marker="tab-program").click()
+        await asyncio.sleep(0)
+        textarea = ui_state.active_textarea
+        assert textarea is not None
+        # Gated to the real subprocess: the dry-run preview runs the source too.
+        textarea.value = (
+            "import os, time\n"
+            'if os.environ.get("WALDO_STEP_SESSION"):\n'
+            "    time.sleep(30)\n"
+        )
+        user.find(marker="editor-play-btn").click()
+        await _wait_for(is_any_program_running, message="the program did not start")
+        user.find(marker="tab-handeye").click()
+        await asyncio.sleep(0)
         user.find(marker="handeye-auto").click()
+        await user.should_see("A program is moving the robot")
+        await user.should_not_see(marker="handeye-auto-confirm")
+        await user.should_see(marker="editor-stop-btn")
+        user.find(marker="editor-stop-btn").click()
+        await _wait_for(
+            lambda: not is_any_program_running(),
+            timeout=15.0,
+            message="the program did not stop",
+        )
+        textarea.value = ""
+
+        control_lease.seize(MCP, "auto-review", "Review MCP")
+        # A second click before the dialog is up opens no second dialog.
+        auto_button = user.find(marker="handeye-auto")
+        auto_button.click()
+        auto_button.click()
         await user.should_see(marker="handeye-auto-confirm")
+        assert len(user.find(marker="handeye-auto-confirm").elements) == 1
         user.find(marker="handeye-auto-confirm").click()
         await _wait_for(lambda: panel._auto_running, message="auto run did not start")
+        # Confirming the run takes control for the browser, so an AI session
+        # holding the lease cannot interleave its own moves with the sweep.
+        assert control_lease.held_by(BROWSER, ui_state.active_client_id)
+
+        # Nothing else drives the robot during the sweep, and the board it is
+        # capturing stays as it is.
+        user.find(marker="editor-play-btn").click()
+        await user.should_see("Automatic calibration is moving the robot")
+        assert not is_any_program_running()
+        await simulate_click(user, "btn-j1-plus")
+        await user.should_see(
+            "Automatic calibration is moving the robot — jog disabled"
+        )
+        async with McpClient(get_mcp()) as mcp:
+            with pytest.raises(ToolError, match="Automatic calibration is moving"):
+                await mcp.call_tool("motion.move_j", {"angles": home_angles})
+        spec = panel._spec
+        user.find(marker="handeye-step-board").click()
+        await asyncio.sleep(0)
+        squares_x = next(iter(user.find(marker="handeye-squares-x").elements))
+        assert isinstance(squares_x, ui.number)
+        squares_x.set_value(spec.squares_x + 1)
+        await user.should_see("Auto-calibration is running — stop it first")
+        await _wait_for(
+            lambda: squares_x.value == spec.squares_x,
+            message="the refused board edit was not reverted",
+        )
+        assert panel._spec == spec
+        await user.should_not_see(marker="handeye-board-apply-confirm")
 
         n_views = len(AUTO_VIEW_DELTAS_DEG)
         await _wait_for(
@@ -440,11 +882,38 @@ async def test_handeye_auto_calibration(
         )
         result = panel._result
         assert result is not None, "auto run did not solve"
-        trans_err = float(np.linalg.norm(result.T_cam2gripper[:3, 3] - X_TRUE[:3, 3]))
+        assert drops, "the dropped frame was never exercised"
+
+        # The ring followed the run: every view landed in a tilt sector (the
+        # board is pitched 40°), the rolls spread them over more than one
+        # sector and more than one frame cell, the rim is full exactly when
+        # the whole set was captured, and the headers carry count and fit.
+        cov = handeye.coverage(panel._samples)
+        assert (
+            sum(cov.sectors)
+            == len(panel._samples)
+            == sum(1 for s in panel._samples if s.tilt is not None)
+        )
+        assert sum(1 for c in cov.sectors if c) >= 2, cov
+        assert sum(1 for c in cov.cells if c) >= 2, cov
+        # The ring lives in the Views body, folded while Save is open.
+        assert panel._ring is not None
+        ring = panel._ring.element
+        assert ("handeye-coverage-complete" in ring.classes) == (
+            len(panel._samples) >= TARGET_VIEWS
+        )
+        assert panel._step_bodies["save"].visible
+        await user.should_see(f"{len(panel._samples)} of {TARGET_VIEWS} views")
+        summary = next(
+            iter(user.find(marker="handeye-step-summary-save").elements)
+        ).text
+        assert summary.startswith(("good fit", "usable fit", "poor fit")), summary
+
+        trans_err = float(np.linalg.norm(result.T_camera_parent[:3, 3] - X_TRUE[:3, 3]))
         rot_err = np.degrees(
             np.linalg.norm(
                 Rotation.from_matrix(
-                    result.T_cam2gripper[:3, :3].T @ X_TRUE[:3, :3]
+                    result.T_camera_parent[:3, :3].T @ X_TRUE[:3, :3]
                 ).as_rotvec()
             )
         )
@@ -464,10 +933,16 @@ async def test_handeye_auto_calibration(
         # clobber a stored calibration.
         assert ng_app.storage.general.get("handeye/MSG") is None
 
-        # Stop ends a run in flight: the samples already taken survive, the
-        # previous solve is left alone, and the progress line clears.
+        # Stop ends a run in flight: the samples already taken survive and the
+        # progress line clears. The run itself does not solve on Stop; an
+        # unchanged set keeps its result, a changed one re-solves by itself
+        # once the run is over.
+        client = waldoctl.commander.client
         n_before = len(panel._samples)
         await wait_board_detected()
+        # The run left the panel on its save step; the next one starts from Views.
+        user.find(marker="handeye-step-views").click()
+        await asyncio.sleep(0)
         user.find(marker="handeye-auto").click()
         await user.should_see(marker="handeye-auto-confirm")
         user.find(marker="handeye-auto-confirm").click()
@@ -476,15 +951,123 @@ async def test_handeye_auto_calibration(
             timeout=30.0,
             message="second run did not start",
         )
-        user.find(marker="handeye-auto").click()
-        await _wait_for(
-            lambda: panel._auto_task is not None and panel._auto_task.done(),
-            timeout=60.0,
-            message="Stop did not end the run",
-        )
+        acknowledged_stop = client.stop
+
+        async def unacknowledged_stop() -> int:
+            return 0
+
+        monkeypatch.setattr(client, "stop", unacknowledged_stop)
+        try:
+            user.find(marker="handeye-auto").click()
+            await _wait_for(
+                lambda: panel._auto_task is not None and panel._auto_task.done(),
+                timeout=60.0,
+                message="Stop did not end the run",
+            )
+        finally:
+            monkeypatch.setattr(client, "stop", acknowledged_stop)
+        await user.should_see("Stop not confirmed — use E-stop")
         assert len(panel._samples) >= n_before
-        assert panel._result is result
         assert panel._auto_progress_text is None
+        if len(panel._samples) == n_before:
+            assert panel._result is result
+        else:
+            await _wait_for(
+                lambda: panel._result is not None
+                and panel._result.n_views == len(panel._samples),
+                timeout=60.0,
+                message="the enlarged set did not re-solve after Stop",
+            )
+        assert await client.home(wait=True, timeout=30.0) >= 0
+
+        # From here each run is two views long and is interrupted while it
+        # captures the second one, away from its start pose.
+        real_capture = panel._capture_sample
+        hold: dict[str, Any] = {}
+
+        async def capture_held_away_from_start() -> None:
+            start = hold.get("start")
+            now = list(waldoctl.commander.status.joints.angles.deg)
+            if (
+                start is not None
+                and max(abs(a - s) for a, s in zip(now, start, strict=True)) > 5.0
+            ):
+                del hold["start"]
+                hold["reached"].set()
+                await hold["release"].wait()
+            await real_capture()
+
+        monkeypatch.setattr(panel, "_capture_sample", capture_held_away_from_start)
+
+        async def interrupt_second_view(
+            roll_deg: float, interrupt: Callable[[], Awaitable[None]]
+        ) -> None:
+            monkeypatch.setattr(
+                hp,
+                "AUTO_VIEW_DELTAS_DEG",
+                ((0.0,) * 6, (0.0, 0.0, 0.0, 0.0, 0.0, roll_deg)),
+            )
+            angles = await client.angles()
+            assert angles is not None
+            start = list(angles)
+            reached, release = asyncio.Event(), asyncio.Event()
+            hold.update(start=start, reached=reached, release=release)
+            n_before = len(panel._samples)
+            await wait_board_detected()
+            user.find(marker="handeye-auto").click()
+            await user.should_see(marker="handeye-auto-confirm")
+            user.find(marker="handeye-auto-confirm").click()
+            await asyncio.wait_for(reached.wait(), timeout=30.0)
+            await interrupt()
+            release.set()
+            await _wait_for(
+                lambda: panel._auto_task is not None and panel._auto_task.done(),
+                timeout=30.0,
+                message="the interrupted run did not end",
+            )
+            end = await client.angles()
+            assert end is not None
+            assert abs(end[5] - start[5]) > abs(roll_deg) / 2, (
+                "the run drove back to its start pose after it was interrupted"
+            )
+            assert len(panel._samples) >= n_before
+            assert panel._auto_progress_text is None
+
+        async def mcp_stop() -> None:
+            async with McpClient(get_mcp()) as mcp:
+                await mcp.call_tool("motion.stop")
+
+        await interrupt_second_view(35.0, mcp_stop)
+        await user.should_see("Auto-calibration aborted: the robot was stopped")
+
+        async def mcp_take_control() -> None:
+            async with McpClient(get_mcp()) as mcp:
+                await mcp.call_tool("control.take_control")
+
+        await interrupt_second_view(-35.0, mcp_take_control)
+        await user.should_see("Auto-calibration aborted: another client took control")
+        # Let the re-solve an aborted run may trigger land before teardown.
+        await _wait_for(
+            lambda: (
+                panel._result is not None
+                and panel._result.n_views == len(panel._samples)
+            )
+            or panel._solve_error is not None,
+            timeout=60.0,
+            message="the set left by the aborted run did not settle",
+        )
+
+        async def disconnect_and_reopen() -> None:
+            page = user.client
+            assert page is not None
+            for socket_id in list(page._socket_to_document_id):
+                page.handle_disconnect(socket_id)
+            assert not page.has_socket_connection
+            await user.open("/")
+            await wait_for_app_ready()
+
+        await interrupt_second_view(35.0, disconnect_and_reopen)
+        await user.should_see(marker="handeye-auto")
 
         # A refused move is a planner verdict the routine is built to absorb,
         # not a defect — but the controller logs each one at ERROR. Drop just
@@ -523,118 +1106,116 @@ async def test_handeye_auto_calibration(
 
 
 @pytest.mark.integration
-async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
-    """A Stop from anywhere else aborts auto-calibration.
+async def test_auto_move_reports_what_the_controller_did(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One auto-run move's outcome is read off the controller. A timed-out
+    poll that returns after a newer completion status is a completed move,
+    not a Stop. A Stop from anywhere else ends the move as halted, short of
+    its view: the controller cancels the command without completing it and
+    stays enabled, and a run that read that as a rejected view or a done
+    move would capture at the halted pose and drive on to the next one. A
+    move still running at its deadline has no known end, so it is stopped
+    rather than counted done with the next view queued behind it.
 
-    The controller cancels the command without completing it and without
-    an error, so `wait_command` resolves neither True nor raises — and it
-    stays enabled through a Stop. A run that read the halt as success
-    would capture a view at the halted pose and then drive the arm to the
-    next one, seconds after a human deliberately stopped it.
+    Driven against the controller: the halt is an ack ladder and a status
+    edge, and a fake that answers both tests the panel against this test's
+    idea of a Stop rather than against the one the arm performs.
     """
-    from waldo_commander.components.handeye_calibration import (
-        HandEyeCalibrationPanel,
-    )
+    from waldo_commander.components import handeye_calibration as hp
 
-    panel = HandEyeCalibrationPanel()
+    ui_state.plugin_panels = []
+    ui_state._started_panel_ids = set()
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
     commander = waldoctl.commander
-
-    class _HaltingClient:
-        """Answers as the controller does through a Stop: the move starts,
-        then the action goes idle with no completion and no error."""
-
-        def __init__(self) -> None:
-            self.moves = 0
-            self.waits = 0
-
-        async def angles(self):
-            return [0.0] * 6
-
-        async def move_j(self, target, duration=None, **kw):
-            self.moves += 1
-            commander.status.action.state = waldoctl.ActionState.EXECUTING
-            return 7
-
-        async def wait_command(self, index, timeout=0.0):
-            self.waits += 1
-            if self.waits >= 2:
-                commander.status.action.state = waldoctl.ActionState.IDLE
-            return False
-
-    client = _HaltingClient()
-    before = commander.status.action.state
-    try:
-        index = await panel._auto_move(
-            type("C", (), {"client": client, "status": commander.status})(),
-            [10.0] * 6,
-        )
-    finally:
-        commander.status.action.state = before
-
-    assert index < 0, "a halted move must not report the index of a finished one"
-    assert panel._auto_cancel, "the run must stop, not roll on to the next view"
-    assert client.moves == 1, "no further motion may be commanded after a Stop"
-
-
-@pytest.mark.integration
-async def test_an_unpopulated_pose_is_never_captured(user: User) -> None:
-    """All-zeros is the uninitialised value, not a pose.
-
-    The status cache seeds it that way and fills it only once the arm
-    reports, so an unplugged robot answers zeros indefinitely. Stored as a
-    sample it raises "non-positive determinant" out of the *next* capture,
-    which reads as a camera fault rather than a disconnected robot.
-    """
-    from waldo_commander.components.handeye_calibration import (
-        HandEyeCalibrationPanel,
-    )
-    from waldo_commander.state import robot_state
-
+    client = commander.client
     panel = HandEyeCalibrationPanel()
 
-    class _ZeroPoseClient:
-        async def status(self):
-            return type("S", (), {"pose": [0.0] * 16})()
+    assert await client.home(wait=True, timeout=30) >= 0
+    angles = list(await client.angles())
+    target = [*angles[:5], angles[5] - 10]
+    wait_command = client.wait_command
+    polls = 0
+    delayed = False
 
-    # `pose` is a preallocated array mutated in place, so it is restored
-    # the same way rather than reassigned.
-    before = robot_state.pose.copy()
-    robot_state.pose[:] = 0.0
+    async def delayed_timeout(index, timeout=10):
+        nonlocal polls, delayed
+        polls += 1
+        done = await wait_command(index, timeout=timeout)
+        if polls == 2 and not done:
+            assert await wait_command(index, timeout=10)
+            await _wait_for(
+                lambda: commander.status.action.state == waldoctl.ActionState.IDLE
+            )
+            delayed = True
+        return done
+
+    saw_running = asyncio.Event()
+
+    async def observed_poll(index, timeout=10):
+        done = await wait_command(index, timeout=timeout)
+        if not done and commander.status.action.state == waldoctl.ActionState.EXECUTING:
+            saw_running.set()
+        return done
+
     try:
-        got = await panel._current_pose_matrix(
-            type("C", (), {"client": _ZeroPoseClient()})()
-        )
+        with monkeypatch.context() as patch:
+            patch.setattr(client, "wait_command", delayed_timeout)
+            outcome = await panel._auto_move(commander, target)
+            assert delayed, "The deadline/completion interleaving was not exercised"
+            assert outcome is _Move.DONE, "A completed move was mistaken for a Stop"
+            np.testing.assert_allclose(await client.angles(), target, atol=0.1)
+
+            patch.setattr(client, "wait_command", observed_poll)
+            pending = asyncio.create_task(panel._auto_move(commander, angles))
+            await asyncio.wait_for(saw_running.wait(), timeout=5)
+            await client.stop()
+            assert await asyncio.wait_for(pending, timeout=5) is _Move.HALTED
     finally:
-        robot_state.pose[:] = before
+        await client.stop()
+        await client.reset()
 
-    assert got is None, "a zero pose must be refused by both branches alike"
-
-
-@pytest.mark.integration
-async def test_clearing_a_board_field_reverts_instead_of_wedging(user: User) -> None:
-    """NiceGUI sets a number's value to None the moment its text is
-    cleared — which is what selecting a field to retype it does. Parsing
-    that raised TypeError past the handler's except, so the revert never
-    ran and the field stayed blank, re-raising on every later edit to any
-    of the five inputs."""
-    from waldo_commander.services import handeye
-
-    spec = handeye.BoardSpec(
-        squares_x=5,
-        squares_y=7,
-        square_mm=25.0,
-        marker_mm=18.0,
-        dictionary="DICT_4X4_50",
+    assert await client.home(wait=True, timeout=30) >= 0
+    start = await client.angles()
+    assert start is not None
+    target = list(start)
+    target[0] += 25.0  # long enough at the auto speed to stop it mid-move
+    moving = asyncio.create_task(panel._auto_move(commander, target))
+    try:
+        assert await client.wait_status(
+            lambda s: s.action_state == waldoctl.ActionState.EXECUTING, timeout=10
+        ), "the auto move never started"
+        assert await client.stop() > 0
+        outcome = await asyncio.wait_for(moving, 30)
+    finally:
+        if not moving.done():
+            moving.cancel()
+            await asyncio.gather(moving, return_exceptions=True)
+        await client.reset()
+    assert outcome is _Move.HALTED, "the run must stop, not roll on to the next view"
+    halted = await client.angles()
+    assert halted is not None
+    assert abs(halted[0] - target[0]) > 1.0, (
+        "the arm reached the view it was stopped on the way to"
     )
 
-    def num(value, fallback, cast):
-        return fallback if value is None else cast(value)
+    assert await client.home(wait=True, timeout=30.0) >= 0
+    angles = await client.angles()
+    assert angles is not None
+    target = [*angles[:5], angles[5] + 40.0]
+    # A 4 s move against a deadline 1 s after dispatch stands in for a
+    # controller held or slowed well past the move's planned duration.
+    monkeypatch.setattr(hp, "AUTO_MIN_MOVE_S", 4.0)
+    monkeypatch.setattr(hp, "AUTO_MOVE_TIMEOUT_MARGIN_S", -3.0)
 
-    rebuilt = handeye.BoardSpec(
-        squares_x=num(None, spec.squares_x, int),
-        squares_y=num(7.0, spec.squares_y, int),
-        square_mm=num(None, spec.square_mm, float),
-        marker_mm=num(18.0, spec.marker_mm, float),
-        dictionary=str(None or spec.dictionary),
-    )
-    assert rebuilt == spec, "an emptied field means unchanged, not zero"
+    outcome = await HandEyeCalibrationPanel()._auto_move(waldoctl.commander, target)
+
+    assert await client.queue() == []
+    await client.wait_motion(timeout=10.0)
+    end = await client.angles()
+    assert end is not None
+    assert end[5] < target[5] - 10.0, "the overrunning move ran on to its target"
+    assert outcome is hp._Move.UNCONFIRMED

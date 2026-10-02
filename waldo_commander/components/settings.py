@@ -1,26 +1,120 @@
-"""Settings component for serial port, theme, and visualization preferences."""
+"""Settings dialog: connection, tool, jog, view, automation, shortcuts,
+getting started and advanced, one category per tab."""
 
+import asyncio
 import logging
+import math
+import weakref
 from collections.abc import Callable
-from contextlib import contextmanager
-
-from nicegui import app as ng_app
-from nicegui import ui
+from contextlib import AsyncExitStack, contextmanager
+from typing import cast
 
 import waldoctl
+from nicegui import Client, background_tasks, context, ui
+from nicegui import app as ng_app
+from nicegui.client import ClientConnectionTimeout
 from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
+from waldoctl.setup import PoseValues, TcpCalibration
 
+from waldo_commander.components.help_menu import HelpMenu
 from waldo_commander.components.robot_buddy import CALM_STORAGE_KEY, calm_preferred
 from waldo_commander.components.simulation_engine import simulation
+from waldo_commander.common.theme import (
+    STORAGE_KEY as THEME_STORAGE_KEY,
+    stored_theme,
+    theme_names,
+)
 from waldo_commander.constants import RESERVED_TAB_IDS
 from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    control_lease,
+    require_browser_control,
+)
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
+from waldo_commander.services.tcp_calibration import ToolChanged, read_applied_tcp
 from waldo_commander.state import automation_state, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
+
+# Trailing-edge window for a TCP offset edit, seconds.
+TCP_EDIT_THROTTLE_S = 0.4
+
+# How long a reconcile waits for its page's socket, seconds.
+RECONCILE_CONNECT_TIMEOUT_S = 5.0
+
+# Tools this app has pushed a TCP offset for since it started. Until then a
+# controller reporting zero may simply never have been told; afterwards a zero
+# is a deliberate clear by whoever set it, and the GUI follows it rather than
+# overwriting it with what the browser remembers.
+_pushed_offset_tools: set[str] = set()
+
+# The X/Y/Z inputs of one tool's TCP offset row.
+OffsetInputs = tuple[ui.number, ...]
+TCP_AXES = ("x", "y", "z", "roll", "pitch", "yaw")
+TCP_AXIS_LABELS = {
+    "x": "X",
+    "y": "Y",
+    "z": "Z",
+    "roll": "Rx",
+    "pitch": "Ry",
+    "yaw": "Rz",
+}
+
+
+def adopt_applied_tcp(calibration: TcpCalibration) -> None:
+    """Publish a confirmed controller transform to storage and local kinematics."""
+    values = dict(zip(TCP_AXES, calibration.values))
+    ng_app.storage.general[f"tcp_offset_{calibration.tool_key}"] = {
+        **values,
+        "variant_key": calibration.variant_key,
+    }
+    ng_app.storage.general["selected_tool"] = calibration.tool_key
+    ng_app.storage.general[f"tool_variant_{calibration.tool_key}"] = (
+        calibration.variant_key
+    )
+    _pushed_offset_tools.add(calibration.tool_key)
+    ui_state.active_robot.set_active_tool(
+        calibration.tool_key,
+        tcp_offset_m=tuple(v / 1000 for v in calibration.values[:3]),
+        variant_key=calibration.variant_key or None,
+        tcp_rotation_rad=tuple(math.radians(v) for v in calibration.values[3:]),
+    )
+    if ui_state.urdf_scene:
+        ui_state.urdf_scene.apply_tool(
+            calibration.tool_key, variant_key=calibration.variant_key or None
+        )
+        ui_state.urdf_scene.refresh_tcp_ball()
+    simulation_state.notify_changed()
+    try:
+        simulation.schedule_debounced_simulation()
+    except RuntimeError:
+        pass
+    for view in list(_settings_views):
+        view.show_applied_tcp(calibration)
+
+
+async def refresh_applied_tcp(client: RobotClient) -> None:
+    """Adopt the controller's TCP transform after a program run or a reconnect.
+
+    Neither leaves a status edge when the tool stays the same, so without
+    this the inputs and local kinematics keep the transform from before.
+    """
+    async with AsyncExitStack() as stack:
+        # A Settings push in flight adopts its own readback; wait for it.
+        # One lock order, so two refreshes never hold each other's locks.
+        for view in sorted(_settings_views, key=id):
+            await stack.enter_async_context(view._tool_lock)
+        try:
+            applied = await read_applied_tcp(client)
+        except (OSError, TimeoutError, ValueError) as exc:
+            logger.debug("TCP refresh skipped: %s", exc)
+            return
+        adopt_applied_tcp(applied)
 
 
 def get_available_serial_ports() -> list[str]:
@@ -40,27 +134,42 @@ def get_available_serial_ports() -> list[str]:
 
 @contextmanager
 def _setting_row(title: str, description: str):
-    """Standard layout for a settings row: label column + yielded control widget."""
-    with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-        with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-            ui.label(title).classes("text-sm font-medium truncate")
-            ui.label(description).classes(
-                "text-xs text-gray-500 dark:text-gray-400 truncate"
-            )
+    """The setting's name over a one-line description, its control at the right."""
+    with ui.element("div").classes("settings-row"):
+        with ui.element("div").classes("settings-text"):
+            ui.label(title).classes("settings-label")
+            ui.label(description).classes("wc-caption text-wc-text-muted truncate")
         yield
 
 
+# Live Settings views, so a TCP applied from elsewhere (the Setup panel's
+# calibration editor) shows in their inputs before the next nudge pushes.
+_settings_views: weakref.WeakSet["SettingsContent"] = weakref.WeakSet()
+
+
 class SettingsContent:
-    """Settings content that can be embedded in the control panel."""
+    """The settings rows, one category per tab of the Settings dialog."""
 
     def __init__(self, client: RobotClient) -> None:
         self.client = client
+        self.dialog: ui.dialog | None = None
+        self._shortcuts_box: ui.column | None = None
+        self._tour_box: ui.column | None = None
+        self._tcp_inputs: tuple[str, OffsetInputs, Client] | None = None
+        _settings_views.add(self)
         self._port_select: ui.select | None = None
         self._refresh_timer: ui.timer | None = None
         self._cam_select: ui.select | None = None
         self._cam_refresh_timer: ui.timer | None = None
         self._variant_container: ui.column | None = None
         self._tcp_offset_container: ui.column | None = None
+        self._tool_lock = asyncio.Lock()
+        self._tcp_pushing = False
+        self._tcp_push_next: tuple[str, dict, OffsetInputs, Client, int] | None = None
+        # Bumped by every tool change. A push carries the epoch it was
+        # queued under, so an edit in flight when the tool changes is
+        # dropped rather than re-applied to the tool that replaced it.
+        self._tool_epoch = 0
 
     def _load_preferences(self) -> dict:
         """Load persisted preferences from storage."""
@@ -74,17 +183,11 @@ class SettingsContent:
             "envelope_mode": EnvelopeMode(
                 ng_app.storage.general.get("envelope_mode", "auto")
             ),
-            "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
             "motion_profile": stored_profile,
             "jog_blend_r": jog_blend_r(),
             "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
             "jog_invert_x": bool(ng_app.storage.general.get("jog_invert_x", False)),
             "jog_invert_y": bool(ng_app.storage.general.get("jog_invert_y", False)),
-            "show_divergence": bool(
-                ng_app.storage.general.get("show_divergence", True)
-            ),
-            "show_contacts": bool(ng_app.storage.general.get("show_contacts", False)),
-            "show_com": bool(ng_app.storage.general.get("show_com", False)),
         }
 
     def _refresh_serial_ports(self) -> None:
@@ -113,15 +216,29 @@ class SettingsContent:
         if not variants:
             return None
         stored = ng_app.storage.general.get(f"tool_variant_{tool_key}")
-        if stored and any(v.key == stored for v in variants):
+        # "" is a stored answer, not a missing one: the controller carries the
+        # tool with no variant (a program's select_tool without variant_key).
+        if stored is not None and (
+            stored == "" or any(v.key == stored for v in variants)
+        ):
             return stored
         return variants[0].key
 
+    def _bound_variant(self, tool_key: str) -> str:
+        """The variant a TCP edit for ``tool_key`` must be bound to: the
+        controller's own when it carries that tool, else the browser's."""
+        tool = waldoctl.commander.status.tool
+        if tool.key == tool_key:
+            return tool.variant_key or ""
+        return self._get_variant_key(tool_key) or ""
+
     def _get_tcp_offset(self, tool_key: str) -> dict:
         """Get stored TCP offset for a tool (mm)."""
-        return ng_app.storage.general.get(
-            f"tcp_offset_{tool_key}", {"x": 0, "y": 0, "z": 0}
-        )
+        stored = ng_app.storage.general.get(f"tcp_offset_{tool_key}", {})
+        variant = self._get_variant_key(tool_key) or ""
+        if stored.get("variant_key", variant) != variant:
+            return {axis: 0.0 for axis in TCP_AXES}
+        return {axis: stored.get(axis, 0.0) for axis in TCP_AXES}
 
     def _tcp_offset_m(self, tool_key: str) -> tuple[float, float, float] | None:
         """Get stored TCP offset in meters, or None if zero."""
@@ -145,6 +262,10 @@ class SettingsContent:
             tool_key,
             tcp_offset_m=self._tcp_offset_m(tool_key),
             variant_key=variant_key,
+            tcp_rotation_rad=tuple(
+                math.radians(float(self._get_tcp_offset(tool_key).get(k, 0)))
+                for k in TCP_AXES[3:]
+            ),
         )
         if ui_state.urdf_scene:
             ui_state.urdf_scene.apply_tool(tool_key, variant_key=variant_key)
@@ -160,22 +281,45 @@ class SettingsContent:
             tool_spec = None
         variants = tool_spec.variants if tool_spec else ()
         is_none = tool_key == "NONE"
-        if not variants and not is_none:
+        self._variant_container.set_visibility(bool(variants) and not is_none)
+        if not variants:
             return
 
         variant_options = (
             {v.key: v.display_name for v in variants} if variants else {"": "—"}
         )
-        current_vk = self._get_variant_key(tool_key) or (
-            next(iter(variant_options), "") if variants else ""
-        )
+        current_vk = self._get_variant_key(tool_key)
+        if current_vk is None:
+            current_vk = next(iter(variant_options), "") if variants else ""
+        if current_vk == "":
+            variant_options = {"": "—", **variant_options}
 
         async def _on_variant_change(e):
-            vk = e.value
-            ng_app.storage.general[f"tool_variant_{tool_key}"] = vk
-            waldoctl.commander.status.tool.variant_key = vk or ""
-            self._apply_tool_scene(tool_key, variant_key=vk)
-            self._notify_and_resimulate()
+            async with self._tool_lock:
+                vk = e.value
+                self._tool_epoch += 1
+                self._tcp_push_next = None
+                try:
+                    index = await self.client.select_tool(
+                        tool_key, variant_key=vk or ""
+                    )
+                    if index < 0 or not await self.client.wait_command(
+                        index, timeout=5.0
+                    ):
+                        raise TimeoutError("Tool variant change was not confirmed")
+                except Exception as exc:
+                    logger.warning("Tool variant change failed: %s", exc)
+                    ui.notify(f"Tool variant change failed: {exc}", color="negative")
+                    return
+                ng_app.storage.general[f"tool_variant_{tool_key}"] = vk
+                ng_app.storage.general[f"tcp_offset_{tool_key}"] = {
+                    **dict.fromkeys(TCP_AXES, 0.0),
+                    "variant_key": vk or "",
+                }
+                waldoctl.commander.status.tool.variant_key = vk or ""
+                self._apply_tool_scene(tool_key, variant_key=vk)
+                self._rebuild_tcp_offset(tool_key)
+                self._notify_and_resimulate()
 
         with self._variant_container:
             with _setting_row("Variant", "Tool configuration variant"):
@@ -192,47 +336,261 @@ class SettingsContent:
                 if is_none or not variants:
                     sel.props("disable")
 
-    def _rebuild_tcp_offset(self, tool_key: str) -> None:
-        """Rebuild per-tool TCP offset inputs."""
+    def _rebuild_tcp_offset(
+        self, tool_key: str, *, tool_changed: bool = False, adopt_only: bool = False
+    ) -> None:
         assert self._tcp_offset_container is not None
         self._tcp_offset_container.clear()
-        is_none = tool_key == "NONE"
-        offset = (
-            self._get_tcp_offset(tool_key) if not is_none else {"x": 0, "y": 0, "z": 0}
-        )
+        offset = self._get_tcp_offset(tool_key)
+        page_client = context.client
+        inputs: OffsetInputs = ()
 
-        async def _on_offset_change(_e=None):
-            vals = {
-                "x": x_input.value or 0,
-                "y": y_input.value or 0,
-                "z": z_input.value or 0,
-            }
-            ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
-            vk = self._get_variant_key(tool_key)
-            self._apply_tool_scene(tool_key, variant_key=vk)
-            self._notify_and_resimulate()
+        async def _on_offset_change(axis: str) -> None:
+            value = inputs[TCP_AXES.index(axis)].value
+            if value is None:
+                return
+            require_browser_control(page_client.id)
+            await self._push_tcp_offset(tool_key, {axis: value}, inputs, page_client)
 
         with self._tcp_offset_container:
-            with _setting_row("TCP Offset", "Offset from default TCP (mm)"):
-                with ui.row().classes("gap-1"):
-                    x_input = (
-                        ui.number(label="X", value=offset.get("x", 0), step=0.5)
-                        .style("width: 48px;")
-                        .props("dense borderless" + (" disable" if is_none else ""))
-                        .on("update:model-value", _on_offset_change)
+            with _setting_row(
+                "TCP offset",
+                "Tool-local mm and intrinsic XYZ degrees; edits apply to the "
+                "controller",
+            ):
+                with ui.grid(columns=3).classes("gap-1"):
+                    inputs = tuple(
+                        ui.number(
+                            value=offset.get(axis, 0),
+                            step=0.5,
+                            prefix=TCP_AXIS_LABELS[axis],
+                        )
+                        .classes("settings-axis")
+                        .props("dense")
+                        .on(
+                            "update:model-value",
+                            lambda _e, axis=axis: _on_offset_change(axis),
+                            throttle=TCP_EDIT_THROTTLE_S,
+                            leading_events=False,
+                        )
+                        .mark(f"tcp-offset-{axis}")
+                        for axis in TCP_AXES
                     )
-                    y_input = (
-                        ui.number(label="Y", value=offset.get("y", 0), step=0.5)
-                        .style("width: 48px;")
-                        .props("dense borderless" + (" disable" if is_none else ""))
-                        .on("update:model-value", _on_offset_change)
-                    )
-                    z_input = (
-                        ui.number(label="Z", value=offset.get("z", 0), step=0.5)
-                        .style("width: 48px;")
-                        .props("dense borderless" + (" disable" if is_none else ""))
-                        .on("update:model-value", _on_offset_change)
-                    )
+        self._tcp_inputs = (tool_key, inputs, page_client)
+        background_tasks.create(
+            self._reconcile_tcp_offset(
+                tool_key,
+                inputs,
+                page_client,
+                tool_changed=tool_changed,
+                adopt_only=adopt_only,
+                epoch=self._tool_epoch,
+            ),
+            name="tcp-offset-reconcile",
+        )
+
+    def show_applied_tcp(self, calibration: TcpCalibration) -> None:
+        """Reflect a transform the controller confirmed for the shown tool."""
+        if self._tcp_inputs is None:
+            return
+        tool_key, inputs, page_client = self._tcp_inputs
+        if tool_key != calibration.tool_key or not page_client.has_socket_connection:
+            return
+        with page_client:
+            for inp, value in zip(inputs, calibration.values):
+                if inp.value != value:
+                    inp.set_value(value)
+
+    @staticmethod
+    def _notify(page_client: Client, message: str, color: str) -> None:
+        """A toast raised from a background task needs its page's slot stack;
+        without one ``ui.notify`` raises and the user is never told."""
+        if page_client.has_socket_connection:
+            with page_client:
+                ui.notify(message, color=color)
+
+    async def _push_tcp_offset(
+        self,
+        tool_key: str,
+        edits: dict,
+        inputs: OffsetInputs,
+        page_client: Client,
+    ) -> None:
+        """Send the edited axes to the controller, newest values only.
+
+        One push runs at a time: overlapping pushes race each other's
+        readbacks, and the loser adopts an intermediate value the user has
+        already typed past."""
+        pending = self._tcp_push_next
+        if (
+            pending is not None
+            and pending[0] == tool_key
+            and pending[4] == self._tool_epoch
+        ):
+            edits = {**pending[1], **edits}
+        self._tcp_push_next = (tool_key, edits, inputs, page_client, self._tool_epoch)
+        if self._tcp_pushing:
+            return
+        self._tcp_pushing = True
+        try:
+            while self._tcp_push_next is not None:
+                pending = self._tcp_push_next
+                self._tcp_push_next = None
+                await self._send_tcp_offset(*pending)
+        finally:
+            self._tcp_pushing = False
+
+    async def _read_tcp(self) -> list[float]:
+        values = await self.client.tcp_transform()
+        return list(TcpCalibration(cast(PoseValues, tuple(values)), "readback").values)
+
+    def _drop_queued_push(self) -> None:
+        """An edit still waiting when its page goes is nobody's to send."""
+        self._tcp_push_next = None
+
+    async def _send_tcp_offset(
+        self,
+        tool_key: str,
+        edits: dict,
+        inputs: OffsetInputs,
+        page_client: Client,
+        epoch: int,
+    ) -> None:
+        async with self._tool_lock:
+            await self._send_tcp_offset_locked(
+                tool_key, edits, inputs, page_client, epoch
+            )
+
+    async def _send_tcp_offset_locked(
+        self,
+        tool_key: str,
+        edits: dict,
+        inputs: OffsetInputs,
+        page_client: Client,
+        epoch: int,
+    ) -> None:
+        if epoch != self._tool_epoch or not page_client.has_socket_connection:
+            # The tool changed while this edit was queued (the controller
+            # zeroed its offset for the new tool, and the old tool's number
+            # would silently restore it), or the page that typed it is gone.
+            return
+        try:
+            # Axes not edited here keep the controller's values: a program
+            # may have changed them since these inputs were drawn.
+            applied = await read_applied_tcp(self.client)
+            values = cast(
+                PoseValues,
+                tuple(
+                    float(edits[axis]) if axis in edits else current
+                    for axis, current in zip(TCP_AXES, applied.values)
+                ),
+            )
+            calibration = TcpCalibration(
+                values, tool_key, self._bound_variant(tool_key)
+            )
+            from waldo_commander.services.tcp_calibration import (
+                apply_tcp_calibration,
+            )
+
+            await apply_tcp_calibration(self.client, calibration)
+            back = await self._read_tcp()
+            if epoch != self._tool_epoch:
+                return
+            await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+        except ToolChanged as exc:
+            adopt_applied_tcp(exc.applied)
+            logger.warning("TCP transform was not applied: %s", exc)
+            self._notify(page_client, f"TCP transform not applied: {exc}", "negative")
+        except Exception as exc:
+            logger.warning("TCP transform was not applied: %s", exc)
+            self._notify(page_client, f"TCP transform not applied: {exc}", "negative")
+
+    async def _reconcile_tcp_offset(
+        self,
+        tool_key: str,
+        inputs: OffsetInputs,
+        page_client: Client,
+        *,
+        tool_changed: bool,
+        adopt_only: bool = False,
+        epoch: int,
+    ) -> None:
+        """Line the browser's remembered offset up with the controller's.
+
+        The controller's offset is the source of truth wherever it can be
+        someone else's — a program or another client, and a deliberate zero
+        counts. The remembered offset is pushed only where the controller's
+        cannot be: right after a tool change, which resets it, and on a
+        controller reporting nothing that this app has never told, while
+        nobody else is driving."""
+        try:
+            # Started while the page is still being built, so its socket is
+            # often not up yet.
+            await page_client.connected(timeout=RECONCILE_CONNECT_TIMEOUT_S)
+        except ClientConnectionTimeout:
+            return
+        async with self._tool_lock:
+            if epoch != self._tool_epoch:
+                return
+            try:
+                applied = await read_applied_tcp(self.client)
+            except Exception as exc:
+                logger.debug("tcp_offset readback failed: %s", exc)
+                return
+            if (applied.tool_key, applied.variant_key) != (
+                tool_key,
+                self._get_variant_key(tool_key) or "",
+            ):
+                # Another tool's transform; sync_tool follows the tool change.
+                return
+            back = list(applied.values)
+            stored = self._get_tcp_offset(tool_key)
+            if adopt_only:
+                await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+                return
+            mine = [float(stored.get(k, 0) or 0) for k in TCP_AXES]
+            if all(abs(b - m) <= 1e-3 for b, m in zip(back, mine)):
+                # Another page may have updated storage since these inputs
+                # were built. Reconcile the page even when storage agrees.
+                await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+                return
+            never_told = tool_key not in _pushed_offset_tools and not any(
+                abs(b) > 1e-3 for b in back
+            )
+            if tool_changed or (never_told and self._may_push_unasked(page_client)):
+                await self._send_tcp_offset_locked(
+                    tool_key, stored, inputs, page_client, epoch
+                )
+            else:
+                await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+
+    @staticmethod
+    def _may_push_unasked(page_client: Client) -> bool:
+        """A push nobody typed must not move the TCP under another driver."""
+        holder = control_lease.holder()
+        free_or_ours = holder is None or (
+            holder.channel == BROWSER and holder.id == page_client.id
+        )
+        return free_or_ours and motion_guard.busy_reason() is None
+
+    async def _adopt_tcp_offset(
+        self,
+        tool_key: str,
+        offset_mm: list | tuple,
+        inputs: OffsetInputs,
+        page_client: Client,
+    ) -> None:
+        values = cast(PoseValues, tuple(float(v) for v in offset_mm))
+        calibration = TcpCalibration(values, tool_key, self._bound_variant(tool_key))
+        adopt_applied_tcp(calibration)
+        with page_client:
+            for inp, v in zip(inputs, values):
+                if inp.value != v:
+                    inp.set_value(v)
+            self._apply_tool_scene(
+                tool_key, variant_key=self._get_variant_key(tool_key)
+            )
+            self._notify_and_resimulate()
 
     # ── Section builders ─────────────────────────────────────────────
 
@@ -240,17 +598,17 @@ class SettingsContent:
         available_ports = get_available_serial_ports()
         stored_port = prefs["com_port"]
 
-        with _setting_row("Serial Port", "Select robot communication port"):
+        with _setting_row("Serial port", "Robot communication port"):
             self._port_select = (
                 ui.select(
                     options=available_ports,
                     value=stored_port if stored_port in available_ports else None,
-                    label="Port",
                     new_value_mode="add-unique",
                     clearable=True,
                 )
-                .classes("w-32")
+                .classes("w-40")
                 .props("dense")
+                .mark("select-serial-port")
             )
 
         if stored_port and stored_port not in available_ports:
@@ -267,7 +625,6 @@ class SettingsContent:
                 ui.notify(f"Port change failed: {exc}", color="negative")
                 return
             ng_app.storage.general["com_port"] = port_val
-            ui.notify(f"SET_PORT {port_val}", color="primary")
 
         port_select_ref.on("update:model-value", lambda e: _apply_port())
         self._refresh_timer = ui.timer(10.0, self._refresh_serial_ports)
@@ -279,7 +636,7 @@ class SettingsContent:
             ng_app.storage.general["show_route"] = val
             simulation_state.notify_changed()
 
-        with _setting_row("Show Route", "Display path visualization in 3D view"):
+        with _setting_row("Show route", "Draw the program's path in the 3D view"):
             ui.switch(
                 value=prefs["show_route"],
                 on_change=_on_show_route_change,
@@ -287,51 +644,33 @@ class SettingsContent:
 
         waldoctl.commander.settings.view.paths_visible = prefs["show_route"]
 
-    def _build_physics_overlays(self, prefs: dict) -> None:
-        """What the simulated run measured, drawn over the scene.
+    def _build_theme(self) -> None:
+        def _on_theme_change(e):
+            if e.value in theme_names():
+                ng_app.storage.general[THEME_STORAGE_KEY] = e.value
+                ui.navigate.reload()
 
-        Only meaningful on a backend that simulates; the section says so
-        rather than hiding, because "my robot has no physics" is worth
-        knowing and a hidden control is not.
-        """
-        view = waldoctl.commander.settings.view
-        simulates = ui_state.active_robot.has_physics_simulation
+        with _setting_row(
+            "Theme", "Colours of the panels, text and scene; the page reloads"
+        ):
+            ui.select(
+                theme_names(), value=stored_theme(), on_change=_on_theme_change
+            ).props("dense options-dense").mark("select-theme")
 
-        def toggle(label: str, hint: str, key: str, attr: str, marker: str) -> None:
-            async def _on_change(e):
-                setattr(view, attr, bool(e.value))
-                ng_app.storage.general[key] = bool(e.value)
-                simulation_state.notify_changed()
+    def _build_calm_buddy(self) -> None:
+        def _on_calm_change(e) -> None:
+            calm = bool(e.value)
+            ng_app.storage.general[CALM_STORAGE_KEY] = calm
+            if ui_state._readout_panel is not None:
+                ui_state.readout_panel.set_buddy_calm(calm)
 
-            with _setting_row(
-                label, hint if simulates else f"{hint} (this robot has no physics)"
-            ):
-                ui.switch(value=prefs[key], on_change=_on_change).props("dense").mark(
-                    marker
-                ).set_enabled(simulates)
-            setattr(view, attr, prefs[key])
-
-        toggle(
-            "Achieved Path",
-            "Draw where the arm ends up beside where it is aimed",
-            "show_divergence",
-            "divergence_visible",
-            "switch-show-divergence",
-        )
-        toggle(
-            "Contacts",
-            "Contact points and the forces through them",
-            "show_contacts",
-            "contacts_visible",
-            "switch-show-contacts",
-        )
-        toggle(
-            "Centre of Mass",
-            "The scene's centre of mass and its drop line",
-            "show_com",
-            "com_visible",
-            "switch-show-com",
-        )
+        with _setting_row(
+            "Calm robot",
+            "No idle fidgets; Waldo still reacts to the robot",
+        ):
+            ui.switch(value=calm_preferred(), on_change=_on_calm_change).props(
+                "dense"
+            ).mark("switch-calm-buddy")
 
     def _build_envelope(self, prefs: dict) -> None:
         async def _on_envelope_mode_change(e):
@@ -340,7 +679,9 @@ class SettingsContent:
             ng_app.storage.general["envelope_mode"] = mode.value
             simulation_state.notify_changed()
 
-        with _setting_row("Workspace Envelope", "Show reachable workspace boundary"):
+        with _setting_row(
+            "Workspace envelope", "Show the reachable workspace boundary"
+        ):
             ui.select(
                 options={m.value: m.value.capitalize() for m in EnvelopeMode},
                 value=prefs["envelope_mode"].value,
@@ -350,50 +691,115 @@ class SettingsContent:
         waldoctl.commander.settings.view.envelope_mode = prefs["envelope_mode"]
 
     def _build_tool_section(self) -> None:
-        async def _on_tool_change(e):
-            tool = e.value
-            vk = self._get_variant_key(tool)
-            try:
-                await self.client.select_tool(tool, variant_key=vk or "")
-            except Exception as exc:
-                logger.warning("select_tool(%s) failed: %s", tool, exc)
-                ui.notify(f"Tool change failed: {exc}", color="negative")
-                return
+        synchronizing = False
+        pending_changes = 0
 
-            ng_app.storage.general["selected_tool"] = tool
-            waldoctl.commander.status.tool.variant_key = vk or ""
-            self._apply_tool_scene(tool, variant_key=vk)
-            self._apply_tool_camera(tool)
-            self._rebuild_variant_selector(tool)
-            self._rebuild_tcp_offset(tool)
-            self._notify_and_resimulate()
+        async def change_tool(e):
+            nonlocal pending_changes
+            try:
+                await _on_tool_change(e)
+            finally:
+                pending_changes -= 1
+
+        def request_tool_change(e):
+            nonlocal pending_changes
+            if synchronizing:
+                return None
+            pending_changes += 1
+            return change_tool(e)
+
+        async def _on_tool_change(e):
+            async with self._tool_lock:
+                tool = e.value
+                self._tool_epoch += 1
+                self._tcp_push_next = None
+                vk = self._get_variant_key(tool)
+                require_browser_control(context.client.id)
+                try:
+                    index = await self.client.select_tool(tool, variant_key=vk or "")
+                    if index < 0 or not await self.client.wait_command(
+                        index, timeout=5.0
+                    ):
+                        raise TimeoutError("Tool change was not confirmed")
+                except Exception as exc:
+                    logger.warning("select_tool(%s) failed: %s", tool, exc)
+                    ui.notify(f"Tool change failed: {exc}", color="negative")
+                    return
+
+                ng_app.storage.general["selected_tool"] = tool
+                waldoctl.commander.status.tool.variant_key = vk or ""
+                self._apply_tool_scene(tool, variant_key=vk)
+                self._apply_tool_camera(tool)
+                self._rebuild_variant_selector(tool)
+                self._rebuild_tcp_offset(tool, tool_changed=True)
+                self._notify_and_resimulate()
 
         tool_options = {}
         for tool in ui_state.active_robot.tools.available:
-            tool_options[tool.key] = tool.display_name
+            tool_options[tool.key] = tool.display_name.replace("_", " ")
 
         default_tool = next(iter(tool_options), "NONE")
         stored_tool = ng_app.storage.general.get("selected_tool", default_tool)
         if stored_tool not in tool_options:
             stored_tool = default_tool
 
-        with _setting_row("Tool", "Select end effector tool"):
-            ui.select(
-                options=tool_options,
-                value=stored_tool,
-                on_change=_on_tool_change,
-            ).classes("w-32").props("dense").mark("select-tool")
+        with _setting_row("Selected", "Select end effector tool"):
+            tool_select = (
+                ui.select(
+                    options=tool_options,
+                    value=stored_tool,
+                    on_change=request_tool_change,
+                )
+                .classes("w-40")
+                .props("dense")
+                .mark("select-tool")
+            )
 
-        self._variant_container = ui.column().classes("w-full gap-1")
+        self._variant_container = ui.column().classes("w-full gap-0")
         self._rebuild_variant_selector(stored_tool)
 
-        self._tcp_offset_container = ui.column().classes("w-full gap-1")
+        self._tcp_offset_container = (
+            ui.column().classes("w-full gap-0").mark("settings-tcp-details")
+        )
         self._rebuild_tcp_offset(stored_tool)
 
         vk_initial = self._get_variant_key(stored_tool)
         waldoctl.commander.status.tool.variant_key = vk_initial or ""
         if stored_tool:
             self._apply_tool_scene(stored_tool, variant_key=vk_initial)
+
+        def sync_tool() -> None:
+            nonlocal synchronizing
+            status = waldoctl.commander.status
+            tool = status.tool.key
+            if (
+                pending_changes
+                or self._tool_lock.locked()
+                or not (status.connected or status.simulator_active)
+            ):
+                return
+            variant = status.tool.variant_key or ""
+            if tool not in tool_options or (
+                tool == tool_select.value
+                and variant == (self._get_variant_key(tool) or "")
+            ):
+                return
+            # Status changes can come from another client. Reflect them without
+            # sending SELECT_TOOL or restoring an old browser TCP correction.
+            self._tool_epoch += 1
+            self._tcp_push_next = None
+            ng_app.storage.general["selected_tool"] = tool
+            ng_app.storage.general[f"tool_variant_{tool}"] = status.tool.variant_key
+            synchronizing = True
+            try:
+                tool_select.set_value(tool)
+            finally:
+                synchronizing = False
+            self._rebuild_variant_selector(tool)
+            self._rebuild_tcp_offset(tool, adopt_only=True)
+            self._apply_tool_camera(tool)
+
+        ui.timer(0.3, sync_tool)
 
     def _tool_spec(self, tool_key: str):
         """The active robot's ToolSpec for *tool_key*, or None."""
@@ -459,7 +865,12 @@ class SettingsContent:
             else:
                 camera_service.start(val)
 
-        with _setting_row("Camera", "Video device for the active tool"):
+        with _setting_row(
+            "Camera",
+            "Video device for the active tool. For AI annotations: webcam → your "
+            "script → pyvirtualcam → select the virtual device (Linux: sudo apt "
+            "install v4l2loopback-dkms).",
+        ):
             self._cam_select = (
                 ui.select(
                     options=cam_options,
@@ -471,14 +882,6 @@ class SettingsContent:
                 .classes("w-32")
                 .props("dense")
                 .mark("select-camera")
-            )
-
-        with ui.column().classes("w-full gap-0 px-2"):
-            ui.label(
-                "AI annotations: webcam \u2192 your script \u2192 pyvirtualcam \u2192 select virtual device"
-            ).classes("text-xs text-gray-500 dark:text-gray-400")
-            ui.label("Linux: sudo apt install v4l2loopback-dkms").classes(
-                "text-xs text-gray-500 dark:text-gray-400"
             )
 
         def _refresh_camera_devices() -> None:
@@ -496,7 +899,10 @@ class SettingsContent:
 
         self._cam_refresh_timer = ui.timer(10.0, _refresh_camera_devices)
 
-        if cam_value != -1:
+        # A page build must not restart a capture already running on this
+        # device: a restart mints a new session and a calibration in progress
+        # refuses every later capture as "camera changed".
+        if cam_value != -1 and camera_service.device != cam_value:
             camera_service.start(cam_value)
 
     def _build_motion_profile(self, prefs: dict) -> None:
@@ -514,36 +920,12 @@ class SettingsContent:
         for p in ui_state.active_robot.motion_profiles:
             motion_profile_options[p] = p.replace("_", " ").title()
 
-        with _setting_row("Motion Profile", "Trajectory generation algorithm"):
+        with _setting_row("Motion profile", "Trajectory generation algorithm"):
             ui.select(
                 options=motion_profile_options,
                 value=prefs["motion_profile"],
                 on_change=_on_motion_profile_change,
             ).classes("w-32").props("dense").mark("select-motion-profile")
-
-    def _build_theme(self, prefs: dict) -> None:
-        with _setting_row("Theme", "Application color scheme"):
-            with ui.element("span").tooltip(
-                "Light mode will be available in a future update"
-            ):
-                ui.select(
-                    options={"dark": "Dark"},
-                    value="dark",
-                ).classes("w-24").props("dense disable")
-
-        def _on_calm_change(e) -> None:
-            calm = bool(e.value)
-            ng_app.storage.general[CALM_STORAGE_KEY] = calm
-            if ui_state._readout_panel is not None:
-                ui_state.readout_panel.set_buddy_calm(calm)
-
-        with _setting_row(
-            "Calm robot",
-            "No idle fidgets; Waldo still reacts to the robot",
-        ):
-            ui.switch(value=calm_preferred(), on_change=_on_calm_change).props(
-                "dense"
-            ).mark("switch-calm-buddy")
 
     def _build_backend_selector(self) -> None:
         """Backend (robot driver) selection dropdown.
@@ -552,14 +934,14 @@ class SettingsContent:
         ``commander.settings.plugins.backend`` and shows a "restart
         required" hint — backend switching takes effect on next launch.
         """
-        from waldo_commander.profiles import DEFAULT_ROBOT
         from waldoctl.discovery import available_backends
 
         installed = sorted(available_backends())
         if not installed:
             return  # Defensive: shouldn't happen since startup already resolved one
         plugins = waldoctl.commander.settings.plugins
-        current = plugins.backend or DEFAULT_ROBOT
+        active = ui_state.active_robot.name.lower()
+        current = plugins.backend or active
         if current not in installed:
             current = installed[0]
 
@@ -567,7 +949,10 @@ class SettingsContent:
             new = e.value
             plugins.backend = new
             ng_app.storage.general["plugins/backend"] = new
-            ui.notify("Backend change applies on next launch", color="info")
+            self._restart_notice.set_text(
+                f"Restart to use {new.upper()}. Active: {active.upper()}."
+            )
+            self._restart_notice.set_visibility(new != active)
 
         with _setting_row("Backend", "Robot driver (applied on next launch)"):
             ui.select(
@@ -575,6 +960,13 @@ class SettingsContent:
                 value=current,
                 on_change=_on_backend_change,
             ).classes("w-40").props("dense").mark("settings-backend-select")
+
+        self._restart_notice = (
+            ui.label(f"Restart to use {current.upper()}. Active: {active.upper()}.")
+            .classes("panel-note")
+            .mark("settings-restart-notice")
+        )
+        self._restart_notice.set_visibility(current != active)
 
     def _build_plugin_panels(self) -> None:
         """Panel-enable/disable toggle list.
@@ -611,7 +1003,7 @@ class SettingsContent:
         if not discovered:
             with _setting_row("Panel plugins", "Show / hide installed panel plugins"):
                 ui.label("No plugins installed").classes(
-                    "text-xs text-[var(--ctk-muted)]"
+                    "wc-caption text-wc-text-muted"
                 ).mark("settings-plugins-summary")
             return
 
@@ -637,31 +1029,27 @@ class SettingsContent:
                 continue
             panel_id = cls.id
             label = cls.display_name
-            with _setting_row(label, f"Plugin id: {panel_id} (restart to apply)"):
+            with _setting_row(label, f"Plugin: {panel_id}"):
                 ui.switch(
                     value=panel_id not in plugins.disabled_panels,
                     on_change=_on_toggle(panel_id),
                 ).props("dense").mark(f"settings-plugin-{panel_id}")
 
-    def _build_plugin_settings(self) -> None:
-        """Render settings for each enabled panel plugin that contributes any.
-        Owns its leading separator so nothing dangles when no plugin does."""
-        commander = waldoctl.commander
-        contributors = [
+    @staticmethod
+    def _plugin_contributors() -> list[Panel]:
+        return [
             p
             for p in ui_state.plugin_panels
             if type(p).build_settings is not Panel.build_settings
         ]
-        for panel in contributors:
-            ui.separator().classes("my-1")
-            ui.label(panel.display_name).classes("text-sm font-medium").mark(
-                f"settings-plugin-{panel.id}-header"
-            )
-            # A plugin's build_settings() must not break the whole settings page.
-            try:
-                panel.build_settings(commander)
-            except Exception as e:
-                logger.warning("Plugin %s build_settings failed: %s", panel.id, e)
+
+    @staticmethod
+    def _build_plugin_settings(panel: Panel) -> None:
+        # A plugin's build_settings() must not break the whole settings dialog.
+        try:
+            panel.build_settings(waldoctl.commander)
+        except Exception as e:
+            logger.warning("Plugin %s build_settings failed: %s", panel.id, e)
 
     def _build_mcp_server(self) -> None:
         """MCP server controls.
@@ -711,16 +1099,16 @@ class SettingsContent:
             ).mark("settings-mcp-enabled")
 
         with _setting_row(
-            "MCP host", "Bind address — 127.0.0.1 (local) or a LAN address / 0.0.0.0"
+            "Address",
+            "MCP bind address and port — 127.0.0.1 (local) or a LAN address / 0.0.0.0",
         ):
-            ui.input(value=mcp.host).classes("w-40").props("dense").on(
-                "change", _on_host_change
-            ).mark("settings-mcp-host")
-
-        with _setting_row("MCP port", "Listening port for streamable HTTP"):
-            ui.number(value=mcp.port, min=1, max=65535).classes("w-24").props(
-                "dense"
-            ).on("change", _on_port_change).mark("settings-mcp-port")
+            with ui.element("div").classes("settings-address"):
+                ui.input(value=mcp.host).props("dense").on(
+                    "change", _on_host_change
+                ).mark("settings-mcp-host")
+                ui.number(value=mcp.port, min=1, max=65535).props("dense").on(
+                    "change", _on_port_change
+                ).mark("settings-mcp-port")
 
     def _build_automation(self) -> None:
         """Hardware I/O automation: cycle-start input and at-home output."""
@@ -731,7 +1119,7 @@ class SettingsContent:
             ng_app.storage.general["automation/cycle_start"] = val
 
         with _setting_row(
-            "Start program on Input 1",
+            "Start on input 1",
             "Rising edge runs the active program (robot homed, e-stop clear, "
             "nothing already running)",
         ):
@@ -746,7 +1134,7 @@ class SettingsContent:
             ng_app.storage.general["automation/home_output"] = val
 
         with _setting_row(
-            "Home position output",
+            "Home output",
             "Output 2 turns on while all joints are within tolerance of the "
             "home/standby pose",
         ):
@@ -766,13 +1154,14 @@ class SettingsContent:
             ng_app.storage.general["automation/home_tolerance_deg"] = tol
 
         with _setting_row(
-            "Home tolerance (deg)", "Joint distance from home treated as at-home"
+            "Home tolerance", "Joint distance from home treated as at-home"
         ):
             ui.number(
                 value=automation_state.home_tolerance_deg,
                 min=0.1,
                 max=45,
                 step=0.1,
+                suffix="°",
                 on_change=_on_tolerance_change,
             ).classes("w-24").props("dense").mark("input-home-tolerance")
 
@@ -792,7 +1181,7 @@ class SettingsContent:
             cp.set_translation_frame(e.value)
             ng_app.storage.general["translation_frame"] = e.value
 
-        with _setting_row("Translation RF", "Reference frame for translation moves"):
+        with _setting_row("Translation frame", "Reference frame for translation moves"):
             sel = (
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
@@ -808,9 +1197,7 @@ class SettingsContent:
                     "Tool-frame jogging is unavailable for this robot"
                 )
 
-        ui.separator().classes("my-1")
-
-        with _setting_row("Rotation RF", "Reference frame for rotation moves"):
+        with _setting_row("Rotation frame", "Reference frame for rotation moves"):
             with ui.element("span").tooltip("Rotation always jogs in the tool frame"):
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
@@ -826,7 +1213,7 @@ class SettingsContent:
             )
 
         with _setting_row(
-            "Blend Radius", "Corner smoothing for generated moves (0 = exact stop)"
+            "Blend radius", "Corner smoothing for generated moves (0 = exact stop)"
         ):
             ui.number(
                 value=prefs["jog_blend_r"],
@@ -850,54 +1237,185 @@ class SettingsContent:
             cp.set_jog_inversion(invert_y=val)
             ng_app.storage.general["jog_invert_y"] = val
 
-        with _setting_row("Invert X Jog", "Flip the X jog direction (arrows and A/D)"):
-            ui.switch(value=prefs["jog_invert_x"], on_change=_on_invert_x).props(
-                "dense"
-            ).mark("switch-invert-x")
-
-        ui.separator().classes("my-1")
-
-        with _setting_row("Invert Y Jog", "Flip the Y jog direction (arrows and W/S)"):
-            ui.switch(value=prefs["jog_invert_y"], on_change=_on_invert_y).props(
-                "dense"
-            ).mark("switch-invert-y")
+        with _setting_row(
+            "Invert", "Flip a jog direction: X for the arrows and A/D, Y for W/S"
+        ):
+            with ui.row().classes("items-center gap-4 no-wrap"):
+                ui.switch(
+                    "X", value=prefs["jog_invert_x"], on_change=_on_invert_x
+                ).props("dense").mark("switch-invert-x")
+                ui.switch(
+                    "Y", value=prefs["jog_invert_y"], on_change=_on_invert_y
+                ).props("dense").mark("switch-invert-y")
 
     # ── Main entry point ─────────────────────────────────────────────
 
-    def build_embedded(
-        self, ai_control_section: Callable[[], None] | None = None
+    def build_dialog(
+        self, ai_control_section: Callable[[], None], help_menu: HelpMenu
     ) -> None:
-        """Build the settings content for embedding in control panel.
+        """Build the Settings dialog, closed.
 
-        ``ai_control_section`` is the control panel's AI mode row, slotted in
-        with the other AI/MCP settings so hardware settings stay on top.
+        ``ai_control_section`` is the control panel's AI mode row, grouped
+        with the other autonomy settings; ``help_menu`` supplies the
+        Shortcuts table and the Getting started tour.
+
+        Categories run from the control an operator reaches for first to the
+        one they touch least; the restart-scoped settings are penned together
+        at the end so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
+        context.client.on_disconnect(self._drop_queued_push)
 
-        sections = [
-            lambda: self._build_serial_port(prefs),
-            lambda: self._build_show_route(prefs),
-            lambda: self._build_envelope(prefs),
-            lambda: self._build_physics_overlays(prefs),
-            self._build_tool_section,
-            self._build_camera,
-            lambda: self._build_motion_profile(prefs),
-            lambda: self._build_theme(prefs),
-            lambda: self._build_reference_frames(prefs),
-            lambda: self._build_jog_inversion(prefs),
-            lambda: self._build_blend_radius(prefs),
-            self._build_backend_selector,
-            self._build_plugin_panels,
-            *([ai_control_section] if ai_control_section else []),
-            self._build_mcp_server,
-            self._build_automation,
+        categories: list[tuple[str, str, str, list[Callable[[], None]]]] = []
+        if ui_state.active_robot.name.lower() == "parol6":
+            categories.append(
+                (
+                    "connection",
+                    "Connection",
+                    "usb",
+                    [lambda: self._build_serial_port(prefs)],
+                )
+            )
+        categories += [
+            (
+                "tool",
+                "Tool",
+                "handyman",
+                [self._build_tool_section, self._build_camera],
+            ),
+            (
+                "jog",
+                "Jog",
+                "open_with",
+                [
+                    lambda: self._build_reference_frames(prefs),
+                    lambda: self._build_jog_inversion(prefs),
+                    lambda: self._build_blend_radius(prefs),
+                    lambda: self._build_motion_profile(prefs),
+                ],
+            ),
+            (
+                "view",
+                "View",
+                "visibility",
+                [
+                    lambda: self._build_show_route(prefs),
+                    lambda: self._build_envelope(prefs),
+                    *([self._build_theme] if len(theme_names()) > 1 else []),
+                    self._build_calm_buddy,
+                ],
+            ),
+            (
+                "automation",
+                "Automation",
+                "smart_toy",
+                [self._build_automation, ai_control_section],
+            ),
+            ("shortcuts", "Shortcuts", "keyboard", [self._build_shortcuts_box]),
+            ("getting-started", "Getting started", "school", []),
+            (
+                "advanced",
+                "Advanced — restart required",
+                "tune",
+                [
+                    self._build_backend_selector,
+                    self._build_plugin_panels,
+                    self._build_mcp_server,
+                ],
+            ),
         ]
+        for panel in self._plugin_contributors():
+            categories.append(
+                (
+                    f"plugin-{panel.id}",
+                    panel.display_name,
+                    panel.tab_icon or "extension",
+                    [lambda panel=panel: self._build_plugin_settings(panel)],
+                )
+            )
 
-        for i, section in enumerate(sections):
-            section()
-            if i < len(sections) - 1:
-                ui.separator().classes("my-1")
-
-        self._build_plugin_settings()
+        self.dialog = ui.dialog().classes("settings-dialog").mark("settings-dialog")
+        with self.dialog, ui.card().classes("settings-dialog-card p-0"):
+            with (
+                ui.tabs(value=categories[0][0])
+                .props("vertical dense no-caps")
+                .classes("settings-cats") as tabs
+            ):
+                for key, title, icon, _ in categories:
+                    ui.tab(key, label=title.split(" — ")[0], icon=icon).mark(
+                        f"settings-cat-{key}"
+                    )
+            with ui.element("div").classes("settings-body"):
+                with (
+                    ui.row()
+                    .classes("w-full items-center px-4 py-2 no-wrap shrink-0")
+                    .style("border-bottom: 1px solid var(--wc-glass-border);")
+                ):
+                    ui.label("Settings").classes("wc-title")
+                    ui.space()
+                    ui.button(icon="close", on_click=self.dialog.close).props(
+                        "flat round dense color=wc-text"
+                    ).mark("settings-close")
+                with ui.tab_panels(tabs, value=categories[0][0]).props("animated"):
+                    contents = {
+                        key: self._build_category(key, title, sections)
+                        for key, title, _, sections in categories
+                    }
+        self._tour_box = contents["getting-started"]
+        tabs.on_value_change(lambda e: self._open_category(e.value, help_menu))
 
         simulation_state.notify_changed()
+
+    @staticmethod
+    def _build_category(
+        key: str, title: str, sections: list[Callable[[], None]]
+    ) -> ui.column:
+        with ui.tab_panel(key), ui.column().classes("settings-content") as content:
+            ui.label(title).classes("settings-group-heading").mark(
+                f"settings-group-{key}"
+            )
+            for section in sections:
+                section()
+        return content
+
+    def _build_shortcuts_box(self) -> None:
+        self._shortcuts_box = ui.column().classes("w-full")
+
+    def _open_category(self, key: str, help_menu: HelpMenu) -> None:
+        """Build Shortcuts and Getting started when they are opened.
+
+        Bindings register after the page is built and the jog keys'
+        descriptions follow the inversion switches, so the shortcuts table is
+        redrawn every time; the tour is built once.
+        """
+        if key == "shortcuts" and self._shortcuts_box is not None:
+            self._shortcuts_box.clear()
+            with self._shortcuts_box:
+                help_menu._build_keybindings_content()
+        elif key == "getting-started" and self._tour_box is not None:
+            with self._tour_box:
+                self._build_getting_started(help_menu)
+            self._tour_box = None
+
+    def _build_getting_started(self, help_menu: HelpMenu) -> None:
+        with ui.row().classes("w-full items-center no-wrap gap-2"):
+            ui.label("A tour of the interface, one step at a time.").classes(
+                "wc-caption text-wc-text-muted"
+            )
+            ui.space()
+            with (
+                ui.link("", "https://jepson2k.github.io/Waldo-Commander/", new_tab=True)
+                .classes("text-wc-text-muted")
+                .tooltip("Read the guides online")
+                .mark("settings-docs-link")
+            ):
+                ui.icon("open_in_new", size="xs")
+        help_menu._build_quickstart_stepper(on_finish=self.close)
+
+    def open(self) -> None:
+        if self.dialog is not None:
+            self.dialog.open()
+
+    def close(self) -> None:
+        if self.dialog is not None:
+            self.dialog.close()

@@ -10,54 +10,56 @@ import asyncio
 import pytest
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import wait_for_app_ready, wait_until
 
 
 @pytest.mark.integration
-async def test_home_command_behavior(
+async def test_home_estop_and_freedrive_controls(
     user: User, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """HOME command should be blocked without connection, allowed with simulator.
+    """Freedrive renders unavailable on a backend without it; HOME is
+    blocked without a connection and allowed with the simulator, and holding
+    it past the threshold calibrates; the digital E-STOP opens its dialog
+    and Reset clears it.
 
-    Tests both:
-    1. HOME is blocked when neither simulator nor hardware is active
-    2. HOME is allowed and sends command when simulator is active
+    parol6 reports ``has_freedrive`` False. The enabled path is covered
+    against a capable backend in ``test_par6_backend.py``, where the button
+    round-trips on the wire.
     """
+    import waldoctl as _wctl
+
+    from waldo_commander.constants import HOME_LONG_PRESS_S
+    from waldo_commander.state import robot_state, ui_state
+
     await user.open("/")
     await wait_for_app_ready()
 
-    # --- Part 1: HOME blocked without connection ---
-    # Override state after page load so HOME guard sees both flags as False
-    import waldoctl as _wctl
+    assert not ui_state.active_robot.has_freedrive, (
+        "this test needs a backend that reports no freedrive"
+    )
+    button = next(iter(user.find(marker="btn-freedrive").elements))
+    assert not button.enabled, "freedrive must be disabled without the capability"
 
+    # --- HOME blocked without connection ---
+    # Override state after page load so HOME guard sees both flags as False
     _wctl.commander.status.simulator_active = False
     _wctl.commander.status.connected = False
 
     user.find(marker="btn-home").click()
     await asyncio.sleep(0)
-
-    # Should see an error notification
     await user.should_see("Robot mode requires a hardware connection")
-    # And we should not see the success message
     assert not any("Sent HOME" in m for m in user.notify.messages)
 
-    # --- Part 2: HOME allowed with simulator ---
-    # Enable simulator mode and try again
+    # --- HOME allowed with simulator ---
     _wctl.commander.status.simulator_active = True
-
     user.find(marker="btn-home").click()
-
-    # Wait for the async HOME command to complete and log
     for _ in range(20):
         await asyncio.sleep(0.1)
         if any("HOME sent" in r.message for r in caplog.get_records("call")):
             break
     assert any("HOME sent" in r.message for r in caplog.get_records("call"))
 
-    # --- Part 3: holding HOME past the threshold calibrates ---
-    from waldo_commander.constants import HOME_LONG_PRESS_S
-    from waldo_commander.state import robot_state
-
+    # --- Holding HOME past the threshold calibrates ---
     for _ in range(100):
         if robot_state.homed:
             break
@@ -80,54 +82,16 @@ async def test_home_command_behavior(
         await asyncio.sleep(0.1)
     assert robot_state.homed
 
-
-@pytest.mark.integration
-async def test_digital_estop_dialog_behavior(user: User) -> None:
-    """Digital E-STOP dialog should appear with Resume button."""
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Click E-STOP button to trigger digital estop
+    # --- Digital E-STOP ---
     user.find(marker="btn-estop").click()
-    await asyncio.sleep(0.1)
-
-    # Dialog should appear with correct content
     await user.should_see("Digital E-STOP Active")
     await user.should_see("Robot motion has been stopped.")
-
-    # Resume button should be present (marked for testability)
-    resume_btn = user.find(marker="btn-estop-resume")
-    assert resume_btn is not None, "Resume button should be present"
-
-    # Verify dialog has the overlay-card styling (frosted glass effect)
-    dialog_card = user.find(marker="estop-dialog")
-    assert dialog_card is not None, "E-STOP dialog card should have marker"
-
-    # Clean up: dismiss the dialog by clicking Resume
-    resume_btn.click()
-    await asyncio.sleep(0.1)
-
-
-@pytest.mark.integration
-async def test_freedrive_is_disabled_on_a_robot_without_the_capability(
-    user: User,
-) -> None:
-    """parol6 reports ``has_freedrive`` False, so the control renders
-    unavailable rather than inviting a click that can only be refused.
-
-    The enabled path is covered against a capable backend in
-    ``test_par6_backend.py``, where the button round-trips on the wire.
-    """
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    assert not ui_state.active_robot.has_freedrive, (
-        "this test needs a backend that reports no freedrive"
-    )
-    button = next(iter(user.find(marker="btn-freedrive").elements))
-    assert not button.enabled, "freedrive must be disabled without the capability"
+    await user.should_see(marker="btn-estop-resume")
+    card = next(iter(user.find(marker="estop-dialog").elements))
+    dialog = card.parent_slot.parent
+    assert dialog.value, "the E-STOP dialog is open"
+    user.find(marker="btn-estop-resume").click()
+    assert await wait_until(lambda: not dialog.value), "Reset left the dialog open"
 
 
 @pytest.mark.unit
