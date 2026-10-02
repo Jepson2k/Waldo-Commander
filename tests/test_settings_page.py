@@ -223,15 +223,19 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     select_el.set_value("PNEUMATIC")
     await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
     await user.should_see("TCP offset")
-    assert await wait_until(lambda: not offset_x_disabled()), (
-        "a fitted tool's offset is editable"
+    await poll_until(
+        offset_x_disabled,
+        lambda disabled: not disabled,
+        what="a fitted tool's offset editable",
     )
 
     # The bare flange can also carry a user-defined TCP.
     select_el.set_value("NONE")
     await wait_for_tool_key("NONE", timeout_s=5.0)
-    assert await wait_until(lambda: not offset_x_disabled()), (
-        "the bare flange must support a TCP correction"
+    await poll_until(
+        offset_x_disabled,
+        lambda disabled: not disabled,
+        what="the bare flange's TCP correction editable",
     )
 
 

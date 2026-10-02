@@ -166,15 +166,19 @@ Robot communication goes through a `waldoctl.RobotClient` ABC. Each backend (e.g
 
 ### Repository structure
 
-Three repos with a clear dependency direction:
+Four repos with a clear dependency direction:
 
 ```
-waldoctl (ABC/types) ← parol6 (backend) ← waldo-commander (frontend)
+waldoctl (ABC/types)
+   ├── parol6  (PAROL6 backend, PCrnjak/PAROL6-python-API)
+   └── par6    (PAR6 backend,   Jepson2k/par6)
+            └── waldo-commander (this repo)
 ```
 
-- `waldoctl` — shared interface definitions, installed from git tag in pyproject.toml
-- `parol6` — PAROL6 backend, installed from git tag by CI
-- `waldo-commander` — the frontend, depends on both via git URLs
+- `waldoctl` — shared interface definitions, installed from a git tag
+- `parol6` — PAROL6 backend, installed from a git tag
+- `par6` — PAR6 backend, installed from a git ref (`[par6]` extra)
+- `waldo-commander` — the frontend, depending on those via git URLs
 
 WC also depends on a vendored fork of NiceGUI; see [NiceGUI fork](#nicegui-fork) below.
 
@@ -184,9 +188,9 @@ All packages use semver (`MAJOR.MINOR.PATCH`). Pre-1.0 packages bump minor for b
 
 ### Release workflow (breaking cross-repo changes)
 
-1. Release waldoctl first — bump version in pyproject.toml, merge to main, tag (e.g. `v0.2.0`)
-2. Update parol6's `pyproject.toml` to reference the new waldoctl tag, merge, tag
-3. Update waldo-commander's `pyproject.toml` + CI to reference new tags, merge, tag
+See [RELEASING.md](RELEASING.md) — the order, why CI cannot verify a
+release (branch-matching hides a broken pin), and what a waldoctl bump
+tends to break downstream.
 
 ### Dev workflow (coordinated feature branches)
 
