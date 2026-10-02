@@ -1,0 +1,14 @@
+{
+  "name": "idle",
+  "program": "from par6 import RobotClient\n\nwith RobotClient() as rbt:\n    rbt.delay(1.0)\n",
+  "initial_joints_deg": [
+    0,
+    -90,
+    180,
+    0,
+    0,
+    180
+  ],
+  "max_seconds": 2,
+  "assumptions": "Packaged model, referenced arm, powered idle; no hardware measurements."
+}

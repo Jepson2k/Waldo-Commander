@@ -213,14 +213,15 @@ class PathPreviewClient:
     def __exit__(self, exc_type, exc, tb):
         self.flush()
 
-    def close(self):
+    def close(self, max_seconds: float | None = None):
         """Close the blend hold, note whatever the backend recorded after
         the last noted call, and place a target at the end of every move
-        the program wrote with literal coordinates."""
+        the program wrote with literal coordinates, within *max_seconds*
+        of simulated time when given."""
         self.flush()
         self._attribute_commands(self._last_attributed_line)
         known = {t["id"] for t in self.target_collector}
-        for target in targets_from_record(self._client.plan(), self.notes):
+        for target in targets_from_record(self._client.plan(max_seconds), self.notes):
             if target.id not in known:
                 self.target_collector.append(
                     {
@@ -246,10 +247,22 @@ class PathPreviewClient:
         self._holding = False
         return self._label(self._client.plan(max_seconds))
 
-    def simulate(self, max_seconds: float | None = None) -> TickIndex:
-        """The predicted record, labelled the same way."""
+    def simulate(
+        self,
+        max_seconds: float | None = None,
+        *,
+        scenario: dict[str, Any] | None = None,
+    ) -> TickIndex:
+        """The predicted record, labelled the same way. A *scenario* is
+        handed to the backend as given: only a backend that replays
+        scenarios takes one."""
         self._holding = False
-        return self._label(self._client.simulate(max_seconds))
+        record = (
+            self._client.simulate(max_seconds)
+            if scenario is None
+            else self._client.simulate(max_seconds, scenario=scenario)
+        )
+        return self._label(record)
 
     def _label(self, record: TickIndex) -> TickIndex:
         """Give each block the editor line that produced it."""
