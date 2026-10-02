@@ -19,6 +19,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import hashlib
+import json
+import math
+import time
+import uuid
 import sys
 from typing import Protocol
 
@@ -26,6 +31,8 @@ from fastapi import Response
 from starlette.responses import StreamingResponse
 
 from nicegui import app as ng_app, run
+
+from waldo_commander.camera import CameraSnapshot, CameraUnavailable
 
 # Suppress linuxpy's verbose per-ioctl debug logging
 logging.getLogger("linuxpy").setLevel(logging.WARNING)
@@ -169,10 +176,59 @@ class CameraService:
         self._latest_jpeg: bytes = _BLACK_1PX
         self._active: bool = False
         self._capture_task: asyncio.Task | None = None
+        self._snapshot: CameraSnapshot | None = None
+        self._received_monotonic = 0.0
+        self._camera_id: str | None = None
+        self._session_id = ""
+        self._device: int | str | None = None
 
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def device(self) -> int | str | None:
+        """The device the running capture was opened on."""
+        return self._device if self._active else None
+
+    @property
+    def camera_id(self) -> str | None:
+        return self._camera_id
+
+    def snapshot(self, *, max_age_s: float = 1.0) -> CameraSnapshot:
+        """Return a fresh host-received image; an idle placeholder is never data."""
+        if (
+            isinstance(max_age_s, bool)
+            or not math.isfinite(max_age_s)
+            or max_age_s <= 0
+        ):
+            raise ValueError("Camera max_age_s must be finite and positive")
+        if not self._active or self._snapshot is None:
+            raise CameraUnavailable("No camera frame available")
+        if time.monotonic() - self._received_monotonic > max_age_s:
+            raise CameraUnavailable("Camera frame is stale")
+        return self._snapshot
+
+    async def next_snapshot(self, *, timeout_s: float = 1.0) -> CameraSnapshot:
+        """Wait for a subsequent host receipt within the current capture session."""
+        if (
+            isinstance(timeout_s, bool)
+            or not math.isfinite(timeout_s)
+            or timeout_s <= 0
+        ):
+            raise ValueError("Camera timeout_s must be finite and positive")
+        if not self._active:
+            raise CameraUnavailable("No camera active")
+        session = self._session_id
+        sequence = self._snapshot.sequence if self._snapshot else 0
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if not self._active or self._session_id != session:
+                raise CameraUnavailable("Camera source changed during capture")
+            if self._snapshot is not None and self._snapshot.sequence > sequence:
+                return self.snapshot(max_age_s=timeout_s)
+            await asyncio.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+        raise CameraUnavailable("No new camera frame arrived before the deadline")
 
     def start(self, device: int | str, width: int = 640, height: int = 480) -> None:
         """Open a camera device and begin capturing."""
@@ -196,12 +252,23 @@ class CameraService:
 
         self._backend = backend
         self._active = True
-        self._capture_task = asyncio.get_event_loop().create_task(self._capture_loop())
+        self._device = device
+        descriptor = json.dumps([type(device).__name__, device, width, height])
+        self._camera_id = (
+            "capture-" + hashlib.sha256(descriptor.encode()).hexdigest()[:24]
+        )
+        self._session_id = uuid.uuid4().hex
+        self._capture_task = asyncio.get_event_loop().create_task(
+            self._capture_loop(backend, self._camera_id, self._session_id)
+        )
         logger.info("Camera started on device %s", device)
 
     def stop(self) -> None:
         """Release the camera device and stop the capture loop."""
         self._active = False
+        self._snapshot = None
+        self._camera_id = None
+        self._session_id = ""
         if self._capture_task is not None:
             self._capture_task.cancel()
             self._capture_task = None
@@ -214,20 +281,32 @@ class CameraService:
         """Return the most recently captured JPEG (non-blocking)."""
         return self._latest_jpeg
 
-    async def _capture_loop(self) -> None:
+    async def _capture_loop(
+        self, backend: CaptureBackend, camera_id: str, session_id: str
+    ) -> None:
         """Background task: read frames from the backend at ~30 fps."""
         interval = 1.0 / _STREAM_FPS
+        sequence = 0
         try:
-            while self._active and self._backend is not None:
-                frame = await run.io_bound(self._backend.read_frame)
+            while self._active and self._session_id == session_id:
+                frame = await run.io_bound(backend.read_frame)
+                if self._session_id != session_id:
+                    return
                 if frame is not None:
+                    sequence += 1
                     self._latest_jpeg = frame
+                    self._received_monotonic = time.monotonic()
+                    self._snapshot = CameraSnapshot(
+                        frame, camera_id, time.time(), sequence, session_id
+                    )
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             return
         except Exception:
             logger.error("Capture loop crashed", exc_info=True)
-            self._active = False
+            if self._session_id == session_id:
+                self._active = False
+                self._snapshot = None
 
 
 # Module-level singleton
@@ -333,7 +412,6 @@ async def _mjpeg_generator():
         return
 
 
-@ng_app.get("/tool/camera/stream", response_model=None)
 async def _tool_camera_stream():
     """Serve the camera feed as an MJPEG multipart stream."""
     if not camera_service.active:
@@ -345,9 +423,19 @@ async def _tool_camera_stream():
     )
 
 
-@ng_app.get("/tool/camera/frame")
 async def _tool_camera_frame() -> Response:
     """Serve a single JPEG snapshot."""
     if not camera_service.active:
         return _PLACEHOLDER
     return Response(content=camera_service.get_latest_frame(), media_type="image/jpeg")
+
+
+def register_camera_routes() -> None:
+    """Register endpoints on the current app, including after an app rebuild."""
+    paths = {getattr(route, "path", None) for route in ng_app.routes}
+    for path, endpoint in (
+        ("/tool/camera/stream", _tool_camera_stream),
+        ("/tool/camera/frame", _tool_camera_frame),
+    ):
+        if path not in paths:
+            ng_app.get(path, response_model=None)(endpoint)
