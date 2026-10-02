@@ -88,8 +88,9 @@ def _mark_colliding_segments(
     at its point in the program (the dry run itself only validates IK). Each
     hit records its first colliding waypoint in ``collision_step``.
 
-    The checker's tool and program world are restored on exit — the rare
-    in-process fallback shares the live checker.
+    The checker's tool and program world are restored on exit: a caller that
+    runs the simulation in-process rather than through the pool shares the
+    live checker.
     """
     if not robot.has_collision_checking:
         return
@@ -131,6 +132,16 @@ def _mark_colliding_segments(
         robot.apply_shapes(submit_world)
 
 
+def _simulation_timeout_s() -> float:
+    """Wall-clock budget for one preview run.
+
+    ``WALDO_SIM_TIMEOUT_S`` raises it where a worker starts cold: on spawn
+    platforms the first preview a worker runs imports the backend before the
+    script does, and that import is not free.
+    """
+    return float(os.environ.get("WALDO_SIM_TIMEOUT_S", SIMULATION_TIMEOUT_S))
+
+
 def _is_test_environment() -> bool:
     """Detect if running under pytest or similar test environment."""
     return (
@@ -147,7 +158,10 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
     the process pool). Each worker process will import the backend package
     once, and subsequent simulations will be fast since workers are reused.
 
-    Skipped in test environments where multiprocessing spawn doesn't work properly.
+    Skipped under pytest: NiceGUI's fixtures reset the pool after every UI
+    test, so warming would pay a full import per test instead of once per
+    session. A test's first preview pays its own worker's import, which
+    ``WALDO_SIM_TIMEOUT_S`` gives it room for.
 
     Args:
         backend_package: Backend package to import in workers (e.g. "parol6")
@@ -172,7 +186,16 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
         await asyncio.gather(*futures)
         logger.info("Process pool workers warmed successfully")
     except Exception as e:
-        logger.warning("Failed to warm process pool workers: %s", e)
+        # Not a warning: every preview runs in a pool worker and there is no
+        # in-process fallback, so workers that never warmed mean each preview
+        # pays the backend import itself, and a pool that is broken rather
+        # than cold (BrokenProcessPool, the plausible one on a small box)
+        # means previews fail outright.
+        logger.error(
+            "Failed to warm process pool workers: %s; previews will import the "
+            "backend per run, and fail entirely if the pool itself is broken",
+            e,
+        )
 
 
 def _run_simulation_isolated(
@@ -238,10 +261,15 @@ def _run_simulation_isolated(
 
     # Lets us read final state after execution.
     created_clients: list[PathPreviewClient] = []
+    # (module, attribute, original) for every backend client name swapped for
+    # a preview class below, so the thread fallback can put them back.
+    swapped_names: list[tuple[Any, str, Any]] = []
 
     try:
-        # Monkeypatch RobotClient/AsyncRobotClient with preview clients; safe
-        # because this runs in a subprocess.
+        # Swap RobotClient/AsyncRobotClient for preview clients while the
+        # script runs. A pool worker is thrown away afterwards, but tests
+        # call this directly, in-process, so the swap is undone below rather
+        # than left to the worker's exit.
         backend = importlib.import_module(backend_package)
         assert dry_run_client_cls is not None
 
@@ -277,11 +305,15 @@ def _run_simulation_isolated(
                 )
                 created_clients.append(self._sync_client)
 
-        setattr(backend, "RobotClient", LocalPathPreviewClient)
-        setattr(backend, "AsyncRobotClient", LocalAsyncPathPreviewClient)
-        if hasattr(backend, "client"):
-            setattr(backend.client, "RobotClient", LocalPathPreviewClient)
-            setattr(backend.client, "AsyncRobotClient", LocalAsyncPathPreviewClient)
+        for module in (backend, getattr(backend, "client", None)):
+            if module is None:
+                continue
+            for name, preview_cls in (
+                ("RobotClient", LocalPathPreviewClient),
+                ("AsyncRobotClient", LocalAsyncPathPreviewClient),
+            ):
+                swapped_names.append((module, name, getattr(module, name, None)))
+                setattr(module, name, preview_cls)
 
         # Reset this worker's program-layer world to the submit-time truth
         # BEFORE the script runs: a reused pool worker's process-global checker
@@ -420,13 +452,26 @@ def _run_simulation_isolated(
                                 max_workers=1
                             ) as pool:
                                 future = pool.submit(run_async_in_thread)
-                                future.result(timeout=SIMULATION_TIMEOUT_S)
+                                future.result(timeout=_simulation_timeout_s())
                         else:
                             raise
 
                 elif callable(main_func):
                     cast(Callable[[], None], main_func)()
 
+        except SystemExit as e:
+            # `sys.exit()`, and the `exit()`/`quit()` builtins, all raise
+            # this -- and it is not an `Exception`, so it passed both handlers
+            # here and left the whole preview through the `finally` below,
+            # abandoning every segment collected up to that point. A script
+            # that ends by exiting cleanly has ENDED, not failed, so a zero
+            # (or absent) code keeps what it drew; a non-zero one is the
+            # script reporting its own failure and is shown as one.
+            if e.code not in (None, 0):
+                error_message = f"SystemExit: {e.code}"
+        except KeyboardInterrupt:
+            # Same escape, same consequence.
+            error_message = "KeyboardInterrupt: the preview was interrupted"
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
@@ -438,6 +483,19 @@ def _run_simulation_isolated(
 
     except Exception as e:
         error_message = f"Simulation setup failed: {type(e).__name__}: {e}"
+
+    finally:
+        # A pool worker is discarded with these swaps in place, but a test
+        # calling this directly shares the app's interpreter, where a client
+        # built from the backend's name after this point has to be the real
+        # one again. In a ``finally`` because a script ending in ``sys.exit()``
+        # raises SystemExit, which passes both excepts and would otherwise
+        # leave the preview class installed for the rest of the app's life.
+        for module, name, original in reversed(swapped_names):
+            if original is None:
+                delattr(module, name)
+            else:
+                setattr(module, name, original)
 
     # Flush pending blend buffers, covering scripts without context managers.
     for c in created_clients:
@@ -793,38 +851,28 @@ class PathVisualizer:
             if sim_args is None:
                 simulation_state.notify_changed()
                 return None
-            # Tests always simulate in-process: the pool is rebuilt per test
-            # with warm-up disabled, so a cold spawn worker could not meet the
-            # timeout even when submission succeeds. The pool remains a
-            # best-effort optimization elsewhere, with the same in-process
-            # path as fallback.
-            use_pool = run.process_pool is not None and not _is_test_environment()
-            if use_pool:
-                try:
-                    result = await asyncio.wait_for(
-                        run.cpu_bound(_run_simulation_packed, sim_args),
-                        timeout=SIMULATION_TIMEOUT_S
-                        + 2.0,  # Extra buffer for process overhead
-                    )
-                except asyncio.TimeoutError:
-                    logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
-                    return "Simulation timed out"
-                except Exception as e:
-                    logger.warning(
-                        "Subprocess simulation failed (sim_id=%d): %s, using thread",
-                        sim_id,
-                        e,
-                    )
-                    use_pool = False
-            if not use_pool:
-                # A worker thread (not inline) so the event loop keeps running
-                # and the script's own asyncio.run() has no running loop in its
-                # thread — async programs can't be simulated inline at all.
-                try:
-                    result = await asyncio.to_thread(_run_simulation_packed, sim_args)
-                except Exception as e2:
-                    logger.error("Thread simulation failed: %s", e2)
-                    return f"Simulation failed: {e2}"
+
+            # The simulated program always runs in a pool worker, which is
+            # discarded afterwards. It mutates process globals — the time
+            # module, the collision checker's world, the backend's client
+            # classes — so running it here would leak every one of them into
+            # the app, and a runaway script would be unkillable in a thread.
+            # Without a pool there is no preview, which is the honest answer.
+            if run.process_pool is None:
+                logger.error("No simulation process pool (sim_id=%d)", sim_id)
+                return "Preview unavailable: no simulation process pool"
+            try:
+                result = await asyncio.wait_for(
+                    run.cpu_bound(_run_simulation_packed, sim_args),
+                    # Over the script's own budget, for process overhead.
+                    timeout=_simulation_timeout_s() + 2.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
+                return "Simulation timed out"
+            except Exception as e:
+                logger.error("Subprocess simulation failed (sim_id=%d): %s", sim_id, e)
+                return f"Simulation failed: {e}"
 
             # A None result can happen during shutdown/test teardown.
             if result is None:

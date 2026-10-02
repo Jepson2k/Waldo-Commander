@@ -46,8 +46,14 @@ _STATE_DOTS: dict[int, tuple[str, str]] = {
 class GripperPage:
     """Gripper tab page — camera, time series, status, and controls."""
 
-    def __init__(self, client: RobotClient) -> None:
+    def __init__(
+        self, client: RobotClient, is_open: Callable[[], bool] = lambda: True
+    ) -> None:
         self.client = client
+        # The diagnostics tab has had this from the start; this one did not,
+        # so its chart pushed its whole history into a hidden element on
+        # every status tick, for as long as the app ran.
+        self._is_open = is_open
         self._last_current_tool_key: str | None = None
         self._current_range_listener: Callable | None = None
         self._slider_drag_ts: float = 0.0
@@ -262,6 +268,8 @@ class GripperPage:
         return True
 
     def update_chart(self) -> None:
+        if not self._is_open():
+            return
         if not self._ensure_chart_built():
             return
         now = time.monotonic()
@@ -383,6 +391,8 @@ class GripperPage:
 
     def update_status(self) -> None:
         """Update all status fields from robot_state. Called from status consumer."""
+        if not self._is_open():
+            return
         if self._camera_card is not None:
             cam_active = camera_service.active
             self._camera_card.set_visibility(cam_active)
