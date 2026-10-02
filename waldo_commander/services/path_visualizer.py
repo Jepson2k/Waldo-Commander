@@ -188,7 +188,16 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
         await asyncio.gather(*futures)
         logger.info("Process pool workers warmed successfully")
     except Exception as e:
-        logger.warning("Failed to warm process pool workers: %s", e)
+        # Not a warning: every preview runs in a pool worker and there is no
+        # in-process fallback, so workers that never warmed mean each preview
+        # pays the backend import itself, and a pool that is broken rather
+        # than cold (BrokenProcessPool, the plausible one on a small box)
+        # means previews fail outright.
+        logger.error(
+            "Failed to warm process pool workers: %s; previews will import the "
+            "backend per run, and fail entirely if the pool itself is broken",
+            e,
+        )
 
 
 def _tool_metadata(robot: Any) -> dict[str, dict]:
@@ -298,9 +307,9 @@ def _run_simulation_isolated(
 
     try:
         # Swap RobotClient/AsyncRobotClient for preview clients while the
-        # script runs. A pool worker is thrown away afterwards, but this
-        # function is also called directly, in-process, so the swap is undone
-        # below rather than left to the worker's exit.
+        # script runs. A pool worker is thrown away afterwards, but tests
+        # call this directly, in-process, so the swap is undone below rather
+        # than left to the worker's exit.
         backend = importlib.import_module(backend_package)
         assert dry_run_client_cls is not None
 
@@ -475,7 +484,9 @@ def _run_simulation_isolated(
             # status is an error, and the exit must not reach the host.
             if e.code not in (None, 0):
                 error_message = f"Program exited with status {e.code}"
-
+        except KeyboardInterrupt:
+            # Not an Exception either, so it would leave the whole preview.
+            error_message = "KeyboardInterrupt: the preview was interrupted"
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
