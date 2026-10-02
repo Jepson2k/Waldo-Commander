@@ -29,3 +29,5 @@ Spectral-Micro-BLDC-controller/
 pinokin/
 /tools/
 /waldoctl
+# embedded checkout, not part of this repo
+recap/

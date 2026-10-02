@@ -194,7 +194,7 @@ async def test_set_simulator_syncs_gui_mode_visuals(
     with ng_client:
         panel.update_robot_btn_visual()
         playback.sync_mode()
-    assert panel._robot_btn._props.get("color") == "amber-8"  # sim styling
+    assert panel._robot_btn._props.get("color") == "wc-mode-sim"  # simulator fill
 
     flips: list[bool] = []
 
@@ -210,7 +210,7 @@ async def test_set_simulator_syncs_gui_mode_visuals(
             await client.call_tool("control.take_control")
             await client.call_tool("simulation.set_simulator", {"enabled": False})
             assert flips == [False]
-            assert panel._robot_btn._props.get("color") == "grey-7", (
+            assert panel._robot_btn._props.get("color") == "wc-control", (
                 "mode button must reflect hardware mode after an MCP switch"
             )
             if playback.speed_fab is not None:

@@ -309,17 +309,15 @@ class TestEditorInteractivity:
         click_tab(class_screen, "program")
         wait_for_codemirror_ready(class_screen)
 
-        # Ensure recording is on (start if not already from previous test)
-        # Check if record button has warning color (means recording is active)
+        # Ensure recording is on (start if not already from previous test);
+        # the record button carries the `recording` class while active.
         record_btn = class_screen.selenium.find_element(
             By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
         )
-        if "bg-warning" not in (record_btn.get_attribute("class") or ""):
-            # Recording not on, start it
+        if "recording" not in (record_btn.get_attribute("class") or ""):
             record_btn.click()
-            # Wait for button color to change to warning (recording active)
             WebDriverWait(class_screen.selenium, 3).until(
-                lambda d: "bg-warning" in (record_btn.get_attribute("class") or "")
+                lambda d: "recording" in (record_btn.get_attribute("class") or "")
             )
 
         # Switch to a different tab to hide the program panel (but keep tab visible)
@@ -351,16 +349,15 @@ class TestEditorInteractivity:
 
     def test_editor_state_persists_after_refresh(self, class_screen: "Screen") -> None:
         """Editor tabs and content should persist after page refresh."""
-        # Stop recording if active from previous test (check by button color)
+        # Stop recording if active from previous test (the `recording` class)
         try:
             record_btn = class_screen.selenium.find_element(
                 By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
             )
-            if "bg-warning" in (record_btn.get_attribute("class") or ""):
+            if "recording" in (record_btn.get_attribute("class") or ""):
                 record_btn.click()
-                # Wait for recording to stop
                 WebDriverWait(class_screen.selenium, 3).until(
-                    lambda d: "bg-warning"
+                    lambda d: "recording"
                     not in (record_btn.get_attribute("class") or "")
                 )
         except Exception:
@@ -407,3 +404,49 @@ class TestEditorInteractivity:
             f"Content should persist after refresh. "
             f"Expected marker '{unique_marker.strip()}' in content, got: {content_after[:200]}..."
         )
+
+    def test_filled_controls_pair_their_text_colour(
+        self, class_screen: "Screen"
+    ) -> None:
+        """Every filled control renders its glyph in the token the design pairs
+        with that fill, as the browser computes it. Quasar's white-on-fill
+        default lives in a CSS layer that outranks app rules, so this can only
+        be checked on computed styles."""
+        click_tab(class_screen, "program")
+        wait_for_codemirror_ready(class_screen)
+
+        script = """
+            const [icon, token] = arguments;
+            const btn = document.evaluate(
+                `//button[.//i[text()='${icon}']]`, document, null,
+                XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            if (!btn) return `no button with icon ${icon}`;
+            const probe = document.createElement('span');
+            probe.style.color = `var(--wc-${token})`;
+            document.body.appendChild(probe);
+            const want = getComputedStyle(probe).color;
+            probe.remove();
+            const got = getComputedStyle(btn.querySelector('i')).color;
+            return got === want ? 'ok' : `${icon}: got ${got}, want ${token} ${want}`;
+        """
+        expectations = {
+            "play_arrow": "on-bright",  # run fill
+            "dangerous": "on-fill",  # estop fill
+            "precision_manufacturing": "on-bright",  # mode-sim fill (simulator on)
+            "home": "text",  # control fill
+            "stop": "error",  # control fill with a red glyph (hidden until running)
+            "fiber_manual_record": (
+                "on-fill"
+                if "recording"
+                in class_screen.selenium.find_element(
+                    By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
+                ).get_attribute("class")
+                else "record"
+            ),
+        }
+        problems = [
+            r
+            for icon, token in expectations.items()
+            if (r := class_screen.selenium.execute_script(script, icon, token)) != "ok"
+        ]
+        assert not problems, problems

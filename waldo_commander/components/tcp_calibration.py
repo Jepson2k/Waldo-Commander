@@ -109,7 +109,7 @@ class TcpCalibrationEditor:
             ):
                 with ui.row().classes("items-center"):
                     ui.button("Capture pivot pose", on_click=self.capture).props(
-                        "dense"
+                        "dense color=wc-action text-color=wc-on-bright"
                     ).mark("tcp-calibration-capture")
                     ui.button("Clear samples", on_click=self.clear_samples).props(
                         "dense flat"
@@ -123,7 +123,7 @@ class TcpCalibrationEditor:
                         .mark("tcp-calibration-tolerance")
                     )
                     ui.button("Solve position", on_click=self.solve).props(
-                        "dense"
+                        "dense color=wc-action text-color=wc-on-bright"
                     ).mark("tcp-calibration-solve")
                 ui.label(
                     "Align the tool with the reference axes, then teach orientation."
@@ -137,13 +137,15 @@ class TcpCalibrationEditor:
                     )
                     ui.button(
                         "Teach orientation", on_click=self.teach_orientation
-                    ).props("dense").mark("tcp-calibration-orientation")
+                    ).props("dense color=wc-action text-color=wc-on-bright").mark(
+                        "tcp-calibration-orientation"
+                    )
             with ui.row():
                 ui.button("Read applied", on_click=self.read_applied).props(
                     "dense flat"
                 ).mark("tcp-calibration-read")
                 ui.button("Keep calibration", on_click=self.set_calibration).props(
-                    "dense"
+                    "dense color=wc-action text-color=wc-on-bright"
                 ).mark("tcp-calibration-set")
                 ui.button("Apply to controller", on_click=self.apply).props(
                     "dense outline"

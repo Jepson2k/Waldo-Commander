@@ -111,15 +111,26 @@ async def test_recorded_lines_are_staged_until_kept_and_undo_takes_them_out(
     textarea = await _open_program(user, PROGRAM)
     _set_cursor_line(textarea, 3)
     original = str(textarea.value)
+    record_btn = ui_state.editor_panel.playback.record_btn
 
     user.find(marker="editor-record-btn").click()
     await asyncio.sleep(0.1)
+    # Recording shows in the button's fill, not only in a pulse that
+    # reduced motion switches off.
+    assert (record_btn.props["color"], record_btn.props["text-color"]) == (
+        "wc-record",
+        "wc-on-fill",
+    )
     motion_recorder.record_action("io", port=0, state=1)
     user.find(marker="editor-capture-pose").click()
     await asyncio.sleep(0)
     user.find(marker="editor-record-btn").click()
     await asyncio.sleep(0.1)
     assert not is_any_program_recording()
+    assert (record_btn.props["color"], record_btn.props["text-color"]) == (
+        "wc-control",
+        "wc-text",
+    )
 
     # Stopping does not decide: the lines stay marked, the toolbar makes way
     # for Keep and Undo, and the program can be played back meanwhile.
@@ -152,7 +163,7 @@ async def test_recorded_lines_are_staged_until_kept_and_undo_takes_them_out(
     assert str(textarea.value).startswith(kept.rstrip("\n"))
     assert not staged_lines(textarea)
     editor = ui_state.editor_panel
-    assert editor.playback.record_btn._props.get("color") == "negative"
+    assert "recording" not in editor.playback.record_btn.classes
     assert editor.playback._recording_notification is None
 
 

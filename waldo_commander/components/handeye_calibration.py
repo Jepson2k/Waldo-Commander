@@ -26,6 +26,7 @@ from waldoctl.camera import CameraCalibration
 from waldoctl.setup import Pose, SetupSnapshot, TcpCalibration
 
 from waldo_commander.camera import CameraUnavailable
+from waldo_commander.common.theme import SceneColors, hex_of
 from waldo_commander.components.camera_calibration_data import CameraCalibrationData
 from waldo_commander.services import handeye
 from waldo_commander.services.camera_calibration import (
@@ -184,14 +185,6 @@ def _selected_tool_key() -> str:
     return ng_app.storage.general.get("selected_tool", "NONE")
 
 
-def _quality_color(value: float, thresholds: tuple[float, float]) -> str:
-    if value < thresholds[0]:
-        return "text-positive"
-    if value < thresholds[1]:
-        return "text-warning"
-    return "text-negative"
-
-
 class HandEyeCalibrationPanel(Panel):
     id = "handeye"
     display_name = "Hand-Eye Calibration"
@@ -307,7 +300,7 @@ class HandEyeCalibrationPanel(Panel):
                     ng_app.storage.general,
                     "selected_tool",
                     lambda t: f"Tool: {t}" if t and t != "NONE" else "No tool",
-                ).classes("text-caption text-grey")
+                ).classes("text-caption text-wc-text-muted")
             self._build_step_ribbon()
             self._build_camera_section()
             # One step shows at a time; the ribbon says where the operator is
@@ -371,9 +364,9 @@ class HandEyeCalibrationPanel(Panel):
     def _build_camera_hint(self) -> None:
         self._camera_hint = ui.row().classes("items-center")
         with self._camera_hint:
-            ui.icon("videocam_off").classes("text-grey")
+            ui.icon("videocam_off").classes("text-wc-text-muted")
             self._camera_hint_label = ui.label(self._camera_hint_text()).classes(
-                "text-caption text-grey"
+                "text-caption text-wc-text-muted"
             )
 
     def _build_mount_controls(self) -> None:
@@ -544,10 +537,12 @@ class HandEyeCalibrationPanel(Panel):
                             "captured samples. Clear them and continue?"
                         )
                         with ui.row():
-                            ui.button("Cancel", on_click=lambda: dialog.submit(False))
+                            ui.button(
+                                "Cancel", on_click=lambda: dialog.submit(False)
+                            ).props("flat color=wc-text")
                             ui.button(
                                 "Clear & apply", on_click=lambda: dialog.submit(True)
-                            ).props("color=negative").mark(
+                            ).props("color=wc-control text-color=wc-error").mark(
                                 "handeye-board-apply-confirm"
                             )
                     if not await dialog:
@@ -592,7 +587,7 @@ class HandEyeCalibrationPanel(Panel):
                 ui.label(
                     "Print at 100% scale, then measure a printed square and "
                     "correct 'Square mm' if it differs."
-                ).classes("text-caption text-grey")
+                ).classes("text-caption text-wc-text-muted")
 
     def _build_camera_section(self) -> None:
         self._camera_card = ui.element("div").classes("handeye-camera-frame")
@@ -609,7 +604,7 @@ class HandEyeCalibrationPanel(Panel):
 
     def _build_samples_section(self) -> None:
         with ui.row().classes("w-full items-baseline no-wrap gap-3"):
-            ui.label("Views captured").classes("text-caption text-grey")
+            ui.label("Views captured").classes("text-caption text-wc-text-muted")
             ui.space()
             self._sample_count = ui.label(f"0 of {TARGET_VIEWS} views").classes(
                 "handeye-count"
@@ -617,13 +612,13 @@ class HandEyeCalibrationPanel(Panel):
             self._sample_count.mark("handeye-sample-count")
         self._progress = (
             ui.linear_progress(value=0.0, show_value=False)
-            .props("rounded size=5px color=grey-5")
+            .props("rounded size=5px color=wc-progress track-color=wc-control")
             .classes("w-full")
         )
         with ui.row().classes("w-full items-center no-wrap gap-2"):
             self._capture_btn = ui.button(
                 "Capture view", icon="add_a_photo", on_click=self._capture
-            )
+            ).props("color=wc-action text-color=wc-on-bright")
             self._capture_btn.mark("handeye-capture")
             self._auto_btn = ui.button(
                 "Auto-capture", icon="play_circle", on_click=self._on_auto_click
@@ -643,14 +638,16 @@ class HandEyeCalibrationPanel(Panel):
             )
         self._diversity_label = ui.label("").classes("panel-note")
         self._diversity_label.mark("handeye-diversity")
-        self._auto_progress_label = ui.label().classes("text-caption text-primary")
+        self._auto_progress_label = ui.label().classes("text-caption text-wc-info")
         self._auto_progress_label.mark("handeye-auto-progress")
         self._apply_auto_progress()
         self._views_grid = ui.element("div").classes("handeye-views w-full")
 
     def _build_solve_section(self) -> None:
         with ui.row().classes("items-center gap-2"):
-            self._solve_btn = ui.button("Solve", icon="calculate", on_click=self._solve)
+            self._solve_btn = ui.button(
+                "Solve", icon="calculate", on_click=self._solve
+            ).props("color=wc-action text-color=wc-on-bright")
             self._solve_btn.mark("handeye-solve")
             self._next_btn = (
                 ui.button("Next: save", on_click=lambda: self._show_step(4))
@@ -789,7 +786,7 @@ class HandEyeCalibrationPanel(Panel):
                 if detection is None
                 else "".join(
                     f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" '
-                    'stroke="#2dd4bf" stroke-width="1.5" fill="none"/>'
+                    f'stroke="{hex_of("measure-position")}" stroke-width="1.5" fill="none"/>'
                     for x, y in detection.corners.reshape(-1, 2)
                 )
             )
@@ -1081,14 +1078,16 @@ class HandEyeCalibrationPanel(Panel):
                 ui.label(
                     "Clear the space around the tool and stay near the E-stop. "
                     "Stop halts the robot where it is."
-                ).classes("text-warning")
+                ).classes("text-wc-warning")
                 with ui.row():
                     ui.button("Cancel", on_click=lambda: dialog.submit(False)).props(
-                        "flat"
+                        "flat color=wc-text"
                     )
                     ui.button(
                         "Start", icon="play_arrow", on_click=lambda: dialog.submit(True)
-                    ).mark("handeye-auto-confirm")
+                    ).props("color=wc-action text-color=wc-on-bright").mark(
+                        "handeye-auto-confirm"
+                    )
             try:
                 confirmed = await dialog
             finally:
@@ -1397,10 +1396,12 @@ class HandEyeCalibrationPanel(Panel):
         self._last_auto_running = running
         if running:
             self._auto_btn.set_text("Stop")
-            self._auto_btn.props("icon=stop color=negative")
+            self._auto_btn.props("icon=stop color=wc-control text-color=wc-error")
         else:
             self._auto_btn.set_text("Auto-capture")
-            self._auto_btn.props("icon=play_circle color=primary")
+            self._auto_btn.props(
+                "icon=play_circle color=wc-action text-color=wc-on-bright"
+            )
         if self._clear_btn is not None:
             self._clear_btn.set_enabled(not running)
         if self._solve_btn is not None:
@@ -1474,9 +1475,9 @@ class HandEyeCalibrationPanel(Panel):
         if rms < _QUALITY_RMS_PX[0] and spread < _QUALITY_SPREAD_MM[0]:
             verdict, tone = "Good fit", ""
         elif rms < _QUALITY_RMS_PX[1] and spread < _QUALITY_SPREAD_MM[1]:
-            verdict, tone = "Usable fit", "text-warning"
+            verdict, tone = "Usable fit", "text-wc-warning"
         else:
-            verdict, tone = "Poor fit; recapture the flagged views", "text-negative"
+            verdict, tone = "Poor fit; recapture the flagged views", "text-wc-error"
         self._result_container.clear()
         with self._result_container:
             ui.label(
@@ -1486,7 +1487,7 @@ class HandEyeCalibrationPanel(Panel):
                 "Camera → WRF transform"
                 if result.mount == "fixed"
                 else "Camera → TCP transform"
-            ).classes("text-caption text-grey")
+            ).classes("text-caption text-wc-text-muted")
             ui.label(f"X {x:+.1f}  Y {y:+.1f}  Z {z:+.1f} mm").classes("font-mono")
             ui.label(f"R {rx:+.1f}  P {ry:+.1f}  Y {rz:+.1f} °").classes("font-mono")
             ui.label(
@@ -1519,7 +1520,7 @@ class HandEyeCalibrationPanel(Panel):
                         lambda e: setattr(self, "_method", str(e.value))
                     )
                     ui.label("— re-solve to apply a different method").classes(
-                        "text-grey"
+                        "text-wc-text-muted"
                     )
 
     async def _measurement(
@@ -1574,7 +1575,7 @@ class HandEyeCalibrationPanel(Panel):
                 info = handeye.from_storage_dict(stored)
             except (KeyError, TypeError, ValueError) as e:
                 ui.label(f"Stored calibration unreadable: {e}").classes(
-                    "text-caption text-negative"
+                    "text-caption text-wc-error"
                 )
                 return
             x, y, z = info["xyz_mm"]
@@ -1594,7 +1595,7 @@ class HandEyeCalibrationPanel(Panel):
                 ui.label(
                     "TCP offset changed since this calibration was saved — "
                     "the stored transform no longer matches the current TCP."
-                ).classes("text-caption text-warning")
+                ).classes("text-caption text-wc-warning")
 
     # ------------------------------------------------------------- 3D scene
 
@@ -1661,12 +1662,20 @@ class HandEyeCalibrationPanel(Panel):
         ]
         with commander.scene.overlay(SCENE_GROUP) as scene:
             for axis, color in zip(
-                axes.T, ("#ef4444", "#22c55e", "#3b82f6"), strict=True
+                axes.T,
+                (
+                    SceneColors.AXIS_X_HEX,
+                    SceneColors.AXIS_Y_HEX,
+                    SceneColors.AXIS_Z_HEX,
+                ),
+                strict=True,
             ):
                 scene.line(
                     origin.tolist(), (origin + axis_len * axis).tolist()
                 ).material(color)
             for c in corners:
-                scene.line(origin.tolist(), c.tolist()).material("#94a3b8")
+                scene.line(origin.tolist(), c.tolist()).material(
+                    hex_of("path-checkpoint")
+                )
             for a, b in zip(corners, corners[1:] + corners[:1], strict=True):
-                scene.line(a.tolist(), b.tolist()).material("#94a3b8")
+                scene.line(a.tolist(), b.tolist()).material(hex_of("path-checkpoint"))

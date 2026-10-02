@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from nicegui import app, ui, run
+from nicegui import app, background_tasks, run
 from nicegui.events import SceneClipPlane
 
 import waldoctl
@@ -27,6 +27,8 @@ from waldoctl import EnvelopeMode
 
 from waldo_commander.common.theme import SceneColors
 from waldo_commander.state import simulation_state
+
+from .objects import Stl
 
 
 logger = logging.getLogger(__name__)
@@ -335,7 +337,8 @@ class WorkspaceEnvelope:
                     self.reset()
                     self.generate(tool_offset_z=pending)
 
-        ui.timer(0.0, start_background_generation, once=True)
+        # Tool readback can request regeneration outside a page's slot stack.
+        background_tasks.create(start_background_generation(), name="workspace-hull")
         return True
 
     def generate_sync(
@@ -599,7 +602,7 @@ class EnvelopeRenderer:
             return False
         try:
             with self.simulation_group:
-                self.envelope_object = ui.scene.stl(
+                self.envelope_object = Stl(
                     workspace_envelope.stl_url, wireframe=True
                 ).with_name("envelope:hull")
                 self.envelope_object.material(SceneColors.ENVELOPE_HEX, 0.8)

@@ -166,7 +166,7 @@ class FileOperationsMixin:
             self._file_tree_nodes(),
             node_key="id",
             label_key="label",
-        ).props("dense text-color=grey selected-color=white")
+        ).props("dense text-color=wc-text-muted selected-color=wc-text")
         tree.classes("file-tree")
         tree.expand()
         tree.mark(marker)
@@ -184,7 +184,7 @@ class FileOperationsMixin:
                 ui.label("Save").classes("text-lg font-medium")
                 ui.space()
                 ui.button(icon="close", on_click=dlg.close).props(
-                    "flat round dense color=white"
+                    "flat round dense color=wc-text"
                 )
 
             filename_input = (
@@ -220,12 +220,12 @@ class FileOperationsMixin:
 
             with ui.row().classes("w-full items-center mt-2"):
                 ui.button("Download", icon="download", on_click=do_download).props(
-                    "flat color=white"
+                    "flat color=wc-text"
                 ).mark("save-download-btn")
                 ui.space()
-                ui.button("Save", on_click=do_save).props("color=primary").mark(
-                    "save-confirm-btn"
-                )
+                ui.button("Save", on_click=do_save).props(
+                    "color=wc-action text-color=wc-on-bright"
+                ).mark("save-confirm-btn")
 
         dlg.open()
 
@@ -239,7 +239,7 @@ class FileOperationsMixin:
                 ui.label("Open").classes("text-lg font-medium")
                 ui.space()
                 ui.button(icon="close", on_click=dlg.close).props(
-                    "flat round dense color=white"
+                    "flat round dense color=wc-text"
                 )
 
             with (
@@ -287,9 +287,9 @@ class FileOperationsMixin:
             ui.upload(
                 on_upload=_on_upload,
                 label="Drop .py file here or click to browse",
-            ).props('accept=".py" max-file-size=10485760 flat color=teal').classes(
-                "w-full file-upload"
-            ).mark("open-upload")
+            ).props(
+                'accept=".py" max-file-size=10485760 color=wc-control text-color=wc-text'
+            ).classes("w-full file-upload").mark("open-upload")
 
             async def do_open():
                 fname = selected_file[0]
@@ -298,8 +298,8 @@ class FileOperationsMixin:
                     dlg.close()
 
             with ui.row().classes("w-full justify-end mt-2"):
-                ui.button("Open", on_click=do_open).props("color=primary").mark(
-                    "open-confirm-btn"
-                )
+                ui.button("Open", on_click=do_open).props(
+                    "color=wc-action text-color=wc-on-bright"
+                ).mark("open-confirm-btn")
 
         dlg.open()

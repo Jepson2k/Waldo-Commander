@@ -424,8 +424,10 @@ class EditingMixin(ShapeEditingMixin):
         with dialog, ui.card():
             ui.label("Delete Target?")
             with ui.row():
-                ui.button("Cancel", on_click=dialog.close)
-                ui.button("Delete", on_click=confirm, color="negative")
+                ui.button("Cancel", on_click=dialog.close).props("flat color=wc-text")
+                ui.button("Delete", on_click=confirm).props(
+                    "color=wc-control text-color=wc-error"
+                )
         dialog.open()
 
     # -------------------------------------------------------------------------
@@ -584,10 +586,10 @@ class EditingMixin(ShapeEditingMixin):
                 )
                 ui.space()
                 ui.button(icon="close", on_click=self._on_edit_bar_cancel).props(
-                    "round flat color=red"
+                    "round flat color=wc-error"
                 )
                 ui.button(icon="check", on_click=self._on_edit_bar_confirm).props(
-                    "round color=positive"
+                    "round color=wc-action text-color=wc-on-bright"
                 )
 
         self._current_editing_type = editing_type
@@ -622,8 +624,8 @@ class EditingMixin(ShapeEditingMixin):
 
         def color(delta: float) -> str:
             if abs(delta) < 0.1:
-                return "text-gray-400"
-            return "text-green-400" if delta > 0 else "text-red-400"
+                return "text-wc-text-muted"
+            return "text-wc-positive" if delta > 0 else "text-wc-error"
 
         with self._edit_bar_values:
             show_joints = editing_type == "joint" or (

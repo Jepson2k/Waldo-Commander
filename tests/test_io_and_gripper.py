@@ -6,7 +6,12 @@ import pytest
 from nicegui import Client
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_app_ready, wait_for_tool_key
+from tests.helpers.wait import (
+    enable_sim,
+    poll_until,
+    wait_for_app_ready,
+    wait_for_tool_key,
+)
 from waldo_commander.state import ui_state
 
 
@@ -60,11 +65,13 @@ async def test_gripper_panel_layout_elements(user: User) -> None:
 
 @pytest.mark.integration
 async def test_control_panel_tool_quick_actions(user: User) -> None:
-    """Control panel should show tool quick-action box when a tool is active."""
+    """Control panel should show tool quick-action box when a tool is active,
+    and the action button's icon keeps a readable colour on either fill."""
     from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
+    await enable_sim(user)
 
     # Set tool to SSG-48 and wait for status loop to propagate
     await ui_state.control_panel.client.select_tool("SSG-48")
@@ -76,6 +83,24 @@ async def test_control_panel_tool_quick_actions(user: User) -> None:
     # Adjust buttons should be visible for electric grippers
     await user.should_see(marker="btn-tool-adjust-minus")
     await user.should_see(marker="btn-tool-adjust-plus")
+
+    # Closing lights the button with the action fill and opening puts it
+    # back; the icon's colour follows the fill both ways.
+    text_on = {"wc-control": "wc-text", "wc-action": "wc-on-bright"}
+    button = next(iter(user.find(marker="btn-tool-action-l").elements))
+    seen = set()
+    for _ in text_on:
+        before = button.props.get("color")
+        user.find(marker="btn-tool-action-l").click()
+        fill = await poll_until(
+            lambda: button.props.get("color"),
+            lambda color, before=before: color != before,
+            timeout_s=15,
+            what="the action button's fill after a click",
+        )
+        assert button.props.get("text-color") == text_on[fill], button.props
+        seen.add(fill)
+    assert seen == set(text_on)
 
 
 @pytest.mark.integration
