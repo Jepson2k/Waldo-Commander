@@ -190,30 +190,38 @@ fixture means an unresolved preview. Live clients refuse fixtures.
 
 ## Camera calibration
 
-The **Camera calibration** panel walks through four steps: Board, Views, Solve
-and Save. In **Board**, choose **Camera on tool** or **Fixed camera**. For a
-tool camera, keep the printed ChArUco board fixed in the workspace. For a fixed
-camera, attach the board rigidly to the tool and leave the camera stationary.
-The fixed-camera controls can list and start a video device independently of a
-tool's camera assignment.
+The **Camera calibration** panel is one flow of three steps — Board, Views and
+Save. The open step shows its controls; the others collapse to a header line
+that summarises them. In **Board**, choose **Camera on tool** or **Fixed
+camera**. For a tool camera, keep the printed ChArUco board fixed in the
+workspace. For a fixed camera, attach the board rigidly to the tool and leave
+the camera stationary. The fixed-camera controls can list and start a video
+device independently of a tool's camera assignment. Views opens by itself once
+a camera is running.
 
-In **Views**, reference the arm, hold it stationary, and capture views with
-rotation about multiple wrist axes: four can solve, and the panel counts toward
-fifteen, which give a good fit. **Auto-capture** moves the arm through fifteen
-poses itself. Each view appears as a thumbnail; one that nearly repeats an
-earlier orientation is flagged. **Capture view**
-waits for a subsequent camera frame and reads the controller's tool/TCP binding.
-Changing the camera session, tool, TCP transform or image dimensions requires
-clearing the sample set. The timestamp is host receipt time, not hardware
-exposure time: this acquisition workflow requires stationary observations.
+**Views** shows the live image with the detected corners and a coverage ring:
+its eight sectors record the direction each view saw the board from, the 3×3
+grid inside records where in the frame the board has been, the rim fills
+toward fifteen views and the sector to fill next glows, with the same advice
+as a line of text. **Auto-capture** moves the arm through fifteen poses around
+its current position and captures a view at each; a view is taken only while
+the board is detected and the robot is still. Each view waits for a subsequent
+camera frame and reads the controller's tool/TCP binding; the timestamp is host
+receipt time, not hardware exposure time. Changing the camera session, tool,
+TCP transform or image dimensions requires clearing the set. The thumbnails
+fold out from **Captured views**, where a view that nearly repeats an earlier
+orientation, or that a solve could not explain, is flagged and can be deleted.
 
-**Solve** estimates pinhole intrinsics and the camera transform. A tool camera
-is expressed relative to the current TCP; a fixed camera is expressed in WRF.
-The result leads with a verdict (good, usable or poor fit) from the reprojection
-error and board position spread, then the transform and the rotational and
-translational residuals; views the fit does not explain are flagged in the
-thumbnails. Review those measurements against the accuracy your task needs.
-The fixed-camera case uses inverse robot poses with OpenCV's
+The solve runs by itself whenever the views change and at least four exist,
+estimating pinhole intrinsics and the camera transform. A tool camera is
+expressed relative to the current TCP; a fixed camera is expressed in WRF. The
+**Save** header reads the outcome — solving, a good, usable or poor fit from
+the reprojection error and board position spread, or the reason no fit was
+possible — and the step holds the transform, the rotational and translational
+residuals, and under **Details** the intrinsics, the motion diversity and the
+solver method with a **Re-solve** button. Review those measurements against
+the accuracy your task needs. The fixed-camera case uses inverse robot poses
+with OpenCV's
 [hand-eye calibration solver](https://docs.opencv.org/4.8.0/d9/d0c/group__calib3d.html).
 
 In **Save**, select the setup and camera name before pressing
