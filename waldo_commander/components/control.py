@@ -1709,6 +1709,7 @@ class ControlPanel:
             if intent is not None:
                 j, d = intent
                 if not self._joint_jog_allowed(j, d):
+                    robot_state.jog_limit_stops += 1
                     self._release_joint_jog(j, d)
                     return
                 signed_speed = speed if d == "pos" else -speed
@@ -2008,6 +2009,7 @@ class ControlPanel:
             # Priority 2: cart jog buttons (streamed)
             axis = self._get_first_pressed_axis()
             if axis is not None and not self._cart_axis_allowed(axis):
+                robot_state.jog_limit_stops += 1
                 self._release_cart_jog(axis)
                 axis = None
             if axis is not None:

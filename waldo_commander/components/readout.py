@@ -307,6 +307,11 @@ class StatusFooter:
                 self._buddy.react(Reaction.SHRUG)
             self._blocked_jogs = blocked
             self._seen_jog_pos, self._seen_jog_neg = pos, neg
+        # A held jog the panel ended at a limit stops short of where the
+        # controller flags the direction, so it is counted where it ends.
+        if robot_state.jog_limit_stops != self._seen_jog_limit_stops:
+            self._seen_jog_limit_stops = robot_state.jog_limit_stops
+            self._buddy.react(Reaction.SHRUG)
 
         homed = robot_state.homed
         if homed and self._last_homed is False:
@@ -423,6 +428,7 @@ class StatusFooter:
                 self._mode_word = ui.label(_MOOD_WORDS[mood]).classes("wc-micro")
                 self._buddy_tooltip = ui.tooltip(_tooltip(mood, None))
             self._seen_events_version = robot_events.version
+            self._seen_jog_limit_stops = robot_state.jog_limit_stops
             ui.label(ui_state.active_robot.name).classes("wc-label readout-robot-name")
             self._tool_chip = (
                 ui.chip()

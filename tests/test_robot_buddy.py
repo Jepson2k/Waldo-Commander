@@ -122,11 +122,11 @@ async def test_chip_buddy_reacts_to_how_programs_end_and_to_new_warnings(
     assert await run("import time\ntime.sleep(1.0)\n") == 0
     watcher.cancel()
     assert busy_seen, "the buddy should be busy while a program runs"
-    assert chip.last_reaction == Reaction.CELEBRATE
+    assert await _wait_for(lambda: chip.last_reaction == Reaction.CELEBRATE)
     assert await _wait_for(lambda: not chip.busy)
 
     assert await run("raise RuntimeError('boom')\n") != 0
-    assert chip.last_reaction == Reaction.OOPS
+    assert await _wait_for(lambda: chip.last_reaction == Reaction.OOPS)
 
     # The fake-serial backend reports no warnings of its own; add one the
     # way the status consumer does when a new condition arrives. The log is
@@ -157,9 +157,12 @@ async def test_chip_buddy_shrugs_at_a_joint_limit_and_nods_when_homed(
         pose[0] = hi - step - 1.0
         assert await client.teleport(pose) == 1
         user.find(marker="btn-j1-plus").trigger("mousedown")
+        assert await _wait_for(lambda: ui_state.joint_jog_timer.active, timeout=3.0), (
+            "the hold never started jogging"
+        )
         assert await _wait_for(
-            lambda: not waldoctl.commander.status.joints.can_jog_pos[0], timeout=10.0
-        ), "the jog should have reached J1's limit"
+            lambda: not ui_state.joint_jog_timer.active, timeout=10.0
+        ), "the panel never stopped the jog at J1's limit"
         assert await _wait_for(lambda: chip.last_reaction == Reaction.SHRUG)
     finally:
         user.find(marker="btn-j1-plus").trigger("mouseup")
