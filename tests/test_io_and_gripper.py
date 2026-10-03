@@ -1,10 +1,12 @@
 """Tests for I/O and gripper functionality."""
 
 import asyncio
+import json
 
 import pytest
 import waldoctl
 from nicegui import Client
+from nicegui.outbox import Outbox
 from nicegui.testing import User
 from waldoctl import ElectricGripperTool
 
@@ -66,7 +68,9 @@ async def test_io_outputs_and_the_footer_io_dots(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_gripper_panel_and_quick_actions(user: User) -> None:
+async def test_gripper_panel_and_quick_actions(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """With an electric gripper fitted the Gripper tab draws its chart, and
     the control panel's quick actions toggle it: the action button's icon
     keeps a readable colour on either fill, two quick toggles return to the
@@ -142,5 +146,32 @@ async def test_gripper_panel_and_quick_actions(user: User) -> None:
         assert await wait_until(
             lambda: waldoctl.commander.status.tool.current == expected, 5, interval=0.01
         ), f"drew {waldoctl.commander.status.tool.current}, expected {expected}"
+
+        # The chart streams: a push carries the samples since the last one, so
+        # over two seconds it sends far less than one copy of its window, where
+        # resending the window every push would send it twenty times.
+        chart = next(iter(user.find(marker="gripper-chart").elements))
+        series = chart.options["series"]
+        assert await wait_until(lambda: len(series[0]["data"]) >= 150, 15), (
+            "the chart's window never filled"
+        )
+        window_bytes = sum(len(json.dumps(s["data"])) for s in series)
+        sent: list[int] = []
+        enqueue = Outbox.enqueue_message
+
+        def counting(self, message_type, data, target_id):
+            text = json.dumps(data, default=str)
+            if any(
+                f"{call}({chart.id}," in text
+                for call in ("runMethod", "liveChartAppend")
+            ):
+                sent.append(len(text))
+            return enqueue(self, message_type, data, target_id)
+
+        monkeypatch.setattr(Outbox, "enqueue_message", counting)
+        await asyncio.sleep(2.0)
+        monkeypatch.undo()
+        assert sent, "the chart pushed nothing while samples arrived"
+        assert sum(sent) < window_bytes, (sum(sent), window_bytes, len(sent))
     finally:
         await client.select_tool("NONE")
