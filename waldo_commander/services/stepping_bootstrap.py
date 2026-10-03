@@ -11,6 +11,7 @@ Usage:
 
 Environment:
     WALDO_STEP_SESSION: Required. Session ID for IPC with GUI.
+    WALDO_PROGRAM_DIR: The program library the script's imports resolve in.
 """
 
 from __future__ import annotations
@@ -148,6 +149,13 @@ def main() -> None:
 
     # Drop our bootstrap script from argv so the user script sees correct args.
     sys.argv = [str(script_path)] + sys.argv[2:]
+    # The program imports its neighbours (`from setups.bench import setup`)
+    # exactly as it would when run with `python program.py` in its library,
+    # though Commander runs a copy of it from elsewhere.
+    sys.path.insert(0, str(script_path.parent))
+    program_dir = os.environ.get("WALDO_PROGRAM_DIR")
+    if program_dir:
+        sys.path.insert(1, program_dir)
 
     script_globals = {
         "__name__": "__main__",
@@ -177,7 +185,15 @@ def main() -> None:
             observe_skills(record_skill, capture_values=step_io.capture_values),
             observe_setup_loads(record_setup),
         ):
-            exec(code, script_globals)
+            entry = os.environ.get("WALDO_RESTART_ENTRY")
+            if entry:
+                from waldo_commander.services.supervised_restart import execute_entry
+
+                step_io.emit_event("entry_started", entry)
+                execute_entry(script_code, str(script_path), entry)
+                step_io.emit_event("entry_returned", entry)
+            else:
+                exec(code, script_globals)
         # Bare-construction scripts never hit __exit__: barrier any queued
         # blended moves so the process doesn't exit while the arm still runs.
         for wrapper in created_wrappers:

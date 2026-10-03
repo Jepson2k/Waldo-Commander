@@ -1,19 +1,30 @@
 """Tests for stepping functionality - GUI-controlled script execution.
 
 The stepping system allows users to execute robot scripts step-by-step:
-- StepIO: File-based IPC for script subprocess to communicate with GUI
+- StepIO: the program side of the stepping link (a duplex pipe to the GUI)
 - GUIStepController: GUI-side controller for sending play/pause/step signals
 - SteppingClientWrapper: Wraps robot client to intercept motion commands
-
-These are unit tests for the IPC components.
 """
 
-import json
-import tempfile
+import asyncio
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+
+from waldo_commander.services.stepping_client import GUIStepController
+
+
+def _drain(controller, count, timeout=2.0):
+    """Events the program published, waiting for `count` of them."""
+    deadline = time.monotonic() + timeout
+    events = []
+    while len(events) < count and time.monotonic() < deadline:
+        events.extend(controller.poll_events())
+        time.sleep(0.01)
+    return events
 
 
 # ============================================================================
@@ -22,114 +33,75 @@ import pytest
 
 
 class TestStepIO:
-    """Unit tests for StepIO file-based IPC.
+    """The program side of the stepping link.
 
-    StepIO is used by the script subprocess to:
-    - Emit events (start/complete) to the GUI
-    - Check if execution should pause
-    - Wait for step/play signals from GUI
-
-    The WALDO_STEP_SESSION env var is set by script_runner.py when launching
-    a script subprocess. It contains the session ID for IPC file naming.
+    A program constructs StepIO from WALDO_STEP_SESSION and connects to the
+    GUI's listener for that session. Without a session it is never held;
+    with one, it never runs on without its GUI.
     """
 
-    def test_from_env_returns_step_io_when_session_set(self, monkeypatch):
-        """StepIO.from_env returns StepIO when WALDO_STEP_SESSION is set."""
-        from waldo_commander.services.stepping_client import StepIO
-
-        monkeypatch.setenv("WALDO_STEP_SESSION", "test123")
-        result = StepIO.from_env()
-        assert isinstance(result, StepIO)
-        assert result.session_id == "test123"
-
-    def test_from_env_returns_none_when_session_not_set(self, monkeypatch):
-        """StepIO.from_env returns None when env var is not set."""
-        from waldo_commander.services.stepping_client import StepIO
+    def test_from_env_connects_or_refuses_to_run_unmanaged(self, monkeypatch):
+        from waldo_commander.services.stepping_client import GUIStepController, StepIO
 
         monkeypatch.delenv("WALDO_STEP_SESSION", raising=False)
-        result = StepIO.from_env()
-        assert result is None
-
-    def test_emit_event_writes_to_file(self, tmp_path, monkeypatch):
-        """emit_event writes events to the event file."""
-        from waldo_commander.services.stepping_client import StepIO
-
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-
-        step_io = StepIO("test_emit")
-        step_io.emit_event("start", "move_j", extra_data="test")
-
-        event_file = tmp_path / ".parol_events_test_emit"
-        assert event_file.exists()
-
-        data = json.loads(event_file.read_text())
-        assert "events" in data
-        assert len(data["events"]) == 1
-        assert data["events"][0]["event"] == "start"
-        assert data["events"][0]["method"] == "move_j"
-        assert data["events"][0]["extra_data"] == "test"
-
-    def test_event_publication_recovers_after_transient_file_lock(
-        self, tmp_path, monkeypatch
-    ):
-        from waldo_commander.services import stepping_client
-
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-        controller = stepping_client.GUIStepController("locked-event-file")
+        assert StepIO.from_env() is None
+        # A session nobody listens on: the program was launched managed, and
+        # running it unmanaged would ignore every Pause and Step.
+        monkeypatch.setenv("WALDO_STEP_SESSION", "nobody-listens")
+        with pytest.raises(ConnectionError, match="nobody-listens"):
+            StepIO.from_env()
+        controller = GUIStepController("from-env")
         controller.initialize()
-        publisher = stepping_client.StepIO(controller.session_id)
-        publisher.emit_event("command_started", "move_j")
-        assert [e["event"] for e in controller.poll_events()] == ["command_started"]
+        try:
+            monkeypatch.setenv("WALDO_STEP_SESSION", "from-env")
+            linked = StepIO.from_env()
+            assert linked.check_should_pause() is True, "a fresh session starts paused"
+            controller.signal_play()
+            linked.wait_for_step_or_play(poll_interval=0.01)
+            assert linked.check_should_pause() is False
+        finally:
+            controller.cleanup()
 
-        with monkeypatch.context() as fault:
+    def test_every_event_reaches_the_gui_in_order(self):
+        """No window, no loss: a burst far larger than any file window arrives
+        complete and ordered, and the step counter rides along."""
+        from waldo_commander.services.stepping_client import GUIStepController, StepIO
 
-            def locked_file(source, destination):
-                raise PermissionError("event file temporarily held by a reader")
+        controller = GUIStepController("burst")
+        controller.initialize()
+        try:
+            io = StepIO(controller.session_id)
+            for i in range(2000):
+                io.emit_event("complete", "delay", command=io.issue(), index=i)
+            io.emit_event("start", "move_j", command=io.issue(), extra_data="test")
+            deadline = time.monotonic() + 5.0
+            events = []
+            while len(events) < 2001 and time.monotonic() < deadline:
+                events.extend(controller.poll_events())
+                time.sleep(0.01)
+            assert len(events) == 2001
+            assert [e["index"] for e in events[:-1]] == list(range(2000))
+            assert (
+                events[-1]["method"] == "move_j" and events[-1]["extra_data"] == "test"
+            )
+            assert events[-1]["command"] == 2000
+            assert controller.poll_events() == []
+        finally:
+            controller.cleanup()
 
-            fault.setattr(stepping_client.os, "replace", locked_file)
-            publisher.emit_event("command_completed", "move_j")
-        assert controller.poll_events() == []
-        publisher.emit_event("command_started", "delay")
-        events = controller.poll_events()
-        assert [(e["event"], e["method"]) for e in events] == [
-            ("command_completed", "move_j"),
-            ("command_started", "delay"),
-        ]
-        assert [e["sequence"] for e in events] == [2, 3]
-        assert controller.poll_events() == []
-        controller.cleanup()
-
-    def test_check_should_pause_behavior(self, tmp_path, monkeypatch):
-        """check_should_pause returns True by default, False when control file says so."""
-        from waldo_commander.services.stepping_client import StepIO
-
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-        step_io = StepIO("test_pause")
-
-        # No control file exists - should default to paused=True
-        assert step_io.check_should_pause() is True
-
-        # Create control file with paused=False
-        control_file = tmp_path / ".parol_control_test_pause"
-        control_file.write_text(json.dumps({"paused": False}))
-
-        assert step_io.check_should_pause() is False
-
-    def test_wait_for_step_blocks_paused_and_releases(self, tmp_path, monkeypatch):
-        """A paused session blocks until a step is granted; a missing control
-        file means the session is no longer GUI-controlled and must not block."""
-        import threading
-        import time
-
+    def test_wait_for_step_blocks_paused_and_releases(self):
+        """A paused session blocks until a step is granted; once the GUI has
+        closed the link the wait fails rather than block or run on."""
         from waldo_commander.services.stepping_client import (
             GUIStepController,
+            SteppingLinkLost,
             StepIO,
         )
 
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         controller = GUIStepController("test_wait")
         controller.initialize()
         step_io = StepIO("test_wait")
+        assert step_io.check_should_pause() is True
 
         waiter = threading.Thread(
             target=lambda: step_io.wait_for_step_or_play(poll_interval=0.01)
@@ -137,29 +109,34 @@ class TestStepIO:
         waiter.start()
         time.sleep(0.3)
         assert waiter.is_alive(), "paused session must keep blocking"
+        deadline = time.monotonic() + 1.0
+        while not controller.waiting_for_step() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller.waiting_for_step(), "the GUI sees the program waiting"
 
         controller.signal_step()
         waiter.join(timeout=1.0)
         assert not waiter.is_alive(), "a granted step must release the wait"
+        deadline = time.monotonic() + 1.0
+        while controller.waiting_for_step() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not controller.waiting_for_step()
 
-        # Control file deleted mid-session: not GUI-controlled anymore, so the
-        # wait returns immediately instead of polling the paused default.
         controller.cleanup()
         start = time.monotonic()
-        step_io.wait_for_step_or_play(poll_interval=0.01)
+        with pytest.raises(SteppingLinkLost):
+            step_io.wait_for_step_or_play(poll_interval=0.01)
         assert time.monotonic() - start < 1.0
 
-    async def test_wait_for_step_async_blocks_and_releases(self, tmp_path, monkeypatch):
+    async def test_wait_for_step_async_blocks_and_releases(self):
         """The async wait mirrors the sync semantics: blocks while paused,
-        releases on a granted step, returns immediately with no control file."""
-        import asyncio
-
+        releases on a granted step, fails at once when the GUI is gone."""
         from waldo_commander.services.stepping_client import (
             GUIStepController,
+            SteppingLinkLost,
             StepIO,
         )
 
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         controller = GUIStepController("test_async_wait")
         controller.initialize()
         step_io = StepIO("test_async_wait")
@@ -173,9 +150,56 @@ class TestStepIO:
         await asyncio.wait_for(task, timeout=1.0)
 
         controller.cleanup()
-        await asyncio.wait_for(
-            step_io.wait_for_step_or_play_async(poll_interval=0.01), timeout=1.0
+        with pytest.raises(SteppingLinkLost):
+            await asyncio.wait_for(
+                step_io.wait_for_step_or_play_async(poll_interval=0.01), timeout=1.0
+            )
+
+    def test_a_lost_gui_stops_the_program_instead_of_releasing_it(
+        self, session_controller
+    ):
+        """A GUI that goes away mid-run takes nothing with it: the program's
+        next command raises instead of running on unmanaged, and the arm is
+        stopped, queued motion and all."""
+        from parol6 import RobotClient
+
+        from tests.conftest import _get_test_ports
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            SteppingClientWrapper,
+            SteppingLinkLost,
+            StepIO,
         )
+
+        controller = GUIStepController("lost-gui")
+        controller.initialize()
+        controller.signal_play()
+        port, _ = _get_test_ports()
+        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+            client.simulator(True)
+            client.reset()
+            assert client.home(wait=True, timeout=10.0) >= 0
+            step_io = StepIO("lost-gui")
+            wrapper = SteppingClientWrapper(client, step_io)
+            home = client.angles()
+            assert home is not None
+            away = [a + 5.0 for a in home]
+            try:
+                # A blend group is queued and not waited on: only a Stop ends it.
+                assert wrapper.move_j(away, duration=4.0, r=15, wait=False) >= 0
+                controller.cleanup()
+                deadline = time.monotonic() + 1.0
+                while step_io._connected and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                with pytest.raises(SteppingLinkLost):
+                    wrapper.move_j(home, duration=0.5)
+                deadline = time.monotonic() + 2.0
+                while not (client.queue() == [] and client.is_robot_stopped()):
+                    assert time.monotonic() < deadline, "the arm was left moving"
+                    time.sleep(0.05)
+            finally:
+                controller.cleanup()
+                client.stop()
 
 
 # ============================================================================
@@ -184,90 +208,77 @@ class TestStepIO:
 
 
 class TestGUIStepController:
-    """Unit tests for GUIStepController.
+    """The GUI side of the stepping link: play/pause/step reach the program,
+    the program's events reach the GUI, cleanup closes the link."""
 
-    GUIStepController is used by the GUI to:
-    - Initialize IPC files for a stepping session
-    - Send play/pause/step signals to the script
-    - Poll events from the script
-    - Clean up IPC files
-    """
+    def test_control_signals_reach_the_program(self):
+        from waldo_commander.services.stepping_client import GUIStepController, StepIO
 
-    def test_initialize_and_control_signals(self, tmp_path, monkeypatch):
-        """Controller creates files and play/pause signals work correctly."""
-        from waldo_commander.services.stepping_client import GUIStepController
-
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         controller = GUIStepController("test_init")
         controller.initialize()
+        try:
+            io = StepIO(controller.session_id)
+            assert io.check_should_pause() is True and io.hold_requested() is False
+            controller.signal_play()
+            io.wait_for_step_or_play(poll_interval=0.01)
+            assert io.check_should_pause() is False
+            controller.signal_pause()
+            deadline = time.monotonic() + 1.0
+            while not io.hold_requested() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert io.hold_requested() and io.check_should_pause()
+            # One grant releases one wait; the next wait blocks until the
+            # GUI acts again.
+            controller.signal_step()
+            io.wait_for_step_or_play(poll_interval=0.01)
+            waiter = threading.Thread(
+                target=lambda: io.wait_for_step_or_play(poll_interval=0.01)
+            )
+            waiter.start()
+            time.sleep(0.2)
+            assert waiter.is_alive()
+            controller.signal_play()
+            waiter.join(timeout=1.0)
+            assert not waiter.is_alive()
+        finally:
+            controller.cleanup()
 
-        control_file = tmp_path / ".parol_control_test_init"
-        assert control_file.exists()
+    def test_poll_events_and_cleanup(self):
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            SteppingLinkLost,
+            StepIO,
+        )
 
-        # Initial state: paused
-        data = json.loads(control_file.read_text())
-        assert data["paused"] is True
-        assert data["step_signal"] == 0
-
-        # Signal play
-        controller.signal_play()
-        data = json.loads(control_file.read_text())
-        assert data["paused"] is False
-
-        # Signal pause
-        controller.signal_pause()
-        data = json.loads(control_file.read_text())
-        assert data["paused"] is True
-
-    def test_signal_step_increments_counter(self, tmp_path, monkeypatch):
-        """signal_step increments step_signal counter."""
-        from waldo_commander.services.stepping_client import GUIStepController
-
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-        controller = GUIStepController("test_step")
-        controller.initialize()
-
-        controller.signal_step()
-        control_file = tmp_path / ".parol_control_test_step"
-        data = json.loads(control_file.read_text())
-        assert data["step_signal"] == 1
-
-        controller.signal_step()
-        data = json.loads(control_file.read_text())
-        assert data["step_signal"] == 2
-
-    def test_poll_events_and_cleanup(self, tmp_path, monkeypatch):
-        """poll_events returns new events; cleanup removes IPC files."""
-        from waldo_commander.services.stepping_client import GUIStepController
-
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         controller = GUIStepController("test_poll")
         controller.initialize()
-
-        from waldo_commander.services.stepping_client import StepIO
-
         step_io = StepIO(controller.session_id)
-        event_file = tmp_path / ".parol_events_test_poll"
         step_io.emit_event("start", "move_j")
         step_io.emit_event("complete", "move_j")
-
-        events = controller.poll_events()
-        assert len(events) == 2
-        assert events[0]["event"] == "start"
-        assert events[1]["event"] == "complete"
-
-        # Second poll should return empty (already read)
-        events = controller.poll_events()
-        assert len(events) == 0
-
-        # Cleanup removes files
-        control_file = tmp_path / ".parol_control_test_poll"
-        assert control_file.exists()
-        assert event_file.exists()
+        deadline = time.monotonic() + 2.0
+        events = []
+        while len(events) < 2 and time.monotonic() < deadline:
+            events.extend(controller.poll_events())
+            time.sleep(0.01)
+        assert [e["event"] for e in events] == ["start", "complete"]
+        assert controller.poll_events() == []
 
         controller.cleanup()
-        assert not control_file.exists()
-        assert not event_file.exists()
+        # Nothing of the session outlives it: the listener's thread ends too.
+        assert not any(
+            t.name == f"step-gui-{controller.session_id}" and t.is_alive()
+            for t in threading.enumerate()
+        ), "the accept thread outlived its session"
+        # The link is closed: the program's events go nowhere, and it is held
+        # to account at its next gate rather than let run on.
+        deadline = time.monotonic() + 1.0
+        while step_io._connected and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not step_io._connected
+        step_io.emit_event("start", "move_l")
+        assert controller.poll_events() == []
+        with pytest.raises(SteppingLinkLost):
+            step_io.check_should_pause()
 
 
 # ============================================================================
@@ -285,20 +296,19 @@ class TestSteppingClientWrapper:
     def test_wraps_motion_methods(self, tmp_path, monkeypatch):
         """Wrapper intercepts motion methods and waits for completion."""
         from waldo_commander.services.stepping_client import (
+            GUIStepController,
             StepIO,
             SteppingClientWrapper,
         )
-
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
 
         mock_client = MagicMock()
         mock_client.move_j = MagicMock(return_value=42)
         mock_client.wait_command = MagicMock()
 
+        controller = GUIStepController("test_wrapper")
+        controller.initialize()
+        controller.signal_play()
         step_io = StepIO("test_wrapper")
-        # Set up control file so we don't pause (paused=False)
-        control_file = tmp_path / ".parol_control_test_wrapper"
-        control_file.write_text(json.dumps({"paused": False, "step_signal": 0}))
 
         wrapper = SteppingClientWrapper(mock_client, step_io)
 
@@ -308,13 +318,9 @@ class TestSteppingClientWrapper:
         mock_client.wait_command.assert_called_once_with(42, timeout=0.1)
         assert result == 42
 
-        # Verify events were emitted
-        event_file = tmp_path / ".parol_events_test_wrapper"
-        assert event_file.exists()
-        events = json.loads(event_file.read_text())["events"]
-        assert len(events) == 2
-        assert events[0]["event"] == "start"
-        assert events[1]["event"] == "complete"
+        events = _drain(controller, 2)
+        assert [e["event"] for e in events] == ["start", "complete"]
+        controller.cleanup()
 
     def test_passes_through_non_motion_methods(self, tmp_path, monkeypatch):
         """Non-motion methods are passed through without wrapping."""
@@ -323,11 +329,12 @@ class TestSteppingClientWrapper:
             SteppingClientWrapper,
         )
 
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-
         mock_client = MagicMock()
         mock_client.status = MagicMock(return_value="status")
 
+        controller = GUIStepController("test_passthrough")
+        controller.initialize()
+        controller.signal_play()
         step_io = StepIO("test_passthrough")
         wrapper = SteppingClientWrapper(mock_client, step_io)
 
@@ -337,9 +344,10 @@ class TestSteppingClientWrapper:
         mock_client.wait_command.assert_not_called()
         assert result == "status"
 
-        # No events should be emitted for non-motion methods
-        event_file = tmp_path / ".parol_events_test_passthrough"
-        assert not event_file.exists()
+        # A read is not a step: nothing is published for it.
+        time.sleep(0.1)
+        assert controller.poll_events() == []
+        controller.cleanup()
 
     def test_paused_wrapper_strips_blend_radius(self, tmp_path, monkeypatch):
         """While stepping (paused), each r>0 group member is dispatched as an
@@ -351,13 +359,15 @@ class TestSteppingClientWrapper:
             SteppingClientWrapper,
         )
 
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         controller = GUIStepController("test_strip")
         controller.initialize()
 
         mock_client = MagicMock()
         mock_client.move_j = MagicMock(return_value=7)
         mock_client.wait_command = MagicMock()
+        # The health check runs while a grant is still in flight on the link.
+        mock_client.wait_status = MagicMock(return_value=False)
+        mock_client.error = MagicMock(return_value=None)
 
         step_io = StepIO("test_strip")
         wrapper = SteppingClientWrapper(mock_client, step_io)
@@ -372,8 +382,7 @@ class TestSteppingClientWrapper:
         wrapper.move_j([1, 1, 1, 1, 1, 1], r=15, wait=False)
         assert mock_client.move_j.call_args.kwargs["r"] == 0.0
 
-        events_file = tmp_path / ".parol_events_test_strip"
-        events = json.loads(events_file.read_text())["events"]
+        events = _drain(controller, 1)
         assert [e["event"] for e in events] == ["start"], (
             "group members must not emit per-member events"
         )
@@ -383,7 +392,7 @@ class TestSteppingClientWrapper:
         # the normal per-command events.
         controller.signal_play()
         wrapper.move_j([2, 2, 2, 2, 2, 2])
-        events = json.loads(events_file.read_text())["events"]
+        events += _drain(controller, 3)
         assert [(e["event"], e["method"]) for e in events] == [
             ("start", "move_j"),
             ("complete", "blend_group"),
@@ -391,6 +400,7 @@ class TestSteppingClientWrapper:
             ("complete", "move_j"),
         ]
         assert wrapper._in_blend is False
+        controller.cleanup()
 
     @pytest.mark.timeout(30)
     def test_unbounded_wait_still_ends_when_the_plan_is_empty(
@@ -403,14 +413,15 @@ class TestSteppingClientWrapper:
 
         from waldo_commander.services import completion_budget
         from waldo_commander.services.stepping_client import (
+            GUIStepController,
             StepIO,
             SteppingClientWrapper,
         )
 
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         monkeypatch.setattr(completion_budget, "PLAN_GRACE_S", 0.3)
-        control_file = tmp_path / ".parol_control_test_grace"
-        control_file.write_text(json.dumps({"paused": False, "step_signal": 0}))
+        controller = GUIStepController("test_grace")
+        controller.initialize()
+        controller.signal_play()
         client = MagicMock()
         client.wait_command = MagicMock(return_value=False)
         client.wait_status = MagicMock(return_value=False)
@@ -420,10 +431,13 @@ class TestSteppingClientWrapper:
                 queued_duration=0.0, completed_index=-1, executing_index=-1
             )
         )
-        wrapper = SteppingClientWrapper(client, StepIO("test_grace"))
-        started = time.monotonic()
-        assert wrapper.wait_command(5) is False
-        assert time.monotonic() - started < 3.0
+        try:
+            wrapper = SteppingClientWrapper(client, StepIO("test_grace"))
+            started = time.monotonic()
+            assert wrapper.wait_command(5) is False
+            assert time.monotonic() - started < 3.0
+        finally:
+            controller.cleanup()
 
     def test_stop_reaches_controller_while_a_blend_group_is_pending(
         self, tmp_path, monkeypatch, session_controller
@@ -442,7 +456,6 @@ class TestSteppingClientWrapper:
             SteppingClientWrapper,
         )
 
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         controller = GUIStepController("test_stop")
         controller.initialize()
         controller.signal_play()
@@ -461,15 +474,13 @@ class TestSteppingClientWrapper:
 
             # A stop whose ack never arrives leaves the group possibly still
             # moving: it stays tracked, and the program is told.
-            events_file = tmp_path / ".parol_events_test_stop"
             acked_stop = client.stop
             monkeypatch.setattr(client, "stop", lambda: 0)
             with pytest.raises(RuntimeError, match="not acknowledged"):
                 wrapper.stop()
             assert wrapper._in_blend is True
             assert [
-                (e["event"], e["method"])
-                for e in json.loads(events_file.read_text())["events"]
+                (e["event"], e["method"]) for e in _drain(controller, 2, timeout=0.5)
             ] == [("start", "move_j")], "an unconfirmed stop must not close the group"
             monkeypatch.setattr(client, "stop", acked_stop)
 
@@ -486,13 +497,13 @@ class TestSteppingClientWrapper:
             index = wrapper.move_j(home, duration=0.5)
             assert index >= 0 and client.wait_command(index, timeout=5.0)
 
-        events = json.loads(events_file.read_text())
-        assert [(e["event"], e["method"]) for e in events["events"]] == [
-            ("start", "move_j"),
+        events = _drain(controller, 3)
+        assert [(e["event"], e["method"]) for e in events] == [
             ("complete", "blend_group"),
             ("start", "move_j"),
             ("complete", "move_j"),
         ]
+        controller.cleanup()
 
     def test_a_paused_jog_is_held_until_play(
         self, tmp_path, monkeypatch, session_controller
@@ -511,50 +522,54 @@ class TestSteppingClientWrapper:
             SteppingClientWrapper,
         )
 
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         controller = GUIStepController("test_jog_hold")
         controller.initialize()
         controller.signal_play()
         controller.signal_pause()
-        port, _ = _get_test_ports()
-        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
-            client.simulator(True)
-            client.reset()
-            assert client.home(wait=True, timeout=10.0) >= 0
-            start = client.angles()
-            assert start is not None
-            wrapper = SteppingClientWrapper(client, StepIO("test_jog_hold"))
-            errors: list[BaseException] = []
+        try:
+            port, _ = _get_test_ports()
+            with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+                client.simulator(True)
+                client.reset()
+                assert client.home(wait=True, timeout=10.0) >= 0
+                start = client.angles()
+                assert start is not None
+                wrapper = SteppingClientWrapper(client, StepIO("test_jog_hold"))
+                errors: list[BaseException] = []
 
-            def jog() -> None:
-                try:
-                    wrapper.jog_j(0, speed=0.5, duration=0.5)
-                except BaseException as exc:
-                    errors.append(exc)
+                def jog() -> None:
+                    try:
+                        wrapper.jog_j(0, speed=0.5, duration=0.5)
+                    except BaseException as exc:
+                        errors.append(exc)
 
-            jogger = threading.Thread(target=jog, daemon=True)
-            jogger.start()
-            # Being held is an absence of motion, so it is watched over a window.
-            window_end = time.monotonic() + 1.0
-            while time.monotonic() < window_end:
-                assert jogger.is_alive(), "a jog issued while paused was dispatched"
-                angles = client.angles()
-                assert angles is not None and abs(angles[0] - start[0]) < 0.05, (
-                    "the arm moved while the program was paused"
-                )
-                time.sleep(0.05)
+                jogger = threading.Thread(target=jog, daemon=True)
+                jogger.start()
+                # Being held is an absence of motion, so it is watched over a window.
+                window_end = time.monotonic() + 1.0
+                while time.monotonic() < window_end:
+                    assert jogger.is_alive(), "a jog issued while paused was dispatched"
+                    angles = client.angles()
+                    assert angles is not None and abs(angles[0] - start[0]) < 0.05, (
+                        "the arm moved while the program was paused"
+                    )
+                    time.sleep(0.05)
 
-            controller.signal_play()
-            jogger.join(timeout=5.0)
-            assert not jogger.is_alive(), "Play did not release the held jog"
-            assert errors == []
-            deadline = time.monotonic() + 3.0
-            while True:
-                angles = client.angles()
-                if angles is not None and abs(angles[0] - start[0]) > 0.5:
-                    break
-                assert time.monotonic() < deadline, "the released jog never moved J1"
-                time.sleep(0.05)
+                controller.signal_play()
+                jogger.join(timeout=5.0)
+                assert not jogger.is_alive(), "Play did not release the held jog"
+                assert errors == []
+                deadline = time.monotonic() + 3.0
+                while True:
+                    angles = client.angles()
+                    if angles is not None and abs(angles[0] - start[0]) > 0.5:
+                        break
+                    assert time.monotonic() < deadline, (
+                        "the released jog never moved J1"
+                    )
+                    time.sleep(0.05)
+        finally:
+            controller.cleanup()
 
     def test_paused_jog_holds_until_a_step_is_granted(
         self, tmp_path, monkeypatch, session_controller
@@ -575,47 +590,51 @@ class TestSteppingClientWrapper:
             SteppingClientWrapper,
         )
 
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         # One session per program, as Commander runs them: a step granted to
         # one is not a grant to the next.
         controller = GUIStepController("test_jog")
         controller.initialize()
         async_controller = GUIStepController("test_jog_async")
         async_controller.initialize()
-        port, _ = _get_test_ports()
-        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
-            client.simulator(True)
-            client.reset()
-            wrapper = SteppingClientWrapper(client, StepIO("test_jog"))
-            jog = threading.Thread(
-                target=lambda: wrapper.jog_j(0, 0.2, 0.1), daemon=True
-            )
-            jog.start()
-            jog.join(timeout=0.5)
-            assert jog.is_alive(), "a paused program must hold after a jog"
-            controller.signal_step()
-            jog.join(timeout=2.0)
-            assert not jog.is_alive(), "a granted step must release the jog"
+        try:
+            port, _ = _get_test_ports()
+            with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+                client.simulator(True)
+                client.reset()
+                wrapper = SteppingClientWrapper(client, StepIO("test_jog"))
+                jog = threading.Thread(
+                    target=lambda: wrapper.jog_j(0, 0.2, 0.1), daemon=True
+                )
+                jog.start()
+                jog.join(timeout=0.5)
+                assert jog.is_alive(), "a paused program must hold after a jog"
+                controller.signal_step()
+                jog.join(timeout=2.0)
+                assert not jog.is_alive(), "a granted step must release the jog"
 
-        async def async_jog() -> None:
-            async with AsyncRobotClient(
-                host="127.0.0.1", port=port, timeout=5.0
-            ) as client:
-                wrapper = AsyncSteppingClientWrapper(client, StepIO("test_jog_async"))
-                task = asyncio.ensure_future(wrapper.jog_j(0, -0.2, 0.1))
-                await asyncio.sleep(0.5)
-                assert not task.done(), "a paused program must hold after a jog"
-                async_controller.signal_step()
-                await asyncio.wait_for(task, timeout=2.0)
+            async def async_jog() -> None:
+                async with AsyncRobotClient(
+                    host="127.0.0.1", port=port, timeout=5.0
+                ) as client:
+                    wrapper = AsyncSteppingClientWrapper(
+                        client, StepIO("test_jog_async")
+                    )
+                    task = asyncio.ensure_future(wrapper.jog_j(0, -0.2, 0.1))
+                    await asyncio.sleep(0.5)
+                    assert not task.done(), "a paused program must hold after a jog"
+                    async_controller.signal_step()
+                    await asyncio.wait_for(task, timeout=2.0)
 
-        asyncio.run(async_jog())
+            asyncio.run(async_jog())
 
-        for session in ("test_jog", "test_jog_async"):
-            events = json.loads((tmp_path / f".parol_events_{session}").read_text())
-            assert [(e["event"], e["method"]) for e in events["events"]] == [
-                ("start", "jog_j"),
-                ("complete", "jog_j"),
-            ]
+            for stepped in (controller, async_controller):
+                assert [(e["event"], e["method"]) for e in _drain(stepped, 2)] == [
+                    ("start", "jog_j"),
+                    ("complete", "jog_j"),
+                ]
+        finally:
+            controller.cleanup()
+            async_controller.cleanup()
 
     def test_an_earlier_blend_member_keeps_its_own_deadline(
         self, tmp_path, monkeypatch, session_controller
@@ -633,28 +652,30 @@ class TestSteppingClientWrapper:
             SteppingClientWrapper,
         )
 
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         controller = GUIStepController("test_blend_deadline")
         controller.initialize()
         controller.signal_play()
-        port, _ = _get_test_ports()
-        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
-            client.simulator(True)
-            client.reset()
-            assert client.home(wait=True, timeout=10.0) >= 0
-            home = client.angles()
-            assert home is not None
-            away = [a + 10.0 for a in home]
-            wrapper = SteppingClientWrapper(client, StepIO("test_blend_deadline"))
-            started = time.monotonic()
-            assert wrapper.move_j(away, duration=4.0, r=15, timeout=0.5) >= 0
-            assert wrapper.move_j(home, duration=0.5, r=15) >= 0
-            with pytest.raises(TimeoutError):
-                wrapper.move_j(home, duration=0.5)
-            assert time.monotonic() - started < 2.5, (
-                "the first member's deadline was not enforced"
-            )
-            deadline = time.monotonic() + 3.0
-            while not (client.queue() == [] and client.is_robot_stopped()):
-                assert time.monotonic() < deadline, "controller did not stop"
-                time.sleep(0.05)
+        try:
+            port, _ = _get_test_ports()
+            with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+                client.simulator(True)
+                client.reset()
+                assert client.home(wait=True, timeout=10.0) >= 0
+                home = client.angles()
+                assert home is not None
+                away = [a + 10.0 for a in home]
+                wrapper = SteppingClientWrapper(client, StepIO("test_blend_deadline"))
+                started = time.monotonic()
+                assert wrapper.move_j(away, duration=4.0, r=15, timeout=0.5) >= 0
+                assert wrapper.move_j(home, duration=0.5, r=15) >= 0
+                with pytest.raises(TimeoutError):
+                    wrapper.move_j(home, duration=0.5)
+                assert time.monotonic() - started < 2.5, (
+                    "the first member's deadline was not enforced"
+                )
+                deadline = time.monotonic() + 3.0
+                while not (client.queue() == [] and client.is_robot_stopped()):
+                    assert time.monotonic() < deadline, "controller did not stop"
+                    time.sleep(0.05)
+        finally:
+            controller.cleanup()
