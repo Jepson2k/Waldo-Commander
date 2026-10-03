@@ -40,7 +40,7 @@ class Light(StrEnum):
     RECORDING = "rec"
     """Red dot on one bulb: the motion recorder is capturing."""
     AGENT = "agent"
-    """Both bulbs glow yellow: an AI agent holds control of the arm."""
+    """Both bulbs pulse: an AI agent holds control of the arm."""
 
 
 class Reaction(StrEnum):
