@@ -297,6 +297,26 @@ async def test_diagnostics_reports_only_what_the_backend_reports(
     assert not panel.visible
     await user.should_not_see(marker="response-log")
 
+    # A shut panel costs the page nothing at the status rate: a fieldbus
+    # backend bumps its frame count every tick, and pushing each one re-renders
+    # the panel in the browser until a loaded one stops answering input.
+    rx_frames = next(
+        e for e in user.client.elements.values() if "diag-link-rx-frames" in e._markers
+    )
+    shown = rx_frames.text
+    status.link_health.state = "UP"
+    for _ in range(50):
+        status.link_health.rx_frames += 1
+        page.update()
+        await asyncio.sleep(0)
+    assert rx_frames.text == shown, "a shut panel was sent every frame count"
+    user.find(marker="footer-events").click()
+    await asyncio.sleep(0)
+    page.update()
+    assert rx_frames.text == str(status.link_health.rx_frames), "and opening shows it"
+    status.link_health.state = ""
+    status.link_health.rx_frames = 0
+
     # The refused move is part of the test, and the controller logs it at
     # ERROR. Drop just that record so the fixture's blanket ERROR check still
     # guards everything else.

@@ -135,14 +135,12 @@ async def test_gripper_panel_and_quick_actions(user: User) -> None:
         # A slow close keeps the jaws travelling, and drawing current,
         # across many status ticks.
         waldoctl.commander.settings.jog.speed = 10
-        user.find(marker="btn-tool-action-l").click()
-        drawn = 0.0
-        for _ in range(500):
-            drawn = waldoctl.commander.status.tool.current
-            if drawn:
-                break
-            await asyncio.sleep(0.01)
         lo, hi = tool.current_range
-        assert drawn == round(lo + grip.current / 100 * (hi - lo))
+        expected = round(lo + grip.current / 100 * (hi - lo))
+        user.find(marker="btn-tool-action-l").click()
+        # The last move's current can still be on the wire when the click lands.
+        assert await wait_until(
+            lambda: waldoctl.commander.status.tool.current == expected, 5, interval=0.01
+        ), f"drew {waldoctl.commander.status.tool.current}, expected {expected}"
     finally:
         await client.select_tool("NONE")

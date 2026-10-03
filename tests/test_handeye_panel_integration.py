@@ -37,6 +37,7 @@ from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
     poll_until,
+    reload_page,
     simulate_click,
     wait_for_app_ready,
 )
@@ -519,9 +520,7 @@ async def test_handeye_panel_workflow(
         # A page rebuild (reload, second tab) must not restart the camera: a
         # new capture session would refuse every later capture as "changed".
         session = camera_service.snapshot().session_id
-        ui_state.active_client_id = None
-        await user.open("/")
-        await wait_for_app_ready()
+        await reload_page(user)
         user.find(marker="tab-handeye").click()
         await asyncio.sleep(0)
         assert camera_service.snapshot().session_id == session, (
