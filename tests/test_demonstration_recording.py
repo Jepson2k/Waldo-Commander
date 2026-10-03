@@ -560,8 +560,10 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
 
     # A gripper whose feedback lags the status rate repeats a position while
     # it is still travelling; it is set where it came to rest, not there. One
-    # that does rest partway, then moves on, is set at both stops.
-    def gripping(positions: list[float]) -> Demonstration:
+    # that does rest partway, then moves on, is set at both stops. A
+    # publication without a tool reading (None) says nothing about where the
+    # gripper is.
+    def gripping(positions: list[float | None]) -> Demonstration:
         return replace(
             swung,
             samples=tuple(
@@ -570,7 +572,9 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
                     observed_ns=1_000_000_000 + n * 50_000_000,
                     received_ns=1_000_000_000 + n * 50_000_000,
                     joints_deg=swung.samples[0].joints_deg,
-                    tool=RecordedTool(
+                    tool=None
+                    if position is None
+                    else RecordedTool(
                         key="PNEUMATIC",
                         variant_key="",
                         positions=(position,),
@@ -594,3 +598,6 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
     assert set_positions(
         gripping([1.0] * 6 + [0.8, 0.6] + [0.6] * 10 + ramp[3:] + [0.0] * 10)
     ) == ["0.600", "0.000"]
+    assert set_positions(gripping([1.0] * 6 + [0.7, None, 0.3, 0.0] + [0.0] * 10)) == [
+        "0.000"
+    ]
