@@ -24,6 +24,23 @@ from waldoctl.setup import SetupSnapshot, validate_name
 logger = logging.getLogger(__name__)
 
 _directory: ContextVar[Path | None] = ContextVar("waldo_setup_directory", default=None)
+_load_observer: ContextVar[Callable[[str, SetupSnapshot], None] | None] = ContextVar(
+    "waldo_setup_load_observer", default=None
+)
+
+
+@contextmanager
+def observe_setup_loads(
+    observer: Callable[[str, SetupSnapshot], None],
+) -> Iterator[None]:
+    """Observe the snapshots this program actually loads, without scanning storage."""
+    token = _load_observer.set(observer)
+    try:
+        yield
+    finally:
+        _load_observer.reset(token)
+
+
 _save_listeners: list[Callable[[Path, str, str], None]] = []
 
 
@@ -98,7 +115,14 @@ class SetupStore:
         return sorted(names)
 
     def load(self, name: str) -> SetupSnapshot:
-        return self.read(name)[0]
+        snapshot = self.read(name)[0]
+        observer = _load_observer.get()
+        if observer is not None:
+            try:
+                observer(name, snapshot)
+            except Exception:
+                logger.exception("Setup recording observer failed")
+        return snapshot
 
     def read(self, name: str) -> tuple[SetupSnapshot, str]:
         """The saved snapshot and its revision, the SHA-256 of the file."""
