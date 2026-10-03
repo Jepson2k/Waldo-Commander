@@ -10,10 +10,12 @@ from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from nicegui import background_tasks, ui
 from waldoctl import Commander
+from waldoctl.camera import CameraCalibration
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.signals import DigitalSignal
 from waldoctl.tools import ToolStatus
 
+from waldo_commander.camera_sources import CommanderCameraSource, FrameSource
 from waldo_commander.services.skill_library import (
     SkillEntry,
     call_source,
@@ -21,6 +23,7 @@ from waldo_commander.services.skill_library import (
     plan_preview,
 )
 from waldo_commander.setup import SetupStore
+from waldo_commander.vision import LocalizationLimits
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,7 @@ SKILL_ICONS: dict[str, str] = {
     "waldo.retract": "retract",
     "waldo.park": "park",
     "waldo.align_tool_axis": "align_tool_axis",
+    "waldo.locate_board": "locate_board",
 }
 
 
@@ -308,7 +312,7 @@ class SkillDialog:
                 store = SetupStore()
                 names = store.names()
                 needs_setup = any(
-                    t in (Pose, SetupSnapshot, DigitalSignal)
+                    t in (Pose, SetupSnapshot, DigitalSignal, CameraCalibration)
                     for t in annotations.values()
                 )
                 shared_setup = (
@@ -329,7 +333,7 @@ class SkillDialog:
                 overrides.classes("col-span-2")
                 overrides.set_visibility(
                     sum(
-                        t in (Pose, SetupSnapshot, DigitalSignal)
+                        t in (Pose, SetupSnapshot, DigitalSignal, CameraCalibration)
                         for t in annotations.values()
                     )
                     > 1
@@ -341,10 +345,21 @@ class SkillDialog:
                         if parameter.default is not inspect.Parameter.empty
                         else None
                     )
-                    if annotation in (
+                    if annotation is FrameSource:
+                        ui.label("Uses the active camera.").classes(
+                            "text-caption"
+                        ).mark("skill-camera-source")
+                        readers[name] = CommanderCameraSource
+                    elif annotation == LocalizationLimits | None:
+                        readers[name] = lambda: None
+                        ui.label("Uses default detection limits.").classes(
+                            "text-caption"
+                        )
+                    elif annotation in (
                         Pose,
                         SetupSnapshot,
                         DigitalSignal,
+                        CameraCalibration,
                     ):
                         with override_fields:
                             setup = (
@@ -369,6 +384,7 @@ class SkillDialog:
                             resource = {
                                 Pose: "pose",
                                 DigitalSignal: "signal",
+                                CameraCalibration: "camera",
                             }[annotation]
                             pose = (
                                 ui.select([], label=_label(name))
@@ -391,6 +407,8 @@ class SkillDialog:
                                     options = list(
                                         snapshot.poses
                                         if kind is Pose
+                                        else snapshot.cameras
+                                        if kind is CameraCalibration
                                         else snapshot.signals
                                     )
                                     pose_widget.set_options(
@@ -418,6 +436,11 @@ class SkillDialog:
                                         p.value,
                                     )
                                     if kind is Pose
+                                    else _loaded(
+                                        selected_store,
+                                        s.value or shared_setup.value,
+                                    ).cameras[p.value]
+                                    if kind is CameraCalibration
                                     else _loaded(
                                         selected_store,
                                         s.value or shared_setup.value,

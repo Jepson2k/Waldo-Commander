@@ -703,6 +703,8 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
     command. While the program runs, the sim Previous-step button is hidden
     (live stepping is forward-only); it reappears after the run stops.
     """
+    import waldoctl
+
     editor, tab = await _open_simulated_three_move_program(user)
 
     prev_btn = editor.playback.prev_btn
@@ -738,6 +740,21 @@ async def test_step_program_runs_one_command_per_press(user: User) -> None:
         await asyncio.sleep(0.5)
         assert pb.executing_step_index == 0, "paused start ran more than one command"
         assert is_any_program_running() is True, "program must be paused, not finished"
+
+        # A preview scrub must not reposition the controller while Python owns it,
+        # including between steps when the native queue is idle.
+        timeline = editor.playback._timeline
+        assert timeline is not None
+        slider = next(iter(user.find(marker="editor-scrub-slider").elements))
+        with slider.client:
+            slider.set_value(timeline.total_duration)
+        await asyncio.sleep(0)
+        teleport = editor.playback._teleport_task
+        if teleport is not None:
+            await teleport
+        assert not await waldoctl.commander.client.wait_status(
+            lambda s: abs(s.angles[0] - 85.0) > 1.0, timeout=1
+        ), "preview scrubbing moved the controller during a paused Python run"
 
         # Second press while running-paused: exactly one more command.
         user.find(marker="editor-step-program").click()

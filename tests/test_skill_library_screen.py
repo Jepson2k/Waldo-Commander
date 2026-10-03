@@ -8,6 +8,7 @@ from selenium.webdriver.common.by import By
 
 from tests.helpers.browser_helpers import dismiss_dialogs, run_in_app
 from tests.helpers.wait import screen_wait_for_scene_ready
+from tests.test_vision import localization_scene
 from waldo_commander.setup import SetupStore
 from waldo_commander.state import ui_state
 from waldoctl.setup import Pose, SetupSnapshot
@@ -19,7 +20,11 @@ def test_a_skill_form_opens_beside_the_scene_and_keeps_insert_in_reach(
 ):
     monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
     SetupStore(tmp_path).save(
-        "bench", SetupSnapshot(poses={"pick": Pose((15, 222, 179, 85, 2, 87))})
+        "bench",
+        SetupSnapshot(
+            poses={"pick": Pose((15, 222, 179, 85, 2, 87))},
+            cameras=localization_scene()[1].cameras,
+        ),
     )
     screen.open("/")
     screen_wait_for_scene_ready(screen, timeout_s=40)
@@ -88,3 +93,22 @@ def test_a_skill_form_opens_beside_the_scene_and_keeps_insert_in_reach(
 
     click("skill-close")
     WebDriverWait(driver, 10).until(lambda _: run_in_app(preview_objects) == 0)
+
+    # A skill that takes a camera: its calibration picker and limits fit the
+    # form too, with Insert still in reach.
+    click("editor-commands-btn")
+    click("editor-skills-menu")
+    click("editor-skill-waldo.locate_board")
+    WebDriverWait(driver, 10).until(
+        lambda d: "Uses the active camera." in d.find_element(By.TAG_NAME, "body").text
+    )
+    dimensions = driver.execute_script(
+        "const form=document.querySelector('.skill-library-form-scroll');"
+        "const r=document.getElementById(arguments[0]).getBoundingClientRect();"
+        "return {width:form.clientWidth, content:form.scrollWidth, bottom:r.bottom, height:innerHeight};",
+        f"c{element_id('skill-insert')}",
+    )
+    assert dimensions["content"] <= dimensions["width"] + 1, dimensions
+    assert dimensions["bottom"] < dimensions["height"], dimensions
+    driver.save_screenshot(str(tmp_path / "vision-localization.png"))
+    click("skill-close")
