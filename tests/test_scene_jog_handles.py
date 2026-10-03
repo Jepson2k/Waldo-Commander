@@ -21,6 +21,7 @@ from pinokin import so3_from_rpy
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
+    reload_page,
     simulate_click,
     teleport_to_jog_pose,
     wait_for_app_ready,
@@ -514,12 +515,7 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
     _at(user, urdf, dial, "pointerdown", 0)
     ui_state.joint_jog_timer.active = False
     _at(user, urdf, dial, "pointermove", 10)
-    page = user.client
-    assert page is not None
-    for socket_id in list(page._socket_to_document_id):
-        page.handle_disconnect(socket_id)
-    await user.open("/")
-    await wait_for_app_ready()
+    await reload_page(user)
     await ensure_robot_ready_for_motion()
     panel = ui_state.control_panel
     start = np.array(await panel.client.angles())
