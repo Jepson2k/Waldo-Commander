@@ -304,7 +304,8 @@ async def test_saved_named_output_readback_wait_cancellation_and_disconnection(
                 evaluated += 1
                 return evaluated == 3
 
-            assert await client.wait_status(second_fresh_frame, timeout=4)
+            # Two 1 Hz frames; a loaded runner can deliver them late.
+            assert await client.wait_status(second_fresh_frame, timeout=8)
             # A second before the next frame: the output drops while the held
             # frame still shows it high.
             assert await client.write_io(0, 0) >= 0

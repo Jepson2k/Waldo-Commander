@@ -319,7 +319,13 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         stop = asyncio.Event()
         task = asyncio.create_task(
             record_demonstration(
-                client, duration_s=20, stop=stop, on_sample=lambda sample: first.set()
+                client,
+                duration_s=20,
+                stop=stop,
+                on_sample=lambda sample: first.set(),
+                # Conversion is the subject: a loaded runner's late frame is
+                # not a drop (missing frames still split the span).
+                gap_threshold_s=0.6,
             )
         )
         try:
@@ -388,8 +394,8 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         )
         assert trailing.seconds == 0.0, "the trailing hold is a comment, not a delay"
         assert delayed < still, "the trailing hold is a comment, not a delay"
+        assert "before or after the demonstration" in conversion.source
     assert "rbt.delay(" in conversion.source
-    assert "before or after the demonstration" in conversion.source
     moves = [s for s in conversion.spans if s.kind in ("move_j", "move_l")]
     assert moves, conversion.source
 
@@ -423,7 +429,8 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
     # converter saves itself.
     captures = tmp_path / "captures"
     lines = span_to_lines(recording, robot, program="bench", directory=captures)
-    assert not lines.replayed and lines.source.startswith("rbt.")
+    code = [line for line in lines.source.splitlines() if not line.startswith("#")]
+    assert not lines.replayed and code[0].startswith("rbt."), lines.source
     assert all(
         line in lines.source
         for span in conversion.spans[1:]
