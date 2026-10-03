@@ -161,11 +161,11 @@ async def test_jog_speed_keys_and_popover_and_the_mode_shortcut(user: User) -> N
 
 
 @pytest.mark.integration
-async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
-    """The Invert X/Y Jog settings must flip the WASD jog keys through the
-    same funnel as the arrow buttons: 'd' commands X+ by default and X- when
-    invert-X is on; 'w' commands Y+ by default and Y- when invert-Y is on.
-    (The matching arrow-button flip is covered in test_control_panel_jogging.)
+async def test_wasd_jog_keys_drive_the_pad_arrows(user: User) -> None:
+    """Each jog key presses one arrow of the cartesian pad: D the right
+    arrow, W the up arrow. With the default assignment those are X- and Y-,
+    and the Invert X/Y Jog settings flip key and arrow together.
+    (The arrow-button flip itself is covered in test_control_panel_jogging.)
     """
     from waldo_commander.services.keybindings import keybindings_manager
     from waldo_commander.state import ui_state
@@ -235,27 +235,30 @@ async def test_wasd_jog_keys_follow_arrow_inversion(user: User) -> None:
     invert_x.set_value(False)
     invert_y.set_value(False)
     await asyncio.sleep(0)
-    assert keybindings_manager._bindings["d"].description == "Jog X+", (
-        "invert-X must be off before the baseline tap"
-    )
-    assert keybindings_manager._bindings["w"].description == "Jog Y+", (
-        "invert-Y must be off before the baseline tap"
-    )
+
+    def arrow_label(slot_id: str) -> str:
+        return panel._cart_slot_meta[slot_id]["label"].text
+
+    def assert_keys_match_arrows() -> None:
+        for key, slot_id in (("d", "lr_pos"), ("w", "ud1_up")):
+            assert (
+                keybindings_manager._bindings[key].description
+                == f"Jog {arrow_label(slot_id)}"
+            ), f"'{key}' must drive the {slot_id} arrow"
+
+    assert arrow_label("lr_pos") == "X-" and arrow_label("ud1_up") == "Y-"
+    assert_keys_match_arrows()
     try:
-        await tap_key("d", "x", 5.0)
+        await tap_key("d", "x", -5.0)
+        await tap_key("w", "y", -5.0)
 
         invert_x.set_value(True)
-        await asyncio.sleep(0)
-        assert keybindings_manager._bindings["d"].description == "Jog X-", (
-            "help-menu description must follow the inversion"
-        )
-        await tap_key("d", "x", -5.0)
-
-        await tap_key("w", "y", 5.0)
-
         invert_y.set_value(True)
         await asyncio.sleep(0)
-        await tap_key("w", "y", -5.0)
+        assert arrow_label("lr_pos") == "X+" and arrow_label("ud1_up") == "Y+"
+        assert_keys_match_arrows()
+        await tap_key("d", "x", 5.0)
+        await tap_key("w", "y", 5.0)
     finally:
         invert_x.set_value(False)
         invert_y.set_value(False)
