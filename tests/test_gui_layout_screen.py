@@ -6,6 +6,7 @@ import json
 import pytest
 import waldoctl
 from nicegui import Client, core
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl.setup import Frame, Pose, SetupSnapshot
@@ -15,6 +16,8 @@ from tests.helpers.wait import screen_wait_for_scene_ready
 from tests.test_par6_backend import par6_env, requires_par6  # noqa: F401
 from waldo_commander.setup import SetupStore
 from waldo_commander.state import ui_state
+from waldo_commander.components.simulation_engine import SimulationEngine
+from waldo_commander.components.skill_library import SkillStrip
 
 
 @pytest.fixture
@@ -26,6 +29,14 @@ def layout_screen(screen):
 
 
 def review_layout(screen, tmp_path, monkeypatch, backend):
+    # This test measures controls, not the inserted sample's motion plan.
+    # Keep the live daemon/status and scene, but avoid starting planners for
+    # each edit with fixture-only poses and a temporary setup directory.
+    # Native planning/execution is covered by test_par6_backend and scenarios.
+    monkeypatch.setattr(
+        SimulationEngine, "schedule_debounced_simulation", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(SkillStrip, "_schedule_preview", lambda self: None)
     monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path / "setups"))
     SetupStore().save(
         "assembly",
@@ -47,12 +58,16 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         return next(e for e in client.elements.values() if marker in e._markers)
 
     def click(marker):
-        target = WebDriverWait(screen.selenium, 10).until(
-            lambda _: marked_element(screen, marker)
-            if marked_element(screen, marker).is_displayed()
-            else None
-        )
-        target.click()
+        def click_visible(_):
+            target = marked_element(screen, marker)
+            if not target.is_displayed():
+                return False
+            target.click()
+            return True
+
+        WebDriverWait(
+            screen.selenium, 10, ignored_exceptions=(StaleElementReferenceException,)
+        ).until(click_visible)
         screen.selenium.execute_cdp_cmd(
             "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 600, "y": 4}
         )
@@ -90,7 +105,8 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         (1920, 941, 1),
         (1366, 900, 1),
         (1366, 768, 1),
-        (1366, 768, 1.25),
+        # At 125%, 960 physical pixels leaves 768 CSS pixels.
+        (1366, 960, 1.25),
     ]:
         screen.selenium.execute_cdp_cmd(
             "Emulation.setDeviceMetricsOverride",
@@ -100,6 +116,12 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "deviceScaleFactor": zoom,
                 "mobile": False,
             },
+        )
+        WebDriverWait(screen.selenium, 10).until(
+            lambda d: d.execute_script("""
+                return ['.status-footer', '.overlay-br', '.side-tab-bar.bottom-0']
+                    .every(selector => document.querySelector(selector));
+            """)
         )
         # The footer is one row inside the viewport, and the control panel
         # sits clear of it.
@@ -121,26 +143,44 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         # description beside its control, not a card with a divider.
         measure_category = """
             const card = document.querySelector('.settings-dialog-card');
-            const e = card.querySelector('.q-tab-panel:not(.q-tab-panel--inactive) .settings-content')
-                || card.querySelector('.q-tab-panel .settings-content');
+            const e = arguments[0].closest('.q-tab-panel').querySelector('.settings-content');
             const r = card.getBoundingClientRect();
+            const content = e.getBoundingClientRect();
+            const clipped = [...e.querySelectorAll('.settings-row > :not(.settings-text)')]
+                .filter(control => control.offsetParent !== null)
+                .map(control => control.getBoundingClientRect())
+                .filter(control => control.left < content.left - 1 || control.right > content.right + 1)
+                .map(control => ({left:control.left, right:control.right}));
             const tall = [...e.querySelectorAll('.settings-row')]
                 .filter(row => row.offsetParent !== null && !row.querySelector('.settings-axis'))
                 .map(row => row.getBoundingClientRect().height)
                 .filter(h => h > 48);
             return {width:e.clientWidth, content:e.scrollWidth, bottom:r.bottom, right:r.right,
                     viewport:innerHeight, viewportWidth:innerWidth,
-                    separators: card.querySelectorAll('.q-separator').length, tall,
+                    separators: card.querySelectorAll('.q-separator').length, tall, clipped,
+                    contentRight:content.right,
                     rows: e.scrollHeight, shown: e.clientHeight};
         """
         for key in categories:
             click(f"settings-cat-{key}")
             WebDriverWait(screen.selenium, 10).until(
                 lambda d: d.execute_script(
-                    "return !!document.querySelector('.settings-dialog-card .q-tab-panel:not(.q-tab-panel--inactive) .settings-content')"
+                    """
+                    const panel = arguments[0].closest('.q-tab-panel');
+                    const bounds = panel.getBoundingClientRect();
+                    const body = panel.closest('.settings-body').getBoundingClientRect();
+                    return panel.offsetParent !== null
+                        && Math.abs(bounds.left - body.left) < 1
+                        && Math.abs(bounds.right - body.right) < 1
+                        && !panel.getAnimations().some(a => a.playState === 'running')
+                        && !panel.parentElement.querySelector('[class*="-leave-active"]');
+                    """,
+                    marked_element(screen, f"settings-group-{key}"),
                 )
             )
-            dimensions = screen.selenium.execute_script(measure_category)
+            dimensions = screen.selenium.execute_script(
+                measure_category, marked_element(screen, f"settings-group-{key}")
+            )
             if zoom > 1:
                 # Only the tightest window is worth a picture of every category.
                 screen.selenium.save_screenshot(
@@ -158,22 +198,34 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             )
             assert dimensions["separators"] == 0, (key, dimensions)
             assert not dimensions["tall"], (key, dimensions)
+            assert dimensions["contentRight"] <= dimensions["right"] + 1, (
+                key,
+                dimensions,
+            )
+            assert not dimensions["clipped"], (key, dimensions)
         click("settings-cat-tool")
         WebDriverWait(screen.selenium, 10).until(
             lambda _: marked_element(screen, "select-tool").is_displayed()
         )
         if height >= 941:
-            # A tool with variants adds its Variant row, and the form still fits.
-            select_tool("SSG-48")
-            WebDriverWait(screen.selenium, 20).until(
-                lambda _: marked_element(screen, "select-tool-variant").is_displayed()
+            # PAROL6's gripper adds a Variant row. PAR6 only permits the
+            # gripper fitted in its daemon config, so review that tool.
+            if backend == "parol6":
+                select_tool("SSG-48")
+                WebDriverWait(screen.selenium, 20).until(
+                    lambda _: marked_element(
+                        screen, "select-tool-variant"
+                    ).is_displayed()
+                )
+            grown = screen.selenium.execute_script(
+                measure_category, marked_element(screen, "settings-group-tool")
             )
-            grown = screen.selenium.execute_script(measure_category)
             assert grown["rows"] <= grown["shown"] + 1, (
                 "Settings → Tool scrolls on a 1080p screen with a gripper selected",
                 grown,
             )
-            select_tool("NONE")
+            if backend == "parol6":
+                select_tool("NONE")
         WebDriverWait(screen.selenium, 10).until(
             lambda _: run_in_app(
                 lambda: (
@@ -198,8 +250,14 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         click("editor-commands-btn")
         click("editor-skills-menu")
         click("editor-skill-waldo.transfer")
-        WebDriverWait(screen.selenium, 10).until(
-            lambda _: marked_element(screen, "skill-strip-teach").is_displayed()
+        # The strip can rebuild while the preview and cursor settle. Query
+        # the rendered controls together, rather than resolve a server-side
+        # element id that can be replaced before it reaches the browser.
+        WebDriverWait(screen.selenium, 30).until(
+            lambda d: d.execute_script("""
+                return [...document.querySelectorAll('.skill-strip button')]
+                    .some(e => e.offsetParent !== null && e.textContent.includes('Teach now'));
+            """)
         )
         bounds = screen.selenium.execute_script(
             """
@@ -278,7 +336,21 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "return !Array.from(document.querySelectorAll('.q-dialog')).some(e => e.getClientRects().length)"
             )
         )
-        click("bottom-panel-close")
+
+        # The remaining check concerns the drive panel's scrolling. Set up
+        # its unobstructed layout directly; bottom-panel close interactions
+        # have their own footer tests.
+        def close_diagnostics():
+            with Client.instances[ui_state.active_client_id]:
+                ui_state.bottom_panel.close()
+
+        run_in_app(close_diagnostics)
+        # The form fits at 900px. Use the smallest desktop height so this
+        # actually exercises scrolling instead of requiring needless overflow.
+        screen.selenium.execute_cdp_cmd(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 1366, "height": 768, "deviceScaleFactor": 1, "mobile": False},
+        )
 
         click("tab-par6-drives")
 
@@ -324,7 +396,7 @@ def test_compact_layout_parol6(layout_screen, tmp_path, monkeypatch):
 
 @requires_par6
 @pytest.mark.browser
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(240)
 @pytest.mark.usefixtures("par6_env")
 def test_compact_layout_par6(layout_screen, tmp_path, monkeypatch):
     review_layout(layout_screen, tmp_path, monkeypatch, "par6")

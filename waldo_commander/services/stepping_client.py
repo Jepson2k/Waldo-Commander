@@ -337,7 +337,9 @@ class StepIO:
         )
 
 
-_STEPPABLE_TOOL_METHODS = frozenset({"set_position", "open", "close", "calibrate"})
+_STEPPABLE_TOOL_METHODS = frozenset(
+    {"set_position", "open", "close", "calibrate", "release"}
+)
 
 
 class _SteppingToolProxy:
@@ -544,7 +546,6 @@ class SteppingClientWrapper:
     @property
     def tool(self):
         """Return the sync tool with stepping behavior on action methods."""
-        self._flush_blend()
         return _SteppingToolProxy(self._wrapped.tool, self)
 
     def __enter__(self) -> "SteppingClientWrapper":

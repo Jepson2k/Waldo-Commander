@@ -23,7 +23,9 @@ AWAY = [90, -90, 140, 15, 50, 175]
 
 def _preview() -> PathPreviewClient:
     return PathPreviewClient(
-        dry_run_client_cls=DryRunRobotClient, initial_joints=np.radians(START)
+        dry_run_client_cls=DryRunRobotClient,
+        initial_joints=np.radians(START),
+        initial_gripper_calibrated=True,
     )
 
 

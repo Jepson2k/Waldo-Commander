@@ -57,7 +57,9 @@ _UNRESOLVED = frozenset(
 
 #: Tool calls that move the jaws. Anything else on a tool is a read, and a
 #: read answers with what it read, not with a queue index.
-_TOOL_ACTIONS = frozenset({"set_position", "open", "close", "calibrate", "grip"})
+_TOOL_ACTIONS = frozenset(
+    {"set_position", "open", "close", "calibrate", "release", "grip"}
+)
 
 #: Reads a program makes on its client that are not commands: nothing to
 #: note, and no blend hold to close first.
@@ -121,6 +123,7 @@ class PathPreviewClient:
         initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
         robot: Any = None,
+        initial_gripper_calibrated: bool = False,
     ):
         self.target_collector: list[dict] = (
             [] if target_collector is None else target_collector
@@ -144,7 +147,9 @@ class PathPreviewClient:
             init_deg = np.degrees(np.asarray(initial_joints, dtype=np.float64)).tolist()
 
         self._client = dry_run_client_cls(
-            initial_joints_deg=init_deg, initial_homed=initial_homed
+            initial_joints_deg=init_deg,
+            initial_homed=initial_homed,
+            initial_gripper_calibrated=initial_gripper_calibrated,
         )
         if robot is not None:
             # The worker already holds the backend it planned with; a bare
@@ -342,6 +347,8 @@ class PathPreviewClient:
         line_no = self._get_caller_line_number()
         self._attribute_commands(line_no, method="tool_action")
         self._holding = False
+        self._pending_sleep = 0.0
+        self._last_move_non_blocking = False
         if self._tool_metadata is None:
             return
 
@@ -371,9 +378,8 @@ class PathPreviewClient:
                 line_number=line_no,
                 method=method_name,
                 estimated_duration=0.0,
-                # A sleep after a non-blocking move puts the action mid-motion,
-                # offset from the start of the move it rides.
-                sleep_offset=self._pending_sleep,
+                # The backend's queued block owns the action's timing.
+                sleep_offset=0.0,
                 segment_index=-1,
                 tcp_path=None,
                 command=command,
@@ -666,6 +672,7 @@ class AsyncPathPreviewClient:
         initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
         robot: Any = None,
+        initial_gripper_calibrated: bool = False,
     ):
         self._sync_client = PathPreviewClient(
             dry_run_client_cls=dry_run_client_cls,
@@ -677,6 +684,7 @@ class AsyncPathPreviewClient:
             initial_homed=initial_homed,
             tool_meta_registry=tool_meta_registry,
             robot=robot,
+            initial_gripper_calibrated=initial_gripper_calibrated,
         )
 
     async def __aenter__(self):

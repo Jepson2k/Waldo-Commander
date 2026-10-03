@@ -49,7 +49,7 @@ async def set_jog(
 
 @mcp.tool(name="settings.get_gripper")
 async def get_gripper() -> dict:
-    """Gripper preferences."""
+    """Gripper preferences, in the units ``settings.set_gripper`` takes."""
     g = waldoctl.commander.settings.gripper
     return {
         "speed_sync": g.speed_sync,
@@ -66,7 +66,12 @@ async def set_gripper(
     current: int | None = None,
     target_position: float | None = None,
 ) -> None:
-    """Update one or more gripper preferences."""
+    """Update one or more gripper preferences. ``None`` leaves a field
+    unchanged.
+
+    ``speed`` and ``current`` are percent (0..100); ``current`` spans the
+    electric gripper's current range, 0 its minimum and 100 its maximum.
+    ``target_position`` is 0..1, 0 = open."""
     g = waldoctl.commander.settings.gripper
     if speed_sync is not None:
         g.speed_sync = speed_sync

@@ -141,6 +141,10 @@ class RobotState(ChangeNotifierMixin):
     # All joints homed, from the status stream. Seeds dry-run previews so an
     # unhomed robot's preview mirrors the controller's planned-motion gate.
     homed: bool = True
+    # Last calibration confirmed by Commander. The shared status protocol
+    # does not expose the backend's calibration latch.
+    gripper_calibrated: bool = False
+    controller_session: tuple[int, bool] | None = None
     # The controller's latched error, or None; self-clearing conditions are
     # on commander.status.warnings.
     standing_error: RobotError | None = None
@@ -160,6 +164,8 @@ class RobotState(ChangeNotifierMixin):
         self.torque_time_series.clear()
         self.speeds[:] = 0.0
         self.homed = True
+        self.gripper_calibrated = False
+        self.controller_session = None
         self.standing_error = None
         self.executing_index = -1
         self.completed_index = -1
@@ -452,6 +458,14 @@ class ReadinessState:
             self._backend_done = True
             logger.debug("Readiness: backend done")
             self._check_app_ready()
+
+    def begin_page(self) -> None:
+        """A replacement page must finish building before it is ready."""
+        self._page_done = False
+        self.app_ready.clear()
+        self.app_ready_ts = 0.0
+        self.urdf_scene_ready.clear()
+        self.urdf_scene_ready_ts = 0.0
 
     def mark_page_done(self) -> None:
         """Mark page as ready (call from index_page after setup)."""

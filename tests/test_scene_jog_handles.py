@@ -490,6 +490,27 @@ async def test_next_ring_keeps_the_previous_joints_commanded_target(user: User) 
         20,
     )
 
+    # Release commits an angle, but it must not refresh that servo after a
+    # takeover, even if this browser immediately regains the lease.
+    from waldo_commander.services.control_lease import BROWSER, control_lease
+
+    start = np.array(await panel.client.angles())
+    waldoctl.commander.settings.jog.speed = 10
+    assert panel.ring_drag_begin(0)
+    panel.ring_drag_target(0, float(start[0] + 25))
+    await panel.ring_drag_end()
+    assert await wait_until(
+        lambda: waldoctl.commander.status.joints.angles.deg[0] > start[0] + 1, 5
+    )
+    control_lease.seize("mcp", "other", "Other driver")
+    control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
+    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+    stopped = np.array(await panel.client.angles())
+    assert stopped[0] < start[0] + 24
+    await panel.jog_tick()
+    await asyncio.sleep(0.4)
+    assert np.array(await panel.client.angles()) == pytest.approx(stopped, abs=0.1)
+
 
 @pytest.mark.integration
 async def test_touch_pinned_gizmo_survives_an_arrow_press_miss(user: User) -> None:

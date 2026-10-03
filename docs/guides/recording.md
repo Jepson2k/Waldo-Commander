@@ -20,6 +20,12 @@ the background, its place in the program marked *converting…* meanwhile, and
 written there like any other recorded action. Stopping or keeping a take while
 the arm is still moving keeps the motion up to that moment.
 
+Manual gripper drags keep the latest target and record one final position.
+Tool actions requested during a jog are recorded directly after its completed
+move. Their order comes from the shared command queue; the recorder adds no
+mid-move delay or nonblocking move to recreate overlap. Idle gaps between
+separate manual actions are still retained.
+
 ## Keeping a take
 
 The lines a recording writes stay marked in the editor, tinted orange, until

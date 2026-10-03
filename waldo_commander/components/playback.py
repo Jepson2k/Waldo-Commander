@@ -16,7 +16,12 @@ from waldo_commander.common.theme import hex_of
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    control_lease,
+    require_browser_control,
+)
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.path_visualizer import path_visualizer
 from waldo_commander.services.preview_segments import (
@@ -839,6 +844,13 @@ class PlaybackController:
 
             # Sample tool position once (used for both teleport and URDF animation)
             tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
+            selection = tl.sample_tool_selection(t)
+            tool_key = (
+                selection.tool_key if selection else waldoctl.commander.status.tool.key
+            )
+            motions = ui_state.active_robot.tools[tool_key or "NONE"].motions
+            if not motions or len(tool_pos) != len(motions):
+                tool_pos = ()
 
             if (
                 sample.joints
@@ -858,6 +870,9 @@ class PlaybackController:
                         self._teleport(
                             waldoctl.commander.status.joints.angles.deg.tolist(),
                             list(tool_pos) if tool_pos else None,
+                            (selection.tool_key, selection.variant_key)
+                            if selection
+                            else None,
                         )
                     )
 
@@ -910,14 +925,6 @@ class PlaybackController:
                         ui_state.urdf_scene.apply_tool_everywhere(
                             sel.tool_key, variant_key=sel.variant_key or None
                         )
-                        # Sync to controller so readout reflects tool TCP
-                        if ui_state.control_panel and ui_state.control_panel.client:
-                            asyncio.create_task(
-                                ui_state.control_panel.client.select_tool(
-                                    sel.tool_key,
-                                    variant_key=sel.variant_key or "",
-                                )
-                            )
 
             # Drive tool animation from timeline keyframes
             if (
@@ -943,12 +950,40 @@ class PlaybackController:
                 self._scrub_slider.props(f'label-value="{text}"')
 
     @staticmethod
-    async def _teleport(joints_deg: list[float], tool_pos: list[float] | None) -> None:
+    async def _teleport(
+        joints_deg: list[float],
+        tool_pos: list[float] | None,
+        selection: tuple[str, str] | None = None,
+    ) -> None:
         """Send a fire-and-forget teleport to the backend."""
-        if is_any_program_running():
+        page = ui_state.active_client_id
+        if not require_browser_control(page, notify=False):
+            return
+        generation = motion_guard.stop_generation
+        lease_generation = control_lease.generation
+
+        def allowed() -> bool:
+            return (
+                not is_any_program_running()
+                and waldoctl.commander.status.simulator_active
+                and page == ui_state.active_client_id
+                and generation == motion_guard.stop_generation
+                and lease_generation == control_lease.generation
+                and control_lease.held_by(BROWSER, page or "")
+            )
+
+        if not allowed() or ui_state.control_panel is None:
             return
         try:
-            await ui_state.control_panel.client.teleport(
+            client = ui_state.control_panel.client
+            tool = waldoctl.commander.status.tool
+            if selection is not None and selection != (tool.key, tool.variant_key):
+                index = await client.select_tool(selection[0], variant_key=selection[1])
+                if index < 0 or not await client.wait_command(index, timeout=5.0):
+                    return
+            if not allowed():
+                return
+            await client.teleport(
                 joints_deg,
                 tool_positions=tool_pos,
             )

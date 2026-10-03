@@ -58,7 +58,7 @@ def test_review_controls_and_diff_coexist_without_clipping(screen) -> None:
     screen.open("/")
     # Narrow window: in the app the editor lives in a ~380px overlay panel,
     # so the header must cope with tight widths.
-    screen.selenium.set_window_size(800, 1024)
+    screen.selenium.set_window_size(760, 900)
     dismiss_dialogs(screen)
     click_tab(screen, "program")
     wait_for_codemirror_ready(screen)

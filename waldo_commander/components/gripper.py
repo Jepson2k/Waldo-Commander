@@ -1,9 +1,10 @@
+import asyncio
 import logging
 import time
 from collections.abc import Callable
 
 import waldoctl
-from nicegui import ui
+from nicegui import background_tasks, ui
 from waldoctl import (
     ElectricGripperTool,
     GripperTool,
@@ -14,8 +15,13 @@ from waldo_commander.common.panel_theme import chart_grid, chart_text
 from waldo_commander.common.theme import css, hex_of
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S, config
 from waldo_commander.services.camera_service import camera_service
-from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.services.control_lease import (
+    control_lease,
+    require_browser_control,
+)
 from waldo_commander.services.motion_recorder import motion_recorder
+from waldo_commander.services.motion_guard import motion_guard
+from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import robot_state, ui_state
 
 logger = logging.getLogger(__name__)
@@ -56,8 +62,17 @@ class GripperPage:
         self._is_open = is_open
         self._last_current_tool_key: str | None = None
         self._current_range_listener: Callable | None = None
+        self._current_range: tuple[int, int] = (0, 0)
         self._slider_drag_ts: float = 0.0
-        self._last_slider_send: float = 0.0
+        self._slider_task: asyncio.Task | None = None
+        self._pending_position: float | None = None
+        self._slider_final = False
+        self._gesture_has_value = False
+        self._finished_slider_targets: list[float] = []
+        self._slider_cancelled = False
+        self._slider_context: tuple | None = None
+        self._last_final_position: float | None = None
+        self._page_client = None
         self._last_lease_block_notify: float = 0.0
         self._user_dragging: bool = False
         self._target_initialized: bool = False
@@ -83,7 +98,13 @@ class GripperPage:
         control doesn't stack dozens of identical warnings per gesture."""
         now = time.monotonic()
         should_notify = now - self._last_lease_block_notify > 3.0
-        ok = require_browser_control(ui_state.active_client_id, notify=should_notify)
+        ok = (
+            self._page_client is not None
+            and self._page_client.id == ui_state.active_client_id
+            and motion_guard.owner is None
+            and not is_any_program_running()
+            and require_browser_control(ui_state.active_client_id, notify=should_notify)
+        )
         if not ok and should_notify:
             self._last_lease_block_notify = now
         return ok
@@ -104,8 +125,9 @@ class GripperPage:
                     spd_kwargs["speed"] = (
                         waldoctl.commander.settings.gripper.speed / 100.0
                     )
-                if self._cur_slider:
-                    spd_kwargs["current"] = int(self._cur_slider.value)
+                spd_kwargs["current"] = (
+                    waldoctl.commander.settings.gripper.current / 100.0
+                )
             await motion_recorder.owned_tool_move(
                 self.client,
                 tool.set_position(position, **spd_kwargs),
@@ -120,6 +142,11 @@ class GripperPage:
     # ---- Build ----
 
     def build(self) -> None:
+        self._page_client = ui.context.client
+        self._page_client.on_disconnect(self._cancel_slider)
+        self._drop_stop_listener = motion_guard.add_stop_listener(
+            lambda *_: self._cancel_slider()
+        )
         self._pos_slider: ui.slider | None = None
         self._cur_slider: ui.slider | None = None
         self._combined_chart: ui.echart | None = None
@@ -289,7 +316,11 @@ class GripperPage:
         target_pos_pct = round(
             waldoctl.commander.settings.gripper.target_position * 100, 1
         )
-        current_limit = waldoctl.commander.settings.gripper.current
+        # The chart plots measured mA; the setting is a percent of the range.
+        lo, hi = self._current_range
+        current_limit = lo + waldoctl.commander.settings.gripper.current / 100.0 * (
+            hi - lo
+        )
         clr_pos, clr_cur = self._clr_pos, self._clr_cur
 
         chart = self._combined_chart
@@ -315,13 +346,15 @@ class GripperPage:
 
     def set_target_position(self, position: float) -> None:
         """Set target position and update the slider. Called by control panel actions."""
+        self._target_initialized = True
         waldoctl.commander.settings.gripper.target_position = position
         if self._pos_slider is not None:
             self._pos_slider.set_value(round(position * 100))
         self._update_mark_lines()
 
     def set_target_current(self, current: int) -> None:
-        """Set target current and update the slider. Called by control panel adjust."""
+        """Set the target current (percent) and update the slider. Called by
+        control panel adjust."""
         waldoctl.commander.settings.gripper.current = current
         if self._cur_slider is not None:
             self._cur_slider.set_value(current)
@@ -333,47 +366,188 @@ class GripperPage:
 
     # ---- Live slider ----
 
+    def _input_context(self) -> tuple:
+        return (
+            motion_guard.stop_generation,
+            ui_state.active_client_id,
+            waldoctl.commander.status.simulator_active,
+            waldoctl.commander.status.tool.key,
+            waldoctl.commander.status.tool.variant_key,
+            control_lease.generation,
+        )
+
+    def _cancel_slider(self) -> None:
+        self._slider_cancelled = True
+        self._user_dragging = False
+        self._pending_position = None
+        self._finished_slider_targets.clear()
+        self._slider_context = None
+        if self._slider_task is not None:
+            self._slider_task.cancel()
+            self._slider_task = None
+
     def _on_slider_pan(self, e) -> None:
-        """Track user drag state via Quasar pan event (not fired on programmatic changes)."""
+        if self._pos_slider is None:
+            return
         self._user_dragging = e.args in ("start", True)
+        if self._user_dragging:
+            if not self._can_actuate():
+                self._cancel_slider()
+                return
+            self._slider_cancelled = False
+            self._slider_final = False
+            self._last_final_position = None
+            self._slider_context = self._input_context()
+            # Quasar updates its value before emitting pan start.
+            self._queue_position(float(self._pos_slider.value))
+        elif self._slider_context is not None:
+            self._slider_final = True
+            self._queue_position(float(self._pos_slider.value))
 
-    async def _on_slider_drag(self, e) -> None:
-        """Throttled handler for continuous slider drag — streams position at jog rate."""
-        if not self._user_dragging:
+    def _on_slider_drag(self, e) -> None:
+        if self._user_dragging or self._slider_context is not None:
+            self._queue_position(float(e.value))
+
+    def _on_slider_change(self, e) -> None:
+        # change is also emitted by keyboard/click input, without a pan.
+        if self._slider_cancelled:
             return
+        value = float(e.args)
+        if self._slider_context is None:
+            if not self._can_actuate():
+                return
+            if self._last_final_position == value / 100.0:
+                return
+            self._slider_context = self._input_context()
+        self._user_dragging = False
+        self._slider_final = True
+        self._queue_position(value)
+
+    def _on_slider_input_start(self) -> None:
+        if (
+            self._slider_context is not None
+            and self._slider_context != self._input_context()
+        ):
+            self._cancel_slider()
+        if not self._can_actuate():
+            return
+        # Seal the preceding endpoint before this pointer/keyboard event can
+        # update the value. The previous command may still be completing.
+        if self._slider_context is not None and self._slider_final:
+            self._finished_slider_targets.append(
+                waldoctl.commander.settings.gripper.target_position
+            )
+            self._pending_position = None
+            self._gesture_has_value = False
+        # Only a fresh physical interaction can re-arm a cancelled gesture.
+        self._slider_cancelled = False
+
+    def _queue_position(self, value: float) -> None:
+        if self._slider_context != self._input_context() or not self._can_actuate():
+            self._cancel_slider()
+            return
+        position = max(0.0, min(1.0, value / 100.0))
+        self._target_initialized = True
+        waldoctl.commander.settings.gripper.target_position = position
+        self._pending_position = position
+        self._gesture_has_value = True
         self._slider_drag_ts = time.monotonic()
-        now = self._slider_drag_ts
-        if now - self._last_slider_send < self._slider_interval:
-            return
-        self._last_slider_send = now
-        # Gate before mutating: don't move the target_position setting / mark
-        # lines when an MCP session holds the lease and the action is refused.
-        if not self._can_actuate():
-            return
-        value = e.value
-        pos = value / 100.0
-        waldoctl.commander.settings.gripper.target_position = pos
         self._update_mark_lines()
-        await self._grip_set(pos, "Set")
+        if self._slider_task is None:
+            self._slider_task = background_tasks.create(self._drain_positions())
 
-    async def _on_current_slider_change(self, e) -> None:
-        """Sync current slider value to commander.settings.gripper.current, update markLine, and send to gripper."""
-        value = e.value
-        waldoctl.commander.settings.gripper.current = int(value)
+    async def _drain_positions(self) -> None:
+        """One queued command at a time; retain the latest unsent target.
+
+        Keep the observer's owned window across the entire gesture, then
+        record only its final accepted target. A trailing Quasar update may
+        arrive up to 50 ms after pan end.
+        """
+        task = asyncio.current_task()
+        last_position = None
+        last_kwargs: dict = {}
+        try:
+            with motion_recorder.owned():
+                while self._slider_context is not None:
+                    await asyncio.sleep(self._slider_interval)
+                    if (
+                        self._slider_context != self._input_context()
+                        or not self._can_actuate()
+                    ):
+                        self._slider_cancelled = True
+                        return
+                    finished = bool(self._finished_slider_targets)
+                    if finished:
+                        position = self._finished_slider_targets.pop(0)
+                    else:
+                        position, self._pending_position = self._pending_position, None
+                    if position is not None and position != last_position:
+                        tool = self._get_active_gripper()
+                        if tool is None:
+                            return
+                        kwargs = {}
+                        if isinstance(tool, ElectricGripperTool):
+                            settings = waldoctl.commander.settings
+                            kwargs = {
+                                "speed": (
+                                    settings.jog.speed
+                                    if settings.gripper.speed_sync
+                                    else settings.gripper.speed
+                                )
+                                / 100.0,
+                                "current": settings.gripper.current / 100.0,
+                            }
+                        index = await tool.set_position(position, **kwargs)
+                        if index < 0 or not await self.client.wait_command(
+                            index, timeout=10.0
+                        ):
+                            return
+                        last_position, last_kwargs = position, kwargs
+                    if (
+                        finished
+                        and self._slider_context == self._input_context()
+                        and self._can_actuate()
+                    ):
+                        motion_recorder.record_action(
+                            "gripper", position=last_position, **last_kwargs
+                        )
+                    if (
+                        self._slider_final
+                        and not self._finished_slider_targets
+                        and self._pending_position is None
+                        and time.monotonic() - self._slider_drag_ts >= 0.06
+                    ):
+                        if (
+                            self._gesture_has_value
+                            and last_position is not None
+                            and self._slider_context == self._input_context()
+                            and self._can_actuate()
+                        ):
+                            motion_recorder.record_action(
+                                "gripper", position=last_position, **last_kwargs
+                            )
+                            self._last_final_position = last_position
+                        return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Gripper slider failed: %s", exc)
+        finally:
+            if self._slider_task is task:
+                self._slider_task = None
+                self._slider_context = None
+                self._pending_position = None
+                self._finished_slider_targets.clear()
+                self._user_dragging = False
+
+    def _on_current_slider_change(self, e) -> None:
+        waldoctl.commander.settings.gripper.current = int(e.value)
         self._mark_lines_dirty = True
-        if not self._user_dragging:
-            return
-        if not self._can_actuate():
-            return
-        tool = self._get_active_gripper()
-        if isinstance(tool, ElectricGripperTool):
-            try:
-                await tool.set_position(
-                    waldoctl.commander.settings.gripper.target_position,
-                    current=int(value),
-                )
-            except Exception as exc:
-                logger.debug("Current limit update failed: %s", exc)
+
+    async def _on_current_slider_commit(self, _e) -> None:
+        await self._grip_set(
+            waldoctl.commander.settings.gripper.target_position, "Set current"
+        )
 
     # ---- Status updates (called from status consumer) ----
 
@@ -516,6 +690,10 @@ class GripperPage:
             ui.slider(min=0, max=100, value=0, step=1)
             .on_value_change(self._on_slider_drag)
             .on("pan", self._on_slider_pan)
+            .on("change", self._on_slider_change)
+            .on("pointerdown", self._on_slider_input_start)
+            .on("keydown", self._on_slider_input_start)
+            .mark("gripper-position")
         )
         pos_input = ui.number(min=0, max=100, step=1, value=0).props("dense borderless")
         pos_input.bind_value_from(self._pos_slider, "value")
@@ -524,21 +702,24 @@ class GripperPage:
         def _electric_visible(k: str) -> bool:
             return k != "NONE" and self._is_electric()
 
-        ui.label("mA").classes("wc-caption text-wc-text-muted").bind_visibility_from(
+        ui.label("Current %").classes(
+            "wc-caption text-wc-text-muted"
+        ).bind_visibility_from(
             waldoctl.commander.status.tool,
             "key",
             backward=_electric_visible,
         )
+        cur_pct = waldoctl.commander.settings.gripper.current
         self._cur_slider = (
-            ui.slider(min=0, max=1000, value=500, step=10)
-            .on("pan", self._on_slider_pan)
+            ui.slider(min=0, max=100, value=cur_pct, step=1)
+            .on("change", self._on_current_slider_commit)
             .on_value_change(self._on_current_slider_change)
         ).bind_visibility_from(
             waldoctl.commander.status.tool,
             "key",
             backward=_electric_visible,
         )
-        cur_input = ui.number(min=0, max=1000, step=10, value=500).props(
+        cur_input = ui.number(min=0, max=100, step=1, value=cur_pct).props(
             "dense borderless"
         )
         cur_input.bind_value_from(self._cur_slider, "value")
@@ -549,20 +730,13 @@ class GripperPage:
         )
 
         def _update_current_range() -> None:
-            if self._cur_slider is None:
-                return
             if waldoctl.commander.status.tool.key == self._last_current_tool_key:
                 return
             self._last_current_tool_key = waldoctl.commander.status.tool.key
             tool = self._get_active_gripper()
             if isinstance(tool, ElectricGripperTool):
-                lo, hi = tool.current_range
-                self._cur_slider._props["min"] = lo
-                self._cur_slider._props["max"] = hi
-                cur_input._props["min"] = lo
-                cur_input._props["max"] = hi
-                self._cur_slider.value = min(lo + 80, hi)
-                self._cur_slider.update()
+                self._current_range = tool.current_range
+                self._mark_lines_dirty = True
 
         self._current_range_listener = _update_current_range
         robot_state.add_change_listener(_update_current_range)
@@ -606,5 +780,8 @@ class GripperPage:
 
     def cleanup(self) -> None:
         """Remove listeners when panel is destroyed."""
+        self._cancel_slider()
+        if hasattr(self, "_drop_stop_listener"):
+            self._drop_stop_listener()
         if self._current_range_listener is not None:
             robot_state.remove_change_listener(self._current_range_listener)

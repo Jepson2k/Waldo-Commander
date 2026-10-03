@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 import pytest
 from nicegui import ui
 
+from tests.helpers.wait import wait_for_app_ready
+
 if TYPE_CHECKING:
     from nicegui.testing import User
 
@@ -51,6 +53,7 @@ class TestFileOperations:
     async def test_buttons_exist(self, user: "User") -> None:
         """Verify file operation buttons are present when editor is open."""
         await user.open("/")
+        await wait_for_app_ready()
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
 
@@ -61,6 +64,7 @@ class TestFileOperations:
     async def test_save_dialog_opens(self, user: "User") -> None:
         """Clicking save button opens the save dialog with tree."""
         await user.open("/")
+        await wait_for_app_ready()
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
 
@@ -74,6 +78,7 @@ class TestFileOperations:
     async def test_open_dialog_opens(self, user: "User") -> None:
         """Clicking open button opens the open dialog with tree."""
         await user.open("/")
+        await wait_for_app_ready()
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
 
@@ -90,6 +95,7 @@ class TestFileOperations:
         import waldoctl
 
         await user.open("/")
+        await wait_for_app_ready()
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
 
@@ -119,6 +125,7 @@ class TestFileOperations:
         import waldoctl
 
         await user.open("/")
+        await wait_for_app_ready()
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
 
@@ -132,6 +139,7 @@ class TestFileOperations:
     async def test_download_triggers(self, user: "User") -> None:
         """Download button in save dialog triggers a download."""
         await user.open("/")
+        await wait_for_app_ready()
         user.find(marker="tab-program").click()
         await asyncio.sleep(0)
 

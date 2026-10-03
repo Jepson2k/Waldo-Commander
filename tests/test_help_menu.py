@@ -8,6 +8,7 @@ from nicegui import ui
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
 
+from tests.helpers.wait import wait_for_app_ready
 from waldo_commander.components.help_menu import HelpMenu
 from waldo_commander.state import ui_state
 
@@ -20,6 +21,7 @@ def _settings_button(user: User, label: str) -> UserInteraction:
 
 
 async def _open_settings(user: User, category: str) -> None:
+    await wait_for_app_ready()
     user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
     assert ui_state.settings_content.dialog.value, "the gear opens Settings"

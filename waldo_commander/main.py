@@ -526,6 +526,8 @@ async def check_ping() -> None:
     # that the consumer cannot, since they read
     # waldoctl.commander.status.connected directly.
     waldoctl.commander.status.connected = ps.last_ping_ok
+    if not ps.last_ping_ok and not waldoctl.commander.status.simulator_active:
+        robot_state.gripper_calibrated = False
     _update_connection_notification()
     if readout_panel is not None:
         readout_panel.update_conn_io()
@@ -1610,6 +1612,7 @@ async def index_page():
         ui.timer(interval=1.0, callback=check_ping, active=True)
         return
 
+    readiness_state.begin_page()
     apply_theme()
     ui.query(".nicegui-content").classes("p-0")
     inject_layout_css()
@@ -1655,7 +1658,8 @@ async def index_page():
     # Mark page as ready for tests
     async def _mark_page_done():
         await asyncio.sleep(0)  # Yield to event loop to ensure timers are wired
-        readiness_state.mark_page_done()
+        if ui_state.active_client_id == this_client.id:
+            readiness_state.mark_page_done()
 
     asyncio.create_task(_mark_page_done())
 
@@ -1896,9 +1900,16 @@ async def _status_consumer() -> None:
                     if not playback_coordination.sim_pose_override:
                         robot_state.tool_status = status.tool_status
 
-                    # Speeds arrive as rad/s from backend — convert to deg/s for display
-                    np.rad2deg(status.speeds, out=robot_state.speeds)
+                    # robot_state.speeds doubles as the shadow, so the bindable
+                    # list is rebuilt only while a joint's speed changes.
+                    if not arrays_equal_n(status.speeds, robot_state.speeds):
+                        robot_state.speeds[:] = status.speeds
+                        st.joints.speeds = robot_state.speeds.tolist()
                     robot_state.homed = status.homed
+                    session = (status.session_id, status.simulator_active)
+                    if robot_state.controller_session != session or not status.homed:
+                        robot_state.gripper_calibrated = False
+                    robot_state.controller_session = session
                     pose = st.pose
                     pose.tcp_speed = 0.3 * status.tcp_speed + 0.7 * pose.tcp_speed
 
@@ -2342,10 +2353,12 @@ def main():
     )
     waldoctl._set_commander(commander)
 
-    # Seed the IO buffers so consumers (readout chips, e-stop monitor) see
-    # the right list lengths before the first STATUS broadcast arrives.
+    # Seed the IO and joint-speed lists so consumers (readout chips, e-stop
+    # monitor, status.get_joints) see the right list lengths before the first
+    # STATUS broadcast arrives.
     commander.status.io.inputs = [0] * robot.digital_inputs
     commander.status.io.outputs = [0] * robot.digital_outputs
+    commander.status.joints.speeds = [0.0] * robot.joints.count
 
     # Seed per-frame cart_jog availability so the cartesian-button sync code
     # has a frame_av to read on the first tick (before STATUS arrives).
