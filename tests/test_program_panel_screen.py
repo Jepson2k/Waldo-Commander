@@ -66,19 +66,25 @@ def _restore_sizes(screen) -> None:
 def test_a_widened_program_panel_stays_on_top_and_closes_while_recording(screen):
     close = _open_program(screen)
     try:
-        # Widened under the readout card, the panel is drawn over the card and
-        # its close button, now inside the card's box, still takes the click.
-        readout = js(
+        # Widened over the control card, the panel is drawn over the card and
+        # its close button, now above the card's column, still takes the click.
+        card = js(
             screen,
-            "const r = document.querySelector('.readout-panel').getBoundingClientRect();"
-            "return {left: r.left, right: r.right};",
+            "const r = document.querySelector('.overlay-br').getBoundingClientRect();"
+            "return {left: r.left, right: r.right, top: r.top, bottom: r.bottom};",
         )
-        x = (readout["left"] + readout["right"]) / 2
+        x = (card["left"] + card["right"]) / 2
         under_card = WebDriverWait(screen.selenium, 10).until(
-            lambda _: (m := js(screen, _CLOSE_AT, x, close))["cx"] > readout["left"]
-            and m
+            lambda _: (m := js(screen, _CLOSE_AT, x, close))["cx"] > card["left"] and m
         )
         assert under_card["inPanel"] and under_card["onClose"], under_card
+        assert js(
+            screen,
+            "const [x, y] = arguments; const hit = document.elementFromPoint(x, y);"
+            "return !!hit && !!hit.closest('.program-panel');",
+            x - 30,
+            (card["top"] + card["bottom"]) / 2,
+        ), "the control card is drawn over the widened program panel"
         screen.selenium.find_element(By.ID, close).click()
         # Closed once the tab itself shows it: a click that lands before the
         # deselection reaches the page is undone by it.

@@ -253,7 +253,7 @@ async def test_commander_runs_on_the_par6_runtime(
         # Diagnostics off the wire, all of it from the status broadcast:
         # the loop's tail, the drives' readings, and the torque series the
         # chart draws.
-        user.find(marker="tab-diagnostics").click()
+        user.find(marker="footer-events").click()
         await asyncio.sleep(0)
         await user.should_see(marker="diagnostics-panel")
         # A section reveals on the first status tick that finds it reportable,

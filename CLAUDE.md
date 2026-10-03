@@ -123,7 +123,11 @@ Global state is managed through dataclasses in `waldo_commander/state.py`:
 Custom components are in `waldo_commander/components/`:
 - `editor.py` - Code editor with tabs, script execution
 - `control.py` - Jogging controls, robot mode switching
-- `readout.py` - Joint/position readouts
+- `readout.py` - Status footer: mode, tool, I/O dots, pose, last action, event counts
+- `bottom_panel.py` - Diagnostics and the app log, opened from the footer
+- `diagnostics.py` - Diagnostics content (verdict, loop, drives, events)
+- `settings.py` - Settings dialog, one category per tab
+- `help_menu.py` - Keybindings table, quick-start tour, first-visit dialog
 
 ### Services
 

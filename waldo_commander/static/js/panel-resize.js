@@ -17,20 +17,16 @@
     let config = {
         storageKey: 'panel_sizes',
         selectors: {
-            wrap: null,
             topContainer: null,
-            bottomContainer: null
+            bottomContainer: null,
+            controlPanel: null,
+            bottomCovers: [],
+            columnCovers: []
         },
         constraints: {
             viewportMarginX: 80,
             viewportMarginY: 100,
-            containerPadding: 20,
-            bottomOffset: 12,
-            totalMargin: 36,
-            defaultsClearOf: []
-        },
-        stateClasses: {
-            coupled: 'coupled'
+            totalMargin: 36
         },
         panels: {}
     };
@@ -73,7 +69,7 @@
 
     // ========== Active Tab Storage ==========
     const ACTIVE_TABS_KEY = 'parol_active_tabs';
-    let activeTabs = { top: null, bottom: null };
+    let activeTabs = { top: null, bottom: null, panel: null };
 
     function loadActiveTabs() {
         try {
@@ -84,7 +80,7 @@
             }
         } catch (e) {
             console.warn('[PanelResize] Could not load active tabs:', e);
-            activeTabs = { top: null, bottom: null };
+            activeTabs = { top: null, bottom: null, panel: null };
         }
     }
 
@@ -98,6 +94,14 @@
 
     function getActiveTabs() {
         return { ...activeTabs };
+    }
+
+    // Until the app is ready, tab changes are the page's own start-up
+    // selection and restore; recording them would overwrite what is restored.
+    function rememberTab(group, tab) {
+        if (!appReady) return;
+        activeTabs[group] = tab || null;
+        saveActiveTabs();
     }
 
     // ========== Panel Identification ==========
@@ -178,6 +182,7 @@
     function shouldCouple() {
         const topResizable = getVisibleResizablePanel('top');
         const bottomResizable = getVisibleResizablePanel('bottom');
+        if (topResizable && isFullHeightPanel(getPanelId(topResizable))) return false;
         return topResizable !== null && bottomResizable !== null;
     }
 
@@ -234,6 +239,68 @@
         return !(saved && saved.height);
     }
 
+    // A full-height panel is a column: CSS pins it between the top margin and
+    // the footer, so its height is never dragged, saved or pushed.
+    function isFullHeightPanel(panelId) {
+        const cfg = panelId && config.panels[panelId];
+        return !!(cfg && cfg.fullHeight);
+    }
+
+    // ========== Shell geometry ==========
+    // What covers the 3D view: the column's right edge and the height the
+    // footer and bottom panel take from the bottom. The scene frames itself
+    // from the `wc:layout` event; CSS reads --wc-column-cover (the column
+    // stops above it and above the bottom plugin panels) and
+    // --wc-control-inset (the bottom panel stops short of the control panel).
+
+    let columnOpen = false;
+    let coupled = false;
+    let layout = { columnRight: 0, bottomCover: 0 };
+    let layoutFrame = 0;
+
+    function setRootPx(name, value) {
+        const style = document.documentElement.style;
+        if (style.getPropertyValue(name) !== value + 'px') style.setProperty(name, value + 'px');
+    }
+
+    // An empty container still sits at its bottom offset; it covers nothing.
+    function coverFromBottom(element) {
+        if (!element || element.offsetParent === null) return 0;
+        const rect = element.getBoundingClientRect();
+        return rect.height > 0 ? Math.max(0, Math.round(window.innerHeight - rect.top)) : 0;
+    }
+
+    function coverOf(selectors) {
+        let cover = 0;
+        for (const selector of selectors) {
+            cover = Math.max(cover, coverFromBottom(document.querySelector(selector)));
+        }
+        return cover;
+    }
+
+    function publishLayout() {
+        layoutFrame = 0;
+        let columnRight = 0;
+        const container = columnOpen ? getContainer('top') : null;
+        if (container) {
+            columnRight = Math.round(container.getBoundingClientRect().left + container.offsetWidth);
+        }
+        const bottomCover = coverOf(config.selectors.bottomCovers);
+        const columnCover = Math.max(bottomCover, coverOf(config.selectors.columnCovers));
+        const controlPanel = config.selectors.controlPanel ? document.querySelector(config.selectors.controlPanel) : null;
+        const inset = controlPanel && controlPanel.offsetParent !== null
+            ? Math.max(0, Math.round(window.innerWidth - controlPanel.getBoundingClientRect().left))
+            : 0;
+        setRootPx('--wc-control-inset', inset);
+        setRootPx('--wc-column-cover', columnCover);
+        layout = { columnRight: columnRight, bottomCover: bottomCover };
+        window.dispatchEvent(new CustomEvent('wc:layout', { detail: { ...layout } }));
+    }
+
+    function scheduleLayout() {
+        if (!layoutFrame) layoutFrame = requestAnimationFrame(publishLayout);
+    }
+
     function getContainer(group) {
         const selector = group === 'top'
             ? config.selectors.topContainer
@@ -288,19 +355,10 @@
         return window.innerHeight - config.constraints.viewportMarginY;
     }
 
-    // A default width is a suggestion: it stops short of the overlays to its
-    // right, such as the readout. A width the operator dragged is kept.
+    // A default width is a suggestion; a width the operator dragged is kept.
     function defaultWidth(container, panelConfig) {
-        let width = panelConfig.defaultWidth || panelConfig.minWidth;
-        if (!width) return width;
-        const left = container.getBoundingClientRect().left;
-        for (const selector of config.constraints.defaultsClearOf || []) {
-            const overlay = document.querySelector(selector);
-            if (!overlay || overlay.offsetParent === null) continue;
-            const overlayLeft = overlay.getBoundingClientRect().left;
-            if (overlayLeft > left) width = Math.min(width, overlayLeft - left - 12);
-        }
-        return Math.max(width, panelConfig.minWidth || 0);
+        const width = panelConfig.defaultWidth || panelConfig.minWidth;
+        return width ? Math.max(width, panelConfig.minWidth || 0) : width;
     }
 
     // ========== Resize State ==========
@@ -343,6 +401,7 @@
                     container.style.setProperty('width', newWidth + 'px', 'important');
                 }
             }
+            if (isFullHeightPanel(panelId)) scheduleLayout();
         }
 
         // Handle height resize - only set containers, panels fill via CSS
@@ -426,6 +485,7 @@
         document.body.style.cursor = '';
         activePanel = null;
         activeHandle = null;
+        scheduleLayout();
     }
 
     // ========== Handle Attachment ==========
@@ -595,14 +655,8 @@
     function onTabChange(group, toTab) {
         console.log('[PanelResize] Tab change:', group, '->', toTab);
 
-        // Only update and save active tab state after app is fully initialized
-        // This prevents the initial auto-selection from overwriting saved state in memory
-        if (appReady) {
-            activeTabs[group] = toTab || null;
-            saveActiveTabs();
-        }
+        rememberTab(group, toTab);
 
-        const wrap = config.selectors.wrap ? document.querySelector(config.selectors.wrap) : null;
         const containerSelector = group === 'top'
             ? config.selectors.topContainer
             : config.selectors.bottomContainer;
@@ -615,9 +669,11 @@
 
         if (isClosing) {
             // Save current size before closing. A fit panel's height is its
-            // content's, not a choice to remember.
+            // content's, and a column's is the viewport's: neither is a choice
+            // to remember.
             const panel = getVisibleResizablePanel(group);
-            if (panel && container && !isFitPanel(getPanelId(panel))) {
+            const panelId = panel && getPanelId(panel);
+            if (panel && container && !isFitPanel(panelId) && !isFullHeightPanel(panelId)) {
                 const currentHeight = container.offsetHeight;
                 if (currentHeight > 0) {
                     savePanelSize(panel, null, currentHeight);
@@ -630,9 +686,8 @@
                 container.style.removeProperty('width');
             }
 
-            if (wrap) {
-                wrap.classList.remove(config.stateClasses.coupled);
-            }
+            coupled = false;
+            if (group === 'top') columnOpen = false;
         } else if (!isResizableTab) {
             // Non-resizable tab - clear container constraints
             if (container) {
@@ -640,22 +695,23 @@
                 container.style.removeProperty('height');
             }
 
-            if (wrap) {
-                wrap.classList.remove(config.stateClasses.coupled);
-            }
+            coupled = false;
+            if (group === 'top') columnOpen = false;
         } else {
             // Resizable tab - set container size BEFORE panel animates in
-            // Panel ID matches tab name (e.g., "program", "response")
+            // Panel ID matches tab name (e.g., "program", "gripper")
             const panelId = toTab;
             const savedSize = getSavedPanelSize(panelId) || {};
             const panelConfig = config.panels[panelId] || {};
+            const column = isFullHeightPanel(panelId);
 
+            if (group === 'top') columnOpen = column;
             if (container) {
                 const width = savedSize.width || defaultWidth(container, panelConfig);
                 if (width) {
                     container.style.width = Math.min(width, getMaxWidth()) + 'px';
                 }
-                if (isFitPanel(panelId)) {
+                if (column || isFitPanel(panelId)) {
                     container.style.removeProperty('height');
                 } else {
                     const height = savedSize.height || panelConfig.defaultHeight || panelConfig.minHeight
@@ -666,6 +722,7 @@
             }
         }
 
+        scheduleLayout();
         // Update coupling state after Quasar finishes animating the panel
         setTimeout(updateCouplingState, 350);
     }
@@ -676,21 +733,15 @@
      * When coupling is activated, ensures panels don't overlap.
      */
     function updateCouplingState() {
-        const wrap = config.selectors.wrap ? document.querySelector(config.selectors.wrap) : null;
-        if (!wrap) return;
+        const wasCoupled = coupled;
+        coupled = shouldCouple();
 
-        const isCoupled = shouldCouple();
-        const wasCoupled = wrap.classList.contains(config.stateClasses.coupled);
-
-        if (isCoupled) {
-            wrap.classList.add(config.stateClasses.coupled);
-
+        if (coupled) {
             // When coupling is first activated, ensure panels don't overlap
             if (!wasCoupled) {
                 ensureNoOverlap();
             }
         } else {
-            wrap.classList.remove(config.stateClasses.coupled);
             releaseFitHeight('top');
             releaseFitHeight('bottom');
         }
@@ -787,6 +838,7 @@
     function observeContainers() {
         if (containerObserver || !('ResizeObserver' in window)) return;
         containerObserver = new ResizeObserver(function() {
+            scheduleLayout();
             if (isResizing || !appReady) return;
             if (shouldCouple()) ensureNoOverlap();
         });
@@ -794,6 +846,12 @@
             const container = getContainer(group);
             if (container) containerObserver.observe(container);
         });
+        const layoutObserver = new ResizeObserver(scheduleLayout);
+        const watched = [config.selectors.controlPanel, ...config.selectors.bottomCovers];
+        for (const selector of watched) {
+            const element = selector ? document.querySelector(selector) : null;
+            if (element) layoutObserver.observe(element);
+        }
     }
 
     // ========== Viewport Resize Handler ==========
@@ -815,13 +873,15 @@
             } else if (container.offsetWidth > maxW) {
                 container.style.setProperty('width', maxW + 'px', 'important');
             }
-            // CSS caps a fit panel; pinning it here would stick after the window grows back.
-            const fits = panel && isFitPanel(panelId);
+            // CSS caps a fit panel and pins a column; pinning either here would
+            // stick after the window grows back.
+            const fits = panel && (isFitPanel(panelId) || isFullHeightPanel(panelId));
             if (!fits && container.offsetHeight > maxH) {
                 container.style.setProperty('height', maxH + 'px', 'important');
             }
         }
         updateCouplingState();
+        scheduleLayout();
     }
 
     // ========== Global Event Listeners ==========
@@ -854,9 +914,6 @@
         }
         if (userConfig.constraints) {
             Object.assign(config.constraints, userConfig.constraints);
-        }
-        if (userConfig.stateClasses) {
-            Object.assign(config.stateClasses, userConfig.stateClasses);
         }
         if (userConfig.panels) {
             for (const [panelId, panelConfig] of Object.entries(userConfig.panels)) {
@@ -1013,20 +1070,19 @@
         const maxH = getMaxHeight();
         if (width) width = Math.max(panelCfg.minWidth ?? DEFAULT_MIN.width, Math.min(width, maxW));
         if (height) height = Math.max(panelCfg.minHeight ?? DEFAULT_MIN.height, Math.min(height, maxH));
+        if (isFullHeightPanel(panelId)) height = null;
 
-        // Find container
-        const containerSelector = panelCfg.group === 'top'
-            ? config.selectors.topContainer
-            : config.selectors.bottomContainer;
-        const container = containerSelector ? document.querySelector(containerSelector) : null;
-
-        if (container) {
+        // The container is shared by its group's panels: size it only for
+        // this one. A hidden panel gets its size when its tab opens.
+        const panel = document.querySelector(panelCfg.selector);
+        const container = getContainer(panelCfg.group);
+        if (panel && panel.offsetParent !== null && container) {
             if (width) container.style.setProperty('width', width + 'px', 'important');
             if (height) container.style.setProperty('height', height + 'px', 'important');
+            scheduleLayout();
         }
 
         // Save to localStorage
-        const panel = document.querySelector(panelCfg.selector);
         if (panel) {
             savePanelSize(panel, width, height);
         } else {
@@ -1056,6 +1112,7 @@
         onAppReady: onAppReady,
         getSavedSize: getSavedPanelSize,
         getActiveTabs: getActiveTabs,
+        rememberTab: rememberTab,
         resizePanel: resizePanel,
         clearAllSizes: function() {
             panelSizes = {};
@@ -1064,6 +1121,7 @@
         },
         getConfig: function() { return config; },
         getSizes: function() { return panelSizes; },
+        layout: function() { return { ...layout }; },
         isConfigured: function() { return configured; },
         isAppReady: function() { return appReady; }
     };

@@ -21,28 +21,32 @@ app_storage: Any = getattr(ng_app, "storage")
 
 @pytest.mark.integration
 async def test_settings_tab_accessible(user: User) -> None:
-    """Test that Settings tab is accessible in the control panel.
-
-    Verifies that the Settings tab can be found and clicked to reveal
-    the settings content with serial port selection.
-    """
+    """The gear opens the Settings dialog with every category's rows built."""
     await user.open("/")
     await wait_for_app_ready()
 
+    assert not ui_state.settings_content.dialog.value
     settings_tab = user.find(marker="tab-settings")
     settings_tab.click()
     await asyncio.sleep(0)
+    assert ui_state.settings_content.dialog.value, "the gear opens the dialog"
 
-    # Rows from the first group and the last, so the whole panel is present
-    # rather than just the part above a fold.
+    # Rows from the first category and the last, so the whole dialog is
+    # present rather than just the category on screen.
     await user.should_see("Serial port")
     await user.should_see("Show route")
     await user.should_see("Tool")
     await user.should_see("Select end effector tool")
-    # Grouped, most-reached-for first: the port an operator sets before
+    # Categorised, most-reached-for first: the port an operator sets before
     # anything else works leads, and the restart-scoped settings come last.
+    await user.should_see(marker="settings-cat-connection")
     await user.should_see(marker="settings-group-connection")
+    await user.should_see(marker="settings-cat-advanced")
     await user.should_see(marker="settings-group-advanced")
+
+    user.find(marker="settings-close").click()
+    await asyncio.sleep(0)
+    assert not ui_state.settings_content.dialog.value
 
 
 @pytest.mark.integration
