@@ -57,9 +57,30 @@ async def test_report_status_and_timer_delivery(session_controller, capsys) -> N
             time.sleep(0.01)
             qos_sleeps.append(time.monotonic() - started)
 
+    # A thread that never sleeps still loses the CPU when the box is short
+    # of cores: the longest stall between two clock reads shows it.
+    stalls: list[float] = []
+    last = time.perf_counter()
+    end = last + 1.0
+    while last < end:
+        now = time.perf_counter()
+        if now - last > 0.002:
+            stalls.append(now - last)
+        last = now
+    import subprocess
+
+    top = subprocess.run(
+        ["ps", "-Ao", "pcpu,comm"], capture_output=True, text=True, check=False
+    ).stdout.splitlines()
+    busiest = sorted(top[1:], key=lambda r: -float(r.split()[0] or 0))[:6]
+
     gaps = [b - a for a, b in zip(arrivals, arrivals[1:])]
     report = (
         "TIMING-PROBE\n"
+        f"  cpus={os.cpu_count()} loadavg={os.getloadavg()}\n"
+        f"  busy-loop stalls >2 ms in 1 s: {len(stalls)} "
+        f"{_ms(stalls) if stalls else ''}\n"
+        f"  busiest: {busiest}\n"
         f"  status_rate={rate}\n"
         f"  frames in 3 s: {len(arrivals)}; inter-arrival ms {_ms(gaps)}\n"
         f"  ping ms {_ms(pings)}\n"
