@@ -165,6 +165,26 @@ def _indent_unit(lines: list[str]) -> str:
     return "    "
 
 
+def replace_lines(
+    text: str, first_line: int, last_line: int, snippet: str
+) -> tuple[str, int, int]:
+    """Replace 1-indexed *first_line*..*last_line* of *text* with *snippet*,
+    or delete them when it is empty, keeping the first line's indentation.
+
+    Returns ``(new_text, first_line, inserted_line_count)``.
+    """
+    lines = text.split("\n")
+    first_line = max(1, first_line)
+    last_line = min(max(first_line, last_line), len(lines))
+    anchor = lines[first_line - 1]
+    prefix = anchor[: len(anchor) - len(anchor.lstrip(" \t"))]
+    replacement = (
+        [prefix + ln if ln else ln for ln in snippet.split("\n")] if snippet else []
+    )
+    new_lines = lines[: first_line - 1] + replacement + lines[last_line:]
+    return "\n".join(new_lines), first_line, len(replacement)
+
+
 def insert_below_line(text: str, snippet: str, after_line: int) -> tuple[str, int, int]:
     """Insert *snippet* below 1-indexed *after_line* of *text*; an
     ``after_line`` of 0 (cursor unset) or at/past the last content line

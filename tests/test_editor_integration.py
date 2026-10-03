@@ -1441,10 +1441,14 @@ async def test_recording_cursor_tracks_user_edits(user: User) -> None:
     assert is_any_program_recording()
     tracked = textarea._props["line-anchors"].get(_RECORD_ANCHOR_ID)
     assert tracked, "session cursor must be declared as a line anchor"
+    # The browser applies a declaration and reports it back (replayed here —
+    # the user fixture runs no JS).
+    _fire_editor_event(
+        textarea, "anchor-positions", {"anchors": dict(textarea._props["line-anchors"])}
+    )
 
     # The user types two lines at the top mid-session; the browser remaps the
-    # anchor and echoes the shifted position (replayed here — the user
-    # fixture runs no JS).
+    # anchor and echoes the shifted position.
     textarea.value = "# note 1\n# note 2\n" + str(textarea.value)
     _fire_editor_event(
         textarea,

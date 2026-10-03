@@ -424,8 +424,13 @@ class _ToolQuickActions:
                     ui_state.gripper_page.set_target_position(target)
                 else:
                     waldoctl.commander.settings.gripper.target_position = target
-                await tool.set_position(target, **spd_kwargs)
-                motion_recorder.record_action("gripper", position=target, **spd_kwargs)
+                await motion_recorder.owned_tool_move(
+                    waldoctl.commander.client,
+                    tool.set_position(target, **spd_kwargs),
+                    lambda: motion_recorder.record_action(
+                        "gripper", position=target, **spd_kwargs
+                    ),
+                )
             else:
                 await tool.action_l(not waldoctl.commander.status.tool.engaged)
         except Exception as e:
@@ -461,8 +466,13 @@ class _ToolQuickActions:
             waldoctl.commander.settings.gripper.current = new_cur
         try:
             pos = waldoctl.commander.settings.gripper.target_position
-            await tool.set_position(pos, current=new_cur)
-            motion_recorder.record_action("gripper", position=pos, current=new_cur)
+            await motion_recorder.owned_tool_move(
+                waldoctl.commander.client,
+                tool.set_position(pos, current=new_cur),
+                lambda: motion_recorder.record_action(
+                    "gripper", position=pos, current=new_cur
+                ),
+            )
         except Exception as e:
             logger.error("Adjust failed: %s", e)
             ui.notify(f"Adjust failed: {e}", color="negative")
@@ -1792,6 +1802,19 @@ class ControlPanel:
         else:
             motion_recorder.on_jog_end()
 
+    async def _dial_move(self, target: list[float], speed: float) -> None:
+        """Send a dial's joint move, recorded as a jog once the arm settles. A
+        move the controller never took records nothing and leaves the motion
+        to the recorder's observer again."""
+        index = -1
+        try:
+            index = await self.client.move_j(target, speed=speed)
+        finally:
+            if index < 0:
+                motion_recorder.abort_jog()
+        if index >= 0:
+            self._schedule_jog_end_wait()
+
     async def move_joint_to_angle(self, joint_index: int, target_deg: float) -> None:
         """Move a single joint to the specified angle (deg) while holding others."""
         if not self._movement_allowed():
@@ -1805,7 +1828,8 @@ class ControlPanel:
             pose[joint_index] = tgt
             spd = _norm_speed()
 
-            await self.client.move_j(pose, speed=spd)
+            motion_recorder.on_jog_start("joint", f"J{joint_index + 1}")
+            await self._dial_move(pose, spd)
         except Exception as e:
             logger.error("Go to joint angle failed: %s", e)
 
@@ -1826,7 +1850,8 @@ class ControlPanel:
             target[joint_index] = float(lo if which == "min" else hi)
             spd = _norm_speed()
 
-            await self.client.move_j(target, speed=spd)
+            motion_recorder.on_jog_start("joint", f"J{joint_index + 1}{which}")
+            await self._dial_move(target, spd)
         except Exception as e:
             logger.error("Go to joint limit failed: %s", e)
             ui.notify(f"Failed joint move: {e}", color="negative")
@@ -1896,13 +1921,16 @@ class ControlPanel:
         self._home_inflight = True
         self._home_progress_start()
         try:
-            index = await self.client.home(calibrate=calibrate)
-            if index < 0:
-                logger.error("HOME rejected by the controller")
-                return
-            logger.info("HOME sent%s", " (calibrate)" if calibrate else "")
-            motion_recorder.record_action("home", calibrate=calibrate)
-            await self._wait_home(index)
+            # The recording gets rbt.home(); the observer must not also
+            # capture the move it makes.
+            with motion_recorder.owned():
+                index = await self.client.home(calibrate=calibrate)
+                if index < 0:
+                    logger.error("HOME rejected by the controller")
+                    return
+                logger.info("HOME sent%s", " (calibrate)" if calibrate else "")
+                motion_recorder.record_action("home", calibrate=calibrate)
+                await self._wait_home(index)
         except Exception as e:
             logger.error("HOME failed: %s", e)
         finally:

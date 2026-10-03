@@ -103,7 +103,50 @@ class EditorDecorations:
                 }
             )
         specs.extend(self._diff_decoration_specs(tab_id))
+        specs.extend(self._staged_decoration_specs(tab_id, textarea))
         textarea.decorations[:] = specs
+
+    @staticmethod
+    def _staged_decoration_specs(tab_id: str, textarea) -> list[DecorationSpec]:
+        """The lines a recording session wrote and nobody has kept yet, a
+        badge on each captured span saying what it became, and one where a
+        capture still converting will go."""
+        lines = str(textarea.value or "").split("\n")
+        starts = [0]
+        for line in lines:
+            starts.append(starts[-1] + len(line) + 1)
+        specs: list[DecorationSpec] = [
+            {
+                "kind": "widget",
+                "position": starts[pending.line - 1] + len(lines[pending.line - 1]),
+                "text": "captured · converting…",
+                "class": "cm-staged-badge",
+                "side": 1,
+            }
+            for pending in motion_recorder.pending_captures(tab_id)
+            if 1 <= pending.line <= len(lines)
+        ]
+        session = motion_recorder.session
+        if session is None or session.tab_id != tab_id:
+            return specs
+        for block in session.blocks:
+            first = max(1, block.first_line)
+            last = min(block.last_line, len(lines))
+            specs.extend(
+                {"kind": "line", "line": n, "class": "cm-line-staged"}
+                for n in range(first, last + 1)
+            )
+            if block.kind == "capture" and first <= last:
+                specs.append(
+                    {
+                        "kind": "widget",
+                        "position": starts[first - 1] + len(lines[first - 1]),
+                        "text": block.summary(),
+                        "class": "cm-staged-badge",
+                        "side": 1,
+                    }
+                )
+        return specs
 
     def _diff_decoration_specs(self, tab_id: str) -> list[DecorationSpec]:
         """Build decoration specs from this tab's pending LLM edits.
@@ -216,9 +259,9 @@ class EditorDecorations:
                         lines.add(cursor + 1)
         return sorted(lines)
 
-    def refresh_diff_overlay(self, tab_id: str) -> None:
-        """Re-render decorations for ``tab_id`` after its pending-edits list
-        changed. Public entry point for the editor's edit-listener wiring."""
+    def refresh_overlays(self, tab_id: str) -> None:
+        """Re-render decorations for ``tab_id`` after its pending edits or its
+        staged recording changed."""
         self._apply_decorations_to_tab(tab_id)
 
     def _apply_active_tab_decorations(self) -> None:
@@ -375,20 +418,28 @@ class EditorDecorations:
 
         textarea._props["line-tooltips"] = tooltips
 
-    def push_target_positions(self, tab_id: str) -> None:
-        """Push current target positions to CM6 line anchors on the
-        simulated tab's textarea for edit tracking."""
-        textarea = ui_state.textareas_by_tab.get(tab_id)
+    def push_line_anchors(
+        self, tab_id: str, *, textarea=None, sim_targets: bool = False
+    ) -> None:
+        """Declare a tab's line anchors: the one writer of them.
+
+        The dry-run targets (re-read after a simulation pass, kept where they
+        are otherwise) together with every line the recorder tracks: its
+        cursor, the lines a session wrote, a selection being re-recorded.
+        Assigning line anchors replaces the whole set, so a writer that
+        declared only its own would drop everyone else's.
+        """
+        textarea = textarea or ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
-        tab = waldoctl.commander.programs.get(tab_id)
-        targets = tab.dry_run.targets if tab is not None else []
-        anchors = {t.id: t.line_number for t in targets if t.line_number > 0}
-        if textarea is ui_state.active_textarea:
-            # A full re-declare would drop the recording insertion cursor;
-            # merging keeps it tracking at its browser-remapped position.
-            anchors.update(motion_recorder.insertion_anchor())
-        textarea.line_anchors = anchors
+        if sim_targets:
+            tab = waldoctl.commander.programs.get(tab_id)
+            targets = tab.dry_run.targets if tab is not None else []
+            base = {t.id: t.line_number for t in targets if t.line_number > 0}
+        else:
+            declared = getattr(textarea, "_props", {}).get("line-anchors") or {}
+            base = {k: v for k, v in dict(declared).items() if not k.startswith("__")}
+        textarea.line_anchors = {**base, **motion_recorder.line_anchors(tab_id)}
 
 
 decorations: EditorDecorations = EditorDecorations()

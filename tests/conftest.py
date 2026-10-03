@@ -495,6 +495,7 @@ def reset_editor_singletons(
     from waldo_commander.components.playback import playback
     from waldo_commander.components.simulation_engine import simulation
     from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.motion_recorder import motion_recorder
     from waldo_commander.services.path_visualizer import path_visualizer
 
     # Only playback owns a per-page simulation_state listener; reset it first
@@ -505,6 +506,8 @@ def reset_editor_singletons(
     log_panel.reset_for_test()
     simulation.reset_for_test()
     script_exec.reset_for_test()
+    # A staged recording session belongs to the page that made it.
+    motion_recorder.reset_for_test()
     # Rebuild the path visualizer's simulation lock: a sim still running when
     # the test ends leaves it acquired against this test's dying event loop.
     path_visualizer.reset_for_test()
