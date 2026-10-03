@@ -263,6 +263,9 @@ def _run_simulation_isolated(
     setup_directory: str | None = None,
     simulate_seconds: float | None = None,
     attachment_epoch: int = 0,
+    scenario: dict[str, Any] | None = None,
+    plan_seconds: float | None = None,
+    config_path: str | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -288,6 +291,10 @@ def _run_simulation_isolated(
             physics plant — and the result carries the predicted record.
             The value bounds SIMULATED time, so a program that never
             terminates still comes back. None plans only.
+        plan_seconds: Cuts the commanded record to this much simulated
+            time; None keeps all of it.
+        config_path: The backend configuration the dry run loads, where
+            the backend takes one; None leaves the choice to the backend.
 
     Returns:
         Dict with keys:
@@ -339,6 +346,8 @@ def _run_simulation_isolated(
         _preview_robot = get_robot(backend_package)
 
         def _dr_cls(**kwargs: Any) -> Any:
+            if config_path is not None:
+                kwargs["config_path"] = config_path
             return _preview_robot.create_dry_run_client(**kwargs)
 
         def seed_world(preview: PathPreviewClient) -> None:
@@ -560,7 +569,7 @@ def _run_simulation_isolated(
     # Close blend holds and note the last commands, covering scripts without
     # context managers.
     for c in session:
-        c.close()
+        c.close(plan_seconds)
 
     for c in session:
         if c.accumulated_errors:
@@ -584,7 +593,7 @@ def _run_simulation_isolated(
         client = session[0]
         notes = list(client.notes)
         try:
-            commanded = _portable(client.plan())
+            commanded = _portable(client.plan(plan_seconds))
         except Exception as e:
             logger.warning("Reading the commanded record failed: %s", e)
             error_message = (error_message + "\n" if error_message else "") + (
@@ -624,7 +633,11 @@ def _run_simulation_isolated(
                 logger.warning("Preview collision marking failed: %s", e)
         if simulate_seconds is not None and commanded is not None:
             try:
-                predicted = _portable(client.simulate(simulate_seconds))
+                predicted = _portable(
+                    client.simulate(simulate_seconds, scenario=scenario)
+                    if scenario is not None
+                    else client.simulate(simulate_seconds)
+                )
             except Exception as e:
                 physics_error = f"{type(e).__name__}: {e}"
                 logger.warning("Physics simulation failed: %s", e)
@@ -819,10 +832,6 @@ class PathVisualizer:
             simulation_state.notify_changed()
             return None
 
-        # Build serializable tool metadata registry for all tools.
-        # Scripts can call select_tool() to switch tools mid-program, so we
-        # need metadata for every tool — not just the currently active one.
-        # Each entry includes base motions + per-variant motions.
         tool_meta_registry = _tool_metadata(robot)
 
         # Collision-marking inputs: the live shapes (wire form crosses the
