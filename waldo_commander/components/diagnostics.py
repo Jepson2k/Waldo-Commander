@@ -291,18 +291,11 @@ class DiagnosticsPage:
             self._row("Scheduling", "diag-loop-sched")
 
     def _build_link_section(self) -> None:
-        lh = waldoctl.commander.status.link_health
         with self._section("link", "Motor bus"):
-            self._row("State", "diag-link-state").bind_text_from(lh, "state")
-            self._row("Restarts", "diag-link-restarts").bind_text_from(
-                lh, "restarts", backward=str
-            )
-            self._row("TX errors", "diag-link-tx-errors").bind_text_from(
-                lh, "tx_errors", backward=str
-            )
-            self._row("RX frames", "diag-link-rx-frames").bind_text_from(
-                lh, "rx_frames", backward=str
-            )
+            self._row("State", "diag-link-state")
+            self._row("Restarts", "diag-link-restarts")
+            self._row("TX errors", "diag-link-tx-errors")
+            self._row("RX frames", "diag-link-rx-frames")
 
     def _build_drives_section(self) -> None:
         """A row per actuator, plus the tool drive some backends report.
@@ -678,9 +671,14 @@ class DiagnosticsPage:
 
     def _update_link(self, worst: int, reasons: _Reasons) -> tuple[int, _Reasons]:
         """Bus state, where anything but Up is the whole story."""
-        state = waldoctl.commander.status.link_health.state
+        lh = waldoctl.commander.status.link_health
+        state = lh.state
         if not state:
             return worst, reasons
+        self._set("diag-link-state", state)
+        self._set("diag-link-restarts", str(lh.restarts))
+        self._set("diag-link-tx-errors", str(lh.tx_errors))
+        self._set("diag-link-rx-frames", str(lh.rx_frames))
         # Backends spell the CAN states either way: ErrorPassive, ERROR_PASSIVE.
         normalised = state.lower().replace("_", "")
         level = OK if normalised in ("up", "unknown") else FAULT
