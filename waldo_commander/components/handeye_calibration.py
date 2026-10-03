@@ -1,54 +1,59 @@
-"""Eye-in-hand hand-eye calibration panel.
+"""Calibrate a camera on the tool or fixed in the workspace.
 
-Workflow: print a generated ChArUco board, fix it in the workspace, and aim
-the tool camera at it. Then either jog the robot to 10-15 rotation-diverse
-poses by hand, capturing a synchronized (TCP pose, frame) sample at each, or
-let Auto-calibrate drive the robot through a built-in pose set around the
-start pose, capturing at each stop. Solving recovers camera intrinsics + the
-camera→TCP transform, saved per tool.
-
-Registered through the ``waldoctl.panels`` entry-point group, so the host
-mounts it like any third-party panel; being in-tree it may also use
-Waldo-Commander internals (camera service, robot_state) directly.
+Capture stationary robot poses paired with fresh ChArUco images, solve camera
+intrinsics and its mounting transform, then explicitly save named setup data.
+The auto-calibration routine can acquire diverse views through planned moves.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 import math
 import time
-from datetime import UTC, datetime
 from enum import Enum, auto
+from typing import Literal, cast
 
 import numpy as np
-from nicegui import Client, app as ng_app
-from nicegui import background_tasks, context, run, ui
-from scipy.spatial.transform import Rotation
 import waldoctl
+from nicegui import Client, background_tasks, context, run, ui
+from nicegui import app as ng_app
+from scipy.spatial.transform import Rotation
 from waldoctl import Commander, Panel, PanelSlot
+from waldoctl.camera import CameraCalibration
+from waldoctl.setup import Pose, SetupSnapshot, TcpCalibration
 
+from waldo_commander.camera import CameraUnavailable
+from waldo_commander.components.camera_calibration_data import CameraCalibrationData
 from waldo_commander.services import handeye
+from waldo_commander.services.camera_calibration import (
+    CaptureBinding,
+    calibration_from_result,
+)
+from waldo_commander.services.camera_service import (
+    camera_service,
+    enumerate_video_devices,
+)
 from waldo_commander.services.control_lease import (
     BROWSER,
     control_lease,
     require_browser_control,
 )
-from waldo_commander.services.camera_service import camera_service
 from waldo_commander.services.motion_guard import (
     CALIBRATION,
     MotionBusy,
     Reservation,
     motion_guard,
 )
+from waldo_commander.services.tcp_calibration import observe_tcp, read_applied_tcp
 from waldo_commander.state import robot_state
 
 logger = logging.getLogger(__name__)
 
 STATIONARY_SPEED_DEG_S = 0.5
 SOLVE_MIN_SAMPLES = handeye.MIN_SAMPLES
-RECOMMENDED_SAMPLES = 8
 DETECT_INTERVAL_S = 0.2
 # Consecutive undecodable frames before surfacing a camera-format hint.
 DECODE_FAILURE_HINT = 15
@@ -87,6 +92,9 @@ AUTO_VIEW_DELTAS_DEG: tuple[tuple[float, float, float, float, float, float], ...
     (-5.0, -10.0, 14.0, 0.0, 8.0, 25.0),
     (0.0, -5.0, 7.0, 0.0, 6.0, -15.0),
 )
+# The one figure the panel counts views against: enough for a good fit, and
+# what an auto-capture run attempts.
+TARGET_VIEWS = len(AUTO_VIEW_DELTAS_DEG)
 
 # Autonomous moves are deliberately slow: duration is sized so the fastest
 # joint stays under AUTO_DEG_PER_S. Tests lower these for the simulator.
@@ -106,6 +114,10 @@ AUTO_SETTLE_S = 0.5
 AUTO_CAPTURE_ATTEMPTS = 3
 AUTO_CAPTURE_RETRY_S = 0.6
 AUTO_MAX_CONSECUTIVE_REJECTS = 3
+# Largest tool motion between the poses read before and after a capture.
+# Rotation has its own limit: turning about the tool origin moves it by nothing.
+STILL_TRANSLATION_MM = 0.05
+STILL_ROTATION_DEG = 0.05
 
 
 class _CaptureRefused(Exception):
@@ -191,7 +203,7 @@ class HandEyeCalibrationPanel(Panel):
     # high-resolution tool camera can't balloon the layout.
     min_width = 440
     min_height = 320
-    default_width = 600
+    default_width = 540
     resizable = True
 
     def __init__(self) -> None:
@@ -207,8 +219,12 @@ class HandEyeCalibrationPanel(Panel):
         self._detector = handeye.make_detector(self._spec)
         self._samples: list[handeye.HandEyeSample] = []
         self._sample_tool_key: str | None = None
+        self._sample_binding: CaptureBinding | None = None
+        self._mount: Literal["tool", "fixed"] = "tool"
+        self._sample_revision = 0
+        self._solving = False
         self._method = "PARK"
-        self._result: handeye.HandEyeResult | None = None
+        self._solved: handeye.HandEyeResult | None = None
         self._last_detection: handeye.Detection | None = None
         self._detect_busy = False
         self._decode_failures = 0
@@ -218,20 +234,38 @@ class HandEyeCalibrationPanel(Panel):
         # The panel is shared by every page, so this covers them all.
         self._auto_confirming = False
         self._auto_progress_text: str | None = None
+        self._step = 1
+        self._advanced = False
+        self._saved = False
         self._reset_element_refs()
+
+    @property
+    def _result(self) -> handeye.HandEyeResult | None:
+        return self._solved
+
+    @_result.setter
+    def _result(self, result: handeye.HandEyeResult | None) -> None:
+        # Save stores one solve; any other result has not been saved.
+        if result is not self._solved:
+            self._saved = False
+        self._solved = result
 
     def _reset_element_refs(self) -> None:
         self._image: ui.interactive_image | None = None
-        self._camera_card: ui.card | None = None
+        self._camera_card: ui.element | None = None
         self._camera_hint: ui.row | None = None
         self._status_label: ui.label | None = None
         self._capture_btn: ui.button | None = None
         self._solve_btn: ui.button | None = None
         self._save_btn: ui.button | None = None
         self._sample_count: ui.label | None = None
-        self._samples_container: ui.column | None = None
-        self._samples_detail: ui.expansion | None = None
+        self._progress: ui.linear_progress | None = None
+        self._views_grid: ui.element | None = None
         self._diversity_label: ui.label | None = None
+        self._step_buttons: dict[int, ui.button] = {}
+        self._step_views: dict[int, ui.column] = {}
+        self._next_btn: ui.button | None = None
+        self._last_stage: tuple | None = None
         self._result_container: ui.column | None = None
         self._stored_container: ui.column | None = None
         self._scene_switch: ui.switch | None = None
@@ -248,7 +282,9 @@ class HandEyeCalibrationPanel(Panel):
         self._auto_btn: ui.button | None = None
         self._clear_btn: ui.button | None = None
         self._auto_progress_label: ui.label | None = None
+        self._solve_next_btn: ui.button | None = None
         self._last_auto_running: bool | None = None
+        self._data_editor: CameraCalibrationData | None = None
 
     @property
     def _auto_running(self) -> bool:
@@ -260,35 +296,146 @@ class HandEyeCalibrationPanel(Panel):
         self._reset_element_refs()
         self._commander = commander
 
-        with ui.column().classes("w-full gap-2"):
+        with ui.column().classes(
+            "camera-panel-scroll w-full h-full min-h-0 flex-nowrap overflow-y-auto overflow-x-hidden gap-2"
+        ):
             with ui.row().classes("w-full items-center"):
-                ui.label("Hand-Eye Calibration").classes("text-subtitle1")
+                ui.label("Camera calibration").classes("panel-heading")
                 ui.space()
                 ui.label().bind_text_from(
                     ng_app.storage.general,
                     "selected_tool",
-                    lambda t: f"Tool: {t or 'NONE'}",
+                    lambda t: f"Tool: {t}" if t and t != "NONE" else "No tool",
                 ).classes("text-caption text-grey")
-
-            self._build_board_section()
+            self._build_step_ribbon()
             self._build_camera_section()
-            # Progressive disclosure: each later workflow stage stays hidden
-            # until it is reachable (camera live -> capture, enough samples ->
-            # solve, something saved or solved -> stored/scene).
-            self._samples_section = ui.column().classes("w-full gap-2")
-            with self._samples_section:
+            # One step shows at a time; the ribbon says where the operator is
+            # and which steps are behind them.
+            for number, _ in self._STEPS:
+                self._step_views[number] = ui.column().classes("w-full gap-2")
+            with self._step_views[1]:
+                self._build_camera_hint()
+                self._build_mount_controls()
+                self._build_board_section()
+            with self._step_views[2]:
                 self._build_samples_section()
-            self._solve_section = ui.column().classes("w-full gap-2")
-            with self._solve_section:
+            with self._step_views[3]:
                 self._build_solve_section()
-            self._stored_section = ui.column().classes("w-full gap-2")
-            with self._stored_section:
+            with self._step_views[4]:
+                self._data_editor = CameraCalibrationData(
+                    commander, self._measurement, on_save=self._save
+                )
+                self._save_btn = self._data_editor.save_button
                 self._build_stored_section()
+            self._samples_section = self._step_views[2]
+            self._solve_section = self._step_views[3]
+            self._stored_section = self._step_views[4]
 
         ui.timer(DETECT_INTERVAL_S, self._detect_tick)
+        self._step = 2 if self._samples else 1
+        self._advanced = bool(self._samples)
+        self._show_step(self._step)
         self._refresh_samples()
         self._refresh_stored()
         self._refresh_stage()
+
+    _STEPS = ((1, "Board"), (2, "Views"), (3, "Solve"), (4, "Save"))
+
+    def _build_step_ribbon(self) -> None:
+        self._step_buttons = {}
+        with ui.row().classes("handeye-steps w-full no-wrap"):
+            for number, name in self._STEPS:
+                self._step_buttons[number] = (
+                    ui.button(
+                        f"{number}  {name}",
+                        color=None,
+                        on_click=lambda n=number: self._show_step(n),
+                    )
+                    .props("flat dense no-caps")
+                    .classes("handeye-step")
+                    .mark(f"handeye-step-{number}")
+                )
+
+    def _show_step(self, number: int) -> None:
+        self._step = number
+        for n, view in self._step_views.items():
+            view.set_visibility(n == number)
+        self._set_camera_visibility(camera_service.active)
+        for n, button in self._step_buttons.items():
+            if n == number:
+                button.classes(add="handeye-step-active")
+            else:
+                button.classes(remove="handeye-step-active")
+
+    def _build_camera_hint(self) -> None:
+        self._camera_hint = ui.row().classes("items-center")
+        with self._camera_hint:
+            ui.icon("videocam_off").classes("text-grey")
+            self._camera_hint_label = ui.label(self._camera_hint_text()).classes(
+                "text-caption text-grey"
+            )
+
+    def _build_mount_controls(self) -> None:
+        self._mount_select = (
+            ui.select(
+                {"tool": "Camera on tool", "fixed": "Fixed camera"},
+                value=self._mount,
+                label="Camera placement",
+                on_change=self._change_mount,
+            )
+            .props("dense")
+            .classes("w-full")
+            .mark("camera-mount")
+        )
+        self._mount_hint = ui.label().classes("text-caption")
+        self._fixed_controls = ui.row().classes("items-center w-full")
+        with self._fixed_controls:
+            device = (
+                ui.select({}, label="Fixed camera device")
+                .props("dense")
+                .classes("flex-1")
+                .mark("fixed-camera-device")
+            )
+
+            async def scan() -> None:
+                devices = await run.io_bound(enumerate_video_devices) or []
+                device.set_options(
+                    {entry["index"]: entry["label"] for entry in devices}
+                )
+
+            def start() -> None:
+                if self._auto_running:
+                    ui.notify(
+                        "Stop calibration before changing the camera", color="warning"
+                    )
+                elif device.value is not None:
+                    camera_service.start(device.value)
+
+            ui.button("Scan", on_click=scan).props("dense flat")
+            ui.button("Start camera", on_click=start).props("dense outline").mark(
+                "fixed-camera-start"
+            )
+        self._refresh_mount()
+
+    def _change_mount(self, event) -> None:
+        if event.value == self._mount:
+            return
+        if self._auto_running or self._samples:
+            self._mount_select.set_value(self._mount)
+            ui.notify("Clear samples before changing camera placement", color="warning")
+            return
+        self._mount = cast(Literal["tool", "fixed"], event.value)
+        self._result = None
+        self._refresh_mount()
+        self._refresh_stage()
+
+    def _refresh_mount(self) -> None:
+        self._fixed_controls.set_visibility(self._mount == "fixed")
+        self._mount_hint.set_text(
+            "Keep the camera fixed; attach the board rigidly to the tool and capture varied wrist orientations."
+            if self._mount == "fixed"
+            else "Keep the board fixed in the workspace; move the tool-mounted camera through varied orientations."
+        )
 
     def _build_board_section(self) -> None:
         with ui.expansion("Target board", icon="grid_on").classes("w-full"):
@@ -447,56 +594,69 @@ class HandEyeCalibrationPanel(Panel):
                 ).classes("text-caption text-grey")
 
     def _build_camera_section(self) -> None:
-        self._camera_card = ui.card().tight().classes("w-full")
+        self._camera_card = ui.element("div").classes("handeye-camera-frame")
         with self._camera_card:
-            self._image = ui.interactive_image("/tool/camera/stream").classes("w-full")
-            self._image.mark("handeye-camera")
-        self._camera_hint = ui.row().classes("items-center")
-        with self._camera_hint:
-            ui.icon("videocam_off").classes("text-grey")
-            self._camera_hint_label = ui.label(self._camera_hint_text()).classes(
-                "text-caption text-grey"
+            self._image = ui.interactive_image("/tool/camera/stream").classes(
+                "handeye-camera"
             )
-        self._status_label = ui.label("No board detected").classes("text-caption")
-        self._status_label.mark("handeye-detect-status")
+            self._image.mark("handeye-camera")
+            self._status_label = ui.label("No board detected").classes(
+                "handeye-camera-chip"
+            )
+            self._status_label.mark("handeye-detect-status")
         self._set_camera_visibility(camera_service.active)
 
     def _build_samples_section(self) -> None:
-        with ui.row().classes("items-center"):
-            self._auto_btn = ui.button(
-                "Auto-calibrate", icon="play_circle", on_click=self._on_auto_click
+        with ui.row().classes("w-full items-baseline no-wrap gap-3"):
+            ui.label("Views captured").classes("text-caption text-grey")
+            ui.space()
+            self._sample_count = ui.label(f"0 of {TARGET_VIEWS} views").classes(
+                "handeye-count"
             )
-            self._auto_btn.mark("handeye-auto")
-            self._capture_btn = ui.button(
-                "Capture", icon="add_a_photo", on_click=self._capture
-            ).props("outline")
-            self._capture_btn.mark("handeye-capture")
-            self._clear_btn = ui.button(
-                "Clear", icon="delete_sweep", on_click=self._on_clear
-            ).props("outline")
-            self._clear_btn.mark("handeye-clear")
-            self._sample_count = ui.label("0 samples")
             self._sample_count.mark("handeye-sample-count")
+        self._progress = (
+            ui.linear_progress(value=0.0, show_value=False)
+            .props("rounded size=5px color=grey-5")
+            .classes("w-full")
+        )
+        with ui.row().classes("w-full items-center no-wrap gap-2"):
+            self._capture_btn = ui.button(
+                "Capture view", icon="add_a_photo", on_click=self._capture
+            )
+            self._capture_btn.mark("handeye-capture")
+            self._auto_btn = ui.button(
+                "Auto-capture", icon="play_circle", on_click=self._on_auto_click
+            ).props("outline")
+            self._auto_btn.mark("handeye-auto")
+            self._clear_btn = (
+                ui.button(icon="delete_sweep", on_click=self._on_clear)
+                .props("flat round dense")
+                .tooltip("Clear all views")
+            )
+            self._clear_btn.mark("handeye-clear")
+            ui.space()
+            self._solve_next_btn = (
+                ui.button("Solve", on_click=self._solve_from_views)
+                .props("flat no-caps")
+                .mark("handeye-solve-next")
+            )
+        self._diversity_label = ui.label("").classes("panel-note")
+        self._diversity_label.mark("handeye-diversity")
         self._auto_progress_label = ui.label().classes("text-caption text-primary")
         self._auto_progress_label.mark("handeye-auto-progress")
         self._apply_auto_progress()
-        self._diversity_label = ui.label("").classes("text-caption")
-        self._diversity_label.mark("handeye-diversity")
-        self._samples_detail = (
-            ui.expansion("Sample details").props("dense").classes("w-full text-caption")
-        )
-        with self._samples_detail:
-            self._samples_container = ui.column().classes("w-full gap-0")
+        self._views_grid = ui.element("div").classes("handeye-views w-full")
 
     def _build_solve_section(self) -> None:
-        with ui.row().classes("items-center"):
+        with ui.row().classes("items-center gap-2"):
             self._solve_btn = ui.button("Solve", icon="calculate", on_click=self._solve)
             self._solve_btn.mark("handeye-solve")
-            self._save_btn = ui.button("Save", icon="save", on_click=self._save).props(
-                "outline"
+            self._next_btn = (
+                ui.button("Next: save", on_click=lambda: self._show_step(4))
+                .props("flat")
+                .mark("handeye-next-save")
             )
-            self._save_btn.mark("handeye-save")
-            self._save_btn.set_enabled(False)
+            self._next_btn.set_visibility(self._result is not None)
         self._result_container = ui.column().classes("w-full gap-0")
         self._result_container.mark("handeye-result")
         if self._result is not None:
@@ -514,22 +674,22 @@ class HandEyeCalibrationPanel(Panel):
             ui.timer(1.0, self._refresh_scene_overlay)
 
     def _refresh_stage(self) -> None:
-        """Show each workflow stage only once it is reachable. Repeated
-        set_visibility calls with an unchanged value are no-ops, so this is
-        safe to drive from the detection timer."""
-        if self._samples_section is not None:
-            self._samples_section.set_visibility(
-                camera_service.active or bool(self._samples)
-            )
-        if self._solve_section is not None:
-            self._solve_section.set_visibility(
-                len(self._samples) >= SOLVE_MIN_SAMPLES or self._result is not None
-            )
-        if self._stored_section is not None:
-            has_stored = bool(
-                ng_app.storage.general.get(f"handeye/{_selected_tool_key()}")
-            )
-            self._stored_section.set_visibility(has_stored or self._result is not None)
+        """Mark the steps behind the operator as done. Driven from the
+        detection timer, so it writes only on change."""
+        state = (
+            camera_service.active or bool(self._samples),
+            len(self._samples) >= SOLVE_MIN_SAMPLES,
+            self._result is not None,
+            self._saved,
+        )
+        if state == self._last_stage:
+            return
+        self._last_stage = state
+        for number, button in self._step_buttons.items():
+            if state[number - 1]:
+                button.props("icon=check").classes(add="handeye-step-done")
+            else:
+                button.props(remove="icon").classes(remove="handeye-step-done")
 
     # ------------------------------------------------------------- detection
 
@@ -551,12 +711,17 @@ class HandEyeCalibrationPanel(Panel):
         return "No camera active — enable a tool camera in Settings."
 
     def _set_camera_visibility(self, active: bool) -> None:
+        if active and self._step == 1 and not self._advanced:
+            # A running camera is what step 1 was waiting for; capturing is
+            # the operator's next act.
+            self._advanced = True
+            self._show_step(2)
         if self._camera_card is not None:
-            self._camera_card.set_visibility(active)
+            # The picture is the content while placing the board and capturing
+            # views; the solve and the save need the room instead.
+            self._camera_card.set_visibility(active and self._step <= 2)
         if self._camera_hint is not None:
             self._camera_hint.set_visibility(not active)
-        if self._status_label is not None:
-            self._status_label.set_visibility(active)
         if not active and self._camera_hint_label is not None:
             hint = self._camera_hint_text()
             if hint != self._last_hint_text:
@@ -580,7 +745,11 @@ class HandEyeCalibrationPanel(Panel):
             return
         self._detect_busy = True
         try:
-            frame = handeye.decode_jpeg(camera_service.get_latest_frame())
+            try:
+                frame = handeye.decode_jpeg(camera_service.snapshot().jpeg)
+            except CameraUnavailable as error:
+                self._set_detection(None, str(error))
+                return
             if frame is None or min(frame.shape[:2]) < 64:
                 self._decode_failures += 1
                 message = (
@@ -609,6 +778,10 @@ class HandEyeCalibrationPanel(Panel):
         if self._status_label is not None and message != self._last_status_text:
             self._last_status_text = message
             self._status_label.set_text(message)
+            self._status_label.classes(
+                replace="handeye-camera-chip"
+                + (" handeye-camera-chip-found" if detection is not None else "")
+            )
         if self._image is not None:
             content = (
                 ""
@@ -639,7 +812,7 @@ class HandEyeCalibrationPanel(Panel):
             ui.notify(str(e), color="negative" if e.fatal else "warning")
 
     async def _capture_sample(self) -> None:
-        """Take one synchronized (TCP pose, frame) sample, or raise
+        """Take one stationary (TCP pose, fresh frame) sample, or raise
         :class:`_CaptureRefused`. Shared by the Capture button and the
         auto-calibration run."""
         commander = self._commander
@@ -647,8 +820,28 @@ class HandEyeCalibrationPanel(Panel):
             raise _CaptureRefused("Panel is not connected to a robot", fatal=True)
         if float(np.max(np.abs(robot_state.speeds))) > STATIONARY_SPEED_DEG_S:
             raise _CaptureRefused("Robot is moving — hold still to capture")
-        raw = camera_service.get_latest_frame()
-        frame = handeye.decode_jpeg(raw)
+        try:
+            before = await observe_tcp(commander.client)
+            observation = await camera_service.next_snapshot()
+        except (CameraUnavailable, TimeoutError, ValueError) as error:
+            # A dropped frame, an arm still settling or a mid-capture tool
+            # readback are worth another attempt; the auto run retries them.
+            raise _CaptureRefused(str(error)) from error
+        except (OSError, NotImplementedError) as error:
+            raise _CaptureRefused(str(error), fatal=True) from error
+        binding = CaptureBinding(
+            observation.camera_id,
+            observation.session_id,
+            commander.robot.backend_package,
+            TcpCalibration(
+                before.applied, before.binding.tool_key, before.binding.variant_key
+            ),
+        )
+        if self._sample_binding is not None and binding != self._sample_binding:
+            raise _CaptureRefused(
+                "Camera, tool or TCP changed — clear samples first", fatal=True
+            )
+        frame = handeye.decode_jpeg(observation.jpeg)
         if frame is None:
             raise _CaptureRefused("No camera frame available")
         detection = await run.io_bound(handeye.detect_board, frame, self._detector)
@@ -661,42 +854,45 @@ class HandEyeCalibrationPanel(Panel):
             raise _CaptureRefused(
                 "Camera resolution changed — clear samples to restart", fatal=True
             )
-        tool_key = _selected_tool_key()
-        if self._sample_tool_key is None:
-            self._sample_tool_key = tool_key
-        elif tool_key != self._sample_tool_key:
-            raise _CaptureRefused(
-                f"Tool changed ({self._sample_tool_key} → {tool_key}) — "
-                "clear samples first",
-                fatal=True,
-            )
-
-        pose = await self._current_pose_matrix(commander)
-        if pose is None:
-            raise _CaptureRefused("Could not read robot pose", fatal=True)
-        self._samples.append(handeye.HandEyeSample(pose, detection, time.time()))
-        self._refresh_samples()
-
-    async def _current_pose_matrix(self, commander: Commander) -> np.ndarray | None:
-        """TCP pose as 4x4 (mm), preferring a fresh status round-trip over the
-        multicast cache."""
         try:
-            st = await commander.client.status()
-        except NotImplementedError:
-            st = None
-        status_pose = getattr(st, "pose", None) if st is not None else None
-        for candidate in (status_pose, robot_state.pose):
-            if candidate is None:
-                continue
-            pose = np.asarray(candidate, dtype=np.float64)
-            # All zeros is the uninitialised value, not a pose: the status
-            # cache seeds it that way and only fills it once the arm
-            # reports, so an unplugged robot answers zeros indefinitely.
-            # Storing one as a sample raises "non-positive determinant"
-            # out of the NEXT capture, which is unreadable as a diagnosis.
-            if pose.size == 16 and np.any(pose):
-                return pose.reshape(4, 4).copy()
-        return None
+            after = await observe_tcp(commander.client)
+            latest = camera_service.snapshot()
+        except (CameraUnavailable, TimeoutError, ValueError) as error:
+            raise _CaptureRefused(str(error)) from error
+        except (OSError, NotImplementedError) as error:
+            raise _CaptureRefused(str(error), fatal=True) from error
+        drift = (
+            np.linalg.inv(before.nominal_tool.matrix()) @ after.nominal_tool.matrix()
+        )
+        turned_deg = np.degrees(
+            np.arccos(np.clip((np.trace(drift[:3, :3]) - 1.0) / 2.0, -1.0, 1.0))
+        )
+        if (
+            after.binding != before.binding
+            or after.applied != before.applied
+            or latest.session_id != observation.session_id
+            or np.linalg.norm(drift[:3, 3]) > STILL_TRANSLATION_MM
+            or turned_deg > STILL_ROTATION_DEG
+        ):
+            raise _CaptureRefused(
+                "Camera or robot changed during capture; hold still and try again"
+            )
+        self._sample_binding = binding
+        self._sample_tool_key = binding.tool.tool_key
+        self._result = None
+        if self._save_btn is not None:
+            self._save_btn.set_enabled(False)
+        pose = before.nominal_tool.matrix() @ Pose(before.applied).matrix()
+        self._samples.append(
+            handeye.HandEyeSample(
+                pose,
+                detection,
+                observation.received_at,
+                thumbnail=handeye.thumbnail_jpeg(frame),
+            )
+        )
+        self._sample_revision += 1
+        self._refresh_samples()
 
     def _on_clear(self) -> None:
         if self._auto_running:
@@ -706,95 +902,141 @@ class HandEyeCalibrationPanel(Panel):
         self._refresh_samples()
 
     def _clear_samples(self) -> None:
+        self._sample_revision += 1
         self._samples = []
         self._sample_tool_key = None
+        self._sample_binding = None
+        self._result = None
+        if self._result_container is not None:
+            self._result_container.clear()
+        if self._save_btn is not None:
+            self._save_btn.set_enabled(False)
 
     def _delete_sample(self, index: int) -> None:
         if 0 <= index < len(self._samples):
+            self._sample_revision += 1
             del self._samples[index]
         if not self._samples:
             self._sample_tool_key = None
+            self._sample_binding = None
+        self._result = None
+        if self._save_btn is not None:
+            self._save_btn.set_enabled(False)
         self._refresh_samples()
 
     def _refresh_samples(self) -> None:
         n = len(self._samples)
         if self._sample_count is not None:
-            self._sample_count.set_text(f"{n} sample{'s' if n != 1 else ''}")
+            self._sample_count.set_text(f"{n} of {TARGET_VIEWS} views")
+        if self._progress is not None:
+            self._progress.set_value(min(n / TARGET_VIEWS, 1.0))
+        can_solve = n >= SOLVE_MIN_SAMPLES and not self._auto_running
         if self._solve_btn is not None:
-            self._solve_btn.set_enabled(
-                n >= SOLVE_MIN_SAMPLES and not self._auto_running
+            self._solve_btn.set_enabled(can_solve)
+        if self._solve_next_btn is not None:
+            to_go = SOLVE_MIN_SAMPLES - n
+            self._solve_next_btn.set_text(
+                "Solve"
+                if to_go <= 0
+                else f"Solve — {to_go} more view{'s' if to_go > 1 else ''}"
             )
-        if self._samples_detail is not None:
-            self._samples_detail.set_visibility(n > 0)
+            self._solve_next_btn.set_enabled(can_solve)
+        if self._next_btn is not None:
+            self._next_btn.set_visibility(self._result is not None)
         self._refresh_stage()
 
+        flags = self._view_flags()
         if self._diversity_label is not None:
-            if n < 2:
-                self._diversity_label.set_text(
-                    f"Capture {SOLVE_MIN_SAMPLES}+ views (10–15 recommended), "
-                    "varying wrist orientation ≥30° between views."
-                )
-                self._diversity_label.classes(replace="text-caption text-grey")
-            else:
-                max_rot, max_axis = handeye.motion_diversity(
-                    [s.T_base_gripper for s in self._samples]
-                )
-                if max_rot < handeye.DEGENERATE_ROTATION_DEG:
-                    self._diversity_label.set_text(
-                        f"Max relative rotation {max_rot:.1f}° — rotate the wrist "
-                        "between captures or the solve will fail."
-                    )
-                    self._diversity_label.classes(replace="text-caption text-negative")
-                elif max_axis < handeye.AXIS_DIVERSITY_MIN_DEG:
-                    self._diversity_label.set_text(
-                        f"Rotation about one axis only (axis spread {max_axis:.1f}°) "
-                        "— roll the wrist about a second axis or the solve will fail."
-                    )
-                    self._diversity_label.classes(replace="text-caption text-negative")
-                elif (
-                    max_rot < handeye.WARN_ROTATION_DEG
-                    or max_axis < handeye.AXIS_WARN_DEG
-                    or n < RECOMMENDED_SAMPLES
-                ):
-                    self._diversity_label.set_text(
-                        f"{n} views, max relative rotation {max_rot:.1f}°, axis "
-                        f"spread {max_axis:.1f}° — more views / larger rotations "
-                        "about varied axes improve accuracy."
-                    )
-                    self._diversity_label.classes(replace="text-caption text-warning")
-                else:
-                    self._diversity_label.set_text(
-                        f"{n} views, max relative rotation {max_rot:.1f}°, "
-                        f"axis spread {max_axis:.1f}°."
-                    )
-                    self._diversity_label.classes(replace="text-caption text-positive")
-
-        if self._samples_container is not None:
-            self._samples_container.clear()
-            with self._samples_container:
-                for i, s in enumerate(self._samples):
-                    with ui.row().classes("items-center text-caption"):
-                        ui.label(f"#{i + 1}")
-                        ui.label(f"{len(s.detection.corners)} corners")
-                        if i > 0:
-                            R_rel = (
-                                self._samples[i - 1].T_base_gripper[:3, :3].T
-                                @ s.T_base_gripper[:3, :3]
+            self._diversity_label.set_text(self._views_advice(flags))
+        if self._views_grid is not None:
+            self._views_grid.clear()
+            with self._views_grid:
+                for i, sample in enumerate(self._samples):
+                    kind, why = flags.get(i, ("", ""))
+                    with ui.element("div").classes(
+                        "handeye-view" + (f" handeye-view-{kind}" if kind else "")
+                    ):
+                        if sample.thumbnail:
+                            ui.image(
+                                "data:image/jpeg;base64,"
+                                + base64.b64encode(sample.thumbnail).decode()
                             )
-                            delta = math.degrees(
-                                float(
-                                    np.linalg.norm(
-                                        Rotation.from_matrix(R_rel).as_rotvec()
-                                    )
-                                )
-                            )
-                            ui.label(f"Δrot {delta:.1f}°")
+                        ui.label(str(i + 1)).classes("handeye-view-index")
                         ui.button(
                             icon="close",
                             on_click=lambda _, idx=i: self._delete_sample(idx),
-                        ).props("flat dense round size=sm").mark(
+                        ).props("flat dense round size=xs").mark(
                             f"handeye-sample-del-{i}"
                         )
+                        ui.tooltip(
+                            f"View {i + 1}: {len(sample.detection.corners)} corners"
+                            + (f", {why}" if why else "")
+                        )
+                for _ in range(n, TARGET_VIEWS):
+                    ui.element("div").classes("handeye-view handeye-view-empty")
+
+    def _views_advice(self, flags: dict[int, tuple[str, str]]) -> str:
+        """The one thing to do before the next capture, or nothing."""
+        n = len(self._samples)
+        for i, (kind, why) in flags.items():
+            if kind == "similar":
+                return f"View {i + 1} is {why}. Tilt the tool before the next capture."
+        if n >= 2:
+            max_rot, max_axis = handeye.motion_diversity(
+                [s.T_base_gripper for s in self._samples]
+            )
+            if max_rot < handeye.DEGENERATE_ROTATION_DEG:
+                return (
+                    f"The views differ by at most {max_rot:.0f}°. Rotate the wrist "
+                    "between captures or the solve will fail."
+                )
+            if max_axis < handeye.AXIS_DIVERSITY_MIN_DEG:
+                return (
+                    "Every view rotates about one axis. Roll the wrist about a "
+                    "second axis or the solve will fail."
+                )
+            if max_rot < handeye.WARN_ROTATION_DEG or max_axis < handeye.AXIS_WARN_DEG:
+                return "Tilt and roll the tool more between views for a better fit."
+        if n < SOLVE_MIN_SAMPLES:
+            return "Tilt and roll the tool between views."
+        return ""
+
+    async def _solve_from_views(self) -> None:
+        self._show_step(3)
+        await self._solve()
+
+    def _view_flags(self) -> dict[int, tuple[str, str]]:
+        """Views worth replacing: a near repeat of an earlier orientation,
+        and after a solve, a view the fit does not explain."""
+        flags: dict[int, tuple[str, str]] = {}
+        rotations = [sample.T_base_gripper[:3, :3] for sample in self._samples]
+        for i in range(1, len(rotations)):
+            for j in range(i):
+                delta = math.degrees(
+                    float(
+                        np.linalg.norm(
+                            Rotation.from_matrix(
+                                rotations[j].T @ rotations[i]
+                            ).as_rotvec()
+                        )
+                    )
+                )
+                if delta < handeye.DEGENERATE_ROTATION_DEG:
+                    flags[i] = ("similar", f"close to view {j + 1}")
+                    break
+        result = self._result
+        if result is not None and len(result.intrinsics.per_view_errors) == len(
+            self._samples
+        ):
+            errors = result.intrinsics.per_view_errors
+            limit = max(2.0 * float(np.median(errors)), _QUALITY_RMS_PX[1])
+            for i, error in enumerate(errors):
+                if error > limit:
+                    flags[i] = (
+                        "error",
+                        f"{error:.1f} px reprojection error; recapture this view.",
+                    )
+        return flags
 
     # ------------------------------------------------------- auto-calibration
 
@@ -977,9 +1219,7 @@ class HandEyeCalibrationPanel(Panel):
                     else:
                         ui.notify(
                             f"Auto-calibration captured {captured}/{n} views",
-                            color="positive"
-                            if captured >= RECOMMENDED_SAMPLES
-                            else "warning",
+                            color="positive" if captured >= TARGET_VIEWS else "warning",
                         )
                     if (
                         error is None
@@ -988,6 +1228,7 @@ class HandEyeCalibrationPanel(Panel):
                         and len(self._samples) >= SOLVE_MIN_SAMPLES
                     ):
                         self._set_auto_progress("Solving…")
+                        self._show_step(3)
                         await self._run_solve()
         except Exception:
             logger.exception("Auto-calibration run failed")
@@ -1154,7 +1395,7 @@ class HandEyeCalibrationPanel(Panel):
             self._auto_btn.set_text("Stop")
             self._auto_btn.props("icon=stop color=negative")
         else:
-            self._auto_btn.set_text("Auto-calibrate")
+            self._auto_btn.set_text("Auto-capture")
             self._auto_btn.props("icon=play_circle color=primary")
         if self._clear_btn is not None:
             self._clear_btn.set_enabled(not running)
@@ -1172,28 +1413,46 @@ class HandEyeCalibrationPanel(Panel):
         await self._run_solve()
 
     async def _run_solve(self) -> None:
-        if len(self._samples) < SOLVE_MIN_SAMPLES:
+        if len(self._samples) < SOLVE_MIN_SAMPLES or self._solving:
             return
+        revision = self._sample_revision
+        self._solving = True
         method = self._method
         assert self._solve_btn is not None
         self._solve_btn.props("loading")
         try:
             result = await run.io_bound(
-                handeye.solve_hand_eye, list(self._samples), self._spec, method=method
+                handeye.solve_hand_eye,
+                list(self._samples),
+                self._spec,
+                method=method,
+                mount=self._mount,
             )
         except handeye.CalibrationError as e:
             ui.notify(str(e), color="negative")
+            if self._save_btn is not None:
+                self._save_btn.set_enabled(False)
             return
         finally:
+            self._solving = False
             self._solve_btn.props(remove="loading")
+        if revision != self._sample_revision:
+            ui.notify(
+                "Samples changed during solve; solve the current set again",
+                color="warning",
+            )
+            return
         if result is None:
             return
         self._result = result
         self._show_result(result)
-        self._refresh_stage()
+        self._refresh_samples()
         if self._save_btn is not None:
             self._save_btn.set_enabled(True)
-        if float(np.linalg.norm(result.T_cam2gripper[:3, 3])) > 500.0:
+        if (
+            result.mount == "tool"
+            and float(np.linalg.norm(result.T_camera_parent[:3, 3])) > 500.0
+        ):
             ui.notify(
                 "Camera offset exceeds 500 mm — the solution looks degenerate; "
                 "recapture with more rotation diversity",
@@ -1203,32 +1462,47 @@ class HandEyeCalibrationPanel(Panel):
     def _show_result(self, result: handeye.HandEyeResult) -> None:
         if self._result_container is None:
             return
-        (x, y, z), (rx, ry, rz) = handeye.matrix_to_xyz_rpy(result.T_cam2gripper)
+        (x, y, z), (rx, ry, rz) = handeye.matrix_to_xyz_rpy(result.T_camera_parent)
         K = result.intrinsics.camera_matrix
         rms = result.intrinsics.reproj_rms_px
+        spread = result.target_spread_mm
+        # One line says whether to trust it; colour appears only when not.
+        if rms < _QUALITY_RMS_PX[0] and spread < _QUALITY_SPREAD_MM[0]:
+            verdict, tone = "Good fit", ""
+        elif rms < _QUALITY_RMS_PX[1] and spread < _QUALITY_SPREAD_MM[1]:
+            verdict, tone = "Usable fit", "text-warning"
+        else:
+            verdict, tone = "Poor fit; recapture the flagged views", "text-negative"
         self._result_container.clear()
         with self._result_container:
-            ui.label("Camera → TCP transform").classes("text-caption text-grey")
+            ui.label(
+                f"{verdict}: {rms:.2f} px reprojection, {spread:.1f} mm target spread"
+            ).classes(f"handeye-verdict {tone}")
+            ui.label(
+                "Camera → WRF transform"
+                if result.mount == "fixed"
+                else "Camera → TCP transform"
+            ).classes("text-caption text-grey")
             ui.label(f"X {x:+.1f}  Y {y:+.1f}  Z {z:+.1f} mm").classes("font-mono")
             ui.label(f"R {rx:+.1f}  P {ry:+.1f}  Y {rz:+.1f} °").classes("font-mono")
-            with ui.row().classes("text-caption"):
-                ui.label(f"Reproj RMS {rms:.2f} px").classes(
-                    _quality_color(rms, _QUALITY_RMS_PX)
-                )
-                ui.label(
-                    f"Residuals rot {result.rot_residual_deg[0]:.2f}° / "
-                    f"trans {result.trans_residual_mm[0]:.1f} mm (mean)"
-                )
-                ui.label(f"Target spread {result.target_spread_mm:.1f} mm").classes(
-                    _quality_color(result.target_spread_mm, _QUALITY_SPREAD_MM)
-                )
+            ui.label(
+                f"Residuals: rotation {result.rot_residual_deg[0]:.2f}°, "
+                f"translation {result.trans_residual_mm[0]:.1f} mm (mean)"
+            ).classes("text-caption")
             # Diagnostics and the solver choice are expert territory — folded
-            # away so the headline stays transform + quality.
+            # away so the headline stays verdict + transform.
             with ui.expansion("Details").props("dense").classes("w-full text-caption"):
                 ui.label(
                     f"fx {K[0, 0]:.1f}  fy {K[1, 1]:.1f}  "
                     f"cx {K[0, 2]:.1f}  cy {K[1, 2]:.1f} px"
                 ).classes("font-mono text-caption")
+                max_rot, max_axis = handeye.motion_diversity(
+                    [s.T_base_gripper for s in self._samples]
+                )
+                ui.label(
+                    f"Largest rotation between views {max_rot:.1f}°, "
+                    f"axis spread {max_axis:.1f}°"
+                ).classes("text-caption")
                 with ui.row().classes("items-center text-caption"):
                     ui.label(f"{result.n_views} views · method")
                     method_select = (
@@ -1244,27 +1518,42 @@ class HandEyeCalibrationPanel(Panel):
                         "text-grey"
                     )
 
-    def _save(self) -> None:
-        result = self._result
-        if result is None:
-            return
-        tool_key = self._sample_tool_key or _selected_tool_key()
-        tcp_offset = ng_app.storage.general.get(
-            f"tcp_offset_{tool_key}", {"x": 0, "y": 0, "z": 0}
+    async def _measurement(
+        self, setup: SetupSnapshot, reference: str
+    ) -> CameraCalibration:
+        if (
+            self._result is None
+            or self._sample_binding is None
+            or self._commander is None
+        ):
+            raise ValueError("Capture and solve a calibration first")
+        observation = camera_service.snapshot()
+        frame = handeye.decode_jpeg(observation.jpeg)
+        if frame is None:
+            raise CameraUnavailable("Camera image cannot be decoded")
+        calibration = calibration_from_result(
+            self._result, self._spec, self._sample_binding, setup, reference
         )
-        ng_app.storage.general[f"handeye/{tool_key}"] = handeye.to_storage_dict(
-            result,
-            self._spec,
-            tool_key,
-            tcp_offset,
-            datetime.now(UTC).isoformat(timespec="seconds"),
+        tool = (
+            await read_applied_tcp(self._commander.client)
+            if calibration.mount == "tool"
+            else None
         )
-        ui.notify(f"Calibration saved for tool {tool_key}", color="positive")
-        # Shown for the tool it was SAVED under. The samples fix the tool
-        # at capture time and the selector can move afterwards, so reading
-        # back under the selection would leave a green "saved" toast above
-        # an empty Stored section — indistinguishable from a failed save.
-        self._refresh_stored(tool_key)
+        if camera_service.snapshot().session_id != observation.session_id:
+            raise CameraUnavailable("Camera changed while checking calibration")
+        calibration.validate(
+            setup,
+            camera_id=observation.camera_id,
+            image_size=(frame.shape[1], frame.shape[0]),
+            backend=self._commander.robot.backend_package,
+            tool=tool,
+        )
+        return calibration
+
+    async def _save(self) -> None:
+        if self._data_editor is not None:
+            self._saved = await self._data_editor.save()
+            self._refresh_stage()
 
     def _refresh_stored(self, tool_key: str | None = None) -> None:
         if self._stored_container is None:
@@ -1312,34 +1601,50 @@ class HandEyeCalibrationPanel(Panel):
         if self._scene_switch is not None and not self._scene_switch.value:
             commander.scene.clear(SCENE_GROUP)
 
-    def _active_transform(self) -> np.ndarray | None:
-        if self._result is not None:
-            return self._result.T_cam2gripper
-        stored = ng_app.storage.general.get(f"handeye/{_selected_tool_key()}")
-        if stored:
-            try:
-                return np.asarray(stored["T_cam2gripper_mm"], dtype=np.float64).reshape(
-                    4, 4
-                )
-            except (KeyError, TypeError, ValueError):
-                return None
-        return None
-
-    def _refresh_scene_overlay(self) -> None:
+    async def _refresh_scene_overlay(self) -> None:
         commander = self._commander
         if (
             commander is None
             or commander.scene is None
             or self._scene_switch is None
             or not self._scene_switch.value
+            or self._data_editor is None
         ):
             return
-        X = self._active_transform()
-        pose = np.asarray(robot_state.pose, dtype=np.float64)
-        if X is None or pose.size != 16 or not np.any(pose):
+        try:
+            if self._result is not None:
+                setup = SetupSnapshot()
+                calibration = await self._measurement(setup, "WRF")
+            else:
+                setup = self._data_editor.snapshot()
+                calibration = setup.cameras[self._data_editor.name.value]
+            observation = camera_service.snapshot()
+            frame = handeye.decode_jpeg(observation.jpeg)
+            if frame is None:
+                raise CameraUnavailable("Camera image cannot be decoded")
+            tool = (
+                await read_applied_tcp(commander.client)
+                if calibration.mount == "tool"
+                else None
+            )
+            if camera_service.snapshot().session_id != observation.session_id:
+                raise CameraUnavailable("Camera changed while checking calibration")
+            pose = (
+                Pose.from_matrix(np.asarray(robot_state.pose).reshape(4, 4))
+                if calibration.mount == "tool"
+                else None
+            )
+            T_base_cam_m = calibration.world_pose(
+                setup,
+                camera_id=observation.camera_id,
+                image_size=(frame.shape[1], frame.shape[0]),
+                backend=commander.robot.backend_package,
+                tool=tool,
+                tcp_pose=pose,
+            ).matrix()
+        except (ValueError, KeyError, OSError, TimeoutError, CameraUnavailable):
             commander.scene.clear(SCENE_GROUP)
             return
-        T_base_cam_m = (pose.reshape(4, 4) @ X).copy()
         T_base_cam_m[:3, 3] /= 1000.0
         origin = T_base_cam_m[:3, 3]
         axes = T_base_cam_m[:3, :3]
