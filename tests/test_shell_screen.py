@@ -47,19 +47,6 @@ def _clicked(element) -> bool:
     return True
 
 
-def _click_until(screen, marker: str, done) -> None:
-    """Click *marker* until ``done()``. A dialog still sliding in can let a
-    click land on what it slides over, or arrive before it listens."""
-
-    def step(_) -> bool:
-        if done():
-            return True
-        _clicked(marked_element(screen, marker))
-        return False
-
-    wait(screen).until(step)
-
-
 MEASURE = """
     const footer = document.querySelector('.status-footer');
     const f = footer.getBoundingClientRect();
@@ -576,10 +563,14 @@ class TestShellLayout:
                             ), placed
                             gear.click()
                             wait(screen).until(lambda _: _settings_open())
-                            _click_until(
-                                screen,
-                                "settings-close",
-                                lambda: not _settings_open(),
+                            # A click while the dialog is still sliding in can
+                            # be dropped; close it until it is closed.
+                            wait(screen).until(
+                                lambda _: not _settings_open()
+                                or (
+                                    _clicked(marked_element(screen, "settings-close"))
+                                    and not _settings_open()
+                                )
                             )
                             wait(screen, 5).until(
                                 lambda _: no_visible(screen, ".q-dialog__backdrop")
