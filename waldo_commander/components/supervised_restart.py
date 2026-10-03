@@ -3,6 +3,7 @@
 import waldoctl
 from nicegui import ui
 
+from waldo_commander.components.run_records import outcome_label
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.programs import is_any_program_running
@@ -19,7 +20,7 @@ from waldo_commander.state import ui_state
 async def show_supervised_restart() -> None:
     if is_any_program_running():
         ui.notify(
-            "Stop the current program before selecting a restart entry", color="warning"
+            "Stop the current program before starting from a function", color="warning"
         )
         return
     textarea = ui_state.active_textarea
@@ -36,15 +37,20 @@ async def show_supervised_restart() -> None:
         ui.dialog() as dialog,
         ui.card().classes("task-dialog w-[720px] max-w-full overflow-y-auto"),
     ):
-        ui.label("Supervised restart").classes("text-lg font-semibold")
-        previous = script_exec.last_outcome or "No previous run in this session"
-        if script_exec.last_run_source_digest is not None:
-            previous += (
-                " · same source"
-                if digest == script_exec.last_run_source_digest
-                else " · different source"
+        ui.label("Start from a function").classes("text-lg font-semibold")
+        if script_exec.last_outcome is None:
+            previous = "No previous run in this session."
+        else:
+            previous = (
+                f"Previous run: {outcome_label(script_exec.last_outcome).lower()}"
             )
-        ui.label(f"Previous run: {previous}").mark("restart-previous-run")
+            if script_exec.last_run_source_digest is not None:
+                previous += (
+                    ", from this program as it is now."
+                    if digest == script_exec.last_run_source_digest
+                    else ", from a different version of this program."
+                )
+        ui.label(previous).mark("restart-previous-run")
         if script_exec.last_record is not None:
             try:
                 events = load_record(script_exec.last_record)
@@ -58,20 +64,20 @@ async def show_supervised_restart() -> None:
                 )
                 if last_action:
                     ui.label(
-                        f"Last recorded action: {last_action.get('method', '')} (completion is not implied)"
+                        f"Last recorded step: {last_action.get('method', '')}. It may not have finished."
                     ).classes("text-sm")
             except (OSError, ValueError):
                 ui.label("Previous run record is unavailable.").classes("text-sm")
         if not entries:
             ui.label(
-                "This program has no top-level function that runs without arguments. Start runs it from the beginning."
+                "This program has no function to start from. Add a top-level function that takes no arguments, or run the program from the beginning."
             )
             ui.button("Close", on_click=dialog.close).props("flat")
             dialog.on("hide", dialog.delete)
             dialog.open()
             return
         ui.label(
-            "The selected function starts with fresh Python state. Check the arm, tool, held part and work area before continuing."
+            "The function starts fresh; nothing from the previous run carries over. Check the arm, tool, held part and work area before continuing."
         ).classes("text-sm")
         if hook is not None:
             ui.label(
@@ -96,9 +102,9 @@ async def show_supervised_restart() -> None:
             .classes("whitespace-pre-line text-sm")
             .mark("restart-controller-state")
         )
-        with ui.expansion("Controller details", icon="info_outline").classes("w-full"):
+        with ui.expansion("Controller details").classes("w-full"):
             controller_details = ui.label().classes("whitespace-pre-line panel-note")
-        confirmation = ui.checkbox("I checked the physical setup for this entry").mark(
+        confirmation = ui.checkbox("I checked the arm, tool and work area").mark(
             "restart-physical-confirmation"
         )
 
@@ -112,11 +118,15 @@ async def show_supervised_restart() -> None:
                 current = await fresh_state(waldoctl.commander.client)
                 current.require_ready()
                 reference = current
-                mode = "simulator" if current.simulator_active else "robot hardware"
+                mode = "the simulator" if current.simulator_active else "robot hardware"
+                tool = (
+                    f"Tool: {current.tool} {current.tool_variant}".rstrip()
+                    if current.tool
+                    else "No tool selected"
+                )
                 state_label.text = (
-                    f"Controller ready · {mode}\n"
-                    f"Referenced · enabled · queue empty\n"
-                    f"Tool: {current.tool or 'none'} {current.tool_variant}"
+                    f"Controller ready on {mode}: homed, enabled, nothing queued.\n"
+                    + tool
                     + (
                         "\nHand-guiding available at rest; keep hands clear for execution."
                         if current.freedrive
@@ -124,7 +134,7 @@ async def show_supervised_restart() -> None:
                     )
                 )
                 controller_details.set_text(
-                    f"Session: {current.session_id} · publication: {current.seq}\nJoints (°): {', '.join(f'{v:.1f}' for v in current.angles_deg)}\nTCP: {current.tcp}"
+                    f"Session {current.session_id}, publication {current.seq}\nJoints (°): {', '.join(f'{v:.1f}' for v in current.angles_deg)}\nTCP: {current.tcp}"
                 )
             except Exception as error:
                 controller_details.set_text("")
@@ -151,13 +161,11 @@ async def show_supervised_restart() -> None:
             else:
                 reference = None
                 confirmation.value = False
-                state_label.text = (
-                    "Restart refused. Refresh state and check the physical setup again."
-                )
+                state_label.text = "The controller refused the restart. Refresh its state and check the setup again."
 
         with ui.row():
             start_button = (
-                ui.button("Start from entry", on_click=start)
+                ui.button(f"Start from {choice.value}", on_click=start)
                 .props("color=wc-action text-color=wc-on-bright")
                 .mark("restart-start")
             )
@@ -169,7 +177,12 @@ async def show_supervised_restart() -> None:
         confirmation.on_value_change(
             lambda e: start_button.set_enabled(bool(e.value) and reference is not None)
         )
-        choice.on_value_change(lambda _: confirmation.set_value(False))
+
+        def entry_changed(event) -> None:
+            confirmation.set_value(False)
+            start_button.set_text(f"Start from {event.value}")
+
+        choice.on_value_change(entry_changed)
     dialog.on("hide", dialog.delete)
     dialog.open()
     await refresh()

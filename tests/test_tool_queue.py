@@ -253,7 +253,23 @@ async def test_tool_state_reaches_the_preview_and_the_scrubbed_arm(user: User):
 
     client = await _gripper(user)
     try:
+        # A Stop during the panel's calibration cancels it, which is what the
+        # user asked for: nothing reports it as a failed action.
         robot_state.gripper_calibrated = False
+        # Queued behind a delay, the calibration is still waiting when the
+        # Stop lands, however fast the runner.
+        assert await client.delay(2.0) >= 0
+        user.find(marker="btn-tool-action-r").click()
+        async with asyncio.timeout(5):
+            while "tool_action" not in (await client.queue() or []):
+                await asyncio.sleep(0.02)
+        assert await client.stop() == 1
+        async with asyncio.timeout(5):
+            while await client.queue():
+                await asyncio.sleep(0.02)
+        assert not robot_state.gripper_calibrated, "the Stop came after calibration"
+        await user.should_not_see("Action failed")
+
         user.find(marker="btn-tool-action-r").click()
         assert await wait_until(lambda: robot_state.gripper_calibrated, 10)
         error = await path_visualizer.update_path_visualization(

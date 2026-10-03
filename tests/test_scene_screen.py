@@ -458,7 +458,11 @@ class TestScene:
         for _attempt in range(5):
             ActionChains(screen.selenium).context_click(canvas).perform()
             try:
-                items = wait(screen, 2).until(lambda _: js(screen, visible_items))
+                items = wait(screen, 2).until(
+                    lambda _: (shown := js(screen, visible_items))
+                    and shown[0]
+                    and shown
+                )
                 break
             except TimeoutException:
                 continue

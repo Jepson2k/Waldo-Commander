@@ -97,6 +97,7 @@ class PlaybackController:
         self._checkpoint_markers: list[ui.element] = []
         self._tool_markers: list[ui.element] = []
         self.speed_fab: ui.fab | None = None
+        self._layers_button: ui.button | None = None
         self._speed_2x: ui.fab_action | None = None
         self._speed_tooltip: ui.tooltip | None = None
         self._speed_query_pending = False
@@ -325,6 +326,7 @@ class PlaybackController:
                         checkbox.mark(mark)
                         self._layer_checks[flag] = checkbox
         button.mark("preview-layers")
+        self._layers_button = button
         self.refresh_layers()
 
     def _set_layer(self, flag: str, on: bool) -> None:
@@ -360,10 +362,12 @@ class PlaybackController:
         available = layers_available(active.dry_run if active is not None else None)
         for flag, checkbox in self._layer_checks.items():
             checkbox.set_enabled(available[flag])
+        busy = path_visualizer.physics_in_flight(waldoctl.commander.programs.active_id)
         if self._physics_busy is not None:
-            self._physics_busy.set_visibility(
-                path_visualizer.physics_in_flight(waldoctl.commander.programs.active_id)
-            )
+            self._physics_busy.set_visibility(busy)
+        # A menu of choices that are all disabled reads as something missing.
+        if self._layers_button is not None:
+            self._layers_button.set_visibility(any(available.values()) or busy)
 
     # ---- Recording lifecycle ----
 
@@ -599,9 +603,7 @@ class PlaybackController:
             if not live:
                 active = waldoctl.commander.programs.active
                 value = active.dry_run.playback.playback_speed if active else 1.0
-                self.speed_fab.props(
-                    f'icon="{self._SPEED_ICONS.get(value, "1x_mobiledata")}"'
-                )
+                self._show_speed(value)
                 if self._speed_tooltip:
                     self._speed_tooltip.text = "Preview playback speed"
 
@@ -1171,9 +1173,7 @@ class PlaybackController:
                 self._script_slider_tick()
             self._execution_speed = state
             self._execution_speed_at = time.monotonic()
-            if self.speed_fab:
-                icon = self._SPEED_ICONS.get(state.resume_scale, "speed")
-                self.speed_fab.props(f'icon="{icon}"')
+            self._show_speed(state.resume_scale)
             if self._speed_tooltip:
                 prefix = (
                     "Paused" if state.paused else f"Applied {state.applied_scale:.0%}"
@@ -1213,9 +1213,16 @@ class PlaybackController:
         active = waldoctl.commander.programs.active
         if active is not None:
             active.dry_run.playback.playback_speed = value
-        if self.speed_fab:
-            icon = self._SPEED_ICONS.get(value, "1x_mobiledata")
-            self.speed_fab.props(f'icon="{icon}"')
+        self._show_speed(value)
+
+    def _show_speed(self, value: float) -> None:
+        """Full speed is the resting state and stays quiet; the chip shows as
+        on only while the program runs slower or faster than written."""
+        if self.speed_fab is None:
+            return
+        self.speed_fab.props(f'icon="{self._SPEED_ICONS.get(value, "speed")}"')
+        written = abs(value - 1.0) < 1e-6
+        self.speed_fab.props("color=wc-text" if written else "color=wc-action-text")
 
     # ---- Play button state ----
 

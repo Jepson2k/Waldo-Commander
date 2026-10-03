@@ -27,8 +27,8 @@ nav:
   - Named Setup: guides/named-setup.md
   - Camera Localization: guides/vision-localization.md
   - Tray Patterns: guides/tray-patterns.md
-  - Run Records: run-records.md
-  - Supervised Restart: guides/supervised-restart.md
+  - Run History: run-records.md
+  - Start from a Function: guides/supervised-restart.md
   - AI Control (MCP): guides/mcp.md
   - API Reference: guides/api-reference.md
   - Backend Development: guides/backend-development.md

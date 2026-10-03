@@ -132,10 +132,16 @@ if __name__ == '__main__':
     before = await client.angles()
     initial_state = await fresh_state(client)
     initial_state.require_ready()
+    # Joint speeds arrive in deg/s: an arm still settling under 0.01 rad/s is
+    # at rest, and one turning at 1 deg/s is not.
+    n = len(initial_state.angles_deg)
+    replace(initial_state, speeds_deg_s=(0.3,) * n).require_ready()
+    with pytest.raises(ValueError, match="Wait for the arm to stop"):
+        replace(initial_state, speeds_deg_s=(1.0,) * n).require_ready()
     user.find(marker="editor-more-btn").click()
     user.find(marker="editor-restart-btn").click()
-    await user.should_see("Previous run: failed · same source")
-    await user.should_see("Controller ready · simulator", retries=50)
+    await user.should_see("Previous run: failed, from this program as it is now.")
+    await user.should_see("Controller ready on the simulator", retries=50)
     assert not marker.exists()
     start_button = next(iter(user.find(marker="restart-start").elements))
     entry_choice = next(iter(user.find(marker="restart-entry-choice").elements))
@@ -146,6 +152,7 @@ if __name__ == '__main__':
     with user.client:
         entry_choice.value = "after_place"
     assert not start_button.enabled, "a check of one entry authorized another"
+    assert start_button.text == "Start from after_place"
     user.find(marker="restart-physical-confirmation").click()
     assert start_button.enabled
     from waldo_commander.services.control_lease import BROWSER, MCP, control_lease

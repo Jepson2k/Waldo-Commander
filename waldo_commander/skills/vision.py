@@ -45,7 +45,7 @@ async def locate_board(
     timeout_s: float = 2.0,
     limits: LocalizationLimits | None = None,
 ) -> LocalizationResult:
-    """Locate a calibrated ChArUco board in WRF; hold a tool camera still.
+    """Find the calibration board with a calibrated camera and return where it is in the world; hold a tool camera still.
 
     Preview requires an explicit ImageFixture. Live programs request a fresh
     image from their FrameSource. Missing and rejected detections return no

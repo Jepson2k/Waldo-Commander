@@ -1,11 +1,12 @@
-# Supervised restart
+# Start from a function
 
-Use the editor's **Supervised restart** button after an interrupted program to
-start again from any of its top-level functions, the way an industrial
-controller lets the operator move the program pointer to a routine. Review the
-previous run, read fresh controller state, pick the function, check the
-physical setup, then click **Start from entry**. Optional [run records](../run-records.md) retain the selected
-entry and the state observed at launch.
+Use **Start from a function…** in the editor's ⋮ menu after an interrupted
+program to start again from any of its top-level functions, the way an
+industrial controller lets the operator move the program pointer to a routine.
+Review the previous run, read fresh controller state, pick the function, check
+the physical setup, then click **Start from** the chosen function. Optional
+[run records](../run-records.md) retain the selected entry and the state
+observed at launch.
 
 ```python
 from parol6 import RobotClient
@@ -43,10 +44,10 @@ in the program is imported or run to build the list.
 
 A top-level `before_restart()` is the program's restart hook, the counterpart
 of a controller's restart event routine: it runs in the fresh process before
-the chosen function on every supervised restart, never on ordinary **Start**,
-and is never offered as a place to start. Put the cell reset there: release a
-held part, clear outputs, check a sensor. If it raises, the chosen function
-does not run.
+the chosen function each time you start from a function, never on ordinary
+**Start**, and is never offered as a place to start. Put the cell reset there:
+release a held part, clear outputs, check a sensor. If it raises, the chosen
+function does not run.
 
 Each selection launches a new Python process with fresh globals and calls only
 the selected entry. It does not reconstruct locals or resume at a source line.
@@ -73,4 +74,5 @@ configuration automatically. **Stop** clears old queued motion; **Pause** leaves
 it pending and therefore prevents a new restart.
 
 Ordinary **Start** always runs from the beginning, including for programs whose
-functions all take arguments. Supervised restart works with run recording disabled.
+functions all take arguments. Starting from a function works with run
+recording disabled.

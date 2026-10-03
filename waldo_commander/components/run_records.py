@@ -13,6 +13,41 @@ from waldo_commander.services.run_records import (
 )
 
 
+# The recorder's event names are identifiers; the table shows what happened.
+_EVENT_LABELS = {
+    "run_started": "Run started",
+    "run_finished": "Run finished",
+    "entry_started": "Started from function",
+    "entry_returned": "Function returned",
+    "command_started": "Command started",
+    "skill_started": "Skill started",
+    "controller_context": "Controller state",
+    "context_unavailable": "Controller state unavailable",
+    "status": "Status",
+    "status_unavailable": "Status unavailable",
+    "setup_loaded": "Setup loaded",
+    "events_lost": "Events lost",
+    "record_truncated": "Record cut short",
+}
+_OUTCOMES = {
+    "completed": "Completed",
+    "failed": "Failed",
+    "stopped": "Stopped",
+    "start_failed": "Did not start",
+    "interrupted": "Interrupted",
+}
+
+
+def event_label(name: str) -> str:
+    return _EVENT_LABELS.get(name, name.replace("_", " ").capitalize())
+
+
+def outcome_label(outcome: str | None) -> str:
+    if not outcome:
+        return "Did not finish"
+    return _OUTCOMES.get(outcome, outcome.replace("_", " ").capitalize())
+
+
 def show_run_records() -> None:
     selected = {}
 
@@ -25,7 +60,7 @@ def show_run_records() -> None:
         selected.clear()
         selected.update({p.stem: p for p in paths})
         return {
-            p.stem: f"{datetime.fromtimestamp(p.stat().st_mtime, UTC).astimezone():%b %d %H:%M:%S} · {p.stem[:8]}"
+            p.stem: f"{datetime.fromtimestamp(p.stat().st_mtime, UTC).astimezone():%b %d, %H:%M:%S} ({p.stem[:8]})"
             for p in paths
         }
 
@@ -34,16 +69,14 @@ def show_run_records() -> None:
         ui.dialog() as dialog,
         ui.card().classes("task-dialog w-[850px] max-w-full flex-nowrap"),
     ):
-        ui.label("Run records").classes("text-lg font-semibold")
+        ui.label("Run history").classes("text-lg font-semibold")
         with ui.column().classes("panel-body gap-2"):
             ui.checkbox(
                 "Record future program runs",
                 value=script_exec.record_runs,
                 on_change=lambda e: setattr(script_exec, "record_runs", bool(e.value)),
             ).mark("record-runs-enabled")
-            with ui.expansion("What is recorded?", icon="info_outline").classes(
-                "w-full"
-            ):
+            with ui.expansion("What is recorded?").classes("w-full"):
                 ui.label(
                     "Records stay local and include arguments, results, setup snapshots and sampled status. Source code and console output are excluded."
                 ).classes("panel-note")
@@ -55,7 +88,7 @@ def show_run_records() -> None:
                 .classes("w-full")
                 .mark("run-record-choice")
             )
-            summary = ui.label("No recorded runs yet.").mark("run-record-summary")
+            summary = ui.label("No runs recorded yet.").mark("run-record-summary")
             search = (
                 ui.input("Filter events")
                 .props("dense clearable")
@@ -76,7 +109,7 @@ def show_run_records() -> None:
                     ],
                     rows=[],
                     row_key="row",
-                    pagination=6,
+                    pagination=10,
                 )
                 .classes("w-full shrink-0")
                 .props("dense")
@@ -87,14 +120,15 @@ def show_run_records() -> None:
             detail = (
                 ui.column().classes("w-full shrink-0 gap-2").mark("run-record-detail")
             )
-            ui.label("Select an event to inspect its values.").classes("panel-note")
+            hint = ui.label("Select an event to see its values.").classes("panel-note")
 
             def refresh():
                 detail.clear()
+                hint.set_visibility(True)
                 if choice.value not in selected:
                     table.rows = []
                     table.update()
-                    summary.text = "No recorded runs yet."
+                    summary.text = "No runs recorded yet."
                     return
                 try:
                     events = load_record(selected[choice.value])
@@ -105,14 +139,14 @@ def show_run_records() -> None:
                             for e in reversed(events)
                             if e["event"] == "run_finished"
                         ),
-                        "No terminal event",
+                        None,
                     )
                     loss = any(
                         e["event"] in {"events_lost", "record_truncated"}
                         for e in events
                     )
-                    summary.text = f"{outcome} · {len(events)} entries" + (
-                        " · incomplete capture" if loss else ""
+                    summary.text = f"{outcome_label(outcome)}: {len(events)} events" + (
+                        ", not all of them captured" if loss else ""
                     )
                     # A program's own timestamp, where it sent one: a backlog
                     # drained after a disconnect is received all at once.
@@ -125,9 +159,9 @@ def show_run_records() -> None:
                                     - started
                                 )
                                 / 1e9,
-                                3,
+                                2,
                             ),
-                            "event": e["event"],
+                            "event": event_label(e["event"]),
                             "method": e.get("method", ""),
                             "command": e.get("command", ""),
                         }
@@ -144,8 +178,10 @@ def show_run_records() -> None:
                 try:
                     record = load_record(selected[choice.value])[row["row"]]
                     detail.clear()
+                    hint.set_visibility(False)
                     with detail:
-                        ui.label("Local event values").classes("font-medium")
+                        ui.label(event_label(record["event"])).classes("font-medium")
+                        shown = 0
                         with ui.element("div").classes("event-detail-grid w-full"):
                             fields = (
                                 "method",
@@ -164,6 +200,7 @@ def show_run_records() -> None:
                                 value = record.get(key)
                                 if value is None or value == "":
                                     continue
+                                shown += 1
                                 ui.label(key.replace("_", " ").capitalize()).classes(
                                     "panel-note"
                                 )
@@ -173,7 +210,11 @@ def show_run_records() -> None:
                                     ).classes("text-sm font-mono whitespace-pre-wrap")
                                 else:
                                     ui.label(str(value)).classes("text-sm")
-                        with ui.expansion("Raw JSON", icon="code").classes("w-full"):
+                        if not shown:
+                            ui.label(
+                                "Nothing more was recorded for this event."
+                            ).classes("panel-note")
+                        with ui.expansion("Raw JSON").classes("w-full"):
                             ui.code(
                                 json.dumps(record, indent=2), language="json"
                             ).classes("w-full overflow-auto")
@@ -207,9 +248,9 @@ def show_run_records() -> None:
                 refresh()
 
         with ui.row().classes("panel-actions"):
-            ui.button("Export debugging data", on_click=export).props(
-                "color=wc-action text-color=wc-on-bright"
-            ).mark("run-record-export")
+            ui.button("Export debugging data", on_click=export).props("flat").mark(
+                "run-record-export"
+            )
             ui.button("Refresh", on_click=reload_choices).props("flat").mark(
                 "run-record-refresh"
             )

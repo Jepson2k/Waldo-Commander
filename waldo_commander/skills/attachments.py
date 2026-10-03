@@ -66,7 +66,7 @@ async def attach_object(
     allowed_contacts: tuple[str, ...] = (),
     shape: Shape | None = None,
 ) -> Shape:
-    """Declare an existing program shape held at a flange-relative pose.
+    """Tell the world model the tool is now holding a program shape, at a pose relative to the flange.
 
     The pose uses metres and radians, extrinsic XYZ, independently of the TCP.
     Exact collision-report names exempt only this shape's selected partners.
@@ -93,7 +93,7 @@ async def attach_object(
 async def detach_object(
     rbt: RobotClient, *, name: str, world_pose: Pose6, shape: Shape | None = None
 ) -> Shape:
-    """Declare a held shape fixed at an explicit world pose (metres/radians).
+    """Tell the world model a held shape now rests in the world at the given pose (metres, radians).
 
     Removes its allowed-contact exemptions and confirms readback. This does
     not release the gripper or assert where a physical object came to rest.

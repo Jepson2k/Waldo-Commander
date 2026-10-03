@@ -452,6 +452,13 @@ class _ToolQuickActions:
                 )
             else:
                 await tool.action_l(not waldoctl.commander.status.tool.engaged)
+        except waldoctl.RobotError as e:
+            # A Stop cancels the action: what the user asked for, not a failure.
+            if e.cancelled:
+                logger.info("Tool action_l stopped: %s", e)
+                return
+            logger.error("Tool action_l failed: %s", e)
+            ui.notify(f"Action failed: {e}", color="negative")
         except Exception as e:
             logger.error("Tool action_l failed: %s", e)
             ui.notify(f"Action failed: {e}", color="negative")
@@ -480,6 +487,13 @@ class _ToolQuickActions:
                         motion_recorder.record_action("gripper", calibrate=True)
             else:
                 await tool.action_r(not waldoctl.commander.status.tool.engaged)
+        except waldoctl.RobotError as e:
+            # A Stop cancels the action: what the user asked for, not a failure.
+            if e.cancelled:
+                logger.info("Tool action_r stopped: %s", e)
+                return
+            logger.error("Tool action_r failed: %s", e)
+            ui.notify(f"Action failed: {e}", color="negative")
         except Exception as e:
             logger.error("Tool action_r failed: %s", e)
             ui.notify(f"Action failed: {e}", color="negative")
@@ -2271,13 +2285,18 @@ class ControlPanel:
             self._home_progress_stop()
 
     async def _wait_home(self, index: int) -> None:
-        # wait_command only resolves on completion or a pipeline error; a plain
-        # Stop cancels the command without either, so the action going idle
-        # after it ran also ends the wait.
+        # A Stop cancels the command, and its wait raises a cancelled
+        # RobotError; the action going idle after it ran also ends the wait.
         started = False
         deadline = time.monotonic() + 120.0
         while time.monotonic() < deadline:
-            if await self.client.wait_command(index, timeout=0.5):
+            try:
+                if await self.client.wait_command(index, timeout=0.5):
+                    return
+            except waldoctl.RobotError as e:
+                if not e.cancelled:
+                    raise
+                logger.info("HOME stopped before it finished")
                 return
             await asyncio.sleep(0.1)
             act_state = waldoctl.commander.status.action.state
