@@ -2579,7 +2579,9 @@ class ControlPanel:
                         return r["el"].value  # Keep current value while editing
                     if len(a) <= i or not math.isfinite(a[i]):
                         return None
-                    return float(a[i])
+                    # To the tenth the field shows: a reading that jitters
+                    # within it leaves the field, and its websocket, alone.
+                    return round(float(a[i]), 1)
 
                 num.on("focus", lambda _e, r=_num_ref: r.__setitem__("focused", True))
                 num.on("blur", lambda _e, r=_num_ref: r.__setitem__("focused", False))

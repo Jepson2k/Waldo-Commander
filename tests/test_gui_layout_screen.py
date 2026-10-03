@@ -290,7 +290,7 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
         )
         wait(screen, 10).until(
             lambda _: run_in_app(
-                lambda: bool(marked("diag-torque-chart").options["series"][0]["data"])
+                lambda: bool(marked("diag-torque-chart").options["dataset"]["source"])
             )
         )
         _ = marked_element(screen, "diag-expand-chart").location_once_scrolled_into_view

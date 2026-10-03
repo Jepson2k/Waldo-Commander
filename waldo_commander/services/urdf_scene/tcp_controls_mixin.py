@@ -75,6 +75,7 @@ class TCPControlsMixin:
     # here would shadow the real method.
     snap: SceneSnap
     _watch_hover: Callable[[Any, str], None]
+    _apply_joint_angles: Callable[[list[float]], None]
 
     @property
     def tcp_transform_mode(self) -> str:
@@ -567,10 +568,7 @@ class TCPControlsMixin:
             # Update angles without repositioning the TCP ball; the user is dragging it.
             n = len(self.joint_names)
             self._editing_angles[:n] = result.angles[:n]
-            for joint_name, q in zip(self.joint_names, self._editing_angles):
-                if joint_name in self.joint_groups and joint_name in self.joint_trafos:
-                    t, r = self.joint_trafos[joint_name](q)
-                    self.joint_groups[joint_name].move(*t).rotate(*r)
+            self._apply_joint_angles(self._editing_angles)
             self._sync_robot_state_from_editing()
             self._update_collision_highlight()
             if self._current_editing_type:

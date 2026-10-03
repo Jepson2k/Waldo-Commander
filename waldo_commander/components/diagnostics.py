@@ -128,6 +128,12 @@ def _faults(drive_health: Any) -> Sequence[Sequence[str]]:
     return getattr(drive_health, "faults", ())
 
 
+def _cells(reading: list[float], n: int) -> list[float | None]:
+    """A torque reading as *n* chart cells, blank where it has no joint."""
+    cells: list[float | None] = [round(v, 3) for v in reading[:n]]
+    return cells + [None] * (n - len(cells))
+
+
 class DiagnosticsPage:
     """The Diagnostics tab of the bottom panel."""
 
@@ -291,18 +297,11 @@ class DiagnosticsPage:
             self._row("Scheduling", "diag-loop-sched")
 
     def _build_link_section(self) -> None:
-        lh = waldoctl.commander.status.link_health
         with self._section("link", "Motor bus"):
-            self._row("State", "diag-link-state").bind_text_from(lh, "state")
-            self._row("Restarts", "diag-link-restarts").bind_text_from(
-                lh, "restarts", backward=str
-            )
-            self._row("TX errors", "diag-link-tx-errors").bind_text_from(
-                lh, "tx_errors", backward=str
-            )
-            self._row("RX frames", "diag-link-rx-frames").bind_text_from(
-                lh, "rx_frames", backward=str
-            )
+            self._row("State", "diag-link-state")
+            self._row("Restarts", "diag-link-restarts")
+            self._row("TX errors", "diag-link-tx-errors")
+            self._row("RX frames", "diag-link-rx-frames")
 
     def _build_drives_section(self) -> None:
         """A row per actuator, plus the tool drive some backends report.
@@ -392,7 +391,8 @@ class DiagnosticsPage:
                         | ({} if measured else {"type": "dashed"})
                         | {"color": color},
                         "itemStyle": {"color": color},
-                        "data": [],
+                        # Column 0 of the dataset is the time.
+                        "encode": {"x": 0, "y": len(series) + 1},
                     }
                 )
         with self._section("torques", "Joint torque"):
@@ -421,6 +421,8 @@ class DiagnosticsPage:
                 )
             options = chart_options(y_name="Nm")
             options["series"] = series
+            # One row per sample, the time once rather than once per series.
+            options["dataset"] = {"source": []}
             options["legend"].update(
                 {"data": [f"J{i + 1}" for i in range(n)], "selectedMode": False}
             )
@@ -678,7 +680,12 @@ class DiagnosticsPage:
 
     def _update_link(self, worst: int, reasons: _Reasons) -> tuple[int, _Reasons]:
         """Bus state, where anything but Up is the whole story."""
-        state = waldoctl.commander.status.link_health.state
+        lh = waldoctl.commander.status.link_health
+        state = lh.state
+        self._set("diag-link-state", state)
+        self._set("diag-link-restarts", str(lh.restarts))
+        self._set("diag-link-tx-errors", str(lh.tx_errors))
+        self._set("diag-link-rx-frames", str(lh.rx_frames))
         if not state:
             return worst, reasons
         # Backends spell the CAN states either way: ErrorPassive, ERROR_PASSIVE.
@@ -848,23 +855,14 @@ class DiagnosticsPage:
             return
         self._chart_pushed_at = now
         timestamps, measured, external = result
-        ts_ms = [t * 1000.0 for t in timestamps]
-        series: list[dict[str, Any]] = []
-        for rows in (measured, external):
-            for j in range(self._joint_count):
-                series.append(
-                    {
-                        "data": [
-                            [t, round(row[j], 3)]
-                            for t, row in zip(ts_ms, rows)
-                            if j < len(row)
-                        ]
-                    }
-                )
+        n = self._joint_count
+        source = [
+            [round(t * 1000.0), *_cells(m, n), *_cells(e, n)]
+            for t, m, e in zip(timestamps, measured, external)
+        ]
         with self._chart.props.suspend_updates():
-            for destination, values in zip(self._chart.options["series"], series):
-                destination["data"] = values["data"]
-        self._chart.run_chart_method("setOption", {"series": series})
+            self._chart.options["dataset"]["source"] = source
+        self._chart.run_chart_method("setOption", {"dataset": {"source": source}})
 
     # ---- actions ----
 
