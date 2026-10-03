@@ -132,7 +132,9 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
         control_lease.reset()
 
     # Guard: a pulse while a program is running neither starts nor queues one.
-    slow_script = "import time\ntime.sleep(1.5)\n"
+    # The program outlasts a stalled status tick on a loaded runner, so the
+    # watcher sees the pulse mid-run rather than after the program ends.
+    slow_script = "import time\ntime.sleep(4)\n"
     ui_state.active_textarea.value = slow_script
     tab.source = slow_script
     automation_state._cycle_last_fire = time.monotonic() - 2.0
@@ -140,6 +142,12 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     assert await _wait_for(is_any_program_running, timeout=15.0)
     automation_state._cycle_last_fire = time.monotonic() - 2.0
     _pulse_input_1()
+    # The watcher runs before the tick republishes the wire's low input, so
+    # a low input again means the watcher has seen the pulse.
+    assert await _wait_for(
+        lambda: waldoctl.commander.status.io.inputs[0] == 0, timeout=5.0
+    ), "the status loop never consumed the mid-run pulse"
+    assert is_any_program_running(), "the mid-run pulse arrived after the program"
     assert await _wait_for(lambda: not is_any_program_running(), timeout=15.0)
     await _settle()
     assert not is_any_program_running(), "consumed mid-run pulse must not queue a run"
