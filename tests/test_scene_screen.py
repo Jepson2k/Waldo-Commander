@@ -26,7 +26,6 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from waldoctl import Box
 
-from tests.conftest import skip_webgl_macos_ci
 from tests.helpers.browser_helpers import (
     click_tab,
     hover_scene_object,
@@ -280,7 +279,6 @@ def _records(
 
 
 @pytest.mark.browser
-@skip_webgl_macos_ci
 class TestScene:
     def test_gizmo_snap_follows_the_zoom_without_reattaching(
         self, class_screen: Screen

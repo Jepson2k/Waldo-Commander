@@ -10,6 +10,8 @@ way in preview, or the preview passes what the arm refuses.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 from parol6.client.dry_run_client import DryRunRobotClient
@@ -149,7 +151,12 @@ def test_a_tool_read_answers_with_its_reading_and_an_action_with_an_index():
     answers with a `ToolStatus`, which has no planner fields at all, so the
     preview used to die on the first `tool.status()` in a program.
     """
-    par6 = pytest.importorskip("par6", reason="needs a backend whose tool reads state")
+    if os.environ.get("WALDO_PAR6_E2E"):
+        import par6  # the par6 job runs this case; a missing backend fails it
+    else:
+        par6 = pytest.importorskip(
+            "par6", reason="needs a backend whose tool reads state"
+        )
     robot = par6.Robot()
     client = PathPreviewClient(
         dry_run_client_cls=lambda **kwargs: robot.create_dry_run_client(**kwargs),

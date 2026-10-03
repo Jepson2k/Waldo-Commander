@@ -102,15 +102,6 @@ nicegui_storage.Storage.clear = _patient_storage_clear
 
 
 # ============================================================================
-# Skip marker for WebGL-dependent tests on macOS CI
-# ============================================================================
-# SwiftShader WebGL fails with "BindToCurrentSequence failed" on macOS runners
-skip_webgl_macos_ci = pytest.mark.skipif(
-    sys.platform == "darwin" and "GITHUB_ACTIONS" in os.environ,
-    reason="WebGL context creation fails on macOS CI with SwiftShader",
-)
-
-# ============================================================================
 # Port Configuration (kernel-allocated per session to avoid conflicts)
 # ============================================================================
 

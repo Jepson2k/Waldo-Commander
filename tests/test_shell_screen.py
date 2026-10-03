@@ -18,7 +18,6 @@ from selenium.common.exceptions import (
 )
 from nicegui import Client, core
 
-from tests.conftest import skip_webgl_macos_ci
 from tests.helpers.browser_helpers import (
     click_tab,
     close_panel,
@@ -167,7 +166,6 @@ def _wait_view(screen, predicate) -> dict:
 
 
 @pytest.mark.browser
-@skip_webgl_macos_ci
 class TestShellLayout:
     def test_the_joint_tab_is_as_tall_as_its_dials(self, class_screen) -> None:
         screen_wait_for_scene_ready(class_screen, timeout_s=40.0)
