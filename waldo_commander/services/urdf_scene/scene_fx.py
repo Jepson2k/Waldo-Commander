@@ -39,7 +39,7 @@ class SceneFx:
             self._segments.append(ids)
 
     def queue_marker(self, obj: Any) -> None:
-        """Pop in a new waypoint or target marker."""
+        """Pop in a new object: a waypoint or target marker, a keep-out shape."""
         self._markers.append(obj.id)
 
     def flush(self, scene: ui.scene | None) -> None:
@@ -63,12 +63,45 @@ class SceneFx:
             _run(scene, f"SceneFx.flash({scene.id}, {json.dumps(ids)})")
 
     @staticmethod
+    def alarm(scene: ui.scene, objects: Iterable[Any], color: str) -> None:
+        """Flash objects that just started colliding in *color*."""
+        ids = [obj.id for obj in objects]
+        if ids:
+            _run(
+                scene,
+                f"SceneFx.alarm({scene.id}, {json.dumps(ids)}, {json.dumps(color)})",
+            )
+
+    @staticmethod
+    def fade_in(scene: ui.scene, objects: Iterable[Any]) -> None:
+        """Fade objects that were just shown up to their own opacity."""
+        ids = [obj.id for obj in objects]
+        if ids:
+            _run(scene, f"SceneFx.fadeIn({scene.id}, {json.dumps(ids)})")
+
+    @staticmethod
+    def spring_back(
+        scene: ui.scene,
+        obj: Any,
+        start: tuple[float, float, float],
+        miss_color: str | None = None,
+    ) -> None:
+        """Spring *obj* back from *start* (in its parent's frame) to the
+        position just set on it, tinted *miss_color* when the drag asked
+        for an unreachable pose."""
+        _run(
+            scene,
+            f"SceneFx.springBack({scene.id}, {json.dumps(obj.id)}, "
+            f"{json.dumps(list(start))}, {json.dumps(miss_color)})",
+        )
+
+    @staticmethod
     def pulse(scene: ui.scene, objects: Iterable[Any]) -> None:
         """Ripple *objects* in order until the next call; empty stops it."""
         ids = [obj.id for obj in objects]
         _run(scene, f"SceneFx.pulse({scene.id}, {json.dumps(ids)})")
 
     @staticmethod
-    def ease_camera(scene: ui.scene) -> None:
-        """Ease the ``move_camera`` tween that was just started."""
-        _run(scene, f"SceneFx.easeCamera({scene.id})")
+    def ease_camera(scene: ui.scene, duration: float) -> None:
+        """Ease the ``move_camera`` tween of *duration* seconds that was just started."""
+        _run(scene, f"SceneFx.easeCamera({scene.id}, {round(duration * 1000)})")

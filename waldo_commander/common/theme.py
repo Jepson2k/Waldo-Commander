@@ -1622,6 +1622,24 @@ html, body {
 .status-footer .footer-btn.unread-warning { animation: wc-bump var(--wc-duration-base) var(--wc-ease-pop); }
 .status-footer .footer-btn.unread-error { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter); }
 
+/* The run bar's buttons pop in as they appear; a button's icon spins in
+   when it changes. Twin classes so swapping between them restarts it. */
+.bottom-playback-bar > .q-btn { animation: wc-pop-in var(--wc-duration-base) var(--wc-ease-pop); }
+.icon-swap-a .q-icon { animation: wc-icon-swap-a var(--wc-duration-base) var(--wc-ease-pop); }
+.icon-swap-b .q-icon { animation: wc-icon-swap-b var(--wc-duration-base) var(--wc-ease-pop); }
+@keyframes wc-icon-swap-a { from { transform: rotate(-90deg) scale(0.4); opacity: 0; } }
+@keyframes wc-icon-swap-b { from { transform: rotate(-90deg) scale(0.4); opacity: 0; } }
+
+/* A saved editor tab glows once; a gripper fault shakes as it appears. */
+.editor-tab.tab-saved-a { animation: wc-saved-a var(--wc-duration-flash) var(--wc-ease-enter); }
+.editor-tab.tab-saved-b { animation: wc-saved-b var(--wc-duration-flash) var(--wc-ease-enter); }
+@keyframes wc-saved-a { 15% { background-color: var(--wc-positive-soft); } }
+@keyframes wc-saved-b { 15% { background-color: var(--wc-positive-soft); } }
+.gripper-fault { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter); }
+
+/* A diagnostics event that just landed drops in at the top of the log. */
+.diag-event-new { animation: wc-drop-in var(--wc-duration-base) var(--wc-ease-enter); }
+
 /* The E-STOP card shakes for attention as its dialog opens. */
 .estop-card { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter) var(--wc-duration-fast) both; }
 
@@ -1631,6 +1649,10 @@ html, body {
 }
 @keyframes wc-slide-in {
   from { transform: translateY(6px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+@keyframes wc-drop-in {
+  from { transform: translateY(-6px); opacity: 0; }
   to   { transform: none; opacity: 1; }
 }
 @keyframes wc-bump { 40% { transform: scale(1.3); } }
@@ -1687,6 +1709,26 @@ html, body {
   height: 96px;
   pointer-events: none;
 }
+
+
+/* ========== Guest Waldos ========== */
+
+.waldo-guest { flex-shrink: 0; }
+.waldo-guest > div, .waldo-guest svg { width: 100%; height: 100%; display: block; }
+
+/* Run-bar peek: Waldo rises over the bar's top edge when a script ends.
+   The padding leaves room for hops and sparkles inside the clip. */
+.bottom-playback-bar { position: relative; }
+.waldo-peek {
+  position: absolute;
+  bottom: 100%;
+  left: var(--wc-space-2);
+  box-sizing: content-box;
+  padding: var(--wc-space-2) var(--wc-space-2) 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.waldo-peek > div { transform: translateY(105%); }
 
 
 /* ========== Status footer ========== */
@@ -1906,7 +1948,10 @@ body:has(.panels-wrap.column-open) .bottom-panel {
   .record-btn.recording .q-icon, .robot-face-happy svg, .robot-face-neutral svg, .robot-face-sad svg,
   .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next,
   .status-footer .footer-tool, .io-pop-a, .io-pop-b, .action-line, .action-line *,
-  .status-footer .footer-btn, .estop-card { animation: none !important; }
+  .status-footer .footer-btn, .estop-card, .bottom-playback-bar > .q-btn,
+  .icon-swap-a .q-icon, .icon-swap-b .q-icon, .diag-event-new,
+  .editor-tab.tab-saved-a, .editor-tab.tab-saved-b, .gripper-fault { animation: none !important; }
+  [class*="q-transition--"] { --q-transition-duration: 0s !important; }
   .q-btn--actionable:active { transform: none; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
 }

@@ -11,6 +11,7 @@ from nicegui import ui
 import waldoctl
 from waldoctl import Program
 
+from waldo_commander.common.tab_flash import replay
 from waldo_commander.components.simulation_engine import simulation
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,9 @@ class FileOperationsMixin:
             tab.file_path = str(target)
             tab.mark_saved()
             self._update_dirty_dot(tab)
+            tab_element = self._tab_widgets.get(tab.id, {}).get("tab_element")
+            if tab_element is not None:
+                replay(tab_element, "tab-saved")
             logger.info("Saved program %s", name)
         except Exception as e:
             ui.notify(f"Save failed: {e}", color="negative")

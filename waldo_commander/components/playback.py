@@ -12,10 +12,12 @@ import waldoctl
 from nicegui import Client, ui, context
 from nicegui import app as ng_app
 
+from waldo_commander.common.tab_flash import replay
 from waldo_commander.common.theme import hex_of
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
+from waldo_commander.components.waldo import RobotFace, peek, waldo
 from waldo_commander.services.control_lease import (
     BROWSER,
     control_lease,
@@ -82,10 +84,19 @@ def layers_available(dry_run) -> dict[str, bool]:
     }
 
 
+def _swap_icon(btn: ui.button | ui.fab, icon: str) -> None:
+    """Set *btn*'s icon, spinning the new one in when it changes."""
+    if btn.props.get("icon") == icon:
+        return
+    btn.props(f'icon="{icon}"')
+    replay(btn, "icon-swap")
+
+
 class PlaybackController:
     """Owns the bottom playback bar UI and all simulation/script playback logic."""
 
     def __init__(self) -> None:
+        self._peek_waldo: ui.element | None = None
         self.play_btn: ui.button | None = None
         self.play_btn_tooltip: ui.tooltip | None = None
         self.stop_btn: ui.button | None = None
@@ -162,6 +173,11 @@ class PlaybackController:
             .classes("w-full items-center gap-2 bottom-playback-bar")
             .style("min-height: 48px;")
         ):
+            self._peek_waldo = (
+                waldo(RobotFace.HAPPY, size=36, idles=False)
+                .classes("waldo-peek")
+                .mark("run-bar-waldo")
+            )
             self.play_btn = ui.button(
                 icon="play_arrow", on_click=self.toggle_play
             ).props("round dense color=wc-run unelevated text-color=wc-on-bright")
@@ -791,8 +807,12 @@ class PlaybackController:
         """Reset playback bar after a script finishes or is stopped."""
         # A user stop leaves no exit code; only a finished run gets a reaction.
         rc = script_exec.last_exit_code
-        if rc is not None and ui_state._readout_panel is not None:
-            ui_state._readout_panel.face_react("success" if rc == 0 else "failure")
+        if rc is not None:
+            kind = "success" if rc == 0 else "failure"
+            if ui_state._readout_panel is not None:
+                ui_state._readout_panel.face_react(kind)
+            if self._peek_waldo is not None:
+                peek(self._peek_waldo, kind)
         self._exec_step_index = -1
         if self._sim_timer:
             self._sim_timer.active = False
@@ -1226,7 +1246,7 @@ class PlaybackController:
         on only while the program runs slower or faster than written."""
         if self.speed_fab is None:
             return
-        self.speed_fab.props(f'icon="{self._SPEED_ICONS.get(value, "speed")}"')
+        _swap_icon(self.speed_fab, self._SPEED_ICONS.get(value, "speed"))
         written = abs(value - 1.0) < 1e-6
         self.speed_fab.props("color=wc-text" if written else "color=wc-action-text")
 
@@ -1246,11 +1266,11 @@ class PlaybackController:
         if self.play_btn:
             playing = (script_running and play_is_playing) or active_is_active
             if playing:
-                self.play_btn.props("icon=pause")
+                _swap_icon(self.play_btn, "pause")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Pause (Space)"
             else:
-                self.play_btn.props("icon=play_arrow")
+                _swap_icon(self.play_btn, "play_arrow")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Play (Space)"
 

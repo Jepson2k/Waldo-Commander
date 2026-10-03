@@ -27,3 +27,14 @@ def flash_tab(tab: ui.element | None) -> None:
     # ui.timer() raises rather than scheduling.
     with tab:
         ui.timer(_FLASH_S, lambda: tab.classes(remove="tab-flash"), once=True)
+
+
+def replay(element: ui.element, name: str) -> None:
+    """Restart the one-shot animation keyed on the twin classes ``<name>-a``
+    and ``<name>-b``: re-adding a class does not restart its animation, but
+    swapping to an identical twin does."""
+    a, b = name + "-a", name + "-b"
+    if a in element.classes:
+        element.classes(add=b, remove=a)
+    else:
+        element.classes(add=a, remove=b)

@@ -19,6 +19,7 @@ from waldo_commander.components.joint_dial import JointDial
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import _setting_row
+from waldo_commander.components.waldo import current_mood, waldo
 from waldo_commander.constants import (
     CLICK_HOLD_THRESHOLD_S,
     DEFAULT_CAMERA,
@@ -118,7 +119,7 @@ class _EStopManager:
         self._digital_active: bool = False
 
     def show(self, is_physical: bool) -> None:
-        """Show E-STOP dialog with Lottie animation."""
+        """Show the E-STOP dialog, with a startled Waldo."""
         ui_client = self._ui_client_fn()
         if not ui_client:
             return
@@ -141,10 +142,13 @@ class _EStopManager:
                 .classes("overlay-card estop-card gap-4 items-center")
                 .mark("estop-dialog"),
             ):
-                ui.html(
-                    """<lottie-player src="https://lottie.host/b9d2fa51-2204-454e-a882-7647c6712b03/d7w0e81TRh.json" autoplay loop />""",
-                    sanitize=False,
-                ).classes("w-96")
+                waldo(
+                    current_mood(),
+                    size=160,
+                    color="error" if is_physical else "warning",
+                    hold={"estop": True},
+                    react="shock",
+                ).mark("estop-waldo")
 
                 if is_physical:
                     ui.label("Physical E-STOP Active").classes(
@@ -2729,6 +2733,7 @@ class ControlPanel:
 
         with (
             ui.tab_panels(jog_mode_tabs, value=joint_tab)
+            .props("animated")
             .classes("cp-jog-panels")
             .style("width: 400px")
         ):
@@ -3114,7 +3119,7 @@ class ControlPanel:
                     if ui_state.urdf_scene and ui_state.urdf_scene.scene:
                         scene = ui_state.urdf_scene.scene
                         scene.move_camera(**DEFAULT_CAMERA, duration=0.8)
-                        SceneFx.ease_camera(scene)
+                        SceneFx.ease_camera(scene, 0.8)
                 except Exception as e:
                     logger.error("Reset camera failed: %s", e)
 

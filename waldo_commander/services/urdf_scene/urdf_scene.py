@@ -607,6 +607,7 @@ class UrdfScene(
                             logger.error(
                                 "TCP cartesian move end callback error: %s", err
                             )
+                self._spring_tcp_ball()
                 self._settle_hover()
             return
 
@@ -1655,6 +1656,8 @@ class UrdfScene(
                 saved = self._collision_saved.pop(id(m), None)
                 if saved is not None:
                     m.material(saved[0], saved[1])
+        if to_add:
+            SceneFx.alarm(self.scene, to_add, SceneColors.COLLISION_HEX)
         self._colliding_meshes = target
 
     def _make_shape_object(self, s):
@@ -1774,6 +1777,7 @@ class UrdfScene(
                                 continue
                             obj.with_name(key)
                             self._shape_objects[key] = obj
+                            self.fx.queue_marker(obj)
                             last = None
                             changed = True
                         moved = last is None or last.pose != pose
@@ -1809,6 +1813,7 @@ class UrdfScene(
                         if repaint:
                             self._paint_shape(obj, key)
                             changed = True
+        self.fx.flush(self.scene)
         if not changed:
             return
         # The world changed — force the highlight to recompute next tick.

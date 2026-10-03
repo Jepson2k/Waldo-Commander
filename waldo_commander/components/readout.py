@@ -3,33 +3,24 @@
 import html as html_mod
 import json
 import random
-from enum import Enum
-from pathlib import Path
 
 import waldoctl
 from nicegui import binding, ui
 from nicegui.events import ValueChangeEventArguments
 from waldoctl import ActionStatus
 
+from waldo_commander.common.tab_flash import replay
+from waldo_commander.components.waldo import (
+    FACE_SVGS,
+    RobotFace,
+    current_mood,
+    face_js,
+    mount_js,
+)
 from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.state import robot_events, ui_state
 
 
-class RobotFace(Enum):
-    """Robot face states for the connection status indicator."""
-
-    HAPPY = "happy"
-    NEUTRAL = "neutral"
-    SAD = "sad"
-
-
-# Load robot face SVGs at module level for inline rendering (CSS hover needs DOM access)
-_ICONS_DIR = Path(__file__).parent.parent / "static" / "icons"
-FACE_SVGS = {
-    RobotFace.HAPPY: (_ICONS_DIR / "robot_happy.svg").read_text(),
-    RobotFace.NEUTRAL: (_ICONS_DIR / "robot_neutral.svg").read_text(),
-    RobotFace.SAD: (_ICONS_DIR / "robot_sad.svg").read_text(),
-}
 _FACE_WORDS = {
     RobotFace.HAPPY: "Connected",
     RobotFace.NEUTRAL: "Simulator",
@@ -41,21 +32,6 @@ _CHIP_COLORS = {
     RobotFace.NEUTRAL: ("wc-mode-sim", "wc-on-bright"),
     RobotFace.SAD: ("wc-error-soft", "wc-error"),
 }
-
-
-def _current_face() -> RobotFace:
-    status = waldoctl.commander.status
-    if status.simulator_active:
-        return RobotFace.NEUTRAL
-    return RobotFace.HAPPY if status.connected else RobotFace.SAD
-
-
-def _face_js(call: str) -> str:
-    """Wrap a robot-faces.js call so it waits for the deferred script to load."""
-    return (
-        "(function go(n){if(window.robotFaceHold){" + call + "}"
-        "else if(n>0){setTimeout(function(){go(n-1)},50)}})(60);"
-    )
 
 
 def _fmt_1f(v: float) -> str:
@@ -195,7 +171,13 @@ class StatusFooter:
         container = self._robot_face_container
         if container is None or container.is_deleted:
             return
-        container.client.run_javascript(_face_js(call))
+        container.client.run_javascript(face_js(call))
+
+    def _mount_face(self, face: RobotFace) -> None:
+        container = self._robot_face_container
+        if container is None or container.is_deleted:
+            return
+        container.client.run_javascript(mount_js(container, face, primary=True))
 
     def _update_face_signals(self) -> None:
         """Mirror E-STOP and recording onto the face; react to new warnings,
@@ -239,7 +221,7 @@ class StatusFooter:
     def update_conn_io(self) -> None:
         """Update the mode chip, tool chip and I/O dots. Called from the status consumer."""
         if self._robot_face_html and self._robot_face_container:
-            face = _current_face()
+            face = current_mood()
             if face != self._last_face_state:
                 self._last_face_state = face
                 self._robot_face_html.set_content(FACE_SVGS[face])
@@ -249,7 +231,7 @@ class StatusFooter:
                 self._robot_face_container.classes(
                     add=f"robot-face-{face.value}", remove=remove
                 )
-                self._run_face_js("window.initRobotFace('" + face.value + "');")
+                self._mount_face(face)
                 if self._mode_word is not None:
                     self._mode_word.text = _FACE_WORDS[face]
                 if self._robot_chip:
@@ -300,11 +282,7 @@ class StatusFooter:
                     else:
                         dot.classes(remove="io-dot-on")
                     if previous is not None and previous[i] != on:
-                        # Swapping between twin animations restarts the pop.
-                        if "io-pop-a" in dot.classes:
-                            dot.classes(add="io-pop-b", remove="io-pop-a")
-                        else:
-                            dot.classes(add="io-pop-a", remove="io-pop-b")
+                        replay(dot, "io-pop")
 
         self._update_face_signals()
 
@@ -417,7 +395,7 @@ class StatusFooter:
             .classes("status-footer")
             .mark("status-footer")
         ):
-            face = _current_face()
+            face = current_mood()
             self._last_face_state = face
             fill, text = _CHIP_COLORS[face]
             self._robot_chip = (
@@ -517,7 +495,7 @@ class StatusFooter:
         self._action_newest = (
             (latest.timestamp, latest.count, latest.status) if latest else None
         )
-        self._run_face_js("window.initRobotFace('" + face.value + "');")
+        self._mount_face(face)
 
         self._bind_action_log_listener()
         self.update_action_log()

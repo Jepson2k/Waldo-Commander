@@ -4,6 +4,9 @@
  * clock, so an effect costs one websocket message instead of a stream of
  * transforms. Every effect restores the object's own scale/material when it
  * ends, and nothing runs under prefers-reduced-motion.
+ *
+ * The scene itself redraws at a low rate to spare the GPU, so while a
+ * one-shot effect runs its scene is also redrawn on every animation frame.
  */
 (function () {
   const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -21,18 +24,40 @@
   const tweens = new Set();
   const pulses = new Map(); // scene element id -> [{ mesh, base, phase }]
   const restScale = new WeakMap(); // mesh -> its own scale while a pop-in runs
+  const rushUntil = new Map(); // scene element id -> when its one-shot effects end
   let raf = 0;
 
   function wake() {
     if (!raf) raf = requestAnimationFrame(tick);
   }
 
-  function tween(delayMs, ms, step, done) {
+  function rush(sceneId, until) {
+    if (until > (rushUntil.get(sceneId) || 0)) rushUntil.set(sceneId, until);
+    wake();
+  }
+
+  function tween(sceneId, delayMs, ms, step, done) {
     const tw = { start: performance.now() + delayMs, ms, step, done };
     step(0);
     tweens.add(tw);
-    wake();
+    rush(sceneId, tw.start + ms + 50);
     return tw;
+  }
+
+  /* The scene's own render pass, minus the controls update (its damping
+   * steps per call, so extra calls would speed it up). */
+  function renderNow(comp) {
+    if (!comp || !comp.renderer || !comp.camera) return;
+    if (comp.camera_tween) comp.camera_tween.update();
+    comp.renderer.render(comp.scene, comp.camera);
+    if (comp.text_renderer) comp.text_renderer.render(comp.scene, comp.camera);
+    if (comp.text3d_renderer) comp.text3d_renderer.render(comp.scene, comp.camera);
+    if (comp.viewHelper) {
+      const autoClear = comp.renderer.autoClear;
+      comp.renderer.autoClear = false;
+      comp.viewHelper.render(comp.renderer);
+      comp.renderer.autoClear = autoClear;
+    }
   }
 
   function tick(now) {
@@ -53,7 +78,11 @@
         p.mesh.scale.copy(p.base).multiplyScalar(1 + 0.45 * Math.max(0, s) ** 3);
       }
     }
-    raf = tweens.size || pulses.size ? requestAnimationFrame(tick) : 0;
+    for (const [sceneId, until] of rushUntil) {
+      if (now > until) rushUntil.delete(sceneId);
+      else renderNow(getElement(sceneId));
+    }
+    raf = tweens.size || pulses.size || rushUntil.size ? requestAnimationFrame(tick) : 0;
   }
 
   /* ---- Scene object lookup ----
@@ -76,19 +105,19 @@
   }
 
   /* ---- Effects ---- */
-  function drawIn(mesh, delayMs, ms) {
+  function drawIn(sceneId, mesh, delayMs, ms) {
     const g = mesh.geometry;
     const n = g && g.attributes && g.attributes.position ? g.attributes.position.count : 0;
     if (!n) return;
-    tween(delayMs, ms,
+    tween(sceneId, delayMs, ms,
       t => g.setDrawRange(0, t <= 0 ? 0 : Math.max(2, Math.ceil(n * easeOutCubic(t)))),
       () => g.setDrawRange(0, Infinity));
   }
 
-  function popIn(mesh, delayMs, ms) {
-    const base = mesh.scale.clone();
+  function popIn(sceneId, mesh, delayMs, ms) {
+    const base = (restScale.get(mesh) || mesh.scale).clone();
     restScale.set(mesh, base);
-    tween(delayMs, ms,
+    tween(sceneId, delayMs, ms,
       t => mesh.scale.copy(base).multiplyScalar(Math.max(1e-3, easeOutBack(t))),
       () => {
         mesh.scale.copy(base);
@@ -96,14 +125,19 @@
       });
   }
 
-  function glowPop(mesh) {
-    const base = mesh.scale.clone();
+  function emissives(mesh) {
     const mats = [];
     mesh.traverse(child => {
       const m = child.material;
       if (m && m.emissive) mats.push({ m, emissive: m.emissive.clone() });
     });
-    tween(0, 750, t => {
+    return mats;
+  }
+
+  function glowPop(sceneId, mesh) {
+    const base = mesh.scale.clone();
+    const mats = emissives(mesh);
+    tween(sceneId, 0, 750, t => {
       const k = t < 0.3 ? 0.88 + 0.2 * easeOutCubic(t / 0.3) : 1.08 - 0.08 * easeOutCubic((t - 0.3) / 0.7);
       mesh.scale.copy(base).multiplyScalar(k);
       const glow = 0.55 * (1 - easeOutCubic(t));
@@ -113,6 +147,46 @@
     }, () => {
       mesh.scale.copy(base);
       for (const { m, emissive } of mats) m.emissive.copy(emissive);
+    });
+  }
+
+  /* Two hard emissive flashes in *color*, e.g. on geometry that just collided. */
+  function alarm(sceneId, mesh, color) {
+    const mats = emissives(mesh);
+    if (!mats.length) return;
+    const hot = mats[0].emissive.clone().set(color);
+    tween(sceneId, 0, 700, t => {
+      const k = Math.max(0, Math.sin(t * 2 * Math.PI * 2 - Math.PI / 2) * 0.5 + 0.5) * (1 - t);
+      for (const { m, emissive } of mats) m.emissive.copy(emissive).lerp(hot, k);
+    }, () => {
+      for (const { m, emissive } of mats) m.emissive.copy(emissive);
+    });
+  }
+
+  function fadeIn(sceneId, mesh, ms) {
+    const mats = [];
+    mesh.traverse(child => {
+      const m = child.material;
+      if (m && typeof m.opacity === 'number') mats.push({ m, opacity: m.opacity, transparent: m.transparent });
+    });
+    if (!mats.length) return;
+    // Blending is compiled into the material's program, so flipping
+    // transparency needs a recompile.
+    const setTransparent = (m, on) => {
+      if (m.transparent !== on) {
+        m.transparent = on;
+        m.needsUpdate = true;
+      }
+    };
+    for (const { m } of mats) setTransparent(m, true);
+    tween(sceneId, 0, ms, t => {
+      const k = easeOutCubic(t);
+      for (const { m, opacity } of mats) m.opacity = opacity * k;
+    }, () => {
+      for (const { m, opacity, transparent } of mats) {
+        m.opacity = opacity;
+        setTransparent(m, transparent);
+      }
     });
   }
 
@@ -138,14 +212,17 @@
         const delay = Math.min(k * 70, 700);
         const meshes = await Promise.all(ids.map(id => meshOf(sceneId, id)));
         const [line, ...cones] = meshes;
-        if (line) drawIn(line, delay, lineMs);
+        if (line) drawIn(sceneId, line, delay, lineMs);
         cones.forEach((cone, j) => {
-          if (cone) popIn(cone, delay + ((j + 1) / (cones.length + 1)) * lineMs, 260);
+          if (cone) popIn(sceneId, cone, delay + ((j + 1) / (cones.length + 1)) * lineMs, 260);
         });
       });
       markers.forEach(async (id, k) => {
         const mesh = await meshOf(sceneId, id);
-        if (mesh) popIn(mesh, Math.min(k * 50, 500) + 150, 420);
+        // A scale queued behind the creation (an ellipsoid's radii) is the
+        // size to pop to.
+        await nextFrame();
+        if (mesh) popIn(sceneId, mesh, Math.min(k * 50, 500) + 150, 420);
       });
     },
 
@@ -155,7 +232,47 @@
       const meshes = await Promise.all(ids.map(id => meshOf(sceneId, id)));
       // Let any scale/material calls queued behind creation land first.
       await nextFrame();
-      for (const mesh of meshes) if (mesh) glowPop(mesh);
+      for (const mesh of meshes) if (mesh) glowPop(sceneId, mesh);
+    },
+
+    /** Flash meshes that just started colliding in *color*. */
+    async alarm(sceneId, ids, color) {
+      if (reducedMotion()) return;
+      const meshes = await Promise.all(ids.map(id => meshOf(sceneId, id)));
+      await nextFrame();
+      for (const mesh of meshes) if (mesh) alarm(sceneId, mesh, color);
+    },
+
+    /** Fade meshes that were just shown up to their own opacity. */
+    async fadeIn(sceneId, ids, ms = 450) {
+      if (reducedMotion()) return;
+      const meshes = await Promise.all(ids.map(id => meshOf(sceneId, id)));
+      await nextFrame();
+      for (const mesh of meshes) if (mesh) fadeIn(sceneId, mesh, ms);
+    },
+
+    /**
+     * Spring a dragged handle back from where it was let go, *from* in its
+     * parent's frame, to where Python just put it. A *missColor* tints it
+     * on the way: the drag asked for a pose the arm could not reach.
+     */
+    async springBack(sceneId, id, from, missColor) {
+      if (reducedMotion()) return;
+      const mesh = await meshOf(sceneId, id);
+      if (!mesh) return;
+      await nextFrame();
+      const rest = mesh.position.clone();
+      const start = rest.clone().set(from[0], from[1], from[2]);
+      const mats = missColor ? emissives(mesh) : [];
+      const hot = mats.length ? mats[0].emissive.clone().set(missColor) : null;
+      tween(sceneId, 0, 520, t => {
+        mesh.position.lerpVectors(start, rest, easeOutBack(t));
+        const k = Math.max(0, Math.sin(t * Math.PI * 3)) * (1 - t);
+        for (const { m, emissive } of mats) m.emissive.copy(emissive).lerp(hot, k);
+      }, () => {
+        mesh.position.copy(rest);
+        for (const { m, emissive } of mats) m.emissive.copy(emissive);
+      });
     },
 
     /**
@@ -180,12 +297,13 @@
       }
     },
 
-    /** Ease the camera move started just before this call. */
-    easeCamera(sceneId) {
+    /** Ease the camera move of *ms* started just before this call. */
+    easeCamera(sceneId, ms) {
       const comp = getElement(sceneId);
       const tw = comp ? comp.camera_tween : null;
       if (tw && typeof tw.easing === 'function') {
         tw.easing(reducedMotion() ? () => 1 : easeInOutCubic);
+        if (!reducedMotion()) rush(sceneId, performance.now() + ms + 50);
       }
     },
   };

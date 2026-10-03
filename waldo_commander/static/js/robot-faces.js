@@ -1,11 +1,16 @@
-/* Animated robot face for the connection status indicator.
+/* Waldo, the animated robot face.
  *
- * Each mood (happy / neutral / sad) plays a table of idle behaviours on
- * random timers. Python drives reactions to robot events through
+ * Every face on the page is its own Robot, mounted on the robot_<mood>.svg
+ * markup (parts named by data-part) through WaldoFace.mount. Each mood
+ * (happy / neutral / sad) plays a table of idle behaviours on random timers,
+ * and a reaction interrupts whatever idle is playing.
+ *
+ * One face is primary: the status footer's. Python drives it through
  * robotFaceReact(kind) (one-shot) and robotFaceHold(name, value) (held until
- * changed: E-STOP, jog look, recording light). A reaction interrupts whatever
- * idle is playing. Held state lives outside the Robot so it survives a mood
- * swap, which re-renders the SVG.
+ * changed: E-STOP, jog look, recording light). The primary's held state
+ * lives outside any Robot so it survives a mood swap, which re-renders the
+ * SVG. Guest faces (the E-STOP dialog, the run-bar peek, empty states, the
+ * takeover overlay) keep their own.
  */
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -23,12 +28,12 @@ const DEFAULT_MOUTH = { happy: 'smile', neutral: 'flat', sad: 'frown' };
 
 const LOOK_MIN_MS = 450;
 
-const _held = { estop: false, look: null, recording: false };
-let _current = null;
-let _timers = [];
+const _primaryHeld = { estop: false, look: null, recording: false };
+const _faces = new WeakMap(); // mount root -> Robot
+let _primary = null;
+let _primaryMood = null;
 let _lookSince = 0;
 let _lookTimer = null;
-let _lastPrefix = null;
 
 function shake(amp, n) {
   const k = [{ transform: 'translateX(0)' }];
@@ -56,8 +61,11 @@ const SWEAT_SLIDE = [
 ];
 
 class Robot {
-  constructor(prefix) {
-    this.prefix = prefix;
+  constructor(svg, mood, held) {
+    this.svg = svg;
+    this.mood = mood;
+    this.held = held;
+    this.timers = [];
     this.eyeL = this.part('eyeL');
     this.eyeR = this.part('eyeR');
     this.pupilL = this.part('pupilL');
@@ -65,8 +73,7 @@ class Robot {
     this.mouthContainer = this.part('mouth');
     this.antenna = this.part('antenna');
     this.rig = this.part('rig');
-    this.svg = this.eyeL ? this.eyeL.ownerSVGElement : null;
-    this.defaultMouth = DEFAULT_MOUTH[prefix];
+    this.defaultMouth = DEFAULT_MOUTH[mood];
     this.busy = false;
     this.epoch = 0;
     this.anims = new Set();
@@ -79,7 +86,16 @@ class Robot {
     }
   }
 
-  part(name) { return document.getElementById(`${this.prefix}-${name}`); }
+  part(name) { return this.svg.querySelector(`[data-part="${name}"]`); }
+
+  alive() { return this.svg.isConnected; }
+
+  stop() {
+    for (const id of this.timers) clearTimeout(id);
+    this.timers = [];
+    this.epoch++;
+    this.busy = false;
+  }
 
   /* Eyes and pupils animate transform, radius and opacity independently. */
   transition(el, prop, seconds) {
@@ -256,13 +272,14 @@ class Robot {
   }
 
   applyHeld() {
-    if (_held.estop) {
+    const held = this.held;
+    if (held.estop) {
       this.setEyeSize(2.2, 0.15);
       this.setPupilSize(0.45, 0.15);
       this.setMouth('o', 150);
       this.fx('sweat', true, 200);
-    } else if (_held.look) {
-      const [dx, dy, tilt] = _held.look;
+    } else if (held.look) {
+      const [dx, dy, tilt] = held.look;
       this.movePupils(dx * 0.55, dy * 0.45, 0.25);
       if (this.rig && !reducedMotion()) {
         this.rig.style.transition = 'transform 0.3s ease';
@@ -275,7 +292,7 @@ class Robot {
   applyRecording() {
     const el = this.part('rec');
     if (!el) return;
-    if (_held.recording) {
+    if (this.held.recording) {
       el.setAttribute('opacity', '1');
       if (!this.recAnim && !reducedMotion() && typeof el.animate === 'function') {
         this.recAnim = el.animate(
@@ -291,7 +308,7 @@ class Robot {
   }
 
   async perform(fn, calm = false) {
-    if (this.busy || _held.estop || (_held.look && !calm)) return;
+    if (this.busy || this.held.estop || (this.held.look && !calm)) return;
     const epoch = this.epoch;
     this.busy = true;
     try {
@@ -837,77 +854,186 @@ const REACTIONS = {
 
 function schedule(r, idle) {
   const [lo, hi] = idle.every;
-  const slot = _timers.length;
+  const slot = r.timers.length;
   const tick = () => {
-    if (_current === r && (idle.calm || !reducedMotion())) {
+    if (!r.alive()) {
+      r.stop();
+      return;
+    }
+    if (idle.calm || !reducedMotion()) {
       if (!idle.solo) {
         r.perform(idle.run, idle.calm).catch(logUnlessAbort);
-      } else if (!r.busy && !_held.estop && !_held.look) {
+      } else if (!r.busy && !r.held.estop && !r.held.look) {
         idle.run(r).catch(logUnlessAbort);
       }
     }
-    _timers[slot] = setTimeout(tick, rand(lo, hi));
+    r.timers[slot] = setTimeout(tick, rand(lo, hi));
   };
-  _timers[slot] = setTimeout(tick, rand(lo, hi));
+  r.timers[slot] = setTimeout(tick, rand(lo, hi));
 }
 
-/**
- * Cancel all scheduled animations.
- */
-window.stopRobotFace = function() {
-  for (const id of _timers) clearTimeout(id);
-  _timers = [];
-  if (_current) _current.epoch++;
-  _current = null;
-};
-
-/**
- * Initialize animations for a robot face. Retries briefly when the SVG has
- * not been mounted yet (a mood swap re-renders it through Vue).
- * @param {string} prefix - "happy", "neutral", or "sad"
- */
-window.initRobotFace = function(prefix, retries = 20) {
-  window.stopRobotFace();
-  const r = new Robot(prefix);
-  if (!r.eyeL) {
-    if (retries > 0) {
-      _timers.push(setTimeout(() => window.initRobotFace(prefix, retries - 1), 50));
+function holdOn(r, name, value, was) {
+  if (name === 'estop') {
+    if (Boolean(was) !== Boolean(value)) {
+      r.react(value ? REACTIONS.shock : REACTIONS.relief).catch(logUnlessAbort);
     }
-    return;
+  } else if (name === 'recording') {
+    r.applyRecording();
+    if (value && !was && !r.held.estop) r.react(REACTIONS.cheese).catch(logUnlessAbort);
+  } else if (!r.held.estop) {
+    r.interrupt();
+    r.applyHeld();
   }
-  _current = r;
+}
+
+const POP_IN = [
+  { transform: 'scale(0.5)', opacity: 0 },
+  { transform: 'scale(1.12)', opacity: 1, offset: 0.6 },
+  { transform: 'scale(1)', opacity: 1 },
+];
+
+/* Faces mounted by element id, re-mounted whenever their element (re)enters
+ * the DOM: a face in a closed panel or an unopened dialog is not rendered
+ * yet, and closing a panel throws its face away. */
+const _registry = new Map(); // root id -> { mood, opts }
+let _mountQueued = false;
+
+function mountRegistered() {
+  _mountQueued = false;
+  for (const [id, { mood, opts }] of _registry) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const r = _faces.get(el);
+    if (r && r.alive() && r.mood === mood) continue;
+    const svg = el.querySelector(`svg[data-mood="${mood}"]`);
+    if (svg) mountOn(el, svg, mood, opts);
+  }
+}
+
+const _observer = new MutationObserver(() => {
+  if (_registry.size && !_mountQueued) {
+    _mountQueued = true;
+    requestAnimationFrame(mountRegistered);
+  }
+});
+
+function mountOn(el, svg, mood, opts) {
+  const old = _faces.get(el);
+  if (old) old.stop();
+  const held = opts.primary
+    ? _primaryHeld
+    : { estop: false, look: null, recording: false, ...(opts.hold || {}) };
+  const r = new Robot(svg, mood, held);
+  _faces.set(el, r);
   r.setMouth(r.defaultMouth, 0);
   r.applyHeld();
-  if (_lastPrefix && _lastPrefix !== prefix) {
-    // Mood swap: the new face pops in.
-    r.spawn(r.rig, [
-      { transform: 'scale(0.5)', opacity: 0 },
-      { transform: 'scale(1.12)', opacity: 1, offset: 0.6 },
-      { transform: 'scale(1)', opacity: 1 },
-    ], { duration: 450, easing: 'ease-out' });
+  if (opts.primary) {
+    if (_primary && _primary !== r) _primary.stop();
+    if (_primaryMood && _primaryMood !== mood) {
+      // Mood swap: the new face pops in.
+      r.spawn(r.rig, POP_IN, { duration: 450, easing: 'ease-out' });
+    }
+    _primary = r;
+    _primaryMood = mood;
   }
-  _lastPrefix = prefix;
-  for (const idle of IDLES[prefix] || []) schedule(r, idle);
+  if (opts.idles !== false) {
+    for (const idle of IDLES[mood] || []) schedule(r, idle);
+  }
+  if (opts.react && REACTIONS[opts.react]) r.react(REACTIONS[opts.react]).catch(logUnlessAbort);
+  return r;
+}
+
+function faceOf(root) {
+  const el = typeof root === 'string' ? document.getElementById(root) : root;
+  if (!el) return [null, null];
+  if (typeof root === 'string') mountRegistered();
+  const r = _faces.get(el);
+  return [el, r && r.alive() ? r : null];
+}
+
+window.WaldoFace = {
+  /**
+   * Bring the face inside *root* to life, replacing any face already there.
+   * Given an id, the face is also brought back to life each time its
+   * element re-enters the page (a reopened panel, a re-rendered mood).
+   * @param {Element|string} root - the mount element, or its id
+   * @param {string} mood - "happy", "neutral", or "sad"
+   * @param {object} [opts]
+   * @param {boolean} [opts.primary] - the status footer's face
+   * @param {boolean} [opts.idles] - play idle behaviours (default true)
+   * @param {object} [opts.hold] - held states for a guest, e.g. {estop: true}
+   * @param {string} [opts.react] - a reaction to play once mounted
+   */
+  mount(root, mood, opts = {}) {
+    if (typeof root !== 'string') {
+      const svg = root.querySelector(`svg[data-mood="${mood}"]`);
+      return svg ? mountOn(root, svg, mood, opts) : null;
+    }
+    _registry.set(root, { mood, opts });
+    _observer.observe(document.body, { childList: true, subtree: true });
+    mountRegistered();
+    return null;
+  },
+
+  /** Play a one-shot reaction on the face inside *root*. */
+  react(root, kind) {
+    const [, r] = faceOf(root);
+    const fn = REACTIONS[kind];
+    if (r && fn && !r.held.estop) return r.react(fn).catch(logUnlessAbort);
+    return Promise.resolve();
+  },
+
+  /**
+   * Raise the face inside *root* from below its clip, play *kind*, and
+   * duck back down. The root is the peek window (overflow hidden); its
+   * child, the SVG's wrapper, rests translated out of view below it.
+   */
+  async peek(root, kind, holdMs = 1600) {
+    const [el, r] = faceOf(root);
+    const body = r ? r.svg.parentElement : null;
+    if (!body || typeof body.animate !== 'function') return;
+    if (el.classList.contains('waldo-peeking')) {
+      await WaldoFace.react(el, kind);
+      return;
+    }
+    const still = reducedMotion();
+    const up = [{ transform: 'translateY(105%)' }, { transform: 'translateY(0)' }];
+    el.classList.add('waldo-peeking');
+    const rise = body.animate(up, {
+      duration: still ? 0 : 320, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)', fill: 'forwards',
+    });
+    await rise.finished.catch(() => {});
+    await WaldoFace.react(el, kind);
+    await sleep(holdMs);
+    const sink = body.animate([...up].reverse(), {
+      duration: still ? 0 : 260, easing: 'ease-in', fill: 'forwards',
+    });
+    await sink.finished.catch(() => {});
+    el.classList.remove('waldo-peeking');
+    rise.cancel();
+    sink.cancel();
+  },
 };
 
 /**
- * Play a one-shot reaction. Suppressed while the E-STOP face is held.
+ * Play a one-shot reaction on the primary face. Suppressed while the E-STOP
+ * face is held.
  * @param {string} kind - a key of REACTIONS
  */
 window.robotFaceReact = function(kind) {
-  const r = _current;
+  const r = _primary;
   const fn = REACTIONS[kind];
-  if (!r || !fn || _held.estop) return;
+  if (!r || !fn || r.held.estop || !r.alive()) return;
   r.react(fn).catch(logUnlessAbort);
 };
 
 /**
- * Set a held face state.
+ * Set a held state on the primary face.
  * @param {'estop'|'look'|'recording'} name
  * @param {boolean|number[]|null} value - look takes [dx, dy, tiltDeg] or null
  */
 window.robotFaceHold = function(name, value) {
-  if (!(name in _held)) return;
+  if (!(name in _primaryHeld)) return;
   if (name === 'look') {
     // A jog click releases within milliseconds; hold the glance long
     // enough to read before the eyes recenter.
@@ -922,29 +1048,16 @@ window.robotFaceHold = function(name, value) {
       }
     }
   }
-  const was = _held[name];
-  _held[name] = value;
-  const r = _current;
-  if (!r) return;
-  if (name === 'estop') {
-    if (Boolean(was) !== Boolean(value)) {
-      r.react(value ? REACTIONS.shock : REACTIONS.relief).catch(logUnlessAbort);
-    }
-  } else if (name === 'recording') {
-    r.applyRecording();
-    if (value && !was && !_held.estop) r.react(REACTIONS.cheese).catch(logUnlessAbort);
-  } else if (!_held.estop) {
-    r.interrupt();
-    r.applyHeld();
-  }
+  const was = _primaryHeld[name];
+  _primaryHeld[name] = value;
+  if (_primary && _primary.alive()) holdOn(_primary, name, value, was);
 };
 
 /* ===== Bouncing sad robot for the takeover overlay =====
  * DVD-screensaver-style: the face moves at a constant velocity and reflects
  * off the viewport edges and the centered card. raf-driven so the motion
- * stays smooth at any frame rate. The slow spin lives in CSS (.takeover-face
- * animation: takeover-spin), independent of position, so it composes with
- * the SVG's own breathing animation.
+ * stays smooth at any frame rate. The slow spin rides the same transform as
+ * the position, so it composes with the SVG's own breathing animation.
  */
 window.startRobotMope = function() {
   // The face element may not be in the DOM yet when this runs (NiceGUI
@@ -961,6 +1074,7 @@ window.startRobotMope = function() {
       }
       return;
     }
+    WaldoFace.mount(face, 'sad');
     runMope(face);
   }
   start();

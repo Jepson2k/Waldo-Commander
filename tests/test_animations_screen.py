@@ -16,16 +16,19 @@ import pytest
 import waldoctl
 
 from tests.helpers.browser_helpers import (
+    click_tab,
     defocus_editor,
     dismiss_dialogs,
     ensure_robot_homed,
+    marked_element,
     run_in_app,
     send_global_key,
 )
 
-# Eye radius, left pupil offset and visible mouth of the readout face.
+# Eye radius, left pupil offset and visible mouth of the face under the
+# selector arguments[0].
 _FACE_JS = """
-const svg = document.querySelector('.footer-mode svg');
+const svg = document.querySelector(arguments[0] + ' svg[data-mood]');
 if (!svg) return null;
 const eye = svg.querySelector('.eye-white');
 const pupil = svg.querySelector('.pupil');
@@ -38,11 +41,45 @@ return {
   mouth: mouth ? mouth.dataset.state : null,
 };
 """
+_FOOTER = ".footer-mode"
+
+# Whether the run-bar Waldo sits wholly below its clip, out of sight.
+_PEEK_HIDDEN_JS = """
+const root = document.querySelector('.waldo-peek');
+if (!root) return null;
+const body = root.firstElementChild.getBoundingClientRect();
+return body.top >= root.getBoundingClientRect().bottom - 0.5;
+"""
+
+# Records the run-bar Waldo's mouths while it peeks, and whether it has
+# ducked back out of sight since.
+_WATCH_PEEK_JS = (
+    """
+const root = document.querySelector('.waldo-peek');
+const hidden = () => { """
+    + _PEEK_HIDDEN_JS.replace("return null", "return false")
+    + """ };
+window.__peek = {mouths: [], peeking: false, hidden: hidden()};
+(function sample() {
+  const peeking = root.classList.contains('waldo-peeking');
+  window.__peek.peeking = peeking;
+  window.__peek.hidden = hidden();
+  if (peeking) {
+    const mouth = [...root.querySelectorAll('[data-state]')]
+      .find(el => el.getAttribute('opacity') !== '0');
+    if (mouth && !window.__peek.mouths.includes(mouth.dataset.state)) {
+      window.__peek.mouths.push(mouth.dataset.state);
+    }
+  }
+  requestAnimationFrame(sample);
+})();
+"""
+)
 
 # Records whether the face blinks: the blink overlay turning opaque.
 _WATCH_BLINK_JS = """
 window.__faceBlinked = false;
-const blink = document.querySelector('.footer-mode svg [id$="-blink"]');
+const blink = document.querySelector('.footer-mode svg [data-part="blink"]');
 new MutationObserver(() => {
   if (blink.getAttribute('opacity') === '1') window.__faceBlinked = true;
 }).observe(blink, {attributes: true, attributeFilter: ['opacity']});
@@ -84,11 +121,11 @@ def _teleport_to_jog_pose() -> None:
     ).result(15)
 
 
-def _poll(screen, script: str, predicate, timeout: float, what: str):
+def _poll(screen, script: str, predicate, timeout: float, what: str, *args):
     deadline = time.time() + timeout
     value = None
     while time.time() < deadline:
-        value = screen.selenium.execute_script(script)
+        value = screen.selenium.execute_script(script, *args)
         if value is not None and predicate(value):
             return value
         time.sleep(0.05)
@@ -106,14 +143,14 @@ class TestAnimations:
         # wrist singularity where a cartesian step can be refused too.
         ensure_robot_homed()
         _teleport_to_jog_pose()
-        face = f"return (function(){{{_FACE_JS}}})()"
-        _poll(screen, face, bool, 15, "no face")
+        face = _FACE_JS
+        _poll(screen, face, bool, 15, "no face", _FOOTER)
 
         # Idle behaviours start with the page, not only after a mood change:
         # a reload once the connection state has settled builds the face in
         # its final mood, so no mood change follows to start them.
         screen.selenium.refresh()
-        rest = _poll(screen, face, bool, 30, "no face after reload")
+        rest = _poll(screen, face, bool, 30, "no face after reload", _FOOTER)
         screen.selenium.execute_script(_WATCH_BLINK_JS)
         _poll(
             screen,
@@ -135,6 +172,7 @@ class TestAnimations:
                 lambda f, s=sign: f["pupilX"] * s > 0.3,
                 3,
                 f"eyes did not follow the {key!r} jog",
+                _FOOTER,
             )
             _poll(
                 screen,
@@ -142,18 +180,22 @@ class TestAnimations:
                 lambda f: f["pupilX"] == 0,
                 3,
                 f"eyes did not recenter after the {key!r} jog",
+                _FOOTER,
             )
 
-        # Digital E-STOP: wide eyes and an open mouth until reset.
+        # Digital E-STOP: wide eyes and an open mouth until reset, on the
+        # footer face and on the dialog's own Waldo, each driving its own SVG.
         defocus_editor(screen)
         send_global_key(screen, "")  # Escape
-        _poll(
-            screen,
-            face,
-            lambda f: f["eyeR"] > rest["eyeR"] and f["mouth"] == "o",
-            5,
-            "face did not startle on E-STOP",
-        )
+        for root in (_FOOTER, ".estop-card .waldo-guest"):
+            _poll(
+                screen,
+                face,
+                lambda f: f["eyeR"] > rest["eyeR"] and f["mouth"] == "o",
+                5,
+                f"{root} face did not startle on E-STOP",
+                root,
+            )
         screen.click("Reset")
         _poll(
             screen,
@@ -161,6 +203,44 @@ class TestAnimations:
             lambda f: f["eyeR"] == rest["eyeR"] and f["mouth"] == rest["mouth"],
             5,
             "face did not settle after the E-STOP reset",
+            _FOOTER,
+        )
+        screen.selenium.execute_script(_WATCH_BLINK_JS)
+        _poll(
+            screen,
+            "return window.__faceBlinked",
+            bool,
+            15,
+            "the footer face stopped idling once the dialog's Waldo was gone",
+        )
+
+    def test_a_finished_run_raises_waldo_over_the_run_bar(self, class_screen) -> None:
+        screen = class_screen
+        dismiss_dialogs(screen)
+        click_tab(screen, "program")
+        assert _poll(screen, _PEEK_HIDDEN_JS, lambda v: True, 15, "no run-bar Waldo"), (
+            "the run-bar Waldo shows before any run"
+        )
+
+        def _load() -> None:
+            from waldo_commander.state import ui_state
+
+            assert ui_state.active_textarea is not None
+            ui_state.active_textarea.value = "print('done', flush=True)\n"
+            program = waldoctl.commander.programs.active
+            assert program is not None
+            program.source = ui_state.active_textarea.value
+
+        run_in_app(_load)
+        screen.selenium.execute_script(_WATCH_PEEK_JS)
+        marked_element(screen, "editor-play-btn").click()
+        _poll(
+            screen,
+            "return window.__peek",
+            lambda p: "grin" in p["mouths"] and not p["peeking"] and p["hidden"],
+            20,
+            "Waldo did not rise grinning over the run bar and duck back down "
+            "after a clean run",
         )
 
     def test_a_new_path_draws_in_and_settles(self, class_screen) -> None:
