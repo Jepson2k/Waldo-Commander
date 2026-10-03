@@ -42,6 +42,7 @@ from waldo_commander.services.programs import active_cursor_line
 from waldo_commander.services.timeline import ObjectSample
 from waldo_commander.services.urdf_scene.physics_overlay import PhysicsOverlay
 from waldo_commander.services.urdf_scene.scene_batch import batch_scene
+from waldo_commander.services.urdf_scene.scene_fx import SceneFx
 from waldo_commander.state import robot_state, simulation_state, ui_state
 
 from .config import DRAFT_PREFIX, RobotAppearanceMode, ToolPose, UrdfSceneConfig
@@ -343,6 +344,7 @@ class UrdfScene(
         self._rendered_tool_actions: list[RenderedItem | None] = []
         self._rendered_waypoints: list[RenderedItem | None] = []
         self._highlighted_line: int = 0
+        self.fx = SceneFx()
         self._rendered_playback_step: int = -1
 
         self._robot_meshes: list[ui.scene.stl] = []
@@ -605,6 +607,7 @@ class UrdfScene(
                             logger.error(
                                 "TCP cartesian move end callback error: %s", err
                             )
+                self._spring_tcp_ball()
                 self._settle_hover()
             return
 
@@ -776,6 +779,7 @@ class UrdfScene(
             # among them, e.g. from MCP).
             self.refresh_handles()
             self._do_update_simulation_view_body()
+        self.fx.flush(self.scene)
 
     def _do_update_simulation_view_body(self) -> None:
         """Body of the simulation view update (run inside a batch_scene)."""
@@ -1049,6 +1053,7 @@ class UrdfScene(
                     segment,
                     pp_colors,
                 )
+        self.fx.queue_segment(objs)
         return RenderedSegment(
             objects=objs,
             colors=obj_colors,
@@ -1146,6 +1151,7 @@ class UrdfScene(
                     with self.path_group:
                         mk = _create_waypoint_marker(shape, WAYPOINT_SIZE_SMALL, color)
                         mk.move(pos[0], pos[1], pos[2])
+                self.fx.queue_marker(mk)
                 self._rendered_waypoints[i] = RenderedItem(
                     objects=[mk],
                     fingerprint=fp_w,
@@ -1165,6 +1171,7 @@ class UrdfScene(
                                 shape, WAYPOINT_SIZE_SMALL, color
                             )
                             mk.move(pos[0], pos[1], pos[2])
+                    self.fx.queue_marker(mk)
                     self._rendered_waypoints.append(
                         RenderedItem(
                             objects=[mk],
@@ -1212,6 +1219,7 @@ class UrdfScene(
                             )
                             mk.with_name(f"target:{target.id}")
                     grp.move(target.pose[0], target.pose[1], target.pose[2])
+                self.fx.queue_marker(mk)
                 self._target_objects[target.id] = {
                     "group": grp,
                     "marker": mk,
@@ -1243,6 +1251,7 @@ class UrdfScene(
                                 )
                                 mk.with_name(f"target:{target.id}")
                         grp.move(target.pose[0], target.pose[1], target.pose[2])
+                    self.fx.queue_marker(mk)
                     td["group"] = grp
                     td["marker"] = mk
                     td["shape_type"] = shape
@@ -1383,9 +1392,12 @@ class UrdfScene(
             for i in self._line_to_segments.get(prev_line, ()):
                 self._restore_segment_material(i)
 
-        # Glow segments matching the new cursor line.
+        # Glow segments matching the new cursor line; their direction cones
+        # and targets ripple in path order.
+        rippling: list[Any] = []
         if cursor_line > 0:
-            for i in self._line_to_segments.get(cursor_line, ()):
+            seg_indices = self._line_to_segments.get(cursor_line, ())
+            for i in seg_indices:
                 if i >= len(self._rendered_segments):
                     continue
                 rs = self._rendered_segments[i]
@@ -1394,6 +1406,14 @@ class UrdfScene(
                 for j, obj in enumerate(rs.objects):
                     base = rs.colors[j] if j < len(rs.colors) else ""
                     obj.material(self._glow_color(base))
+                rippling.extend(rs.objects[1:])
+            rippling.extend(
+                td["marker"]
+                for td in self._target_objects.values()
+                if td["segment_index"] in seg_indices
+            )
+        if self.scene is not None and (rippling or prev_line > 0):
+            self.fx.pulse(self.scene, rippling)
 
     def show_skill_preview(
         self,
@@ -1636,6 +1656,8 @@ class UrdfScene(
                 saved = self._collision_saved.pop(id(m), None)
                 if saved is not None:
                     m.material(saved[0], saved[1])
+        if to_add:
+            SceneFx.alarm(self.scene, to_add, SceneColors.COLLISION_HEX)
         self._colliding_meshes = target
 
     def _make_shape_object(self, s):
@@ -1755,6 +1777,7 @@ class UrdfScene(
                                 continue
                             obj.with_name(key)
                             self._shape_objects[key] = obj
+                            self.fx.queue_marker(obj)
                             last = None
                             changed = True
                         moved = last is None or last.pose != pose
@@ -1790,6 +1813,7 @@ class UrdfScene(
                         if repaint:
                             self._paint_shape(obj, key)
                             changed = True
+        self.fx.flush(self.scene)
         if not changed:
             return
         # The world changed — force the highlight to recompute next tick.
@@ -2128,6 +2152,7 @@ class UrdfScene(
                         self._tool_motion_rotations.setdefault(role, []).append(
                             (float(rpy[0]), float(rpy[1]), float(rpy[2]))
                         )
+        SceneFx.flash(self.scene, self._tool_meshes)
 
     def update_tool_animation(self) -> None:
         """Animate tool meshes based on ``ToolSpec.motions`` descriptors.

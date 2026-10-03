@@ -1178,15 +1178,20 @@ async def test_auto_move_reports_what_the_controller_did(
         await client.stop()
         await client.reset()
 
-    assert await client.home(wait=True, timeout=30) >= 0
+    home_index = await client.home(wait=True, timeout=30)
+    assert home_index >= 0
     start = await client.angles()
     assert start is not None
     target = list(start)
     target[0] += 25.0  # long enough at the auto speed to stop it mid-move
     moving = asyncio.create_task(panel._auto_move(commander, target))
     try:
+        # The cached status can still be the home's EXECUTING; a Stop sent on
+        # it reaches the controller ahead of the move it was meant to halt.
         assert await client.wait_status(
-            lambda s: s.action_state == waldoctl.ActionState.EXECUTING, timeout=10
+            lambda s: s.action_state == waldoctl.ActionState.EXECUTING
+            and s.executing_index > home_index,
+            timeout=10,
         ), "the auto move never started"
         assert await client.stop() > 0
         outcome = await asyncio.wait_for(moving, 30)

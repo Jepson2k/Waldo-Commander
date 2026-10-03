@@ -272,6 +272,10 @@ def load_demonstration(path: str | Path) -> Demonstration:
 STILL_DEG = 0.05
 #: A gripper at rest reports positions closer together than this (0–1).
 STILL_TOOL = 1e-3
+#: A gripper has settled once it holds a position this long (seconds). Tool
+#: feedback can lag the status rate, so a gripper still travelling can repeat
+#: a position in consecutive publications.
+TOOL_SETTLE_S = 0.25
 #: A span whose path stays this close to its chord is one linear move (mm).
 STRAIGHT_MM = 3.0
 BLEND_MM = (1.0, 10.0)
@@ -614,6 +618,22 @@ def _convert_spans(
     tool_position = _tool_position(samples[0])
     needs_tool = False
 
+    def settled(index: int, stop: int) -> bool:
+        """Whether the gripper holds *index*'s position for
+        ``TOOL_SETTLE_S``, or for as long as it reports one before *stop*.
+        A publication without a reading says nothing about where it is."""
+        position = _tool_position(samples[index])
+        assert position is not None
+        for later in range(index + 1, stop + 1):
+            now = _tool_position(samples[later])
+            if now is None:
+                continue
+            if abs(now - position) > STILL_TOOL:
+                return False
+            if _seconds(recording, index, later) >= TOOL_SETTLE_S:
+                return True
+        return True
+
     def tool_changes(start: int, stop: int) -> list[tuple[int, str]]:
         """Where the gripper started moving within *start*..*stop*, each with
         the line that puts it where it settled."""
@@ -629,12 +649,14 @@ def _convert_spans(
                 index += 1
                 continue
             began = index
-            while index < stop:
-                following = _tool_position(samples[index + 1])
-                if following is None or abs(following - position) <= STILL_TOOL:
-                    break
-                index += 1
-                position = following
+            while not settled(index, stop):
+                index = next(
+                    later
+                    for later in range(index + 1, stop + 1)
+                    if _tool_position(samples[later]) is not None
+                )
+            position = _tool_position(samples[index])
+            assert position is not None
             changes.append((began, f"rbt.tool.set_position({position:.3f})"))
             tool_position = position
             needs_tool = True

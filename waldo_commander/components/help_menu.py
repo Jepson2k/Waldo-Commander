@@ -160,7 +160,8 @@ class HelpMenu:
             with (
                 ui.stepper()
                 .props(
-                    "vertical header-nav flat active-color=wc-text done-color=wc-text-muted"
+                    "vertical header-nav flat animated"
+                    " active-color=wc-text done-color=wc-text-muted"
                 )
                 .classes("p-0 w-full") as stepper
             ):

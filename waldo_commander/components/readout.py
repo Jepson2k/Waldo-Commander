@@ -1,33 +1,26 @@
 """Status footer: mode, robot, tool, I/O, pose, last action and the event counts."""
 
 import html as html_mod
+import json
 import random
-from enum import Enum
-from pathlib import Path
 
 import waldoctl
 from nicegui import binding, ui
 from nicegui.events import ValueChangeEventArguments
 from waldoctl import ActionStatus
 
+from waldo_commander.common.tab_flash import replay
+from waldo_commander.components.waldo import (
+    FACE_SVGS,
+    RobotFace,
+    current_mood,
+    face_js,
+    mount_js,
+)
+from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.state import robot_events, ui_state
 
 
-class RobotFace(Enum):
-    """Robot face states for the connection status indicator."""
-
-    HAPPY = "happy"
-    NEUTRAL = "neutral"
-    SAD = "sad"
-
-
-# Load robot face SVGs at module level for inline rendering (CSS hover needs DOM access)
-_ICONS_DIR = Path(__file__).parent.parent / "static" / "icons"
-FACE_SVGS = {
-    RobotFace.HAPPY: (_ICONS_DIR / "robot_happy.svg").read_text(),
-    RobotFace.NEUTRAL: (_ICONS_DIR / "robot_neutral.svg").read_text(),
-    RobotFace.SAD: (_ICONS_DIR / "robot_sad.svg").read_text(),
-}
 _FACE_WORDS = {
     RobotFace.HAPPY: "Connected",
     RobotFace.NEUTRAL: "Simulator",
@@ -39,13 +32,6 @@ _CHIP_COLORS = {
     RobotFace.NEUTRAL: ("wc-mode-sim", "wc-on-bright"),
     RobotFace.SAD: ("wc-error-soft", "wc-error"),
 }
-
-
-def _current_face() -> RobotFace:
-    status = waldoctl.commander.status
-    if status.simulator_active:
-        return RobotFace.NEUTRAL
-    return RobotFace.HAPPY if status.connected else RobotFace.SAD
 
 
 def _fmt_1f(v: float) -> str:
@@ -92,7 +78,7 @@ _TIP_HTML = (
 def _entry_html(entry) -> str:
     icon = _STATUS_ICONS.get(entry.status, "")
     count = (
-        f" <span style='color:var(--wc-text-muted)'>×{entry.count}</span>"
+        f" <span class='log-count' style='color:var(--wc-text-muted)'>×{entry.count}</span>"
         if entry.count > 1
         else ""
     )
@@ -137,6 +123,14 @@ class StatusFooter:
         self._last_tool_key: str | None = None
         self._last_io_inputs: list[int] | None = None
         self._last_io_outputs: list[int] | None = None
+        # Newest action's (timestamp, count, status) at the last redraw
+        self._action_newest: tuple[float, int, ActionStatus] | None = None
+
+        # Face reactions (robot-faces.js). Held values are cached so the
+        # per-frame checks only send changes.
+        self._face_held: dict[str, bool | tuple[float, float, float] | None] = {}
+        self._face_collision: bool = False
+        self._face_events_version: int = robot_events.version
         self._unread_severity = ""
         binding.bind_from(self, "unread_severity", robot_events, "unread_severity")
 
@@ -155,6 +149,53 @@ class StatusFooter:
             add=f"unread-{value}" if value else None,
             remove="unread-warning unread-error",
         )
+
+    # ---- status face ----
+
+    def face_react(self, kind: str) -> None:
+        """Play a one-shot face reaction (a ``REACTIONS`` key in robot-faces.js)."""
+        self._run_face_js(f"window.robotFaceReact({json.dumps(kind)});")
+
+    def face_hold(
+        self, name: str, value: bool | tuple[float, float, float] | None
+    ) -> None:
+        """Set a held face state (``estop``, ``recording`` or ``look``)."""
+        if name in self._face_held and self._face_held[name] == value:
+            return
+        self._face_held[name] = value
+        self._run_face_js(
+            f"window.robotFaceHold({json.dumps(name)}, {json.dumps(value)});"
+        )
+
+    def _run_face_js(self, call: str) -> None:
+        container = self._robot_face_container
+        if container is None or container.is_deleted:
+            return
+        container.client.run_javascript(face_js(call))
+
+    def _mount_face(self, face: RobotFace) -> None:
+        container = self._robot_face_container
+        if container is None or container.is_deleted:
+            return
+        container.client.run_javascript(mount_js(container, face, primary=True))
+
+    def _update_face_signals(self) -> None:
+        """Mirror E-STOP and recording onto the face; react to new warnings,
+        errors and collisions."""
+        cp = ui_state._control_panel
+        estop = cp is not None and cp.estop is not None and cp.estop.active
+        self.face_hold("estop", estop)
+        self.face_hold("recording", is_any_program_recording())
+        collision = bool(waldoctl.commander.status.collision.active)
+        if collision and not self._face_collision:
+            self.face_react("warning")
+        self._face_collision = collision
+        if robot_events.version != self._face_events_version:
+            grew = robot_events.version > self._face_events_version
+            self._face_events_version = robot_events.version
+            if grew and robot_events.entries:
+                severity = robot_events.entries[-1][6]
+                self.face_react("error" if severity == "error" else "warning")
 
     # ---- I/O ----
 
@@ -180,7 +221,7 @@ class StatusFooter:
     def update_conn_io(self) -> None:
         """Update the mode chip, tool chip and I/O dots. Called from the status consumer."""
         if self._robot_face_html and self._robot_face_container:
-            face = _current_face()
+            face = current_mood()
             if face != self._last_face_state:
                 self._last_face_state = face
                 self._robot_face_html.set_content(FACE_SVGS[face])
@@ -190,10 +231,7 @@ class StatusFooter:
                 self._robot_face_container.classes(
                     add=f"robot-face-{face.value}", remove=remove
                 )
-                ui.run_javascript(
-                    "window.stopRobotFace();"
-                    " window.initRobotFace('" + face.value + "');"
-                )
+                self._mount_face(face)
                 if self._mode_word is not None:
                     self._mode_word.text = _FACE_WORDS[face]
                 if self._robot_chip:
@@ -202,6 +240,8 @@ class StatusFooter:
 
         tool_key = waldoctl.commander.status.tool.key
         if tool_key != self._last_tool_key:
+            if self._last_tool_key is not None:
+                self.face_react("tool")
             self._last_tool_key = tool_key
             if self._tool_chip is not None and self._tool_label is not None:
                 if tool_key and tool_key != "NONE":
@@ -228,14 +268,23 @@ class StatusFooter:
                 self._last_io_inputs = None
                 self._last_io_outputs = None
             if inputs != self._last_io_inputs or outputs != self._last_io_outputs:
+                previous = (
+                    None
+                    if self._last_io_inputs is None or self._last_io_outputs is None
+                    else self._last_io_inputs + self._last_io_outputs
+                )
                 self._last_io_inputs = list(inputs)
                 self._last_io_outputs = list(outputs)
                 values = self._last_io_inputs + self._last_io_outputs
-                for dot, on in zip(self._io_dots, values):
+                for i, (dot, on) in enumerate(zip(self._io_dots, values)):
                     if on:
                         dot.classes(add="io-dot-on")
                     else:
                         dot.classes(remove="io-dot-on")
+                    if previous is not None and previous[i] != on:
+                        replay(dot, "io-pop")
+
+        self._update_face_signals()
 
     # ---- action line ----
 
@@ -244,9 +293,41 @@ class StatusFooter:
         if self._action_line is None:
             return
         latest = waldoctl.commander.status.action.latest
-        self._action_line.set_content(_entry_html(latest) if latest else _TIP_HTML)
+        motion = self._newest_action_motion()
+        if motion == "log-fail":
+            self.face_react("error")
+        elif (
+            motion == "log-done"
+            and latest is not None
+            and latest.command_name == "Home"
+        ):
+            self.face_react("home")
+        self._action_line.set_content(
+            f'<span class="action-line {motion}">{_entry_html(latest)}</span>'
+            if latest
+            else _TIP_HTML
+        )
         if self._history_menu is not None and self._history_menu.value:
             self._draw_history()
+
+    def _newest_action_motion(self) -> str:
+        """Motion class for the newest action: entered, repeated, or settled."""
+        latest = waldoctl.commander.status.action.latest
+        prev = self._action_newest
+        if latest is None:
+            self._action_newest = None
+            return ""
+        self._action_newest = (latest.timestamp, latest.count, latest.status)
+        if prev is None:
+            return ""
+        if latest.timestamp != prev[0]:
+            return "log-enter" if latest.count == 1 else "log-bump"
+        if latest.status != prev[2]:
+            if latest.status == ActionStatus.COMPLETED:
+                return "log-done"
+            if latest.status == ActionStatus.FAILED:
+                return "log-fail"
+        return ""
 
     def _draw_history(self) -> None:
         if self._history_html is not None:
@@ -314,7 +395,7 @@ class StatusFooter:
             .classes("status-footer")
             .mark("status-footer")
         ):
-            face = _current_face()
+            face = current_mood()
             self._last_face_state = face
             fill, text = _CHIP_COLORS[face]
             self._robot_chip = (
@@ -406,6 +487,15 @@ class StatusFooter:
                 .mark("footer-settings")
                 .tooltip("Settings")
             )
+
+        # A fresh page has fresh face JS: resend held states, animate only
+        # actions that land from here on, and start the idles.
+        self._face_held = {}
+        latest = waldoctl.commander.status.action.latest
+        self._action_newest = (
+            (latest.timestamp, latest.count, latest.status) if latest else None
+        )
+        self._mount_face(face)
 
         self._bind_action_log_listener()
         self.update_action_log()

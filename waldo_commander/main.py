@@ -52,6 +52,8 @@ from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import StatusFooter
 from waldo_commander.components.script_execution import script_exec
+from waldo_commander.components.waldo import FACE_SVGS, RobotFace, waldo
+from waldo_commander.components.waldo import react as waldo_react
 from waldo_commander.components.settings import (
     adopt_applied_tcp,
     refresh_applied_tcp,
@@ -1051,13 +1053,10 @@ def _setup_panel_persistence(refs: dict) -> None:
 def build_page_content() -> None:
     """Build the Move page UI."""
 
-    # Lottie player for E-STOP dialog animations; load early in HEAD.
-    ui.add_head_html(
-        '<script type="module" defer src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>'
-    )
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
     ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
     ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
+    ui.add_head_html('<script src="/static/js/scene-fx.js" defer></script>')
 
     with ui.column().classes(
         "commander-workspace relative w-screen h-screen overflow-hidden gap-0"
@@ -1073,7 +1072,7 @@ def build_page_content() -> None:
                     # No STATUS frame (com_port configured but no robot wired).
                     # The scene only needs local URDF assets and guarded client
                     # calls, so render it anyway instead of blocking the page.
-                    loading_spinner.set_visibility(False)
+                    waldo_react(loading_waldo, "warning")
                     loading_status.text = (
                         "Robot disconnected — proceeding without live data"
                     )
@@ -1124,7 +1123,9 @@ def build_page_content() -> None:
                 " transition: opacity 0.4s ease;"
             ) as scene_loading_overlay
         ):
-            loading_spinner = ui.spinner("dots", size="xl").props("color=wc-text-muted")
+            loading_waldo = waldo(
+                RobotFace.NEUTRAL, size=72, color="text-muted", cut="scene-bg"
+            ).mark("loading-waldo")
             loading_status = ui.label("Connecting to controller...").classes(
                 "wc-body text-wc-text-muted"
             )
@@ -1471,16 +1472,14 @@ def _build_takeover_overlay(message: str) -> None:
     repeat callers (e.g. check_ping firing on a shadow tab that was already
     built with an overlay by index_page) skip a duplicate build.
     """
-    from waldo_commander.components.readout import FACE_SVGS, RobotFace
-
     c = ui.context.client
     if getattr(c, "_waldo_overlay_shown", False):
         return
     c._waldo_overlay_shown = True  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
 
     # robot-faces.js is normally loaded by build_page_content, which the
-    # shadow branch skips. Load it here so initRobotFace / startRobotMope
-    # are defined when the run_javascript bootstrap fires below.
+    # shadow branch skips. Load it here so startRobotMope is defined when
+    # the run_javascript bootstrap fires below.
     ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
 
     with (
@@ -1514,9 +1513,6 @@ def _build_takeover_overlay(message: str) -> None:
         """
         (function bootstrap(retries) {
           if (typeof window.startRobotMope === 'function') {
-            if (typeof window.initRobotFace === 'function') {
-              window.initRobotFace('sad');
-            }
             window.startRobotMope();
           } else if (retries > 0) {
             setTimeout(() => bootstrap(retries - 1), 50);

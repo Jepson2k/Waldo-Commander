@@ -668,7 +668,7 @@ class GripperPage:
             ui.label()
 
             self._fault_label = ui.label("").classes(
-                "wc-caption text-wc-error col-span-3"
+                "wc-caption text-wc-error col-span-3 gripper-fault"
             )
             self._fault_label.set_visibility(False)
 

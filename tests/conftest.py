@@ -164,6 +164,9 @@ def nicegui_chrome_options():
     options.add_argument("no-sandbox")
     if not os.environ.get("HEADED"):
         options.add_argument("headless=new")
+    # Robot-face idles, scene reveals and CSS motion all stand down under
+    # reduced motion; a test that checks an animation opts back in via CDP.
+    options.add_argument("--force-prefers-reduced-motion")
     options.add_argument("--use-gl=angle")
     if "GITHUB_ACTIONS" in os.environ:
         # GitHub runners have no GPU — force SwiftShader CPU rasterizer.

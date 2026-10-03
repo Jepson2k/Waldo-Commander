@@ -404,7 +404,7 @@ async def test_tcp_tab_guards_measurements_and_application(
 
         await interrupted_apply(mcp_takeover)
         await user.should_see(
-            "Control of the robot changed hands; nothing more was sent"
+            "Control of the robot changed hands; nothing more was sent", retries=50
         )
         assert await client.tcp_transform() == pytest.approx([0] * 6)
     finally:
