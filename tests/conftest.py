@@ -7,7 +7,7 @@ import subprocess
 import sys
 import asyncio
 import time
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -15,11 +15,14 @@ import pytest
 from nicegui import run as nicegui_run
 from nicegui import storage as nicegui_storage
 from nicegui.testing import general as nicegui_testing_general
+from nicegui.testing import User
 from nicegui.testing.general_fixtures import (
+    get_path_to_main_file,
     nicegui_reset_globals,  # noqa: F401 - required by screen fixture
 )
 from nicegui.testing import screen_plugin as nicegui_screen_plugin
 from nicegui.testing.screen import Screen
+from nicegui.testing.user_simulation import user_simulation
 from nicegui.testing.screen_plugin import (
     _reset_browser_state,
     nicegui_driver,  # noqa: F401 - session browser, also lent to class_screen
@@ -357,6 +360,20 @@ def suppress_udp_conn_reset_error(silence_noisy_logging):
     transport_logger.addFilter(filt)
     yield
     transport_logger.removeFilter(filt)
+
+
+@pytest.fixture
+async def user(
+    caplog: pytest.LogCaptureFixture, request: pytest.FixtureRequest
+) -> AsyncGenerator[User, None]:
+    """NiceGUI's user fixture, with its unexpected-ERROR gate moved after the
+    app has shut down. Failing inside the simulation throws into NiceGUI's
+    lifespan generator, which then skips its shutdown, so the next test's app
+    never becomes ready."""
+    async with user_simulation(main_file=get_path_to_main_file(request)) as user:
+        yield user
+    if any(r.levelname == "ERROR" for r in caplog.get_records("call")):
+        pytest.fail("There were unexpected ERROR logs.", pytrace=False)
 
 
 # ============================================================================
