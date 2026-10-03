@@ -353,9 +353,14 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         *(gap.sample_index for gap in recording.gaps),
         len(recording.samples),
     ]
-    begin, end = max(
-        zip(boundaries, boundaries[1:]), key=lambda span: span[1] - span[0]
-    )
+    spans = list(zip(boundaries, boundaries[1:]))
+    # The final span keeps the hold that ends the capture; when a late drop
+    # leaves it too short to hold any motion, the longest span stands in.
+    begin, end = spans[-1]
+    sample_rate = len(recording.samples) / max(recording.duration_s, 1e-9)
+    if (end - begin) / sample_rate <= 1.0:
+        begin, end = max(spans, key=lambda span: span[1] - span[0])
+    reaches_the_end = end == len(recording.samples)
     recording = recording.select(begin, end)
     recording.require_continuous()
     assert recording.duration_s > 1.0, "need a span with motion in it to convert"
@@ -376,12 +381,13 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
     )
     delays = [span for span in conversion.spans if span.kind == "delay"]
     delayed = sum(span.seconds for span in delays)
-    trailing = max(delays, key=lambda span: span.stop)
-    assert trailing.stop == len(recording.samples) - 1, (
-        "the capture outlasted the demonstration; its hold is the last span"
-    )
-    assert trailing.seconds == 0.0, "the trailing hold is a comment, not a delay"
-    assert delayed < still, "the trailing hold is a comment, not a delay"
+    if reaches_the_end:
+        trailing = max(delays, key=lambda span: span.stop)
+        assert trailing.stop == len(recording.samples) - 1, (
+            "the capture outlasted the demonstration; its hold is the last span"
+        )
+        assert trailing.seconds == 0.0, "the trailing hold is a comment, not a delay"
+        assert delayed < still, "the trailing hold is a comment, not a delay"
     assert "rbt.delay(" in conversion.source
     assert "before or after the demonstration" in conversion.source
     moves = [s for s in conversion.spans if s.kind in ("move_j", "move_l")]

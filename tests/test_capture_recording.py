@@ -94,7 +94,11 @@ async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
         )
         assert preview["error"] is None, preview["error"]
         final = np.degrees(preview["final_joints_rad"])
-        assert final == pytest.approx(target, abs=0.5)
+        # J5 is near zero, where only J4 + J6 sets the pose.
+        assert final[[0, 1, 2, 4]] == pytest.approx(
+            np.asarray(target)[[0, 1, 2, 4]], abs=0.5
+        )
+        assert final[3] + final[5] == pytest.approx(target[3] + target[5], abs=0.5)
 
         # Raw, the same lines replay the recorded points instead.
         element("staged-capture-mode").set_value("raw")
