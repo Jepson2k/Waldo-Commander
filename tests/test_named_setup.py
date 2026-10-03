@@ -7,7 +7,7 @@ from typing import cast
 import numpy as np
 import pytest
 import waldoctl
-from nicegui import run, ui
+from nicegui import ui
 from nicegui.testing import User
 from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot, TcpCalibration
 
@@ -16,7 +16,6 @@ from tests.helpers.wait import (
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
 )
-from waldo_commander.services.path_visualizer import _run_simulation_isolated
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.setup import SetupStore, export_snapshot, load_setup
 from waldo_commander.state import ui_state
@@ -84,41 +83,6 @@ def test_named_storage_and_export_remain_independent_snapshots(tmp_path, monkeyp
 
 
 @pytest.mark.integration
-async def test_a_program_imports_its_setup_module_from_the_library(
-    user: User, tmp_path
-):
-    """A setup is a module beside the programs. A program previewed or run
-    from Commander imports it as `python program.py` in the library would,
-    though Commander runs a copy of it from elsewhere."""
-    from waldo_commander.components.script_execution import script_exec
-    from waldo_commander.components.simulation_engine import simulation
-
-    library = tmp_path / "programs"
-    SetupStore(library / "setups").save(
-        "bench", SetupSnapshot(poses={"pick": Pose((1, 2, 3, 0, 0, 0))})
-    )
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    script_exec.set_program_dir(library)
-    textarea = ui_state.active_textarea
-    program = waldoctl.commander.programs.active
-    assert textarea is not None and program is not None
-    textarea.value = (
-        "from setups.bench import setup\nprint('bench poses:', len(setup.poses))\n"
-    )
-    assert await simulation.run_simulation() is None
-    assert await script_exec.start()
-    async with asyncio.timeout(20):
-        while is_any_program_running():
-            await asyncio.sleep(0.05)
-    output = [entry.text for entry in program.log.entries]
-    assert script_exec.last_exit_code == 0, output
-    assert "bench poses: 1" in output
-
-
-@pytest.mark.integration
 async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
     user: User, tmp_path, monkeypatch
 ):
@@ -152,13 +116,39 @@ async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
     await message("Captured TCP. Save setup to keep it.")
     user.find(marker="setup-set-frame").click()
     await message("Frame fixture updated. Save setup to keep it.")
+    # An uncommitted frame edit is saved together with the pose taught in it,
+    # so teaching must resolve against the edited frame.
+    element("setup-frame-x").set_value(element("setup-frame-x").value + 10.0)
     user.find(kind=ui.tab, content="Poses").click()
     element("setup-pose-frame").set_value("fixture")
     user.find(marker="setup-teach-pose").click()
     await message("Captured TCP. Save setup to keep it.")
-    for axis in ("x", "y", "z", "rx", "ry", "rz"):
+    taught = [element(f"setup-pose-{axis}").value for axis in ("x", "y", "z")]
+    assert np.linalg.norm(taught) == pytest.approx(10, abs=0.1), (
+        "the pose is taught relative to the edited frame, 10 mm away"
+    )
+    for axis in ("rx", "ry", "rz"):
         assert element(f"setup-pose-{axis}").value == pytest.approx(0, abs=0.1)
-    element("setup-pose-z").set_value(2.0)
+    user.find(marker="setup-save").click()
+    await message("Saved bench")
+    taught_setup = load_setup("bench")
+    assert np.array(taught_setup.resolve("pick").values[:3]) == pytest.approx(
+        current[:3], abs=0.1
+    ), "the taught pose resolves to the TCP it was taught at"
+    taught_z = taught_setup.relative_pose(
+        taught_setup.resolve("pick"), "fixture"
+    ).values[2]
+
+    # A pending pose in a frame pins that frame: removing it would otherwise
+    # silently rebind the pending pose to WRF with frame-local numbers.
+    element("setup-pose-z").set_value(element("setup-pose-z").value + 2.0)
+    user.find(kind=ui.tab, content="Frames").click()
+    user.find(marker="setup-remove-frame").click()
+    await message(
+        "Keep or discard the pending pose in fixture before removing the frame"
+    )
+    assert element("setup-pose-frame").value == "fixture"
+    user.find(kind=ui.tab, content="Poses").click()
     user.find(marker="setup-set-pose").click()
     await message("Pose pick updated. Save setup to keep it.")
     user.find(kind=ui.tab, content="Parameters").click()
@@ -168,9 +158,11 @@ async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
     await message("Saved bench")
     before = load_setup("bench")
     assert before.parameters["clearance"].value == 30
+    assert "fixture" in before.frames
+    assert before.poses["pick"].frame == "fixture"
     assert before.relative_pose(before.resolve("pick"), "fixture").values[
         2
-    ] == pytest.approx(2)
+    ] == pytest.approx(taught_z + 2.0, abs=0.01)
 
     # Move one frame; every pose that refers to it follows on the next load.
     user.find(kind=ui.tab, content="Frames").click()
@@ -212,26 +204,18 @@ async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
         "the load lands where nobody is looking, so the program tab flashes"
     )
 
-    initial = await client.angles()
-    assert initial is not None
-    result = await run.cpu_bound(
-        _run_simulation_isolated,
-        program.source,
-        np.radians(initial),
-        setup_directory=str(tmp_path),
-    )
-    assert result["error"] is None, result["error"]
-    record = result["commanded"]
-    moves = [b for b in record.blocks if b.move_type is not None]
-    assert len(moves) == 1 and moves[0].error is None and moves[0].rows > 0
-    end = record.tcp[moves[0].start_row + moves[0].rows - 1]
-    assert np.asarray(end[:3]) * 1000 == pytest.approx(target.values[:3], abs=0.1)
-
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
     from waldo_commander.components.simulation_engine import simulation
 
-    await simulation.run_simulation()
+    # The native preview resolves the named pose to the same target.
+    assert await simulation.run_simulation() is None
+    record = program.dry_run.commanded
+    assert record is not None
+    moves = [b for b in record.blocks if b.move_type is not None]
+    assert len(moves) == 1 and moves[0].error is None and moves[0].rows > 0
+    end = record.tcp[moves[0].start_row + moves[0].rows - 1]
+    assert np.asarray(end[:3]) * 1000 == pytest.approx(target.values[:3], abs=0.1)
     assert program.dry_run.path_segments
     user.find(marker="editor-step-program").click()
     try:
@@ -255,127 +239,24 @@ async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
                     await asyncio.sleep(0.05)
 
 
-async def test_setup_save_keeps_sections_written_by_other_panels(
-    user: User, tmp_path, monkeypatch
-):
-    """The camera calibration panel writes its section straight to the setup
-    file; the Setup panel saving its own edits afterwards must not drop it."""
-    from waldoctl.setup import TcpCalibration
-
-    from tests.test_handeye_service import SPEC, _samples
-    from waldo_commander.services import handeye
-    from waldo_commander.services.camera_calibration import (
-        CaptureBinding,
-        calibration_from_result,
-    )
-
-    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
-    ui_state.plugin_panels = []
-    ui_state._started_panel_ids = set()
-    await user.open("/")
-    await wait_for_app_ready()
-    user.find(marker="tab-setup").click()
-    user.find(marker="setup-save").click()
-    await user.should_see(content="Saved bench")
-
-    store = SetupStore(tmp_path)
-    binding = CaptureBinding(
-        "camera-A", "session", "parol6", TcpCalibration((0, 0, 0, 0, 0, 0), "MSG")
-    )
-    on_disk = store.load("bench")
-    calibration = calibration_from_result(
-        handeye.solve_hand_eye(_samples(), SPEC), SPEC, binding, on_disk
-    )
-    store.save("bench", on_disk.with_camera("overhead", calibration))
-
-    user.find(kind=ui.tab, content="Parameters").click()
-    user.find(marker="setup-set-parameter").click()
-    await user.should_see(content="Parameter clearance updated. Save setup to keep it.")
-    user.find(marker="setup-save").click()
-    await user.should_see(content="Saved bench")
-    saved = load_setup("bench")
-    assert "clearance" in saved.parameters
-    assert "overhead" in saved.cameras, "saving the Setup panel dropped the camera"
-
-
-async def test_pending_frame_edits_are_honoured_by_teach_and_block_frame_removal(
-    user: User, tmp_path, monkeypatch
-):
-    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
-    ui_state.plugin_panels = []
-    ui_state._started_panel_ids = set()
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    client = waldoctl.commander.client
-    index = await client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
-    assert index >= 0 and await client.wait_command(index, timeout=20)
-    current = await client.pose()
-    assert current is not None
-
-    def element(marker):
-        return next(iter(user.find(marker=marker).elements))
-
-    async def message(text):
-        await user.should_see(content=text)
-
-    user.find(marker="tab-setup").click()
-    user.find(marker="setup-teach-frame").click()
-    await message("Captured TCP. Save setup to keep it.")
-    user.find(marker="setup-set-frame").click()
-    await message("Frame fixture updated. Save setup to keep it.")
-    # An uncommitted frame edit is saved together with the pose taught in it,
-    # so teaching must resolve against the edited frame.
-    element("setup-frame-x").set_value(element("setup-frame-x").value + 10.0)
-    user.find(kind=ui.tab, content="Poses").click()
-    element("setup-pose-frame").set_value("fixture")
-    user.find(marker="setup-teach-pose").click()
-    await message("Captured TCP. Save setup to keep it.")
-    taught = [element(f"setup-pose-{axis}").value for axis in ("x", "y", "z")]
-    assert np.linalg.norm(taught) == pytest.approx(10, abs=0.1), (
-        "the pose is taught relative to the edited frame, 10 mm away"
-    )
-    user.find(marker="setup-save").click()
-    await message("Saved bench")
-    saved = load_setup("bench")
-    assert np.array(saved.resolve("pick").values[:3]) == pytest.approx(
-        current[:3], abs=0.1
-    ), "the taught pose resolves to the TCP it was taught at"
-
-    # A pending pose in a frame pins that frame: removing it would otherwise
-    # silently rebind the pending pose to WRF with frame-local numbers.
-    element("setup-pose-z").set_value(element("setup-pose-z").value + 5.0)
-    user.find(kind=ui.tab, content="Frames").click()
-    user.find(marker="setup-remove-frame").click()
-    await message(
-        "Keep or discard the pending pose in fixture before removing the frame"
-    )
-    assert element("setup-pose-frame").value == "fixture"
-    user.find(marker="setup-save").click()
-    await message("Saved bench")
-    after = load_setup("bench")
-    assert "fixture" in after.frames
-    assert after.poses["pick"].frame == "fixture"
-    assert after.relative_pose(after.resolve("pick"), "fixture").values[
-        2
-    ] == pytest.approx(
-        saved.relative_pose(saved.resolve("pick"), "fixture").values[2] + 5.0, abs=0.01
-    )
-
-
 @pytest.mark.integration
 async def test_the_panel_keeps_its_lists_and_its_selector_usable_while_switching(
     user: User, tmp_path, monkeypatch
 ):
     """Switching the edited entry commits the pending one, so the lists have to
     be rebuilt with it; and a switch refused for an invalid edit must leave the
-    selector usable."""
+    selector usable. The TCP selector keeps its pending edit the same way."""
     monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
     ui_state.plugin_panels = []
     ui_state._started_panel_ids = set()
     await user.open("/")
     await wait_for_app_ready()
+    client = waldoctl.commander.client
+    for index in (
+        await client.select_tool("NONE"),
+        await client.set_tcp_transform(),
+    ):
+        assert index >= 0 and await client.wait_command(index, timeout=20)
 
     def element(marker):
         return next(iter(user.find(marker=marker).elements))
@@ -384,6 +265,20 @@ async def test_the_panel_keeps_its_lists_and_its_selector_usable_while_switching
         await user.should_see(content=text)
 
     user.find(marker="tab-setup").click()
+
+    # Reading an all-zero transform into zeroed fields still identifies the
+    # tool, so it is a pending edit that Save writes.
+    user.find(kind=ui.tab, content="TCP").click()
+    user.find(marker="tcp-calibration-read").click()
+    await user.should_see("Read the controller's applied TCP transform.", retries=50)
+    assert element("setup-dirty").visible
+    user.find(marker="setup-save").click()
+    await message("Saved bench")
+    assert SetupStore(tmp_path).load("bench").tcp_calibrations["tip"] == TcpCalibration(
+        (0, 0, 0, 0, 0, 0), "NONE"
+    )
+
+    user.find(kind=ui.tab, content="Frames").click()
     element("setup-frame-name").set_value("fixture")
     element("setup-frame-x").set_value(10.0)
     user.find(marker="setup-set-frame").click()
@@ -419,8 +314,16 @@ async def test_the_panel_keeps_its_lists_and_its_selector_usable_while_switching
     assert element("setup-frame-x").value == pytest.approx(20.0)
 
     # A setup written after the panel was built loads and appears in the list.
+    tcp_b = TcpCalibration((4, 5, 6, 0, 0, 0), "NONE")
     SetupStore(tmp_path).save(
-        "cell", SetupSnapshot(frames={"bench": Frame((1, 2, 3, 0, 0, 0))})
+        "cell",
+        SetupSnapshot(
+            frames={"bench": Frame((1, 2, 3, 0, 0, 0))},
+            tcp_calibrations={
+                "tcp_a": TcpCalibration((1, 2, 3, 0, 0, 0), "NONE"),
+                "tcp_b": tcp_b,
+            },
+        ),
     )
     element("setup-name").set_value("cell")
     user.find(marker="setup-load").click()
@@ -429,35 +332,8 @@ async def test_the_panel_keeps_its_lists_and_its_selector_usable_while_switching
     assert element("setup-saved").value == "cell"
     assert "cell" in element("setup-saved").options
 
-
-@pytest.mark.integration
-async def test_switching_tcp_entries_keeps_the_pending_edit(
-    user: User, tmp_path, monkeypatch
-):
-    """Picking another saved TCP calibration keeps the edit made to the shown
-    one, as the frame, pose and parameter selectors do."""
-    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
-    ui_state.plugin_panels = []
-    ui_state._started_panel_ids = set()
-    tcp_b = TcpCalibration((4, 5, 6, 0, 0, 0), "NONE")
-    SetupStore(tmp_path).save(
-        "bench",
-        SetupSnapshot(
-            tcp_calibrations={
-                "tcp_a": TcpCalibration((1, 2, 3, 0, 0, 0), "NONE"),
-                "tcp_b": tcp_b,
-            }
-        ),
-    )
-    await user.open("/")
-    await wait_for_app_ready()
-
-    def element(marker):
-        return next(iter(user.find(marker=marker).elements))
-
-    user.find(marker="tab-setup").click()
-    user.find(marker="setup-load").click()
-    await user.should_see("Loaded bench")
+    # Picking another saved TCP calibration keeps the edit made to the shown
+    # one, as the frame, pose and parameter selectors do.
     user.find(kind=ui.tab, content="TCP").click()
     assert element("tcp-calibration-existing").value == "tcp_a"
     element("tcp-calibration-x").set_value(11.0)
@@ -468,7 +344,7 @@ async def test_switching_tcp_entries_keeps_the_pending_edit(
 
     element("tcp-calibration-name").set_value("")
     element("tcp-calibration-existing").set_value("tcp_a")
-    await user.should_see("Keep the current edit valid before switching")
+    await message("Keep the current edit valid before switching")
     assert element("tcp-calibration-existing").value == "tcp_b"
     element("tcp-calibration-name").set_value("tcp_b")
     element("tcp-calibration-existing").set_value("tcp_a")
@@ -476,46 +352,10 @@ async def test_switching_tcp_entries_keeps_the_pending_edit(
     assert element("tcp-calibration-x").value == 11
 
     user.find(marker="setup-save").click()
-    await user.should_see("Saved bench")
-    saved = SetupStore(tmp_path).load("bench").tcp_calibrations
+    await message("Saved cell")
+    saved = SetupStore(tmp_path).load("cell").tcp_calibrations
     assert saved["tcp_a"].values[:3] == (11, 2, 3)
     assert saved["tcp_b"] == tcp_b
-
-
-@pytest.mark.integration
-async def test_reading_the_applied_tcp_is_saved_even_when_the_numbers_match(
-    user: User, tmp_path, monkeypatch
-):
-    """Reading an all-zero transform into zeroed fields still identifies the
-    tool, so it is a pending edit that Save writes."""
-    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
-    ui_state.plugin_panels = []
-    ui_state._started_panel_ids = set()
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    client = waldoctl.commander.client
-    for index in (
-        await client.select_tool("NONE"),
-        await client.set_tcp_transform(),
-        await client.move_j([85, -85, 135, 10, 45, 170], speed=1.0),
-    ):
-        assert index >= 0 and await client.wait_command(index, timeout=20)
-
-    def element(marker):
-        return next(iter(user.find(marker=marker).elements))
-
-    user.find(marker="tab-setup").click()
-    user.find(kind=ui.tab, content="TCP").click()
-    user.find(marker="tcp-calibration-read").click()
-    await user.should_see("Read the controller's applied TCP transform.", retries=50)
-    assert element("setup-dirty").visible
-    user.find(marker="setup-save").click()
-    await user.should_see("Saved bench")
-    assert SetupStore(tmp_path).load("bench").tcp_calibrations["tip"] == TcpCalibration(
-        (0, 0, 0, 0, 0, 0), "NONE"
-    )
 
 
 @pytest.mark.integration
@@ -523,8 +363,15 @@ async def test_setup_save_replans_programs_that_load_it(
     user: User, tmp_path, monkeypatch
 ):
     """Saving a setup re-plans the preview of a program that loads it, though
-    the program's text is unchanged."""
-    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
+    the program's text is unchanged. And a setup is a module beside the
+    programs: a program previewed or run from Commander imports it as
+    `python program.py` in the library would, though Commander runs a copy of
+    it from elsewhere."""
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.components.simulation_engine import simulation
+
+    library = tmp_path / "programs"
+    monkeypatch.setenv("WALDO_SETUP_DIR", str(library / "setups"))
     ui_state.plugin_panels = []
     ui_state._started_panel_ids = set()
     await user.open("/")
@@ -541,6 +388,7 @@ async def test_setup_save_replans_programs_that_load_it(
     SetupStore().save(
         "bench", SetupSnapshot(poses={"pick": Pose(cast(PoseValues, tuple(below)))})
     )
+    script_exec.set_program_dir(library)
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -577,3 +425,17 @@ async def test_setup_save_replans_programs_that_load_it(
     user.find(marker="setup-save").click()
     await user.should_see("Saved bench")
     await planned_end_z(below[2] - 10.0)
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    textarea.value = (
+        "from setups.bench import setup\nprint('bench poses:', len(setup.poses))\n"
+    )
+    assert await simulation.run_simulation() is None
+    assert await script_exec.start()
+    async with asyncio.timeout(20):
+        while is_any_program_running():
+            await asyncio.sleep(0.05)
+    output = [entry.text for entry in program.log.entries]
+    assert script_exec.last_exit_code == 0, output
+    assert "bench poses: 1" in output

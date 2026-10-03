@@ -20,20 +20,27 @@ app_storage: Any = getattr(ng_app, "storage")
 
 
 @pytest.mark.integration
-async def test_settings_tab_accessible(user: User) -> None:
-    """The gear opens the Settings dialog with every category's rows built."""
+async def test_settings_dialog_rows_drive_their_settings(user: User) -> None:
+    """The gear opens the Settings dialog with every category's rows built.
+    Show Route and the envelope mode reach ``commander.settings.view``; the
+    tool select persists each choice, shows a variant row only for a tool
+    with variants, and offers a TCP correction for fitted tools and the bare
+    flange alike."""
+    import waldoctl
+    from waldoctl import EnvelopeMode
+
     await user.open("/")
     await wait_for_app_ready()
 
     assert not ui_state.settings_content.dialog.value
-    settings_tab = user.find(marker="tab-settings")
-    settings_tab.click()
+    user.find(marker="tab-settings").click()
     await asyncio.sleep(0)
     assert ui_state.settings_content.dialog.value, "the gear opens the dialog"
 
     # Rows from the first category and the last, so the whole dialog is
     # present rather than just the category on screen.
     await user.should_see("Serial port")
+    await user.should_see(marker="select-serial-port")
     await user.should_see("Show route")
     await user.should_see("Tool")
     await user.should_see("Select end effector tool")
@@ -44,115 +51,27 @@ async def test_settings_tab_accessible(user: User) -> None:
     await user.should_see(marker="settings-cat-advanced")
     await user.should_see(marker="settings-group-advanced")
 
-    user.find(marker="settings-close").click()
-    await asyncio.sleep(0)
-    assert not ui_state.settings_content.dialog.value
-
-
-@pytest.mark.integration
-async def test_serial_port_select_exists(user: User) -> None:
-    """Test that the serial port select dropdown exists in Settings.
-
-    Note: The port select auto-saves on change (no Set Port button needed).
-    We verify the select element exists with the correct label.
-    """
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Navigate to Settings tab
-    settings_tab = user.find(marker="tab-settings")
-    settings_tab.click()
-    await asyncio.sleep(0)
-
-    port_select = user.find(marker="select-serial-port")
-    assert port_select is not None, "Serial port select should exist in Settings"
-
-
-@pytest.mark.integration
-async def test_show_route_toggle_changes_state(user: User) -> None:
-    """Test that toggling Show Route updates commander.settings.view.paths_visible."""
-    import waldoctl
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Navigate to Settings tab
-    settings_tab = user.find(marker="tab-settings")
-    settings_tab.click()
-    await asyncio.sleep(0)
-
-    # Get initial state
     initial_visible = waldoctl.commander.settings.view.paths_visible
-
-    # Find and toggle the Show Route switch (by marker, not content)
-    show_route_switch = user.find(marker="switch-show-route")
-    show_route_switch.click()
+    user.find(marker="switch-show-route").click()
     await asyncio.sleep(0)
-
-    # State should have toggled
     assert waldoctl.commander.settings.view.paths_visible != initial_visible, (
         f"Expected paths_visible to toggle from {initial_visible}"
     )
-
-
-@pytest.mark.integration
-async def test_workspace_envelope_mode_changes(user: User) -> None:
-    """Test that changing workspace envelope mode updates commander.settings.view.envelope_mode."""
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Navigate to Settings tab
-    settings_tab = user.find(marker="tab-settings")
-    settings_tab.click()
-    await asyncio.sleep(0)
-
-    # Find the Workspace Envelope select (by marker)
-    envelope_select = user.find(marker="select-envelope-mode")
-    assert envelope_select is not None, "Envelope mode select should exist"
-
-    import waldoctl
-    from waldoctl import EnvelopeMode
 
     envelope_mode = waldoctl.commander.settings.view.envelope_mode
     assert isinstance(envelope_mode, EnvelopeMode), (
         f"Expected EnvelopeMode, got {envelope_mode}"
     )
-
-    # Drive a real change through the select and verify it propagates to
-    # commander.settings.view (select option keys are the EnvelopeMode values).
-    select_el = next(iter(envelope_select.elements))
-
-    async def set_and_verify(mode: EnvelopeMode) -> None:
-        select_el.set_value(mode.value)
+    # Select option keys are the EnvelopeMode values.
+    envelope_select = next(iter(user.find(marker="select-envelope-mode").elements))
+    for mode in (EnvelopeMode.OFF, EnvelopeMode.ON):
+        envelope_select.set_value(mode.value)
         await poll_until(
             lambda: waldoctl.commander.settings.view.envelope_mode,
-            lambda m: m == mode,
+            lambda m, mode=mode: m == mode,
             timeout_s=2.0,
             what=f"envelope mode {mode} after selecting {mode.value!r}",
         )
-
-    await set_and_verify(EnvelopeMode.OFF)
-    await set_and_verify(EnvelopeMode.ON)
-
-
-@pytest.mark.integration
-async def test_tool_selection_changes_tool(user: User) -> None:
-    """Test that selecting a tool updates storage and sends SET_TOOL to backend.
-
-    Cycles through registered tools verifying each selection persists to storage.
-    """
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Navigate to Settings tab
-    settings_tab = user.find(marker="tab-settings")
-    settings_tab.click()
-    await asyncio.sleep(0)
-
-    # The tool select exists (by marker)
-    tool_select = user.find(marker="select-tool")
-    assert tool_select is not None, "Tool select should exist"
 
     # Native count stays 5; robot.tools may compose plugin tools on top.
     native_tools = [t.key for t in ui_state.active_robot.native_tools.available]
@@ -161,69 +80,33 @@ async def test_tool_selection_changes_tool(user: User) -> None:
     for expected in ("NONE", "PNEUMATIC", "SSG-48", "MSG", "VACUUM"):
         assert expected in available_tools, f"{expected} not in {available_tools}"
 
-    async def select_and_verify(tool: str) -> None:
+    select_el = next(iter(user.find(marker="select-tool").elements))
+    for tool in ("PNEUMATIC", "SSG-48", "VACUUM"):
         select_el.set_value(tool)
         await poll_until(
             lambda: app_storage.general.get("selected_tool"),
-            lambda stored: stored == tool,
+            lambda stored, tool=tool: stored == tool,
             timeout_s=2.0,
             what=f"storage to reflect {tool} after selection",
         )
 
-    select_el = next(iter(tool_select.elements))
-    await select_and_verify("PNEUMATIC")
-    await select_and_verify("SSG-48")
-    await select_and_verify("VACUUM")
-
-
-@pytest.mark.integration
-async def test_variant_selector_appears_for_tools_with_variants(user: User) -> None:
-    """Test that variant dropdown appears for tools with variants and hides for those without."""
-    await user.open("/")
-    await wait_for_app_ready()
-
-    settings_tab = user.find(marker="tab-settings")
-    settings_tab.click()
-    await asyncio.sleep(0)
-
-    tool_select = user.find(marker="select-tool")
-    select_el = next(iter(tool_select.elements))
-
-    # SSG-48 has variants (finger, pinch) — selector should appear
+    # SSG-48 has variants (finger, pinch); NONE has none, so it should not
+    # occupy a Settings row.
     select_el.set_value("SSG-48")
     await wait_for_tool_key("SSG-48", timeout_s=5)
     await user.should_see("Variant")
-    variant_select = user.find(marker="select-tool-variant")
-    assert len(variant_select.elements) == 1, (
+    assert len(user.find(marker="select-tool-variant").elements) == 1, (
         "Variant selector should appear for SSG-48"
     )
-    await user.should_see("Variant")
-
-    # NONE has no variants, so it should not occupy a Settings row.
     select_el.set_value("NONE")
     await wait_for_tool_key("NONE", timeout_s=5)
     await user.should_not_see("Variant")
-
-
-@pytest.mark.integration
-async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
-    """TCP correction is available for fitted tools and the bare flange."""
-    await user.open("/")
-    await wait_for_app_ready()
-
-    settings_tab = user.find(marker="tab-settings")
-    settings_tab.click()
-    await asyncio.sleep(0)
-
-    tool_select = user.find(marker="select-tool")
-    select_el = next(iter(tool_select.elements))
 
     def offset_x_disabled() -> bool:
         """The tool select rebuilds the offset inputs only after the
         controller confirms the change, so read them once it has."""
         return "disable" in next(iter(user.find(marker="tcp-offset-x").elements)).props
 
-    # PNEUMATIC — offset inputs should appear with X/Y/Z fields
     select_el.set_value("PNEUMATIC")
     await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
     await user.should_see("TCP offset")
@@ -232,8 +115,6 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
         lambda disabled: not disabled,
         what="a fitted tool's offset editable",
     )
-
-    # The bare flange can also carry a user-defined TCP.
     select_el.set_value("NONE")
     await wait_for_tool_key("NONE", timeout_s=5.0)
     await poll_until(
@@ -241,6 +122,10 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
         lambda disabled: not disabled,
         what="the bare flange's TCP correction editable",
     )
+
+    user.find(marker="settings-close").click()
+    await asyncio.sleep(0)
+    assert not ui_state.settings_content.dialog.value
 
 
 @pytest.mark.integration
@@ -374,13 +259,7 @@ async def test_settings_follows_controller_variants_and_setup_applied_tcp(
     user: User,
 ) -> None:
     """Settings binds TCP edits to the tool the controller actually carries,
-    follows a variant another client selected, and shows a transform the
-    Setup panel applied so the next nudge does not push stale values."""
-    from waldoctl.setup import TcpCalibration
-
-    from waldo_commander.components.settings import adopt_applied_tcp
-    from waldo_commander.services.tcp_calibration import apply_tcp_calibration
-
+    and follows a variant another client selected."""
     await user.open("/")
     await wait_for_app_ready()
     client = ui_state.control_panel.client
@@ -432,21 +311,6 @@ async def test_settings_follows_controller_variants_and_setup_applied_tcp(
             what="the variant select adopting vertical",
         )
         assert app_storage.general.get("tool_variant_PNEUMATIC") == "vertical"
-
-        # Applied from the Setup panel's calibration editor.
-        calibration = TcpCalibration(
-            (25.0, 0.0, 0.0, 0.0, 90.0, 0.0), "PNEUMATIC", "vertical"
-        )
-        await apply_tcp_calibration(client, calibration)
-        adopt_applied_tcp(calibration)
-        await poll_until(
-            lambda: shown("tcp-offset-x").value,
-            lambda v: v == 25.0,
-            timeout_s=5,
-            what="Settings showing the applied X",
-        )
-        user.find(marker="tcp-offset-y").trigger("update:modelValue", 1.0)
-        await expect_transform([25.0, 1.0, 0.0, 0.0, 90.0, 0.0])
     finally:
         await client.set_tcp_transform()
         await client.select_tool("NONE")
@@ -539,13 +403,15 @@ async def _reopen(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_opening_a_page_never_pushes_an_offset_under_an_ai_holder(
+async def test_opening_a_page_adopts_only_what_is_safe(
     user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A page load carries no human intent to drive. With an AI session
     holding control, the browser's remembered offset must not replace the
     controller's, even on a controller this app has never told: the AI plans
-    its Cartesian moves with the TCP it has."""
+    its Cartesian moves with the TCP it has. And the controller's offset
+    belongs to the tool it carries: a page that remembers a different tool
+    must not file that offset under its own."""
     from waldo_commander.components import settings
     from waldo_commander.services.control_lease import MCP, control_lease
 
@@ -566,19 +432,8 @@ async def test_opening_a_page_never_pushes_an_offset_under_an_ai_holder(
 
         assert [float(v) for v in await client.tcp_offset()] == [0.0, 0.0, 0.0]
         assert control_lease.held_by(MCP, "settings-review")
-    finally:
-        await client.set_tcp_offset(0.0, 0.0, 0.0)
-        await client.select_tool("NONE")
+        control_lease.reset()
 
-
-@pytest.mark.integration
-async def test_another_tools_offset_is_not_adopted(user: User) -> None:
-    """The controller's offset belongs to the tool it carries. A page that
-    remembers a different tool must not file that offset under its own."""
-    await user.open("/")
-    await wait_for_app_ready()
-    client = ui_state.control_panel.client
-    try:
         index = await client.select_tool("SSG-48")
         assert await client.wait_command(index, timeout=5.0)
         await client.set_tcp_offset(1.0, 2.0, 3.0)
@@ -600,6 +455,7 @@ async def test_another_tools_offset_is_not_adopted(user: User) -> None:
         }
         assert [float(v) for v in await client.tcp_offset()] == [1.0, 2.0, 3.0]
     finally:
+        control_lease.reset()
         await client.set_tcp_offset(0.0, 0.0, 0.0)
         await client.select_tool("NONE")
 

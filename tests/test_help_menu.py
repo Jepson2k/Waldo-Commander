@@ -30,53 +30,40 @@ async def _open_settings(user: User, category: str) -> None:
 
 
 @pytest.mark.integration
-class TestHelpMenuAndKeybindings:
-    """The keybindings table under Settings → Shortcuts."""
+async def test_settings_lists_the_shortcuts_and_walks_the_tour(user: User) -> None:
+    """The keybindings table under Settings → Shortcuts; Getting started walks
+    the tour, Next and Back move through it, and Finish on the last step
+    closes Settings."""
+    await user.open("/")
+    await _open_settings(user, "shortcuts")
 
-    async def test_shortcuts_category_lists_the_keybindings(self, user: User) -> None:
-        await user.open("/")
-        await _open_settings(user, "shortcuts")
+    await user.should_see(marker="settings-cat-shortcuts")
+    await user.should_see(marker="settings-cat-getting-started")
+    await user.should_see(marker="keybindings-content")
+    await user.should_see("Robot Control")
+    await user.should_see("Playback")
 
-        await user.should_see(marker="settings-cat-shortcuts")
-        await user.should_see(marker="settings-cat-getting-started")
-        await user.should_see(marker="keybindings-content")
-        await user.should_see("Robot Control")
-        await user.should_see("Playback")
+    user.find(marker="settings-cat-getting-started").click()
+    await asyncio.sleep(0)
+    # Step text, since step titles are Quasar props.
+    await user.should_see("Jog in joint space")
 
+    _settings_button(user, "Next").click()
+    await asyncio.sleep(0)
+    await user.should_see("Open **Settings** from the gear in the bottom-left rail")
 
-@pytest.mark.integration
-class TestTutorialStepper:
-    """Tests for tutorial/quickstart stepper functionality."""
+    _settings_button(user, "Back").click()
+    await asyncio.sleep(0)
+    await user.should_see("Jog in joint space")
 
-    async def test_tutorial_shows_steps_and_navigates(self, user: User) -> None:
-        """Settings → Getting started walks the tour; Next and Back move through it."""
-        await user.open("/")
-        await _open_settings(user, "getting-started")
-
-        # Step text, since step titles are Quasar props.
-        await user.should_see("Jog in joint space")
-
-        user.find("Next").click()
+    for _ in range(3):  # 4 steps total, need 3 Next clicks
+        _settings_button(user, "Next").click()
         await asyncio.sleep(0)
-        await user.should_see("Open **Settings** from the gear in the bottom-left rail")
 
-        user.find("Back").click()
-        await asyncio.sleep(0)
-        await user.should_see("Jog in joint space")
-
-    async def test_tutorial_can_reach_final_step(self, user: User) -> None:
-        """Finish on the last step closes Settings."""
-        await user.open("/")
-        await _open_settings(user, "getting-started")
-
-        for _ in range(3):  # 4 steps total, need 3 Next clicks
-            _settings_button(user, "Next").click()
-            await asyncio.sleep(0)
-
-        await user.should_see("Toggle digital outputs")
-        _settings_button(user, "Finish").click()
-        await asyncio.sleep(0)
-        assert not ui_state.settings_content.dialog.value
+    await user.should_see("Toggle digital outputs")
+    _settings_button(user, "Finish").click()
+    await asyncio.sleep(0)
+    assert not ui_state.settings_content.dialog.value
 
 
 @pytest.mark.integration
@@ -98,10 +85,8 @@ class TestFirstTimeDialogWithSafety:
         ng_app.storage.general.pop(HelpMenu.SAFETY_ACKNOWLEDGED_KEY, None)
 
         await user.open("/")
-        await asyncio.sleep(0.5)  # Wait for async task to trigger dialog
-
-        # Should see safety step content (search by marker)
-        await user.should_see(marker="safety-step")
+        # An async task opens the dialog after the page is built.
+        await user.should_see(marker="safety-step", retries=50)
         await user.should_see("Please read before continuing")
         await user.should_see("no safety guarantees")
         await user.should_see("I have read and accept responsibility")

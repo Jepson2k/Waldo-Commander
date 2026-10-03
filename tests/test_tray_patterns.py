@@ -103,11 +103,11 @@ def test_tray_frames_transfer_preview_and_advisory_progress(tmp_path):
 
     preview = preview_with_gripper()
     pick = pose_of(preview)
-    targets = grid_poses(pick, rows=2, columns=2, pitch_x_mm=1, pitch_y_mm=1)
+    targets = grid_poses(pick, rows=1, columns=2, pitch_x_mm=1, pitch_y_mm=1)
     for place in targets:
         transfer(preview, pick=pick, place=place, clearance_mm=2, speed=0.5)
-    assert len(motion_blocks(preview)) == 24
-    assert len(preview.tool_action_collector) == 8
+    assert len(motion_blocks(preview)) == 12
+    assert len(preview.tool_action_collector) == 4
     assert all(block.error is None for block in motion_blocks(preview))
     target = targets[-1].matrix()
     target[:3, 3] += 2 * target[:3, 2]

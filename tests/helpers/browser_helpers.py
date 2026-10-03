@@ -136,7 +136,7 @@ def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
     if tab_name in _SHELL_BUTTONS:
         marker, shown = _SHELL_BUTTONS[tab_name]
         marked_element(screen, marker).click()
-        WebDriverWait(screen.selenium, timeout).until(
+        WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(
             lambda d: any(
                 e.is_displayed() for e in d.find_elements(By.CSS_SELECTOR, shown)
             )
@@ -183,7 +183,7 @@ def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
                 continue
         return False
 
-    WebDriverWait(screen.selenium, timeout).until(tab_is_active)
+    WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(tab_is_active)
 
 
 _FIND_HOVER_PIXEL = """
@@ -316,7 +316,9 @@ def click_button_by_icon(
     if btn is None:
         raise AssertionError(f"Button with icon '{icon_name}' not found")
 
-    WebDriverWait(screen.selenium, timeout).until(EC.element_to_be_clickable(btn))
+    WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(
+        EC.element_to_be_clickable(btn)
+    )
     btn.click()
 
 
@@ -336,26 +338,26 @@ def close_panel(screen: "Screen", panel_class: str) -> None:
 
 
 def dismiss_dialogs(screen: "Screen", timeout: float = 2.0) -> None:
-    """Dismiss any open dialogs by clicking the backdrop or pressing Escape.
+    """Close any dialog that is open right now.
 
-    Waits for the tutorial dialog (which appears ~1s after page load) to appear,
-    dismisses it, then sets localStorage to prevent future dialogs.
+    The screen fixtures acknowledge the first-visit and safety dialogs before
+    the page loads, so this normally finds nothing and returns at once. The
+    check runs in JS: an empty Selenium lookup would block on the driver's
+    implicit wait.
 
     Args:
         screen: Selenium screen fixture
-        timeout: Max seconds to wait for dialog operations
+        timeout: Max seconds to wait for an open dialog to close
     """
-    from selenium.common.exceptions import TimeoutException
 
     def has_visible_dialog() -> bool:
-        """Check if any dialog backdrop is currently visible."""
-        try:
-            backdrops = screen.selenium.find_elements(
-                By.CSS_SELECTOR, ".q-dialog__backdrop"
+        return bool(
+            js(
+                screen,
+                "return [...document.querySelectorAll('.q-dialog__backdrop')]"
+                ".some(b => b.getClientRects().length > 0);",
             )
-            return any(b.is_displayed() for b in backdrops)
-        except Exception:
-            return False
+        )
 
     def close_dialogs() -> None:
         """Try to close any open dialogs."""
@@ -400,17 +402,9 @@ def dismiss_dialogs(screen: "Screen", timeout: float = 2.0) -> None:
             """,
         )
 
-    # Wait for tutorial dialog to appear (it has a 1s delay after page load)
-    # Use short timeout since dialog may not appear if localStorage already set
-    try:
-        WebDriverWait(screen.selenium, timeout).until(lambda _: has_visible_dialog())
-    except TimeoutException:
-        pass  # No dialog appeared, that's fine
-
-    # If a dialog is visible, close it and wait for it to be gone
     if has_visible_dialog():
         close_dialogs()
-        WebDriverWait(screen.selenium, timeout).until(
+        WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(
             lambda _: not has_visible_dialog()
         )
 
@@ -437,7 +431,7 @@ def wait_for_codemirror_ready(screen: "Screen", timeout: float = 20.0) -> None:
         return driver.execute_script(f"return {condition_js}")
 
     try:
-        WebDriverWait(screen.selenium, timeout).until(check_ready)
+        WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(check_ready)
     except Exception as e:
         raise TimeoutError(f"CodeMirror not ready after {timeout}s") from e
 
@@ -497,7 +491,7 @@ def type_in_editor(screen: "Screen", text: str) -> None:
 
 def wait_for_autocomplete(screen: "Screen", timeout: float = 3.0) -> WebElement:
     """Wait for the CodeMirror autocomplete popup to appear and return it."""
-    return WebDriverWait(screen.selenium, timeout).until(
+    return WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, ".cm-tooltip-autocomplete"))
     )
 
@@ -530,4 +524,4 @@ def wait_for_notification(screen: "Screen", text: str, timeout: float = 3.0) -> 
             for n in driver.find_elements(By.CSS_SELECTOR, ".q-notification")
         )
 
-    WebDriverWait(screen.selenium, timeout).until(matches)
+    WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(matches)

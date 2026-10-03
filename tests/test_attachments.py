@@ -5,7 +5,6 @@ import asyncio
 import numpy as np
 import pytest
 import waldoctl
-from nicegui import run
 from nicegui.testing import User
 from waldoctl import Sphere
 
@@ -21,16 +20,29 @@ from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
 
 
 @pytest.mark.integration
-async def test_preview_seeds_held_world_and_confirms_explicit_detach(user: User):
+async def test_held_geometry_previews_lands_and_is_confirmed_by_the_controls(
+    user: User, caplog
+):
+    """A preview starts from the held world and confirms an explicit detach
+    without touching the controller's; attachments declared together all
+    land; and the attachment dialog confirms against the controller,
+    reconciles a stale context, and takes control back from the AI."""
+    from waldo_commander.state import ui_state
+
     await user.open("/")
     await wait_for_app_ready()
+    await wait_for_urdf_ready()
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
     client = waldoctl.commander.client
+    handle = waldoctl.commander.scene
+    scene = ui_state.urdf_scene
+    assert handle is not None and scene is not None
+
     world = await client.shapes()
     joints = await client.angles()
     assert world is not None and joints is not None
-    part = Sphere(name="part", radius=0.01).attach(
+    held = Sphere(name="part", radius=0.01).attach(
         flange_pose=(0, 0, 0.25, 0, 0, 0), epoch=world.attachment_epoch
     )
     source = (
@@ -45,39 +57,39 @@ async def test_preview_seeds_held_world_and_confirms_explicit_detach(user: User)
         "    attach_object(rbt, name='part', flange_pose=(0, 0, .25, 0, 0, 0))\n"
         "    assert rbt.shapes().attachments_valid\n"
     )
-    preview = await run.cpu_bound(
+    # Off the event loop, as a pool worker would be: the program's skill
+    # calls run their own loop.
+    preview = await asyncio.to_thread(
         _run_simulation_isolated,
         source,
         np.radians(joints),
-        shapes_wire=[part.to_wire()],
+        shapes_wire=[held.to_wire()],
         initial_tool=("NONE", ""),
         attachment_epoch=world.attachment_epoch,
     )
     assert preview["error"] is None, preview["error"]
     assert (await client.shapes()).program == world.program
-    stale = await run.cpu_bound(
+    stale = await asyncio.to_thread(
         _run_simulation_isolated,
         source,
         np.radians(joints),
-        shapes_wire=[part.to_wire()],
+        shapes_wire=[held.to_wire()],
         attachment_epoch=world.attachment_epoch + 1,
     )
     assert "reconcile the scene" in stale["error"]
 
+    marker = Sphere(name="fixture", radius=0.01, pose=(1, 1, 1, 0, 0, 0))
+    part = Sphere(name="part", radius=0.01, pose=(1, 1, 1.2, 0, 0, 0))
 
-@pytest.mark.integration
-async def test_gathered_attachments_both_land(user: User):
-    """Two declarations in flight at once each rewrite the program layer from
-    what they read; both held shapes must survive, neither dropped nor
-    refused as a mismatched readback."""
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    client = waldoctl.commander.client
-    first = Sphere(name="first", radius=0.01, pose=(1, 1, 1, 0, 0, 0))
-    second = Sphere(name="second", radius=0.01, pose=(1, 1, 1.2, 0, 0, 0))
+    def element(marker):
+        return next(iter(user.find(marker=marker).elements))
+
     try:
+        # Two declarations in flight at once each rewrite the program layer
+        # from what they read; both held shapes must survive, neither dropped
+        # nor refused as a mismatched readback.
+        first = Sphere(name="first", radius=0.01, pose=(1, 1, 1, 0, 0, 0))
+        second = Sphere(name="second", radius=0.01, pose=(1, 1, 1.2, 0, 0, 0))
         assert await client.set_shapes([first, second]) == 1
         await asyncio.gather(
             attach_object.async_call(
@@ -87,46 +99,13 @@ async def test_gathered_attachments_both_land(user: User):
                 client, name="second", flange_pose=(0, 0, 0.3, 0, 0, 0)
             ),
         )
-        world = await client.shapes()
-        assert world is not None and world.attachments_valid
-        assert {s.name: s.attachment is not None for s in world.program} == {
+        gathered = await client.shapes()
+        assert gathered is not None and gathered.attachments_valid
+        assert {s.name: s.attachment is not None for s in gathered.program} == {
             "first": True,
             "second": True,
         }
-    finally:
-        await client.set_shapes([])
-        # The app's model mirrors the controller's world, and the next test's
-        # previews plan against it: wait until it holds the cleared one.
-        scene = waldoctl.commander.scene
-        assert scene is not None
-        async with asyncio.timeout(5):
-            while scene.shapes or not scene.confirmed:
-                await scene.refresh_from_backend()
-                await asyncio.sleep(0.05)
 
-
-@pytest.mark.integration
-async def test_attachment_controls_confirm_model_and_require_reconciliation(
-    user: User, caplog
-):
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await wait_for_urdf_ready()
-    await enable_sim(user)
-    await ensure_robot_ready_for_motion()
-    client = waldoctl.commander.client
-    handle = waldoctl.commander.scene
-    scene = ui_state.urdf_scene
-    assert handle is not None and scene is not None
-    marker = Sphere(name="fixture", radius=0.01, pose=(1, 1, 1, 0, 0, 0))
-    part = Sphere(name="part", radius=0.01, pose=(1, 1, 1.2, 0, 0, 0))
-
-    def element(marker):
-        return next(iter(user.find(marker=marker).elements))
-
-    try:
         assert await client.set_shapes([marker, part]) == 1
         async with asyncio.timeout(5):
             while "shape:part" not in scene._shape_objects:
@@ -234,7 +213,8 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
     finally:
         await client.stop()
         await client.set_shapes([])
-        # As above: the next test's previews plan against the app's model.
+        # The app's model mirrors the controller's world, and the next test's
+        # previews plan against it: wait until it holds the cleared one.
         async with asyncio.timeout(5):
             while handle.shapes or not handle.confirmed:
                 await handle.refresh_from_backend()

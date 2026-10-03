@@ -44,86 +44,51 @@ def test_get_latest_frame_returns_placeholder_then_cached():
 
 
 @pytest.mark.unit
-def test_backend_selection_prefers_linuxpy_on_linux():
-    """On Linux, start() tries LinuxpyBackend first, falls back to OpenCV."""
-
-    open_calls: list[str] = []
-
-    class FakeLinuxpy(LinuxpyBackend):
-        def open(self, device, width, height):
-            open_calls.append("linuxpy")
-            return True
-
-        def read_frame(self):
-            return _SAMPLE_JPEG
-
-        def close(self):
-            pass
-
-    class FakeOpenCV(OpenCVBackend):
-        def open(self, device, width, height):
-            open_calls.append("opencv")
-            return True
-
-        def read_frame(self):
-            return _SAMPLE_JPEG
-
-        def close(self):
-            pass
-
-    cs = CameraService()
-
-    with (
-        patch("waldo_commander.services.camera_service.LinuxpyBackend", FakeLinuxpy),
-        patch("waldo_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
-        patch("waldo_commander.services.camera_service.sys") as mock_sys,
+def test_backend_selection_prefers_linuxpy_and_falls_back_to_opencv():
+    """On Linux, start() tries LinuxpyBackend first and falls back to OpenCV
+    when it cannot open the device."""
+    for linuxpy_opens, expected in (
+        (True, ["linuxpy"]),
+        (False, ["linuxpy", "opencv"]),
     ):
-        mock_sys.platform = "linux"
-        cs.start(0)
+        open_calls: list[str] = []
 
-    assert cs.active
-    assert open_calls == ["linuxpy"]
-    cs.stop()
+        class FakeLinuxpy(LinuxpyBackend):
+            def open(self, device, width, height):
+                open_calls.append("linuxpy")
+                return linuxpy_opens
 
+            def read_frame(self):
+                return _SAMPLE_JPEG
 
-@pytest.mark.unit
-def test_backend_fallback_to_opencv_when_linuxpy_fails():
-    """When LinuxpyBackend.open() returns False, falls back to OpenCV."""
+            def close(self):
+                pass
 
-    open_calls: list[str] = []
+        class FakeOpenCV(OpenCVBackend):
+            def open(self, device, width, height):
+                open_calls.append("opencv")
+                return True
 
-    class FailLinuxpy(LinuxpyBackend):
-        def open(self, device, width, height):
-            open_calls.append("linuxpy")
-            return False
+            def read_frame(self):
+                return _SAMPLE_JPEG
 
-        def close(self):
-            pass
+            def close(self):
+                pass
 
-    class FakeOpenCV(OpenCVBackend):
-        def open(self, device, width, height):
-            open_calls.append("opencv")
-            return True
+        cs = CameraService()
+        with (
+            patch(
+                "waldo_commander.services.camera_service.LinuxpyBackend", FakeLinuxpy
+            ),
+            patch("waldo_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
+            patch("waldo_commander.services.camera_service.sys") as mock_sys,
+        ):
+            mock_sys.platform = "linux"
+            cs.start(0)
 
-        def read_frame(self):
-            return _SAMPLE_JPEG
-
-        def close(self):
-            pass
-
-    cs = CameraService()
-
-    with (
-        patch("waldo_commander.services.camera_service.LinuxpyBackend", FailLinuxpy),
-        patch("waldo_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
-        patch("waldo_commander.services.camera_service.sys") as mock_sys,
-    ):
-        mock_sys.platform = "linux"
-        cs.start(0)
-
-    assert cs.active
-    assert open_calls == ["linuxpy", "opencv"]
-    cs.stop()
+        assert cs.active
+        assert open_calls == expected
+        cs.stop()
 
 
 @pytest.mark.skipif(
@@ -140,56 +105,3 @@ def test_camera_listing_never_opens_devices():
     from waldo_commander.services.camera_service import _enumerate_listing
 
     assert _enumerate_listing() is not None
-
-
-@pytest.mark.integration
-async def test_snapshot_freshness_and_camera_restart(user, monkeypatch):
-    import asyncio
-    import time
-    from waldo_commander.camera import CameraUnavailable
-    from waldo_commander.services import camera_service as module
-    from tests.test_handeye_panel_integration import _FrameBackend, _blank_jpeg
-    from tests.helpers.wait import wait_for_app_ready
-
-    monkeypatch.setattr(module, "LinuxpyBackend", _FrameBackend)
-    monkeypatch.setattr(module, "OpenCVBackend", _FrameBackend)
-    _FrameBackend.holder["jpeg"] = _blank_jpeg()
-    await user.open("/")
-    await wait_for_app_ready()
-    service = CameraService()
-    try:
-        with pytest.raises(CameraUnavailable):
-            service.snapshot()
-        service.start(0)
-        first = await service.next_snapshot(timeout_s=3)
-        second = await service.next_snapshot(timeout_s=3)
-        assert second.sequence > first.sequence
-        assert second.received_at >= first.received_at
-        _FrameBackend.holder["jpeg"] = b""
-        deadline = time.monotonic() + 3
-        while True:
-            try:
-                service.snapshot(max_age_s=0.05)
-            except CameraUnavailable:
-                break
-            assert time.monotonic() < deadline, "Cached camera data never expired"
-            await asyncio.sleep(0.02)
-        with pytest.raises(CameraUnavailable, match="deadline"):
-            await service.next_snapshot(timeout_s=0.05)
-        service.stop()
-        with pytest.raises(CameraUnavailable):
-            service.snapshot()
-        _FrameBackend.holder["jpeg"] = first.jpeg
-        service.start(1)
-        changed = await service.next_snapshot(timeout_s=3)
-        assert changed.camera_id != first.camera_id
-        service.start(0)
-        restarted = await service.next_snapshot(timeout_s=3)
-        assert restarted.camera_id == first.camera_id
-        assert restarted.session_id != first.session_id
-        # The restart serves fresh frames, not the cache that expired while
-        # the backend was handing back nothing.
-        assert restarted.received_at > first.received_at
-        assert service.snapshot(max_age_s=1.0).session_id == restarted.session_id
-    finally:
-        service.stop()

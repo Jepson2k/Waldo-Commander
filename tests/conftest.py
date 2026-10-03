@@ -21,7 +21,8 @@ from nicegui.testing.general_fixtures import (
 from nicegui.testing import screen_plugin as nicegui_screen_plugin
 from nicegui.testing.screen import Screen
 from nicegui.testing.screen_plugin import (
-    nicegui_driver,  # noqa: F401 - default driver (per-test browser)
+    _reset_browser_state,
+    nicegui_driver,  # noqa: F401 - session browser, also lent to class_screen
     nicegui_remove_all_screenshots,  # noqa: F401 - clears screenshots before session
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
@@ -364,47 +365,23 @@ def suppress_udp_conn_reset_error(silence_noisy_logging):
 def class_driver(
     request: pytest.FixtureRequest,
 ) -> Generator[_webdriver.Chrome, None, None]:
-    """Class-scoped Chrome webdriver for shared browser tests.
+    """The session's Chrome, shared by every test in a class.
 
-    Creates a single browser instance that persists across all tests in a class.
-    CSS animations are disabled for deterministic testing.
+    Reusing it spares a browser launch per class. The class gets a cleared
+    origin, no implicit wait and room for a WebGL page load; NiceGUI's own
+    settings are restored for the per-test screen fixture afterwards.
     """
-    from selenium.webdriver.chrome.service import Service
-    import shutil
-
-    options = _webdriver.ChromeOptions()
-    if chrome_binary := os.environ.get("CHROME_BINARY"):
-        options.binary_location = chrome_binary
-    if not os.environ.get("HEADED"):
-        options.add_argument("headless=new")
-    options.add_argument("disable-search-engine-choice-screen")
-    options.add_argument("--use-gl=angle")
-    # ANGLE backend selection — see nicegui_chrome_options for the rationale.
-    if "GITHUB_ACTIONS" in os.environ:
-        options.add_argument("--use-angle=swiftshader-webgl")
-    elif sys.platform == "linux" and os.access(
-        "/dev/dri/renderD128", os.R_OK | os.W_OK
-    ):
-        options.add_argument("--use-angle=gl-egl")
-    options.add_argument("no-sandbox")
-    options.add_argument("disable-dev-shm-usage")
-    # Disable CSS animations for deterministic testing
-    options.add_argument("--disable-animations")
-
-    # Find system chromedriver (same as NiceGUI's approach)
-    chromedriver_path = shutil.which("chromedriver")
-    if chromedriver_path:
-        service = Service(executable_path=chromedriver_path)
-        driver = _webdriver.Chrome(service=service, options=options)
-    else:
-        driver = _webdriver.Chrome(options=options)
-
+    driver = request.getfixturevalue("nicegui_driver")
+    _reset_browser_state(driver)
     driver.set_window_size(TEST_WINDOW_WIDTH, TEST_WINDOW_HEIGHT)
     driver.implicitly_wait(0)
-
-    yield driver
-
-    driver.quit()
+    driver.set_page_load_timeout(30)
+    try:
+        yield driver
+    finally:
+        driver.implicitly_wait(Screen.IMPLICIT_WAIT)
+        driver.set_page_load_timeout(4)
+        _reset_browser_state(driver)
 
 
 class _StubCaplog:
@@ -463,7 +440,7 @@ def class_screen(
             # (e.g. once the viewport has selected the control layout).
             from selenium.webdriver.support.ui import WebDriverWait
 
-            WebDriverWait(class_driver, 30).until(
+            WebDriverWait(class_driver, 30, poll_frequency=0.05).until(
                 lambda driver: driver.execute_script(
                     "return !!document.querySelector('.side-tab-bar, .mobile-control')"
                 )
@@ -475,9 +452,10 @@ def class_screen(
 
             # Stop server before exiting context
             screen_instance.stop_server()
-        # NiceGUI globals reset on context exit (class teardown)
-        # Re-setup process pool since nicegui_reset_globals calls run.reset()
-        nicegui_run.setup()
+        # NiceGUI globals reset on context exit (class teardown), which
+        # clears run.process_pool and pops "__main__"
+        sys.modules.setdefault("__main__", _MAIN_MODULE)
+        _session_pool.restore()
     finally:
         os.environ.pop("NICEGUI_SCREEN_TEST_PORT", None)
 
@@ -537,14 +515,35 @@ def reset_editor_singletons(
 
 
 @pytest.fixture(autouse=True)
+def remove_elements_of_finished_clients(
+    request: pytest.FixtureRequest,
+) -> Generator[None, None, None]:
+    """Detach the elements of the clients a user or screen test leaves behind.
+
+    NiceGUI's per-test reset forgets clients without deleting them, so their
+    elements stay attached; each ui.dialog's canary finalizer then holds its
+    dialog, the handlers on it, and through them the whole page, for the rest
+    of the session. Every later gc.collect() walks all of it, which made the
+    per-test reset grow with every app start before it.
+    """
+    yield
+    if "class_screen" in request.fixturenames:
+        return
+    from nicegui import Client
+
+    for client in list(Client.instances.values()):
+        client.remove_all_elements()
+
+
+@pytest.fixture(autouse=True)
 def restore_process_pool_after_nicegui_fixtures(
     request: pytest.FixtureRequest,
 ) -> Generator[None, None, None]:
     """Repair interpreter state after tests using NiceGUI's user or screen fixtures.
 
-    Their nicegui_reset_globals teardown calls run.reset() (clearing the
-    process pool) and pops "__main__" from sys.modules (breaking any later
-    multiprocessing spawn/forkserver launch). Restore both.
+    Their nicegui_reset_globals teardown clears run.process_pool and pops
+    "__main__" from sys.modules (breaking any later multiprocessing
+    spawn/forkserver launch). Restore both.
 
     Load-bearing, not hygiene: path previews run in that pool and have no
     in-process fallback, so a session that loses it stops previewing.
@@ -556,7 +555,7 @@ def restore_process_pool_after_nicegui_fixtures(
         "screen" in request.fixturenames and "class_screen" not in request.fixturenames
     )
     if uses_nicegui_fixture:
-        nicegui_run.setup()
+        _session_pool.restore()
 
 
 def _pinned_nicegui_sha() -> str | None:
@@ -636,16 +635,59 @@ def pytest_collection_modifyitems(
             item.add_marker(skip)
 
 
+class _SessionProcessPool:
+    """NiceGUI's process pool, shielded so it lives for the whole session.
+
+    NiceGUI's per-test reset and the app's shutdown each discard the pool,
+    which made every test's first preview build the robot model again in a
+    fresh worker. Here the pool's shutdown is a no-op until the session ends,
+    run.reset() leaves it alone, and restore() hands it back after each test.
+    A pool that broke (a worker died) is replaced by a fresh one.
+    """
+
+    def __init__(self) -> None:
+        self._pool = None
+        self._shutdown = None
+        self._reset = nicegui_run.reset
+
+    def install(self) -> None:
+        def reset_keeping_process_pool() -> None:
+            nicegui_run.process_pool = None
+            self._reset()
+
+        nicegui_run.reset = reset_keeping_process_pool
+        self._adopt_new_pool()
+
+    def _adopt_new_pool(self) -> None:
+        nicegui_run.setup()
+        pool = nicegui_run.process_pool
+        assert pool is not None
+        self._pool, self._shutdown = pool, pool.shutdown
+        pool.shutdown = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    def restore(self) -> None:
+        if self._pool is None or self._pool._broken:  # type: ignore[attr-defined]
+            self._adopt_new_pool()
+        else:
+            nicegui_run.process_pool = self._pool
+
+    def close(self) -> None:
+        nicegui_run.reset = self._reset
+        if self._shutdown is not None:
+            self._shutdown(wait=False, cancel_futures=True)
+        nicegui_run.process_pool = None
+        nicegui_run.reset()
+
+
+_session_pool = _SessionProcessPool()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_nicegui_process_pool() -> Generator[None, None, None]:
-    """Enable NiceGUI's process pool for cpu_bound() calls in tests.
-
-    This allows tests to use `run.cpu_bound()` for subprocess isolation,
-    matching production behavior for path visualization simulations.
-    """
-    nicegui_run.setup()
+    """One process pool for cpu_bound() previews, kept for the whole session."""
+    _session_pool.install()
     yield
-    nicegui_run.reset()
+    _session_pool.close()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -979,9 +1021,8 @@ async def controller_reset(
             await client.reset()
             assert await client.resume() == 1
             assert await client.set_execution_speed(1) == 1
-            # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
-            # Use short timeouts since simulator homing is instant
-            await client.home(wait=True, timeout=10.0)
+            # The home pose, and the homed state, without playing a homing move
+            assert await client.teleport(list(HOME_ANGLES_DEG)) == 1
 
     yield
 

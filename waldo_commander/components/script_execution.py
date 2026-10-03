@@ -16,8 +16,12 @@ required after each mutation. This module never imports ``playback``.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
 import logging
+import os
+import signal
+import sys
 import time
 import uuid
 from collections.abc import Sequence
@@ -742,5 +746,34 @@ class ScriptExecutionController:
             self._step_controller = None
         self._step_session_id = None
 
+    def kill_orphaned_script(self) -> None:
+        """Synchronously kill any running script subprocess.
+
+        Registered with atexit as a last-resort cleanup.
+        """
+        try:
+            if self.script_handle:
+                proc = self.script_handle.get("proc")
+                if proc and proc.returncode is None:
+                    logger.info("Killing orphaned script process (PID: %s)", proc.pid)
+                    try:
+                        # On Unix, try to kill the entire process group
+                        if sys.platform != "win32" and proc.pid:
+                            try:
+                                pgid = os.getpgid(proc.pid)
+                                os.killpg(pgid, signal.SIGKILL)
+                                logger.debug("Killed process group %s", pgid)
+                            except (ProcessLookupError, OSError):
+                                proc.kill()
+                        else:
+                            proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    except Exception as e:
+                        logger.debug("Error killing script process: %s", e)
+        except Exception as e:
+            logger.debug("Error in script cleanup: %s", e)
+
 
 script_exec: ScriptExecutionController = ScriptExecutionController()
+atexit.register(script_exec.kill_orphaned_script)

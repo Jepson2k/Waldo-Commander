@@ -29,9 +29,12 @@ def _dying_job(_args: tuple) -> int:
     os._exit(1)
 
 
-async def test_physics_cancellation_terminates_its_worker_and_allows_another_job(
+async def test_a_cancelled_or_dead_physics_worker_leaves_the_next_job_a_fresh_one(
     tmp_path: Path,
 ) -> None:
+    """Cancelling a physics job — from the pool or by its caller — kills its
+    worker, and so does a worker dying mid-job; either way the next job runs
+    in a fresh process."""
     pool = _PhysicsPool()
     for cancel_via in ("pool", "caller"):
         marker, release = (
@@ -58,6 +61,10 @@ async def test_physics_cancellation_terminates_its_worker_and_allows_another_job
                 ):
                     await asyncio.sleep(0.01)
 
+            if cancel_via == "caller":
+                async with asyncio.timeout(20):
+                    with pytest.raises(BrokenProcessPool):
+                        await pool.run(_dying_job, ())
             async with asyncio.timeout(20):
                 successor = await pool.run(_worker_pid, ())
             assert successor not in (worker_pid, os.getpid())
@@ -74,7 +81,6 @@ async def test_delayed_preview_retains_the_submitted_joint_pose(user):
     import pickle
     import numpy as np
     import waldoctl
-    from nicegui import run
     from tests.helpers.wait import (
         enable_sim,
         ensure_robot_ready_for_motion,
@@ -116,20 +122,8 @@ async def test_delayed_preview_retains_the_submitted_joint_pose(user):
         assert pickle.dumps(submitted) == frozen, (
             "live status rewrote the already displayed plan's starting pose"
         )
-        delayed = await run.cpu_bound(_run_simulation_packed, submitted)
+        delayed = _run_simulation_packed(submitted)
         assert delayed["error"] is None
         assert delayed["final_joints_rad"] == pytest.approx(planned_final)
     finally:
         await client.stop()
-
-
-async def test_a_worker_that_dies_mid_job_leaves_the_next_job_a_fresh_one() -> None:
-    pool = _PhysicsPool()
-    try:
-        async with asyncio.timeout(40):
-            with pytest.raises(BrokenProcessPool):
-                await pool.run(_dying_job, ())
-            successor = await pool.run(_worker_pid, ())
-        assert successor != os.getpid()
-    finally:
-        pool.shutdown()

@@ -3,119 +3,30 @@
 import asyncio
 
 import pytest
+import waldoctl
 from nicegui import Client
 from nicegui.testing import User
+from waldoctl import ElectricGripperTool
 
 from tests.helpers.wait import (
     enable_sim,
     poll_until,
     wait_for_app_ready,
     wait_for_tool_key,
+    wait_until,
 )
 from waldo_commander.state import ui_state
 
 
 @pytest.mark.integration
-async def test_io_tab_high_low_buttons_send_commands(user: User) -> None:
-    """Clicking HIGH/LOW buttons in the I/O tab should send SET_IO commands.
-
-    Verifies the full integration from UI button to controller by checking
-    that the IO output state changes after clicking HIGH/LOW.
-    """
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Open the I/O tab
-    user.find(marker="tab-io").click()
-    await asyncio.sleep(0)
-
-    # Click HIGH for OUTPUT 1 and wait for status propagation
-    import waldoctl as _wctl
-
-    user.find("HIGH").click()
-    for _ in range(20):
-        await asyncio.sleep(0.05)
-        _outs = _wctl.commander.status.io.outputs
-        if _outs and int(_outs[0]) == 1:
-            break
-    _outs = _wctl.commander.status.io.outputs
-    assert _outs and int(_outs[0]) == 1, (
-        f"Expected OUTPUT 1 = HIGH (1) after click, got {_outs}"
-    )
-
-
-@pytest.mark.integration
-async def test_gripper_panel_layout_elements(user: User) -> None:
-    """Gripper panel should show chart and status readouts."""
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Set tool to SSG-48 and wait for status loop to propagate
-    await ui_state.control_panel.client.select_tool("SSG-48")
-    await wait_for_tool_key("SSG-48")
-
-    # Open the Gripper tab
-    user.find(marker="tab-gripper").click()
-    await asyncio.sleep(0)
-
-    # Combined dual-axis chart should exist
-    await user.should_see(marker="gripper-chart")
-
-
-@pytest.mark.integration
-async def test_control_panel_tool_quick_actions(user: User) -> None:
-    """Control panel should show tool quick-action box when a tool is active,
-    and the action button's icon keeps a readable colour on either fill."""
-    from waldo_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-    await enable_sim(user)
-
-    # Set tool to SSG-48 and wait for status loop to propagate
-    await ui_state.control_panel.client.select_tool("SSG-48")
-    await wait_for_tool_key("SSG-48")
-    client = ui_state.control_panel.client
-    index = await client.tool.calibrate()
-    assert index >= 0 and await client.wait_command(index, timeout=10)
-
-    # Tool action L button should be visible
-    await user.should_see(marker="btn-tool-action-l")
-
-    # Adjust buttons should be visible for electric grippers
-    await user.should_see(marker="btn-tool-adjust-minus")
-    await user.should_see(marker="btn-tool-adjust-plus")
-
-    # Closing lights the button with the action fill and opening puts it
-    # back; the icon's colour follows the fill both ways.
-    text_on = {"wc-control": "wc-text", "wc-action": "wc-on-bright"}
-    button = next(iter(user.find(marker="btn-tool-action-l").elements))
-    seen = set()
-    for _ in text_on:
-        before = button.props.get("color")
-        user.find(marker="btn-tool-action-l").click()
-        fill = await poll_until(
-            lambda: button.props.get("color"),
-            lambda color, before=before: color != before,
-            timeout_s=15,
-            what="the action button's fill after a click",
-        )
-        assert button.props.get("text-color") == text_on[fill], button.props
-        seen.add(fill)
-    assert seen == set(text_on)
-
-
-@pytest.mark.integration
-async def test_the_footer_io_dots_follow_the_line_count(user: User) -> None:
-    """One dot per line the backend reports, named on hover.
+async def test_io_outputs_and_the_footer_io_dots(user: User) -> None:
+    """HIGH in the I/O tab sets the output on the controller; the footer has
+    one dot per line the backend reports, named on hover.
 
     parol6 has four fixed lines, but a backend that takes its I/O from
     config can report many more, and the first frame from it may not match
     the count the footer was built for.
     """
-    import waldoctl as _wctl
-
     await user.open("/")
     await wait_for_app_ready()
 
@@ -129,7 +40,19 @@ async def test_the_footer_io_dots_follow_the_line_count(user: User) -> None:
         "Digital Output 2",
     ]
 
-    io = _wctl.commander.status.io
+    user.find(marker="tab-io").click()
+    await asyncio.sleep(0)
+    user.find("HIGH").click()
+    outputs = await poll_until(
+        lambda: waldoctl.commander.status.io.outputs,
+        lambda outs: bool(outs) and int(outs[0]) == 1,
+        timeout_s=1.0,
+        interval=0.05,
+        what="OUTPUT 1 after clicking HIGH",
+    )
+    assert int(outputs[0]) == 1
+
+    io = waldoctl.commander.status.io
     io.inputs = [1] + [0] * 11
     io.outputs = [0] * 12
     # The status consumer calls this on the page; a face change in between
@@ -143,15 +66,14 @@ async def test_the_footer_io_dots_follow_the_line_count(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_grip_current_is_a_percent_of_the_tools_range(user: User) -> None:
-    """The adjust buttons step the grip current in percent of the tool's
-    current range, and the next grip draws that share of the range."""
-    import waldoctl
-    from waldoctl import ElectricGripperTool
-
-    from waldo_commander.state import ui_state
-
+async def test_gripper_panel_and_quick_actions(user: User) -> None:
+    """With an electric gripper fitted the Gripper tab draws its chart, and
+    the control panel's quick actions toggle it: the action button's icon
+    keeps a readable colour on either fill, two quick toggles return to the
+    open target, and the adjust buttons step the grip current in percent of
+    the tool's current range, which the next grip draws."""
     await user.open("/")
+    await wait_for_app_ready()
     await enable_sim(user)
     client = ui_state.control_panel.client
     try:
@@ -159,17 +81,55 @@ async def test_grip_current_is_a_percent_of_the_tools_range(user: User) -> None:
         await wait_for_tool_key("SSG-48")
         tool = client.tool
         assert isinstance(tool, ElectricGripperTool)
-        assert await tool.calibrate(wait=True) >= 0
+        index = await tool.calibrate()
+        assert index >= 0 and await client.wait_command(index, timeout=10)
+
+        user.find(marker="tab-gripper").click()
+        await asyncio.sleep(0)
+        await user.should_see(marker="gripper-chart")
+
+        await user.should_see(marker="btn-tool-action-l")
+        # Adjust buttons are shown for electric grippers.
+        await user.should_see(marker="btn-tool-adjust-minus")
+        await user.should_see(marker="btn-tool-adjust-plus")
+
+        # Closing lights the button with the action fill and opening puts it
+        # back; the icon's colour follows the fill both ways.
+        text_on = {"wc-control": "wc-text", "wc-action": "wc-on-bright"}
+        button = next(iter(user.find(marker="btn-tool-action-l").elements))
+        seen = set()
+        for _ in text_on:
+            before = button.props.get("color")
+            user.find(marker="btn-tool-action-l").click()
+            fill = await poll_until(
+                lambda: button.props.get("color"),
+                lambda color, before=before: color != before,
+                timeout_s=15,
+                what="the action button's fill after a click",
+            )
+            assert button.props.get("text-color") == text_on[fill], button.props
+            seen.add(fill)
+        assert seen == set(text_on)
+
+        # A second toggle that lands before the first one's jaws arrive still
+        # ends on the open target.
+        waldoctl.commander.settings.jog.speed = 20
+        waldoctl.commander.settings.gripper.target_position = 0.0
+        user.find(marker="btn-tool-action-l").click()
+        await asyncio.sleep(0.1)
+        user.find(marker="btn-tool-action-l").click()
+        assert await wait_until(
+            lambda: waldoctl.commander.settings.gripper.target_position == 0.0, 2
+        )
+        assert await client.wait_motion(timeout=15, settle_window=0.1)
+        assert (await tool.status()).position == pytest.approx(0, abs=5 / 255)
+
         step = tool.adjust_step
         assert step is not None
-
         grip = waldoctl.commander.settings.gripper
         before = grip.current
         user.find(marker="btn-tool-adjust-minus").click()
-        for _ in range(40):
-            if grip.current != before:
-                break
-            await asyncio.sleep(0.05)
+        assert await wait_until(lambda: grip.current != before, 2, interval=0.05)
         assert grip.current == before - step
 
         # A slow close keeps the jaws travelling, and drawing current,

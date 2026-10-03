@@ -52,22 +52,11 @@ def test_the_following_error_gradient_renders_the_legend_colours():
 
 
 @pytest.mark.integration
-async def test_notification_colours_keep_their_white_text_readable(user: User) -> None:
+async def test_filled_colours_keep_their_text_readable(user: User) -> None:
     """ui.notify writes Quasar's white text on the semantic colour it is
-    given, so each one the app maps to a token must hold 4.5:1 against it."""
-    await user.open("/")
-    await wait_for_app_ready()
-    colors = next(e for e in user.client.elements.values() if isinstance(e, Colors))
-    for kind in ("positive", "negative", "warning", "info"):
-        match = re.fullmatch(r"var\(--wc-([\w-]+)\)", colors.props[kind])
-        assert match, (kind, colors.props[kind])
-        fill = hex_of(match.group(1))
-        assert _contrast(fill, "#ffffff") >= 4.5, (kind, match.group(1), fill)
+    given, so each one the app maps to a token must hold 4.5:1 against it.
 
-
-@pytest.mark.integration
-async def test_every_filled_button_names_a_readable_text_colour(user: User) -> None:
-    """A filled button left on Quasar's default takes the bright action fill
+    A filled button left on Quasar's default takes the bright action fill
     with white text at about 2:1; every filled button the panels build names
     its fill and text colour together, and the pair clears 3:1. Buttons
     styled by their own classes carry no fill."""
@@ -77,6 +66,13 @@ async def test_every_filled_button_names_a_readable_text_colour(user: User) -> N
 
     await user.open("/")
     await wait_for_app_ready()
+    colors = next(e for e in user.client.elements.values() if isinstance(e, Colors))
+    for kind in ("positive", "negative", "warning", "info"):
+        match = re.fullmatch(r"var\(--wc-([\w-]+)\)", colors.props[kind])
+        assert match, (kind, colors.props[kind])
+        fill = hex_of(match.group(1))
+        assert _contrast(fill, "#ffffff") >= 4.5, (kind, match.group(1), fill)
+
     # A plugin panel builds when its tab first opens.
     for panel in ui_state.plugin_panels:
         user.find(marker=f"tab-{panel.id}").click()

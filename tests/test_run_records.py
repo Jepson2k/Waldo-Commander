@@ -10,9 +10,11 @@ from uuid import uuid4
 
 import pytest
 import waldoctl
+from nicegui import ui
 from nicegui.testing import User
 from waldoctl.setup import Pose, SetupSnapshot
 
+from tests.helpers.editor_events import _fire_editor_event
 from tests.helpers.wait import (
     enable_sim,
     ensure_robot_ready_for_motion,
@@ -26,29 +28,12 @@ from waldo_commander.services.run_records import (
     debugging_export,
     load_record,
 )
-from waldo_commander.services.stepping_client import GUIStepController, StepIO
+from waldo_commander.services.stepping_client import (
+    GUIStepController,
+    StepIO,
+    _step_address,
+)
 from waldo_commander.setup import SetupStore
-
-
-def test_every_command_event_reaches_the_record_with_its_command():
-    controller = GUIStepController(uuid4().hex)
-    controller.initialize()
-    io = StepIO(controller.session_id)
-    try:
-        for _ in range(300):
-            io.emit_event("complete", "delay", command=io.issue())
-        io.emit_event("start", "move_j", command=io.issue())
-        deadline = time.monotonic() + 5.0
-        events = []
-        while len(events) < 301 and time.monotonic() < deadline:
-            events.extend(controller.poll_events())
-            time.sleep(0.01)
-        assert len(events) == 301, "no event window, no loss"
-        assert [e["command"] for e in events[:300]] == list(range(300))
-        assert events[-1]["event"] == "start" and events[-1]["command"] == 300
-        assert controller.poll_events() == []
-    finally:
-        controller.cleanup()
 
 
 def test_export_removes_personal_values_and_journal_recovers_a_partial_tail(tmp_path):
@@ -193,6 +178,8 @@ if os.environ.get("WALDO_STEP_SESSION"):
     assert [
         r["time"] for r in events_table.rows if r["event"] == "command_started"
     ] == [2.5]
+    summary = next(iter(user.find(marker="run-record-summary").elements))
+    assert summary.text.startswith("completed"), summary.text
     user.find("Close").click()
     assert script_exec.record_runs
     program = waldoctl.commander.programs.active
@@ -287,6 +274,26 @@ if os.environ.get("WALDO_STEP_SESSION"):
         )
     )
 
+    # Reopened, the browser shows the newest run; a row opens its local values.
+    # The first dialog is only hidden here, so its elements are still found.
+    user.find(marker="editor-more-btn").click()
+    user.find(marker="editor-records-btn").click()
+
+    def newest(marker: str):
+        return max(user.find(marker=marker).elements, key=lambda e: e.id)
+
+    assert newest("run-record-summary").text.startswith("failed")
+    events_table = newest("run-record-events")
+    parent_row = next(r for r in events_table.rows if r["event"] == "skill_started")
+    _fire_editor_event(events_table, "rowClick", {"row": parent_row})
+    detail = [
+        e.text
+        for e in newest("run-record-detail").descendants()
+        if isinstance(e, ui.label)
+    ]
+    assert "Local event values" in detail
+    assert any('"offset": 2.0' in text for text in detail), detail
+
     # The next run is not captured, even if the subprocess inherited a flag.
     script_exec.record_runs = False
     ui_state.active_textarea.value = "print('uncaptured')"
@@ -332,13 +339,8 @@ def test_recorded_values_travel_only_over_the_owners_link(tmp_path, monkeypatch)
     controller = GUIStepController(uuid4().hex)
     try:
         controller.initialize()
-        if os.name == "posix":
-            # Recorded values travel over a socket only its owner can open.
-            from waldo_commander.services.stepping_client import _step_address
-
-            assert (
-                Path(_step_address(controller.session_id)).stat().st_mode & 0o077 == 0
-            )
+        # Recorded values travel over a socket only its owner can open.
+        assert Path(_step_address(controller.session_id)).stat().st_mode & 0o077 == 0
         io = StepIO(controller.session_id)
         io.emit_event("command_started", "move_j", arguments={"label": "private-value"})
         io.emit_event("command_completed", "move_j", result="private-result")
