@@ -2,8 +2,8 @@
 
 The readout face and the scene effects are JavaScript: whether Python asked
 for a reaction says nothing about what the browser shows. These drive real
-events — a page load, jog keys, a digital E-STOP, a fresh path — and read
-the resulting DOM and three.js state.
+events — a page load, taps on the jog pad, a digital E-STOP, a fresh path —
+and read the resulting DOM and three.js state.
 
 The test browser runs with prefers-reduced-motion forced on, which keeps
 every other browser test deterministic; the scene test turns it off for
@@ -14,15 +14,14 @@ import time
 
 import pytest
 import waldoctl
+from selenium.webdriver.common.by import By
 
 from tests.helpers.browser_helpers import (
     click_tab,
-    defocus_editor,
     dismiss_dialogs,
     ensure_robot_homed,
     marked_element,
     run_in_app,
-    send_global_key,
 )
 
 # Eye radius, left pupil offset and visible mouth of the face under the
@@ -86,25 +85,27 @@ new MutationObserver(() => {
 """
 
 
-def _arrow_direction(key: str) -> int:
-    """-1/+1: whether the pad arrow that jog key *key* presses points left or right."""
+def _pad_arrow(screen, slot_id: str):
+    """The cartesian pad's arrow in the fixed slot *slot_id* ("lr_neg" is the left arrow)."""
+    from waldo_commander.state import ui_state
 
-    def _find() -> int:
-        from waldo_commander.services.keybindings import keybindings_manager
-        from waldo_commander.state import ui_state
+    element_id = run_in_app(lambda: ui_state.control_panel._cart_slot_elems[slot_id].id)
+    return screen.selenium.find_element(By.ID, f"c{element_id}")
 
-        axis = keybindings_manager._bindings[key].description.removeprefix("Jog ")
-        panel = ui_state.control_panel
-        for slot_id, direction in (("lr_neg", -1), ("lr_pos", 1)):
-            meta = panel._cart_slot_meta[slot_id]
-            slot_axis = panel._axis_string_for(
-                meta["assign_key"], meta["sign"], meta["rotation"]
-            )
-            if slot_axis == axis:
-                return direction
-        raise AssertionError(f"{key!r} drives no left/right arrow ({axis})")
 
-    return run_in_app(_find)
+def _wait_until_jog_allowed(timeout: float = 15.0) -> None:
+    """Block until the app would let a jog through: a tap refused for the
+    lease or a busy guard never begins, so the eyes would have nothing to
+    follow."""
+    from waldo_commander.state import ui_state
+
+    deadline = time.time() + timeout
+    while not run_in_app(
+        lambda: ui_state.control_panel._movement_allowed(notify=False)
+    ):
+        if time.time() > deadline:
+            raise AssertionError("the app never allowed a jog")
+        time.sleep(0.1)
 
 
 def _teleport_to_jog_pose() -> None:
@@ -160,18 +161,27 @@ class TestAnimations:
             "the face never blinked after page load",
         )
 
-        # A jog tap turns the eyes the way the pad arrow it drives points.
-        # The pair also returns the arm to where it started.
-        for key in ("d", "a"):
-            sign = _arrow_direction(key)
-            defocus_editor(screen)
-            send_global_key(screen, key)
+        # A tap on a pad arrow turns the eyes the way the arrow points. The
+        # pair also returns the arm to where it started.
+        marked_element(screen, "tab-cartesian").click()
+        _wait_until_jog_allowed()
+        for slot_id, sign in (("lr_pos", 1), ("lr_neg", -1)):
+            arrow = _pad_arrow(screen, slot_id)
+            _poll(
+                screen,
+                "return arguments[0].offsetParent !== null",
+                bool,
+                5,
+                f"the {slot_id} arrow never showed",
+                arrow,
+            )
+            arrow.click()
             _poll(
                 screen,
                 face,
                 lambda f, s=sign: f["pupilX"] * s > 0.3,
                 3,
-                f"eyes did not follow the {key!r} jog",
+                f"eyes did not follow the {slot_id} arrow",
                 _FOOTER,
             )
             _poll(
@@ -179,14 +189,13 @@ class TestAnimations:
                 face,
                 lambda f: f["pupilX"] == 0,
                 3,
-                f"eyes did not recenter after the {key!r} jog",
+                f"eyes did not recenter after the {slot_id} arrow",
                 _FOOTER,
             )
 
         # Digital E-STOP: wide eyes and an open mouth until reset, on the
         # footer face and on the dialog's own Waldo, each driving its own SVG.
-        defocus_editor(screen)
-        send_global_key(screen, "")  # Escape
+        marked_element(screen, "btn-estop").click()
         for root in (_FOOTER, ".estop-card .waldo-guest"):
             _poll(
                 screen,
