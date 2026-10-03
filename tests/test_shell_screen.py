@@ -562,13 +562,15 @@ class TestShellLayout:
                             ), placed
                             gear.click()
                             wait(screen).until(lambda _: _settings_open())
-                            # The dialog is still sliding in when it opens.
+                            # A click while the dialog is still sliding in can
+                            # be dropped; close it until it is closed.
                             wait(screen).until(
-                                lambda _: _clicked(
-                                    marked_element(screen, "settings-close")
+                                lambda _: not _settings_open()
+                                or (
+                                    _clicked(marked_element(screen, "settings-close"))
+                                    and not _settings_open()
                                 )
                             )
-                            wait(screen).until(lambda _: not _settings_open())
                             wait(screen, 5).until(
                                 lambda _: no_visible(screen, ".q-dialog__backdrop")
                             )
