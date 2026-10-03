@@ -5,6 +5,7 @@ Never merged. Fails on purpose so the report lands in the CI log.
 
 import os
 import statistics
+import sys
 import time
 
 from parol6.client.async_client import AsyncRobotClient
@@ -44,6 +45,18 @@ async def test_report_status_and_timer_delivery(session_controller, capsys) -> N
         time.sleep(0.01)
         sleeps.append(time.monotonic() - started)
 
+    qos = "n/a"
+    qos_sleeps: list[float] = []
+    if sys.platform == "darwin":
+        import ctypes
+
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        qos = libsystem.pthread_set_qos_class_self_np(0x21, 0)  # USER_INTERACTIVE
+        for _ in range(50):
+            started = time.monotonic()
+            time.sleep(0.01)
+            qos_sleeps.append(time.monotonic() - started)
+
     gaps = [b - a for a, b in zip(arrivals, arrivals[1:])]
     report = (
         "TIMING-PROBE\n"
@@ -51,6 +64,8 @@ async def test_report_status_and_timer_delivery(session_controller, capsys) -> N
         f"  frames in 3 s: {len(arrivals)}; inter-arrival ms {_ms(gaps)}\n"
         f"  ping ms {_ms(pings)}\n"
         f"  sleep(10 ms) actual ms {_ms(sleeps)}\n"
+        f"  after USER_INTERACTIVE QoS (rc={qos}): sleep(10 ms) actual ms "
+        f"{_ms(qos_sleeps) if qos_sleeps else 'n/a'}\n"
         f"  controller loop_stats={loop}"
     )
     # End the job here so its log is readable without waiting for the suite.
