@@ -29,7 +29,7 @@ _FACE_WORDS = {
 # Chip (fill, text) per face state; simulator is the app's amber mode colour.
 _CHIP_COLORS = {
     RobotFace.HAPPY: ("wc-positive-soft", "wc-positive"),
-    RobotFace.NEUTRAL: ("wc-mode-sim", "wc-on-bright"),
+    RobotFace.NEUTRAL: ("wc-mode-sim-soft", "wc-mode-sim"),
     RobotFace.SAD: ("wc-error-soft", "wc-error"),
 }
 

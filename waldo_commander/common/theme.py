@@ -287,6 +287,7 @@ def _derive(p: Palette) -> dict[str, str]:
         "warning-soft": _alpha(p.yellow, 0.1),
         "error": _shift(p.red, L=0.86, C=0.5),
         "error-soft": _alpha(p.red, 0.08),
+        "mode-sim-soft": _alpha(FIXED_COLOR["mode-sim"], 0.12),
         "info": _shift(p.accent, L=0.88, C=0.5),
         "run": _shift(p.green, L=0.7),
         "fill-positive": _shift(p.green, L=0.5),
@@ -1668,7 +1669,6 @@ html, body {
 /* The face is drawn in the chip's text colour; eyes and mouth are cut-outs
    in the surface behind it. */
 .robot-face { --face-cut: var(--wc-glass-end); }
-.bg-wc-mode-sim .robot-face { --face-cut: var(--wc-mode-sim); }
 
 /* Hops, head tilts and floating notes/Zs reach past the viewBox. */
 .robot-face svg { overflow: visible; }
