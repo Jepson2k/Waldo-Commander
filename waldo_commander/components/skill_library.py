@@ -36,6 +36,8 @@ SKILL_ICONS: dict[str, str] = {
     "waldo.retract": "retract",
     "waldo.park": "park",
     "waldo.align_tool_axis": "align_tool_axis",
+    "waldo.transfer": "transfer",
+    "waldo.transfer_with_signal": "transfer_with_signal",
     "waldo.locate_board": "locate_board",
 }
 

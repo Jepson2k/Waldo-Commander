@@ -64,6 +64,7 @@ class WcSceneHandle:
         self._confirmed = False
         self._refresh_seq = 0
         self._pushes_inflight = 0
+        self._push_lock = asyncio.Lock()
 
     @property
     def shapes(self) -> list[Shape]:
@@ -225,24 +226,27 @@ class WcSceneHandle:
         """
         err: Exception | None = None
         try:
-            try:
-                code = await waldoctl.commander.client.set_shapes(shapes)
-            except NotImplementedError:
-                return  # backend without shape support — local render only
-            except Exception as e:
-                code = -1
-                err = e
-            if shapes is not self._shapes:
-                return  # superseded by a newer assignment
-            if code > 0:
-                await self._adopt_backend_world()
-                return
-            logger.error(
-                "set_shapes push unconfirmed (code=%s%s) — displayed keep-outs are "
-                "NOT enforced by the controller until readback confirms",
-                code,
-                f": {err}" if err is not None else "",
-            )
+            async with self._push_lock:
+                if shapes is not self._shapes:
+                    return
+                try:
+                    code = await waldoctl.commander.client.set_shapes(shapes)
+                except NotImplementedError:
+                    return  # backend without shape support — local render only
+                except Exception as e:
+                    code = -1
+                    err = e
+                if shapes is not self._shapes:
+                    return  # superseded by a newer assignment
+                if code > 0:
+                    await self._adopt_backend_world()
+                    return
+                logger.error(
+                    "set_shapes push unconfirmed (code=%s%s) — displayed keep-outs are "
+                    "NOT enforced by the controller until readback confirms",
+                    code,
+                    f": {err}" if err is not None else "",
+                )
         finally:
             self._pushes_inflight -= 1
 

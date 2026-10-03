@@ -3,6 +3,7 @@
 from waldo_commander.skills.motion import align_tool_axis, approach, park, retract
 from waldo_commander.skills.gripper import gripper_close, gripper_open
 from waldo_commander.skills.vision import locate_board
+from waldo_commander.skills.transfer import transfer, transfer_with_signal
 from waldo_commander.skills.signals import (
     SignalFixture,
     read_signal,
@@ -11,6 +12,8 @@ from waldo_commander.skills.signals import (
 )
 
 __all__ = [
+    "transfer",
+    "transfer_with_signal",
     "locate_board",
     "SignalFixture",
     "read_signal",
