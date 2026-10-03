@@ -798,9 +798,9 @@ export default {
   line-height: 0;
   color: var(--bb-color);
   transition: color 0.6s ease;
-  /* Eyes, mouth and LEDs are cut-outs in the surface behind the buddy, so
-     they read on any body colour; the glass by default. */
-  --bb-cut: var(--wc-glass-end);
+  /* Eyes, mouth and LEDs are drawn in on-fill; a chip whose fill shows
+     through instead sets its own. */
+  --bb-cut: var(--wc-on-fill);
   /* Floating glyphs sit on the page, not the body: follow the theme's text. */
   --bb-glyph: var(--wc-text);
 }
@@ -867,10 +867,9 @@ export default {
 .robot-buddy.bb-leds-party .bb-antenna-r .bb-led { animation-delay: 0.15s; }
 
 /* Steady lights for standing conditions, big enough to read at chip size:
-   the left bulb turns record red while recording, both bulbs glow warning
-   yellow while an AI agent drives. */
+   the left bulb turns record red while recording, and both bulbs pulse while
+   an AI agent drives (the screen-edge glow is what says who has control). */
 .robot-buddy.bb-leds-rec .bb-antenna-l .bb-bulb { fill: var(--wc-record); }
-.robot-buddy.bb-leds-agent .bb-bulb { fill: var(--wc-warning); }
 .robot-buddy.bb-leds-rec .bb-antenna-l .bb-led,
 .robot-buddy.bb-leds-agent .bb-led { animation: bb-glow 2s ease-in-out infinite; }
 @keyframes bb-glow {

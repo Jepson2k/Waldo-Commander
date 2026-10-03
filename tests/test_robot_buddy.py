@@ -150,13 +150,19 @@ async def test_chip_buddy_shrugs_at_a_joint_limit_and_nods_when_homed(
     client = ui_state.control_panel.client
 
     try:
-        # Hold J1+ until the base runs out of travel.
-        await simulate_click(user, "btn-j1-plus", hold_ms=4000)
+        # Park J1 a step short of its upper limit, then hold J1+ into it.
+        hi = float(ui_state.active_robot.joints.limits.position.deg[0, 1])
+        step = abs(float(waldoctl.commander.settings.jog.joint_step_deg))
+        pose = [float(a) for a in waldoctl.commander.status.joints.angles.deg]
+        pose[0] = hi - step - 1.0
+        assert await client.teleport(pose) == 1
+        user.find(marker="btn-j1-plus").trigger("mousedown")
         assert await _wait_for(
-            lambda: not waldoctl.commander.status.joints.can_jog_pos[0]
+            lambda: not waldoctl.commander.status.joints.can_jog_pos[0], timeout=10.0
         ), "the jog should have reached J1's limit"
         assert await _wait_for(lambda: chip.last_reaction == Reaction.SHRUG)
     finally:
+        user.find(marker="btn-j1-plus").trigger("mouseup")
         await teleport_to_jog_pose(client)
 
     assert await _wait_for(lambda: robot_state.homed, timeout=15.0)
@@ -209,8 +215,9 @@ async def test_chip_buddy_dozes_only_in_the_simulator_and_calms_on_request(
     and every buddy built afterwards."""
     await user.open("/")
     await wait_for_app_ready()
+    await enable_sim(user)
     chip = _buddy(user, "readout-robot-buddy")
-    assert chip.mood == Mood.NEUTRAL
+    assert await _wait_for(lambda: chip.mood == Mood.NEUTRAL)
     assert chip.sleep_after_s > 0
 
     # Leaving the simulator makes the controller open a serial port this box
