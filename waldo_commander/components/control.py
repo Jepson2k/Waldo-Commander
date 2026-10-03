@@ -2,34 +2,28 @@
 
 import asyncio
 import dataclasses
+import importlib.resources as pkg_resources
 import logging
-import time
 import math
+import time
 from functools import partial
 from typing import Any, Callable, ClassVar
-import importlib.resources as pkg_resources
 
 import numpy as np
-
-from nicegui import ui, app, Client
 import waldoctl
+from nicegui import Client, app, ui
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
-from waldo_commander.constants import (
-    config,
-    DEFAULT_CAMERA,
-    CLICK_HOLD_THRESHOLD_S,
-    HOME_LONG_PRESS_S,
-)
-from waldo_commander.state import (
-    robot_state,
-    ui_state,
-    global_phase_timer,
-)
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.settings import SettingsContent, _setting_row
+from waldo_commander.components.settings import _setting_row
+from waldo_commander.constants import (
+    CLICK_HOLD_THRESHOLD_S,
+    DEFAULT_CAMERA,
+    HOME_LONG_PRESS_S,
+    config,
+)
 from waldo_commander.services.control_lease import (
     BROWSER,
     ControlMode,
@@ -46,9 +40,15 @@ from waldo_commander.services.control_lease import (
     set_control_mode,
 )
 from waldo_commander.services.keybindings import refresh_jog_key_descriptions
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import motion_recorder
-from waldo_commander.services.startup_mode import set_startup_mode
 from waldo_commander.services.programs import is_any_program_running
+from waldo_commander.services.startup_mode import set_startup_mode
+from waldo_commander.state import (
+    global_phase_timer,
+    robot_state,
+    ui_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,8 +242,16 @@ class _ToolQuickActions:
             )
             .mark("tool-quick-actions")
         ):
-            ui.label().bind_text_from(waldoctl.commander.status.tool, "key").classes(
-                "text-xs text-center w-full opacity-60"
+            ui.label().bind_text_from(
+                waldoctl.commander.status.tool,
+                "key",
+                backward=lambda key: (
+                    ui_state.active_robot.tools[key].display_name.replace("_", " ")
+                    if key in {t.key for t in ui_state.active_robot.tools.available}
+                    else key.replace("_", " ")
+                ),
+            ).classes("text-xs text-center w-full truncate text-neutral-300").style(
+                "max-width: 180px"
             )
 
             with ui.row().classes("items-center gap-2 justify-center"):
@@ -650,7 +658,6 @@ class ControlPanel:
         self._cart_click_hold: _ClickHoldHandler | None = None
 
         # Settings content for cleanup
-        self._settings_content: "SettingsContent | None" = None
 
         # Tool quick-actions (initialized in build())
         self.tool_actions: _ToolQuickActions | None = None
@@ -1035,6 +1042,7 @@ class ControlPanel:
                 waldoctl.commander.status.simulator_active
                 or waldoctl.commander.status.connected
             )
+            and motion_guard.owner is None
             and not is_any_program_running()
         )
         if not jog_possible and not self._gizmo_auto_hidden:
@@ -1050,10 +1058,10 @@ class ControlPanel:
 
     @staticmethod
     def _movement_allowed(notify: bool = True) -> bool:
-        """Return True if robot movement is permitted (simulator active or hardware connected, no script running)."""
-        if is_any_program_running():
+        """Return True if robot movement is permitted (simulator active or hardware connected, nobody else driving)."""
+        if (busy := motion_guard.busy_reason()) is not None:
             if notify:
-                ui.notify("Script is running — jog disabled", color="warning")
+                ui.notify(f"{busy} — jog disabled", color="warning")
             return False
         if not require_browser_control(ui_state.active_client_id, notify=notify):
             return False
@@ -1203,12 +1211,17 @@ class ControlPanel:
         if cid is None:
             return
         control_lease.seize(BROWSER, cid, "Browser")
-        try:
-            await waldoctl.commander.client.stop()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("take_control stop failed: %s", e)
+        stopped = await motion_guard.stop_robot(
+            waldoctl.commander.client, "browser took control"
+        )
         self.refresh_control_indicator()
-        ui.notify("You're in control — robot stopped", color="positive")
+        if stopped:
+            ui.notify("You're in control — robot stopped", color="positive")
+        else:
+            ui.notify(
+                "You're in control, but the stop was not confirmed — use E-stop",
+                color="negative",
+            )
 
     def refresh_control_indicator(self) -> None:
         """Drive the ambient glow, Take-control button, and pending approvals
@@ -1341,7 +1354,7 @@ class ControlPanel:
     def _build_control_mode_selector(self) -> None:
         """AI control-mode row for the control panel's Settings tab — mirrors
         the mode chip, the perimeter glow, and the Alt+M shortcut."""
-        with _setting_row("AI Control Mode", "AI autonomy level · Alt+M cycles"):
+        with _setting_row("AI control mode", "AI autonomy level · Alt+M cycles"):
             self._mode_toggle = (
                 ui.select(
                     {m.value: m.label for m in ControlMode},
@@ -2062,6 +2075,9 @@ class ControlPanel:
                     logger.warning("Failed to stop script before mode switch: %s", e)
 
             enabled = not waldoctl.commander.status.simulator_active
+            # The controller drops its queue on a mode switch; motion sources
+            # holding their own state must drop theirs too.
+            motion_guard.note_stop("simulator switch")
             await self.client.simulator(enabled)
             waldoctl.commander.status.simulator_active = enabled
             # Persist the human's choice so the next boot starts in this mode.
@@ -2088,17 +2104,20 @@ class ControlPanel:
             ui.notify("Physical E-STOP is active - release it first", color="warning")
             return
 
-        await self.client.estop()
+        if not await motion_guard.stop_robot(self.client, "E-stop", estop=True):
+            ui.notify(
+                "E-STOP was not confirmed by the controller — use the physical E-stop",
+                color="negative",
+            )
         if self.estop:
             self.estop._digital_active = True
             self.estop.show(is_physical=False)
 
     def render_jog_content(self) -> None:
-        """Render jog controls (tabs + grids) and settings."""
+        """Render the jog controls."""
         with ui.tabs().props("dense").classes("cp-jog-tabs") as jog_mode_tabs:
             joint_tab = ui.tab("Joint Jog").mark("tab-joint")
             cart_tab = ui.tab("Cartesian Jog").mark("tab-cartesian")
-            settings_tab = ui.tab("Settings").mark("tab-settings")
         jog_mode_tabs.value = joint_tab
         self._jog_mode_tabs = jog_mode_tabs
 
@@ -2418,14 +2437,6 @@ class ControlPanel:
                 # Initialize axis->element mapping and ensure visuals reflect current assignment
                 self._refresh_cartesian_icons()
 
-            # Settings panel
-            with ui.tab_panel(settings_tab).classes("gap-0 p-0"):
-                with ui.scroll_area().classes("w-full h-full p-0"):
-                    self._settings_content = SettingsContent(self.client)
-                    self._settings_content.build_embedded(
-                        ai_control_section=self._build_control_mode_selector
-                    )
-
     _PREF_TARGETS = {
         "jog_speed": ("jog", "speed"),
         "jog_accel": ("jog", "accel"),
@@ -2519,7 +2530,7 @@ class ControlPanel:
         self._set_rating_step(ui_attr, step)
 
     def build(self, anchor: str = "bl") -> None:
-        """Render the bottom-left control panel (overlay-bl).
+        """Render the control panel.
 
         Args:
             anchor: Position anchor for the panel (e.g., "bl" for bottom-left)
@@ -2760,8 +2771,6 @@ class ControlPanel:
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""
-        if self._settings_content is not None:
-            self._settings_content.cleanup()
         if self._joint_click_hold:
             self._joint_click_hold.cleanup()
         if self._cart_click_hold:

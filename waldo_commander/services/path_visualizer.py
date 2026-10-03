@@ -18,7 +18,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, replace
 from types import ModuleType
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 import numpy as np
 
 from nicegui import run
@@ -275,6 +275,10 @@ def _run_simulation_isolated(
 
         _dr_cls: type = dry_run_client_cls
 
+        from waldo_commander.profiles import get_robot
+
+        _preview_robot = get_robot(backend_package)
+
         class LocalPathPreviewClient(PathPreviewClient):
             def __init__(self, *args: Any, **kwargs: Any):
                 super().__init__(
@@ -287,6 +291,7 @@ def _run_simulation_isolated(
                     initial_homed=initial_homed,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
+                    robot=_preview_robot,
                 )
                 created_clients.append(self)
 
@@ -302,6 +307,7 @@ def _run_simulation_isolated(
                     initial_homed=initial_homed,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
+                    robot=_preview_robot,
                 )
                 created_clients.append(self._sync_client)
 
@@ -320,10 +326,8 @@ def _run_simulation_isolated(
         # otherwise carries a previous run's shapes into this run's planning
         # guard. Empty included. Installation shapes come from robot config at
         # backend import and are untouched.
-        from waldo_commander.profiles import get_robot
         from waldoctl import shape_from_wire
 
-        _preview_robot = get_robot(backend_package)
         if _preview_robot.has_collision_checking:
             _preview_robot.apply_shapes(
                 [shape_from_wire(*t) for t in shapes_wire or []]
@@ -401,7 +405,7 @@ def _run_simulation_isolated(
         sys.modules["time"] = mock_time
 
         sim_globals = {
-            "__name__": "__simulation__",
+            "__name__": "__main__",
             "__file__": "simulation_script.py",
             "__builtins__": builtins.__dict__.copy(),
             "print": lambda *args, **kwargs: None,
@@ -428,49 +432,13 @@ def _run_simulation_isolated(
 
             exec(code, sim_globals)
 
-            if "main" in sim_globals:
-                main_func = sim_globals["main"]
-
-                if asyncio.iscoroutinefunction(main_func):
-                    # asyncio.run() works in the normal subprocess context.
-                    try:
-                        coro = main_func()
-                        asyncio.run(coro)
-                    except RuntimeError as e:
-                        if "cannot be called from a running event loop" in str(e):
-                            # The coroutine from asyncio.run() was never awaited;
-                            # close it explicitly to suppress the RuntimeWarning.
-                            coro.close()
-                            # Fallback in-process mode: already inside a running
-                            # loop, so spin up a fresh loop in a thread.
-                            import concurrent.futures
-
-                            def run_async_in_thread():
-                                return asyncio.run(main_func())
-
-                            with concurrent.futures.ThreadPoolExecutor(
-                                max_workers=1
-                            ) as pool:
-                                future = pool.submit(run_async_in_thread)
-                                future.result(timeout=_simulation_timeout_s())
-                        else:
-                            raise
-
-                elif callable(main_func):
-                    cast(Callable[[], None], main_func)()
-
         except SystemExit as e:
-            # `sys.exit()`, and the `exit()`/`quit()` builtins, all raise
-            # this -- and it is not an `Exception`, so it passed both handlers
-            # here and left the whole preview through the `finally` below,
-            # abandoning every segment collected up to that point. A script
-            # that ends by exiting cleanly has ENDED, not failed, so a zero
-            # (or absent) code keeps what it drew; a non-zero one is the
-            # script reporting its own failure and is shown as one.
+            # A script entry point ends in sys.exit(main()); only a failure
+            # status is an error, and the exit must not reach the host.
             if e.code not in (None, 0):
-                error_message = f"SystemExit: {e.code}"
+                error_message = f"Program exited with status {e.code}"
         except KeyboardInterrupt:
-            # Same escape, same consequence.
+            # Not an Exception either, so it would leave the whole preview.
             error_message = "KeyboardInterrupt: the preview was interrupted"
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
@@ -485,12 +453,10 @@ def _run_simulation_isolated(
         error_message = f"Simulation setup failed: {type(e).__name__}: {e}"
 
     finally:
-        # A pool worker is discarded with these swaps in place, but a test
-        # calling this directly shares the app's interpreter, where a client
-        # built from the backend's name after this point has to be the real
-        # one again. In a ``finally`` because a script ending in ``sys.exit()``
-        # raises SystemExit, which passes both excepts and would otherwise
-        # leave the preview class installed for the rest of the app's life.
+        # A pool worker is discarded with these swaps in place, but a direct
+        # in-process call shares the app's interpreter, where a client built
+        # from the backend's name after this point has to be the real one
+        # again, even after a BaseException neither except takes.
         for module, name, original in reversed(swapped_names):
             if original is None:
                 delattr(module, name)

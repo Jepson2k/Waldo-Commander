@@ -12,6 +12,8 @@ import json
 import tempfile
 from unittest.mock import MagicMock
 
+import pytest
+
 
 # ============================================================================
 # Unit Tests - StepIO (Script-side IPC)
@@ -365,17 +367,129 @@ class TestSteppingClientWrapper:
         ]
         assert wrapper._in_blend is False
 
-    def test_motion_methods_list_is_correct(self):
-        """STEPPABLE_METHODS contains expected robot motion commands."""
-        from waldo_commander.services.stepping_client import STEPPABLE_METHODS
+    def test_stop_reaches_controller_while_a_blend_group_is_pending(
+        self, tmp_path, monkeypatch, session_controller
+    ):
+        """stop()/estop() are not gated on the blend barrier: a pending group
+        is discarded, the controller is told at once, and the next motion
+        command runs normally."""
+        import time
 
-        expected = {
-            "home",
-            "move_j",
-            "move_l",
-            "jog_j",
-            "jog_l",
-            "tool_action",
-            "delay",
-        }
-        assert expected.issubset(STEPPABLE_METHODS)
+        from parol6 import RobotClient
+
+        from tests.conftest import _get_test_ports
+        from waldo_commander.services.stepping_client import (
+            GUIStepController,
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_stop")
+        controller.initialize()
+        controller.signal_play()
+        port, _ = _get_test_ports()
+        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+            client.simulator(True)
+            client.reset()
+            assert client.home(wait=True, timeout=10.0) >= 0
+            wrapper = SteppingClientWrapper(client, StepIO("test_stop"))
+            home = client.angles()
+            assert home is not None
+            away = [a + 5.0 for a in home]
+            assert wrapper.move_j(away, duration=8.0, r=15, wait=False) >= 0
+            assert wrapper.move_j(home, duration=8.0, r=15, wait=False) >= 0
+            assert wrapper._in_blend is True
+
+            # A stop whose ack never arrives leaves the group possibly still
+            # moving: it stays tracked, and the program is told.
+            events_file = tmp_path / ".parol_events_test_stop"
+            acked_stop = client.stop
+            monkeypatch.setattr(client, "stop", lambda: 0)
+            with pytest.raises(RuntimeError, match="not acknowledged"):
+                wrapper.stop()
+            assert wrapper._in_blend is True
+            assert [
+                (e["event"], e["method"])
+                for e in json.loads(events_file.read_text())["events"]
+            ] == [("start", "move_j")], "an unconfirmed stop must not close the group"
+            monkeypatch.setattr(client, "stop", acked_stop)
+
+            started = time.monotonic()
+            assert wrapper.stop() == 1
+            assert time.monotonic() - started < 1.0, (
+                "stop must not wait for the blend group it cancels"
+            )
+            assert wrapper._in_blend is False
+            deadline = time.monotonic() + 3.0
+            while not (client.queue() == [] and client.is_robot_stopped()):
+                assert time.monotonic() < deadline, "controller did not stop"
+                time.sleep(0.05)
+            index = wrapper.move_j(home, duration=0.5)
+            assert index >= 0 and client.wait_command(index, timeout=5.0)
+
+        events = json.loads(events_file.read_text())
+        assert [(e["event"], e["method"]) for e in events["events"]] == [
+            ("start", "move_j"),
+            ("complete", "blend_group"),
+            ("start", "move_j"),
+            ("complete", "move_j"),
+        ]
+
+    def test_paused_jog_holds_until_a_step_is_granted(
+        self, tmp_path, monkeypatch, session_controller
+    ):
+        """Streamed motion (jog, servo) is a step like queued motion: a paused
+        program holds after it until the operator steps, in the sync and the
+        async wrapper alike."""
+        import asyncio
+        import threading
+
+        from parol6 import AsyncRobotClient, RobotClient
+
+        from tests.conftest import _get_test_ports
+        from waldo_commander.services.stepping_client import (
+            AsyncSteppingClientWrapper,
+            GUIStepController,
+            StepIO,
+            SteppingClientWrapper,
+        )
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        controller = GUIStepController("test_jog")
+        controller.initialize()
+        port, _ = _get_test_ports()
+        with RobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
+            client.simulator(True)
+            client.reset()
+            wrapper = SteppingClientWrapper(client, StepIO("test_jog"))
+            jog = threading.Thread(
+                target=lambda: wrapper.jog_j(0, 0.2, 0.1), daemon=True
+            )
+            jog.start()
+            jog.join(timeout=0.5)
+            assert jog.is_alive(), "a paused program must hold after a jog"
+            controller.signal_step()
+            jog.join(timeout=2.0)
+            assert not jog.is_alive(), "a granted step must release the jog"
+
+        async def async_jog() -> None:
+            async with AsyncRobotClient(
+                host="127.0.0.1", port=port, timeout=5.0
+            ) as client:
+                wrapper = AsyncSteppingClientWrapper(client, StepIO("test_jog"))
+                task = asyncio.ensure_future(wrapper.jog_j(0, -0.2, 0.1))
+                await asyncio.sleep(0.5)
+                assert not task.done(), "a paused program must hold after a jog"
+                controller.signal_step()
+                await asyncio.wait_for(task, timeout=2.0)
+
+        asyncio.run(async_jog())
+
+        events = json.loads((tmp_path / ".parol_events_test_jog").read_text())
+        assert [(e["event"], e["method"]) for e in events["events"]] == [
+            ("start", "jog_j"),
+            ("complete", "jog_j"),
+            ("start", "jog_j"),
+            ("complete", "jog_j"),
+        ]

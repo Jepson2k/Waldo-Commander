@@ -17,13 +17,31 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
+from collections.abc import Coroutine
+from typing import TypeVar, cast
 
-from .path_preview_client import MOTION_METHODS
+from waldoctl.client import RobotClient
 
-# Methods that trigger wait_command and stepping: all motion methods plus
-# non-motion commands that queue on the controller.
-STEPPABLE_METHODS = frozenset(MOTION_METHODS) | frozenset(
-    {"home", "tool_action", "delay"}
+from waldoctl.commands import CommandKind, command_table
+
+R = TypeVar("R")
+
+_COMMANDS = command_table()
+
+# Commands the wrapper steps: everything queued on the controller, plus
+# streamed motion (jog, servo), which moves the robot but returns no index,
+# so it is stepped without being waited on.
+STEPPABLE_METHODS = frozenset(
+    n for n, s in _COMMANDS.items() if s.mints_index or s.kind is CommandKind.MOTION
+)
+# Plain attribute reads a skill makes on its client; not commands, so a
+# pending blend group has nothing to close.
+_PASSTHROUGH_ATTRS = frozenset({"robot"})
+
+# Controls that must reach the controller at once: they cancel whatever a
+# pending blend group was waiting for, so they never wait on it first.
+_IMMEDIATE_CONTROLS = frozenset(
+    n for n, s in _COMMANDS.items() if s.kind is CommandKind.CONTROL and s.cancels
 )
 
 
@@ -51,6 +69,17 @@ def _read_control(control_file: Path) -> dict:
 def _is_blended(kwargs: dict) -> bool:
     """Check if motion kwargs specify a blend radius."""
     return float(kwargs.get("r", 0)) > 0
+
+
+def _require_stop_ack(name: str, result: Any) -> None:
+    """Raise when stop()/estop() went unacknowledged: queued motion may still
+    run, so a pending blend group must stay tracked and the program must not
+    carry on as if the robot had stopped."""
+    if result <= 0:
+        raise RuntimeError(
+            f"{name}() was not acknowledged by the controller; "
+            "queued motion may still be running"
+        )
 
 
 class StepIO:
@@ -204,6 +233,18 @@ class SteppingClientWrapper:
         self._in_blend = False
         self._last_blend_index: int = -1
 
+    def run_skill(self, invoke: Callable[[RobotClient], Coroutine[Any, Any, R]]) -> R:
+        """Keep native motion stepping when a sync program calls an async skill."""
+        self._flush_blend()
+
+        async def execute(client: RobotClient) -> R:
+            wrapped = AsyncSteppingClientWrapper(client, self._step_io)
+            result = await invoke(cast(RobotClient, wrapped))
+            await wrapped.finalize()
+            return result
+
+        return self._wrapped.run_skill(execute)
+
     def finalize(self) -> None:
         """Barrier for a pending blend group: wait it out, emit completion,
         clear. No pause gate — callers add one where stepping applies."""
@@ -223,6 +264,16 @@ class SteppingClientWrapper:
         self.finalize()
         if self._step_io.check_should_pause():
             self._step_io.wait_for_step_or_play()
+
+    def _discard_blend(self) -> None:
+        """Close a pending blend group without waiting: the controller has
+        just been told to drop it, so its indices will never complete."""
+        if not self._in_blend:
+            return
+        self._in_blend = False
+        self._last_blend_index = -1
+        self._step_io.emit_event("complete", "blend_group")
+        self._step_io.increment_step_count()
 
     @property
     def tool(self):
@@ -250,13 +301,31 @@ class SteppingClientWrapper:
         attr = getattr(self._wrapped, name)
 
         if name in STEPPABLE_METHODS and callable(attr):
-            return self._wrap_motion_method(name, attr)
+            return self._wrap_motion_method(
+                name, attr, waits=_COMMANDS[name].mints_index
+            )
+
+        if name in _IMMEDIATE_CONTROLS:
+
+            def immediate(*args: Any, **kwargs: Any) -> Any:
+                result = attr(*args, **kwargs)
+                _require_stop_ack(name, result)
+                self._discard_blend()
+                return result
+
+            return immediate
+
+        if name in _PASSTHROUGH_ATTRS:
+            return attr
 
         self._flush_blend()
         return attr
 
-    def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
-        """Create a wrapper function for a motion method."""
+    def _wrap_motion_method(
+        self, name: str, method: Callable, *, waits: bool = True
+    ) -> Callable:
+        """Create a wrapper function for a motion method; ``waits`` is False
+        for streamed motion, which has no queue index to wait on."""
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             is_blended = _is_blended(kwargs)
@@ -295,7 +364,7 @@ class SteppingClientWrapper:
 
             result = method(*args, **kwargs)
 
-            if isinstance(result, int) and result >= 0:
+            if waits and isinstance(result, int) and result >= 0:
                 self._wrapped.wait_command(result)
 
             self._step_io.emit_event("complete", name)
@@ -369,6 +438,14 @@ class AsyncSteppingClientWrapper:
         if self._step_io.check_should_pause():
             await self._step_io.wait_for_step_or_play_async()
 
+    def _discard_blend(self) -> None:
+        if not self._in_blend:
+            return
+        self._in_blend = False
+        self._last_blend_index = -1
+        self._step_io.emit_event("complete", "blend_group")
+        self._step_io.increment_step_count()
+
     @property
     def tool(self):
         """Return the async tool with stepping behavior on action methods."""
@@ -390,9 +467,20 @@ class AsyncSteppingClientWrapper:
         attr = getattr(self._wrapped, name)
 
         if name in STEPPABLE_METHODS and callable(attr):
-            return self._wrap_motion_method(name, attr)
+            return self._wrap_motion_method(
+                name, attr, waits=_COMMANDS[name].mints_index
+            )
 
         if asyncio.iscoroutinefunction(attr):
+            if name in _IMMEDIATE_CONTROLS:
+
+                async def immediate(*args: Any, **kwargs: Any) -> Any:
+                    result = await attr(*args, **kwargs)
+                    _require_stop_ack(name, result)
+                    self._discard_blend()
+                    return result
+
+                return immediate
 
             async def passthrough(*args: Any, **kwargs: Any) -> Any:
                 await self._flush_blend()
@@ -402,7 +490,9 @@ class AsyncSteppingClientWrapper:
 
         return attr
 
-    def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
+    def _wrap_motion_method(
+        self, name: str, method: Callable, *, waits: bool = True
+    ) -> Callable:
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             is_blended = _is_blended(kwargs)
 
@@ -432,7 +522,7 @@ class AsyncSteppingClientWrapper:
 
             self._step_io.emit_event("start", name)
             result = await method(*args, **kwargs)
-            if isinstance(result, int) and result >= 0:
+            if waits and isinstance(result, int) and result >= 0:
                 await self._wrapped.wait_command(result)
             self._step_io.emit_event("complete", name)
             self._step_io.increment_step_count()

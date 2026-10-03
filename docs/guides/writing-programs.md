@@ -3,6 +3,7 @@
 This guide builds a single script from scratch, adding capabilities section by section. By the end you'll have a program that demos joint and Cartesian moves, curved paths, scan patterns, tool control, TCP offset, and precision TRF rotations — a tour of what the robot can do.
 
 For the full method reference, see the [API Reference](api-reference.md).
+For reusable motion functions, see [Python skills](skills.md).
 
 ## Connect and home
 

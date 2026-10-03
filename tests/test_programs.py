@@ -1,4 +1,4 @@
-"""Verify that all programs/ scripts simulate without errors.
+"""Verify that shipped programs preview or explain a required observation.
 
 Runs each program through the path visualizer's dry-run simulation
 (the same code path used when viewing scripts in the editor).
@@ -35,13 +35,20 @@ PROGRAMS = sorted(
 
 @pytest.mark.parametrize("script", PROGRAMS)
 def test_program_simulates(script):
-    """Each program should simulate without errors in the path visualizer."""
+    """Motion programs preview; the hardware handshake stops at its observation."""
     program_text = (PROGRAMS_DIR / script).read_text()
     result = _run_simulation_isolated(
         program_text,
         dry_run_client_cls=DryRunRobotClient,
     )
-    assert result["error"] is None, f"{script} simulation failed:\n{result['error']}"
+    if script == "cycle_start.py":
+        assert result["error"] is not None
+        assert "UnresolvedPreview: wait_status" in result["error"]
+        assert result["segments"], "the initial home/standby path should remain visible"
+    else:
+        assert result["error"] is None, (
+            f"{script} simulation failed:\n{result['error']}"
+        )
 
 
 def test_preview_mirrors_unhomed_motion_gate():

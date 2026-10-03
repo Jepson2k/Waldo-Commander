@@ -434,7 +434,14 @@ class UrdfScene(
                         "contextmenu",
                     ],
                 )
-                .classes("w-full h-[66vh]")
+                # ui.scene sizes its canvas once, shortly after mount, from
+                # whatever height this element resolves to at that instant, and
+                # never observes it again. So the height has to be definite in
+                # the first payload: an arbitrary Tailwind value would still be
+                # queued for a browser-side JIT build by then, and a later style
+                # patch would land after the measurement.
+                .classes("w-full h-full")
+                .style("margin: 0; display: block;")
                 .on_transform_end(self._handle_transform_event) as self.scene
             ):
                 # Placeholder ground for contrast with the background, shown

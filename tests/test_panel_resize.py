@@ -5,13 +5,16 @@ All tests share a single browser session and page load via class_screen fixture.
 
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
+from nicegui import ui
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
+from waldoctl import Commander, Panel, PanelSlot
 
-from tests.helpers.browser_helpers import click_tab, close_panel, js
+from tests.helpers.browser_helpers import click_tab, close_panel, dismiss_dialogs, js
+from tests.helpers.plugin_panels import install_plugin_panels
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -239,3 +242,191 @@ class TestPanelResize:
 
         final_height = bottom.rect["height"]
         assert abs(final_height - after_switch_height) < 30
+
+    def test_a_fit_panel_is_as_tall_as_its_content_until_dragged(
+        self, class_screen: "Screen"
+    ) -> None:
+        """Settings opens at its content's height, capped at the viewport, and a
+        height the operator drags is the one it keeps."""
+        wait_ready(class_screen)
+        clear_storage(class_screen, STORAGE_KEY)
+        click_tab(class_screen, "settings")
+        time.sleep(0.5)
+
+        measure = """
+            const c = document.querySelector('.bottom-panels-container');
+            const p = document.querySelector('.settings-panel');
+            const body = p.querySelector('.settings-content')
+                || p.querySelector('.q-scrollarea__container');
+            const r = p.getBoundingClientRect();
+            const lowest = Math.max(...[...body.children]
+                .filter(e => e.offsetParent !== null)
+                .map(e => e.getBoundingClientRect().bottom));
+            return {inline: c.style.height, height: r.height, bottom: r.bottom,
+                    viewport: innerHeight, slack: r.bottom - lowest,
+                    scrolls: body.scrollHeight > body.clientHeight + 1,
+                    clipped: p.scrollHeight > p.clientHeight + 1};
+        """
+        fit = js(class_screen, measure)
+        assert fit["inline"] == "", fit
+        # Every row's fields end at the panel's content edge: no empty strip on the right.
+        edges = js(
+            class_screen,
+            """
+            const c = document.querySelector('.settings-panel .settings-content');
+            const inner = c.getBoundingClientRect().left + c.clientLeft + c.clientWidth;
+            const rights = [...c.querySelectorAll('.settings-row')]
+                .map(row => [...row.querySelectorAll('.q-field')]
+                    .filter(e => e.offsetParent !== null)
+                    .map(e => e.getBoundingClientRect().right))
+                .filter(r => r.length)
+                .map(r => Math.max(...r));
+            return {inner, rights};
+        """,
+        )
+        assert edges["rights"], edges
+        assert all(edges["inner"] - right <= 2 for right in edges["rights"]), edges
+        assert not fit["clipped"], fit
+        assert fit["bottom"] <= fit["viewport"], fit
+        capped = fit["height"] >= fit["viewport"] - 30
+        # Content-sized means no room left over under the last row; at the cap
+        # the rows scroll instead.
+        assert fit["scrolls"] if capped else fit["slack"] <= 24, fit
+
+        drag(class_screen, ".settings-panel .resize-handle-top", dy=60)
+        saved = get_storage(class_screen, STORAGE_KEY)
+        assert saved and saved["settings"]["height"], saved
+        dragged = js(class_screen, measure)
+        assert dragged["inline"] != "", dragged
+
+        close_panel(class_screen, "settings-panel")
+        time.sleep(0.3)
+        click_tab(class_screen, "settings")
+        time.sleep(0.5)
+        reopened = js(class_screen, measure)
+        assert abs(reopened["height"] - saved["settings"]["height"]) < 3, reopened
+
+        # A height an older build saved on close was a default, not a choice.
+        js(
+            class_screen,
+            """
+            localStorage.removeItem(arguments[0] + '_fit');
+            localStorage.setItem(arguments[0],
+                JSON.stringify({settings: {height: 560, group: 'bottom'}}));
+            PanelResize.configure(PanelResize.getConfig());
+            """,
+            STORAGE_KEY,
+        )
+        assert "height" not in get_storage(class_screen, STORAGE_KEY)["settings"]
+        close_panel(class_screen, "settings-panel")
+
+    def test_the_editor_opens_at_its_default_size(self, class_screen: "Screen") -> None:
+        """The editor opens at its default size, not its minimum. The minimum
+        an older build saved when the editor closed was not a choice."""
+        wait_ready(class_screen)
+        if js(
+            class_screen,
+            "return !!document.querySelector('.program-panel')?.offsetParent",
+        ):
+            close_panel(class_screen, "program-panel")
+            time.sleep(0.3)
+        js(
+            class_screen,
+            """
+            localStorage.removeItem(arguments[0] + '_defaults');
+            localStorage.setItem(arguments[0],
+                JSON.stringify({program: {height: 300, group: 'top'}}));
+            PanelResize.configure(PanelResize.getConfig());
+            """,
+            STORAGE_KEY,
+        )
+        assert "height" not in get_storage(class_screen, STORAGE_KEY)["program"]
+        click_tab(class_screen, "program")
+        time.sleep(0.5)
+        size = js(
+            class_screen,
+            """
+            const c = document.querySelector('.top-panels-container');
+            return {width: c.offsetWidth, height: c.offsetHeight, viewport: innerHeight};
+            """,
+        )
+        assert size["width"] >= 670 and size["height"] >= 470, size
+
+    def test_diagnostics_and_settings_share_the_column(
+        self, class_screen: "Screen"
+    ) -> None:
+        """Diagnostics sits above Settings in the left column. With both open,
+        the taller content-sized panel gives way; neither is drawn over the
+        other."""
+        wait_ready(class_screen)
+        clear_storage(class_screen, STORAGE_KEY)
+        click_tab(class_screen, "diagnostics")
+        time.sleep(0.5)
+        click_tab(class_screen, "settings")
+        time.sleep(1.0)
+        rects = js(
+            class_screen,
+            """
+            const r = s => document.querySelector(s).getBoundingClientRect();
+            const d = r('.diagnostics-view'), s = r('.settings-panel');
+            return {diagnosticsBottom: d.bottom, settingsTop: s.top,
+                    diagnostics: d.height, settings: s.height, viewport: innerHeight};
+        """,
+        )
+        assert rects["diagnosticsBottom"] <= rects["settingsTop"], rects
+        close_panel(class_screen, "settings-panel")
+        close_panel(class_screen, "diagnostics-view")
+        time.sleep(0.3)
+
+
+class TallPanel(Panel):
+    """A drag-resizable plugin that declares no minima, as waldoctl allows,
+    with content taller than any viewport."""
+
+    id: ClassVar[str] = "tall"
+    display_name: ClassVar[str] = "Tall"
+    slot: ClassVar[PanelSlot] = PanelSlot.LEFT_TOP_TAB
+    tab_icon: ClassVar[str] = "view_day"
+    resizable: ClassVar[bool] = True
+
+    def build(self, commander: Commander) -> None:
+        ui.element("div").style("height: 3000px")
+
+
+@pytest.mark.browser
+def test_a_plugin_without_minima_gives_way_to_settings(
+    screen: "Screen", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resizable plugin that leaves its minima unset is still resized: with
+    Settings open below it, the taller of the two gives way and neither is
+    drawn over the other."""
+    install_plugin_panels(monkeypatch, TallPanel)
+    screen.open("/")
+    wait_ready(screen, timeout=30.0)
+    dismiss_dialogs(screen)
+    js(screen, "PanelResize.clearAllSizes()")
+
+    js(
+        screen,
+        """
+        [...document.querySelectorAll('.q-tab')]
+            .find(t => t.querySelector('.q-icon')?.textContent.trim() === arguments[0])
+            .click();
+        """,
+        TallPanel.tab_icon,
+    )
+    click_tab(screen, "settings")
+
+    measure = """
+        const top = document.querySelector('.top-panels-container').getBoundingClientRect();
+        const bottom = document.querySelector('.bottom-panels-container').getBoundingClientRect();
+        return {plugin: !!document.querySelector('.tall-panel')?.offsetParent,
+                topBottom: top.bottom, bottomTop: bottom.top};
+    """
+    deadline = time.time() + 5.0
+    while True:
+        rects = js(screen, measure)
+        if rects["plugin"] and rects["topBottom"] <= rects["bottomTop"] + 1:
+            break
+        assert time.time() < deadline, rects
+        time.sleep(0.1)

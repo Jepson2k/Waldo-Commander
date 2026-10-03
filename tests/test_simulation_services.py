@@ -917,6 +917,9 @@ import parol6
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -925,6 +928,39 @@ async def main():
         assert len(self._active_dry_run().path_segments) >= 1, (
             f"Expected at least 1 segment, got {len(self._active_dry_run().path_segments)}"
         )
+
+    @pytest.mark.asyncio
+    async def test_sys_exit_entry_point_previews(self):
+        """A script ending in ``sys.exit(main())`` previews its motion: exit
+        status 0 is a normal finish, a failure status is the preview's error,
+        and neither exit reaches the app."""
+        visualizer = PathVisualizer()
+        program = """
+import asyncio
+import sys
+
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+    return STATUS
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
+"""
+
+        error = await visualizer.update_path_visualization(
+            program.replace("STATUS", "0")
+        )
+        assert error is None
+        assert len(self._active_dry_run().path_segments) >= 1
+
+        error = await visualizer.update_path_visualization(
+            program.replace("STATUS", "3")
+        )
+        assert error is not None and "status 3" in error
+        assert len(self._active_dry_run().path_segments) >= 1
 
     @pytest.mark.asyncio
     async def test_visualizer_updates_total_steps(self):
@@ -939,6 +975,9 @@ async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([80, -80, 170, 10, 10, 170], speed=1.0)
         await rbt.move_j([100, -100, 190, -10, -10, 190], speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -964,6 +1003,9 @@ import parol6
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -1000,6 +1042,9 @@ async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
         await rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -1031,6 +1076,9 @@ import parol6
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j([85, -85, 175, 5, 5, 175], duration=0.01)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)
@@ -1071,6 +1119,9 @@ async def main():
     async with parol6.AsyncRobotClient() as rbt:
         await rbt.move_j(joints_a, speed=1.0)
         await rbt.move_j(joints_b, speed=1.0)
+
+import asyncio
+asyncio.run(main())
 """
 
         await visualizer.update_path_visualization(program)

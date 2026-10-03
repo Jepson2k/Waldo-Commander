@@ -5,21 +5,28 @@ Wraps a backend's DryRunRobotClient with visualization
 metadata collection (path segments, targets, colors).
 """
 
+import asyncio
 import inspect
 import linecache
 import logging
 import math
 import re
-from typing import Any
+from collections.abc import Callable, Coroutine
+from typing import Any, TypeVar, cast
 
 import numpy as np
 
 from waldoctl import DryRunResult
+from waldoctl.client import RobotClient
+from waldoctl.commands import CommandKind, command_table
+from waldoctl.skills import UnresolvedPreview
 
 from waldo_commander.common.theme import get_color_for_move_type
 from waldo_commander.state import ShapeChange, ToolAction, ToolSelection
 
 logger = logging.getLogger(__name__)
+
+R = TypeVar("R")
 
 _LITERAL_LIST_RE = re.compile(
     r"(?:move_j|move_l|move_c|move_s|move_p)\s*\(\s*(?:\w+\s*=\s*)?\["
@@ -28,21 +35,25 @@ _LITERAL_LIST_RE = re.compile(
 )
 _DURATION_RE = re.compile(r"duration\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)")
 
-# Methods that produce trajectory segments for visualization.
+_COMMANDS = command_table()
+
+# Methods that produce trajectory segments for visualization, by path shape.
 MOTION_METHODS: dict[str, str] = {
-    # Swings the wrist through a few poses to weigh the payload: joint
-    # motion the step gate and the preview both have to know about.
-    "estimate_payload": "joints",
-    "move_j": "joints",
-    "move_l": "cartesian",
-    "move_c": "smooth_arc",
-    "move_s": "smooth_spline",
-    "move_p": "cartesian",
-    "jog_j": "jog",
-    "jog_l": "jog",
-    "servo_j": "jog",
-    "servo_l": "jog",
+    name: spec.move_type or ""
+    for name, spec in _COMMANDS.items()
+    if spec.kind is CommandKind.MOTION
 }
+
+# There is no observation behind these in a planning preview; the PAROL6
+# extras are not on the ABC but answer the same live-only questions.
+_UNRESOLVED = frozenset(
+    name for name, spec in _COMMANDS.items() if spec.kind is CommandKind.OBSERVATION
+) | {"command_verdict", "is_estop_pressed"}
+
+
+#: Tool calls that move the jaws. Anything else on a tool is a read, and a
+#: read answers with what it read, not with a queue index.
+_TOOL_ACTIONS = frozenset({"set_position", "open", "close", "calibrate", "grip"})
 
 
 class _ToolCollectionProxy:
@@ -62,10 +73,16 @@ class _ToolCollectionProxy:
         if not callable(attr):
             return attr
 
+        if name not in _TOOL_ACTIONS:
+            # A read (`tool.status()`, `tool.is_open(...)`) answers with its
+            # value; minting an index for it would hand a program a number
+            # where the live client hands it a reading.
+            return attr
+
         def interceptor(*args: Any, **kwargs: Any) -> Any:
             result = attr(*args, **kwargs)
             self._preview._record_tool_action(name, args, kwargs, result)
-            return result
+            return self._preview._queued_result(result)
 
         return interceptor
 
@@ -120,6 +137,7 @@ class PathPreviewClient:
         initial_joints: list[float] | np.ndarray | None = None,
         initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
+        robot: Any = None,
     ):
         self.segment_collector: list[dict] = (
             [] if segment_collector is None else segment_collector
@@ -139,6 +157,8 @@ class PathPreviewClient:
         self._tool_meta_registry: dict[str, dict] = tool_meta_registry or {}
         self._tool_metadata: dict | None = None
         self.accumulated_errors: list[str] = []
+        self._command_results: dict[int, bool | None] = {}
+        self._skill_line: int = 0
 
         init_deg: list[float] | None = None
         if initial_joints is not None:
@@ -147,6 +167,10 @@ class PathPreviewClient:
         self._client = dry_run_client_cls(
             initial_joints_deg=init_deg, initial_homed=initial_homed
         )
+        if robot is not None:
+            # The worker already holds the backend it planned with; a bare
+            # client would otherwise build its own on first read.
+            self._client.robot = robot
         self._tool_proxy = _ToolCollectionProxy(self)
         self.last_joints_rad: list[float] | None = None
         self._blend_move_type: str = ""
@@ -167,6 +191,77 @@ class PathPreviewClient:
         self.sim_time_s: float = 0.0
 
         logger.debug("PathPreviewClient initialized")
+
+    @property
+    def robot(self) -> Any:
+        """The backend the preview stands in for; what a skill checks its
+        requirements against."""
+        return self._client.robot
+
+    def run_skill(self, invoke: Callable[[RobotClient], Coroutine[Any, Any, R]]) -> R:
+        """Use this collector's async view, without opening a backend client."""
+        line = self._skill_line
+        self._skill_line = self._get_caller_line_number()
+        try:
+            return asyncio.run(
+                invoke(cast(RobotClient, AsyncPathPreviewClient.from_sync(self)))
+            )
+        finally:
+            self._skill_line = line
+
+    def _command_result(self, result: DryRunResult | None) -> int:
+        """A planned (or blend-held, ``None``) motion's collector-owned index."""
+        return self._mint_index(
+            self._result_valid(result) if result is not None else None
+        )
+
+    def _mint_index(self, success: bool | None) -> int:
+        index = len(self._command_results)
+        if success is not None:
+            self._complete_pending(success)
+        self._command_results[index] = success
+        return -1 if success is False else index
+
+    def _queued_result(self, result: Any) -> int:
+        """The index a queued non-motion command returns: a backend's own
+        index or code, a planner result, or ``None`` when there was nothing
+        to plan and the command simply applied."""
+        if isinstance(result, bool) or result is None:
+            return self._mint_index(True if result is None else result)
+        if isinstance(result, int):
+            return self._mint_index(result >= 0)
+        return self._mint_index(self._result_valid(result))
+
+    @staticmethod
+    def _system_result(result: Any) -> int:
+        """The live client's 1/0/negative code for a system or control
+        command, whatever the dry run answered with."""
+        if isinstance(result, bool):
+            return int(result)
+        if isinstance(result, int):
+            return result
+        if result is None:
+            return 1
+        return 1 if PathPreviewClient._result_valid(result) else -1
+
+    def _complete_pending(self, success: bool) -> None:
+        for index, status in self._command_results.items():
+            if status is None:
+                self._command_results[index] = success
+
+    @staticmethod
+    def _result_valid(result: DryRunResult) -> bool:
+        return result.error is None and (
+            result.valid is None or bool(np.all(result.valid))
+        )
+
+    def wait_command(
+        self, command_index: int, timeout: float = 10.0, **kwargs: Any
+    ) -> bool:
+        """The live signature, positional *timeout* included: a program written
+        as ``rbt.wait_command(index, 30.0)`` runs in preview as it does live."""
+        self._flush_blend()
+        return self._command_results.get(command_index) is True
 
     def __enter__(self):
         return self
@@ -358,11 +453,17 @@ class PathPreviewClient:
         results = self._client.flush()
         for result in results:
             self._collect_from_result(result, self._blend_move_type or "joints")
+        if results:
+            self._complete_pending(
+                all(self._result_valid(result) for result in results)
+            )
         self._blend_move_type = ""
 
     # ---- Source introspection ----
 
     def _get_caller_line_number(self) -> int:
+        if self._skill_line:
+            return self._skill_line
         try:
             frame = inspect.currentframe()
             while frame:
@@ -502,8 +603,13 @@ class PathPreviewClient:
         if pose_kwarg is not None:
             pose = [float(v) for v in pose_kwarg[:6]]
         elif move_type in ("cartesian", "smooth_arc", "smooth_spline") and args:
-            # move_l/move_p/move_c: first arg is [x,y,z,rx,ry,rz] in mm/deg
-            pose = [float(v) for v in args[0][:6]]
+            # move_l/move_c: the first arg is [x,y,z,rx,ry,rz] in mm/deg;
+            # move_p/move_s pass a list of such waypoints, and the last one
+            # is the pose the move was trying to reach.
+            first = args[0]
+            if len(first) and isinstance(first[0], (list, tuple, np.ndarray)):
+                first = first[-1]
+            pose = [float(v) for v in first[:6]]
         # move_j with joint angles: skip — we'd need FK to get TCP pose
 
         if pose is None or len(pose) < 3:
@@ -589,16 +695,19 @@ class PathPreviewClient:
 
     # ---- Explicit: home ----
 
-    def home(self, **kw: Any) -> bool:
+    def home(self, **kw: Any) -> int:
         self._flush_blend()
         self._first_motion_seen = True
         try:
             result = self._client.home(**kw)
         except Exception as e:
             logger.warning("home failed: %s", e)
-            return True
+            self.accumulated_errors.append(
+                f"Line {self._get_caller_line_number()}: {e}"
+            )
+            return -1
         self._collect_from_result(result, "joints", checkpoint="home")
-        return True
+        return self._command_result(result)
 
     def checkpoint(self, label: str) -> int:
         """Record a checkpoint marker in the timeline.
@@ -630,7 +739,7 @@ class PathPreviewClient:
             "is_travel": not self._first_motion_seen,
         }
         self.segment_collector.append(segment)
-        return 0
+        return self._mint_index(True)
 
     # ---- Dynamic dispatch ----
 
@@ -641,13 +750,18 @@ class PathPreviewClient:
         # Motion methods: dispatch through _client + collect visualization
         move_type = MOTION_METHODS.get(name)
         if move_type is not None:
+            # A backend without this optional motion raises here, as the live
+            # client would, rather than previewing a refusal.
+            method = getattr(self._client, name)
+            # Streamed motion (jog, servo) is fire-and-forget on the live
+            # client: it answers 1/0/negative, never an index to wait on.
+            mints_index = _COMMANDS[name].mints_index
 
-            def motion_method(*args: Any, **kwargs: Any) -> bool:
+            def motion_method(*args: Any, **kwargs: Any) -> int:
                 try:
                     self._first_motion_seen = True
                     self._pending_sleep = 0.0
                     self._last_move_non_blocking = not kwargs.get("wait", True)
-                    method = getattr(self._client, name)
                     result = method(*args, **kwargs)
                     if result is None:
                         # Buffered for blending — track move_type of first buffered cmd
@@ -671,7 +785,9 @@ class PathPreviewClient:
                             )
                         else:
                             self._collect_from_result(result, mt)
-                    return True
+                    if mints_index:
+                        return self._command_result(result)
+                    return self._system_result(result)
                 except Exception as e:
                     self._first_motion_seen = True
                     line_no = self._get_caller_line_number()
@@ -685,7 +801,7 @@ class PathPreviewClient:
                         args,
                         kwargs,
                     )
-                    return False
+                    return -1
 
             return motion_method
 
@@ -725,14 +841,9 @@ class PathPreviewClient:
                             line_number=self._get_caller_line_number(),
                         )
                     )
-                return result
+                return self._system_result(result)
 
             return set_tool_wrapper
-
-        # Intercept set_tcp_offset — flush blend since it changes kinematics
-        if name == "set_tcp_offset":
-            self._flush_blend()
-            return getattr(self._client, name)
 
         # Intercept set_shapes — record the boundary so collision marking can
         # replay the world that was active at each segment (like tool
@@ -751,25 +862,61 @@ class PathPreviewClient:
                         line_number=self._get_caller_line_number(),
                     )
                 )
-                return result
+                return self._system_result(result)
 
             return set_shapes_wrapper
 
-        # Status waits have no live status in dry-run: report the awaited
-        # condition as met so the preview continues past I/O handshakes.
-        # Blend flushes first — a real wait_status is a synchronization point.
-        if name == "wait_status":
+        # There is no observation behind a status predicate in a planning
+        # preview. Inventing a successful handshake would select the wrong
+        # branch of an ordinary Python program or skill.
+        if name in _UNRESOLVED:
             self._flush_blend()
-            return lambda *args, **kwargs: True
 
-        # All other methods: flush blend first, then delegate to backend.
-        # It raises AttributeError for unknown names, catching typos.
+            def unresolved(*args: Any, **kwargs: Any) -> Any:
+                raise UnresolvedPreview(f"{name} needs an explicit observation fixture")
+
+            return unresolved
+
+        # Everything else flushes the blend first and delegates to the
+        # backend, which raises AttributeError for unknown names, catching
+        # typos. Queued and system commands answer with the live client's
+        # return contract, not the dry run's planner result.
+        underlying = getattr(self._client, name)
+        spec = _COMMANDS.get(name)
         self._flush_blend()
-        return getattr(self._client, name)
+        if spec is None or not callable(underlying):
+            return underlying
+        if spec.kind is CommandKind.QUEUED:
+
+            def queued(*args: Any, **kwargs: Any) -> int:
+                return self._queued_result(underlying(*args, **kwargs))
+
+            return queued
+        if spec.kind in (CommandKind.SYSTEM, CommandKind.CONTROL):
+
+            def applied(*args: Any, **kwargs: Any) -> int:
+                return self._system_result(underlying(*args, **kwargs))
+
+            return applied
+        return underlying
 
 
 class AsyncPathPreviewClient:
     """Async wrapper around PathPreviewClient."""
+
+    @classmethod
+    def from_sync(cls, client: PathPreviewClient) -> "AsyncPathPreviewClient":
+        view = cls.__new__(cls)
+        view._sync_client = client
+        return view
+
+    @property
+    def tool(self) -> "_AsyncPreviewTool":
+        return _AsyncPreviewTool(self._sync_client.tool)
+
+    @property
+    def robot(self) -> Any:
+        return self._sync_client.robot
 
     def __init__(
         self,
@@ -782,6 +929,7 @@ class AsyncPathPreviewClient:
         initial_joints: list[float] | np.ndarray | None = None,
         initial_homed: bool = True,
         tool_meta_registry: dict[str, dict] | None = None,
+        robot: Any = None,
     ):
         self._sync_client = PathPreviewClient(
             dry_run_client_cls=dry_run_client_cls,
@@ -793,6 +941,7 @@ class AsyncPathPreviewClient:
             initial_joints=initial_joints,
             initial_homed=initial_homed,
             tool_meta_registry=tool_meta_registry,
+            robot=robot,
         )
 
     async def __aenter__(self):
@@ -821,6 +970,11 @@ class AsyncPathPreviewClient:
         return self._sync_client.tool_selection_collector
 
     def __getattr__(self, name: str) -> Any:
+        # `run_skill` is the sync client's own entry point; exposing it here as
+        # a coroutine would let a sync skill call on an async client preview as
+        # a no-op where the real client raises AttributeError.
+        if name == "run_skill":
+            raise AttributeError(name)
         attr = getattr(self._sync_client, name)
         if callable(attr) and name != "close":
 
@@ -829,3 +983,18 @@ class AsyncPathPreviewClient:
 
             return wrapper
         return attr
+
+
+class _AsyncPreviewTool:
+    def __init__(self, tool: _ToolCollectionProxy) -> None:
+        self._tool = tool
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._tool, name)
+        if not callable(attr):
+            return attr
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            return attr(*args, **kwargs)
+
+        return call

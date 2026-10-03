@@ -1,4 +1,4 @@
-"""Settings component for serial port, theme, and visualization preferences."""
+"""Settings panel: connection, tool, jogging, view, automation and advanced."""
 
 import asyncio
 import logging
@@ -18,6 +18,12 @@ from waldo_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
+from waldo_commander.services.control_lease import (
+    BROWSER,
+    control_lease,
+    require_browser_control,
+)
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
 from waldo_commander.state import automation_state, simulation_state, ui_state
 
@@ -26,8 +32,8 @@ logger = logging.getLogger(__name__)
 # Trailing-edge window for a TCP offset edit, seconds.
 TCP_EDIT_THROTTLE_S = 0.4
 
-# How long an adopted offset waits for its page's socket, seconds.
-ADOPT_CONNECT_TIMEOUT_S = 5.0
+# How long a reconcile waits for its page's socket, seconds.
+RECONCILE_CONNECT_TIMEOUT_S = 5.0
 
 # Tools this app has pushed a TCP offset for since it started. Until then a
 # controller reporting zero may simply never have been told; afterwards a zero
@@ -56,18 +62,16 @@ def get_available_serial_ports() -> list[str]:
 
 @contextmanager
 def _setting_row(title: str, description: str):
-    """Standard layout for a settings row: label column + yielded control widget."""
-    with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-        with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-            ui.label(title).classes("text-sm font-medium truncate")
-            ui.label(description).classes(
-                "text-xs text-gray-500 dark:text-gray-400 truncate"
-            )
+    """A label beside its control; what the setting does is on hover or focus."""
+    with ui.element("div").classes("settings-row"):
+        ui.label(title).classes("settings-label").props("tabindex=0").tooltip(
+            description
+        )
         yield
 
 
 class SettingsContent:
-    """Settings content that can be embedded in the control panel."""
+    """The settings rows, grouped and built into whichever panel hosts them."""
 
     def __init__(self, client: RobotClient) -> None:
         self.client = client
@@ -92,7 +96,6 @@ class SettingsContent:
             "envelope_mode": EnvelopeMode(
                 ng_app.storage.general.get("envelope_mode", "auto")
             ),
-            "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
             "motion_profile": stored_profile,
             "jog_blend_r": jog_blend_r(),
             "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
@@ -230,15 +233,16 @@ class SettingsContent:
             vk = self._get_variant_key(tool_key)
             self._apply_tool_scene(tool_key, variant_key=vk)
             self._notify_and_resimulate()
+            require_browser_control(page_client.id)
             await self._push_tcp_offset(
                 tool_key, vals, (x_input, y_input, z_input), page_client
             )
 
         def _axis_input(axis: str) -> ui.number:
             return (
-                ui.number(label=axis.upper(), value=offset.get(axis, 0), step=0.5)
-                .style("width: 48px;")
-                .props("dense borderless" + (" disable" if is_none else ""))
+                ui.number(value=offset.get(axis, 0), step=0.5, prefix=axis.upper())
+                .classes("settings-axis")
+                .props("dense" + (" disable" if is_none else ""))
                 # Trailing edge only: typing "125" is three edits, and each
                 # one on its own would reach the controller.
                 .on(
@@ -251,8 +255,8 @@ class SettingsContent:
             )
 
         with self._tcp_offset_container:
-            with _setting_row("TCP Offset", "Offset from default TCP (mm)"):
-                with ui.row().classes("gap-1"):
+            with _setting_row("TCP offset", "Offset from the tool's default TCP (mm)"):
+                with ui.row().classes("gap-1 no-wrap"):
                     x_input = _axis_input("x")
                     y_input = _axis_input("y")
                     z_input = _axis_input("z")
@@ -314,6 +318,10 @@ class SettingsContent:
         finally:
             self._tcp_pushing = False
 
+    def _drop_queued_push(self) -> None:
+        """An edit still waiting when its page goes is nobody's to send."""
+        self._tcp_push_next = None
+
     async def _send_tcp_offset(
         self,
         tool_key: str,
@@ -323,6 +331,9 @@ class SettingsContent:
     ) -> None:
         """Set the offset and adopt what the controller reports back, so the
         GUI's TCP is the one the controller plans with."""
+        if not page_client.has_socket_connection:
+            # The page that typed it is gone.
+            return
         x, y, z = (float(vals.get(k, 0) or 0) for k in ("x", "y", "z"))
         back: list[float] = []
         try:
@@ -362,11 +373,23 @@ class SettingsContent:
         someone else's — a program or another client, and a deliberate zero
         counts. The remembered offset is pushed only where the controller's
         cannot be: right after a tool change, which resets it, and on a
-        controller reporting nothing that this app has never told."""
+        controller reporting nothing that this app has never told, while
+        nobody else is driving."""
         try:
+            # Started while the page is still being built, so its socket is
+            # often not up yet.
+            await page_client.connected(timeout=RECONCILE_CONNECT_TIMEOUT_S)
+        except ClientConnectionTimeout:
+            return
+        try:
+            tools = await self.client.tools()
             back = await self._read_tcp_offset()
         except Exception as exc:
             logger.debug("tcp_offset readback failed: %s", exc)
+            return
+        if tools is None or tools.tool != tool_key:
+            # The readback is the offset of whatever tool the controller
+            # carries; adopting it would file it under this one.
             return
         stored = self._get_tcp_offset(tool_key)
         mine = [float(stored.get(k, 0) or 0) for k in ("x", "y", "z")]
@@ -375,10 +398,19 @@ class SettingsContent:
         never_told = tool_key not in _pushed_offset_tools and not any(
             abs(b) > 1e-3 for b in back
         )
-        if tool_changed or never_told:
+        if tool_changed or (never_told and self._may_push_unasked(page_client)):
             await self._push_tcp_offset(tool_key, stored, inputs, page_client)
         else:
             await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+
+    @staticmethod
+    def _may_push_unasked(page_client: Client) -> bool:
+        """A push nobody typed must not move the TCP under another driver."""
+        holder = control_lease.holder()
+        free_or_ours = holder is None or (
+            holder.channel == BROWSER and holder.id == page_client.id
+        )
+        return free_or_ours and motion_guard.busy_reason() is None
 
     async def _adopt_tcp_offset(
         self,
@@ -392,22 +424,8 @@ class SettingsContent:
             "y": float(offset_mm[1]),
             "z": float(offset_mm[2]),
         }
-        if not page_client.has_socket_connection:
-            # The reconcile that adopts an out-of-band offset is started
-            # while the page is still being built, so its socket is often
-            # not up yet. Dropping the update here would leave the inputs
-            # showing the browser's remembered offset while the controller
-            # plans with another one.
-            try:
-                await page_client.connected(timeout=ADOPT_CONNECT_TIMEOUT_S)
-            except ClientConnectionTimeout:
-                return
+        ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
         with page_client:
-            # Written here, beside the inputs it must agree with: ahead of
-            # the connection guard above, a page that went away left the
-            # remembered offset changed and the inputs still showing the old
-            # one, and the next rebuild read back the discrepancy as truth.
-            ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
             for inp, v in zip(inputs, (vals["x"], vals["y"], vals["z"])):
                 if inp.value != v:
                     inp.set_value(v)
@@ -422,17 +440,17 @@ class SettingsContent:
         available_ports = get_available_serial_ports()
         stored_port = prefs["com_port"]
 
-        with _setting_row("Serial Port", "Select robot communication port"):
+        with _setting_row("Serial port", "Robot communication port"):
             self._port_select = (
                 ui.select(
                     options=available_ports,
                     value=stored_port if stored_port in available_ports else None,
-                    label="Port",
                     new_value_mode="add-unique",
                     clearable=True,
                 )
-                .classes("w-32")
+                .classes("w-40")
                 .props("dense")
+                .mark("select-serial-port")
             )
 
         if stored_port and stored_port not in available_ports:
@@ -461,7 +479,7 @@ class SettingsContent:
             ng_app.storage.general["show_route"] = val
             simulation_state.notify_changed()
 
-        with _setting_row("Show Route", "Display path visualization in 3D view"):
+        with _setting_row("Show route", "Draw the program's path in the 3D view"):
             ui.switch(
                 value=prefs["show_route"],
                 on_change=_on_show_route_change,
@@ -522,7 +540,9 @@ class SettingsContent:
             ng_app.storage.general["envelope_mode"] = mode.value
             simulation_state.notify_changed()
 
-        with _setting_row("Workspace Envelope", "Show reachable workspace boundary"):
+        with _setting_row(
+            "Workspace envelope", "Show the reachable workspace boundary"
+        ):
             ui.select(
                 options={m.value: m.value.capitalize() for m in EnvelopeMode},
                 value=prefs["envelope_mode"].value,
@@ -538,6 +558,7 @@ class SettingsContent:
             # queued for the old one must not be sent after the change.
             self._tcp_push_next = None
             vk = self._get_variant_key(tool)
+            require_browser_control(context.client.id)
             try:
                 index = await self.client.select_tool(tool, variant_key=vk or "")
                 if isinstance(index, int) and index >= 0:
@@ -564,17 +585,17 @@ class SettingsContent:
         if stored_tool not in tool_options:
             stored_tool = default_tool
 
-        with _setting_row("Tool", "Select end effector tool"):
+        with _setting_row("Selected", "Select end effector tool"):
             ui.select(
                 options=tool_options,
                 value=stored_tool,
                 on_change=_on_tool_change,
             ).classes("w-32").props("dense").mark("select-tool")
 
-        self._variant_container = ui.column().classes("w-full gap-1")
+        self._variant_container = ui.column().classes("w-full gap-0")
         self._rebuild_variant_selector(stored_tool)
 
-        self._tcp_offset_container = ui.column().classes("w-full gap-1")
+        self._tcp_offset_container = ui.column().classes("w-full gap-0")
         self._rebuild_tcp_offset(stored_tool)
 
         vk_initial = self._get_variant_key(stored_tool)
@@ -646,7 +667,12 @@ class SettingsContent:
             else:
                 camera_service.start(val)
 
-        with _setting_row("Camera", "Video device for the active tool"):
+        with _setting_row(
+            "Camera",
+            "Video device for the active tool. For AI annotations: webcam → your "
+            "script → pyvirtualcam → select the virtual device (Linux: sudo apt "
+            "install v4l2loopback-dkms).",
+        ):
             self._cam_select = (
                 ui.select(
                     options=cam_options,
@@ -658,14 +684,6 @@ class SettingsContent:
                 .classes("w-32")
                 .props("dense")
                 .mark("select-camera")
-            )
-
-        with ui.column().classes("w-full gap-0 px-2"):
-            ui.label(
-                "AI annotations: webcam \u2192 your script \u2192 pyvirtualcam \u2192 select virtual device"
-            ).classes("text-xs text-gray-500 dark:text-gray-400")
-            ui.label("Linux: sudo apt install v4l2loopback-dkms").classes(
-                "text-xs text-gray-500 dark:text-gray-400"
             )
 
         def _refresh_camera_devices() -> None:
@@ -701,22 +719,12 @@ class SettingsContent:
         for p in ui_state.active_robot.motion_profiles:
             motion_profile_options[p] = p.replace("_", " ").title()
 
-        with _setting_row("Motion Profile", "Trajectory generation algorithm"):
+        with _setting_row("Motion profile", "Trajectory generation algorithm"):
             ui.select(
                 options=motion_profile_options,
                 value=prefs["motion_profile"],
                 on_change=_on_motion_profile_change,
             ).classes("w-32").props("dense").mark("select-motion-profile")
-
-    def _build_theme(self, prefs: dict) -> None:
-        with _setting_row("Theme", "Application color scheme"):
-            with ui.element("span").tooltip(
-                "Light mode will be available in a future update"
-            ):
-                ui.select(
-                    options={"dark": "Dark"},
-                    value="dark",
-                ).classes("w-24").props("dense disable")
 
     def _build_backend_selector(self) -> None:
         """Backend (robot driver) selection dropdown.
@@ -826,8 +834,7 @@ class SettingsContent:
             if type(p).build_settings is not Panel.build_settings
         ]
         for panel in contributors:
-            ui.separator().classes("my-1")
-            ui.label(panel.display_name).classes("text-sm font-medium").mark(
+            ui.label(panel.display_name).classes("settings-group-heading").mark(
                 f"settings-plugin-{panel.id}-header"
             )
             # A plugin's build_settings() must not break the whole settings page.
@@ -884,16 +891,16 @@ class SettingsContent:
             ).mark("settings-mcp-enabled")
 
         with _setting_row(
-            "MCP host", "Bind address — 127.0.0.1 (local) or a LAN address / 0.0.0.0"
+            "Address",
+            "MCP bind address and port — 127.0.0.1 (local) or a LAN address / 0.0.0.0",
         ):
-            ui.input(value=mcp.host).classes("w-40").props("dense").on(
-                "change", _on_host_change
-            ).mark("settings-mcp-host")
-
-        with _setting_row("MCP port", "Listening port for streamable HTTP"):
-            ui.number(value=mcp.port, min=1, max=65535).classes("w-24").props(
-                "dense"
-            ).on("change", _on_port_change).mark("settings-mcp-port")
+            with ui.element("div").classes("settings-address"):
+                ui.input(value=mcp.host).props("dense").on(
+                    "change", _on_host_change
+                ).mark("settings-mcp-host")
+                ui.number(value=mcp.port, min=1, max=65535).props("dense").on(
+                    "change", _on_port_change
+                ).mark("settings-mcp-port")
 
     def _build_automation(self) -> None:
         """Hardware I/O automation: cycle-start input and at-home output."""
@@ -904,7 +911,7 @@ class SettingsContent:
             ng_app.storage.general["automation/cycle_start"] = val
 
         with _setting_row(
-            "Start program on Input 1",
+            "Start on input 1",
             "Rising edge runs the active program (robot homed, e-stop clear, "
             "nothing already running)",
         ):
@@ -919,7 +926,7 @@ class SettingsContent:
             ng_app.storage.general["automation/home_output"] = val
 
         with _setting_row(
-            "Home position output",
+            "Home output",
             "Output 2 turns on while all joints are within tolerance of the "
             "home/standby pose",
         ):
@@ -939,13 +946,14 @@ class SettingsContent:
             ng_app.storage.general["automation/home_tolerance_deg"] = tol
 
         with _setting_row(
-            "Home tolerance (deg)", "Joint distance from home treated as at-home"
+            "Home tolerance", "Joint distance from home treated as at-home"
         ):
             ui.number(
                 value=automation_state.home_tolerance_deg,
                 min=0.1,
                 max=45,
                 step=0.1,
+                suffix="°",
                 on_change=_on_tolerance_change,
             ).classes("w-24").props("dense").mark("input-home-tolerance")
 
@@ -965,7 +973,7 @@ class SettingsContent:
             cp.set_translation_frame(e.value)
             ng_app.storage.general["translation_frame"] = e.value
 
-        with _setting_row("Translation RF", "Reference frame for translation moves"):
+        with _setting_row("Translation frame", "Reference frame for translation moves"):
             sel = (
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
@@ -981,9 +989,7 @@ class SettingsContent:
                     "Tool-frame jogging is unavailable for this robot"
                 )
 
-        ui.separator().classes("my-1")
-
-        with _setting_row("Rotation RF", "Reference frame for rotation moves"):
+        with _setting_row("Rotation frame", "Reference frame for rotation moves"):
             with ui.element("span").tooltip("Rotation always jogs in the tool frame"):
                 ui.select(
                     options={"WRF": "World", "TRF": "Tool"},
@@ -999,7 +1005,7 @@ class SettingsContent:
             )
 
         with _setting_row(
-            "Blend Radius", "Corner smoothing for generated moves (0 = exact stop)"
+            "Blend radius", "Corner smoothing for generated moves (0 = exact stop)"
         ):
             ui.number(
                 value=prefs["jog_blend_r"],
@@ -1023,53 +1029,79 @@ class SettingsContent:
             cp.set_jog_inversion(invert_y=val)
             ng_app.storage.general["jog_invert_y"] = val
 
-        with _setting_row("Invert X Jog", "Flip the X jog direction (arrows and A/D)"):
-            ui.switch(value=prefs["jog_invert_x"], on_change=_on_invert_x).props(
-                "dense"
-            ).mark("switch-invert-x")
-
-        ui.separator().classes("my-1")
-
-        with _setting_row("Invert Y Jog", "Flip the Y jog direction (arrows and W/S)"):
-            ui.switch(value=prefs["jog_invert_y"], on_change=_on_invert_y).props(
-                "dense"
-            ).mark("switch-invert-y")
+        with _setting_row(
+            "Invert", "Flip a jog direction: X for the arrows and A/D, Y for W/S"
+        ):
+            with ui.row().classes("items-center gap-4 no-wrap"):
+                ui.switch(
+                    "X", value=prefs["jog_invert_x"], on_change=_on_invert_x
+                ).props("dense").mark("switch-invert-x")
+                ui.switch(
+                    "Y", value=prefs["jog_invert_y"], on_change=_on_invert_y
+                ).props("dense").mark("switch-invert-y")
 
     # ── Main entry point ─────────────────────────────────────────────
 
     def build_embedded(
         self, ai_control_section: Callable[[], None] | None = None
     ) -> None:
-        """Build the settings content for embedding in control panel.
+        """Build the settings content.
 
-        ``ai_control_section`` is the control panel's AI mode row, slotted in
-        with the other AI/MCP settings so hardware settings stay on top.
+        ``ai_control_section`` is the control panel's AI mode row, grouped
+        with the other autonomy settings.
+
+        Groups run from the control an operator reaches for first to the one
+        they touch least. The port leads because on some backends nothing
+        works until it is set, and it is the first place to look when the arm
+        is not answering; the restart-scoped settings are penned together at
+        the bottom so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
+        context.client.on_disconnect(self._drop_queued_push)
 
-        sections = [
-            lambda: self._build_serial_port(prefs),
-            lambda: self._build_show_route(prefs),
-            lambda: self._build_envelope(prefs),
-            lambda: self._build_physics_overlays(prefs),
-            self._build_tool_section,
-            self._build_camera,
-            lambda: self._build_motion_profile(prefs),
-            lambda: self._build_theme(prefs),
-            lambda: self._build_reference_frames(prefs),
-            lambda: self._build_jog_inversion(prefs),
-            lambda: self._build_blend_radius(prefs),
-            self._build_backend_selector,
-            self._build_plugin_panels,
-            *([ai_control_section] if ai_control_section else []),
-            self._build_mcp_server,
-            self._build_automation,
+        groups: list[tuple[str, list[Callable[[], None]]]] = [
+            ("Connection", [lambda: self._build_serial_port(prefs)]),
+            ("Tool", [self._build_tool_section, self._build_camera]),
+            (
+                "Jog",
+                [
+                    lambda: self._build_reference_frames(prefs),
+                    lambda: self._build_jog_inversion(prefs),
+                    lambda: self._build_blend_radius(prefs),
+                    lambda: self._build_motion_profile(prefs),
+                ],
+            ),
+            (
+                "View",
+                [
+                    lambda: self._build_show_route(prefs),
+                    lambda: self._build_envelope(prefs),
+                    lambda: self._build_physics_overlays(prefs),
+                ],
+            ),
+            (
+                "Automation",
+                [
+                    self._build_automation,
+                    *([ai_control_section] if ai_control_section else []),
+                ],
+            ),
+            (
+                "Advanced — restart required",
+                [
+                    self._build_backend_selector,
+                    self._build_plugin_panels,
+                    self._build_mcp_server,
+                ],
+            ),
         ]
 
-        for i, section in enumerate(sections):
-            section()
-            if i < len(sections) - 1:
-                ui.separator().classes("my-1")
+        for heading, sections in groups:
+            ui.label(heading).classes("settings-group-heading").mark(
+                f"settings-group-{heading.split()[0].lower()}"
+            )
+            for section in sections:
+                section()
 
         self._build_plugin_settings()
 
