@@ -65,6 +65,11 @@ logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  #
 
 SHAPE_OPACITY = 0.35
 
+#: A joint drawn within this of its new value is left where it is \[rad, or
+#: m for a prismatic joint\]: encoder noise on an arm at rest would otherwise
+#: redraw it on every status frame.
+_JOINT_REDRAW_EPS = 1e-4
+
 #: Highest a solid's top face may sit and still read as ground \[m\].
 #: The robot's base is at z = 0, so anything reaching above it is
 #: furniture rather than the floor.
@@ -403,6 +408,8 @@ class UrdfScene(
         self._init_tcp_controls_state()
         self._init_jog_handles_state()
         self._init_envelope_state()
+        # The value each joint group was last drawn at; NaN until drawn.
+        self._shown_q = np.full(len(self.joint_names), np.nan)
         self.path_renderer = PathRenderer()
 
         # Event-driven updates on simulation state changes.
@@ -480,6 +487,8 @@ class UrdfScene(
                         scale_stls=self._stl_scale,
                         material=material,
                     )
+                # Fresh groups, drawn at none of the values drawn before.
+                self._shown_q.fill(np.nan)
 
                 with ui.scene.group().with_name("simulation:root") as sim_grp:
                     self.simulation_group = sim_grp
@@ -1915,8 +1924,12 @@ class UrdfScene(
             joint_name: Name of the joint to move
             val: Joint value (radians for revolute, meters for prismatic)
         """
-        t, r = self.joint_trafos[joint_name](val)
+        self._draw_joint(self.joint_names.index(joint_name), joint_name, val)
+
+    def _draw_joint(self, index: int, joint_name: str, q: float) -> None:
+        t, r = self.joint_trafos[joint_name](q)
         self.joint_groups[joint_name].move(*t).rotate(*r)
+        self._shown_q[index] = q
 
     def set_axis_values(self, val: list | np.ndarray) -> None:
         """Set all axes values by passing an array or list.
@@ -1942,11 +1955,10 @@ class UrdfScene(
         n = min(len(val), len(self._joint_q))
         self._joint_q[:n] = val[:n]
         with batch_scene(self.scene):
-            for joint_name, q in zip(self.joint_names, val):
-                joint_TF = self.joint_trafos[joint_name]
-                joint_i = self.joint_groups[joint_name]
-                t, r = joint_TF(q)
-                joint_i.move(*t).rotate(*r)
+            for i, (joint_name, q) in enumerate(zip(self.joint_names, val)):
+                if abs(q - self._shown_q[i]) < _JOINT_REDRAW_EPS:
+                    continue
+                self._draw_joint(i, joint_name, q)
             self._follow_dial()
 
     def _apply_joint_angles(self, angles_rad: list[float]) -> None:
@@ -1957,10 +1969,9 @@ class UrdfScene(
         Args:
             angles_rad: Joint angles in radians, ordered by self.joint_names
         """
-        for joint_name, q in zip(self.joint_names, angles_rad):
+        for i, (joint_name, q) in enumerate(zip(self.joint_names, angles_rad)):
             if joint_name in self.joint_groups and joint_name in self.joint_trafos:
-                t, r = self.joint_trafos[joint_name](q)
-                self.joint_groups[joint_name].move(*t).rotate(*r)
+                self._draw_joint(i, joint_name, q)
 
     def set_editing_angles(self, angles: list[float]) -> None:
         """Set joint angles for editing mode (radians).

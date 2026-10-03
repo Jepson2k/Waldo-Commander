@@ -64,9 +64,12 @@ def expand_chart_button(chart: ui.echart, title: str) -> ui.button:
 
             # Only replace data, so focusing a series in this view remains stable.
             def refresh() -> None:
-                expanded.run_chart_method(
-                    "setOption", {"series": chart.options.get("series", [])}
-                )
+                data = {
+                    key: chart.options[key]
+                    for key in ("dataset", "series")
+                    if key in chart.options
+                }
+                expanded.run_chart_method("setOption", data)
 
             timer = ui.timer(0.3, refresh)
 
