@@ -8,6 +8,7 @@ from nicegui import app as ng_app
 from nicegui.testing import User
 
 from tests.helpers.wait import (
+    close_page,
     poll_until,
     wait_for_app_ready,
     wait_for_tool_key,
@@ -231,10 +232,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         # controller's offset wins and the inputs show it.
         await client.set_tcp_offset(1.0, 2.0, 3.0)
         await expect_controller_offset([1.0, 2.0, 3.0])
-        # The old tab's disconnect clears the active slot before the reload.
-        ui_state.active_client_id = None
-        await user.open("/")
-        await wait_for_app_ready()
+        await _reopen(user)
         user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         await user.should_see("TCP offset")
@@ -396,8 +394,7 @@ async def _reconciled() -> None:
 
 
 async def _reopen(user: User) -> None:
-    # The old tab's disconnect clears the active slot before the reload.
-    ui_state.active_client_id = None
+    close_page(user)
     await user.open("/")
     await wait_for_app_ready()
 
