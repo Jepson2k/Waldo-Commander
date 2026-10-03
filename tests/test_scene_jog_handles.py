@@ -518,6 +518,10 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
     assert page is not None
     for socket_id in list(page._socket_to_document_id):
         page.handle_disconnect(socket_id)
+    # The tab is gone, as when its reconnect window expires. Left alive, its
+    # 1 Hz ping would find the slot free and reload through the simulated
+    # user, racing the page opened below for the active slot.
+    page.delete()
     await user.open("/")
     await wait_for_app_ready()
     await ensure_robot_ready_for_motion()
