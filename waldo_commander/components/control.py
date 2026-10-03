@@ -19,7 +19,9 @@ from waldo_commander.components.joint_dial import JointDial
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import _setting_row
-from waldo_commander.components.waldo import current_mood, waldo
+from waldo_commander.components.readout import AI_MODE_CLASS
+from waldo_commander.components.waldo import RobotFace, current_mood, waldo
+from waldo_commander.components.waldo import react as waldo_react
 from waldo_commander.constants import (
     CLICK_HOLD_THRESHOLD_S,
     DEFAULT_CAMERA,
@@ -677,13 +679,12 @@ class ControlPanel:
         self.client = client
         self._ui_client: Any = None  # NiceGUI client for background task UI ops
 
-        # Control-lease indicator (glow + edge Take-control button + consent
-        # dialog), built lazily in _build_control_indicator; shown only when an
-        # MCP/AI session holds the lease.
+        # Control-lease indicator (perimeter glow + consent dialog), built
+        # lazily in _build_control_indicator. The AI mode and Take control
+        # live in the status footer's chip.
         self._control_glow: ui.element | None = None
-        self._take_control_btn: ui.button | None = None
         self._mode_scope: ui.element | None = None
-        self._cluster_row: ui.row | None = None
+        self._approval_face: ui.element | None = None
         self._consent_dialog: ui.dialog | None = None
         self._approval_card: ui.card | None = None
         self._approval_title: ui.label | None = None
@@ -694,8 +695,6 @@ class ControlPanel:
         # AI control-mode selector (built in _build_control_mode_selector).
         self._mode_toggle: ui.select | None = None
         self._suppress_mode_toggle: bool = False
-        # Always-visible mode chip in the action row (click to cycle).
-        self._mode_chip: ui.chip | None = None
 
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
@@ -1327,29 +1326,38 @@ class ControlPanel:
 
     # ---- Control-lease indicator ----
 
-    # Per-mode theme class (theme.py) setting --mode-accent, the single
-    # source of truth for the glow, capsule, and approval-dialog colors.
-    _MODE_CLASS = {
-        ControlMode.INSPECT: "wc-mode-inspect",
-        ControlMode.AUTO_EDITS: "wc-mode-auto-edits",
-        ControlMode.AUTOPILOT: "wc-mode-autopilot",
-    }
-
     def _set_mode_theme(self, mode: ControlMode) -> None:
-        """Swap the mode class on the capsule/glow scope. The approval card
-        is deliberately unthemed — it uses the app's standard panel style."""
+        """Swap the mode class on the glow's scope. The approval card is
+        deliberately unthemed — it uses the app's standard panel style."""
         el = getattr(self, "_mode_scope", None)
         if el is not None:
             el.classes(
-                remove=" ".join(self._MODE_CLASS.values()),
-                add=self._MODE_CLASS[mode],
+                remove=" ".join(AI_MODE_CLASS.values()),
+                add=AI_MODE_CLASS[mode],
             )
 
+    @staticmethod
+    def _ai_driving() -> bool:
+        """Whether someone other than this browser tab holds the lease."""
+        h = control_lease.holder()
+        return h is not None and not control_lease.held_by(
+            BROWSER, ui_state.active_client_id or ""
+        )
+
+    def _show_ai(self) -> None:
+        """The AI session as the status footer's chip shows it: around (an MCP
+        client connected, or holding the lease) and driving (holding it)."""
+        readout = ui_state._readout_panel
+        if readout is None:
+            return
+        driving = self._ai_driving()
+        readout.show_ai(driving or mcp_connected(), driving, control_mode())
+
     def _build_control_indicator(self) -> None:
-        """Page-perimeter glow (colored by control mode) + an edge Take-control
-        button, shown only while another controller (an MCP/AI session) holds
-        the lease, plus the approval dialog (per-action move approvals and the
-        one-time hardware-consent floor). Driven by the 1 Hz ping.
+        """Page-perimeter glow (colored by control mode) while an MCP/AI
+        session is around, plus the approval dialog (per-action move
+        approvals and the one-time hardware-consent floor). Driven by the
+        1 Hz ping; the mode and Take control sit in the footer's chip.
 
         Parented at the page root: the overlay-card's ``backdrop-filter``
         creates a containing block that would trap these ``position:fixed``
@@ -1358,10 +1366,10 @@ class ControlPanel:
             self._build_control_indicator_elements()
 
     def _build_control_indicator_elements(self) -> None:
-        # display:contents scope carrying the wc-mode-* class: one place themes
-        # the glow and the capsule together.
+        # display:contents scope carrying the wc-mode-* class the glow is
+        # coloured by.
         self._mode_scope = ui.element("div").classes(
-            f"ai-mode-scope {self._MODE_CLASS[control_mode()]}"
+            f"ai-mode-scope {AI_MODE_CLASS[control_mode()]}"
         )
         with self._mode_scope:
             # Ambient glow around the viewport while an AI session drives; its
@@ -1374,43 +1382,6 @@ class ControlPanel:
                 .mark("control-lease-glow")
             )
             self._control_glow.set_visibility(False)
-            # Glass capsule at top-center: the mode chip and, while an AI
-            # session drives, the Take-control button popping out beside it.
-            # Hidden with its contents — an empty capsule is a floating blob.
-            self._cluster_row = ui.row().classes("ai-cluster items-center no-wrap")
-            self._cluster_row.set_visibility(False)
-            with self._cluster_row:
-                self._mode_chip = (
-                    ui.chip(
-                        control_mode().label,
-                        icon="smart_toy",
-                        # None skips Quasar's bg-primary (!important) class so
-                        # the .ai-cluster background can take effect.
-                        color=None,
-                        on_click=self.cycle_mode,
-                    )
-                    .props("dense clickable")
-                    .classes("control-mode-chip")
-                    .tooltip("AI control mode — click or press Alt+M to cycle")
-                    .mark("control-mode-chip")
-                )
-                # Hidden until an MCP client is around, like the glow.
-                self._mode_chip.set_visibility(False)
-                self._take_control_btn = (
-                    ui.button(
-                        "Take control",
-                        icon="back_hand",
-                        # None skips Quasar's bg-primary/text-white (!important)
-                        # so the .ai-cluster mode-accent styling can take effect.
-                        color=None,
-                        on_click=self._take_control,
-                    )
-                    .props("dense unelevated")
-                    .classes("btn-take-control")
-                    .tooltip("Reclaim control and stop the robot")
-                    .mark("btn-take-control")
-                )
-                self._take_control_btn.set_visibility(False)
         # Approval dialog. Persistent so ESC / a backdrop click can't dismiss it
         # into limbo; the value handler below catches any non-button close and
         # re-arms the prompt. Serves both per-action move approvals (Inspect /
@@ -1420,7 +1391,9 @@ class ControlPanel:
             ui.card().classes("ai-approval-card gap-2") as self._approval_card,
         ):
             with ui.row().classes("items-center gap-2 no-wrap"):
-                ui.icon("smart_toy", size="sm").classes("ai-approval-icon")
+                self._approval_face = waldo(
+                    RobotFace.NEUTRAL, size=30, hold={"ask": True}
+                ).classes("ai-approval-icon")
                 self._approval_title = ui.label("Allow AI action?").classes(
                     "text-base font-medium"
                 )
@@ -1449,8 +1422,14 @@ class ControlPanel:
         if not e.value and self._approval_sid is not None:
             self._approval_sid = None
             self._approval_kind = None
+            self._face_ask(False)
 
-    async def _take_control(self) -> None:
+    def _face_ask(self, asking: bool) -> None:
+        readout = ui_state._readout_panel
+        if readout is not None:
+            readout.face_hold("ask", asking)
+
+    async def take_control(self) -> None:
         """Hard reclaim: seize the lease for this browser tab and stop any
         motion the AI started — the robot stays enabled so the human can
         drive immediately."""
@@ -1471,35 +1450,20 @@ class ControlPanel:
             )
 
     def refresh_control_indicator(self) -> None:
-        """Drive the ambient glow, Take-control button, and pending approvals
-        from the 1 Hz ping loop. Glow states: hidden (no MCP client around),
-        faint (a client is connected but the human holds control), breathing
-        at full strength (an AI session holds the lease)."""
+        """Drive the ambient glow, the footer chip's AI state, and pending
+        approvals from the 1 Hz ping loop. Glow states: hidden (no MCP client
+        around), faint (a client is connected but the human holds control),
+        breathing at full strength (an AI session holds the lease)."""
         glow = getattr(self, "_control_glow", None)
-        btn = getattr(self, "_take_control_btn", None)
-        if glow is None or btn is None:
+        if glow is None:
             return
-        h = control_lease.holder()
-        other = h is not None and not control_lease.held_by(
-            BROWSER, ui_state.active_client_id or ""
-        )
-        connected = mcp_connected()
-        glow.set_visibility(other or connected)
-        btn.set_visibility(other)
-        chip = getattr(self, "_mode_chip", None)
-        if chip is not None:
-            chip.set_visibility(other or connected)
+        other = self._ai_driving()
+        glow.set_visibility(other or mcp_connected())
         if other:
             glow.classes(add="control-glow-breathe", remove="glow-faint")
         else:
             glow.classes(add="glow-faint", remove="control-glow-breathe")
-        cluster = getattr(self, "_cluster_row", None)
-        if cluster is not None:
-            cluster.set_visibility(other or connected)
-            if other:
-                cluster.classes(add="ai-driving")
-            else:
-                cluster.classes(remove="ai-driving")
+        self._show_ai()
 
         dlg = self._consent_dialog
         desc_label = self._approval_label
@@ -1524,7 +1488,7 @@ class ControlPanel:
                     card.classes(remove="consent-hw")
                 desc_label.text = desc
                 hint.text = "Approve this AI action to let it proceed."
-                dlg.open()
+                self._open_approval(dlg)
             elif consents:
                 sid, label = next(iter(consents.items()))
                 self._approval_sid = sid
@@ -1538,7 +1502,13 @@ class ControlPanel:
                     "First real hardware move of this AI session — make sure "
                     "the workspace is clear before allowing."
                 )
-                dlg.open()
+                self._open_approval(dlg)
+
+    def _open_approval(self, dialog: ui.dialog) -> None:
+        dialog.open()
+        if self._approval_face is not None:
+            waldo_react(self._approval_face, "ai-ask")
+        self._face_ask(True)
 
     def _resolve_approval(self, granted: bool) -> None:
         sid = self._approval_sid
@@ -1549,6 +1519,10 @@ class ControlPanel:
             self._consent_dialog.close()
         if sid is None:
             return
+        self._face_ask(False)
+        readout = ui_state._readout_panel
+        if readout is not None:
+            readout.face_react("nod" if granted else "headshake")
         if kind == "action":
             if granted:
                 grant_action(sid)
@@ -1576,9 +1550,7 @@ class ControlPanel:
         set_control_mode(mode)
         ui.notify(f"AI control mode: {mode.label}", color="info")
         self._set_mode_theme(mode)
-        chip = getattr(self, "_mode_chip", None)
-        if chip is not None:
-            chip.text = mode.label
+        self._show_ai()
         toggle = getattr(self, "_mode_toggle", None)
         if toggle is not None and toggle.value != mode.value:
             self._suppress_mode_toggle = True

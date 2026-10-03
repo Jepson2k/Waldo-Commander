@@ -17,6 +17,7 @@ from waldo_commander.components.waldo import (
     face_js,
     mount_js,
 )
+from waldo_commander.services.control_lease import ControlMode, control_mode
 from waldo_commander.services.programs import is_any_program_recording
 from waldo_commander.state import robot_events, ui_state
 
@@ -25,6 +26,13 @@ _FACE_WORDS = {
     RobotFace.HAPPY: "Connected",
     RobotFace.NEUTRAL: "Simulator",
     RobotFace.SAD: "Disconnected",
+}
+#: Theme scope per AI control mode: its accent colours the mode's label, the
+#: face's AI parts and the perimeter glow.
+AI_MODE_CLASS = {
+    ControlMode.INSPECT: "wc-mode-inspect",
+    ControlMode.AUTO_EDITS: "wc-mode-auto-edits",
+    ControlMode.AUTOPILOT: "wc-mode-autopilot",
 }
 # Chip (fill, text) per face state; simulator is the app's amber mode colour.
 _CHIP_COLORS = {
@@ -109,6 +117,10 @@ class StatusFooter:
         self._robot_face_container: ui.element | None = None
         self._robot_chip: ui.chip | None = None
         self._mode_word: ui.label | None = None
+        self._ai_mode: ui.label | None = None
+        self.take_control_btn: ui.button | None = None
+        # (present, driving, mode) last shown in the chip.
+        self._ai_shown: tuple[bool, bool, ControlMode] | None = None
         self._tool_chip: ui.chip | None = None
         self._tool_label: ui.label | None = None
         self._io_dots: list[ui.element] = []
@@ -128,7 +140,7 @@ class StatusFooter:
 
         # Face reactions (robot-faces.js). Held values are cached so the
         # per-frame checks only send changes.
-        self._face_held: dict[str, bool | tuple[float, float, float] | None] = {}
+        self._face_held: dict[str, bool | str | tuple[float, float, float] | None] = {}
         self._face_collision: bool = False
         self._face_events_version: int = robot_events.version
         self._unread_severity = ""
@@ -157,15 +169,44 @@ class StatusFooter:
         self._run_face_js(f"window.robotFaceReact({json.dumps(kind)});")
 
     def face_hold(
-        self, name: str, value: bool | tuple[float, float, float] | None
+        self, name: str, value: bool | str | tuple[float, float, float] | None
     ) -> None:
-        """Set a held face state (``estop``, ``recording`` or ``look``)."""
+        """Set a held face state: ``estop``, ``recording``, ``look``, ``ai``
+        (``"present"``, ``"driving"`` or None) or ``ask``."""
         if name in self._face_held and self._face_held[name] == value:
             return
         self._face_held[name] = value
         self._run_face_js(
             f"window.robotFaceHold({json.dumps(name)}, {json.dumps(value)});"
         )
+
+    def show_ai(self, present: bool, driving: bool, mode: ControlMode) -> None:
+        """Fold an AI session into the status chip: its control mode beside
+        the connection while one is around, and Take control while it drives."""
+        shown = (present, driving, mode)
+        if shown == self._ai_shown:
+            return
+        was = self._ai_shown
+        self._ai_shown = shown
+        chip, label, button = self._robot_chip, self._ai_mode, self.take_control_btn
+        if chip is None or label is None or button is None:
+            return
+        chip.classes(
+            add=AI_MODE_CLASS[mode],
+            remove=" ".join(c for m, c in AI_MODE_CLASS.items() if m is not mode),
+        )
+        if driving:
+            chip.classes(add="ai-driving")
+        else:
+            chip.classes(remove="ai-driving")
+        label.set_visibility(present)
+        button.set_visibility(driving)
+        if label.text != mode.label:
+            label.text = mode.label
+            if was is not None and present:
+                replay(label, "ai-swap")
+                self.face_react("ai-mode")
+        self.face_hold("ai", "driving" if driving else "present" if present else None)
 
     def _run_face_js(self, call: str) -> None:
         container = self._robot_face_container
@@ -401,7 +442,7 @@ class StatusFooter:
             self._robot_chip = (
                 ui.chip()
                 .props(f"dense color={fill} text-color={text}")
-                .classes("footer-mode")
+                .classes(f"footer-mode {AI_MODE_CLASS[control_mode()]}")
                 .mark("footer-mode")
             )
             with self._robot_chip:
@@ -412,7 +453,32 @@ class StatusFooter:
                 )
                 with self._robot_face_container:
                     self._robot_face_html = ui.html(FACE_SVGS[face], sanitize=False)
-                self._mode_word = ui.label(_FACE_WORDS[face]).classes("wc-micro")
+                self._mode_word = ui.label(_FACE_WORDS[face]).classes(
+                    "wc-micro footer-mode-word"
+                )
+                self._ai_mode = (
+                    ui.label(control_mode().label)
+                    .classes("wc-micro footer-ai-mode")
+                    .on("click", lambda: ui_state._control_panel.cycle_mode())
+                    .tooltip("AI control mode — click or press Alt+M to cycle")
+                    .mark("footer-ai-mode")
+                )
+                self._ai_mode.set_visibility(False)
+                self.take_control_btn = (
+                    ui.button(
+                        "Take control",
+                        icon="back_hand",
+                        # None skips Quasar's bg-primary/text-white (!important)
+                        # so the mode accent can fill it.
+                        color=None,
+                        on_click=lambda: ui_state._control_panel.take_control(),
+                    )
+                    .props("dense unelevated no-caps")
+                    .classes("btn-take-control")
+                    .tooltip("Reclaim control and stop the robot")
+                    .mark("btn-take-control")
+                )
+                self.take_control_btn.set_visibility(False)
             ui.label(ui_state.active_robot.name).classes("wc-label readout-robot-name")
             self._tool_chip = (
                 ui.chip()

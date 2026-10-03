@@ -499,7 +499,7 @@ def _inject_tokens_css() -> None:
 
 
 _GLASS_SELECTORS = (
-    ".glass, .overlay-card, .side-tab-bar, .ai-cluster, .ai-approval-card,"
+    ".glass, .overlay-card, .side-tab-bar, .ai-approval-card,"
     " .tutorial-dialog-card, .bottom-playback-bar, .q-dialog__inner > .q-card, .q-menu,"
     " .status-footer, .bottom-panel"
 )
@@ -946,15 +946,15 @@ html, body {
 }
 .control-glow-breathe { animation: wc-glow-breathe var(--wc-duration-ambient) var(--wc-ease-loop) infinite; }
 
-/* ---- AI control cluster ----
+/* ---- AI control mode ----
    One --mode-accent per control mode themes the perimeter glow and the
-   top-center capsule. The accents live only here. */
+   status chip's AI parts. The accents live only here. */
 .wc-mode-inspect    { --mode-accent: var(--wc-ai-inspect);    --mode-accent-text: var(--wc-ai-inspect-text); }
 .wc-mode-auto-edits { --mode-accent: var(--wc-ai-auto-edits); --mode-accent-text: var(--wc-ai-auto-edits-text); }
 .wc-mode-autopilot  { --mode-accent: var(--wc-ai-autopilot);  --mode-accent-text: var(--wc-ai-autopilot-text); }
 
-/* CSS-variable scope over glow + capsule; generates no box, so the fixed
-   children still position against the viewport. */
+/* CSS-variable scope over the glow; generates no box, so the fixed glow
+   still positions against the viewport. */
 .ai-mode-scope { display: contents; }
 
 .control-lease-glow {
@@ -965,42 +965,64 @@ html, body {
 /* An MCP client is connected but the human drives. */
 .control-lease-glow.glow-faint { opacity: 0.35; }
 
-/* Glass capsule holding the mode chip + Take-control button. Its own
-   backdrop-filter makes it a containing block — fine while it has no
-   position:fixed descendants (the glow is a sibling). */
-.ai-cluster {
-  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: var(--wc-z-capsule);
-  display: flex; align-items: center; gap: var(--wc-space-1); padding: 3px 4px;
-  border-radius: var(--wc-radius-pill);
-  border-color: color-mix(in srgb, var(--mode-accent) 35%, transparent) !important;
-  transition: border-color var(--wc-duration-base) var(--wc-ease-enter);
+/* The status chip carries the AI session: Waldo's antenna tips, and its
+   eyes while it drives, take the mode's accent; its label sits beside the
+   connection word, and Take control pops out once the AI drives. */
+.status-footer .footer-mode { --face-ai: var(--mode-accent); }
+.status-footer .footer-ai-mode {
+  position: relative; color: var(--mode-accent-text); font-weight: 600; cursor: pointer;
+  padding: 1px 6px; margin-left: 4px; border-radius: var(--wc-radius-pill);
+  transition: background-color var(--wc-duration-fast) var(--wc-ease-enter);
+  animation: wc-ai-slide var(--wc-duration-base) var(--wc-ease-pop);
 }
-.ai-cluster.ai-driving { border-color: color-mix(in srgb, var(--mode-accent) 65%, transparent) !important; }
+/* A straight divider from the connection word; the label's own border
+   would follow its pill corners. */
+.status-footer .footer-ai-mode::before {
+  content: ""; position: absolute; left: -2px; top: 3px; bottom: 3px; width: 1px;
+  background: color-mix(in srgb, currentColor 35%, transparent);
+}
+.status-footer .footer-ai-mode:hover { background: color-mix(in srgb, var(--mode-accent) 18%, transparent); }
+@keyframes wc-ai-slide {
+  from { transform: translateX(-6px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+/* A new mode flips in. */
+.status-footer .footer-ai-mode.ai-swap-a { animation: wc-ai-swap-a var(--wc-duration-base) var(--wc-ease-pop); }
+.status-footer .footer-ai-mode.ai-swap-b { animation: wc-ai-swap-b var(--wc-duration-base) var(--wc-ease-pop); }
+@keyframes wc-ai-swap-a { from { transform: rotateX(90deg); opacity: 0.3; } to { transform: none; opacity: 1; } }
+@keyframes wc-ai-swap-b { from { transform: rotateX(90deg); opacity: 0.3; } to { transform: none; opacity: 1; } }
 
-/* Text-only at rest so the capsule reads as one pill (no pill-in-pill);
-   the hover tint is the click affordance. */
-.ai-cluster .control-mode-chip {
-  background: transparent !important;
-  color: var(--mode-accent-text) !important;
-  border-radius: var(--wc-radius-pill); font-weight: 500; margin: 0;
+/* While the AI drives, the chip is handed over: the connection word steps
+   aside for the mode, and an accent ring breathes on the glow's clock. */
+.status-footer .footer-mode.ai-driving .footer-mode-word { display: none; }
+.status-footer .footer-mode.ai-driving .footer-ai-mode { margin-left: 0; }
+.status-footer .footer-mode.ai-driving .footer-ai-mode::before { display: none; }
+.status-footer .footer-mode.ai-driving {
+  box-shadow: inset 0 0 0 1.5px var(--mode-accent);
+  animation: wc-ai-ring var(--wc-duration-ambient) var(--wc-ease-loop) infinite;
 }
-.ai-cluster .control-mode-chip:hover {
-  background: color-mix(in srgb, var(--mode-accent) 15%, transparent) !important;
+@keyframes wc-ai-ring {
+  0%, 100% { box-shadow: inset 0 0 0 1.5px var(--mode-accent); }
+  50%      { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--mode-accent) 35%, transparent); }
 }
 
-/* The only solid-filled element in the capsule: pops out when the AI takes
-   the lease (the entry animation replays on every hidden -> visible flip)
-   and pulses on the glow-breathe clock. */
-.ai-cluster .btn-take-control {
+/* Solid-filled: pops out as the chip's right-hand cap when the AI takes the
+   lease (the entry animation replays on every hidden -> visible flip) and
+   pulses on the glow-breathe clock. Drawn 2px inside the chip, so the global
+   button minimum is overridden; the ::after keeps the touch target. */
+.status-footer .footer-mode.ai-driving { padding-right: 2px; }
+.status-footer .footer-mode .btn-take-control {
   background: var(--mode-accent) !important;
   color: var(--wc-on-bright) !important;
-  border-radius: var(--wc-radius-pill); font-weight: 600;
-  /* Chip-height so the capsule doesn't grow when the button pops in. */
-  font-size: 0.75rem; min-height: 0; padding: 1px 10px;
+  position: relative; border-radius: var(--wc-radius-pill); font-weight: 600; font-size: 0.7rem;
+  min-height: 0 !important; height: 20px; padding: 0 8px 0 6px !important; margin-left: 6px;
   animation: wc-popout var(--wc-duration-base) var(--wc-ease-pop),
              wc-btn-pulse var(--wc-duration-ambient) var(--wc-ease-loop) infinite;
 }
-.ai-cluster .btn-take-control .q-icon { font-size: 1.3em; }
+.status-footer .footer-mode .btn-take-control::after {
+  content: ""; position: absolute; inset: -6px 0;
+}
+.status-footer .footer-mode .btn-take-control .q-icon { font-size: 1.2em; margin-right: 3px; }
 @keyframes wc-popout {
   from { transform: translateX(-10px) scale(0.85); opacity: 0; }
   to   { transform: none; opacity: 1; }
@@ -1027,7 +1049,8 @@ html, body {
 .ai-approval-card .btn-consent-allow:hover {
   background: var(--wc-action-hover) !important;
 }
-.ai-approval-card.consent-hw .ai-approval-icon { color: var(--wc-warning); }
+/* Over the guest Waldo's text colour class, which Quasar marks !important. */
+.ai-approval-card.consent-hw .ai-approval-icon { color: var(--wc-warning) !important; }
 .ai-approval-card.consent-hw .ai-approval-desc { border-left-color: var(--wc-warning-fill); }
 .ai-approval-card.consent-hw .btn-consent-allow {
   background: var(--wc-warning-fill) !important;
@@ -1944,7 +1967,8 @@ body:has(.panels-wrap.column-open) .bottom-panel {
 
 /* ========== Reduced motion ========== */
 @media (prefers-reduced-motion: reduce) {
-  .control-glow-breathe, .ai-cluster .btn-take-control, .recording-notification .q-notification__icon,
+  .control-glow-breathe, .status-footer .btn-take-control, .status-footer .footer-mode.ai-driving,
+  .status-footer .footer-ai-mode, .recording-notification .q-notification__icon,
   .record-btn.recording .q-icon, .robot-face-happy svg, .robot-face-neutral svg, .robot-face-sad svg,
   .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next,
   .status-footer .footer-tool, .io-pop-a, .io-pop-b, .action-line, .action-line *,

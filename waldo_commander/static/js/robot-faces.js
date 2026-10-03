@@ -7,7 +7,8 @@
  *
  * One face is primary: the status footer's. Python drives it through
  * robotFaceReact(kind) (one-shot) and robotFaceHold(name, value) (held until
- * changed: E-STOP, jog look, recording light). The primary's held state
+ * changed: E-STOP, jog look, recording light, an AI session around or
+ * driving, an AI request awaiting approval). The primary's held state
  * lives outside any Robot so it survives a mood swap, which re-renders the
  * SVG. Guest faces (the E-STOP dialog, the run-bar peek, empty states, the
  * takeover overlay) keep their own.
@@ -28,7 +29,7 @@ const DEFAULT_MOUTH = { happy: 'smile', neutral: 'flat', sad: 'frown' };
 
 const LOOK_MIN_MS = 450;
 
-const _primaryHeld = { estop: false, look: null, recording: false };
+const _primaryHeld = { estop: false, look: null, recording: false, ai: null, ask: false };
 const _faces = new WeakMap(); // mount root -> Robot
 let _primary = null;
 let _primaryMood = null;
@@ -78,6 +79,7 @@ class Robot {
     this.epoch = 0;
     this.anims = new Set();
     this.recAnim = null;
+    this.aiAnim = null;
     this._dur = new WeakMap();
     if (this.mouthContainer) {
       for (const c of this.mouthContainer.children) {
@@ -235,6 +237,22 @@ class Robot {
     ], { duration: ms, easing: 'ease-in-out' });
   }
 
+  /* Radio waves rising off both antenna tips, *times* over. */
+  async radio(times = 2) {
+    const waves = this.part('ai-waves');
+    if (!waves) return;
+    waves.setAttribute('opacity', '1');
+    const arcs = [...waves.children];
+    for (let k = 0; k < times; k++) {
+      await Promise.all(arcs.map((arc, i) => this.play(arc, [
+        { opacity: 0, transform: 'scale(0.6)' },
+        { opacity: 1, offset: 0.35 },
+        { opacity: 0, transform: 'scale(1.3)' },
+      ], { duration: 650, delay: i < 2 ? 0 : 140, easing: 'ease-out' })));
+    }
+    waves.setAttribute('opacity', '0');
+  }
+
   async sparkle(duration = 1100) {
     const group = this.part('sparkle');
     if (!group) return;
@@ -287,6 +305,31 @@ class Robot {
       }
     }
     this.applyRecording();
+    this.applyAi();
+  }
+
+  /* The AI's colour on the antenna tips while a session is around; while it
+   * drives, the pupils too and the tips pulse. A question mark while a
+   * request waits for the human. */
+  applyAi() {
+    const ai = this.held.ai;
+    const driving = ai === 'driving';
+    const tips = this.part('ai-tips');
+    if (tips) tips.setAttribute('opacity', ai ? '1' : '0');
+    for (const el of [this.pupilL, this.pupilR]) {
+      if (el) el.style.fill = driving ? 'var(--face-ai, currentColor)' : '';
+    }
+    const ask = this.part('ask');
+    if (ask) ask.setAttribute('opacity', this.held.ask ? '1' : '0');
+    if (driving && tips && !this.aiAnim && !reducedMotion() && typeof tips.animate === 'function') {
+      this.aiAnim = tips.animate(
+        [{ opacity: 1 }, { opacity: 0.35 }, { opacity: 1 }],
+        { duration: 900, iterations: Infinity, easing: 'ease-in-out' },
+      );
+    } else if (!driving && this.aiAnim) {
+      this.aiAnim.cancel();
+      this.aiAnim = null;
+    }
   }
 
   applyRecording() {
@@ -850,7 +893,130 @@ const REACTIONS = {
     r.setMouth(r.defaultMouth, 250);
     await r.wait(300);
   },
+
+  /* An AI client connects: the antennae light up and send out a hello. */
+  async 'ai-hello'(r) {
+    r.setEyeSize(2.15, 0.15);
+    r.setMouth('o', 120);
+    r.applyAi();
+    r.spawn(r.antenna, [
+      { transform: 'translateY(0)' },
+      { transform: 'translateY(-0.6px)', offset: 0.3 },
+      { transform: 'translateY(0)' },
+    ], { duration: 450, easing: 'ease-out' });
+    await r.radio(2);
+    r.resetEyeSize(0.2);
+    r.setMouth('grin', 150);
+    await r.wait(450);
+  },
+
+  /* It leaves: the tips go dark and the antennae droop. */
+  async 'ai-bye'(r) {
+    const tips = r.part('ai-tips');
+    if (tips) {
+      tips.setAttribute('opacity', '1');
+      await r.play(tips, [{ opacity: 1 }, { opacity: 0 }], { duration: 600, easing: 'ease-in' });
+      tips.setAttribute('opacity', '0');
+    }
+    r.movePupils(0, 0.4, 0.4);
+    await r.droop(1200);
+  },
+
+  /* It takes the controls: a scan sweeps down the face and the eyes take
+   * its colour. */
+  async 'ai-take'(r) {
+    r.setEyeSize(1.55, 0.2);
+    r.setMouth('flat', 120);
+    await r.play(r.part('ai-scan'), [
+      { opacity: 0, transform: 'translateY(0)' },
+      { opacity: 0.9, transform: 'translateY(1px)', offset: 0.1 },
+      { opacity: 0.9, transform: 'translateY(8.6px)', offset: 0.9 },
+      { opacity: 0, transform: 'translateY(9.55px)' },
+    ], { duration: 750, easing: 'ease-in-out' });
+    r.applyAi();
+    await r.radio(1);
+    r.resetEyeSize(0.25);
+    await r.wait(250);
+  },
+
+  /* The human takes them back: shake it off, blink, breathe out. */
+  async 'ai-release'(r) {
+    r.setMouth('zigzag', 100);
+    await r.play(r.rig, shake(0.6, 7), { duration: 500, easing: 'linear' });
+    r.applyAi();
+    await r.blink(140);
+    r.setMouth('o', 120);
+    await r.play(r.rig, [
+      { transform: 'translateY(0) scale(1, 1)' },
+      { transform: 'translateY(0.5px) scale(1.03, 0.96)', offset: 0.5 },
+      { transform: 'translateY(0) scale(1, 1)' },
+    ], { duration: 700, easing: 'ease-in-out' });
+  },
+
+  /* A request waits for approval: a tilt and a look up at the question. */
+  async 'ai-ask'(r) {
+    r.applyAi();
+    r.setMouth('slant', 150);
+    r.movePupils(0.5, -0.4, 0.3);
+    r.spawn(r.part('ask'), POP_IN, { duration: 380, easing: 'ease-out' });
+    await r.play(r.rig, [
+      { transform: 'rotate(0deg)' },
+      { transform: 'rotate(-7deg)', offset: 0.4 },
+      { transform: 'rotate(-5deg)', offset: 0.8 },
+      { transform: 'rotate(0deg)' },
+    ], { duration: 1100, easing: 'ease-in-out' });
+  },
+
+  async nod(r) {
+    r.setMouth('grin', 120);
+    await r.play(r.rig, [
+      { transform: 'translateY(0)' },
+      { transform: 'translateY(0.9px)', offset: 0.25 },
+      { transform: 'translateY(0)', offset: 0.5 },
+      { transform: 'translateY(0.9px)', offset: 0.75 },
+      { transform: 'translateY(0)' },
+    ], { duration: 700, easing: 'ease-in-out' });
+    await r.wait(300);
+  },
+
+  async headshake(r) {
+    r.setMouth('slant', 120);
+    await r.play(r.rig, [
+      { transform: 'rotate(0deg)' },
+      { transform: 'rotate(-8deg)', offset: 0.2 },
+      { transform: 'rotate(8deg)', offset: 0.45 },
+      { transform: 'rotate(-5deg)', offset: 0.7 },
+      { transform: 'rotate(0deg)' },
+    ], { duration: 650, easing: 'ease-in-out' });
+    await r.wait(300);
+  },
+
+  /* A new AI control mode: the tips flash in its colour. */
+  async 'ai-mode'(r) {
+    r.applyAi();
+    const tips = r.part('ai-tips');
+    r.spawn(r.antenna, [
+      { transform: 'rotate(0deg)' }, { transform: 'rotate(3deg)', offset: 0.35 },
+      { transform: 'rotate(-2deg)', offset: 0.7 }, { transform: 'rotate(0deg)' },
+    ], { duration: 450 });
+    if (tips) {
+      await Promise.all([...tips.children].map(tip => r.play(tip, [
+        { transform: 'scale(1)' },
+        { transform: 'scale(1.8)', offset: 0.4 },
+        { transform: 'scale(1)' },
+      ], { duration: 450, easing: 'ease-out' })));
+    }
+    await r.wait(200);
+  },
 };
+
+/* The reaction for an AI session's arrival, departure, or change of hands. */
+function aiTransition(was, now) {
+  if (was === now) return null;
+  if (now === 'driving') return 'ai-take';
+  if (was === 'driving') return 'ai-release';
+  return now ? 'ai-hello' : 'ai-bye';
+}
 
 function schedule(r, idle) {
   const [lo, hi] = idle.every;
@@ -880,6 +1046,13 @@ function holdOn(r, name, value, was) {
   } else if (name === 'recording') {
     r.applyRecording();
     if (value && !was && !r.held.estop) r.react(REACTIONS.cheese).catch(logUnlessAbort);
+  } else if (name === 'ai') {
+    const kind = aiTransition(was, value);
+    if (kind && !r.held.estop) r.react(REACTIONS[kind]).catch(logUnlessAbort);
+    else r.applyAi();
+  } else if (name === 'ask') {
+    if (value && !was && !r.held.estop) r.react(REACTIONS['ai-ask']).catch(logUnlessAbort);
+    else r.applyAi();
   } else if (!r.held.estop) {
     r.interrupt();
     r.applyHeld();
@@ -922,7 +1095,7 @@ function mountOn(el, svg, mood, opts) {
   if (old) old.stop();
   const held = opts.primary
     ? _primaryHeld
-    : { estop: false, look: null, recording: false, ...(opts.hold || {}) };
+    : { estop: false, look: null, recording: false, ai: null, ask: false, ...(opts.hold || {}) };
   const r = new Robot(svg, mood, held);
   _faces.set(el, r);
   r.setMouth(r.defaultMouth, 0);
@@ -1029,8 +1202,9 @@ window.robotFaceReact = function(kind) {
 
 /**
  * Set a held state on the primary face.
- * @param {'estop'|'look'|'recording'} name
- * @param {boolean|number[]|null} value - look takes [dx, dy, tiltDeg] or null
+ * @param {'estop'|'look'|'recording'|'ai'|'ask'} name
+ * @param {boolean|number[]|string|null} value - look takes [dx, dy, tiltDeg]
+ *   or null; ai takes "present", "driving" or null
  */
 window.robotFaceHold = function(name, value) {
   if (!(name in _primaryHeld)) return;

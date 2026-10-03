@@ -2,8 +2,9 @@
 
 The readout face and the scene effects are JavaScript: whether Python asked
 for a reaction says nothing about what the browser shows. These drive real
-events — a page load, taps on the jog pad, a digital E-STOP, a fresh path —
-and read the resulting DOM and three.js state.
+events — a page load, taps on the jog pad, a digital E-STOP, a fresh path,
+an AI session taking control — and read the resulting DOM and three.js
+state.
 
 The test browser runs with prefers-reduced-motion forced on, which keeps
 every other browser test deterministic; the scene test turns it off for
@@ -41,6 +42,22 @@ return {
 };
 """
 _FOOTER = ".footer-mode"
+
+# What the status chip shows of an AI session: the antenna tips lit, the
+# eyes in the mode's colour, the mode's label and the Take control button.
+_AI_JS = """
+const chip = document.querySelector(arguments[0]);
+const svg = chip && chip.querySelector('svg[data-mood]');
+if (!svg) return null;
+const shown = el => !!el && el.getClientRects().length > 0;
+const mode = chip.querySelector('.footer-ai-mode');
+return {
+  tips: svg.querySelector('[data-part="ai-tips"]').getAttribute('opacity'),
+  driving: svg.querySelector('.pupil').style.fill.includes('face-ai'),
+  mode: shown(mode) ? mode.textContent.trim() : '',
+  take: shown(chip.querySelector('.btn-take-control')),
+};
+"""
 
 # Whether the run-bar Waldo sits wholly below its clip, out of sight.
 _PEEK_HIDDEN_JS = """
@@ -237,6 +254,58 @@ class TestAnimations:
             15,
             "the footer face stopped idling once the dialog's Waldo was gone",
         )
+
+    def test_an_ai_session_takes_over_the_status_chip(self, class_screen) -> None:
+        """An MCP client around lights Waldo's antenna tips and puts its
+        control mode beside the connection; one that takes control turns its
+        eyes to the mode's colour and offers Take control, which hands the
+        chip back."""
+        from waldo_commander.services.control_lease import (
+            BROWSER,
+            MCP,
+            control_lease,
+            mcp_touch,
+        )
+        from waldo_commander.state import ui_state
+
+        screen = class_screen
+        dismiss_dialogs(screen)
+        try:
+            run_in_app(lambda: mcp_touch("anim-mcp"))
+            around = _poll(
+                screen,
+                _AI_JS,
+                lambda v: v["tips"] == "1" and v["mode"] == "Inspect",
+                10,
+                "an MCP client did not light the antenna tips or show its mode",
+                _FOOTER,
+            )
+            assert not around["driving"] and not around["take"], around
+            run_in_app(
+                lambda: control_lease.seize(MCP, "anim-mcp", "MCP session anim-mc")
+            )
+            _poll(
+                screen,
+                _AI_JS,
+                lambda v: v["driving"] and v["take"],
+                10,
+                "an AI holding control did not take the eyes or offer Take control",
+                _FOOTER,
+            )
+            screen.selenium.find_element(By.CSS_SELECTOR, ".btn-take-control").click()
+            _poll(
+                screen,
+                _AI_JS,
+                lambda v: not v["driving"] and not v["take"],
+                10,
+                "Take control did not hand the chip back",
+                _FOOTER,
+            )
+            assert run_in_app(
+                lambda: control_lease.held_by(BROWSER, ui_state.active_client_id or "")
+            )
+        finally:
+            run_in_app(control_lease.reset)
 
     def test_a_finished_run_raises_waldo_over_the_run_bar(self, class_screen) -> None:
         screen = class_screen

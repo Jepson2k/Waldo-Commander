@@ -312,12 +312,13 @@ async def test_hard_reclaim_leaves_robot_drivable(user: User) -> None:
 async def test_mode_theme_approval_cards_and_persisted_mode(user: User) -> None:
     """A dismissed consent prompt re-prompts instead of wedging. The
     ``wc-mode-*`` class is the single theming source of truth: ``_apply_mode``
-    stamps it on the scope div (glow + capsule). The approval card stays
-    app-styled (no mode class). Glow intensity is class-driven — faint while
-    the human drives with an AI connected, breathing when an AI session holds
-    the lease — and the approval card switches to the amber hardware variant
-    only for the session-consent kind. The human's mode choice survives an
-    app restart."""
+    stamps it on the glow's scope and the status chip. The approval card
+    stays app-styled (no mode class). The chip carries the AI session — its
+    mode beside the connection while a client is around, handed over with
+    Take control while it drives — and the glow is faint, then breathing, in
+    step. The approval card switches to the amber hardware variant only for
+    the session-consent kind. The human's mode choice survives an app
+    restart."""
     from nicegui import app as ng_app
 
     from waldo_commander.services.control_lease import (
@@ -335,6 +336,8 @@ async def test_mode_theme_approval_cards_and_persisted_mode(user: User) -> None:
 
     panel = ui_state.control_panel
     ng_client = cl.Client.instances[ui_state.active_client_id]
+    footer = ui_state._readout_panel
+    chip, ai_mode, take = footer._robot_chip, footer._ai_mode, footer.take_control_btn
     try:
         # ESC/backdrop-dismissing the consent dialog (no Allow/Deny click)
         # leaves the request pending, and the next refresh re-opens it.
@@ -356,40 +359,44 @@ async def test_mode_theme_approval_cards_and_persisted_mode(user: User) -> None:
 
         with ng_client:
             panel._apply_mode(ControlMode.AUTOPILOT)
-        assert "wc-mode-autopilot" in panel._mode_scope.classes
-        assert "wc-mode-inspect" not in panel._mode_scope.classes
-        assert "wc-mode-auto-edits" not in panel._mode_scope.classes
+        for scope in (panel._mode_scope, chip):
+            assert "wc-mode-autopilot" in scope.classes
+            assert "wc-mode-inspect" not in scope.classes
+            assert "wc-mode-auto-edits" not in scope.classes
         # The approval card is app-styled — mode classes never land on it.
         assert not any(c.startswith("wc-mode-") for c in panel._approval_card.classes)
-        assert panel._mode_chip.text == "Autopilot"
+        assert ai_mode.text == "Autopilot"
         with ng_client:
             panel._apply_mode(ControlMode.INSPECT)
-        assert "wc-mode-inspect" in panel._mode_scope.classes
-        assert "wc-mode-autopilot" not in panel._mode_scope.classes
+        for scope in (panel._mode_scope, chip):
+            assert "wc-mode-inspect" in scope.classes
+            assert "wc-mode-autopilot" not in scope.classes
+        assert ai_mode.text == "Inspect"
 
-        # No MCP client at all: the capsule is hidden entirely — an empty
-        # glass pill floating at top-center is a visual bug.
+        # No MCP client at all: the chip shows only the connection.
         control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
         with ng_client:
             panel.refresh_control_indicator()
-        assert panel._cluster_row.visible is False
+        assert not ai_mode.visible and not take.visible
 
-        # AI connected, human driving: faint glow, capsule ring stays calm.
+        # AI connected, human driving: faint glow, the mode beside the
+        # connection, no Take control.
         mcp_touch("sess-x")
         with ng_client:
             panel.refresh_control_indicator()
-        assert panel._cluster_row.visible is True
+        assert ai_mode.visible and not take.visible
         assert "glow-faint" in panel._control_glow.classes
         assert "control-glow-breathe" not in panel._control_glow.classes
-        assert "ai-driving" not in panel._cluster_row.classes
+        assert "ai-driving" not in chip.classes
 
-        # AI seizes: breathing at full strength, capsule ring brightens.
+        # AI seizes: breathing at full strength, the chip handed over.
         control_lease.seize(MCP, "sess-x", "MCP session sess-x")
         with ng_client:
             panel.refresh_control_indicator()
         assert "control-glow-breathe" in panel._control_glow.classes
         assert "glow-faint" not in panel._control_glow.classes
-        assert "ai-driving" in panel._cluster_row.classes
+        assert "ai-driving" in chip.classes
+        assert ai_mode.visible and take.visible
 
         # Per-action approval: neutral (mode-accent) card variant.
         arm_action_prompt("sess-x", "jog joint 1")
