@@ -13,7 +13,7 @@ from tests.helpers.wait import (
     ensure_robot_ready_for_motion,
     wait_for_app_ready,
 )
-from tests.test_editor_integration import _set_selection
+from tests.test_editor_integration import _set_cursor_line, _set_selection
 from tests.test_skill_library import START
 from waldo_commander.patterns import (
     PatternProgress,
@@ -119,31 +119,33 @@ async def test_tray_loop_progress_cancellation_and_generated_signal_transfer(
         ),
     )
 
-    def element(marker):
-        return next(iter(user.find(marker=marker).elements))
-
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
-    ui_state.active_textarea.value = (
+    textarea = ui_state.active_textarea
+    textarea.value = (
         "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    pass\n"
     )
+    _set_cursor_line(textarea, 3)
     user.find(marker="editor-commands-btn").click()
     user.find(marker="editor-skill-waldo.transfer_with_signal").click()
     await asyncio.sleep(0)
-    element("skill-place-pose").set_value("place")
-    element("skill-arg-clearance_mm").set_value(2)
-    user.find(marker="skill-insert").click()
-    await asyncio.sleep(0)
-    assert (
-        "_skill_waldo_transfer_with_signal("
-        in waldoctl.commander.programs.active.source
-    )
-    textarea = ui_state.active_textarea
+    # The transfer takes its poses and its grip output from the saved setup
+    # by name; only the clearance is filled in by hand.
+    lines = str(textarea.value).split("\n")
     call = next(
         number
-        for number, line in enumerate(str(textarea.value).split("\n"), start=1)
+        for number, line in enumerate(lines, start=1)
         if "_skill_waldo_transfer_with_signal(" in line
     )
+    for field in (
+        'pick=setup.resolve("pick")',
+        'place=setup.resolve("place")',
+        'grip=setup.signals["grip"]',
+    ):
+        assert field in lines[call - 1], lines[call - 1]
+    lines[call - 1] = lines[call - 1].replace("clearance_mm=30.0", "clearance_mm=2.0")
+    textarea.value = "\n".join(lines)
+    assert "clearance_mm=2.0" in waldoctl.commander.programs.active.source
     _set_selection(textarea, call, call)
     await asyncio.sleep(0)
     user.find(marker="editor-run-selection").click()

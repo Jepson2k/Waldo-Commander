@@ -20,11 +20,6 @@ def chart_grid() -> str:
 
 def inject_panel_css() -> None:
     ui.add_css("""
-@layer quasar {
-  /* A skill's form opens where the side panels do, clear of the scene, the
-     readout and the E-stop. */
-  .skill-dialog-host > .q-dialog__inner--left { align-items: flex-start !important; padding: 12px 0 12px var(--wc-size-panel-inset) !important; }
-}
 .task-panel, .overlay-card.task-panel, .task-dialog {
   color: var(--wc-text);
   background: var(--wc-surface) !important;
@@ -125,10 +120,22 @@ def inject_panel_css() -> None:
 .handeye-camera-chip { position: absolute; left: 8px; top: 8px; font-size: 11px; line-height: 1.4; padding: 2px 7px; border-radius: 3px; background: var(--wc-well); color: var(--wc-text-muted); }
 .handeye-camera-chip-found { color: var(--wc-positive); }
 .handeye-count { font-size: 15px; font-weight: 600; color: var(--wc-text); }
-/* A skill is inserted from a dialog beside the 3D view, labelled by its diagram. */
-.skill-dialog { width: 450px; max-width: calc(100vw - 80px); margin: 0; max-height: calc(100vh - 24px) !important; }
-.skill-detail-icon { width: 42px; height: 30px; font-size: 30px; flex-shrink: 0; }
+/* A skill is labelled by its diagram. The call under the editor's cursor is
+   described above the code: the skill, the field the cursor is in, and the
+   setup entries that fit that field. */
 .skill-menu-icon { width: 34px; height: 24px; font-size: 24px; }
+.skill-strip { flex: 0 0 auto; width: 100%; min-width: 0; gap: 4px; flex-wrap: nowrap; padding: 6px 10px; border-bottom: 1px solid var(--wc-glass-border); font-size: 13px; color: var(--wc-text); }
+.skill-strip-head { width: 100%; min-width: 0; flex-wrap: nowrap; align-items: center; gap: 8px; }
+.skill-strip-icon { width: 34px; height: 24px; font-size: 24px; flex-shrink: 0; }
+.skill-strip-title { font-weight: 600; white-space: nowrap; }
+.skill-strip-summary { flex: 1 1 0; min-width: 0; font-size: 12px; color: var(--wc-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-strip-field { width: 100%; min-width: 0; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.skill-strip-field-label { font-weight: 600; }
+.skill-strip-kind { font-size: 12px; color: var(--wc-text-muted); }
+.skill-strip-names { min-width: 120px; max-width: 180px; }
+.skill-strip-input { width: 104px; }
+.skill-strip .q-btn { text-transform: none; }
+.skill-strip-note { font-size: 12px; line-height: 1.4; color: var(--wc-warning); overflow-wrap: anywhere; }
 .editor-toolbar-menu { min-width: 190px; }
 .editor-toolbar-menu .q-item { min-height: 36px; }
 .event-detail-grid { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 4px 12px; }

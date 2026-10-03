@@ -13,10 +13,7 @@ import html
 import re
 
 from nicegui import ui
-from nicegui.elements.codemirror.codemirror import (
-    DecorationSpec,
-    Diagnostic,
-)
+from nicegui.elements.codemirror.codemirror import Diagnostic
 
 import waldoctl
 
@@ -86,7 +83,7 @@ class EditorDecorations:
         textarea = ui_state.textareas_by_tab.get(tab_id)
         if textarea is None:
             return
-        specs: list[DecorationSpec] = []
+        specs: list[dict] = []
         if tab_id == waldoctl.commander.programs.active_id:
             flash_lines: set[int] = set()
             for _, lines in self._active_flashes:
@@ -107,7 +104,7 @@ class EditorDecorations:
         textarea.decorations[:] = specs
 
     @staticmethod
-    def _staged_decoration_specs(tab_id: str, textarea) -> list[DecorationSpec]:
+    def _staged_decoration_specs(tab_id: str, textarea) -> list[dict]:
         """The lines a recording session wrote and nobody has kept yet, a
         badge on each captured span saying what it became, and one where a
         capture still converting will go."""
@@ -115,7 +112,7 @@ class EditorDecorations:
         starts = [0]
         for line in lines:
             starts.append(starts[-1] + len(line) + 1)
-        specs: list[DecorationSpec] = [
+        specs: list[dict] = [
             {
                 "kind": "widget",
                 "position": starts[pending.line - 1] + len(lines[pending.line - 1]),
@@ -148,7 +145,7 @@ class EditorDecorations:
                 )
         return specs
 
-    def _diff_decoration_specs(self, tab_id: str) -> list[DecorationSpec]:
+    def _diff_decoration_specs(self, tab_id: str) -> list[dict]:
         """Build decoration specs from this tab's pending LLM edits.
 
         For each pending edit:
@@ -172,17 +169,15 @@ class EditorDecorations:
         tab = waldoctl.commander.programs.get(tab_id)
         if tab is None or not tab.edits.pending:
             return []
-        # CodeMirror document positions are UTF-16 code-unit offsets, so the
-        # widget anchor must accumulate UTF-16 lengths — Python's ``len`` counts
-        # code points, which drifts one unit per astral-plane char (e.g. an
-        # emoji) earlier in the source. Split on LF/CRLF/CR only and count
-        # every break as ONE unit: CodeMirror normalizes documents to "\n"
+        # NiceGUI's decoration API accepts Python str indices and converts
+        # them to CodeMirror's UTF-16 offsets. Split on LF/CRLF/CR only and count
+        # every break as ONE character: CodeMirror normalizes documents to "\n"
         # (a CRLF counted as 2 would drift anchors +1 per preceding line) and,
         # unlike str.splitlines, doesn't break lines on \f/\x85/U+2028.
         line_starts = [0]
         for line in re.split(r"\r\n|\r|\n", tab.source):
-            line_starts.append(line_starts[-1] + len(line.encode("utf-16-le")) // 2 + 1)
-        specs: list[DecorationSpec] = []
+            line_starts.append(line_starts[-1] + len(line) + 1)
+        specs: list[dict] = []
         for edit in tab.edits.pending:
             try:
                 hunks = waldoctl.parse_unified_diff(edit.diff)
@@ -294,7 +289,8 @@ class EditorDecorations:
         self._active_flashes.append((token, set(line_numbers)))
         self._apply_active_tab_decorations()
         textarea.reveal_line(max(line_numbers))
-        ui.timer(1.5, lambda t=token: self._expire_flash(t), once=True)
+        with textarea.client:
+            ui.timer(1.5, lambda t=token: self._expire_flash(t), once=True)
 
     def _expire_flash(self, token: int) -> None:
         before = len(self._active_flashes)
