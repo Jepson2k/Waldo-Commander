@@ -189,6 +189,24 @@ async def wait_for_tool_key(
     )
 
 
+def close_page(user: User) -> None:
+    """Close the user's page as a browser tab going away does, without waiting
+    out NiceGUI's reconnect window: its disconnect handlers free the active
+    slot, then the client is deleted.
+
+    Left alive, the page's 1 Hz ping finds the slot free and reloads through
+    the simulated user, racing the next ``user.open`` for the slot. Deleting
+    it while its reconnect wait is still pending makes that wait delete it a
+    second time, so the wait is cancelled first.
+    """
+    page = user.client
+    assert page is not None
+    for socket_id, document_id in list(page._socket_to_document_id.items()):
+        page.handle_disconnect(socket_id)
+        page._cancel_delete_task(document_id)
+    page.delete()
+
+
 async def wait_for_app_ready(timeout_s: float = 45.0) -> None:
     """Wait for app to be fully ready (startup + backend + page).
 
