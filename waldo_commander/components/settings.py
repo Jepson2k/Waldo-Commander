@@ -106,7 +106,14 @@ async def refresh_applied_tcp(client: RobotClient) -> None:
     async with AsyncExitStack() as stack:
         # A Settings push in flight adopts its own readback; wait for it.
         # One lock order, so two refreshes never hold each other's locks.
-        for view in sorted(_settings_views, key=id):
+        # A gone page's view lingers until it is collected, and its lock can
+        # be held by a task that will never finish.
+        live = (
+            view
+            for view in _settings_views
+            if view._page is not None and view._page.id in Client.instances
+        )
+        for view in sorted(live, key=id):
             await stack.enter_async_context(view._tool_lock)
         try:
             applied = await read_applied_tcp(client)
@@ -152,6 +159,7 @@ class SettingsContent:
     def __init__(self, client: RobotClient) -> None:
         self.client = client
         self.dialog: ui.dialog | None = None
+        self._page: Client | None = None
         self._shortcuts_box: ui.column | None = None
         self._tour_box: ui.column | None = None
         self._tcp_inputs: tuple[str, OffsetInputs, Client] | None = None
@@ -1248,6 +1256,7 @@ class SettingsContent:
         at the end so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
+        self._page = context.client
         context.client.on_disconnect(self._drop_queued_push)
 
         categories: list[tuple[str, str, str, list[Callable[[], None]]]] = []
