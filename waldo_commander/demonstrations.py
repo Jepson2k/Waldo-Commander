@@ -620,13 +620,14 @@ def _convert_spans(
 
     def settled(index: int, stop: int) -> bool:
         """Whether the gripper holds *index*'s position for
-        ``TOOL_SETTLE_S``, or until it stops reporting one or *stop*."""
+        ``TOOL_SETTLE_S``, or for as long as it reports one before *stop*.
+        A publication without a reading says nothing about where it is."""
         position = _tool_position(samples[index])
         assert position is not None
         for later in range(index + 1, stop + 1):
             now = _tool_position(samples[later])
             if now is None:
-                return True
+                continue
             if abs(now - position) > STILL_TOOL:
                 return False
             if _seconds(recording, index, later) >= TOOL_SETTLE_S:
@@ -648,8 +649,12 @@ def _convert_spans(
                 index += 1
                 continue
             began = index
-            while index < stop and not settled(index, stop):
-                index += 1
+            while not settled(index, stop):
+                index = next(
+                    later
+                    for later in range(index + 1, stop + 1)
+                    if _tool_position(samples[later]) is not None
+                )
             position = _tool_position(samples[index])
             assert position is not None
             changes.append((began, f"rbt.tool.set_position({position:.3f})"))
