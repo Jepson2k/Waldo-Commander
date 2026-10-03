@@ -1,8 +1,8 @@
 """Browser tests for TCP transform controls visibility and interaction.
 
 Tests verify that the TCP ball (gizmo handle sphere) and TransformControls
-are properly created and visible in the Three.js scene after page load,
-and that dragging the TCP ball moves the robot.
+are properly created and visible in the Three.js scene once the pointer rests
+on the last link, and that dragging the TCP ball moves the robot.
 
 Uses class-scoped browser session to reduce browser startup overhead.
 Screenshot-based approach inspired by Three.js testing methodology.
@@ -17,8 +17,9 @@ from PIL import Image
 
 from tests.conftest import skip_webgl_macos_ci
 
-from tests.helpers.browser_helpers import js
+from tests.helpers.browser_helpers import hover_scene_object, js
 from tests.helpers.wait import (
+    screen_get_scene_object,
     screen_list_scene_objects,
     screen_wait_for_scene_ready,
     screen_wait_for_tcp_ball,
@@ -450,8 +451,12 @@ class TestTCPTransformControls:
     """TCP transform control tests sharing a browser session."""
 
     def test_tcp_ball_exists_in_scene(self, class_screen: "Screen") -> None:
-        """Test that TCP ball sphere exists in the Three.js scene after page load."""
+        """Test that TCP ball sphere exists in the Three.js scene once L6 is hovered."""
         screen_wait_for_scene_ready(class_screen, timeout_s=30.0)
+        assert screen_get_scene_object(class_screen, "tcp:ball") is None, (
+            "the gizmo waits for a hover"
+        )
+        hover_scene_object(class_screen, "link:L6")
 
         tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
 
@@ -466,11 +471,18 @@ class TestTCPTransformControls:
 
     def test_tcp_ball_at_tcp_position(self, class_screen: "Screen") -> None:
         """Test that TCP ball position matches robot TCP coordinates."""
+        hover_scene_object(class_screen, "link:L6")
         tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
 
         assert tcp_ball is not None, "TCP ball should exist"
-        pos = tcp_ball.get("position")
-        assert pos is not None, "TCP ball should have a position"
+        assert tcp_ball.get("position") == {"x": 0, "y": 0, "z": 0}, (
+            "at rest the ball sits on its frame's origin"
+        )
+        # The frame is a child of the scene root, so its position is world.
+        frame = screen_get_scene_object(class_screen, "tcp:ball_frame")
+        assert frame is not None, "TCP ball frame should exist"
+        pos = frame.get("position")
+        assert pos is not None, "TCP ball frame should have a position"
 
         # Ball should NOT be exactly at origin
         is_at_origin = (
@@ -485,6 +497,7 @@ class TestTCPTransformControls:
 
     def test_tcp_transform_controls_attached(self, class_screen: "Screen") -> None:
         """Test that TransformControls gizmo is attached to TCP ball."""
+        hover_scene_object(class_screen, "link:L6")
         tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
         assert tcp_ball is not None, "TCP ball should exist for TransformControls"
 
@@ -615,6 +628,8 @@ class TestTCPTransformControls:
         else:
             raise AssertionError("Robot did not return to the home pose")
 
+        # Clicking Home took the pointer off the arm, and the gizmo with it.
+        hover_scene_object(class_screen, "link:L6")
         # Wait for TransformControls (needed for camera reference in get_tcp_screen_position)
         found = wait_for_transform_controls(class_screen, timeout_s=10.0)
         assert found, "TransformControls needed for screen position calculation"

@@ -186,6 +186,98 @@ def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
     WebDriverWait(screen.selenium, timeout).until(tab_is_active)
 
 
+_FIND_HOVER_PIXEL = """
+const name = arguments[0];
+const c = getElement(document.querySelector('.nicegui-scene'));
+if (!c || !c.renderer || !c._raycaster) return null;
+let root = null;
+for (const o of c.objects.values()) if (o.mesh && o.mesh.name === name) root = o.mesh;
+if (!root) return null;
+root.updateWorldMatrix(true, true);
+const canvas = c.renderer.domElement;
+const rect = canvas.getBoundingClientRect();
+const rc = c._raycaster;
+const v = root.position.clone();
+const center = root.position.clone();
+let best = null;
+root.traverse((m) => {
+  if (best || !m.isMesh || !m.geometry || !m.geometry.attributes.position) return;
+  m.geometry.computeBoundingSphere();
+  center.copy(m.geometry.boundingSphere.center).applyMatrix4(m.matrixWorld);
+  const pos = m.geometry.attributes.position;
+  const stride = Math.max(1, Math.floor(pos.count / 400));
+  for (let i = 0; i < pos.count && !best; i += stride) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld).lerp(center, 0.25);
+    v.project(c.camera);
+    if (Math.abs(v.x) > 0.95 || Math.abs(v.y) > 0.95) continue;
+    const px = rect.left + (v.x + 1) / 2 * rect.width;
+    const py = rect.top + (1 - v.y) / 2 * rect.height;
+    if (document.elementFromPoint(px, py) !== canvas) continue;
+    rc.setFromCamera({ x: v.x, y: v.y }, c.camera);
+    const hits = rc.intersectObjects(c.interactiveObjects, true);
+    if (!hits.length) continue;
+    let o = hits[0].object;
+    while (o && o !== root) o = o.parent;
+    if (o === root) best = [px, py];
+  }
+});
+return best;
+"""
+
+_PROJECT_LOCAL = """
+const [name, points] = arguments;
+const c = getElement(document.querySelector('.nicegui-scene'));
+let root = null;
+for (const o of c.objects.values()) if (o.mesh && o.mesh.name === name) root = o.mesh;
+if (!root) return null;
+root.updateWorldMatrix(true, false);
+const rect = c.renderer.domElement.getBoundingClientRect();
+const v = root.position.clone();
+return points.map(([x, y, z]) => {
+  v.set(x, y, z).applyMatrix4(root.matrixWorld).project(c.camera);
+  return [rect.left + (v.x + 1) / 2 * rect.width, rect.top + (1 - v.y) / 2 * rect.height];
+});
+"""
+
+
+def scene_canvas(screen: "Screen") -> WebElement:
+    return screen.selenium.find_element(By.CSS_SELECTOR, ".nicegui-scene canvas")
+
+
+def pointer_to(screen: "Screen", x: float, y: float, actions: ActionChains) -> None:
+    """Queue a real pointer move to viewport point (x, y) on ``actions``."""
+    canvas = scene_canvas(screen)
+    rect = canvas.rect
+    actions.move_to_element_with_offset(
+        canvas,
+        round(x - (rect["x"] + rect["width"] / 2)),
+        round(y - (rect["y"] + rect["height"] / 2)),
+    )
+
+
+def project_local(
+    screen: "Screen", name: str, points: list[list[float]]
+) -> list[list[float]] | None:
+    """Viewport pixels of ``points`` given in the frame of the scene object ``name``."""
+    return js(screen, _PROJECT_LOCAL, name, points)
+
+
+def hover_scene_object(screen: "Screen", name: str, timeout: float = 20.0) -> None:
+    """Rest the real mouse on a pixel where ``name`` is the first thing the scene's
+    pointer ray hits, so the scene reports it as hovered."""
+    deadline = _time.monotonic() + timeout
+    while True:
+        pixel = js(screen, _FIND_HOVER_PIXEL, name)
+        if pixel is not None:
+            break
+        if _time.monotonic() > deadline:
+            raise AssertionError(f"no pixel of {name!r} is hit first on the canvas")
+        _time.sleep(0.2)
+    actions = ActionChains(screen.selenium, duration=0)
+    pointer_to(screen, pixel[0], pixel[1], actions)
+    actions.perform()
+
+
 def find_button_by_icon(screen: "Screen", icon_name: str) -> WebElement | None:
     """Find a button containing a Material icon.
 
