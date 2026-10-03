@@ -651,7 +651,11 @@ async def test_commander_runs_on_the_par6_runtime(
 
         # A loaded runner can drop a status frame, and replay refuses to
         # infer motion across one: replay the longest uninterrupted span.
-        breaks = [0, *(gap.index for gap in recording.gaps), len(recording.samples)]
+        breaks = [
+            0,
+            *(gap.sample_index for gap in recording.gaps),
+            len(recording.samples),
+        ]
         start, stop = max(zip(breaks, breaks[1:]), key=lambda s: s[1] - s[0])
         assert stop - start >= 2, f"no uninterrupted span in {recording.gaps}"
         span = recording.select(start, stop)
