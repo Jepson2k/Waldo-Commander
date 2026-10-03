@@ -214,7 +214,8 @@ async def test_set_simulator_syncs_gui_mode_visuals(
                 "mode button must reflect hardware mode after an MCP switch"
             )
             if playback.speed_fab is not None:
-                assert playback.speed_fab.visible is False
+                assert playback.speed_fab.visible is True
+                assert playback._speed_2x.visible is False
     finally:
         waldoctl.commander.status.simulator_active = True
         control_lease.reset()

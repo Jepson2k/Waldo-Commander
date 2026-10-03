@@ -310,7 +310,7 @@ async def test_a_write_stuck_in_the_queue_stops_and_a_held_step_is_not_charged(
         while time.monotonic() < held_until:
             assert is_any_program_running()
             await asyncio.sleep(0.1)
-        script_exec.signal_play()
+        await script_exec.signal_play()
         async with asyncio.timeout(15):
             while is_any_program_running():
                 await asyncio.sleep(0.05)

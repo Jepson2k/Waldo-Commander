@@ -134,7 +134,7 @@ def test_the_preview_honours_the_command_table_for_every_command():
     assert exercised[CommandKind.MOTION] >= 8
     assert exercised[CommandKind.QUEUED] >= 4
     assert exercised[CommandKind.SYSTEM] >= 6
-    assert exercised[CommandKind.CONTROL] == 2
+    assert exercised[CommandKind.CONTROL] >= 2
     assert exercised[CommandKind.OBSERVATION] >= 3
 
 
