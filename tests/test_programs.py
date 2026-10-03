@@ -122,3 +122,41 @@ def test_insert_below_line_matches_indentation():
     text = "a()\n\nb()\n"
     new, _, _ = insert_below_line(text, "x()", 2)
     assert new.split("\n")[2] == "x()"
+
+
+@pytest.mark.parametrize("ender", ["sys.exit()", "exit()", "quit()", "sys.exit(0)"])
+def test_a_script_that_exits_cleanly_keeps_what_it_drew(ender):
+    """`sys.exit()` and the `exit()`/`quit()` builtins raise SystemExit,
+    which is not an `Exception` -- it passed both handlers in the worker and
+    left the whole preview, throwing away every segment collected before it.
+
+    A script that ends by exiting cleanly has ended, not failed.
+    """
+    program_text = (
+        "import sys\n"
+        "from parol6 import RobotClient\n"
+        "rbt = RobotClient()\n"
+        "rbt.home()\n"
+        "rbt.move_j([90, -90, 180, 0, 0, 180], speed=0.5, wait=True)\n"
+        f"{ender}\n"
+        "rbt.move_j([80, -90, 180, 0, 0, 180], speed=0.5, wait=True)\n"
+    )
+    result = _run_simulation_isolated(
+        program_text,
+        dry_run_client_cls=DryRunRobotClient,
+    )
+    assert result["error"] is None, (
+        f"a clean {ender} was reported as a failure: {result['error']}"
+    )
+    assert result["segments"], f"the move before {ender} was thrown away with the exit"
+
+
+def test_a_script_exiting_nonzero_is_reported_as_a_failure():
+    """The other half: a non-zero code is the script reporting its own
+    failure, and must not be swallowed as a clean end."""
+    program_text = "import sys\nsys.exit(3)\n"
+    result = _run_simulation_isolated(
+        program_text,
+        dry_run_client_cls=DryRunRobotClient,
+    )
+    assert result["error"] and "3" in result["error"], result["error"]

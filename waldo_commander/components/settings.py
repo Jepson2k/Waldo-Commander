@@ -78,11 +78,7 @@ class SettingsContent:
         self._variant_container: ui.column | None = None
         self._tcp_offset_container: ui.column | None = None
         self._tcp_pushing = False
-        self._tcp_push_next: tuple[str, dict, OffsetInputs, Client, int] | None = None
-        # Bumped by every tool change. A push carries the epoch it was
-        # queued under, so an edit in flight when the tool changes is
-        # dropped rather than re-applied to the tool that replaced it.
-        self._tool_epoch = 0
+        self._tcp_push_next: tuple[str, dict, OffsetInputs, Client] | None = None
 
     def _load_preferences(self) -> dict:
         """Load persisted preferences from storage."""
@@ -306,7 +302,7 @@ class SettingsContent:
         One push runs at a time: overlapping pushes race each other's
         readbacks, and the loser adopts an intermediate value the user has
         already typed past."""
-        self._tcp_push_next = (tool_key, vals, inputs, page_client, self._tool_epoch)
+        self._tcp_push_next = (tool_key, vals, inputs, page_client)
         if self._tcp_pushing:
             return
         self._tcp_pushing = True
@@ -324,15 +320,9 @@ class SettingsContent:
         vals: dict,
         inputs: OffsetInputs,
         page_client: Client,
-        epoch: int,
     ) -> None:
         """Set the offset and adopt what the controller reports back, so the
         GUI's TCP is the one the controller plans with."""
-        if epoch != self._tool_epoch:
-            # The tool changed while this edit was queued. The controller
-            # zeroed its offset for the new tool; sending the old tool's
-            # number now would silently restore it.
-            return
         x, y, z = (float(vals.get(k, 0) or 0) for k in ("x", "y", "z"))
         back: list[float] = []
         try:
@@ -544,7 +534,8 @@ class SettingsContent:
     def _build_tool_section(self) -> None:
         async def _on_tool_change(e):
             tool = e.value
-            self._tool_epoch += 1
+            # The controller zeroes its offset for the new tool, so an edit
+            # queued for the old one must not be sent after the change.
             self._tcp_push_next = None
             vk = self._get_variant_key(tool)
             try:

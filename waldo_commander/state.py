@@ -205,27 +205,51 @@ class AutomationState:
 class RobotEventLog:
     """Chronological log of robot warnings and errors.
 
-    The banner shows only the *standing* conditions (they self-clear);
-    this keeps what happened, so a warning that flickered while nobody
-    was watching is still discoverable.
+    The banner shows only the *standing* conditions (they self-clear); this
+    keeps what happened, so a warning that flickered while nobody was
+    watching is still discoverable.
+
+    Entries carry the whole structured error rather than a summary line: the
+    cause, the effect and the remedy are the parts that say what to do, and
+    dropping them leaves a log that can only report that something was
+    wrong.
     """
 
-    entries: list[tuple[str, str, str, str, str]] = field(default_factory=list)
-    """(wall-clock time, severity, message, cause, remedy), oldest first."""
+    entries: list[tuple[str, int, str, str, str, str]] = field(default_factory=list)
+    """(wall-clock time, code, title, cause, effect, remedy), oldest first."""
     version: int = 0
+    unread: int = 0
+    """Entries added since the log was last looked at. Drives the tab badge;
+    cleared by :meth:`mark_read` when the Diagnostics tab renders them."""
     _MAX = 200
 
     def add(
-        self, severity: str, message: str, detail: str = "", remedy: str = ""
+        self,
+        code: int,
+        title: str,
+        cause: str = "",
+        effect: str = "",
+        remedy: str = "",
     ) -> None:
-        if self.entries and self.entries[-1][1:] == (severity, message, detail, remedy):
+        entry = (code, title, cause, effect, remedy)
+        if self.entries and self.entries[-1][1:] == entry:
             return
-        self.entries.append(
-            (time.strftime("%H:%M:%S"), severity, message, detail, remedy)
-        )
+        self.entries.append((time.strftime("%H:%M:%S"), *entry))
         if len(self.entries) > self._MAX:
             del self.entries[: -self._MAX]
         self.version += 1
+        self.unread += 1
+
+    def mark_read(self) -> None:
+        # No version bump: the log rendering keys a full rebuild on it, and
+        # the read count is not something that rendering displays.
+        self.unread = 0
+
+    def clear(self) -> None:
+        if self.entries or self.unread:
+            self.entries.clear()
+            self.unread = 0
+            self.version += 1
 
 
 @dataclass
@@ -293,6 +317,9 @@ class UiState:
     io_page: Any = None
     gripper_page: Any = None
     diagnostics_page: Any = None
+    # Kept so the editor addresses its tab directly instead of hunting the
+    # DOM for a matching icon glyph.
+    _program_tab: Any = None
     _gripper_tab: Any = None
     _build_gripper_content: Any = None
 
