@@ -189,24 +189,6 @@ async def wait_for_tool_key(
     )
 
 
-def close_page(user: User) -> None:
-    """Close the user's page as a browser tab going away does, without waiting
-    out NiceGUI's reconnect window: its disconnect handlers free the active
-    slot, then the client is deleted.
-
-    Left alive, the page's 1 Hz ping finds the slot free and reloads through
-    the simulated user, racing the next ``user.open`` for the slot. Deleting
-    it while its reconnect wait is still pending makes that wait delete it a
-    second time, so the wait is cancelled first.
-    """
-    page = user.client
-    assert page is not None
-    for socket_id, document_id in list(page._socket_to_document_id.items()):
-        page.handle_disconnect(socket_id)
-        page._cancel_delete_task(document_id)
-    page.delete()
-
-
 async def wait_for_app_ready(timeout_s: float = 45.0) -> None:
     """Wait for app to be fully ready (startup + backend + page).
 
@@ -232,6 +214,22 @@ async def wait_for_app_ready(timeout_s: float = 45.0) -> None:
             f"backend={readiness_state._backend_done}, "
             f"page={readiness_state._page_done}"
         ) from None
+
+
+async def reload_page(user: User) -> None:
+    """Reload the page as a browser does: the old tab disconnects and is gone.
+
+    A simulated client outlives its page, and its timers would keep acting
+    through ``user``: the old tab's watchdog sees the slot it just released
+    and reloads, landing the user on a takeover page later in the test.
+    """
+    old = user.client
+    for socket_id, document_id in list(old._socket_to_document_id.items()):
+        old.handle_disconnect(socket_id)
+        old._cancel_delete_task(document_id)
+    old.delete()
+    await user.open("/")
+    await wait_for_app_ready()
 
 
 async def wait_for_urdf_ready(timeout_s: float = 5.0) -> None:

@@ -682,12 +682,12 @@ class DiagnosticsPage:
         """Bus state, where anything but Up is the whole story."""
         lh = waldoctl.commander.status.link_health
         state = lh.state
+        if not state:
+            return worst, reasons
         self._set("diag-link-state", state)
         self._set("diag-link-restarts", str(lh.restarts))
         self._set("diag-link-tx-errors", str(lh.tx_errors))
         self._set("diag-link-rx-frames", str(lh.rx_frames))
-        if not state:
-            return worst, reasons
         # Backends spell the CAN states either way: ErrorPassive, ERROR_PASSIVE.
         normalised = state.lower().replace("_", "")
         level = OK if normalised in ("up", "unknown") else FAULT

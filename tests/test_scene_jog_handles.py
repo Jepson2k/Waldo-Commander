@@ -19,9 +19,9 @@ from nicegui.testing.user_interaction import UserInteraction
 from pinokin import so3_from_rpy
 
 from tests.helpers.wait import (
-    close_page,
     enable_sim,
     ensure_robot_ready_for_motion,
+    reload_page,
     simulate_click,
     teleport_to_jog_pose,
     wait_for_app_ready,
@@ -515,9 +515,7 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
     _at(user, urdf, dial, "pointerdown", 0)
     ui_state.joint_jog_timer.active = False
     _at(user, urdf, dial, "pointermove", 10)
-    close_page(user)
-    await user.open("/")
-    await wait_for_app_ready()
+    await reload_page(user)
     await ensure_robot_ready_for_motion()
     panel = ui_state.control_panel
     start = np.array(await panel.client.angles())
