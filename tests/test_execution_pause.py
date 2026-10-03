@@ -461,6 +461,9 @@ async def test_failed_program_keeps_stop_available_until_controller_confirms(
 
     handle = None
     try:
+        # A Run pressed while the controller still holds a queued command
+        # waits for it to drain instead of refusing.
+        assert await client.delay(0.5) >= 0
         await script_exec.start()
         handle = script_exec.script_handle
         assert handle is not None
