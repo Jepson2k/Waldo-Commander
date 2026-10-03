@@ -908,9 +908,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             )
             with ui.column().classes("panel-body gap-0"):
                 ui_state.diagnostics_page.build()
-            ui.element("div").classes("resize-handle-right")
-            ui.element("div").classes("resize-handle-bottom")
-            ui.element("div").classes("resize-handle-corner")
+            _add_resize_handles(PanelSlot.LEFT_TOP_TAB)
 
         _add_plugin_tab_panels(PanelSlot.LEFT_TOP_TAB, commander)
 
