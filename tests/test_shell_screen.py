@@ -16,6 +16,7 @@ from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
 )
+from selenium.webdriver.common.action_chains import ActionChains
 from nicegui import Client, core
 
 from tests.conftest import skip_webgl_macos_ci
@@ -182,6 +183,63 @@ class TestShellLayout:
             )
         )
         assert sizes["panelsHeight"] <= sizes["dialsHeight"] + 8, sizes
+
+    def test_a_hovered_dial_magnifies_in_place_with_its_caps_beside_the_name(
+        self, class_screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        measure = """
+            const box = e => { const r = e.getBoundingClientRect();
+                return {left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width}; };
+            const cells = [...document.querySelectorAll('.joint-dial-cell')];
+            const cell = cells[2];
+            const shown = e => getComputedStyle(e).visibility !== 'hidden'
+                && getComputedStyle(e).opacity !== '0';
+            return {panel: box(document.querySelector('.cp-jog-panels')),
+                    cell: box(cell), ring: box(cell.querySelector('.joint-dial-svg')),
+                    name: box(cell.querySelector('.joint-dial-name')),
+                    neighbours: [box(cells[1]), box(cells[3])],
+                    caps: [...cell.querySelectorAll('.joint-cap')].map(c => ({...box(c), shown: shown(c)})),
+                    steps: +getComputedStyle(cell.querySelector('.dial-steps')).opacity,
+                    ticks: (cell.querySelector('.dial-steps').getAttribute('d') || '').split('M').length - 1};
+        """
+        rest = js(screen, measure)
+        assert not any(c["shown"] for c in rest["caps"]), rest
+
+        cell = screen.selenium.execute_script(
+            "return document.querySelectorAll('.joint-dial-cell')[2];"
+        )
+        ActionChains(screen.selenium).move_to_element(cell).perform()
+        hot = wait(screen).until(
+            lambda _: (m := js(screen, measure))["cell"]["width"]
+            > rest["cell"]["width"] * 1.2
+            and m["steps"] > 0.5
+            and m
+        )
+        try:
+            # Magnified in place: the panel and the neighbours stay where they were.
+            assert abs(hot["panel"]["top"] - rest["panel"]["top"]) < 0.5, (rest, hot)
+            assert abs(hot["panel"]["bottom"] - rest["panel"]["bottom"]) < 0.5
+            for before, after in zip(rest["neighbours"], hot["neighbours"]):
+                assert abs(before["left"] - after["left"]) < 0.5, (before, after)
+            # The caps flank the name and stay off the ring.
+            minus, plus = hot["caps"]
+            assert minus["shown"] and plus["shown"], hot
+            assert minus["right"] <= hot["name"]["left"] + 0.5, hot
+            assert plus["left"] >= hot["name"]["right"] - 0.5, hot
+            for cap in (minus, plus):
+                assert cap["top"] >= hot["ring"]["bottom"] - 0.5, (cap, hot["ring"])
+            # Ticks mark the steps around the knob.
+            assert hot["ticks"] >= 3, hot
+        finally:
+            screen.selenium.execute_cdp_cmd(
+                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 5, "y": 5}
+            )
+        wait(screen).until(
+            lambda _: abs(js(screen, measure)["cell"]["width"] - rest["cell"]["width"])
+            < 0.5
+        )
 
     def test_a_dial_shows_a_move_made_while_the_cartesian_tab_was_open(
         self, class_screen

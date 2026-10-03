@@ -12,6 +12,16 @@ DIAL_RADIUS = 26.0
 DIAL_KNOB_RADIUS = 4.0
 #: A joint has to move this far before its dial is redrawn.
 DIAL_REDRAW_DEG = 0.5
+#: Step ticks: the closest two may sit along the ring (SVG units), how many
+#: are drawn each side of the knob, and where they run radially.
+DIAL_STEP_MIN_GAP = 2.4
+DIAL_STEP_TICKS = 6
+DIAL_STEP_INNER = 4.5
+DIAL_STEP_OUTER = 9.5
+#: Go-to-limit buttons: how far outside the ring they sit, and how far apart
+#: they stand on a full-turn track, whose two ends coincide.
+DIAL_LIMIT_OFFSET = 12.0
+DIAL_LIMIT_SPREAD_DEG = 16.0
 
 
 def _dial_point(deg: float, r: float) -> tuple[float, float]:
@@ -39,21 +49,10 @@ def _dial_arc(start_deg: float, end_deg: float, r: float) -> str:
     return f"M{x0:.2f} {y0:.2f} A{r:g} {r:g} 0 {large} {sweep} {x1:.2f} {y1:.2f}"
 
 
-def dial_static(lo: float, hi: float, r: float) -> tuple[str, str]:
-    """Track and limit ticks of a joint dial with limits ``lo..hi`` (degrees).
-
-    A span of a full turn or more draws the track as a whole circle and drops
-    the ticks."""
-    if hi - lo >= 360.0:
-        ticks = ""
-    else:
-        tick_parts = []
-        for limit in (lo, hi):
-            x0, y0 = _dial_point(limit, r - 5.0)
-            x1, y1 = _dial_point(limit, r + 5.0)
-            tick_parts.append(f"M{x0:.2f} {y0:.2f} L{x1:.2f} {y1:.2f}")
-        ticks = " ".join(tick_parts)
-    return _dial_arc(lo, hi, r), ticks
+def dial_static(lo: float, hi: float, r: float) -> str:
+    """Track of a joint dial with limits ``lo..hi`` (degrees): its ends are the
+    limits. A span of a full turn or more draws a whole circle."""
+    return _dial_arc(lo, hi, r)
 
 
 def dial_angle(
@@ -68,20 +67,60 @@ def dial_angle(
     return _dial_arc(origin, a, r), _dial_point(a, r)
 
 
+def dial_steps(lo: float, hi: float, angle: float, step: float, r: float) -> str:
+    """Ticks at whole multiples of the jog step nearest ``angle``, inside the limits.
+
+    Where neighbouring multiples would crowd the ring, only every 2nd, 5th,
+    10th… multiple is drawn, so a tick always marks a reachable step."""
+    if not (math.isfinite(angle) and math.isfinite(step) and step > 0):
+        return ""
+    per_deg = r * math.pi / 180.0
+    spacing = next(
+        (
+            step * m
+            for m in (1, 2, 5, 10, 20, 50, 100)
+            if step * m * per_deg >= DIAL_STEP_MIN_GAP
+        ),
+        step * 100,
+    )
+    nearest = round(angle / spacing)
+    parts = []
+    for k in range(nearest - DIAL_STEP_TICKS, nearest + DIAL_STEP_TICKS + 1):
+        a = k * spacing
+        if lo - 1e-9 <= a <= hi + 1e-9:
+            x0, y0 = _dial_point(a, r + DIAL_STEP_INNER)
+            x1, y1 = _dial_point(a, r + DIAL_STEP_OUTER)
+            parts.append(f"M{x0:.2f} {y0:.2f} L{x1:.2f} {y1:.2f}")
+    return " ".join(parts)
+
+
+def dial_limit_spots(
+    lo: float, hi: float, r: float
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Where the go-to-limit buttons sit: just outside each end of the track.
+    A full-turn track has one end, so they flank it."""
+    if hi - lo >= 360.0:
+        lo_at, hi_at = lo - DIAL_LIMIT_SPREAD_DEG, lo + DIAL_LIMIT_SPREAD_DEG
+    else:
+        lo_at, hi_at = lo, hi
+    return _dial_point(lo_at, r + DIAL_LIMIT_OFFSET), _dial_point(
+        hi_at, r + DIAL_LIMIT_OFFSET
+    )
+
+
 class JointDial(ui.element, component="joint_dial.js"):
     """One joint's dial. A redraw is a method call on the dial rather than an
     element update: NiceGUI re-renders a changed element from the component
     that rendered it, which for a dial is the whole joint panel."""
 
-    def __init__(self, lo: float, hi: float) -> None:
+    def __init__(self, lo: float, hi: float, step: float) -> None:
         super().__init__()
         self.lo = lo
         self.hi = hi
         self.last_deg = math.nan
-        track, ticks = dial_static(lo, hi, DIAL_RADIUS)
+        self.step = step
         self._props["size"] = DIAL_SIZE
-        self._props["track"] = track
-        self._props["ticks"] = ticks
+        self._props["track"] = dial_static(lo, hi, DIAL_RADIUS)
         self._props["knob-radius"] = DIAL_KNOB_RADIUS
         self._set_angle(math.nan)
 
@@ -89,19 +128,29 @@ class JointDial(ui.element, component="joint_dial.js"):
         fill, (x, y) = dial_angle(self.lo, self.hi, angle, DIAL_RADIUS)
         self._props["fill"] = fill
         self._props["knob"] = [round(x, 2), round(y, 2)]
+        self._props["steps"] = dial_steps(
+            self.lo, self.hi, angle, self.step, DIAL_RADIUS
+        )
 
-    def show(self, angle: float) -> None:
-        """Redraw for ``angle`` (degrees) once it has moved ``DIAL_REDRAW_DEG``."""
-        if not math.isfinite(angle) or abs(angle - self.last_deg) < DIAL_REDRAW_DEG:
+    def show(self, angle: float, step: float) -> None:
+        """Redraw for ``angle`` (degrees) once it has moved ``DIAL_REDRAW_DEG``,
+        or at once for a new jog ``step``."""
+        if not math.isfinite(angle):
+            return
+        if abs(angle - self.last_deg) < DIAL_REDRAW_DEG and step == self.step:
             return
         self.last_deg = angle
+        self.step = step
         # The props stay current without sending an update each tick.
         with self._props.suspend_updates():
             self._set_angle(angle)
-        self.run_method("show", self._props["fill"], self._props["knob"])
+        self.run_method(
+            "show", self._props["fill"], self._props["knob"], self._props["steps"]
+        )
 
-    def redraw(self, angle: float) -> None:
+    def redraw(self, angle: float, step: float) -> None:
         """Redraw for ``angle`` through the props, for a dial whose panel is
         mounting again: it renders from its props, before a method call can land."""
         self.last_deg = angle
+        self.step = step
         self._set_angle(angle)

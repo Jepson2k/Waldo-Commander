@@ -15,7 +15,11 @@ from nicegui import Client, app, ui
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
-from waldo_commander.components.joint_dial import JointDial
+from waldo_commander.components.joint_dial import (
+    DIAL_RADIUS,
+    JointDial,
+    dial_limit_spots,
+)
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import _setting_row
@@ -1114,8 +1118,9 @@ class ControlPanel:
         if not self._joint_tab_shown:
             return
         angles = waldoctl.commander.status.joints.angles.deg
+        step = float(waldoctl.commander.settings.jog.joint_step_deg)
         for dial, angle in zip(self._dials, angles):
-            dial.show(float(angle))
+            dial.show(float(angle), step)
 
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
@@ -2509,8 +2514,9 @@ class ControlPanel:
         self._joint_tab_shown = not cartesian
         if not cartesian:
             angles = waldoctl.commander.status.joints.angles.deg
+            step = float(waldoctl.commander.settings.jog.joint_step_deg)
             for dial, angle in zip(self._dials, angles):
-                dial.redraw(float(angle))
+                dial.redraw(float(angle), step)
         if self._step_input is not None:
             if cartesian:
                 self._step_input.props('suffix="mm"')
@@ -2525,8 +2531,9 @@ class ControlPanel:
             self._step_input.update()
 
     def _make_joint_dial(self, idx: int, name: str) -> None:
-        """One joint: minus cap, dial ring with the readout in its centre, plus cap,
-        the name, and a limits row revealed with the caps on hover."""
+        """One joint: the dial ring with the readout in its centre and, on hover,
+        a go-to-limit button at each end of its track; under it the name,
+        flanked on hover by the jog caps."""
         lo, hi = self._get_joint_limits(idx)
         joints = waldoctl.commander.status.joints
 
@@ -2540,12 +2547,13 @@ class ControlPanel:
         with (
             ui.column()
             .classes("joint-dial-cell items-center gap-0")
+            .classes("full-turn" if hi - lo >= 360.0 else "")
             .mark(f"joint-dial-{idx}")
         ):
-            with ui.element("div").classes("joint-dial"):
-                left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
-
-                self._dials.append(JointDial(lo, hi))
+            with ui.element("div").classes("joint-dial") as dial_box:
+                self._dials.append(
+                    JointDial(lo, hi, waldoctl.commander.settings.jog.joint_step_deg)
+                )
 
                 num = (
                     ui.number(
@@ -2579,11 +2587,13 @@ class ControlPanel:
                 num.on("blur", _submit_exact)
                 num.on("keydown.enter", _submit_exact)
 
+            with ui.element("div").classes("joint-dial-name-row"):
+                left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
+                ui.label(name).classes("joint-dial-name")
                 right_btn = _cap("add", "plus").mark(f"btn-j{idx + 1}-plus")
 
-            ui.label(name).classes("joint-dial-name")
-
-            with ui.row().classes("joint-dial-limits no-wrap gap-0"):
+            lo_spot, hi_spot = dial_limit_spots(lo, hi, DIAL_RADIUS)
+            with dial_box:
                 min_btn = (
                     ui.button(
                         icon="first_page",
@@ -2592,6 +2602,8 @@ class ControlPanel:
                         ),
                     )
                     .props("round flat dense size=sm color=wc-text-muted")
+                    .classes("joint-limit")
+                    .style(f"left: {lo_spot[0]:.1f}px; top: {lo_spot[1]:.1f}px")
                     .tooltip("Move to minimum joint limit")
                     .mark(f"btn-j{idx + 1}-min-limit")
                 )
@@ -2603,6 +2615,8 @@ class ControlPanel:
                         ),
                     )
                     .props("round flat dense size=sm color=wc-text-muted")
+                    .classes("joint-limit")
+                    .style(f"left: {hi_spot[0]:.1f}px; top: {hi_spot[1]:.1f}px")
                     .tooltip("Move to maximum joint limit")
                     .mark(f"btn-j{idx + 1}-max-limit")
                 )
