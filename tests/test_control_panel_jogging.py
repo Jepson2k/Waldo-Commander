@@ -282,30 +282,45 @@ async def test_rapid_clicks_drop_no_press(user: User) -> None:
         for i in range(num_clicks):
             await simulate_click(user, "btn-j1-plus", hold_ms=30)
             await _wait_issued(joint_targets, i + 1)
+        j1_targets = [t[0] for t in joint_targets]
+        assert len(joint_targets) == num_clicks, (
+            f"the panel dropped a click: {len(joint_targets)} move_j "
+            f"for {num_clicks} presses"
+        )
+        # Never backwards: a click read a stale pose at worst, never an older one.
+        assert all(b >= a for a, b in zip(j1_targets, j1_targets[1:])), (
+            f"a click targeted behind its predecessor: {j1_targets}"
+        )
+        # A joint step is ABSOLUTE — `measured + step`, read when the click is
+        # handled — so clicks that overlap the motion resolve to the same
+        # target and the arm ends on the last one rather than five steps
+        # along. That is the behaviour; asserting a sum here is what made the
+        # old test flaky.
+        await poll_until(
+            _j1,
+            lambda v: abs(v - j1_targets[-1]) < 0.5 and idle(),
+            timeout_s=20.0,
+            interval=0.05,
+            what=f"J1 settling on the last commanded {j1_targets[-1]:.3f}°",
+        )
+        # The rapid clicks can all land before a status shows the arm moving,
+        # so they may share a target; a click once it has settled must step
+        # from where it is now.
+        here = await settled(_j1)
+        await simulate_click(user, "btn-j1-plus", hold_ms=30)
+        await _wait_issued(joint_targets, num_clicks + 1)
     finally:
         cp.client.move_j = orig_move_j
-
-    j1_targets = [t[0] for t in joint_targets]
-    assert len(joint_targets) == num_clicks, (
-        f"the panel dropped a click: {len(joint_targets)} move_j for {num_clicks} presses"
+    assert joint_targets[-1][0] == pytest.approx(here + 1.0, abs=0.1), (
+        f"a click after the arm settled at {here:.3f}° did not step from it: "
+        f"{[t[0] for t in joint_targets]}"
     )
-    # Never backwards: a click read a stale pose at worst, never an older one.
-    assert all(b >= a for a, b in zip(j1_targets, j1_targets[1:])), (
-        f"a click targeted behind its predecessor: {j1_targets}"
-    )
-    assert j1_targets[-1] > j1_targets[0], (
-        f"five presses left the target where it started: {j1_targets}"
-    )
-    # A joint step is ABSOLUTE — `measured + step`, read when the click is
-    # handled — so clicks that overlap the motion resolve to the same target
-    # and the arm ends on the last one rather than five steps along. That is
-    # the behaviour; asserting a sum here is what made the old test flaky.
     await poll_until(
         _j1,
-        lambda v: abs(v - j1_targets[-1]) < 0.5 and idle(),
+        lambda v: abs(v - joint_targets[-1][0]) < 0.5 and idle(),
         timeout_s=20.0,
         interval=0.05,
-        what=f"J1 settling on the last commanded {j1_targets[-1]:.3f}°",
+        what=f"J1 settling on {joint_targets[-1][0]:.3f}°",
     )
 
     user.find("Cartesian Jog").click()
