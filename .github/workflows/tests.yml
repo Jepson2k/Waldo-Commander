@@ -74,7 +74,20 @@ jobs:
           # than this package does, and pip cannot reconcile two direct
           # URLs in one resolve. Its remaining deps are named explicitly
           # (waldoctl/numpy/pinokin/pyserial/scipy/ruckig are above).
-          PAROL6_REF="v0.6.1"
+          # Derived from pyproject, never repeated: this install is
+          # --no-deps and runs after ".[dev]", so a stale literal here
+          # would silently downgrade parol6 in every job without a
+          # branch match.
+          # parol6 is pinned TWICE (the [parol6] extra and the default set).
+          # `head -1` reads only the first, so a divergence between them would
+          # install one ref while the package declared another, silently.
+          PAROL6_REFS="$(sed -n 's#.*PAROL6-python-API\.git@\([^"]*\)".*#\1#p' pyproject.toml | sort -u)"
+          if [ "$(printf '%s\n' "$PAROL6_REFS" | wc -l)" -ne 1 ]; then
+            echo "parol6 is pinned to more than one ref: $PAROL6_REFS" >&2
+            exit 1
+          fi
+          PAROL6_REF="$PAROL6_REFS"
+          : "${PAROL6_REF:?no parol6 pin found in pyproject.toml}"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               PAROL6_REF="$BRANCH"
@@ -160,7 +173,20 @@ jobs:
           # than this package does, and pip cannot reconcile two direct
           # URLs in one resolve. Its remaining deps are named explicitly
           # (waldoctl/numpy/pinokin/pyserial/scipy/ruckig are above).
-          PAROL6_REF="v0.6.1"
+          # Derived from pyproject, never repeated: this install is
+          # --no-deps and runs after ".[dev]", so a stale literal here
+          # would silently downgrade parol6 in every job without a
+          # branch match.
+          # parol6 is pinned TWICE (the [parol6] extra and the default set).
+          # `head -1` reads only the first, so a divergence between them would
+          # install one ref while the package declared another, silently.
+          PAROL6_REFS="$(sed -n 's#.*PAROL6-python-API\.git@\([^"]*\)".*#\1#p' pyproject.toml | sort -u)"
+          if [ "$(printf '%s\n' "$PAROL6_REFS" | wc -l)" -ne 1 ]; then
+            echo "parol6 is pinned to more than one ref: $PAROL6_REFS" >&2
+            exit 1
+          fi
+          PAROL6_REF="$PAROL6_REFS"
+          : "${PAROL6_REF:?no parol6 pin found in pyproject.toml}"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               PAROL6_REF="$BRANCH"
@@ -202,14 +228,20 @@ jobs:
           fetch-depth: 0
 
       # Same branch-matching convention as the pip installs above, resolved
-      # once so the python client and the binary come from one tree. Falls
-      # back to main — also the ref the [par6] extra pins — so main pushes
-      # exercise the same thing pyproject declares.
+      # once so the python client and the binary come from one tree.
+      #
+      # The fallback is DERIVED from the `[par6]` extra, never written here.
+      # It used to be the literal `main`, which was right only for as long as
+      # the pin happened to say `@main`: the moment it names a tag, this job
+      # would go on testing par6 main while the package declared something
+      # else, and say nothing. That is the same drift the parol6 derive below
+      # exists to prevent.
       - name: Resolve par6 ref (branch-matching)
         id: par6-ref
         run: |
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          REF=main
+          REF="$(sed -n 's#.*Jepson2k/par6\.git@\([^"#]*\).*#\1#p' pyproject.toml | head -1)"
+          : "${REF:?no par6 pin found in pyproject.toml}"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/Jepson2k/par6.git "$BRANCH" 2>/dev/null | grep -q .; then
               REF="$BRANCH"
@@ -238,12 +270,10 @@ jobs:
           workspaces: par6
           key: par6-e2e
 
-      # par6 provisions its native dependencies one of two ways depending on
-      # the ref this resolved to, and the branch being tested may be either:
-      # `scripts/ffi/setup.sh` writing `.ffi/env.sh`, or pixi, which supplies
-      # the same closure through environment activation and additionally sets
-      # `MUJOCO_DOWNLOAD_DIR` for `mujoco-rs`. Building a pixi tree the old
-      # way fails in `mujoco-rs`'s build script with nowhere to download to.
+      # par6 provisions its native closure (pinocchio, coal, mujoco, toppra)
+      # through its own `pixi.toml` from a committed lock. A branch-matched ref
+      # old enough to predate that still uses `scripts/ffi/setup.sh` writing
+      # `.ffi/env.sh`, so the job detects which tree it has.
       - name: Detect par6 provisioning
         id: par6-build
         run: |
@@ -266,34 +296,39 @@ jobs:
       - name: cache pinocchio toolchain
         uses: actions/cache@v4
         with:
-          path: par6/.ffi
+          path: |
+            par6/.ffi/shim
+            par6/.ffi/toppra
+            par6/.ffi/src
+            par6/.ffi/mujoco
           key: >-
-            ffi-${{ runner.os }}-${{ steps.par6-build.outputs.pixi }}-${{
+            ffi-prefixes-v2-${{ runner.os }}-${{ steps.par6-build.outputs.pixi }}-${{
             hashFiles('par6/pixi.lock', 'par6/scripts/ffi/**', 'par6/cpp/**') }}
 
       # Release, not debug: the sim runs in wall-clock time and an
       # unoptimized RT loop misses its deadlines. Kinematics is not a
-      # feature — par6d links the FFI shim unconditionally.
+      # feature — par6d links the FFI shim unconditionally. A pixi tree that
+      # declares par6's own `build-daemon` task is built with it, as par6's CI
+      # builds itself.
       #
-      # Whichever provisioning ran then publishes its variables to the job,
-      # because two later steps need them from outside this shell: the par6
-      # wheel is a maturin build (it links the shim and downloads libmujoco),
-      # and it is built into WC's own Python environment, not the provisioner's
-      # — so `pixi run pip` would install into the wrong interpreter. par6d
-      # embeds no rpath either, so the spawned runtime needs the library path.
-      # The names follow par6's `[activation.env]` and its `.ffi/env.sh`;
-      # whichever of them is set gets forwarded.
+      # par6d embeds no rpath and the steps below run WC's Python, not the
+      # provisioner's, so the provisioning's library variables are exported to
+      # the job for the wheel and the spawned runtime.
       - name: build the shim and par6d
         working-directory: par6
         env:
           PAR6_FORWARD: >-
             PAR6_SHIM_LIB_DIR PAR6_SHIM_INCLUDE_DIR PAR6_MUJOCO_LIB_DIR
-            MUJOCO_DOWNLOAD_DIR LD_LIBRARY_PATH
+            MUJOCO_DOWNLOAD_DIR MUJOCO_DYNAMIC_LINK_DIR LD_LIBRARY_PATH
         run: |
           FWD='for v in $PAR6_FORWARD; do [ -n "${!v:-}" ] && printf "%s=%s\n" "$v" "${!v}"; done; true'
           if [ "${{ steps.par6-build.outputs.pixi }}" = "true" ]; then
-            pixi run setup
-            pixi run cargo build -p par6d --release
+            if grep -q '^\[tasks\.build-daemon\]' pixi.toml; then
+              pixi run build-daemon
+            else
+              if [ -f scripts/ffi/setup.sh ]; then pixi run setup; fi
+              pixi run cargo build -p par6d --release
+            fi
             pixi run bash -c "$FWD" >> "$GITHUB_ENV"
           else
             scripts/ffi/setup.sh
@@ -341,7 +376,20 @@ jobs:
           fi
           # parol6 rides along --no-deps (direct-URL branch-drift hazard,
           # same as the jobs above); this job's backend under test is par6.
-          PAROL6_REF="v0.6.1"
+          # Derived from pyproject, never repeated: this install is
+          # --no-deps and runs after ".[dev]", so a stale literal here
+          # would silently downgrade parol6 in every job without a
+          # branch match.
+          # parol6 is pinned TWICE (the [parol6] extra and the default set).
+          # `head -1` reads only the first, so a divergence between them would
+          # install one ref while the package declared another, silently.
+          PAROL6_REFS="$(sed -n 's#.*PAROL6-python-API\.git@\([^"]*\)".*#\1#p' pyproject.toml | sort -u)"
+          if [ "$(printf '%s\n' "$PAROL6_REFS" | wc -l)" -ne 1 ]; then
+            echo "parol6 is pinned to more than one ref: $PAROL6_REFS" >&2
+            exit 1
+          fi
+          PAROL6_REF="$PAROL6_REFS"
+          : "${PAROL6_REF:?no parol6 pin found in pyproject.toml}"
           if [ "$BRANCH" != "main" ]; then
             if git ls-remote --heads https://github.com/PCrnjak/PAROL6-python-API.git "$BRANCH" 2>/dev/null | grep -q .; then
               PAROL6_REF="$BRANCH"
@@ -351,15 +399,24 @@ jobs:
           pip install interpolatepy msgspec numba ormsgpack psutil toppra
           # The par6 client must be the same tree the binary was built from,
           # and that tree is already checked out at the branch-matched ref.
-          # It is a maturin package embedding the Rust engine, so the shim
-          # env must be live for the build (and no build isolation, so the
-          # toolchain above is the one that compiles it).
+          # It is a maturin package embedding the Rust engine: compiled
+          # without build isolation against the provisioning's native closure
+          # (inside pixi for a pixi tree, whose toolchain and prefix its build
+          # script needs) and installed into the interpreter that runs WC's
+          # tests.
           pip install "maturin>=1.7,<2" patchelf
-          pip install --force-reinstall --no-deps --no-build-isolation ./par6/python
+          if [ "${{ steps.par6-build.outputs.pixi }}" = "true" ]; then
+            WALDO_TEST_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+            pixi run --manifest-path par6/pixi.toml "$WALDO_TEST_PYTHON" -m pip install \
+              --force-reinstall --no-deps --no-build-isolation ./par6/python
+          else
+            pip install --force-reinstall --no-deps --no-build-isolation ./par6/python
+          fi
 
       # WALDO_PAR6_E2E=1 makes a missing backend or binary a FAILURE inside
       # the test, not a skip — this job must never go green without the e2e
-      # actually running.
+      # actually running. The spawned runtime inherits the library path
+      # exported by the provisioning step above.
       - name: Run the par6 e2e test
         env:
           PYTHONUNBUFFERED: '1'

@@ -32,10 +32,12 @@ async def test_warning_banner_stands_and_the_log_keeps_history(user: User) -> No
     st.warnings.entries = [
         (-1, 59, "Control loop degraded", "p99 over band", "warning", "reduce load")
     ]
-    robot_events.add("warning", "Control loop degraded", "p99 over band")
+    robot_events.add("warning", "Control loop degraded", "p99 over band", "reduce load")
     await asyncio.sleep(0)
     await user.should_see("Control loop degraded")
     await user.should_see(marker="readout-event-log")
+    # The log carries the remedy, not just the symptom.
+    await user.should_see("Fix: reduce load")
 
     # Self-clearing: the banner leaves with the condition, the log does not
     # (the log's copy of the message is why the poll looks for the

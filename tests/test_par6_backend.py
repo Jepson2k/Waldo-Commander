@@ -31,7 +31,7 @@ import pytest
 from nicegui.testing import User
 from waldoctl.discovery import available_backends
 
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import poll_until, wait_for_app_ready
 
 
 def _par6d_binary() -> str | None:
@@ -145,6 +145,50 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         await asyncio.sleep(1.5)
         assert not status.controller.freedrive, (
             "an unreferenced arm reported itself back-driveable"
+        )
+
+        # Diagnostics off the wire, all of it from the status broadcast:
+        # the loop's tail, the drives' readings, and the torque series the
+        # chart draws.
+        user.find(marker="tab-diagnostics").click()
+        await asyncio.sleep(0)
+        await user.should_see(marker="diagnostics-panel")
+
+        def _text(marker: str) -> str:
+            return next(iter(user.find(marker=marker).elements)).text
+
+        temps = await poll_until(
+            lambda: [_text(f"diag-drive-temp-{j}") for j in range(1, 7)],
+            lambda t: all(v != "—" for v in t),
+            timeout_s=10.0,
+            what=lambda: (
+                f"drive temperatures on STATUS (note: {_text('diag-drives-note')!r})"
+            ),
+        )
+        assert all(float(t) > 0 for t in temps), f"drive temperatures read {temps}"
+        assert status.drive_health.bus_voltage_v is not None
+        assert _text("diag-drive-supply").endswith(" V")
+        # The tool drive answers a temperature but no current, and an
+        # unanswered register must read as unknown rather than as zero.
+        assert _text("diag-drive-current-7") == "—"
+
+        await poll_until(
+            lambda: _text("diag-loop-p99"),
+            lambda t: "budget" in t,
+            timeout_s=10.0,
+            what="the loop tail",
+        )
+        assert status.loop_health.measured
+        assert _text("diag-loop-rate").endswith("Hz target")
+        # The chart's own feed. The page consumes the dirty flag on every
+        # status tick, so ask the buffer how many samples it holds rather
+        # than racing it for a dirty read.
+        await poll_until(
+            lambda: len(robot_state.torque_time_series),
+            bool,
+            timeout_s=5.0,
+            interval=0.05,
+            what="joint torques reaching the chart",
         )
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
