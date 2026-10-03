@@ -157,6 +157,30 @@ def _imported_waldoctl_names(text: str) -> set[str]:
     return names
 
 
+def _imported_modules(text: str) -> set[str]:
+    """Modules bound under their own name by plain ``import X`` statements
+    in *text*; an unparseable program yields the empty set, for the reason
+    :func:`_imported_waldoctl_names` gives."""
+    import ast
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    return {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.asname is None
+    }
+
+
+def _editor_text() -> str:
+    textarea = ui_state.active_textarea
+    return str(textarea.value or "") if textarea else ""
+
+
 @dataclass
 class ActiveJog:
     """Tracks an in-progress jog action."""
@@ -1044,18 +1068,16 @@ class MotionRecorder:
 
         elif action_type == "delay":
             seconds = params["seconds"]
-            return f"time.sleep({seconds:.2f})"
+            snippet = f"time.sleep({seconds:.2f})"
+            if "time" not in _imported_modules(_editor_text()):
+                snippet = f"import time\n{snippet}"
+            return snippet
 
         elif action_type == "set_shapes":
             shapes = params["shapes"]
             snippet = shapes_to_code(shapes)
             # Prepend the constructor imports the program doesn't have yet.
-            text = (
-                (ui_state.active_textarea.value or "")
-                if ui_state.active_textarea
-                else ""
-            )
-            imported = _imported_waldoctl_names(text)
+            imported = _imported_waldoctl_names(_editor_text())
             names = {type(s).__name__ for s in shapes}
             if any(s.physics is not None for s in shapes):
                 names.add("Physical")  # _shape_to_code emits it by repr
