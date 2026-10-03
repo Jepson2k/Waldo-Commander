@@ -198,6 +198,42 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
         )
 
 
+def _tool_metadata(robot: Any) -> dict[str, dict]:
+    """Serializable tool motions for isolated program preview."""
+    tool_meta_registry: dict[str, dict] = {}
+
+    def _serialize_motions(motion_list):
+        return [
+            {"type": "linear", **asdict(m)}
+            if isinstance(m, LinearMotion)
+            else {"type": "rotary", **asdict(m)}
+            for m in motion_list
+        ]
+
+    for spec in robot.tools.available:
+        if spec.key == "NONE":
+            continue
+        try:
+            base_motions = _serialize_motions(spec.motions) if spec.motions else []
+            variants_dict: dict[str, dict] = {}
+            for v in spec.variants:
+                if v.motions:
+                    variants_dict[v.key] = {
+                        "motions": _serialize_motions(v.motions),
+                    }
+            if not base_motions and not variants_dict:
+                continue
+            tool_meta_registry[spec.key] = {
+                "motions": base_motions,
+                "variants": variants_dict,
+                "activation_type": spec.activation_type.value,
+            }
+        except (KeyError, AttributeError):
+            pass
+
+    return tool_meta_registry
+
+
 def _run_simulation_isolated(
     program_text: str,
     initial_joints_rad: np.ndarray | None = None,
@@ -712,36 +748,7 @@ class PathVisualizer:
         # Scripts can call select_tool() to switch tools mid-program, so we
         # need metadata for every tool — not just the currently active one.
         # Each entry includes base motions + per-variant motions.
-        tool_meta_registry: dict[str, dict] = {}
-
-        def _serialize_motions(motion_list):
-            return [
-                {"type": "linear", **asdict(m)}
-                if isinstance(m, LinearMotion)
-                else {"type": "rotary", **asdict(m)}
-                for m in motion_list
-            ]
-
-        for spec in robot.tools.available:
-            if spec.key == "NONE":
-                continue
-            try:
-                base_motions = _serialize_motions(spec.motions) if spec.motions else []
-                variants_dict: dict[str, dict] = {}
-                for v in spec.variants:
-                    if v.motions:
-                        variants_dict[v.key] = {
-                            "motions": _serialize_motions(v.motions),
-                        }
-                if not base_motions and not variants_dict:
-                    continue
-                tool_meta_registry[spec.key] = {
-                    "motions": base_motions,
-                    "variants": variants_dict,
-                    "activation_type": spec.activation_type.value,
-                }
-            except (KeyError, AttributeError):
-                pass
+        tool_meta_registry = _tool_metadata(robot)
 
         # Collision-marking inputs: the live shapes (wire form crosses the
         # process boundary) and the live tool as the checker's starting

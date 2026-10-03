@@ -172,6 +172,7 @@ class ScriptExecutionController:
             ui.notify(str(e), color="warning")
             return
 
+        self.last_exit_code = None
         try:
             filename_input = ui_state.active_filename_input
             filename = (
@@ -213,7 +214,8 @@ class ScriptExecutionController:
             self._step_controller = GUIStepController(self._step_session_id)
             self._step_controller.initialize()
 
-            self.last_exit_code = None
+            if launching_tab is not None:
+                launching_tab.execution.is_running = True
             self.script_handle = await run_script(
                 script_config, on_stdout, on_stderr, session_id=self._step_session_id
             )
