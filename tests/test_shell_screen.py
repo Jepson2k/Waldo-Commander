@@ -289,6 +289,40 @@ class TestShellLayout:
             "but its dial does not show it on the Joint tab",
         )
 
+    def test_an_open_level_menu_is_not_covered_by_its_tooltip(
+        self, class_screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        chip = marked_element(screen, "chip-jog-speed")
+        ActionChains(screen.selenium).move_to_element(chip).perform()
+        wait(screen, 5).until(
+            lambda _: not js(screen, NO_TOOLTIP), message="no tooltip on hover"
+        )
+        chip.click()
+        try:
+            wait(screen, 5).until(
+                lambda _: marked_element(screen, "rating-jog-speed").is_displayed()
+            )
+            wait(screen, 5).until(
+                lambda _: js(screen, NO_TOOLTIP),
+                message="the tooltip stays over the open rating menu",
+            )
+        finally:
+
+            def close_menu() -> None:
+                client = Client.instances[ui_state.active_client_id]
+                next(
+                    e
+                    for e in client.elements.values()
+                    if "menu-jog-speed" in e._markers
+                ).close()
+
+            run_in_app(close_menu)
+            wait(screen, 5).until(
+                lambda _: js(screen, "return !document.querySelector('.q-menu')")
+            )
+
     def test_idle_dials_hide_their_caps_even_at_a_limit(self, class_screen) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)

@@ -790,6 +790,10 @@ html, body {
   height: var(--wc-size-jog-slot);
   cursor: pointer;
 }
+/* Z sits at the pad's top and bottom edges, level with Y's arrow tips and
+   clear of X; the panel clips the empty part of each slot that crosses it. */
+.cart-jog-slot.cart-z-top { top: -17px; }
+.cart-jog-slot.cart-z-bottom { top: 17px; }
 
 .cart-jog-slot .cart-jog-glyph {
   position: absolute;
@@ -831,33 +835,25 @@ html, body {
 
 /* Joint dials: a ring per joint on a control track with the travelled arc in
    a quiet neutral. Hovering a dial (or focusing it, which a tap does) magnifies
-   it in place over its neighbours, so nothing reflows: it shows ticks at the jog
-   step, a go-to-limit button at each end of its track, and the jog caps either
-   side of its name, clear of the ring. */
+   it in place, so nothing reflows, while the others fade and blur behind it: it
+   shows ticks at the jog step and the jog caps either side of its name, clear
+   of the ring. */
 .joint-dials { padding: var(--wc-space-2) 0; }
 .joint-dial-cell {
   width: var(--wc-size-joint-dial);
   position: relative;
   transform-origin: 50% 50%;
-  transition: transform var(--wc-duration-fast) var(--wc-ease-enter);
+  transition: transform var(--wc-duration-fast) var(--wc-ease-enter),
+    opacity var(--wc-duration-fast), filter var(--wc-duration-fast);
 }
 .joint-dial-cell:first-child { transform-origin: 0 50%; }
 .joint-dial-cell:last-child { transform-origin: 100% 50%; }
-.joint-dial-cell::before {
-  content: "";
-  position: absolute;
-  inset: -6px -10px -4px;
-  border-radius: var(--wc-radius-md);
-  background: var(--wc-glass);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--wc-duration-fast);
-  z-index: -1;
-}
-/* A full turn's two ends meet at the top, so its limit buttons sit above it. */
-.joint-dial-cell.full-turn::before { top: -16px; }
 .joint-dial-cell:is(:hover, :focus-within) { transform: scale(1.3); z-index: 3; }
-.joint-dial-cell:is(:hover, :focus-within)::before { opacity: 1; }
+.joint-dials:has(.joint-dial-cell:is(:hover, :focus-within))
+  .joint-dial-cell:not(:hover):not(:focus-within) {
+  opacity: 0.35;
+  filter: blur(1.5px);
+}
 /* The magnified dial reaches past the panel; the panels clip only while none is. */
 .cp-jog-panels:has(.joint-dial-cell:is(:hover, :focus-within)),
 .cp-jog-panels:has(.joint-dial-cell:is(:hover, :focus-within)) :is(.q-panel, .q-tab-panel) {
@@ -896,9 +892,16 @@ html, body {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 44px;
+  max-width: 48px;
   color: var(--wc-text);
   font-variant-numeric: tabular-nums;
+}
+/* The field is as wide as its number, so the degree sign sits right after it. */
+.joint-dial .joint-readout-input .q-field__native {
+  field-sizing: content;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 1ch;
 }
 .joint-dial-name-row {
   position: relative;
@@ -914,7 +917,7 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.joint-cap, .joint-limit {
+.joint-cap {
   position: absolute;
   width: 18px;
   height: 18px;
@@ -930,15 +933,14 @@ html, body {
 .joint-cap { top: 50%; color: var(--wc-text) !important; }
 .joint-cap-minus { right: calc(100% + 3px); transform: translateY(-50%); }
 .joint-cap-plus { left: calc(100% + 3px); transform: translateY(-50%); }
-.joint-limit { transform: translate(-50%, -50%); background: transparent; }
 .joint-cap.q-btn--disabled {
   color: var(--wc-text-disabled) !important;
   pointer-events: none;
 }
-.joint-dial-cell:is(:hover, :focus-within) :is(.joint-cap, .joint-limit) { opacity: 1; }
+.joint-dial-cell:is(:hover, :focus-within) .joint-cap { opacity: 1; }
 /* Visibility, not opacity: Quasar's disabled opacity is !important inside a cascade
    layer, which outranks any unlayered rule, so a cap at its limit would show */
-.joint-dial-cell:not(:hover):not(:focus-within) :is(.joint-cap, .joint-limit) { visibility: hidden; }
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap { visibility: hidden; }
 
 /* Level chips: percentage beside the icon, the rating in the popover */
 .level-chip { font-variant-numeric: tabular-nums; }
@@ -1875,7 +1877,7 @@ body:has(.panels-wrap.column-open) .bottom-panel {
   .record-btn.recording .q-icon, .robot-face-happy svg, .robot-face-neutral svg, .robot-face-sad svg,
   .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next { animation: none !important; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
-  .joint-dial-cell, .joint-dial-cell::before, .dial-steps { transition: none; }
+  .joint-dial-cell, .dial-steps { transition: none; }
 }
 """
     )

@@ -18,10 +18,6 @@ DIAL_STEP_MIN_GAP = 2.4
 DIAL_STEP_TICKS = 6
 DIAL_STEP_INNER = 4.5
 DIAL_STEP_OUTER = 9.5
-#: Go-to-limit buttons: how far outside the ring they sit, and how far apart
-#: they stand on a full-turn track, whose two ends coincide.
-DIAL_LIMIT_OFFSET = 12.0
-DIAL_LIMIT_SPREAD_DEG = 16.0
 
 
 def _dial_point(deg: float, r: float) -> tuple[float, float]:
@@ -92,20 +88,6 @@ def dial_steps(lo: float, hi: float, angle: float, step: float, r: float) -> str
             x1, y1 = _dial_point(a, r + DIAL_STEP_OUTER)
             parts.append(f"M{x0:.2f} {y0:.2f} L{x1:.2f} {y1:.2f}")
     return " ".join(parts)
-
-
-def dial_limit_spots(
-    lo: float, hi: float, r: float
-) -> tuple[tuple[float, float], tuple[float, float]]:
-    """Where the go-to-limit buttons sit: just outside each end of the track.
-    A full-turn track has one end, so they flank it."""
-    if hi - lo >= 360.0:
-        lo_at, hi_at = lo - DIAL_LIMIT_SPREAD_DEG, lo + DIAL_LIMIT_SPREAD_DEG
-    else:
-        lo_at, hi_at = lo, hi
-    return _dial_point(lo_at, r + DIAL_LIMIT_OFFSET), _dial_point(
-        hi_at, r + DIAL_LIMIT_OFFSET
-    )
 
 
 class JointDial(ui.element, component="joint_dial.js"):

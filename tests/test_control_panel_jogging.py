@@ -70,11 +70,10 @@ async def _wait_issued(issued: list, count: int, timeout_s: float = 10.0) -> Non
 
 
 @pytest.mark.integration
-async def test_joint_jog_steps_dials_editing_and_limits(user: User) -> None:
+async def test_joint_jog_steps_dials_and_editing(user: User) -> None:
     """A brief click on a joint jog button moves the joint by the step in
     either direction, also at 1° under TOPPRA. Only the moved joint's dial
-    redraws, and the readout tracks the angle. Editing mode ignores a press,
-    and the go-to-limit button drives the joint to its actual limit."""
+    redraws, and the readout tracks the angle. Editing mode ignores a press."""
     from waldo_commander.state import ui_state
 
     await user.open("/")
@@ -151,28 +150,6 @@ async def test_joint_jog_steps_dials_editing_and_limits(user: User) -> None:
         )
     finally:
         waldoctl.commander.status.editing_mode = False
-
-    j1_min = float(ui_state.active_robot.joints.limits.position.deg[0][0])
-    user.find(marker="btn-j1-min-limit").click()
-    try:
-        await wait_for_motion_start(timeout_s=5.0)
-    except TimeoutError as exc:
-        exc.add_note(
-            f"Full joint angles: {list(waldoctl.commander.status.joints.angles.deg)}; "
-            f"collision pairs: {waldoctl.commander.status.collision.pairs}"
-        )
-        error = await waldoctl.commander.client.error()
-        exc.add_note(f"Controller error: {error.to_wire() if error else None}")
-        exc.add_note(f"Collision world: {await waldoctl.commander.client.shapes()}")
-        exc.add_note(f"Tool state: {await waldoctl.commander.client.tools()}")
-        raise
-    await poll_until(
-        _j1,
-        lambda v: abs(v - j1_min) < 1.0 and idle(),
-        timeout_s=20.0,
-        interval=0.05,
-        what=f"J1 reaching its min limit {j1_min}°",
-    )
 
     # Step precision with a small step under the TOPPRA profile (the app's
     # own client, not session_client).

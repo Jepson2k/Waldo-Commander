@@ -15,11 +15,7 @@ from nicegui import Client, app, ui
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
-from waldo_commander.components.joint_dial import (
-    DIAL_RADIUS,
-    JointDial,
-    dial_limit_spots,
-)
+from waldo_commander.components.joint_dial import JointDial
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import _setting_row
@@ -680,9 +676,6 @@ class ControlPanel:
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
         self._joint_right_btns: dict[int, ui.button] = {}
-        self._joint_limit_btns: dict[
-            tuple[int, str], ui.button
-        ] = {}  # (joint_idx, "min"/"max") -> button
         self._dials: list[JointDial] = []
         self._joint_tab_shown = True
         self._cart_axis_imgs: dict[str, ui.element] = {}
@@ -2184,29 +2177,6 @@ class ControlPanel:
         except Exception as e:
             logger.error("Go to joint angle failed: %s", e)
 
-    async def go_to_joint_limit(self, joint_index: int, which: str) -> None:
-        """Move to min or max joint limit for a specific joint while holding others."""
-        # Skip if in editing mode (target editor controls robot)
-        if waldoctl.commander.status.editing_mode:
-            return
-
-        if not self._movement_allowed():
-            return
-
-        try:
-            angles = list(waldoctl.commander.status.joints.angles.deg)
-            lo, hi = self._get_joint_limits(joint_index)
-
-            target = angles[: self._n_joints]
-            target[joint_index] = float(lo if which == "min" else hi)
-            spd = _norm_speed()
-
-            self._begin_jog_record("joint", f"J{joint_index + 1}{which}")
-            await self._dial_move(target, spd)
-        except Exception as e:
-            logger.error("Go to joint limit failed: %s", e)
-            ui.notify(f"Failed joint move: {e}", color="negative")
-
     # ---- Gizmo control methods ----
 
     def sync_gizmo_to_urdf(self) -> None:
@@ -2531,9 +2501,8 @@ class ControlPanel:
             self._step_input.update()
 
     def _make_joint_dial(self, idx: int, name: str) -> None:
-        """One joint: the dial ring with the readout in its centre and, on hover,
-        a go-to-limit button at each end of its track; under it the name,
-        flanked on hover by the jog caps."""
+        """One joint: the dial ring with the readout in its centre, and under it
+        the name, flanked on hover by the jog caps."""
         lo, hi = self._get_joint_limits(idx)
         joints = waldoctl.commander.status.joints
 
@@ -2547,10 +2516,9 @@ class ControlPanel:
         with (
             ui.column()
             .classes("joint-dial-cell items-center gap-0")
-            .classes("full-turn" if hi - lo >= 360.0 else "")
             .mark(f"joint-dial-{idx}")
         ):
-            with ui.element("div").classes("joint-dial") as dial_box:
+            with ui.element("div").classes("joint-dial"):
                 self._dials.append(
                     JointDial(lo, hi, waldoctl.commander.settings.jog.joint_step_deg)
                 )
@@ -2591,37 +2559,6 @@ class ControlPanel:
                 left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
                 ui.label(name).classes("joint-dial-name")
                 right_btn = _cap("add", "plus").mark(f"btn-j{idx + 1}-plus")
-
-            lo_spot, hi_spot = dial_limit_spots(lo, hi, DIAL_RADIUS)
-            with dial_box:
-                min_btn = (
-                    ui.button(
-                        icon="first_page",
-                        on_click=lambda e, i=idx: _safe_task(
-                            self.go_to_joint_limit(i, "min")
-                        ),
-                    )
-                    .props("round flat dense size=sm color=wc-text-muted")
-                    .classes("joint-limit")
-                    .style(f"left: {lo_spot[0]:.1f}px; top: {lo_spot[1]:.1f}px")
-                    .tooltip("Move to minimum joint limit")
-                    .mark(f"btn-j{idx + 1}-min-limit")
-                )
-                max_btn = (
-                    ui.button(
-                        icon="last_page",
-                        on_click=lambda e, i=idx: _safe_task(
-                            self.go_to_joint_limit(i, "max")
-                        ),
-                    )
-                    .props("round flat dense size=sm color=wc-text-muted")
-                    .classes("joint-limit")
-                    .style(f"left: {hi_spot[0]:.1f}px; top: {hi_spot[1]:.1f}px")
-                    .tooltip("Move to maximum joint limit")
-                    .mark(f"btn-j{idx + 1}-max-limit")
-                )
-                self._joint_limit_btns[(idx, "min")] = min_btn
-                self._joint_limit_btns[(idx, "max")] = max_btn
 
         def check_lower_limit(a, i=idx, lo=lo):
             if len(a) <= i:
@@ -2711,7 +2648,7 @@ class ControlPanel:
                 with (
                     ui.grid(
                         rows="72px 30px 72px",
-                        columns="90px 30px 72px 42px 72px 30px 72px",
+                        columns="90px 30px 72px 34px 72px 30px 72px",
                     )
                     .classes("gap-0")
                     .style("place-items: center")
@@ -2720,7 +2657,9 @@ class ControlPanel:
                     _add_slot("ud2_up", "arrow-small-up-cropped.svg", "ud2", "+", False)
                     # Z chevrons hug the column's outer edge, keeping a clear
                     # gap to the XY arrow pad beside them.
-                    self._cart_slot_elems["ud2_up"].classes("justify-self-start")
+                    self._cart_slot_elems["ud2_up"].classes(
+                        "justify-self-start cart-z-top"
+                    )
                     _add_slot("ud1_up", "arrow-small-up.svg", "ud1", "-", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_plus", "curved-arrow-down.svg", "ud2", "+", True)
@@ -2741,7 +2680,9 @@ class ControlPanel:
                     _add_slot(
                         "ud2_down", "arrow-small-down-cropped.svg", "ud2", "-", False
                     )
-                    self._cart_slot_elems["ud2_down"].classes("justify-self-start")
+                    self._cart_slot_elems["ud2_down"].classes(
+                        "justify-self-start cart-z-bottom"
+                    )
                     _add_slot("ud1_down", "arrow-small-down.svg", "ud1", "+", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_minus", "curved-arrow-up.svg", "ud2", "-", True)
@@ -2789,12 +2730,14 @@ class ControlPanel:
         )
         with chip:
             tooltip = ui.tooltip(storage_key.replace("_", " ").title())
-            with ui.menu().classes("level-menu").mark(f"menu-{marker}"):
+            with ui.menu().classes("level-menu").mark(f"menu-{marker}") as menu:
                 rating = (
                     ui.rating(max=10, icon="circle", size="16px", value=v_init)
                     .props("color=wc-progress")
                     .mark(f"rating-{marker}")
                 )
+            # The open menu sits where the tooltip shows, so the tooltip gives way.
+            menu.on("show", lambda _e, t=tooltip: t.run_method("hide"))
         self._rating_widgets[ui_attr] = {
             "rating": rating,
             "label": chip,
