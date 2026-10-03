@@ -5,7 +5,12 @@ import asyncio
 import pytest
 import waldoctl
 from nicegui import Client, core
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+)
 from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl.setup import Frame, Pose, SetupSnapshot
 
@@ -300,12 +305,26 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
                 "return !!document.querySelector('.q-dialog .nicegui-echart')"
             )
         )
-        click("expanded-chart-close")
-        wait(screen, 15).until(
-            lambda d: d.execute_script(
+
+        # A click while the dialog is still sliding in can be dropped; close it
+        # until it is closed.
+        def dialog_closed(d) -> bool:
+            if d.execute_script(
                 "return !Array.from(document.querySelectorAll('.q-dialog')).some(e => e.getClientRects().length)"
-            )
-        )
+            ):
+                return True
+            try:
+                marked_element(screen, "expanded-chart-close").click()
+            except (
+                ElementClickInterceptedException,
+                ElementNotInteractableException,
+                NoSuchElementException,
+                StaleElementReferenceException,
+            ):
+                pass
+            return False
+
+        wait(screen, 15).until(dialog_closed)
 
         # The remaining check concerns the drive panel's scrolling. Set up
         # its unobstructed layout directly; bottom-panel close interactions
