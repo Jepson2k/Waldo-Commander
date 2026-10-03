@@ -130,6 +130,8 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
         )
     finally:
         control_lease.reset()
+    # The exit code lands before the run lets go of the program.
+    assert await _wait_for(lambda: not is_any_program_running(), timeout=15.0)
 
     # Guard: a pulse while a program is running neither starts nor queues one.
     # The program outlasts any status stall, so the pulse is read mid-run.

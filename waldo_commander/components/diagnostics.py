@@ -846,7 +846,7 @@ class DiagnosticsPage:
             return
         self._chart_pushed_at = now
         timestamps, measured, external = result
-        ts_ms = [t * 1000.0 for t in timestamps]
+        ts_ms = [round(t * 1000.0) for t in timestamps]
         series: list[dict[str, Any]] = []
         for rows in (measured, external):
             for j in range(self._joint_count):

@@ -4,6 +4,7 @@ from nicegui import json, ui
 
 from waldo_commander.common.panel_theme import chart_grid, chart_text, joint_colors
 from waldo_commander.common.theme import hex_of
+from waldo_commander.constants import CHART_PUSH_INTERVAL_S
 
 
 def chart_options(
@@ -62,13 +63,21 @@ def expand_chart_button(chart: ui.echart, title: str) -> ui.button:
                 .style("height: min(65vh, 650px)")
             )
 
-            # Only replace data, so focusing a series in this view remains stable.
-            def refresh() -> None:
-                expanded.run_chart_method(
-                    "setOption", {"series": chart.options.get("series", [])}
-                )
+            sent: list[object] = []
 
-            timer = ui.timer(0.3, refresh)
+            # Only replace data, so focusing a series in this view remains stable.
+            # A push replaces each series' data list, so identity says what changed.
+            def refresh() -> None:
+                series = chart.options.get("series", [])
+                current = [s.get("data") for s in series]
+                if len(current) == len(sent) and all(
+                    a is b for a, b in zip(current, sent)
+                ):
+                    return
+                sent[:] = current
+                expanded.run_chart_method("setOption", {"series": series})
+
+            timer = ui.timer(CHART_PUSH_INTERVAL_S, refresh)
 
         def close() -> None:
             timer.cancel()

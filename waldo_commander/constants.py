@@ -130,8 +130,9 @@ CLICK_HOLD_THRESHOLD_S: float = 0.15
 HOME_LONG_PRESS_S: float = 0.8
 
 # Live charts redraw from their whole history, and a trace only visibly moves
-# a few times a second — far slower than status ticks arrive.
-CHART_PUSH_INTERVAL_S: float = 0.1
+# a few times a second — far slower than status ticks arrive. Each push resends
+# every point, so a fast cadence floods a loaded browser.
+CHART_PUSH_INTERVAL_S: float = 0.25
 
 # Core panel tab ids a plugin panel may never claim. Lives here (not main.py)
 # so components can import it without importing main — importing main from a

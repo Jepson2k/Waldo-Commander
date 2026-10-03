@@ -12,7 +12,10 @@ import math
 
 import pytest
 import waldoctl
-from selenium.common.exceptions import ElementNotInteractableException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
+)
 from nicegui import Client, core
 
 from tests.conftest import skip_webgl_macos_ci
@@ -40,7 +43,7 @@ from waldo_commander.state import ui_state
 def _clicked(element) -> bool:
     try:
         element.click()
-    except ElementNotInteractableException:
+    except (ElementClickInterceptedException, ElementNotInteractableException):
         return False
     return True
 
