@@ -3,10 +3,11 @@
 Never merged. Fails on purpose so the report lands in the CI log.
 """
 
+import os
 import statistics
+import sys
 import time
 
-import pytest
 from parol6.client.async_client import AsyncRobotClient
 
 from tests.conftest import _get_test_ports
@@ -45,12 +46,14 @@ async def test_report_status_and_timer_delivery(session_controller) -> None:
         sleeps.append(time.monotonic() - started)
 
     gaps = [b - a for a, b in zip(arrivals, arrivals[1:])]
-    pytest.fail(
+    report = (
         "TIMING-PROBE\n"
         f"  status_rate={rate}\n"
         f"  frames in 3 s: {len(arrivals)}; inter-arrival ms {_ms(gaps)}\n"
         f"  ping ms {_ms(pings)}\n"
         f"  sleep(10 ms) actual ms {_ms(sleeps)}\n"
-        f"  controller loop_stats={loop}",
-        pytrace=False,
+        f"  controller loop_stats={loop}"
     )
+    # End the job here so its log is readable without waiting for the suite.
+    print(report, file=sys.__stderr__, flush=True)
+    os._exit(3)
