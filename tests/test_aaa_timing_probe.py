@@ -5,7 +5,6 @@ Never merged. Fails on purpose so the report lands in the CI log.
 
 import os
 import statistics
-import sys
 import time
 
 from parol6.client.async_client import AsyncRobotClient
@@ -22,7 +21,7 @@ def _ms(values: list[float]) -> str:
     )
 
 
-async def test_report_status_and_timer_delivery(session_controller) -> None:
+async def test_report_status_and_timer_delivery(session_controller, capsys) -> None:
     port, _ = _get_test_ports()
     async with AsyncRobotClient(host="127.0.0.1", port=port, timeout=5.0) as client:
         rate = await client.status_rate()
@@ -55,5 +54,6 @@ async def test_report_status_and_timer_delivery(session_controller) -> None:
         f"  controller loop_stats={loop}"
     )
     # End the job here so its log is readable without waiting for the suite.
-    print(report, file=sys.__stderr__, flush=True)
+    with capsys.disabled():
+        print(report, flush=True)
     os._exit(3)
