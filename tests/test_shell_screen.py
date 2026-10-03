@@ -52,7 +52,18 @@ MEASURE = """
     const children = [...footer.querySelectorAll(':scope > *')]
         .filter(e => e.offsetParent !== null)
         .map(e => e.getBoundingClientRect());
-    return {height: f.height, top: f.top, bottom: f.bottom, left: f.left, right: f.right,
+    const values = [...footer.querySelectorAll('.pose-well .pose-value')]
+        .filter(v => v.offsetParent !== null)
+        .map(v => {
+            const slot = v.getBoundingClientRect();
+            const range = document.createRange();
+            range.selectNodeContents(v);
+            const text = range.getBoundingClientRect();
+            return {text: v.textContent,
+                    dx: (text.left + text.right - slot.left - slot.right) / 2,
+                    dy: (text.top + text.bottom - well.top - well.bottom) / 2};
+        });
+    return {height: f.height, top: f.top, bottom: f.bottom, left: f.left, right: f.right, values,
             viewport: innerHeight, viewportWidth: innerWidth,
             wellRight: well.right, wellLeft: well.left, wellTop: well.top, wellBottom: well.bottom,
             lowest: Math.max(...children.map(r => r.bottom)),
@@ -324,6 +335,10 @@ class TestShellLayout:
         with window_size(screen, 1366, 768):
             before = _measure_with(screen, 4)
             assert before["height"] <= 29, before
+            # Each pose value sits in the middle of the well and of its slot.
+            assert before["values"], before
+            for value in before["values"]:
+                assert abs(value["dx"]) <= 1.5 and abs(value["dy"]) <= 1.5, value
 
             try:
                 _show_lines(12)

@@ -1667,7 +1667,7 @@ html, body {
 }
 .io-dot.io-dot-on { background: var(--wc-action); }
 .status-footer .pose-well {
-  display: flex; align-items: baseline; gap: 6px;
+  display: flex; align-items: center; gap: 6px;
   height: calc(var(--wc-size-footer) - 6px);
   padding: 0 10px;
   border-radius: var(--wc-radius-pill);
@@ -1676,7 +1676,7 @@ html, body {
 }
 .status-footer .pose-well .wc-caption { line-height: 1; }
 .status-footer .pose-cell { display: flex; align-items: baseline; gap: 6px; }
-.status-footer .pose-value { display: inline-block; text-align: right; }
+.status-footer .pose-value { display: inline-block; text-align: center; }
 .status-footer .footer-action {
   flex: 1 1 0; min-width: 0;
   overflow: hidden; text-overflow: ellipsis;
