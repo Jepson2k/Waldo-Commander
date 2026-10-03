@@ -1061,8 +1061,10 @@ def build_page_content() -> None:
     ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
     ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
 
-    with ui.column().classes("relative w-screen h-screen overflow-hidden gap-0"):
-        with ui.column().classes("absolute inset-0 z-0"):
+    with ui.column().classes(
+        "commander-workspace relative w-screen h-screen overflow-hidden gap-0"
+    ):
+        with ui.column().classes("commander-scene absolute inset-0 z-0"):
 
             async def _init():
                 try:
@@ -1130,7 +1132,11 @@ def build_page_content() -> None:
             )
 
         # Overlay panels and HUD elements.
-        with ui.column().classes("absolute inset-0").style("pointer-events: none;"):
+        with (
+            ui.column()
+            .classes("workspace-overlays absolute inset-0")
+            .style("pointer-events: none;")
+        ):
             physics_legend.build()
             with (
                 ui.element("div")

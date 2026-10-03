@@ -291,6 +291,7 @@
         const inset = controlPanel && controlPanel.offsetParent !== null
             ? Math.max(0, Math.round(window.innerWidth - controlPanel.getBoundingClientRect().left))
             : 0;
+        if (controlPanel) setRootPx('--wc-control-height', Math.ceil(controlPanel.getBoundingClientRect().height));
         setRootPx('--wc-control-inset', inset);
         setRootPx('--wc-column-cover', columnCover);
         layout = { columnRight: columnRight, bottomCover: bottomCover };
