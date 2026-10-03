@@ -1072,7 +1072,9 @@ class HandEyeCalibrationPanel(Panel):
                         # in that window, and reading it as a timeout would
                         # let the run walk to the next view after a human
                         # stopped it.
-                        if await commander.client.wait_command(index, timeout=0.0):
+                        if await commander.client.wait_command(
+                            index, timeout=AUTO_WAIT_SLICE_S
+                        ):
                             return _Move.DONE  # completed between the slice and here
                         logger.info("Auto-calibration halted: the move was cancelled")
                         if self._run is not None:

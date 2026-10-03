@@ -11,6 +11,7 @@ from nicegui import context, ui
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.setup import Frame, Parameter, Pose, PoseValues, SetupSnapshot
 
+from waldo_commander.components.device_signals import DeviceSignalEditor
 from waldo_commander.components.tcp_calibration import TcpCalibrationEditor
 from waldo_commander.services.python_source import insert_prelude
 from waldo_commander.setup import (
@@ -77,6 +78,7 @@ class NamedSetupPanel(Panel):
                 )
             summary.refresh()
             tcp_editor.refresh()
+            signal_editor.refresh()
 
         def set_snapshot(updated: SetupSnapshot) -> None:
             nonlocal snapshot
@@ -84,6 +86,7 @@ class NamedSetupPanel(Panel):
                 kind
                 for kind, before, after in (
                     ("tcp", snapshot.tcp_calibrations, updated.tcp_calibrations),
+                    ("signals", snapshot.signals, updated.signals),
                 )
                 if before != after
             ]
@@ -113,6 +116,7 @@ class NamedSetupPanel(Panel):
                 for widget, value in zip(widgets, initial_values[kind]):
                     widget.set_value(value)
             tcp_editor.reset()
+            signal_editor.use_current_robot()
             refresh()
             # Another session (or a script) can write a setup after this panel
             # was built; without the options the dropdown drops a value it
@@ -123,6 +127,7 @@ class NamedSetupPanel(Panel):
                 (pose_existing, snapshot.poses, select_pose),
                 (parameter_existing, snapshot.parameters, select_parameter),
                 (tcp_editor.existing, snapshot.tcp_calibrations, select_tcp),
+                (signal_editor.existing, snapshot.signals, select_signal),
             ):
                 if entries:
                     selector.set_value(next(iter(entries)))
@@ -139,6 +144,8 @@ class NamedSetupPanel(Panel):
             if kind == "tcp":
                 # A measurement can bind or re-bind the same numbers.
                 return (*values, tcp_editor.draft_state())
+            if kind == "signals":
+                return (*values, signal_editor.binding)
             return values
 
         def remember(kind: str | None = None) -> None:
@@ -171,6 +178,10 @@ class NamedSetupPanel(Panel):
                 elif kind == "tcp":
                     updated = updated.with_tcp_calibration(
                         tcp_editor.name.value, tcp_editor.calibration()
+                    )
+                elif kind == "signals":
+                    updated = updated.with_signal(
+                        signal_editor.name.value, signal_editor.mapping()
                     )
             return updated
 
@@ -399,6 +410,7 @@ class NamedSetupPanel(Panel):
                 poses_tab = ui.tab("Poses")
                 params_tab = ui.tab("Parameters")
                 tcp_tab = ui.tab("TCP")
+                signals_tab = ui.tab("Signals")
 
             def coordinates(prefix: str) -> list[ui.number]:
                 with ui.grid(columns=3).classes("w-full"):
@@ -591,6 +603,16 @@ class NamedSetupPanel(Panel):
                 tcp_editor.load(name)
                 remember("tcp")
 
+            def select_signal(name: str | None) -> None:
+                if name not in snapshot.signals:
+                    return
+                if not keep_current("signals"):
+                    signal_editor.existing.set_value(shown.get("signals"))
+                    return
+                shown["signals"] = name
+                signal_editor.load(name)
+                remember("signals")
+
             with ui.tab_panels(tabs, value=frames_tab).classes(
                 "w-full flex-1 min-h-0 overflow-y-auto gap-2"
             ):
@@ -722,6 +744,10 @@ class NamedSetupPanel(Panel):
                         lambda: pending_snapshot(["frames"]),
                         update_dirty,
                     )
+                with ui.tab_panel(signals_tab).classes("p-0"):
+                    signal_editor = DeviceSignalEditor(
+                        commander, lambda: snapshot, set_snapshot, update_dirty
+                    )
 
             @ui.refreshable
             def summary() -> None:
@@ -765,6 +791,12 @@ class NamedSetupPanel(Panel):
                         parameter_unit,
                     ],
                     "tcp": [tcp_editor.name, *tcp_editor.coordinates],
+                    "signals": [
+                        signal_editor.name,
+                        signal_editor.direction,
+                        signal_editor.index,
+                        signal_editor.active_high,
+                    ],
                 }
             )
             initial_values.update(
@@ -778,3 +810,4 @@ class NamedSetupPanel(Panel):
                 for field in widgets:
                     field.on_value_change(update_dirty)
             tcp_editor.existing.on_value_change(lambda e: select_tcp(e.value))
+            signal_editor.existing.on_value_change(lambda e: select_signal(e.value))

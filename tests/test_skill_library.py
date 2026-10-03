@@ -285,7 +285,18 @@ async def test_skill_form_inserts_fixed_calls_and_the_selection_runs_live(
         async with asyncio.timeout(10):
             while not is_any_program_running():
                 await asyncio.sleep(0.05)
+        assert await client.wait_status(
+            lambda s: (
+                s.executing_index > 0
+                and s.action_state == waldoctl.ActionState.EXECUTING
+            ),
+            timeout=15,
+        ), "the cancellation case must reach actual motion"
         await script_exec.stop()
+        assert await client.wait_status(
+            lambda s: s.action_state == waldoctl.ActionState.IDLE,
+            timeout=2,
+        ), "stopping a program must cancel its active native motion"
         await run_finished()
         assert waldoctl.commander.programs.active is original, (
             "the recording program is active again after a failed run"
@@ -325,7 +336,7 @@ async def test_skill_form_inserts_fixed_calls_and_the_selection_runs_live(
                 await mcp.call_tool("execution.wait_active", {"timeout": 30})
             )
             log = payload(await mcp.call_tool("programs.get_log"))
-        assert result["finished"] and result["exit_ok"], result
+        assert result["finished"] and result["exit_ok"], (result, log)
         actual = await client.pose()
         assert actual is not None
         assert np.linalg.norm(np.array(actual[:3]) - before[:3]) == pytest.approx(
