@@ -58,9 +58,11 @@ class CameraCalibrationData:
             )
             with ui.row().classes("items-center gap-2"):
                 if on_save is not None:
-                    self.save_button = ui.button(
-                        "Save calibration", icon="save", on_click=on_save
-                    ).mark("handeye-save")
+                    self.save_button = (
+                        ui.button("Save calibration", icon="save", on_click=on_save)
+                        .props("color=wc-action text-color=wc-on-bright")
+                        .mark("handeye-save")
+                    )
                     self.save_button.set_enabled(False)
                 ui.button("Load / check", on_click=self.load).props("dense flat").mark(
                     "camera-load"

@@ -12,7 +12,7 @@ import waldoctl
 from nicegui import Client, ui, context
 from nicegui import app as ng_app
 
-from waldo_commander.common.theme import PathColors
+from waldo_commander.common.theme import hex_of
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
@@ -54,6 +54,7 @@ _LAYERS = (
     ("com_visible", "Centre of mass", "layer-com"),
 )
 _LAYER_PREFS = "preview_layers"
+_SPEED_FILL = "color=wc-control text-color=wc-text"
 
 
 def layers_available(dry_run) -> dict[str, bool]:
@@ -157,14 +158,14 @@ class PlaybackController:
         ):
             self.play_btn = ui.button(
                 icon="play_arrow", on_click=self.toggle_play
-            ).props("round dense color=positive unelevated")
+            ).props("round dense color=wc-run unelevated text-color=wc-on-bright")
             with self.play_btn:
                 self.play_btn_tooltip = ui.tooltip("Play (Space)")
             self.play_btn.mark("editor-play-btn")
 
             self.stop_btn = (
                 ui.button(icon="stop", on_click=script_exec.stop)
-                .props("round dense color=negative unelevated")
+                .props("round dense color=wc-control text-color=wc-error unelevated")
                 .tooltip("Stop")
             )
             self.stop_btn.mark("editor-stop-btn")
@@ -172,14 +173,14 @@ class PlaybackController:
 
             self.step_program_btn = (
                 ui.button(icon="sym_o_step_over", on_click=self.step_program)
-                .props("round dense flat color=white")
+                .props("round dense flat color=wc-text")
                 .tooltip("Step program")
             )
             self.step_program_btn.mark("editor-step-program")
 
             self.prev_btn = (
                 ui.button(icon="skip_previous", on_click=self.step_backward)
-                .props("round dense flat color=white")
+                .props("round dense flat color=wc-text")
                 .tooltip("Previous step")
             )
             self.prev_btn.mark("editor-step-prev")
@@ -187,7 +188,7 @@ class PlaybackController:
 
             self.next_btn = (
                 ui.button(icon="skip_next", on_click=self.step_forward)
-                .props("round dense flat color=white")
+                .props("round dense flat color=wc-text")
                 .tooltip("Next step (N)")
             )
             self.next_btn.mark("editor-step-next")
@@ -200,10 +201,11 @@ class PlaybackController:
                 ):
                     self._scrub_container = (
                         ui.row()
-                        .classes("absolute rounded-lg overflow-hidden gap-0")
+                        .classes(
+                            "absolute rounded-lg overflow-hidden gap-0 scrub-track"
+                        )
                         .style(
-                            "background: rgba(128, 128, 128, 0.2);"
-                            " inset: 0; top: 0; left: 0; right: 0; bottom: 0;"
+                            "inset: 0; top: 0; left: 0; right: 0; bottom: 0;"
                             " position: absolute;"
                         )
                     )
@@ -211,7 +213,7 @@ class PlaybackController:
                     self._sim_loading_progress = (
                         ui.linear_progress(show_value=False)
                         .classes("absolute")
-                        .props("indeterminate rounded color=primary")
+                        .props("indeterminate rounded color=wc-progress")
                         .style("position: absolute; inset: 0; height: 100%;")
                     )
                     self._sim_loading_progress.visible = False
@@ -225,8 +227,8 @@ class PlaybackController:
                         )
                         .classes("absolute timeline-slider")
                         .props(
-                            "color=grey-8 thumb-color=grey-9"
-                            " label label-color=grey-9 label-text-color=white"
+                            "color=wc-control thumb-color=wc-text text-color=wc-text"
+                            " label label-color=wc-control label-text-color=wc-text"
                             ' label-value="0:00.0 / 0:00.0"'
                             " thumb-path='M 9.75 5 C 9.75 4 10.25 4 10.25 5"
                             " L 10.25 15 C 10.25 16 9.75 16 9.75 15 Z'"
@@ -235,7 +237,7 @@ class PlaybackController:
                     )
                     self._scrub_slider.mark("editor-scrub-slider")
 
-            self._physics_busy = ui.spinner(size="xs", color="grey-5")
+            self._physics_busy = ui.spinner(size="xs").props("color=wc-text-muted")
             with self._physics_busy:
                 ui.tooltip("Predicting the run")
             self._physics_busy.mark("physics-busy")
@@ -243,8 +245,9 @@ class PlaybackController:
             self._build_layers_menu()
 
             with (
-                ui.fab(icon="1x_mobiledata", color="amber", direction="up")
-                .props("dense unelevated round size=sm")
+                ui.fab(icon="1x_mobiledata", direction="up")
+                .props("dense flat round size=sm color=wc-text")
+                .tooltip("Playback Speed")
                 .mark("editor-speed") as speed_fab
             ):
                 self.speed_fab = speed_fab
@@ -254,21 +257,27 @@ class PlaybackController:
                 ui.fab_action(
                     "sym_o_speed_0_5x",
                     on_click=lambda: self._set_speed(0.5),
-                ).mark("editor-speed-half")
+                ).props(_SPEED_FILL).mark("editor-speed-half")
                 ui.fab_action(
                     "1x_mobiledata",
                     on_click=lambda: self._set_speed(1.0),
-                ).mark("editor-speed-normal")
-                self._speed_2x = ui.fab_action(
-                    "sym_o_speed_2x",
-                    on_click=lambda: self._set_speed(2.0),
-                ).mark("editor-speed-double")
+                ).props(_SPEED_FILL).mark("editor-speed-normal")
+                self._speed_2x = (
+                    ui.fab_action(
+                        "sym_o_speed_2x",
+                        on_click=lambda: self._set_speed(2.0),
+                    )
+                    .props(_SPEED_FILL)
+                    .mark("editor-speed-double")
+                )
             ui.timer(0.5, self._refresh_execution_speed)
             self.sync_mode()
 
-            self.record_btn = ui.button(
-                icon="fiber_manual_record", on_click=self._toggle_recording
-            ).props("round dense color=negative unelevated")
+            self.record_btn = (
+                ui.button(icon="fiber_manual_record", on_click=self._toggle_recording)
+                .props("round dense color=wc-control unelevated text-color=wc-text")
+                .classes("record-btn")
+            )
             with self.record_btn:
                 self._record_btn_tooltip = ui.tooltip("Start Recording")
             self.record_btn.mark("editor-record-btn")
@@ -276,7 +285,7 @@ class PlaybackController:
             capture_btn = ui.button(
                 icon="camera_alt",
                 on_click=lambda: ui_state.editor_panel.capture_pose_at_cursor(),
-            ).props("round dense unelevated")
+            ).props("round dense color=wc-control unelevated text-color=wc-text")
             with capture_btn:
                 capture_tooltip = ui.tooltip("Capture Current Pose")
             capture_btn.mark("editor-capture-pose")
@@ -294,7 +303,7 @@ class PlaybackController:
             if flag in stored:
                 setattr(view, flag, bool(stored[flag]))
         self._layer_checks = {}
-        with ui.button(icon="layers").props("round dense flat color=white") as button:
+        with ui.button(icon="layers").props("round dense flat color=wc-text") as button:
             with ui.menu():
                 with ui.column().classes("p-2 gap-0"):
                     for flag, label, mark in _LAYERS:
@@ -375,7 +384,14 @@ class PlaybackController:
         (Keep and Undo stop it too)."""
         recording = is_any_program_recording()
         if self.record_btn:
-            self.record_btn.props("color=warning" if recording else "color=negative")
+            if recording:
+                self.record_btn.classes(add="recording").props(
+                    "color=wc-record text-color=wc-on-fill"
+                )
+            else:
+                self.record_btn.classes(remove="recording").props(
+                    "color=wc-control text-color=wc-text"
+                )
         if self._record_btn_tooltip:
             self._record_btn_tooltip.text = (
                 "Stop Recording" if recording else "Start Recording"
@@ -1175,11 +1191,11 @@ class PlaybackController:
         if self.play_btn:
             playing = (script_running and play_is_playing) or active_is_active
             if playing:
-                self.play_btn.props("icon=pause color=warning")
+                self.play_btn.props("icon=pause")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Pause (Space)"
             else:
-                self.play_btn.props("icon=play_arrow color=positive")
+                self.play_btn.props("icon=play_arrow")
                 if self.play_btn_tooltip:
                     self.play_btn_tooltip.text = "Play (Space)"
 
@@ -1242,13 +1258,16 @@ class PlaybackController:
         step = active.dry_run.playback.current_step
         cum = tl.cumulative_times
         seg_durs = tl.segment_durations
+        fallback_hex = hex_of("path-cartesian")
+        checkpoint_hex = hex_of("path-checkpoint")
+        tool_hex = hex_of("path-tool-action")
 
         with self._scrub_container:
             # One division per segment the timeline is indexed by: every
             # command that owns rows of the commanded record, a delay
             # between two moves included.
             for idx, segment in enumerate(tl.segments):
-                color = segment.color or PathColors.CARTESIAN
+                color = segment.color or fallback_hex
                 is_current = idx == step
                 left_pct = cum[idx] / total_dur * 100
                 width_pct = seg_durs[idx] / total_dur * 100
@@ -1274,7 +1293,7 @@ class PlaybackController:
                     .style(
                         f"left: {left_pct:.2f}%; top: 50%; width: 8px; height: 8px;"
                         f" transform: translate(-50%, -50%) rotate(45deg);"
-                        f" background: {PathColors.CHECKPOINT};"
+                        f" background: {checkpoint_hex};"
                         f" z-index: 1; pointer-events: none;"
                     )
                 )
@@ -1296,7 +1315,7 @@ class PlaybackController:
                     .style(
                         f"left: {left_pct:.2f}%; top: {top}; height: {height};"
                         f" width: {max(width_pct, 0.5):.2f}%;"
-                        f" background: {PathColors.TOOL_ACTION}; opacity: 0.7;"
+                        f" background: {tool_hex}; opacity: 0.7;"
                         f" z-index: 1; pointer-events: none;"
                         f" border-radius: {radius};"
                     )

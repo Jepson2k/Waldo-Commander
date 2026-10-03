@@ -10,6 +10,8 @@ from waldoctl import (
     RobotClient,
 )
 
+from waldo_commander.common.panel_theme import chart_grid, chart_text
+from waldo_commander.common.theme import css, hex_of
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S, config
 from waldo_commander.services.camera_service import camera_service
 from waldo_commander.services.control_lease import require_browser_control
@@ -17,9 +19,6 @@ from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.state import robot_state, ui_state
 
 logger = logging.getLogger(__name__)
-
-_CLR_POS = "#2dd4bf"  # teal-400
-_CLR_CUR = "#fbbf24"  # amber-400
 
 
 def _make_mark_line(value: float, color: str, name: str) -> dict:
@@ -35,10 +34,10 @@ def _make_mark_line(value: float, color: str, name: str) -> dict:
 
 # Tool state dot colors (by ToolStatus.state int)
 _STATE_DOTS: dict[int, tuple[str, str]] = {
-    0: ("var(--ctk-muted)", "Off"),
-    1: ("var(--color-sky-400)", "Idle"),
-    2: ("var(--color-emerald-400)", "Active"),
-    3: ("var(--color-red-400)", "Error"),
+    0: (css("text-muted"), "Off"),
+    1: (css("info"), "Idle"),
+    2: (css("positive"), "Active"),
+    3: (css("error"), "Error"),
 }
 
 
@@ -49,6 +48,8 @@ class GripperPage:
         self, client: RobotClient, is_open: Callable[[], bool] = lambda: True
     ) -> None:
         self.client = client
+        self._clr_pos = hex_of("measure-position")
+        self._clr_cur = hex_of("measure-current")
         # The diagnostics tab has had this from the start; this one did not,
         # so its chart pushed its whole history into a hidden element on
         # every status tick, for as long as the app ran.
@@ -140,12 +141,10 @@ class GripperPage:
         self._mark_lines_dirty: bool = False
         self._chart_pushed_at: float = 0.0
 
-        _tile = "bg-neutral-800 p-2 rounded"
+        _tile = "well p-2"
         with ui.column().classes("w-full gap-2"):
             self._camera_card = (
-                ui.card()
-                .props("flat")
-                .classes("w-full p-0 overflow-hidden rounded bg-neutral-800")
+                ui.card().props("flat").classes("w-full p-0 overflow-hidden well")
             )
             with self._camera_card:
                 self._camera_image = (
@@ -173,20 +172,22 @@ class GripperPage:
     # ---- Combined dual-axis chart ----
 
     def _build_chart(self) -> None:
+        clr_pos, clr_cur = self._clr_pos, self._clr_cur
+        clr_axis = chart_text()
         y_axis_left: dict = {
             "type": "value",
             "name": "%",
-            "nameTextStyle": {"fontSize": 11, "color": _CLR_POS},
-            "axisLabel": {"fontSize": 11, "color": _CLR_POS},
-            "splitLine": {"lineStyle": {"color": "rgba(128,128,128,0.15)"}},
+            "nameTextStyle": {"fontSize": 11, "color": clr_axis},
+            "axisLabel": {"fontSize": 11, "color": clr_axis},
+            "splitLine": {"lineStyle": {"color": chart_grid()}},
             "min": 0,
             "max": 100,
         }
         y_axis_right: dict = {
             "type": "value",
             "name": "mA",
-            "nameTextStyle": {"fontSize": 11, "color": _CLR_CUR},
-            "axisLabel": {"fontSize": 11, "color": _CLR_CUR},
+            "nameTextStyle": {"fontSize": 11, "color": clr_axis},
+            "axisLabel": {"fontSize": 11, "color": clr_axis},
             "splitLine": {"show": False},
             "min": 0,
         }
@@ -210,7 +211,7 @@ class GripperPage:
                         "data": ["Position", "Current"],
                         "top": 0,
                         "left": 40,
-                        "textStyle": {"fontSize": 11, "color": "var(--ctk-text)"},
+                        "textStyle": {"fontSize": 11, "color": hex_of("text")},
                         "itemWidth": 12,
                         "itemHeight": 8,
                     },
@@ -229,9 +230,9 @@ class GripperPage:
                             "yAxisIndex": 0,
                             "showSymbol": False,
                             "smooth": True,
-                            "lineStyle": {"width": 1.5, "color": _CLR_POS},
-                            "itemStyle": {"color": _CLR_POS},
-                            "markLine": _make_mark_line(0, _CLR_POS, "target"),
+                            "lineStyle": {"width": 1.5, "color": clr_pos},
+                            "itemStyle": {"color": clr_pos},
+                            "markLine": _make_mark_line(0, clr_pos, "target"),
                             "data": [],
                         },
                         {
@@ -240,9 +241,9 @@ class GripperPage:
                             "yAxisIndex": 1,
                             "showSymbol": False,
                             "smooth": True,
-                            "lineStyle": {"width": 1.5, "color": _CLR_CUR},
-                            "itemStyle": {"color": _CLR_CUR},
-                            "markLine": _make_mark_line(0, _CLR_CUR, "limit"),
+                            "lineStyle": {"width": 1.5, "color": clr_cur},
+                            "itemStyle": {"color": clr_cur},
+                            "markLine": _make_mark_line(0, clr_cur, "limit"),
                             "data": [],
                         },
                     ],
@@ -289,6 +290,7 @@ class GripperPage:
             waldoctl.commander.settings.gripper.target_position * 100, 1
         )
         current_limit = waldoctl.commander.settings.gripper.current
+        clr_pos, clr_cur = self._clr_pos, self._clr_cur
 
         chart = self._combined_chart
         if chart is None:
@@ -304,10 +306,10 @@ class GripperPage:
                     [t, round(c, 1)] for t, c in zip(ts_ms, currents)
                 ]
             chart.options["series"][0]["markLine"] = _make_mark_line(
-                target_pos_pct, _CLR_POS, "target"
+                target_pos_pct, clr_pos, "target"
             )
             chart.options["series"][1]["markLine"] = _make_mark_line(
-                current_limit, _CLR_CUR, "limit"
+                current_limit, clr_cur, "limit"
             )
         chart.run_chart_method("setOption", {"series": chart.options["series"]})
 
@@ -418,19 +420,17 @@ class GripperPage:
         s = ts.state
         color, label = _STATE_DOTS.get(s, _STATE_DOTS[0])
         if self._state_dot is not None:
-            self._state_dot.style(f"font-size: 10px; color: {color};")
+            self._state_dot.style(f"color: {color};")
         if self._state_label is not None:
             self._state_label.text = label
 
         if self._part_dot is not None:
-            part_color = (
-                "var(--color-emerald-400)" if ts.part_detected else "var(--ctk-muted)"
-            )
-            self._part_dot.style(f"font-size: 10px; color: {part_color};")
+            part_color = css("positive") if ts.part_detected else css("text-muted")
+            self._part_dot.style(f"color: {part_color};")
 
         if self._engaged_dot is not None:
-            eng_color = "var(--color-emerald-400)" if ts.engaged else "var(--ctk-muted)"
-            self._engaged_dot.style(f"font-size: 10px; color: {eng_color};")
+            eng_color = css("positive") if ts.engaged else css("text-muted")
+            self._engaged_dot.style(f"color: {eng_color};")
 
         if self._fault_label is not None:
             if ts.fault_code != 0:
@@ -441,21 +441,23 @@ class GripperPage:
 
     # ---- Status + Controls ----
     def _build_status_column(self) -> None:
-        _lbl = "text-xs text-[var(--ctk-muted)]"
-        _dot_s = "font-size: 10px;"
+        _lbl = "wc-caption text-wc-text-muted"
+        _dot_size = "10px"
 
         with ui.grid(columns="auto auto 3.5rem").classes(
             "gap-x-1 gap-y-1 items-center"
         ):
             ui.label("State").classes(_lbl)
-            self._state_dot = ui.icon("circle").style(
-                f"{_dot_s} color: var(--ctk-muted);"
+            self._state_dot = ui.icon("circle", size=_dot_size).style(
+                f"color: {css('text-muted')};"
             )
             self._state_label = ui.label("Off").classes("text-xs")
 
             # Project the first DOF of the bindable ``positions`` tuple for single-axis gripper display.
             ui.label("Position").classes(_lbl)
-            ui.icon("circle").style(f"{_dot_s} color: {_CLR_POS};")
+            ui.icon("circle", size=_dot_size).style(
+                f"color: {css('measure-position')};"
+            )
             (
                 ui.label("0 %")
                 .classes("text-sm font-medium")
@@ -468,7 +470,7 @@ class GripperPage:
 
             # Project the first channel of the bindable ``channels`` tuple.
             ui.label("Current").classes(_lbl)
-            ui.icon("circle").style(f"{_dot_s} color: {_CLR_CUR};")
+            ui.icon("circle", size=_dot_size).style(f"color: {css('measure-current')};")
             (
                 ui.label("0 mA")
                 .classes("text-sm")
@@ -480,19 +482,19 @@ class GripperPage:
             )
 
             ui.label("Part").classes(_lbl)
-            self._part_dot = ui.icon("circle").style(
-                f"{_dot_s} color: var(--ctk-muted);"
+            self._part_dot = ui.icon("circle", size=_dot_size).style(
+                f"color: {css('text-muted')};"
             )
             ui.label()
 
             ui.label("Engaged").classes(_lbl)
-            self._engaged_dot = ui.icon("circle").style(
-                f"{_dot_s} color: var(--ctk-muted);"
+            self._engaged_dot = ui.icon("circle", size=_dot_size).style(
+                f"color: {css('text-muted')};"
             )
             ui.label()
 
             self._fault_label = ui.label("").classes(
-                "text-xs text-[var(--color-red-400)] col-span-3"
+                "wc-caption text-wc-error col-span-3"
             )
             self._fault_label.set_visibility(False)
 
@@ -509,7 +511,7 @@ class GripperPage:
         self._slider_interval = config.webapp_control_interval_s
 
         # Target-only slider: seeded from feedback, then tracks the target.
-        ui.label("Pos").classes("text-xs text-[var(--ctk-muted)]")
+        ui.label("Pos").classes("wc-caption text-wc-text-muted")
         self._pos_slider = (
             ui.slider(min=0, max=100, value=0, step=1)
             .on_value_change(self._on_slider_drag)
@@ -522,7 +524,7 @@ class GripperPage:
         def _electric_visible(k: str) -> bool:
             return k != "NONE" and self._is_electric()
 
-        ui.label("mA").classes("text-xs text-[var(--ctk-muted)]").bind_visibility_from(
+        ui.label("mA").classes("wc-caption text-wc-text-muted").bind_visibility_from(
             waldoctl.commander.status.tool,
             "key",
             backward=_electric_visible,
@@ -567,7 +569,7 @@ class GripperPage:
         _update_current_range()  # apply immediately if tool already set
 
     def _build_speed_section(self) -> None:
-        ui.label("Speed").classes("text-xs text-[var(--ctk-muted)] pt-2")
+        ui.label("Speed").classes("wc-caption text-wc-text-muted pt-2")
         with ui.row().classes("col-span-2 w-full items-center gap-2 no-wrap pt-2"):
             (
                 ui.switch("Sync", value=waldoctl.commander.settings.gripper.speed_sync)
@@ -581,7 +583,7 @@ class GripperPage:
                     waldoctl.commander.settings.jog, "speed", backward=lambda v: f"{v}%"
                 )
                 .bind_visibility_from(waldoctl.commander.settings.gripper, "speed_sync")
-                .classes("text-xs text-[var(--ctk-muted)]")
+                .classes("wc-caption text-wc-text-muted")
             )
             # Independent: slider
             (

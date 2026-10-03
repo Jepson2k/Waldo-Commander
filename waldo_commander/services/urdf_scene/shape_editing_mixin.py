@@ -123,7 +123,7 @@ class ShapeEditingMixin:
         ui.item(f"{label} '{shape_name}'").classes("font-bold text-sm")
         if shape.attachment is not None and not self._shape_handle().attachments_valid:
             ui.item("Reconciliation required before arm motion").classes(
-                "text-warning text-xs"
+                "text-wc-warning text-xs"
             )
         ui.separator()
         ui.menu_item(
@@ -165,7 +165,7 @@ class ShapeEditingMixin:
         """Menu items for a right-clicked proposed-installation shape."""
         ui.item(f"Proposed installation '{shape_name}'").classes("font-bold text-sm")
         ui.item("Not enforced until it is in the robot config").classes(
-            "text-xs opacity-70"
+            "text-xs text-wc-text-muted"
         )
         ui.separator()
         ui.menu_item(
@@ -250,7 +250,7 @@ class ShapeEditingMixin:
                 "Paste into the robot config's [[installation_shapes]] section; "
                 "the backend enforces it from its next start, and the proposal "
                 "clears itself once readback shows it."
-            ).classes("text-sm opacity-80")
+            ).classes("text-sm text-wc-text-muted")
             ui.code(text, language="toml").classes("w-full max-h-96 overflow-auto")
             saved = ui.label().classes("text-sm").mark("installation-toml-saved")
 
@@ -270,10 +270,12 @@ class ShapeEditingMixin:
                     dialog.delete()
 
             with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Save to programs folder", on_click=save).props("flat").mark(
-                    "installation-toml-save"
+                ui.button("Save to programs folder", on_click=save).props(
+                    "flat color=wc-text"
+                ).mark("installation-toml-save")
+                ui.button("Close", on_click=dismiss).props(
+                    "unelevated color=wc-control text-color=wc-text"
                 )
-                ui.button("Close", on_click=dismiss).props("unelevated")
         dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
         dialog.open()
 
@@ -424,10 +426,10 @@ class ShapeEditingMixin:
                     dialog.delete()
 
             with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dismiss).props("flat")
-                ui.button("Save", on_click=save).props("unelevated").mark(
-                    "shape-dialog-save"
-                )
+                ui.button("Cancel", on_click=dismiss).props("flat color=wc-text")
+                ui.button("Save", on_click=save).props(
+                    "unelevated color=wc-action text-color=wc-on-bright"
+                ).mark("shape-dialog-save")
         # ESC / backdrop dismissal comes back as a hide event.
         dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
         dialog.open()
@@ -499,7 +501,9 @@ class ShapeEditingMixin:
                     "name like L6. All other collision checks remain active."
                 ).classes("text-xs opacity-70")
             feedback = (
-                ui.label().classes("text-sm text-warning").mark("attachment-feedback")
+                ui.label()
+                .classes("text-sm text-wc-warning")
+                .mark("attachment-feedback")
             )
 
             async def apply() -> None:
@@ -578,10 +582,14 @@ class ShapeEditingMixin:
 
             with ui.row().classes("w-full justify-end"):
                 ui.button("Cancel", on_click=dismiss).props("flat")
-                button = ui.button(
-                    "Declare detachment" if detach else "Declare attachment",
-                    on_click=apply,
-                ).mark("attachment-apply")
+                button = (
+                    ui.button(
+                        "Declare detachment" if detach else "Declare attachment",
+                        on_click=apply,
+                    )
+                    .props("color=wc-action text-color=wc-on-bright")
+                    .mark("attachment-apply")
+                )
         dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
         dialog.open()
 
@@ -601,14 +609,14 @@ class ShapeEditingMixin:
                     dialog.delete()
 
             with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dismiss).props("flat")
+                ui.button("Cancel", on_click=dismiss).props("flat color=wc-text")
 
                 def confirm() -> None:
                     handle.shapes = [s for s in handle.shapes if s.name != name]
                     dismiss()
 
-                ui.button("Delete", color="negative", on_click=confirm).props(
-                    "unelevated"
+                ui.button("Delete", on_click=confirm).props(
+                    "unelevated color=wc-control text-color=wc-error"
                 ).mark("shape-delete-confirm")
         dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
         dialog.open()

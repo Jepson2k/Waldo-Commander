@@ -20,9 +20,9 @@ the arm is still moving keeps the motion up to that moment.
 
 ## Keeping a take
 
-The lines a recording writes stay marked in the editor, tinted in the Record
-button's amber, until you decide. The editor's header shows how many lines the
-take wrote with **Keep** and **Undo** where Open and Save usually are. Stopping
+The lines a recording writes stay marked in the editor, tinted orange, until
+you decide. The editor's header shows how many lines the take wrote with
+**Keep** and **Undo** where Open and Save usually are. Stopping
 the recording does not decide: stop, play the program to watch the arm do it,
 then keep the lines or undo them all. Keep or Undo while still recording also
 stops it, and starting a new recording keeps the last take.

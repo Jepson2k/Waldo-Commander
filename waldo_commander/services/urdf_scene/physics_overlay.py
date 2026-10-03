@@ -32,6 +32,8 @@ from nicegui import ui
 from scipy.spatial.transform import Rotation as ScipyRotation
 from waldoctl import TickIndex, following_error
 
+from waldo_commander.common.theme import hex_of, linear_rgb
+
 logger = logging.getLogger(__name__)
 
 #: Following error at which the predicted path is drawn fully off its
@@ -58,16 +60,23 @@ _ARROW_BASE_M = 0.01
 #: Radius of the centre-of-mass drop line \[m\].
 _DROP_RADIUS_M = 0.001
 
-_ON_TRACK = np.array([0.35, 0.85, 0.45])
-_DIVERGED = np.array([0.95, 0.35, 0.25])
 _CONE_AXIS = np.array([0.0, 1.0, 0.0])
+
+
+def _gradient_endpoints() -> tuple[np.ndarray, np.ndarray]:
+    """The on-track and diverged ends of the colour scale."""
+    return (
+        np.array(linear_rgb("physics-on-track")),
+        np.array(linear_rgb("physics-diverged")),
+    )
 
 
 def following_error_colors(error_rad: np.ndarray) -> list[list[float]]:
     """One RGB triple per row: green where the arm is on its command,
     red where it is not."""
+    on_track, diverged = _gradient_endpoints()
     t = np.clip(error_rad / FULL_FOLLOWING_ERROR_RAD, 0.0, 1.0)[:, None]
-    return (_ON_TRACK * (1 - t) + _DIVERGED * t).tolist()
+    return (on_track * (1 - t) + diverged * t).tolist()
 
 
 def decimate(
@@ -175,6 +184,8 @@ class PhysicsOverlay:
         if scene is None:
             return
         self.clear()
+        com_hex = hex_of("physics-com")
+        contact_hex = hex_of("physics-contact")
         try:
             with scene:
                 with ui.scene.group().with_name("simulation:physics") as grp:
@@ -193,7 +204,7 @@ class PhysicsOverlay:
                     # color=None tells three.js to use the per-vertex colours.
                     self._predicted.material(None, 0.95)
                     self._predicted.visible(show_predicted)
-                    self._com = ui.scene.sphere(0.012).material("#ffd166", 0.9)
+                    self._com = ui.scene.sphere(0.012).material(com_hex, 0.9)
                     self._com.visible(False)
                     # A drop line to the ground: a lone sphere in a
                     # perspective view gives no depth to read its height
@@ -205,7 +216,7 @@ class PhysicsOverlay:
                         bottom_radius=_DROP_RADIUS_M,
                         height=1.0,
                         radial_segments=6,
-                    ).material("#ffd166", 0.35)
+                    ).material(com_hex, 0.35)
                     self._com_drop.visible(False)
                     self._contacts = [
                         ui.scene.cylinder(
@@ -213,7 +224,7 @@ class PhysicsOverlay:
                             bottom_radius=_ARROW_BASE_M * 0.35,
                             height=_ARROW_BASE_M,
                             radial_segments=12,
-                        ).material("#ff5d5d", 0.9)
+                        ).material(contact_hex, 0.9)
                         for _ in range(MAX_CONTACT_ARROWS)
                     ]
                     for arrow in self._contacts:

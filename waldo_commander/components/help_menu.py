@@ -51,7 +51,7 @@ class HelpMenu:
                         with (
                             ui.row()
                             .classes("w-full items-center px-4 py-2 shrink-0")
-                            .style("border-bottom: 1px solid rgba(255,255,255,0.1);")
+                            .style("border-bottom: 1px solid var(--wc-glass-border);")
                         ):
                             ui.label("Help").classes("text-lg font-medium")
                             ui.space()
@@ -61,12 +61,12 @@ class HelpMenu:
                                     "https://jepson2k.github.io/Waldo-Commander/",
                                     new_tab=True,
                                 )
-                                .classes("text-gray-400")
+                                .classes("text-wc-text-muted")
                                 .tooltip("View tutorials online")
                             ):
                                 ui.icon("open_in_new", size="sm")
                             ui.button(icon="close", on_click=self._dialog.close).props(
-                                "flat round dense color=white"
+                                "flat round dense color=wc-text"
                             )
 
                         with (
@@ -99,7 +99,7 @@ class HelpMenu:
 
         with ui.column().classes("w-full p-4 gap-4").mark("keybindings-content"):
             if not categories:
-                ui.label("No keybindings registered").classes("text-gray-500")
+                ui.label("No keybindings registered").classes("text-wc-text-muted")
                 return
 
             # Sort categories into a fixed order for consistent display.
@@ -120,7 +120,7 @@ class HelpMenu:
 
             for category, bindings in sorted_categories:
                 with ui.column().classes("w-full gap-1"):
-                    ui.label(category).classes("text-sm font-medium text-gray-400")
+                    ui.label(category).classes("wc-label text-wc-text-muted")
 
                     rows = []
                     for i, binding in enumerate(bindings):
@@ -203,9 +203,9 @@ class HelpMenu:
                 "description": """
                     Open the **Settings** tab in the bottom-left tab bar and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
 
-                    - <span style="color: #4caf50">■</span> Connected to robot hardware
-                    - <span style="color: #f44336">■</span> Robot mode but disconnected
-                    - <span style="color: #9e9e9e">■</span> Simulator mode
+                    - <span style="color: var(--wc-positive)">■</span> Connected to robot hardware
+                    - <span style="color: var(--wc-error)">■</span> Robot mode but disconnected
+                    - <span style="color: var(--wc-mode-sim)">■</span> Simulator mode (amber)
                 """,
                 "video": "connecting_to_robot.mp4",
             },
@@ -230,14 +230,16 @@ class HelpMenu:
         with ui.scroll_area().classes("w-full h-full tutorial-scroll"):
             with (
                 ui.stepper()
-                .props("vertical header-nav flat active-color=white done-color=grey-5")
+                .props(
+                    "vertical header-nav flat active-color=wc-text done-color=wc-text-muted"
+                )
                 .classes("p-0")
                 .style("width: 700px;") as self._stepper
             ):
                 if include_safety_step:
                     with ui.step("Safety Notice").classes("gap-2").mark("safety-step"):
                         with ui.row().classes("items-center gap-2 mb-2"):
-                            ui.icon("warning", size="md").classes("text-amber-500")
+                            ui.icon("warning", size="md").classes("text-wc-warning")
                             ui.label("Please read before continuing").classes(
                                 "text-lg font-medium"
                             )
@@ -254,7 +256,7 @@ class HelpMenu:
                             for warning in warnings:
                                 with ui.row().classes("items-start gap-2"):
                                     ui.icon("circle", size="6px").classes(
-                                        "text-amber-500 mt-2 shrink-0"
+                                        "text-wc-warning mt-2 shrink-0"
                                     )
                                     ui.label(warning).classes("text-sm")
 
@@ -264,7 +266,7 @@ class HelpMenu:
                             ).classes("mr-4")
                             next_btn = ui.button(
                                 "Continue", on_click=self._stepper.next
-                            ).props("color=primary")
+                            ).props("color=wc-action text-color=wc-on-bright")
                             next_btn.bind_enabled_from(self._safety_accepted, "value")
 
                             def on_accept(e):
@@ -284,22 +286,22 @@ class HelpMenu:
                         # sanitize=False: content is a hardcoded literal whose inline status-marker
                         # color spans DOMPurify would otherwise strip.
                         ui.markdown(step["description"], sanitize=False).classes(
-                            "text-md text-gray-300"
+                            "text-md text-wc-text"
                         )
 
                         with ui.stepper_navigation():
                             if i < len(steps) - 1:
                                 ui.button("Next", on_click=self._stepper.next).props(
-                                    "color=primary"
+                                    "color=wc-action text-color=wc-on-bright"
                                 )
                             else:
                                 ui.button("Finish", on_click=self._on_finish).props(
-                                    "color=primary"
+                                    "color=wc-action text-color=wc-on-bright"
                                 )
                             if i > 0:
                                 ui.button(
                                     "Back", on_click=self._stepper.previous
-                                ).props("flat")
+                                ).props("flat color=wc-text")
 
     def _on_finish(self) -> None:
         """Handle finish button click - mark tutorial complete and close dialog."""
@@ -332,7 +334,7 @@ class HelpMenu:
 
                     ui.label(
                         "Let's get you started with a quick tour of the interface."
-                    ).classes("text-sm text-gray-400 mb-3 shrink-0")
+                    ).classes("text-sm text-wc-text-muted mb-3 shrink-0")
 
                     self._build_quickstart_stepper(
                         include_safety_step=not safety_already_acknowledged
@@ -342,7 +344,7 @@ class HelpMenu:
                     footer = (
                         ui.row()
                         .classes("w-full items-center pt-3 shrink-0")
-                        .style("border-top: 1px solid rgba(255,255,255,0.1);")
+                        .style("border-top: 1px solid var(--wc-glass-border);")
                     )
                     if self._safety_accepted and not safety_already_acknowledged:
                         footer.bind_visibility_from(self._safety_accepted, "value")
@@ -355,7 +357,7 @@ class HelpMenu:
                         )
                         ui.space()
                         ui.button("Skip Tour", on_click=self._dialog.close).props(
-                            "flat"
+                            "flat color=wc-text"
                         )
 
         return self._dialog

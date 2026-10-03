@@ -28,7 +28,7 @@ from waldo_commander.common.theme import SceneColors, get_color_for_move_type
 
 #: A marker segment: a checkpoint or a refusal that owns no rows is drawn
 #: as nothing in the scene and as a zero-width division on the scrub bar.
-MARKER_COLOR = "#00000000"
+MARKER_COLOR = ""  # never drawn: a marker segment has no points
 
 #: Within this many metres two TCP samples are one place: a hold.
 _STILL_M = 1e-6

@@ -16,6 +16,11 @@ from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
 from waldoctl.setup import PoseValues, TcpCalibration
 
 from waldo_commander.components.simulation_engine import simulation
+from waldo_commander.common.theme import (
+    STORAGE_KEY as THEME_STORAGE_KEY,
+    stored_theme,
+    theme_names,
+)
 from waldo_commander.constants import RESERVED_TAB_IDS
 from waldo_commander.services.camera_service import (
     camera_service,
@@ -614,7 +619,6 @@ class SettingsContent:
                 ui.notify(f"Port change failed: {exc}", color="negative")
                 return
             ng_app.storage.general["com_port"] = port_val
-            ui.notify(f"SET_PORT {port_val}", color="primary")
 
         port_select_ref.on("update:model-value", lambda e: _apply_port())
         self._refresh_timer = ui.timer(10.0, self._refresh_serial_ports)
@@ -633,6 +637,19 @@ class SettingsContent:
             ).props("dense").mark("switch-show-route")
 
         waldoctl.commander.settings.view.paths_visible = prefs["show_route"]
+
+    def _build_theme(self) -> None:
+        def _on_theme_change(e):
+            if e.value in theme_names():
+                ng_app.storage.general[THEME_STORAGE_KEY] = e.value
+                ui.navigate.reload()
+
+        with _setting_row(
+            "Theme", "Colours of the panels, text and scene; the page reloads"
+        ):
+            ui.select(
+                theme_names(), value=stored_theme(), on_change=_on_theme_change
+            ).props("dense options-dense").mark("select-theme")
 
     def _build_envelope(self, prefs: dict) -> None:
         async def _on_envelope_mode_change(e):
@@ -965,7 +982,7 @@ class SettingsContent:
         if not discovered:
             with _setting_row("Panel plugins", "Show / hide installed panel plugins"):
                 ui.label("No plugins installed").classes(
-                    "text-xs text-[var(--ctk-muted)]"
+                    "wc-caption text-wc-text-muted"
                 ).mark("settings-plugins-summary")
             return
 
@@ -1251,6 +1268,7 @@ class SettingsContent:
                 [
                     lambda: self._build_show_route(prefs),
                     lambda: self._build_envelope(prefs),
+                    *([self._build_theme] if len(theme_names()) > 1 else []),
                 ],
             ),
             (
