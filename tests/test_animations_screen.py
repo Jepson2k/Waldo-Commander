@@ -75,6 +75,21 @@ window.__peek = {mouths: [], peeking: false, hidden: hidden()};
 """
 )
 
+# Records how far the footer face's left pupil swings either way, every
+# frame: a tap holds the look for under half a second, which a loaded
+# runner's WebDriver round trips can step right over.
+_WATCH_LOOK_JS = """
+const pupil = document.querySelector('.footer-mode svg[data-mood] .pupil');
+window.__look = {min: 0, max: 0};
+(function sample() {
+  const m = (pupil.style.transform || '').match(/translate\\((-?[\\d.]+)px/);
+  const x = m ? parseFloat(m[1]) : 0;
+  window.__look.min = Math.min(window.__look.min, x);
+  window.__look.max = Math.max(window.__look.max, x);
+  if (pupil.isConnected) requestAnimationFrame(sample);
+})();
+"""
+
 # Records whether the face blinks: the blink overlay turning opaque.
 _WATCH_BLINK_JS = """
 window.__faceBlinked = false;
@@ -175,14 +190,14 @@ class TestAnimations:
                 f"the {slot_id} arrow never showed",
                 arrow,
             )
+            screen.selenium.execute_script(_WATCH_LOOK_JS)
             arrow.click()
             _poll(
                 screen,
-                face,
-                lambda f, s=sign: f["pupilX"] * s > 0.3,
+                "return window.__look",
+                lambda look, s=sign: (look["max"] if s > 0 else -look["min"]) > 0.3,
                 3,
                 f"eyes did not follow the {slot_id} arrow",
-                _FOOTER,
             )
             _poll(
                 screen,
