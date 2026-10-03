@@ -17,7 +17,11 @@ from nicegui import Client
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.mcp.server import get_mcp
-from waldo_commander.mcp.tools.control import require_actuation, require_control
+from waldo_commander.mcp.tools.control import (
+    refuse,
+    require_actuation,
+    require_control,
+)
 from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.state import ui_state
@@ -33,9 +37,7 @@ def _page_client():
     cid = ui_state.active_client_id
     client = Client.instances.get(cid) if cid else None
     if client is None or client.is_deleted:
-        raise RuntimeError(
-            "no active Waldo-Commander page is connected; open the GUI first"
-        )
+        refuse("no active Waldo-Commander page is connected; open the GUI first")
     with client:
         yield
 

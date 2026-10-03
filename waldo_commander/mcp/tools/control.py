@@ -37,7 +37,7 @@ from waldo_commander.state import ui_state
 mcp = get_mcp()
 
 
-def _refuse(message: str) -> NoReturn:
+def refuse(message: str) -> NoReturn:
     """Gate refusals are protocol messages steering the LLM, not server
     faults — raised as ToolError at WARNING so fastmcp doesn't log every
     expected refusal as an ERROR (which trips the test fixtures' unexpected-
@@ -80,7 +80,7 @@ def require_control() -> None:
     if h is None or h.channel == MCP:
         control_lease.seize(MCP, sid, _label(sid))
         return
-    _refuse(
+    refuse(
         f"robot is controlled by {control_lease.describe()}; "
         "call control.take_control to take over"
     )
@@ -100,7 +100,7 @@ def require_session_consent() -> None:
     if recently_denied(sid):
         # Terminal for the cooldown: no prompt is re-armed, so the deny can't
         # be nagged away by an immediate retry loop.
-        _refuse(
+        refuse(
             "the user denied hardware motion for this session just now — do "
             "not retry immediately; work in simulator mode or wait for the "
             "user to initiate"
@@ -108,11 +108,11 @@ def require_session_consent() -> None:
     cid = ui_state.active_client_id
     client = Client.instances.get(cid) if cid else None
     if client is None or client.is_deleted:
-        _refuse(
+        refuse(
             "open the Waldo-Commander GUI and approve the hardware-motion prompt first"
         )
     arm_consent_prompt(sid, _label(sid))
-    _refuse(
+    refuse(
         "first hardware move of this session needs GUI consent — call "
         "control.wait_approval, then retry once it reports allowed"
     )
@@ -128,16 +128,16 @@ def require_action_approval(description: str) -> None:
     if take_approved_action(sid, description):
         return
     if recently_denied(sid):
-        _refuse(
+        refuse(
             f"the user just denied '{description}' — do not retry immediately; "
             "wait for the user or take a different approach"
         )
     cid = ui_state.active_client_id
     client = Client.instances.get(cid) if cid else None
     if client is None or client.is_deleted:
-        _refuse("open the Waldo-Commander GUI and approve the action prompt first")
+        refuse("open the Waldo-Commander GUI and approve the action prompt first")
     arm_action_prompt(sid, description)
-    _refuse(
+    refuse(
         f"this action needs approval: {description} — call "
         "control.wait_approval, then retry once it reports allowed"
     )

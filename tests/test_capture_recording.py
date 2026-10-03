@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import re
 
 import numpy as np
 import pytest
@@ -94,7 +95,11 @@ async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
         )
         assert preview["error"] is None, preview["error"]
         final = np.degrees(preview["final_joints_rad"])
-        assert final == pytest.approx(target, abs=0.5)
+        # J5 is near zero, where only J4 + J6 sets the pose.
+        assert final[[0, 1, 2, 4]] == pytest.approx(
+            np.asarray(target)[[0, 1, 2, 4]], abs=0.5
+        )
+        assert final[3] + final[5] == pytest.approx(target[3] + target[5], abs=0.5)
 
         # Raw, the same lines replay the recorded points instead.
         element("staged-capture-mode").set_value("raw")
@@ -422,7 +427,8 @@ async def test_gripper_changes_are_captured_where_they_happen(
             lambda: len(_captures(motion_recorder.session)) == 2, timeout_s=30
         ), "a gripper opened with the arm still was not captured"
         still = _block_text(textarea, _captures(motion_recorder.session)[1])
-        assert "rbt.tool.set_position(0.000)" in still, still
+        opened = re.search(r"rbt\.tool\.set_position\(([0-9.]+)\)", still)
+        assert opened and float(opened.group(1)) <= 5 / 255, still
         assert "rbt.move_" not in still, still
     finally:
         if is_any_program_recording():

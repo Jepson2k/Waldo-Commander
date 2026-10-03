@@ -63,6 +63,8 @@ from waldo_commander.state import playback_coordination, simulation_state, ui_st
 logger = logging.getLogger(__name__)
 
 _COMMANDS = command_table()
+# How long a launch lets already-queued commands drain before refusing.
+_QUEUE_DRAIN_S = 2.0
 
 
 def _lessee() -> tuple[str, str] | None:
@@ -339,7 +341,11 @@ class ScriptExecutionController:
             # Resuming releases whatever a native pause holds, which must be
             # nothing but this run's own motion.
             client = waldoctl.commander.client
-            queued = await client.queue()
+            # The page's own preview fits its tool through the queue, and a
+            # Run pressed right after an edit lands while that is in flight.
+            drain_by = time.monotonic() + _QUEUE_DRAIN_S
+            while (queued := await client.queue()) and time.monotonic() < drain_by:
+                await asyncio.sleep(0.05)
             if queued is None:
                 raise ConnectionError("Controller queue is unavailable")
             if queued or not await client.wait_status(

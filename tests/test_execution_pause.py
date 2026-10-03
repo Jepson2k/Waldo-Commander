@@ -110,13 +110,16 @@ async def test_editor_pause_holds_native_motion_and_managed_program(
         async with asyncio.timeout(3):
             while not (await client.execution_speed()).paused:
                 await asyncio.sleep(0.02)
-        await playback._refresh_execution_speed()
+        assert playback._speed_tooltip is not None
+        # The applied speed ramps down over a few ticks after the pause lands.
+        async with asyncio.timeout(3):
+            while "Paused" not in playback._speed_tooltip.text:
+                await playback._refresh_execution_speed()
+                await asyncio.sleep(0.05)
         assert playback._speed_2x is not None and not playback._speed_2x.visible, (
             "2x is offered for a live program"
         )
-        assert playback._speed_tooltip is not None
-        tooltip = playback._speed_tooltip.text
-        assert "50% selected" in tooltip and "Paused" in tooltip, tooltip
+        assert "50% selected" in playback._speed_tooltip.text
         held_progress = slider.value
         await asyncio.sleep(1.0)
         assert slider.value == pytest.approx(held_progress, abs=0.03), (
@@ -461,6 +464,9 @@ async def test_failed_program_keeps_stop_available_until_controller_confirms(
 
     handle = None
     try:
+        # A Run pressed while the controller still holds a queued command
+        # waits for it to drain instead of refusing.
+        assert await client.delay(0.5) >= 0
         await script_exec.start()
         handle = script_exec.script_handle
         assert handle is not None
