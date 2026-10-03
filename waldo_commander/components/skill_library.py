@@ -37,10 +37,16 @@ SKILL_ICONS: dict[str, str] = {
     "waldo.retract": "retract",
     "waldo.park": "park",
     "waldo.align_tool_axis": "align_tool_axis",
+    "waldo.attach_object": "attach_object",
+    "waldo.detach_object": "detach_object",
     "waldo.transfer": "transfer",
     "waldo.transfer_with_signal": "transfer_with_signal",
     "waldo.locate_board": "locate_board",
 }
+# Skills that edit the world rather than move the arm: nothing to draw, and
+# the backend's dry run keeps shapes process-wide, so planning them in this
+# process would leak into every later preview.
+WORLD_SKILLS = frozenset({"waldo.attach_object", "waldo.detach_object"})
 
 
 def _label(name: str) -> str:
@@ -161,6 +167,9 @@ class SkillDialog:
             nonlocal preview_generation
             preview_generation += 1
             generation = preview_generation
+            if key in WORLD_SKILLS:
+                clear_preview()
+                return
             await asyncio.sleep(0.25)
             from waldo_commander.state import ui_state
 

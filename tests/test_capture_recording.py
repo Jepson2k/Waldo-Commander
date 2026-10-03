@@ -8,7 +8,6 @@ import pytest
 import waldoctl
 from nicegui import run
 from nicegui.testing import User
-from parol6.client.dry_run_client import DryRunRobotClient
 
 from tests.helpers.wait import (
     enable_sim,
@@ -96,10 +95,9 @@ async def test_uncommanded_motion_is_staged_as_moves_or_as_recorded(
             _run_simulation_isolated,
             PROGRAM.rsplit("    rbt.home()", 1)[0] + captured + "\n",
             np.radians(start),
-            dry_run_client_cls=DryRunRobotClient,
         )
         assert preview["error"] is None, preview["error"]
-        final = np.degrees(preview["segments"][-1]["joints"])
+        final = np.degrees(preview["final_joints_rad"])
         assert final == pytest.approx(target, abs=0.5)
 
         # Raw, the same lines replay the recorded points instead.

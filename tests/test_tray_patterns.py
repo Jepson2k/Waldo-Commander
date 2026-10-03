@@ -11,6 +11,7 @@ from waldoctl.setup import Frame, Pose, SetupSnapshot
 from waldoctl.signals import DigitalSignal
 from waldoctl.skills import SkillError, UnresolvedPreview
 
+from tests.helpers.preview import motion_blocks
 from tests.test_skill_library import START, pose_of
 from waldo_commander.patterns import (
     PatternProgress,
@@ -105,9 +106,9 @@ def test_tray_frames_transfer_preview_and_advisory_progress(tmp_path):
     targets = grid_poses(pick, rows=2, columns=2, pitch_x_mm=1, pitch_y_mm=1)
     for place in targets:
         transfer(preview, pick=pick, place=place, clearance_mm=2, speed=0.5)
-    assert len(preview.segment_collector) == 24
+    assert len(motion_blocks(preview)) == 24
     assert len(preview.tool_action_collector) == 8
-    assert all(segment["is_valid"] for segment in preview.segment_collector)
+    assert all(block.error is None for block in motion_blocks(preview))
     target = targets[-1].matrix()
     target[:3, 3] += 2 * target[:3, 2]
     np.testing.assert_allclose(pose_of(preview).matrix(), target, atol=0.1)
@@ -115,12 +116,12 @@ def test_tray_frames_transfer_preview_and_advisory_progress(tmp_path):
     assert path.read_bytes() == before, "preview changed real completion records"
 
     signal = DigitalSignal("parol6", "output", 0, 2, 2)
-    count = len(preview.segment_collector)
+    count = len(motion_blocks(preview))
     with pytest.raises(UnresolvedPreview):
         transfer_with_signal(
             preview, pick=pick, place=pick, grip=signal, clearance_mm=2
         )
-    assert len(preview.segment_collector) == count
+    assert len(motion_blocks(preview)) == count
     transfer_with_signal(
         preview,
         pick=pick,
@@ -130,7 +131,7 @@ def test_tray_frames_transfer_preview_and_advisory_progress(tmp_path):
         open_fixture=SignalFixture(False),
         closed_fixture=SignalFixture(True),
     )
-    count = len(preview.segment_collector)
+    count = len(motion_blocks(preview))
     with pytest.raises((ValueError, SkillError)):
         transfer(
             preview,
@@ -138,4 +139,4 @@ def test_tray_frames_transfer_preview_and_advisory_progress(tmp_path):
             place=Pose((0, 0, 0, 0, 0, 0), frame="tray"),
             clearance_mm=2,
         )
-    assert len(preview.segment_collector) == count
+    assert len(motion_blocks(preview)) == count

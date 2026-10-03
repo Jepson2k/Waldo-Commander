@@ -12,7 +12,6 @@ import waldoctl
 import numpy as np
 from nicegui.testing import User
 from nicegui import run
-from parol6.client.dry_run_client import DryRunRobotClient
 from waldoctl.recordings import Demonstration, RecordedSample
 from waldoctl.skills import MissingCapability, SkillError
 
@@ -134,10 +133,11 @@ async def test_observed_motion_records_cadence_gaps_and_controller_loss(
             _run_simulation_isolated,
             source,
             np.radians(first_joints),
-            dry_run_client_cls=DryRunRobotClient,
         )
         assert preview["error"] is None, preview["error"]
-        assert preview["segments"]
+        assert any(
+            b.move_type is not None and b.rows > 0 for b in preview["commanded"].blocks
+        )
         result = await replay_demonstration.async_call(client, recording)
         assert result.completed_samples == len(recording.samples)
         assert await client.angles() == pytest.approx(
@@ -375,11 +375,11 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         _run_simulation_isolated,
         conversion.source,
         np.radians(recording.samples[0].joints_deg),
-        dry_run_client_cls=DryRunRobotClient,
     )
     assert preview["error"] is None, preview["error"]
-    assert len(preview["segments"]) >= len(moves)
-    final = preview["segments"][-1]["joints"]
+    planned = [b for b in preview["commanded"].blocks if b.move_type is not None]
+    assert len(planned) >= len(moves)
+    final = preview["final_joints_rad"]
     assert np.degrees(final) == pytest.approx(recording.samples[-1].joints_deg, abs=0.5)
 
     # A tolerance the planner cannot meet keeps the observations instead.
@@ -431,10 +431,9 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         + textwrap.indent(bridged.source, "    ")
         + "\n",
         np.radians(gapped.samples[0].joints_deg),
-        dry_run_client_cls=DryRunRobotClient,
     )
     assert preview["error"] is None, preview["error"]
-    final = preview["segments"][-1]["joints"]
+    final = preview["final_joints_rad"]
     assert np.degrees(final) == pytest.approx(gapped.samples[-1].joints_deg, abs=0.5)
 
     strict_lines = span_to_lines(
@@ -564,14 +563,9 @@ async def test_conversion_follows_the_recorded_posture_and_its_backend(
         + textwrap.indent(lines.source, "    ")
         + "\n",
         np.radians(samples[0].joints_deg),
-        dry_run_client_cls=DryRunRobotClient,
     )
     assert preview["error"] is None, preview["error"]
-    wrist = max(
-        float(np.degrees(np.asarray(segment["joint_trajectory"]))[:, 5].max())
-        for segment in preview["segments"]
-        if segment.get("joint_trajectory")
-    )
+    wrist = float(np.degrees(preview["commanded"].joints_rad[:, 5]).max())
     assert wrist >= 235.0, (
         f"the converted lines never swing the wrist out ({wrist:.1f}°):\n{lines.source}"
     )

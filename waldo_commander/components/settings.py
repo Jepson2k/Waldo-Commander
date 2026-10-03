@@ -177,11 +177,6 @@ class SettingsContent:
             "translation_frame": ng_app.storage.general.get("translation_frame", "WRF"),
             "jog_invert_x": bool(ng_app.storage.general.get("jog_invert_x", False)),
             "jog_invert_y": bool(ng_app.storage.general.get("jog_invert_y", False)),
-            "show_divergence": bool(
-                ng_app.storage.general.get("show_divergence", True)
-            ),
-            "show_contacts": bool(ng_app.storage.general.get("show_contacts", False)),
-            "show_com": bool(ng_app.storage.general.get("show_com", False)),
         }
 
     def _refresh_serial_ports(self) -> None:
@@ -638,52 +633,6 @@ class SettingsContent:
             ).props("dense").mark("switch-show-route")
 
         waldoctl.commander.settings.view.paths_visible = prefs["show_route"]
-
-    def _build_physics_overlays(self, prefs: dict) -> None:
-        """What the simulated run measured, drawn over the scene.
-
-        Only meaningful on a backend that simulates; the rows say so rather
-        than hiding, because "my robot has no physics" is worth knowing and a
-        hidden control is not.
-        """
-        view = waldoctl.commander.settings.view
-        simulates = ui_state.active_robot.has_physics_simulation
-
-        def toggle(label: str, hint: str, key: str, attr: str, marker: str) -> None:
-            async def _on_change(e):
-                setattr(view, attr, bool(e.value))
-                ng_app.storage.general[key] = bool(e.value)
-                simulation_state.notify_changed()
-
-            if not simulates:
-                hint += " (needs a backend that simulates physics)"
-            with _setting_row(label, hint):
-                ui.switch(value=prefs[key], on_change=_on_change).props("dense").mark(
-                    marker
-                ).set_enabled(simulates)
-            setattr(view, attr, prefs[key])
-
-        toggle(
-            "Achieved path",
-            "Draw where the arm ends up beside where it is aimed",
-            "show_divergence",
-            "divergence_visible",
-            "switch-show-divergence",
-        )
-        toggle(
-            "Contacts",
-            "Contact points and the forces through them",
-            "show_contacts",
-            "contacts_visible",
-            "switch-show-contacts",
-        )
-        toggle(
-            "Centre of mass",
-            "The scene's centre of mass and its drop line",
-            "show_com",
-            "com_visible",
-            "switch-show-com",
-        )
 
     def _build_envelope(self, prefs: dict) -> None:
         async def _on_envelope_mode_change(e):
@@ -1302,7 +1251,6 @@ class SettingsContent:
                 [
                     lambda: self._build_show_route(prefs),
                     lambda: self._build_envelope(prefs),
-                    lambda: self._build_physics_overlays(prefs),
                 ],
             ),
             (

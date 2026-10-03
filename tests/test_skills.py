@@ -9,6 +9,7 @@ from parol6.client.dry_run_client import DryRunRobotClient
 from waldoctl.client import RobotClient
 from waldoctl.skills import SkillError, UnresolvedPreview, skill
 
+from tests.helpers.preview import motion_blocks
 from waldo_commander.services.path_preview_client import (
     AsyncPathPreviewClient,
     PathPreviewClient,
@@ -30,18 +31,19 @@ def test_imported_skill_previews_sync_async_and_failed_motion():
     assert np.linalg.norm(np.array(client.pose()[:3]) - start) == pytest.approx(
         2.0, abs=0.15
     )
-    assert client.segment_collector and all(
-        s["is_valid"] for s in client.segment_collector
-    )
+    blocks = motion_blocks(client)
+    assert blocks and all(b.error is None for b in blocks)
 
     other = preview()
     async_client = cast(RobotClient, AsyncPathPreviewClient.from_sync(other))
     asyncio.run(retract.async_call(async_client, distance_mm=2.0))
     assert other.pose() == pytest.approx(client.pose(), abs=0.01)
 
-    with pytest.raises(SkillError, match="rejected"):
+    # An unreachable target is refused the way the controller refuses it:
+    # the command is on the record with its error and never completes.
+    with pytest.raises(SkillError, match="rejected|not confirmed"):
         retract(client, distance_mm=10000.0)
-    assert any(not s["is_valid"] for s in client.segment_collector)
+    assert any(b.error is not None for b in motion_blocks(client))
     assert not client.wait_command(100000), "an unknown command cannot be complete"
 
     @skill(id="test.observe", version="1.0.0")
@@ -69,5 +71,5 @@ def test_blended_skill_waits_use_planner_results():
 
     client = PathPreviewClient(dry_run_client_cls=DryRunRobotClient)
     assert blend(client)
-    assert client.segment_collector
+    assert motion_blocks(client)
     assert client.angles() == pytest.approx([90, -90, 180, 0, 0, 180], abs=0.1)

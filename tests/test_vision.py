@@ -9,6 +9,7 @@ from waldoctl.camera import CameraCalibration, CameraIntrinsics, CameraQuality
 from waldoctl.setup import Pose, SetupSnapshot, TcpCalibration
 
 from tests.helpers.charuco_render import look_at_target_pose, render_board_view
+from tests.helpers.preview import motion_blocks
 from tests.test_handeye_service import SPEC, IMAGE_SIZE, K_TRUE, X_TRUE
 from waldo_commander.camera import CameraSnapshot
 from waldo_commander.vision import LocalizationLimits, localize_board
@@ -143,7 +144,7 @@ def test_localization_preview_requires_explicit_observations(tmp_path):
         setup,
     )
     np.testing.assert_allclose(found.pose.matrix()[:3, 3], expected[:3, 3], atol=2)
-    assert not preview.segment_collector, "Localization must not create motion"
+    assert not motion_blocks(preview), "Localization must not create motion"
 
     # The skill localizes against the backend the client drives, not the one
     # the calibration names: comparing the calibration against itself made the

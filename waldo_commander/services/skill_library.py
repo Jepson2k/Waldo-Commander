@@ -174,8 +174,7 @@ async def plan_preview(
     # cpu_bound answers None when its wait is cancelled: by the limit, or at shutdown.
     if planned is None:
         raise TimeoutError("planning it took too long")
-    segments, tool_actions = planned
-    return [PathSegment.from_dict(segment) for segment in segments], tool_actions
+    return planned
 
 
 def _plan_isolated(
@@ -184,13 +183,17 @@ def _plan_isolated(
     joints_rad: Any,
     tool: tuple[str, str],
     shapes_wire: list[tuple],
-) -> tuple[list[dict], list[ToolAction]]:
+) -> tuple[list[PathSegment], list[ToolAction]]:
     """Run a generated call against a dry run; :func:`plan_preview` in a worker."""
     from waldoctl import shape_from_wire
 
     from waldo_commander.profiles import get_robot
     from waldo_commander.services.path_preview_client import PathPreviewClient
     from waldo_commander.services.path_visualizer import _tool_metadata
+    from waldo_commander.services.preview_segments import (
+        segments_from_record,
+        tool_actions_from_record,
+    )
 
     robot = get_robot(backend_package)
     # The worker is shared, so it still holds the last preview's world.
@@ -207,4 +210,10 @@ def _plan_isolated(
         raise RuntimeError(f"The preview refused tool {key}")
     exec(source, {"rbt": client})
     client.close()
-    return list(client.segment_collector), list(client.tool_action_collector)
+    if client.accumulated_errors:
+        raise RuntimeError("; ".join(client.accumulated_errors))
+    record = client.plan()
+    segments = segments_from_record(record, client.notes)
+    return segments, tool_actions_from_record(
+        client.tool_action_collector, record, segments
+    )
