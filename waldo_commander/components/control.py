@@ -45,6 +45,7 @@ from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.startup_mode import set_startup_mode
+from waldo_commander.services.urdf_scene.scene_fx import SceneFx
 from waldo_commander.state import (
     global_phase_timer,
     robot_state,
@@ -137,7 +138,7 @@ class _EStopManager:
             with (
                 self._dialog,
                 ui.card()
-                .classes("overlay-card gap-4 items-center")
+                .classes("overlay-card estop-card gap-4 items-center")
                 .mark("estop-dialog"),
             ):
                 ui.html(
@@ -177,6 +178,11 @@ class _EStopManager:
                         ).mark("btn-estop-resume")
 
             self._dialog.open()
+
+    @property
+    def active(self) -> bool:
+        """Whether an E-STOP (physical or digital) is latched in the UI."""
+        return self._dialog is not None
 
     def close(self) -> None:
         """Close the E-STOP dialog if open."""
@@ -227,6 +233,7 @@ class _ToolQuickActions:
         self._adjust_minus_tooltip: ui.tooltip | None = None
         self._adjust_plus_tooltip: ui.tooltip | None = None
         self._last_visual: tuple = ()
+        self._last_grip: tuple[str | None, bool] | None = None
 
     def _get_active_tool(self) -> "ToolSpec | None":
         try:
@@ -327,6 +334,19 @@ class _ToolQuickActions:
         if visual_key == self._last_visual:
             return
         self._last_visual = visual_key
+
+        if isinstance(tool, GripperTool):
+            grip = (pub_tool.key, tool.is_open(tool_position))
+            last, self._last_grip = self._last_grip, grip
+            if (
+                last is not None
+                and last[0] == grip[0]
+                and last[1] != grip[1]
+                and ui_state._readout_panel is not None
+            ):
+                ui_state._readout_panel.face_react(
+                    "grip-open" if grip[1] else "grip-close"
+                )
 
         # Left action button
         if tool.action_l_icons:
@@ -745,6 +765,9 @@ class ControlPanel:
         # E-STOP manager (initialized with ui_client in build())
         self.estop: _EStopManager | None = None
 
+        # Jog axis the status face is currently looking along
+        self._face_look_axis: str | None = None
+
         # TCP TransformControls drag state
         self._tcp_latest_pose: list[float] | None = None
         self._tcp_last_sent_pose: list[float] | None = (
@@ -841,6 +864,8 @@ class ControlPanel:
         for timer in (ui_state._joint_jog_timer, ui_state._cart_jog_timer):
             if timer is not None:
                 timer.active = False
+        if self._face_look_axis is not None:
+            self._face_look(self._face_look_axis, False)
         for elements in (
             self._joint_left_btns,
             self._joint_right_btns,
@@ -856,6 +881,63 @@ class ControlPanel:
             self._jog_end_wait_task.cancel()
             self._jog_end_wait_task = None
         motion_recorder.on_jog_start(kind, axis)
+        self._face_look(axis, True)
+
+    # ---- Status face: eyes follow the jog ----
+
+    # (dx, dy, tilt degrees) per cartesian pad slot, by the arrow's on-screen
+    # direction; rotations tilt the head instead of moving the eyes.
+    _SLOT_LOOK: ClassVar[dict[str, tuple[float, float, float]]] = {
+        "ud1_up": (0.0, -1.0, 0.0),
+        "ud2_up": (0.0, -1.0, 0.0),
+        "ud1_down": (0.0, 1.0, 0.0),
+        "ud2_down": (0.0, 1.0, 0.0),
+        "lr_neg": (-1.0, 0.0, 0.0),
+        "lr_pos": (1.0, 0.0, 0.0),
+        "r_ud1_plus": (0.0, 0.0, 10.0),
+        "r_ud2_plus": (0.0, 0.0, 10.0),
+        "r_lr_plus": (0.0, 0.0, 10.0),
+        "r_ud1_minus": (0.0, 0.0, -10.0),
+        "r_ud2_minus": (0.0, 0.0, -10.0),
+        "r_lr_minus": (0.0, 0.0, -10.0),
+    }
+
+    def _look_for_axis(self, axis: str) -> tuple[float, float, float] | None:
+        """Face eye direction for a jog axis string ('J2+', 'X-', 'RZ+').
+
+        Dial and gizmo drags carry no direction ('J3', 'TCP') and get none.
+        """
+        if axis[-1:] not in ("+", "-"):
+            return None
+        sign = 1.0 if axis.endswith("+") else -1.0
+        if axis.startswith("J"):
+            joint = int(axis[1:-1])
+            if joint == 1:
+                return (sign, 0.0, 0.0)
+            if joint in (4, 6):
+                return (0.0, 0.0, 10.0 * sign)
+            return (0.0, -sign, 0.0)
+        for slot_id, meta in self._cart_slot_meta.items():
+            slot_axis = self._axis_string_for(
+                meta["assign_key"], meta["sign"], meta["rotation"]
+            )
+            if slot_axis == axis:
+                return self._SLOT_LOOK.get(slot_id)
+        return None
+
+    def _face_look(self, axis: str, pressed: bool) -> None:
+        """Hold the status face's gaze along *axis* while its jog is pressed."""
+        readout = ui_state._readout_panel
+        if readout is None:
+            return
+        if pressed:
+            look = self._look_for_axis(axis)
+            if look is not None:
+                self._face_look_axis = axis
+                readout.face_hold("look", look)
+        elif axis == self._face_look_axis:
+            self._face_look_axis = None
+            readout.face_hold("look", None)
 
     def _get_cart_axis_lookup(self) -> dict[str, tuple[Axis, float, str]]:
         """Build cartesian axis lookup from the active robot's frame names.
@@ -1536,6 +1618,10 @@ class ControlPanel:
 
     async def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
         """Hybrid click/hold: quick click => single step, press-and-hold => stream until release."""
+        sign = "+" if direction == "pos" else "-"
+        axis_info = f"J{j + 1}{sign}"
+        if not is_pressed:
+            self._face_look(axis_info, False)
         if waldoctl.commander.status.editing_mode:
             return
         if not is_pressed and not self._drag_allowed():
@@ -1545,8 +1631,6 @@ class ControlPanel:
             return
         assert self._joint_click_hold is not None
 
-        sign = "+" if direction == "pos" else "-"
-        axis_info = f"J{j + 1}{sign}"
         if is_pressed:
             if (
                 self._ring_joint is not None
@@ -1806,6 +1890,8 @@ class ControlPanel:
 
     async def set_axis_pressed(self, axis: str, is_pressed: bool) -> None:
         """Hybrid click/hold for cartesian axes: click => single step, hold => stream."""
+        if not is_pressed:
+            self._face_look(axis, False)
         if waldoctl.commander.status.editing_mode:
             return
         if not is_pressed and not self._drag_allowed():
@@ -3026,9 +3112,9 @@ class ControlPanel:
             def _reset_cam():
                 try:
                     if ui_state.urdf_scene and ui_state.urdf_scene.scene:
-                        ui_state.urdf_scene.scene.move_camera(
-                            **DEFAULT_CAMERA, duration=0.0
-                        )
+                        scene = ui_state.urdf_scene.scene
+                        scene.move_camera(**DEFAULT_CAMERA, duration=0.8)
+                        SceneFx.ease_camera(scene)
                 except Exception as e:
                     logger.error("Reset camera failed: %s", e)
 

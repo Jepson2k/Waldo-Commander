@@ -733,6 +733,8 @@ class PlaybackController:
         self._execution_speed = None
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
+        if ui_state._readout_panel is not None:
+            ui_state._readout_panel.face_react("start")
 
     @staticmethod
     def _segment_of(program, command: int) -> int:
@@ -787,6 +789,10 @@ class PlaybackController:
 
     def _handle_script_stop_edge(self) -> None:
         """Reset playback bar after a script finishes or is stopped."""
+        # A user stop leaves no exit code; only a finished run gets a reaction.
+        rc = script_exec.last_exit_code
+        if rc is not None and ui_state._readout_panel is not None:
+            ui_state._readout_panel.face_react("success" if rc == 0 else "failure")
         self._exec_step_index = -1
         if self._sim_timer:
             self._sim_timer.active = False

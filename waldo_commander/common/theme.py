@@ -1583,12 +1583,73 @@ html, body {
 .file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 .file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
+/* ========== Micro-interactions ========== */
+
+/* Buttons sink while pressed; Quasar's own transform transition springs
+   them back on release. */
+.q-btn--actionable:active { transform: scale(0.95); transition-duration: var(--wc-duration-instant); }
+
+/* The mode chip recolours with the face's mood; the tool chip pops in on
+   every hidden -> visible flip. */
+.status-footer .footer-mode {
+  transition: background-color var(--wc-duration-base) var(--wc-ease-enter),
+              color var(--wc-duration-base) var(--wc-ease-enter);
+}
+.status-footer .footer-tool { animation: wc-pop-in var(--wc-duration-base) var(--wc-ease-pop); }
+
+/* I/O dots pop when their line flips. Two identical animations so swapping
+   the class restarts it. */
+.io-pop-a { animation: wc-io-pop-a var(--wc-duration-base) var(--wc-ease-pop); }
+.io-pop-b { animation: wc-io-pop-b var(--wc-duration-base) var(--wc-ease-pop); }
+@keyframes wc-io-pop-a { 40% { transform: scale(1.7); } }
+@keyframes wc-io-pop-b { 40% { transform: scale(1.7); } }
+
+/* The last action slides in when it is new, bumps its count on a repeat,
+   pops its check mark on completion and shakes on failure. */
+.status-footer .action-line {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.action-line.log-enter { animation: wc-slide-in var(--wc-duration-base) var(--wc-ease-enter); }
+.action-line.log-bump .log-count,
+.action-line.log-done .action-icon {
+  display: inline-block;
+  animation: wc-bump var(--wc-duration-base) var(--wc-ease-pop);
+}
+.action-line.log-fail { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter); }
+
+/* A new warning or error draws the eye to the Diagnostics button. */
+.status-footer .footer-btn.unread-warning { animation: wc-bump var(--wc-duration-base) var(--wc-ease-pop); }
+.status-footer .footer-btn.unread-error { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter); }
+
+/* The E-STOP card shakes for attention as its dialog opens. */
+.estop-card { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter) var(--wc-duration-fast) both; }
+
+@keyframes wc-pop-in {
+  from { transform: scale(0.6); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+@keyframes wc-slide-in {
+  from { transform: translateY(6px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+@keyframes wc-bump { 40% { transform: scale(1.3); } }
+@keyframes wc-shake {
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(2px); }
+}
+
 /* ========== Robot Face Indicator ========== */
 
 /* The face is drawn in the chip's text colour; eyes and mouth are cut-outs
    in the surface behind it. */
 .robot-face { --face-cut: var(--wc-glass-end); }
 .bg-wc-mode-sim .robot-face { --face-cut: var(--wc-mode-sim); }
+
+/* Hops, head tilts and floating notes/Zs reach past the viewBox. */
+.robot-face svg { overflow: visible; }
 
 /* Robot face SVG transitions */
 .robot-face .pupil { transition: transform 0.45s ease; }
@@ -1843,7 +1904,10 @@ body:has(.panels-wrap.column-open) .bottom-panel {
 @media (prefers-reduced-motion: reduce) {
   .control-glow-breathe, .ai-cluster .btn-take-control, .recording-notification .q-notification__icon,
   .record-btn.recording .q-icon, .robot-face-happy svg, .robot-face-neutral svg, .robot-face-sad svg,
-  .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next { animation: none !important; }
+  .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next,
+  .status-footer .footer-tool, .io-pop-a, .io-pop-b, .action-line, .action-line *,
+  .status-footer .footer-btn, .estop-card { animation: none !important; }
+  .q-btn--actionable:active { transform: none; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
 }
 """
