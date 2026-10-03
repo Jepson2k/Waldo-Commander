@@ -282,6 +282,9 @@ def pytest_runtest_makereport(item, call):
             return rep
         for r in records:
             if r.levelname == "ERROR":
+                item.user_properties.append(
+                    ("error_log", f"{r.name}: {r.getMessage()}")
+                )
                 os.write(
                     2,
                     (

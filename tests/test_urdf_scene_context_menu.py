@@ -119,25 +119,14 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
         )
     )
     settings_tab.click()
-    time.sleep(0.3)
-
-    screen.selenium.execute_script(
-        """
-        const labels = document.querySelectorAll('*');
-        for (const label of labels) {
-            if (label.textContent.includes('Workspace envelope') &&
-                !label.textContent.includes('Show reachable')) {
-                const row = label.closest('.settings-row');
-                if (row) {
-                    const select = row.querySelector('.q-select');
-                    if (select) select.click();
-                    return;
-                }
-            }
-        }
-    """
-    )
-    time.sleep(0.3)
+    WebDriverWait(screen.selenium, 5).until(
+        EC.element_to_be_clickable(
+            (
+                By.XPATH,
+                "//*[contains(@class, 'settings-row')][.//*[text()='Workspace envelope']]//*[contains(@class, 'q-select')]",
+            )
+        )
+    ).click()
 
     on_option = WebDriverWait(screen.selenium, 5).until(
         EC.element_to_be_clickable(
