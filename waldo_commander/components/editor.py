@@ -3,10 +3,11 @@
 import asyncio
 import logging
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 import waldoctl
-from nicegui import Client, context, ui
+from nicegui import Client, background_tasks, context, ui
 from waldoctl import EditId, Program, ProgramTarget
 
 from waldo_commander.common.theme import get_theme
@@ -21,6 +22,8 @@ from waldo_commander.services.programs import (
 from waldo_commander.services import edit_decisions
 from waldo_commander.services.control_lease import control_mode
 from waldo_commander.services.motion_recorder import motion_recorder, move_snippet
+from waldo_commander.services.python_source import loads_setup
+from waldo_commander.setup import add_save_listener
 from waldo_commander.state import (
     simulation_state,
     ui_state,
@@ -93,6 +96,8 @@ class EditorPanel(FileOperationsMixin):
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
+
+        self._drop_setup_listener: Callable[[], None] = lambda: None
 
     def _insert_command(self, method_name: str) -> None:
         """Build a snippet for ``method_name`` (pre-filled with the robot's
@@ -467,6 +472,7 @@ class EditorPanel(FileOperationsMixin):
         ``_on_disconnect`` and ``_on_shutdown``."""
         waldoctl.commander.programs.remove_change_listener(self._reconcile_tabs)
         simulation_state.remove_change_listener(self._update_capture_button)
+        self._drop_setup_listener()
         ui_state.capture_pose_tooltip = None
         self._cursor_selection = None
         # Edit listeners live on the process-global tab.edits notifier; drop
@@ -1033,6 +1039,30 @@ class EditorPanel(FileOperationsMixin):
         if ui_state.urdf_scene and waldoctl.commander.settings.view.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
 
+    def _on_setup_saved(self, directory: Path, name: str, revision: str) -> None:
+        """Re-plan every open program that loads the setup just saved."""
+        client = self._client
+        if client is None:
+            return
+        programs = waldoctl.commander.programs
+        stale = [p.id for p in programs.items if loads_setup(p.source, name)]
+        if programs.active_id in stale:
+            with client:
+                simulation.schedule_debounced_simulation(tab_id=programs.active_id)
+        # One debounced run is pending at a time, and it belongs to the active
+        # program; the others re-plan in turn now.
+        background = [tab_id for tab_id in stale if tab_id != programs.active_id]
+        if background:
+            background_tasks.create(
+                self._resimulate(background), name="setup-resimulate"
+            )
+
+    @staticmethod
+    async def _resimulate(tab_ids: list[str]) -> None:
+        for tab_id in tab_ids:
+            if waldoctl.commander.programs.get(tab_id) is not None:
+                await simulation.run_simulation(tab_id)
+
     def _on_tab_content_change(self, tab: Program, new_value: str) -> None:
         """Handle content change for a tab."""
         tab.source = new_value
@@ -1185,6 +1215,9 @@ class EditorPanel(FileOperationsMixin):
         # Re-teach enablement tracks dry-run results, which refresh through
         # this channel (sim completion, tab switch).
         simulation_state.add_change_listener(self._update_capture_button)
+        # A saved setup changes what the programs that load it do.
+        self._drop_setup_listener()
+        self._drop_setup_listener = add_save_listener(self._on_setup_saved)
 
         # Restore tabs from existing state (page refresh) or create initial tab
         if waldoctl.commander.programs.items:
