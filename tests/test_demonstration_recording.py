@@ -1,6 +1,7 @@
 """Observed motion survives export and capture ends on controller disable."""
 
 import asyncio
+import time
 import textwrap
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -159,14 +160,18 @@ async def test_observed_motion_records_cadence_gaps_and_controller_loss(
             # observed. Which limit was reached is the clock's answer: how long
             # the wire has been quiet.
             live = client.stream_status
-            frames = 44  # ~2.2 s at the suite's 20 Hz status rate
+            seen = 0
 
             async def stalls_after_a_while():
-                seen = 0
+                # Quiet from 2.2 s in by the clock: a slow runner delivers
+                # fewer frames by then than the nominal 20 Hz would.
+                nonlocal seen
+                first = None
                 async for status in live():
                     yield status
                     seen += 1
-                    if seen >= frames:
+                    first = first or time.monotonic()
+                    if time.monotonic() - first >= 2.2:
                         await asyncio.sleep(60)  # the wire goes quiet, mid-capture
 
             with monkeypatch.context() as stalled:
@@ -182,7 +187,7 @@ async def test_observed_motion_records_cadence_gaps_and_controller_loss(
             )
             # Every frame the wire delivered was kept: the first is the baseline the
             # capture compares against rather than a sample of its own.
-            assert len(quiet.samples) == frames - 1
+            assert len(quiet.samples) == seen - 1
 
             first.clear()
             task = asyncio.create_task(
