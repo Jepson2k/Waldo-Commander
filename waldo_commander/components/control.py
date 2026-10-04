@@ -168,7 +168,7 @@ class _EStopManager:
                     )
                 else:
                     ui.label("Digital E-STOP Active").classes(
-                        "text-xl font-bold text-wc-warning text-center"
+                        "text-xl font-bold text-wc-error text-center"
                     )
                     ui.label("Robot motion has been stopped.").classes("text-center")
 
