@@ -374,7 +374,7 @@ def _camera_kept(screen: Screen) -> Iterator[None]:
 @contextmanager
 def _program_previewed(source: str) -> Iterator[list[str]]:
     """Preview ``source`` in the scene and yield its target ids; the program
-    that was there comes back afterwards."""
+    that was there comes back afterwards, as an edit would bring it back."""
     from waldo_commander.components.simulation_engine import simulation
 
     async def preview(text: str) -> list[str]:
@@ -386,15 +386,39 @@ def _program_previewed(source: str) -> Iterator[list[str]]:
         await simulation.run_simulation()
         return [t.id for t in tab.dry_run.targets]
 
-    def run(text: str) -> list[str]:
-        assert core.loop is not None
-        return asyncio.run_coroutine_threadsafe(preview(text), core.loop).result(60)
+    def saved() -> tuple[str, object]:
+        tab = waldoctl.commander.programs.active
+        assert tab is not None
+        return ui_state.active_textarea.value, tab.dry_run.last_sim_joints_deg
 
-    saved = run_in_app(lambda: ui_state.active_textarea.value)
+    def restore() -> None:
+        tab = waldoctl.commander.programs.active
+        assert tab is not None
+        ui_state.active_textarea.value = text  # schedules the preview, as an edit does
+        tab.source = text
+
+    assert core.loop is not None
+    text, sim_joints = run_in_app(saved)
     try:
-        yield run(source)
+        yield asyncio.run_coroutine_threadsafe(preview(source), core.loop).result(60)
     finally:
-        run(saved)
+        run_in_app(restore)
+        # A preview still running when the next test injects its records
+        # would overwrite them.
+        _wait(
+            lambda: run_in_app(lambda: simulation._simulation_debounce_timer is None),
+            15.0,
+            "the restored program's preview",
+        )
+        # A previewed program re-previews whenever the arm moves; the program
+        # that was there had not been previewed.
+        run_in_app(
+            lambda: setattr(
+                waldoctl.commander.programs.active.dry_run,
+                "last_sim_joints_deg",
+                sim_joints,
+            )
+        )
 
 
 def _tcp_mm() -> np.ndarray:
@@ -438,6 +462,8 @@ def _choose(screen: Screen, x: float, y: float, item: str) -> None:
         poll_frequency=0.05,
         ignored_exceptions=(StaleElementReferenceException,),
     ).until(shown_item, message=f"no {item!r} in the menu")
+    # A closing menu still covers the canvas and would swallow the next press.
+    wait(screen, 5).until(lambda _: no_visible(screen, ".q-menu"))
 
 
 def _records(
