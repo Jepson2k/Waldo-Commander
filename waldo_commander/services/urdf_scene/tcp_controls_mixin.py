@@ -454,7 +454,7 @@ class TCPControlsMixin:
             return
 
         object_name = getattr(e, "object_name", "") or ""
-        if object_name not in ("tcp:ball", "tcp:jog_ball", "tcp:offset"):
+        if object_name != "tcp:ball":
             return
 
         self._compose_tcp_pose(e)

@@ -259,15 +259,11 @@ class EditingMixin(ShapeEditingMixin):
             self._unified_target_mode = "joint"
 
         object_name = getattr(e, "object_name", "") or ""
-        if object_name.startswith("edit_joint_group:"):
-            prefix = "edit_joint_group:"
-        elif object_name.startswith("ghost_joint_group:"):
-            prefix = "ghost_joint_group:"
-        else:
+        if not object_name.startswith("edit_joint_group:"):
             return
 
         try:
-            joint_index = int(object_name.split(prefix)[1])
+            joint_index = int(object_name.split("edit_joint_group:")[1])
         except (ValueError, IndexError):
             return
 
@@ -283,19 +279,6 @@ class EditingMixin(ShapeEditingMixin):
         if 0 <= joint_index < len(self._editing_angles):
             self._editing_angles[joint_index] = angle_change
             self._update_tcp_ball_position()
-            self._sync_robot_state_from_editing()
-            self._update_collision_highlight()
-            if self._current_editing_type:
-                self._update_edit_bar_values(self._current_editing_type)
-
-    def _on_ik_solved(self, e) -> None:
-        """Handle IK solution event."""
-        args = e.args if hasattr(e, "args") else {}
-        if args.get("chain_id") != "ghost_ik":
-            return
-        angles = args.get("angles", [])
-        if angles is not None and len(angles) >= len(self.joint_names):
-            self._editing_angles = list(angles)
             self._sync_robot_state_from_editing()
             self._update_collision_highlight()
             if self._current_editing_type:

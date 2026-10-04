@@ -500,10 +500,9 @@ class UrdfScene(
             except Exception as e:
                 logger.debug("set_axes_inset configuration failed: %s", e)
 
-            # ESC deselects TransformControls.
+            # Escape cancels a target edit or a keep-out move.
             ui.keyboard(on_key=self._handle_keyboard)
 
-            self.scene.on("ik_solved", self._on_ik_solved)
             # on_transform_start gives properly typed SceneTransformEventArguments.
             self.scene.on_transform_start(self._handle_transform_start)
             # Continuous events drive live ghost robot updates.
@@ -520,7 +519,7 @@ class UrdfScene(
         object_name = getattr(e, "object_name", "") or ""
 
         # Unified TCP ball: behavior depends on appearance mode (jogging vs IK).
-        if object_name in ("tcp:ball", "tcp:jog_ball", "tcp:offset"):
+        if object_name == "tcp:ball":
             self._handle_tcp_transform_for_jog(e)
             return
 
@@ -531,11 +530,11 @@ class UrdfScene(
     def _handle_transform_start(self, e) -> None:
         """Handle TransformControls transform_start events to manage orbit and mutex."""
         object_name = getattr(e, "object_name", "") or ""
-        if object_name in ("tcp:ball", "tcp:jog_ball", "ghost:tcp_ball") and (
+        if object_name == "tcp:ball" and (
             self._tcp_ball is None or e.object_id != self._tcp_ball.id
         ):
             return
-        if object_name in ("tcp:ball", "ghost:tcp_ball"):
+        if object_name == "tcp:ball":
             # Disable orbit controls for the duration of the TCP drag.
             if self.scene:
                 self.scene.set_orbit_enabled(False)
@@ -560,24 +559,18 @@ class UrdfScene(
                         cb()
                     except Exception as err:
                         logger.error("TCP cartesian move start callback error: %s", err)
-        elif object_name == "tcp:jog_ball":
-            self._tcp_ball_dragging = True
 
     def _handle_transform_event(self, e) -> None:
-        """Handle TransformControls transform_end events for targets.
-
-        This handler fires only at the END of a drag operation.
-        TCP ball and joint transforms are handled by _handle_transform_continuous for live updates.
-        """
+        """Settle the end of a gizmo drag on the TCP ball or a keep-out."""
         object_name = getattr(e, "object_name", "") or ""
         event_type = getattr(e, "type", "")
-        if object_name in ("tcp:ball", "tcp:jog_ball", "ghost:tcp_ball") and (
+        if object_name == "tcp:ball" and (
             self._tcp_ball is None or e.object_id != self._tcp_ball.id
         ):
             return
 
         # Unified TCP ball: on transform_end re-enable orbit and joint controls.
-        if object_name in ("tcp:ball", "ghost:tcp_ball"):
+        if object_name == "tcp:ball":
             if event_type == "transform_end":
                 self._tcp_ball_dragging = False
                 self._tcp_drag_start_rot_deg = None
@@ -603,69 +596,8 @@ class UrdfScene(
                 self._settle_hover()
             return
 
-        # Legacy jog ball names.
-        if object_name in ("tcp:jog_ball", "tcp:offset"):
-            if event_type == "transform_end":
-                self._tcp_ball_dragging = False
-                self._tcp_drag_start_rot_deg = None
-                cb = getattr(self, "_tcp_cartesian_move_end_callback", None)
-                if callable(cb):
-                    try:
-                        cb()
-                    except Exception as err:
-                        logger.error("TCP cartesian move end callback error: %s", err)
-            return
-
-        # Joint rings are handled by the continuous handler.
-        if object_name.startswith("ghost_ring_group:"):
-            return
-
         if object_name.startswith("shape:"):
             self._on_shape_transform(e)
-            return
-
-        if object_name.startswith("targetgroup:"):
-            target_id = object_name.split("targetgroup:", 1)[1]
-            target = self._find_target_by_id(target_id)
-            if target:
-                # Position only updates in translate mode (else None).
-                if e.x is not None:
-                    target.pose[0] = e.x
-                if e.y is not None:
-                    target.pose[1] = e.y
-                if e.z is not None:
-                    target.pose[2] = e.z
-
-                # Rotation only updates in rotate mode (else None).
-                if len(target.pose) >= 6:
-                    if e.rx is not None:
-                        target.pose[3] = e.rx
-                    if e.ry is not None:
-                        target.pose[4] = e.ry
-                    if e.rz is not None:
-                        target.pose[5] = e.rz
-
-                # Sync to editor only on transform_end to avoid update spam.
-                if event_type == "transform_end":
-                    clean_pose = [v if v is not None else 0.0 for v in target.pose]
-                    ui_state.editor_panel.sync_code_from_target(target_id, clean_pose)
-
-                    # Quick IK check to update target validity and color.
-                    ik_result = self._ik_for_position(clean_pose[:3])
-                    is_valid = ik_result is not None
-                    if target.is_valid != is_valid:
-                        target.is_valid = is_valid
-                        new_color = (
-                            hex_of("path-invalid")
-                            if not is_valid
-                            else get_color_for_move_type(target.move_type)
-                        )
-                        td = self._target_objects.get(target_id)
-                        if td:
-                            td["color"] = new_color
-                            mk = td.get("marker")
-                            if mk:
-                                mk.material(new_color)
 
     @staticmethod
     def _screen_pos(evt) -> tuple[float, float]:
@@ -1193,11 +1125,6 @@ class UrdfScene(
                 td["segment_index"] = seg_idx
                 # Shape or color change requires recreating the marker group.
                 if td.get("shape_type") != shape or td.get("color") != color:
-                    if self.scene:
-                        try:
-                            td["group"].disable_transform_controls()
-                        except (RuntimeError, KeyError):
-                            pass
                     self._safe_delete(td["group"])
                     with self.scene:
                         with self.targets_group:
@@ -1223,11 +1150,6 @@ class UrdfScene(
         for tid in list(self._target_objects):
             if tid not in active_ids:
                 td = self._target_objects.pop(tid)
-                if self.scene:
-                    try:
-                        td["group"].disable_transform_controls()
-                    except RuntimeError:
-                        pass
                 self._safe_delete(td["group"])
                 if self._editing_target_id == tid:
                     self._editing_target_id = None
@@ -1411,11 +1333,6 @@ class UrdfScene(
         self._rendered_waypoints.clear()
         # Clear editable targets (path data fully replaced on re-simulation)
         for td in self._target_objects.values():
-            if self.scene:
-                try:
-                    td["group"].disable_transform_controls()
-                except (RuntimeError, KeyError):
-                    pass
             self._safe_delete(td["group"])
         self._target_objects.clear()
         self._editing_target_id = None

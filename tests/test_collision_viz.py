@@ -10,6 +10,7 @@ import asyncio
 
 import pytest
 from nicegui.testing import User
+from nicegui.testing.user_interaction import UserInteraction
 
 from tests.helpers.wait import wait_for_urdf_ready
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
@@ -206,12 +207,21 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
         assert scene._shape_objects["shape:block"].color == SceneColors.COLLISION_HEX
         assert scene._link_to_meshes[link][0].color == SceneColors.COLLISION_HEX
 
-        # Interactive drag paths (ghost IK / joint ring / TCP ball) must also
-        # refresh the highlight — the status loop is skipped in EDITING.
-        class _GhostIkEvent:
-            args = {"chain_id": "ghost_ik", "angles": [0.3] * 6}
-
-        scene._on_ik_solved(_GhostIkEvent())
+        # A joint-ring drag must also refresh the highlight — the status loop
+        # is skipped in EDITING.
+        ring = scene.joint_groups[scene.joint_names[0]].with_name("edit_joint_group:0")
+        UserInteraction(user, {scene.scene}, None).trigger(
+            "transform",
+            {
+                "type": "transform",
+                "mode": "rotate",
+                "object_id": ring.id,
+                "object_name": "edit_joint_group:0",
+                **dict.fromkeys(("x", "y", "z", "wx", "wy", "wz"), 0.0),
+                **dict.fromkeys(("rx", "ry", "rz"), 0.3),
+            },
+        )
+        assert scene._editing_angles[0] == pytest.approx(0.3)
         assert scene._editing_collision_q == tuple(scene._editing_angles)
 
         # A command whose rows pass through the box is reported with its first
