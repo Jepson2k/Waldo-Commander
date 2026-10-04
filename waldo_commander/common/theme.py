@@ -1583,49 +1583,11 @@ html, body {
 .file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 .file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
-/* ========== Robot Face Indicator ========== */
+/* ========== Robot buddy ========== */
 
-/* The face is drawn in the chip's text colour; eyes and mouth are cut-outs
-   in the surface behind it. */
-.robot-face { --face-cut: var(--wc-glass-end); }
-.bg-wc-mode-sim .robot-face { --face-cut: var(--wc-mode-sim); }
-
-/* Robot face SVG transitions */
-.robot-face .pupil { transition: transform 0.45s ease; }
-.robot-face .eye-white { transition: opacity 0.25s ease; }
-
-/* Breathing animations */
-@keyframes breathe-happy {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
-}
-@keyframes breathe-neutral {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-1.5px); }
-}
-@keyframes breathe-sad {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2.5px); }
-}
-.robot-face-happy svg { animation: breathe-happy 6s ease-in-out infinite; }
-.robot-face-neutral svg { animation: breathe-neutral 7s ease-in-out infinite; animation-delay: -2s; }
-.robot-face-sad svg { animation: breathe-sad 8s ease-in-out infinite; animation-delay: -4s; }
-
-
-/* ========== Takeover Overlay ========== */
-
-/* Wandering sad robot — DVD-screensaver-style bounce around the viewport.
-   Dimensions and fixed positioning are load-bearing: robot-faces.js uses
-   FACE_SIZE = 96 for collision math, and the JS sets `transform` directly
-   to compose translate + rotate without browser animation interference. */
-.takeover-face {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 96px;
-  height: 96px;
-  pointer-events: none;
-}
+/* On the simulator's amber fill the buddy is drawn in on-bright, so its eyes
+   and mouth cut through to the fill rather than to the glass. */
+.bg-wc-mode-sim .robot-buddy { --bb-cut: var(--wc-mode-sim); }
 
 
 /* ========== Status footer ========== */
@@ -1652,8 +1614,6 @@ html, body {
   box-shadow: none;
 }
 .status-footer .footer-mode { border-radius: var(--wc-radius-pill); padding: 0 8px 0 4px; }
-.status-footer .footer-mode .robot-face { width: 20px; height: 20px; flex-shrink: 0; }
-.status-footer .footer-mode .robot-face svg { width: 20px; height: 20px; display: block; }
 .status-footer .footer-mode .q-chip__content { gap: 4px; flex-wrap: nowrap; }
 .status-footer .readout-robot-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .status-footer .footer-tool { max-width: 160px; }
@@ -1842,7 +1802,7 @@ body:has(.panels-wrap.column-open) .bottom-panel {
 /* ========== Reduced motion ========== */
 @media (prefers-reduced-motion: reduce) {
   .control-glow-breathe, .ai-cluster .btn-take-control, .recording-notification .q-notification__icon,
-  .record-btn.recording .q-icon, .robot-face-happy svg, .robot-face-neutral svg, .robot-face-sad svg,
+  .record-btn.recording .q-icon,
   .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next { animation: none !important; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
 }
