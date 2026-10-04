@@ -129,6 +129,22 @@ def _transform(
     }
     for key in ("x", "y", "z", "rx", "ry", "rz", "wx", "wy", "wz"):
         args[key] = pose.get(key, 0.0)
+    # The browser also sends the rotation matrix of three.js' XYZ Euler angles, and the scale.
+    rx, ry, rz = args["rx"], args["ry"], args["rz"]
+    cx, sx, cy, sy, cz, sz = (
+        math.cos(rx),
+        math.sin(rx),
+        math.cos(ry),
+        math.sin(ry),
+        math.cos(rz),
+        math.sin(rz),
+    )
+    args["R"] = [
+        [cy * cz, -cy * sz, sy],
+        [cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy],
+        [sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy],
+    ]
+    args["sx"] = args["sy"] = args["sz"] = 1.0
     _scene(user, urdf).trigger(type_, args)
 
 
