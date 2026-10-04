@@ -381,7 +381,7 @@ class EditingMixin(ShapeEditingMixin):
                         )
 
                     def make_delete(t=tid):
-                        return lambda: self._delete_target(t)
+                        return lambda: ui_state.editor_panel.delete_target_code(t)
 
                     ui.menu_item("Edit Target...", on_click=make_edit())
                     ui.menu_item("Delete Target", on_click=make_delete())
@@ -414,23 +414,6 @@ class EditingMixin(ShapeEditingMixin):
     def _is_envelope_hit(self, object_name: str) -> bool:
         """Check if object is the workspace envelope."""
         return object_name == "envelope:hull"
-
-    def _delete_target(self, target_id: str) -> None:
-        """Delete a target after confirmation."""
-
-        def confirm():
-            ui_state.editor_panel.delete_target_code(target_id)
-            dialog.close()
-
-        dialog = ui.dialog()
-        with dialog, ui.card():
-            ui.label("Delete Target?")
-            with ui.row():
-                ui.button("Cancel", on_click=dialog.close).props("flat color=wc-text")
-                ui.button("Delete", on_click=confirm).props(
-                    "color=wc-control text-color=wc-error"
-                )
-        dialog.open()
 
     # -------------------------------------------------------------------------
     # Unified target editor

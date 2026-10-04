@@ -265,7 +265,7 @@ class EditorPanel(FileOperationsMixin):
             logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
-        line_number = textarea.line_anchors.get(target_id)
+        line_number = self._target_line(target_id)
         if line_number is None:
             logger.warning("Sync failed: Target %s not found", target_id)
             return
@@ -533,6 +533,18 @@ class EditorPanel(FileOperationsMixin):
                 ],
             )
 
+    def _target_line(self, target_id: str) -> int | None:
+        """The 1-indexed line of a target in the active program."""
+        textarea = ui_state.active_textarea
+        line_number = textarea.line_anchors.get(target_id) if textarea else None
+        if line_number is not None:
+            return line_number
+        # Only a mounted editor reports anchors; with the program column closed
+        # the last preview's line is the only one there is.
+        tab = waldoctl.commander.programs.active
+        targets = tab.dry_run.targets if tab is not None else []
+        return next((t.line_number for t in targets if t.id == target_id), None)
+
     def delete_target_code(self, target_id: str) -> None:
         """Delete the code line corresponding to the target and re-simulate.
 
@@ -542,7 +554,7 @@ class EditorPanel(FileOperationsMixin):
         if not textarea:
             return
 
-        line_number = textarea.line_anchors.get(target_id)
+        line_number = self._target_line(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
