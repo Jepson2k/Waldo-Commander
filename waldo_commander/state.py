@@ -151,7 +151,7 @@ class RobotState(ChangeNotifierMixin):
     executing_index: int = -1
     completed_index: int = -1
     # Held jogs the control panel ended because the direction ran out of
-    # travel; the status buddy shrugs at each one.
+    # travel; the status Waldo shrugs at each one.
     jog_limit_stops: int = 0
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False

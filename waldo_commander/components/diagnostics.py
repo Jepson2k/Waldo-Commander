@@ -37,7 +37,7 @@ from waldo_commander.common.charts import (
 )
 from waldo_commander.common.panel_theme import joint_colors
 from waldo_commander.common.tab_flash import flash_tab
-from waldo_commander.components.robot_buddy import Mood, RobotBuddy
+from waldo_commander.components.waldo import Mood, Waldo
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S
 from waldo_commander.state import robot_events, robot_state, ui_state
 
@@ -487,7 +487,7 @@ class DiagnosticsPage:
                 .classes("items-center no-wrap gap-2")
                 .mark("diag-events-empty") as self._events_empty
             ):
-                RobotBuddy(Mood.HAPPY, size=28, color="var(--wc-text-muted)")
+                Waldo(Mood.HAPPY, size=28, color="var(--wc-text-muted)")
                 ui.label("Nothing reported since start.").classes(
                     "text-xs text-wc-text-muted"
                 )

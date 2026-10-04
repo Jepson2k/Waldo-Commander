@@ -1724,11 +1724,11 @@ html, body {
   80% { transform: translateX(2px); }
 }
 
-/* ========== Robot buddy ========== */
+/* ========== Waldo ========== */
 
-/* On the simulator's amber fill the buddy is drawn in on-bright, so its eyes
+/* On the simulator's amber fill Waldo is drawn in on-bright, so its eyes
    and mouth cut through to the fill rather than to the glass. */
-.bg-wc-mode-sim .robot-buddy { --bb-cut: var(--wc-mode-sim); }
+.bg-wc-mode-sim .waldo { --waldo-cut: var(--wc-mode-sim); }
 
 
 /* ========== Status footer ========== */

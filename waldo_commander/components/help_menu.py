@@ -6,7 +6,7 @@ from collections.abc import Callable
 from nicegui import app as ng_app, ui
 
 from waldo_commander.components.readout import CHIP_COLORS
-from waldo_commander.components.robot_buddy import Mood, Reaction, RobotBuddy
+from waldo_commander.components.waldo import Mood, Reaction, Waldo
 from waldo_commander.services.keybindings import keybindings_manager
 
 
@@ -241,7 +241,7 @@ class HelpMenu:
                 fill, ink = CHIP_COLORS[mood]
                 with ui.row().classes("items-center gap-3 no-wrap"):
                     with ui.chip().props(f"dense color={fill} text-color={ink}"):
-                        RobotBuddy(mood, size=20, color="currentColor")
+                        Waldo(mood, size=20, color="currentColor")
                     ui.label(text).classes("text-md text-wc-text")
 
     def _on_finish(self, on_finish: Callable[[], None] | None) -> None:
@@ -274,8 +274,8 @@ class HelpMenu:
             with ui.card().classes("overlay-card tutorial-dialog-card"):
                 with ui.column().classes("w-full h-full gap-0"):
                     with ui.row().classes("items-center gap-3 no-wrap"):
-                        buddy = RobotBuddy(Mood.HAPPY, size=44, interactive=True)
-                        buddy.react(Reaction.GREET)
+                        waldo = Waldo(Mood.HAPPY, size=44, interactive=True)
+                        waldo.react(Reaction.GREET)
                         ui.label("Welcome to PAROL Commander!").classes(
                             "text-xl font-bold"
                         )

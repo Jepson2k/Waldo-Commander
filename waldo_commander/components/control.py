@@ -17,7 +17,7 @@ from waldoctl.types import Axis
 
 from waldo_commander.components.joint_dial import JointDial
 from waldo_commander.components.playback import playback
-from waldo_commander.components.robot_buddy import Mood, RobotBuddy
+from waldo_commander.components.waldo import Mood, Waldo
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import _setting_row
 from waldo_commander.components.readout import AI_MODE_CLASS
@@ -56,7 +56,7 @@ from waldo_commander.state import (
 
 logger = logging.getLogger(__name__)
 
-_ESTOP_BUDDY_PX = 160
+_ESTOP_WALDO_PX = 160
 _DIGITAL_ESTOP_COLOR = "var(--wc-warning)"
 
 # Module-level constants and precompiled regexes: avoid recreating them every frame.
@@ -128,7 +128,7 @@ class _EStopManager:
         return self._dialog is not None
 
     def show(self, is_physical: bool) -> None:
-        """Show the E-STOP dialog with an alarmed robot buddy."""
+        """Show the E-STOP dialog with an alarmed Waldo."""
         ui_client = self._ui_client_fn()
         if not ui_client:
             return
@@ -155,11 +155,11 @@ class _EStopManager:
             ):
                 # Error red for the hardware button, warning yellow for the
                 # software stop, matching the headline below.
-                RobotBuddy(
+                Waldo(
                     Mood.ALARMED,
-                    size=_ESTOP_BUDDY_PX,
+                    size=_ESTOP_WALDO_PX,
                     color=None if is_physical else _DIGITAL_ESTOP_COLOR,
-                ).classes("my-4").mark("estop-buddy")
+                ).classes("my-4").mark("estop-waldo")
 
                 if is_physical:
                     ui.label("Physical E-STOP Active").classes(
@@ -1316,7 +1316,7 @@ class ControlPanel:
             ui.card().classes("ai-approval-card gap-2") as self._approval_card,
         ):
             with ui.row().classes("items-center gap-2 no-wrap"):
-                RobotBuddy(Mood.NEUTRAL, size=30).classes("ai-approval-icon")
+                Waldo(Mood.NEUTRAL, size=30).classes("ai-approval-icon")
                 self._approval_title = ui.label("Allow AI action?").classes(
                     "text-base font-medium"
                 )

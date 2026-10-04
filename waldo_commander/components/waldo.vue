@@ -1,6 +1,6 @@
 <template>
   <div
-    class="robot-buddy"
+    class="waldo"
     :class="rootClasses"
     :style="rootStyle"
     @click="onPoke"
@@ -11,38 +11,38 @@
           <circle :cx="e.cx" cy="12" r="1.8" />
         </clipPath>
       </defs>
-      <g class="bb-pose" :style="poseStyle">
-        <g class="bb-rig" :class="rigAnim ? 'bb-anim-' + rigAnim : ''">
+      <g class="waldo-pose" :style="poseStyle">
+        <g class="waldo-rig" :class="rigAnim ? 'waldo-anim-' + rigAnim : ''">
           <g
             v-for="a in ANTENNAE"
             :key="a.side"
-            class="bb-antenna"
-            :class="'bb-antenna-' + a.side + (antennaWave === a.side ? ' bb-wave' : '')"
+            class="waldo-antenna"
+            :class="'waldo-antenna-' + a.side + (antennaWave === a.side ? ' waldo-wave' : '')"
             :style="{ transformOrigin: a.x + 'px 7.5px', transform: 'rotate(' + antenna[a.side] + 'deg)' }"
           >
             <rect :x="a.x - 0.5" y="4.5" width="1" height="3" rx="0.5" fill="currentColor" />
-            <circle class="bb-halo" :cx="a.x" cy="4.2" r="1.6" />
-            <circle class="bb-bulb" :cx="a.x" cy="4.2" r="0.8" fill="currentColor" />
-            <circle class="bb-led" :cx="a.x" cy="4.2" r="0.45" />
+            <circle class="waldo-halo" :cx="a.x" cy="4.2" r="1.6" />
+            <circle class="waldo-bulb" :cx="a.x" cy="4.2" r="0.8" fill="currentColor" />
+            <circle class="waldo-led" :cx="a.x" cy="4.2" r="0.45" />
           </g>
 
           <rect x="4.5" y="8.5" width="15" height="10" rx="2" fill="currentColor" />
-          <rect class="bb-gloss" x="5.6" y="9.3" width="4.4" height="0.6" rx="0.3" />
+          <rect class="waldo-gloss" x="5.6" y="9.3" width="4.4" height="0.6" rx="0.3" />
 
-          <g class="bb-eyes">
-            <g class="bb-eyes-open" :style="{ opacity: eyes === 'open' || eyes === 'wink' ? 1 : 0 }">
+          <g class="waldo-eyes">
+            <g class="waldo-eyes-open" :style="{ opacity: eyes === 'open' || eyes === 'wink' ? 1 : 0 }">
               <g
                 v-for="e in EYES"
                 :key="e.side"
-                class="bb-eye"
+                class="waldo-eye"
                 :style="{
                   transformOrigin: e.cx + 'px 12px',
                   transform: 'scale(' + eyeScale + ')',
                   opacity: e.side === 'R' && eyes === 'wink' ? 0 : 1,
                 }"
               >
-                <circle class="bb-cut" :cx="e.cx" cy="12" r="1.8" />
-                <g class="bb-pupil" :style="pupilStyle">
+                <circle class="waldo-cut" :cx="e.cx" cy="12" r="1.8" />
+                <g class="waldo-pupil" :style="pupilStyle">
                   <circle
                     :cx="e.cx"
                     cy="12"
@@ -53,7 +53,7 @@
                 </g>
                 <g :clip-path="'url(#' + uid + e.side + ')'">
                   <rect
-                    class="bb-lid"
+                    class="waldo-lid"
                     :x="e.cx - 3"
                     y="6"
                     width="6"
@@ -64,60 +64,60 @@
                 </g>
               </g>
             </g>
-            <g class="bb-eyes-alt bb-eyes-happy bb-stroke" :style="{ opacity: eyes === 'happy' ? 1 : 0 }">
+            <g class="waldo-eyes-alt waldo-eyes-happy waldo-stroke" :style="{ opacity: eyes === 'happy' ? 1 : 0 }">
               <path d="M6.2 12.4 Q8 10.5 9.8 12.4" />
               <path d="M14.2 12.4 Q16 10.5 17.8 12.4" />
             </g>
-            <g class="bb-eyes-alt bb-eyes-wink bb-stroke" :style="{ opacity: eyes === 'wink' ? 1 : 0 }">
+            <g class="waldo-eyes-alt waldo-eyes-wink waldo-stroke" :style="{ opacity: eyes === 'wink' ? 1 : 0 }">
               <path d="M14.2 12.4 Q16 10.5 17.8 12.4" />
             </g>
-            <g class="bb-eyes-alt bb-eyes-closed bb-stroke" :style="{ opacity: eyes === 'closed' ? 1 : 0 }">
+            <g class="waldo-eyes-alt waldo-eyes-closed waldo-stroke" :style="{ opacity: eyes === 'closed' ? 1 : 0 }">
               <path d="M6.2 11.8 Q8 13.5 9.8 11.8" />
               <path d="M14.2 11.8 Q16 13.5 17.8 11.8" />
             </g>
-            <g class="bb-eyes-alt bb-eyes-x bb-stroke" :style="{ opacity: eyes === 'x' ? 1 : 0 }">
+            <g class="waldo-eyes-alt waldo-eyes-x waldo-stroke" :style="{ opacity: eyes === 'x' ? 1 : 0 }">
               <path d="M6.9 10.9 L9.1 13.1 M9.1 10.9 L6.9 13.1" />
               <path d="M14.9 10.9 L17.1 13.1 M17.1 10.9 L14.9 13.1" />
             </g>
-            <g class="bb-eyes-alt bb-eyes-scan" :style="{ opacity: eyes === 'scan' ? 1 : 0 }">
-              <rect class="bb-cut" x="5.8" y="11" width="12.4" height="2" rx="1" opacity="0.22" />
-              <rect class="bb-scan-bar bb-cut" x="5.8" y="11" width="2.6" height="2" rx="1" />
+            <g class="waldo-eyes-alt waldo-eyes-scan" :style="{ opacity: eyes === 'scan' ? 1 : 0 }">
+              <rect class="waldo-cut" x="5.8" y="11" width="12.4" height="2" rx="1" opacity="0.22" />
+              <rect class="waldo-scan-bar waldo-cut" x="5.8" y="11" width="2.6" height="2" rx="1" />
             </g>
           </g>
 
-          <g class="bb-mouth">
-            <path class="bb-stroke" :style="m('smile')" d="M9 15.5 Q12 17.8 15 15.5" />
-            <path class="bb-stroke" :style="m('grin')" stroke-width="1.2" d="M8.2 15 Q12 18.8 15.8 15" />
-            <path class="bb-fill" :style="m('open')" d="M9 15.2 Q12 18.2 15 15.2 Z" />
-            <path class="bb-stroke" :style="m('flat')" d="M9 16 H15" />
-            <path class="bb-stroke" :style="m('slant')" d="M9 16.3 L15 15.7" />
-            <path class="bb-stroke" :style="m('zigzag')" stroke-width="0.8" d="M9 16 L10.2 15.2 L11.4 16.8 L12.6 15.2 L13.8 16.8 L15 16" />
-            <path class="bb-stroke" :style="m('frown')" d="M9 16.8 Q12 14.5 15 16.8" />
-            <path class="bb-stroke" :style="m('deep-frown')" stroke-width="1.2" d="M9.5 17.2 Q12 13.5 14.5 17.2" />
-            <path class="bb-stroke" :style="m('wavy')" stroke-width="0.8" d="M9 16.2 Q10 15.3 11 16.2 T13 16.2 T15 16.2" />
-            <ellipse class="bb-fill" :style="m('o')" cx="12" cy="16.1" rx="0.9" ry="1" />
-            <ellipse class="bb-fill" :style="m('small-o')" cx="12" cy="16.2" rx="0.5" ry="0.55" />
-            <ellipse class="bb-fill" :style="m('yawn')" cx="12" cy="16.2" rx="1.3" ry="1.55" />
+          <g class="waldo-mouth">
+            <path class="waldo-stroke" :style="m('smile')" d="M9 15.5 Q12 17.8 15 15.5" />
+            <path class="waldo-stroke" :style="m('grin')" stroke-width="1.2" d="M8.2 15 Q12 18.8 15.8 15" />
+            <path class="waldo-fill" :style="m('open')" d="M9 15.2 Q12 18.2 15 15.2 Z" />
+            <path class="waldo-stroke" :style="m('flat')" d="M9 16 H15" />
+            <path class="waldo-stroke" :style="m('slant')" d="M9 16.3 L15 15.7" />
+            <path class="waldo-stroke" :style="m('zigzag')" stroke-width="0.8" d="M9 16 L10.2 15.2 L11.4 16.8 L12.6 15.2 L13.8 16.8 L15 16" />
+            <path class="waldo-stroke" :style="m('frown')" d="M9 16.8 Q12 14.5 15 16.8" />
+            <path class="waldo-stroke" :style="m('deep-frown')" stroke-width="1.2" d="M9.5 17.2 Q12 13.5 14.5 17.2" />
+            <path class="waldo-stroke" :style="m('wavy')" stroke-width="0.8" d="M9 16.2 Q10 15.3 11 16.2 T13 16.2 T15 16.2" />
+            <ellipse class="waldo-fill" :style="m('o')" cx="12" cy="16.1" rx="0.9" ry="1" />
+            <ellipse class="waldo-fill" :style="m('small-o')" cx="12" cy="16.2" rx="0.5" ry="0.55" />
+            <ellipse class="waldo-fill" :style="m('yawn')" cx="12" cy="16.2" rx="1.3" ry="1.55" />
           </g>
         </g>
       </g>
 
-      <g class="bb-fx">
+      <g class="waldo-fx">
         <g v-if="fx.zzz">
           <g v-for="(z, i) in ZZZ" :key="i" :transform="'translate(' + z.x + ' ' + z.y + ') scale(' + z.s + ')'">
-            <path class="bb-glyph bb-z" :style="{ animationDelay: i * 0.9 + 's' }" d="M0 0 H1.4 L0 1.6 H1.4" />
+            <path class="waldo-glyph waldo-z" :style="{ animationDelay: i * 0.9 + 's' }" d="M0 0 H1.4 L0 1.6 H1.4" />
           </g>
         </g>
         <g v-if="fx.exclaim" transform="translate(20.6 4.6)">
-          <g class="bb-pop">
-            <rect class="bb-alert" x="-0.45" y="-2.3" width="0.9" height="2.4" rx="0.45" />
-            <circle class="bb-alert" cx="0" cy="1" r="0.5" />
+          <g class="waldo-pop">
+            <rect class="waldo-alert" x="-0.45" y="-2.3" width="0.9" height="2.4" rx="0.45" />
+            <circle class="waldo-alert" cx="0" cy="1" r="0.5" />
           </g>
         </g>
         <g v-if="fx.question" transform="translate(20.4 5)">
-          <g class="bb-pop">
-            <path class="bb-glyph" d="M-0.8 -1.3 Q-0.8 -2.5 0.2 -2.5 Q1.2 -2.5 1.1 -1.5 Q1 -0.8 0.2 -0.5 L0.2 0.2" />
-            <circle class="bb-glyph-dot" cx="0.2" cy="1.1" r="0.32" />
+          <g class="waldo-pop">
+            <path class="waldo-glyph" d="M-0.8 -1.3 Q-0.8 -2.5 0.2 -2.5 Q1.2 -2.5 1.1 -1.5 Q1 -0.8 0.2 -0.5 L0.2 0.2" />
+            <circle class="waldo-glyph-dot" cx="0.2" cy="1.1" r="0.32" />
           </g>
         </g>
       </g>
@@ -215,15 +215,15 @@ export default {
   computed: {
     rootClasses() {
       return [
-        "bb-mood-" + this.mood,
-        this.leds ? "bb-leds-" + this.leds : "",
-        this.asleep ? "bb-asleep" : "",
-        this.calm ? "bb-calm" : "",
-        this.roam ? "bb-roam" : "",
+        "waldo-mood-" + this.mood,
+        this.leds ? "waldo-leds-" + this.leds : "",
+        this.asleep ? "waldo-asleep" : "",
+        this.calm ? "waldo-calm" : "",
+        this.roam ? "waldo-roam" : "",
       ];
     },
     rootStyle() {
-      return this.color ? { "--bb-color": this.color } : {};
+      return this.color ? { "--waldo-color": this.color } : {};
     },
     poseStyle() {
       return { transform: "translateY(" + this.sink + "px) rotate(" + this.headTilt + "deg)" };
@@ -792,168 +792,168 @@ export default {
 </script>
 
 <style>
-.robot-buddy {
+.waldo {
   display: inline-block;
   flex-shrink: 0;
   line-height: 0;
-  color: var(--bb-color);
+  color: var(--waldo-color);
   transition: color 0.6s ease;
   /* Eyes, mouth and LEDs are drawn in on-fill; a chip whose fill shows
      through instead sets its own. */
-  --bb-cut: var(--wc-on-fill);
+  --waldo-cut: var(--wc-on-fill);
   /* Floating glyphs sit on the page, not the body: follow the theme's text. */
-  --bb-glyph: var(--wc-text);
+  --waldo-glyph: var(--wc-text);
 }
-.robot-buddy.bb-mood-happy { --bb-color: var(--wc-positive); }
-.robot-buddy.bb-mood-neutral { --bb-color: var(--wc-mode-sim); }
-.robot-buddy.bb-mood-sad { --bb-color: var(--wc-error); }
-.robot-buddy.bb-mood-alarmed { --bb-color: var(--wc-error); }
-.robot-buddy.bb-mood-booting { --bb-color: var(--wc-text-muted); }
+.waldo.waldo-mood-happy { --waldo-color: var(--wc-positive); }
+.waldo.waldo-mood-neutral { --waldo-color: var(--wc-mode-sim); }
+.waldo.waldo-mood-sad { --waldo-color: var(--wc-error); }
+.waldo.waldo-mood-alarmed { --waldo-color: var(--wc-error); }
+.waldo.waldo-mood-booting { --waldo-color: var(--wc-text-muted); }
 
-.robot-buddy svg {
+.waldo svg {
   width: 100%;
   height: 100%;
   overflow: visible;
-  animation: bb-breathe 6s ease-in-out infinite;
+  animation: waldo-breathe 6s ease-in-out infinite;
 }
-.robot-buddy.bb-mood-neutral svg { animation-duration: 7s; animation-delay: -2s; }
-.robot-buddy.bb-mood-sad svg { animation-duration: 8s; animation-delay: -4s; }
-.robot-buddy.bb-mood-alarmed svg { animation-duration: 1.4s; }
-.robot-buddy.bb-asleep svg { animation-duration: 4.5s; }
-.robot-buddy.bb-calm svg { animation: none; }
-@keyframes bb-breathe {
+.waldo.waldo-mood-neutral svg { animation-duration: 7s; animation-delay: -2s; }
+.waldo.waldo-mood-sad svg { animation-duration: 8s; animation-delay: -4s; }
+.waldo.waldo-mood-alarmed svg { animation-duration: 1.4s; }
+.waldo.waldo-asleep svg { animation-duration: 4.5s; }
+.waldo.waldo-calm svg { animation: none; }
+@keyframes waldo-breathe {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-2px); }
 }
 
-.robot-buddy .bb-pose,
-.robot-buddy .bb-antenna,
-.robot-buddy .bb-eye,
-.robot-buddy .bb-eye circle { transition: transform 0.3s ease; }
-.robot-buddy .bb-pose { transition-duration: 0.5s; }
-.robot-buddy .bb-pupil,
-.robot-buddy .bb-lid { transition: transform 0.25s ease; }
-.robot-buddy .bb-eyes > g,
-.robot-buddy .bb-eye,
-.robot-buddy .bb-mouth > * { transition: opacity 0.15s ease, transform 0.3s ease; }
+.waldo .waldo-pose,
+.waldo .waldo-antenna,
+.waldo .waldo-eye,
+.waldo .waldo-eye circle { transition: transform 0.3s ease; }
+.waldo .waldo-pose { transition-duration: 0.5s; }
+.waldo .waldo-pupil,
+.waldo .waldo-lid { transition: transform 0.25s ease; }
+.waldo .waldo-eyes > g,
+.waldo .waldo-eye,
+.waldo .waldo-mouth > * { transition: opacity 0.15s ease, transform 0.3s ease; }
 
-.robot-buddy .bb-stroke,
-.robot-buddy .bb-stroke path,
-.robot-buddy .bb-glyph {
+.waldo .waldo-stroke,
+.waldo .waldo-stroke path,
+.waldo .waldo-glyph {
   fill: none;
-  stroke: var(--bb-cut);
+  stroke: var(--waldo-cut);
   stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.robot-buddy .bb-eyes-alt.bb-stroke path { stroke-width: 1.1; }
-.robot-buddy .bb-eyes-alt.bb-eyes-x path { stroke-width: 0.75; }
-.robot-buddy .bb-cut { fill: var(--bb-cut); }
-.robot-buddy .bb-fill { fill: var(--bb-cut); stroke: var(--bb-cut); stroke-width: 0.4; stroke-linejoin: round; }
-.robot-buddy .bb-gloss { fill: var(--wc-on-fill); opacity: 0.16; }
-.robot-buddy .bb-scan-bar { animation: bb-scan 1.1s ease-in-out infinite alternate; }
+.waldo .waldo-eyes-alt.waldo-stroke path { stroke-width: 1.1; }
+.waldo .waldo-eyes-alt.waldo-eyes-x path { stroke-width: 0.75; }
+.waldo .waldo-cut { fill: var(--waldo-cut); }
+.waldo .waldo-fill { fill: var(--waldo-cut); stroke: var(--waldo-cut); stroke-width: 0.4; stroke-linejoin: round; }
+.waldo .waldo-gloss { fill: var(--wc-on-fill); opacity: 0.16; }
+.waldo .waldo-scan-bar { animation: waldo-scan 1.1s ease-in-out infinite alternate; }
 
-.robot-buddy .bb-led { fill: var(--bb-cut); opacity: 0; }
-.robot-buddy .bb-halo { fill: none; stroke: currentColor; stroke-width: 0.35; opacity: 0; }
-.robot-buddy.bb-leds-chase .bb-led { animation: bb-led 1.2s ease-in-out infinite; }
-.robot-buddy.bb-leds-chase .bb-antenna-r .bb-led { animation-delay: 0.6s; }
-.robot-buddy.bb-leds-pulse .bb-led { animation: bb-led 1.6s ease-in-out infinite; }
-.robot-buddy.bb-leds-pulse .bb-antenna-r .bb-led { animation-delay: 0.3s; }
-.robot-buddy.bb-leds-alarm .bb-led { animation: bb-led 0.5s steps(2, jump-none) infinite; }
-.robot-buddy.bb-leds-alarm .bb-halo { animation: bb-halo 0.5s ease-out infinite; }
-.robot-buddy.bb-leds-alarm .bb-antenna-r .bb-led,
-.robot-buddy.bb-leds-alarm .bb-antenna-r .bb-halo { animation-delay: 0.25s; }
-.robot-buddy.bb-leds-party .bb-led { animation: bb-led 0.3s ease-in-out infinite; }
-.robot-buddy.bb-leds-party .bb-antenna-r .bb-led { animation-delay: 0.15s; }
+.waldo .waldo-led { fill: var(--waldo-cut); opacity: 0; }
+.waldo .waldo-halo { fill: none; stroke: currentColor; stroke-width: 0.35; opacity: 0; }
+.waldo.waldo-leds-chase .waldo-led { animation: waldo-led 1.2s ease-in-out infinite; }
+.waldo.waldo-leds-chase .waldo-antenna-r .waldo-led { animation-delay: 0.6s; }
+.waldo.waldo-leds-pulse .waldo-led { animation: waldo-led 1.6s ease-in-out infinite; }
+.waldo.waldo-leds-pulse .waldo-antenna-r .waldo-led { animation-delay: 0.3s; }
+.waldo.waldo-leds-alarm .waldo-led { animation: waldo-led 0.5s steps(2, jump-none) infinite; }
+.waldo.waldo-leds-alarm .waldo-halo { animation: waldo-halo 0.5s ease-out infinite; }
+.waldo.waldo-leds-alarm .waldo-antenna-r .waldo-led,
+.waldo.waldo-leds-alarm .waldo-antenna-r .waldo-halo { animation-delay: 0.25s; }
+.waldo.waldo-leds-party .waldo-led { animation: waldo-led 0.3s ease-in-out infinite; }
+.waldo.waldo-leds-party .waldo-antenna-r .waldo-led { animation-delay: 0.15s; }
 
 /* Steady lights for standing conditions, big enough to read at chip size:
    the left bulb turns record red while recording, and both bulbs pulse while
    an AI agent drives (the screen-edge glow is what says who has control). */
-.robot-buddy.bb-leds-rec .bb-antenna-l .bb-bulb { fill: var(--wc-record); }
-.robot-buddy.bb-leds-rec .bb-antenna-l .bb-led,
-.robot-buddy.bb-leds-agent .bb-led { animation: bb-glow 2s ease-in-out infinite; }
-@keyframes bb-glow {
+.waldo.waldo-leds-rec .waldo-antenna-l .waldo-bulb { fill: var(--wc-record); }
+.waldo.waldo-leds-rec .waldo-antenna-l .waldo-led,
+.waldo.waldo-leds-agent .waldo-led { animation: waldo-glow 2s ease-in-out infinite; }
+@keyframes waldo-glow {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 0; }
 }
 
-.robot-buddy .bb-alert { fill: var(--wc-warning); stroke: var(--wc-scrim); stroke-width: 0.15; }
-.robot-buddy .bb-glyph { stroke: var(--bb-glyph); stroke-width: 0.45; }
-.robot-buddy .bb-glyph-dot { fill: var(--bb-glyph); }
-.robot-buddy .bb-z { stroke-width: 0.42; opacity: 0; animation: bb-z 2.7s ease-out infinite; }
-.robot-buddy .bb-pop { transform-box: fill-box; transform-origin: bottom center; animation: bb-pop 0.35s cubic-bezier(0.3, 1.8, 0.5, 1); }
+.waldo .waldo-alert { fill: var(--wc-warning); stroke: var(--wc-scrim); stroke-width: 0.15; }
+.waldo .waldo-glyph { stroke: var(--waldo-glyph); stroke-width: 0.45; }
+.waldo .waldo-glyph-dot { fill: var(--waldo-glyph); }
+.waldo .waldo-z { stroke-width: 0.42; opacity: 0; animation: waldo-z 2.7s ease-out infinite; }
+.waldo .waldo-pop { transform-box: fill-box; transform-origin: bottom center; animation: waldo-pop 0.35s cubic-bezier(0.3, 1.8, 0.5, 1); }
 
-.robot-buddy .bb-rig { transform-origin: 12px 18.5px; }
-.robot-buddy .bb-anim-hop { animation: bb-hop 0.45s ease-out; }
-.robot-buddy .bb-anim-hop2 { animation: bb-hop 0.45s ease-out 2; }
-.robot-buddy .bb-anim-jolt { animation: bb-jolt 0.35s ease-out; }
-.robot-buddy .bb-anim-shake { animation: bb-shake 0.45s linear; }
-.robot-buddy .bb-anim-wobble { animation: bb-wobble 0.6s ease-in-out 3; }
-.robot-buddy .bb-anim-squash { animation: bb-squash 0.3s ease-out; }
-.robot-buddy .bb-anim-shrug { animation: bb-shrug 0.52s ease-in-out; }
-.robot-buddy .bb-anim-nod { animation: bb-nod 0.36s ease-in-out 2; }
-.robot-buddy .bb-wave { animation: bb-wave 0.45s ease-in-out 3; }
+.waldo .waldo-rig { transform-origin: 12px 18.5px; }
+.waldo .waldo-anim-hop { animation: waldo-hop 0.45s ease-out; }
+.waldo .waldo-anim-hop2 { animation: waldo-hop 0.45s ease-out 2; }
+.waldo .waldo-anim-jolt { animation: waldo-jolt 0.35s ease-out; }
+.waldo .waldo-anim-shake { animation: waldo-shake 0.45s linear; }
+.waldo .waldo-anim-wobble { animation: waldo-wobble 0.6s ease-in-out 3; }
+.waldo .waldo-anim-squash { animation: waldo-squash 0.3s ease-out; }
+.waldo .waldo-anim-shrug { animation: waldo-shrug 0.52s ease-in-out; }
+.waldo .waldo-anim-nod { animation: waldo-nod 0.36s ease-in-out 2; }
+.waldo .waldo-wave { animation: waldo-wave 0.45s ease-in-out 3; }
 
-@keyframes bb-hop {
+@keyframes waldo-hop {
   0% { transform: translateY(0) scale(1, 1); }
   15% { transform: translateY(0) scale(1.06, 0.92); }
   45% { transform: translateY(-2.2px) scale(0.96, 1.05); }
   80% { transform: translateY(0) scale(1.05, 0.94); }
   100% { transform: translateY(0) scale(1, 1); }
 }
-@keyframes bb-jolt {
+@keyframes waldo-jolt {
   0% { transform: translateY(0) scale(1); }
   30% { transform: translateY(-1.2px) scale(1.06); }
   100% { transform: translateY(0) scale(1); }
 }
-@keyframes bb-shake {
+@keyframes waldo-shake {
   0%, 100% { transform: translateX(0); }
   20%, 60% { transform: translateX(-0.6px); }
   40%, 80% { transform: translateX(0.6px); }
 }
-@keyframes bb-wobble {
+@keyframes waldo-wobble {
   0%, 100% { transform: rotate(0); }
   25% { transform: rotate(-9deg); }
   75% { transform: rotate(9deg); }
 }
-@keyframes bb-shrug {
+@keyframes waldo-shrug {
   0%, 100% { transform: translateY(0); }
   30%, 70% { transform: translateY(-0.8px); }
 }
-@keyframes bb-nod {
+@keyframes waldo-nod {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(0.9px) scale(1, 0.97); }
 }
-@keyframes bb-squash {
+@keyframes waldo-squash {
   0% { transform: scale(1, 1); }
   35% { transform: scale(1.14, 0.84); }
   100% { transform: scale(1, 1); }
 }
-@keyframes bb-wave {
+@keyframes waldo-wave {
   0%, 100% { transform: rotate(0); }
   50% { transform: rotate(28deg); }
 }
-@keyframes bb-scan { to { transform: translateX(9.8px); } }
-@keyframes bb-led {
+@keyframes waldo-scan { to { transform: translateX(9.8px); } }
+@keyframes waldo-led {
   0%, 100% { opacity: 0; }
   50% { opacity: 0.95; }
 }
-@keyframes bb-halo {
+@keyframes waldo-halo {
   0% { opacity: 0.9; transform: scale(0.5); }
   100% { opacity: 0; transform: scale(1.4); }
 }
-.robot-buddy .bb-halo { transform-box: fill-box; transform-origin: center; }
-@keyframes bb-z {
+.waldo .waldo-halo { transform-box: fill-box; transform-origin: center; }
+@keyframes waldo-z {
   0% { opacity: 0; transform: translate(0, 0.6px); }
   25% { opacity: 1; }
   100% { opacity: 0; transform: translate(0.9px, -1.4px); }
 }
-@keyframes bb-pop {
+@keyframes waldo-pop {
   from { transform: scale(0); }
   to { transform: scale(1); }
 }
 
-.robot-buddy.bb-roam {
+.waldo.waldo-roam {
   position: fixed;
   top: 0;
   left: 0;
@@ -961,9 +961,9 @@ export default {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .robot-buddy svg,
-  .robot-buddy .bb-rig,
-  .robot-buddy .bb-scan-bar,
-  .robot-buddy .bb-wave { animation: none !important; }
+  .waldo svg,
+  .waldo .waldo-rig,
+  .waldo .waldo-scan-bar,
+  .waldo .waldo-wave { animation: none !important; }
 }
 </style>

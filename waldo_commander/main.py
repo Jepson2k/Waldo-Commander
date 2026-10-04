@@ -52,7 +52,7 @@ from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import StatusFooter
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.robot_buddy import Mood, RobotBuddy
+from waldo_commander.components.waldo import Mood, Waldo
 from waldo_commander.components.settings import (
     adopt_applied_tcp,
     refresh_applied_tcp,
@@ -1071,7 +1071,7 @@ def build_page_content() -> None:
                     # No STATUS frame (com_port configured but no robot wired).
                     # The scene only needs local URDF assets and guarded client
                     # calls, so render it anyway instead of blocking the page.
-                    loading_buddy.set_mood(Mood.SAD)
+                    loading_waldo.set_mood(Mood.SAD)
                     loading_status.text = (
                         "Robot disconnected — proceeding without live data"
                     )
@@ -1123,7 +1123,7 @@ def build_page_content() -> None:
                 " transition: opacity 0.4s ease;"
             ) as scene_loading_overlay
         ):
-            loading_buddy = RobotBuddy(Mood.BOOTING, size=96).mark("loading-buddy")
+            loading_waldo = Waldo(Mood.BOOTING, size=96).mark("loading-waldo")
             loading_status = ui.label("Connecting to controller...").classes(
                 "wc-body text-wc-text-muted"
             )
@@ -1478,9 +1478,9 @@ def _build_takeover_overlay(message: str) -> None:
         .classes("fixed inset-0 items-center justify-center")
         .style("z-index: var(--wc-z-capsule); background: var(--wc-scrim);")
     ):
-        # Moping buddy — a sibling of the card, wandering the viewport and
+        # Moping Waldo — a sibling of the card, wandering the viewport and
         # bouncing off its edges and the card.
-        RobotBuddy(Mood.SAD, size=96, roam_avoid=".takeover-card")
+        Waldo(Mood.SAD, size=96, roam_avoid=".takeover-card")
 
         with ui.column().classes(
             "overlay-card takeover-card items-center max-w-sm p-8"

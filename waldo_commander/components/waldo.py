@@ -11,11 +11,11 @@ from enum import StrEnum
 
 from nicegui import app, ui
 
-CALM_STORAGE_KEY = "ui/calm_buddy"
+CALM_STORAGE_KEY = "ui/calm_waldo"
 
 
 def calm_preferred() -> bool:
-    """The user's "Calm robot" setting: no idle fidgets anywhere Waldo appears."""
+    """The user's "Calm Waldo" setting: no idle fidgets anywhere Waldo appears."""
     return bool(app.storage.general.get(CALM_STORAGE_KEY, False))
 
 
@@ -44,7 +44,7 @@ class Light(StrEnum):
 
 
 class Reaction(StrEnum):
-    """One-shot animations, after which the buddy settles back into its mood."""
+    """One-shot animations, after which Waldo settles back into its mood."""
 
     GREET = "greet"
     CELEBRATE = "celebrate"
@@ -54,7 +54,7 @@ class Reaction(StrEnum):
     NOD = "nod"
 
 
-class RobotBuddy(ui.element, component="robot_buddy.vue"):
+class Waldo(ui.element, component="waldo.vue"):
     def __init__(
         self,
         mood: Mood = Mood.HAPPY,
@@ -126,14 +126,14 @@ class RobotBuddy(ui.element, component="robot_buddy.vue"):
         self._set("mood", mood.value)
 
     def set_busy(self, busy: bool) -> None:
-        """Busy buddies focus: lids lower, eyes on the arm, antenna LEDs chase."""
+        """A busy Waldo focuses: lids lower, eyes on the arm, antenna LEDs chase."""
         self._set("busy", busy)
 
     def set_light(self, light: Light | None) -> None:
         self._set("light", light.value if light else "")
 
     def set_calm(self, calm: bool) -> None:
-        """Calm buddies skip idle fidgets, breathing, pointer-following and
+        """A calm Waldo skips idle fidgets, breathing, pointer-following and
         sleep; reactions to what the robot does still play."""
         self._set("calm", calm)
 
