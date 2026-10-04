@@ -283,12 +283,14 @@ def _derive(p: Palette) -> dict[str, str]:
         "focus-ring": _shift(p.accent, L=0.75),
         "control": p.surface_2,
         "progress": _shift(p.accent, L=0.75),
-        "positive": _shift(p.green, L=0.88, C=0.6),
+        # Saturated like the simulator's amber, and still past 4.5:1 as small
+        # text on the glass.
+        "positive": _shift(p.green, L=0.72),
         "positive-soft": _alpha(p.green, 0.12),
         "warning": _shift(p.yellow, L=0.92, C=0.7),
         "warning-fill": _shift(p.yellow, L=0.85),
         "warning-soft": _alpha(p.yellow, 0.1),
-        "error": _shift(p.red, L=0.86, C=0.5),
+        "error": _shift(p.red, L=0.66),
         "error-soft": _alpha(p.red, 0.08),
         "mode-sim-soft": _alpha(FIXED_COLOR["mode-sim"], 0.12),
         "info": _shift(p.accent, L=0.88, C=0.5),

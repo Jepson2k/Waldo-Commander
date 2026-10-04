@@ -1160,7 +1160,7 @@ export default {
 .waldo.waldo-mood-happy { --waldo-color: var(--wc-positive); }
 .waldo.waldo-mood-neutral { --waldo-color: var(--wc-mode-sim); }
 .waldo.waldo-mood-sad { --waldo-color: var(--wc-error); }
-.waldo.waldo-mood-alarmed { --waldo-color: var(--wc-error); }
+.waldo.waldo-mood-alarmed { --waldo-color: var(--wc-estop); }
 .waldo.waldo-mood-booting { --waldo-color: var(--wc-text-muted); }
 
 .waldo svg {

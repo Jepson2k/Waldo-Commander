@@ -57,7 +57,6 @@ from waldo_commander.state import (
 logger = logging.getLogger(__name__)
 
 _ESTOP_WALDO_PX = 160
-_DIGITAL_ESTOP_COLOR = "var(--wc-warning)"
 
 # Module-level constants and precompiled regexes: avoid recreating them every frame.
 _AXIS_ORDER = (
@@ -153,13 +152,9 @@ class _EStopManager:
                 .classes("overlay-card estop-card gap-4 items-center")
                 .mark("estop-dialog"),
             ):
-                # Error red for the hardware button, warning yellow for the
-                # software stop, matching the headline below.
-                Waldo(
-                    Mood.ALARMED,
-                    size=_ESTOP_WALDO_PX,
-                    color=None if is_physical else _DIGITAL_ESTOP_COLOR,
-                ).classes("my-4").mark("estop-waldo")
+                Waldo(Mood.ALARMED, size=_ESTOP_WALDO_PX).classes("my-4").mark(
+                    "estop-waldo"
+                )
 
                 if is_physical:
                     ui.label("Physical E-STOP Active").classes(

@@ -35,7 +35,7 @@ CHIP_COLORS = {
     Mood.HAPPY: ("wc-positive-soft", "wc-positive"),
     Mood.NEUTRAL: ("wc-mode-sim-soft", "wc-mode-sim"),
     Mood.SAD: ("wc-error-soft", "wc-error"),
-    Mood.ALARMED: ("wc-error-soft", "wc-error"),
+    Mood.ALARMED: ("wc-error-soft", "wc-estop"),
 }
 #: Theme scope per AI control mode: its accent colours the mode's label and
 #: the perimeter glow.
