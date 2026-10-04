@@ -25,6 +25,7 @@
   /* ---- One frame loop for every scene ---- */
   const tweens = new Set();
   const pulses = new Map(); // scene element id -> { items: [{ mesh, base, phase }], start, until }
+  const pulseCalls = new Map(); // scene element id -> how many pulse() calls it has had
   const rushUntil = new Map(); // scene element id -> when its one-shot effects end
   let raf = 0;
 
@@ -50,6 +51,43 @@
     const held = rests.get(obj);
     const entry = held && held[property];
     if (entry && --entry.holds === 0) delete held[property];
+  }
+
+  function heldEntry(obj, property) {
+    const held = rests.get(obj);
+    return held ? held[property] : undefined;
+  }
+
+  /* Python sets an object's scale or material while an effect on it runs:
+   * that becomes the value the effect runs on from and returns to, or the
+   * effect's restore would undo it and Python, sending only changes, would
+   * never send it again. */
+  const adopted = new WeakSet();
+  function adoptServerChanges(comp) {
+    if (!comp || adopted.has(comp)) return;
+    adopted.add(comp);
+    const after = (name, then) => {
+      const call = comp[name];
+      if (typeof call !== 'function') return;
+      comp[name] = async (objectId, ...args) => {
+        const result = await call(objectId, ...args);
+        const rec = comp.objects ? comp.objects.get(objectId) : undefined;
+        if (rec && rec.mesh) then(rec.mesh);
+        return result;
+      };
+    };
+    after('scale', mesh => {
+      const entry = heldEntry(mesh, 'scale');
+      if (entry) entry.value.copy(mesh.scale);
+    });
+    after('material', mesh => mesh.traverse(child => {
+      const m = child.material;
+      if (!m) return;
+      for (const property of ['opacity', 'transparent']) {
+        const entry = heldEntry(m, property);
+        if (entry) entry.value = m[property];
+      }
+    }));
   }
 
   function shown(mesh) {
@@ -138,6 +176,7 @@
   async function meshOf(sceneId, objectId) {
     for (let i = 0; i < 40; i++) {
       const comp = getElement(sceneId);
+      adoptServerChanges(comp);
       const rec = comp && comp.objects ? comp.objects.get(objectId) : undefined;
       if (rec) {
         if (rec.ready_promise && !(await rec.ready_promise.then(() => true, () => false))) {
@@ -220,11 +259,9 @@
     mesh.traverse(child => {
       const m = child.material;
       if (m && typeof m.opacity === 'number') {
-        mats.push({
-          m,
-          opacity: hold(m, 'opacity', () => m.opacity),
-          transparent: hold(m, 'transparent', () => m.transparent),
-        });
+        hold(m, 'opacity', () => m.opacity);
+        hold(m, 'transparent', () => m.transparent);
+        mats.push(m);
       }
     });
     if (!mats.length) return;
@@ -236,14 +273,16 @@
         m.needsUpdate = true;
       }
     };
-    for (const { m } of mats) setTransparent(m, true);
     tween(sceneId, 0, ms, t => {
       const k = easeOutCubic(t);
-      for (const { m, opacity } of mats) m.opacity = opacity * k;
+      for (const m of mats) {
+        setTransparent(m, true);
+        m.opacity = heldEntry(m, 'opacity').value * k;
+      }
     }, () => {
-      for (const { m, opacity, transparent } of mats) {
-        m.opacity = opacity;
-        setTransparent(m, transparent);
+      for (const m of mats) {
+        m.opacity = heldEntry(m, 'opacity').value;
+        setTransparent(m, heldEntry(m, 'transparent').value);
         release(m, 'opacity');
         release(m, 'transparent');
       }
@@ -329,12 +368,17 @@
       const start = rest.clone().set(from[0], from[1], from[2]);
       const mats = missColor ? emissives(mesh) : [];
       const hot = mats.length ? mats[0].emissive.clone().set(missColor) : null;
+      // Grabbed again mid-spring, the handle is the drag's: the spring
+      // lets go of it where it is.
+      const comp = getElement(sceneId);
+      let grabbed = false;
       tween(sceneId, 0, 520, t => {
-        mesh.position.lerpVectors(start, rest, easeOutBack(t));
+        grabbed = grabbed || !!(comp && comp.dragging_count);
+        if (!grabbed) mesh.position.lerpVectors(start, rest, easeOutBack(t));
         const k = Math.max(0, Math.sin(t * Math.PI * 3)) * (1 - t);
         for (const { m, emissive } of mats) m.emissive.copy(emissive).lerp(hot, k);
       }, () => {
-        mesh.position.copy(rest);
+        if (!grabbed) mesh.position.copy(rest);
         restoreEmissives(mats);
       });
     },
@@ -344,9 +388,13 @@
      * the next call for this scene replaces the set (an empty list stops it).
      */
     async pulse(sceneId, ids) {
+      const call = (pulseCalls.get(sceneId) || 0) + 1;
+      pulseCalls.set(sceneId, call);
       stopPulse(sceneId);
       if (reducedMotion() || !ids.length) return;
       const meshes = await Promise.all(ids.map(id => meshOf(sceneId, id)));
+      // A later call, made while these meshes were awaited, has the scene.
+      if (pulseCalls.get(sceneId) !== call) return;
       stopPulse(sceneId);
       const items = [];
       meshes.forEach((mesh, i) => {

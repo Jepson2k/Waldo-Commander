@@ -1051,8 +1051,11 @@ html, body {
    button minimum is overridden; the ::after keeps the touch target. */
 .status-footer .footer-mode.ai-driving { padding-right: 2px; }
 /* Take control reclaims the arm, so while the AI drives the footer stays
-   above any open dialog, on the layer the AI capsule used. */
+   above any open dialog, on the layer the AI capsule used. Over a dialog it
+   is the only part of the footer that answers the pointer. */
 .status-footer:has(.footer-mode.ai-driving) { z-index: var(--wc-z-capsule); }
+body:has(.q-dialog__backdrop) .status-footer:has(.footer-mode.ai-driving) { pointer-events: none; }
+body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events: auto; }
 .status-footer .footer-mode .btn-take-control {
   background: var(--mode-accent) !important;
   color: var(--wc-on-bright) !important;

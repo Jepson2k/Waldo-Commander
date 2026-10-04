@@ -19,7 +19,7 @@ from selenium.common.exceptions import (
     TimeoutException,
 )
 from selenium.webdriver.common.action_chains import ActionChains
-from nicegui import Client, core
+from nicegui import Client, core, ui
 
 from tests.helpers.browser_helpers import (
     click_tab,
@@ -181,6 +181,12 @@ class TestShellLayout:
             time.sleep(1.0)
             return js(screen, frames) - start
 
+        def marker():
+            assert ui_state.urdf_scene is not None
+            with ui_state.urdf_scene.scene:
+                return ui.scene.sphere(0.01).move(0.0, 0.0, -5.0)
+
+        dot = run_in_app(marker)
         dialog = ui_state.settings_content.dialog
         assert dialog is not None
         run_in_app(dialog.open)
@@ -191,8 +197,18 @@ class TestShellLayout:
                 )
             )
             covered = frames_in_a_second()
+            # A change landing just after a covered frame is drawn a little
+            # later, not left on screen stale until something else draws.
+            wait(screen, 5).until(lambda _: frames_in_a_second() == 0)
+            before = js(screen, frames)
+            run_in_app(lambda: dot.move(0.0, 0.0, -4.9))
+            time.sleep(0.05)
+            run_in_app(lambda: dot.move(0.0, 0.0, -4.8))
+            time.sleep(1.0)
+            drawn = js(screen, frames) - before
         finally:
             run_in_app(dialog.close)
+            run_in_app(dot.delete)
         wait(screen, 5).until(
             lambda _: js(
                 screen, "return !document.querySelector('.q-dialog__backdrop')"
@@ -200,6 +216,7 @@ class TestShellLayout:
         )
         # Each drawn frame is two render calls: the scene, then its axis helper.
         assert covered <= 10, f"{covered} render calls in a second behind the dialog"
+        assert drawn >= 4, f"the second of two changes was never drawn ({drawn} calls)"
 
     def test_the_joint_tab_is_as_tall_as_its_dials(self, class_screen) -> None:
         screen_wait_for_scene_ready(class_screen, timeout_s=40.0)

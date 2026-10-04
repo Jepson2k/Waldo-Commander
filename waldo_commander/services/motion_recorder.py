@@ -137,21 +137,27 @@ def move_snippet(
     return f"rbt.{method}([{vals}], speed={speed}, accel={accel}{r}{wait_str}){tail}"
 
 
-def _module_scope_imports(tree: ast.Module) -> Iterator[ast.Import | ast.ImportFrom]:
+def _module_scope_imports(
+    tree: ast.Module, above: int
+) -> Iterator[ast.Import | ast.ImportFrom]:
     """Import statements that bind in the module's namespace, where recorded
-    lines run: those inside a function or class body bind only there."""
+    lines run, before lines inserted below line *above* (0: at the end) do:
+    those inside a function or class body bind only there."""
     pending: list[ast.AST] = list(tree.body)
     while pending:
         node = pending.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and (
+            not above or node.lineno <= above
+        ):
             yield node
         pending.extend(ast.iter_child_nodes(node))
 
 
-def _imported_waldoctl_names(text: str) -> set[str]:
-    """Names bound by plain ``from waldoctl import X`` statements in *text*.
+def _imported_waldoctl_names(text: str, above: int) -> set[str]:
+    """Names bound by plain ``from waldoctl import X`` statements in *text*
+    by the time lines inserted below line *above* run.
 
     Parsed with ``ast`` — a substring scan would count comments, attribute
     access (``waldoctl.Box``), and aliased imports (which don't bind the bare
@@ -163,15 +169,16 @@ def _imported_waldoctl_names(text: str) -> set[str]:
     except SyntaxError:
         return set()
     names: set[str] = set()
-    for node in _module_scope_imports(tree):
+    for node in _module_scope_imports(tree, above):
         if isinstance(node, ast.ImportFrom) and node.module == "waldoctl":
             names.update(a.name for a in node.names if a.asname is None)
     return names
 
 
-def _imported_modules(text: str) -> set[str]:
+def _imported_modules(text: str, above: int) -> set[str]:
     """Modules bound under their own name by plain ``import X`` statements
-    in *text*; an unparseable program yields the empty set, for the reason
+    in *text* by the time lines inserted below line *above* run; an
+    unparseable program yields the empty set, for the reason
     :func:`_imported_waldoctl_names` gives."""
     try:
         tree = ast.parse(text)
@@ -179,7 +186,7 @@ def _imported_modules(text: str) -> set[str]:
         return set()
     return {
         alias.name
-        for node in _module_scope_imports(tree)
+        for node in _module_scope_imports(tree, above)
         if isinstance(node, ast.Import)
         for alias in node.names
         if alias.asname is None
@@ -1079,7 +1086,7 @@ class MotionRecorder:
         elif action_type == "delay":
             seconds = params["seconds"]
             snippet = f"time.sleep({seconds:.2f})"
-            if "time" not in _imported_modules(_editor_text()):
+            if "time" not in _imported_modules(_editor_text(), self.insertion_line()):
                 snippet = f"import time\n{snippet}"
             return snippet
 
@@ -1087,7 +1094,7 @@ class MotionRecorder:
             shapes = params["shapes"]
             snippet = shapes_to_code(shapes)
             # Prepend the constructor imports the program doesn't have yet.
-            imported = _imported_waldoctl_names(_editor_text())
+            imported = _imported_waldoctl_names(_editor_text(), self.insertion_line())
             names = {type(s).__name__ for s in shapes}
             if any(s.physics is not None for s in shapes):
                 names.add("Physical")  # _shape_to_code emits it by repr

@@ -11,6 +11,7 @@ every other browser test deterministic; the scene test turns it off for
 itself through CDP, since reduced motion skips the scene effects entirely.
 """
 
+import asyncio
 import time
 from io import BytesIO
 
@@ -67,6 +68,25 @@ return {
   take: shown(chip.querySelector('.btn-take-control')),
 };
 """
+
+# The footer buttons, other than Take control, that a click at their
+# centre would reach.
+_FOOTER_BUTTONS_HIT_JS = """
+return [...document.querySelectorAll('.status-footer .q-btn:not(.btn-take-control)')]
+  .filter(b => b.getClientRects().length)
+  .filter(b => {
+    const r = b.getBoundingClientRect();
+    return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+  })
+  .map(b => b.textContent.trim() || b.className);
+"""
+
+# One small triangle, for a model the scene has to download.
+_TRIANGLE_STL = (
+    b"solid t\nfacet normal 0 0 1\nouter loop\n"
+    b"vertex 0 0 0\nvertex 0.02 0 0\nvertex 0 0.02 0\n"
+    b"endloop\nendfacet\nendsolid t\n"
+)
 
 # Whether everything the status chip shows stays inside it, and the chip
 # clear of the footer cells beside it.
@@ -419,7 +439,8 @@ class TestAnimations:
                     "the wrapped chip spilled Take control",
                 )
             # Reachable over an open dialog, as the capsule it replaced was:
-            # Selenium refuses a click a backdrop would take.
+            # Selenium refuses a click a backdrop would take. The rest of the
+            # footer is drawn over the dialog too, but answers no clicks.
             marked_element(screen, "tab-settings").click()
             _poll(
                 screen,
@@ -427,6 +448,9 @@ class TestAnimations:
                 bool,
                 10,
                 "Settings did not open",
+            )
+            assert screen.selenium.execute_script(_FOOTER_BUTTONS_HIT_JS) == [], (
+                "the footer's other buttons answer clicks over an open dialog"
             )
             screen.selenium.find_element(By.CSS_SELECTOR, ".btn-take-control").click()
             _poll(
@@ -620,6 +644,144 @@ class TestAnimations:
                 {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
             )
             run_in_app(_restore)
+
+    def test_scene_effects_keep_what_python_sets_during_them(
+        self, class_screen
+    ) -> None:
+        """An effect ends on the scale or opacity Python set while it ran, not
+        the one it started from: Python sends only changes, so one undone in
+        the browser stays undone. A ripple asked for after another is the one
+        that runs, though the earlier one finishes waiting for its objects
+        last."""
+        from nicegui import app as ng_app
+        from nicegui import ui
+        from starlette.responses import Response
+
+        from waldo_commander.services.urdf_scene.scene_fx import SceneFx
+        from waldo_commander.state import ui_state
+
+        screen = class_screen
+        dismiss_dialogs(screen)
+        driver = screen.selenium
+        driver.execute_cdp_cmd(
+            "Emulation.setEmulatedMedia",
+            {
+                "features": [
+                    {"name": "prefers-reduced-motion", "value": "no-preference"}
+                ]
+            },
+        )
+
+        def make(name: str):
+            def build():
+                urdf = ui_state.urdf_scene
+                assert urdf is not None
+                with urdf.scene:
+                    return (
+                        ui.scene.sphere(0.02)
+                        .material("#888888", opacity=1.0)
+                        .move(0.3, 0.3, 0.3)
+                        .with_name(name)
+                    )
+
+            return build
+
+        dot = run_in_app(make("fx-dot"))
+        read = """
+            const canvas = document.querySelector('canvas');
+            const host = canvas.closest('[id^="c"]');
+            let found = null;
+            getElement(host.id.slice(1)).scene.traverse(o => {
+              if (o.name === arguments[0]) found = o;
+            });
+            return found && {scale: found.scale.x, opacity: found.material.opacity};
+        """
+        try:
+            _poll(screen, read, bool, 10, "the sphere was never drawn", "fx-dot")
+            scene = ui_state.urdf_scene.scene
+
+            run_in_app(lambda: SceneFx.fade_in(scene, [dot]))
+            time.sleep(0.15)
+            run_in_app(lambda: dot.material("#888888", opacity=0.4))
+            time.sleep(1.0)
+            faded = driver.execute_script(read, "fx-dot")
+            assert faded["opacity"] == pytest.approx(0.4), (
+                f"the fade ended on opacity {faded['opacity']}, not Python's 0.4"
+            )
+
+            run_in_app(lambda: SceneFx.pulse(scene, [dot]))
+            time.sleep(0.3)
+            run_in_app(lambda: dot.scale(2.0))
+            # Two waves run about 3.3 s.
+            time.sleep(3.5)
+            rippled = driver.execute_script(read, "fx-dot")
+            assert rippled["scale"] == pytest.approx(2.0), (
+                f"the ripple ended on scale {rippled['scale']}, not Python's 2.0"
+            )
+
+            # The first ripple waits for a model still downloading; the
+            # second, asked for meanwhile, runs past its arrival.
+            async def slow_stl() -> Response:
+                await asyncio.sleep(0.6)
+                return Response(_TRIANGLE_STL, media_type="model/stl")
+
+            ng_app.add_api_route("/test/slow.stl", slow_stl)
+            driver.execute_script("""
+                const canvas = document.querySelector('canvas');
+                const host = canvas.closest('[id^="c"]');
+                let dot = null;
+                getElement(host.id.slice(1)).scene.traverse(o => {
+                  if (o.name === 'fx-dot') dot = o;
+                });
+                // From the first swell (0.4 s into the ripple): the earlier
+                // call gives up about 0.6 s later, and the second wave peaks
+                // 2 s later.
+                const s = window.__ripple = {
+                  start: performance.now(), first: null, late: 0, run: true,
+                };
+                (function sample() {
+                  if (!s.run) return;
+                  const t = s.t = performance.now() - s.start;
+                  const v = dot.scale.x / 2;
+                  if (s.first === null && v > 1.001) s.first = t;
+                  if (s.first !== null && t > s.first + 900 && t < s.first + 2500) {
+                    s.late = Math.max(s.late, v);
+                  }
+                  requestAnimationFrame(sample);
+                })();
+            """)
+
+            def ripple_twice() -> None:
+                with scene:
+                    model = ui.scene.stl("/test/slow.stl").with_name("fx-model")
+                SceneFx.pulse(scene, [model])
+                SceneFx.pulse(scene, [dot])
+
+            run_in_app(ripple_twice)
+            ripple = _poll(
+                screen,
+                "return window.__ripple",
+                lambda r: r["first"] is not None and r["t"] > r["first"] + 2600,
+                10,
+                "the later ripple never started",
+            )
+            assert ripple["late"] > 1.05, (
+                "a ripple asked for earlier stopped the later one when it finished "
+                f"waiting (largest scale in its second wave: {ripple['late']:.3f})"
+            )
+        finally:
+            driver.execute_script("if (window.__ripple) window.__ripple.run = false;")
+
+            def remove() -> None:
+                for obj in list(ui_state.urdf_scene.scene.objects.values()):
+                    if obj.name in ("fx-dot", "fx-model"):
+                        obj.delete()
+
+            run_in_app(remove)
+            driver.execute_cdp_cmd(
+                "Emulation.setEmulatedMedia",
+                {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
+            )
 
     def test_a_keep_out_pops_in_once_and_keeps_its_size_when_redrawn(
         self, class_screen

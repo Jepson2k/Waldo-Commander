@@ -2611,7 +2611,12 @@ class ControlPanel:
                     .classes("joint-readout-input")
                     .mark(f"joint-readout-{idx}")
                 )
-                _num_ref: dict[str, Any] = {"focused": False, "el": num, "shown": None}
+                _num_ref: dict[str, Any] = {
+                    "focused": False,
+                    "el": num,
+                    "edited": False,
+                    "sent": None,
+                }
 
                 def _num_backward(a, i=idx, r=_num_ref) -> float | None:
                     if r["focused"]:
@@ -2624,24 +2629,35 @@ class ControlPanel:
 
                 num.on(
                     "focus",
-                    lambda _e, r=_num_ref: r.update(focused=True, shown=r["el"].value),
+                    lambda _e, r=_num_ref: r.update(
+                        focused=True, edited=False, sent=None
+                    ),
                 )
                 num.on("blur", lambda _e, r=_num_ref: r.__setitem__("focused", False))
                 num.bind_value_from(joints, "angles", backward=_num_backward)
+                # While focused the binding holds the field, so a change is
+                # the user's edit.
+                num.on_value_change(
+                    lambda _e, r=_num_ref: r["focused"] and r.update(edited=True)
+                )
 
-                def _submit_exact(e=None, i=idx, n=num, r=_num_ref):
+                def _submit_exact(retry: bool, i=idx, n=num, r=_num_ref):
                     try:
                         val = float(n.value) if n.value is not None else None
                     except (ValueError, TypeError):
                         val = None
                     # Left as shown, the rounded angle is no target: moving
-                    # to it would nudge the joint by up to 0.05°.
-                    if val is not None and val != r["shown"]:
-                        r["shown"] = val
+                    # to it would nudge the joint by up to 0.05°. Enter
+                    # sends an edit again (a refused move, an arm moved
+                    # since); leaving the field sends it once.
+                    if val is None or not r["edited"]:
+                        return
+                    if retry or val != r["sent"]:
+                        r["sent"] = val
                         _safe_task(self.move_joint_to_angle(i, val))
 
-                num.on("blur", _submit_exact)
-                num.on("keydown.enter", _submit_exact)
+                num.on("blur", lambda _e, submit=_submit_exact: submit(False))
+                num.on("keydown.enter", lambda _e, submit=_submit_exact: submit(True))
 
             with ui.element("div").classes("joint-dial-name-row"):
                 left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")

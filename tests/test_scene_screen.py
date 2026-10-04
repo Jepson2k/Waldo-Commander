@@ -460,6 +460,16 @@ class TestScene:
             raise AssertionError(f"the scene kept drawing at rest ({count} frames)")
 
         at_rest = settled(1.0)
+        # The footer's Waldo moving its eyes is no change to the scene.
+        run_in_app(lambda: ui_state.readout_panel.look((1.0, 0.0, 0.0)))
+        try:
+            looked = settled(1.0)
+        finally:
+            run_in_app(lambda: ui_state.readout_panel.look(None))
+        assert looked == at_rest, (
+            f"the scene drew {looked - at_rest} frames for a glance"
+        )
+        at_rest = settled(1.0)
 
         async def nudge():
             client = waldoctl.commander.client

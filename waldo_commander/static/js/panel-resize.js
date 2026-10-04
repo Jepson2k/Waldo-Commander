@@ -855,9 +855,14 @@
             layoutObserver.observe(element);
             // A transform scales what is published without resizing the
             // box, so a resize can publish a size mid-transition and nothing
-            // would republish the size it settles at.
-            element.addEventListener('transitionend', scheduleLayout);
-            element.addEventListener('transitioncancel', scheduleLayout);
+            // would republish the size it settles at. Transitions inside it
+            // (a blink, a hover) bubble here too and change no layout, and
+            // every publish redraws the scene.
+            const settled = function(e) {
+                if (e.target === element) scheduleLayout();
+            };
+            element.addEventListener('transitionend', settled);
+            element.addEventListener('transitioncancel', settled);
         }
     }
 
