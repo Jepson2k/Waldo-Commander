@@ -43,7 +43,7 @@ from waldo_commander.state import ui_state
 def _clicked(element) -> bool:
     try:
         element.click()
-    except (ElementNotInteractableException, ElementClickInterceptedException):
+    except (ElementClickInterceptedException, ElementNotInteractableException):
         return False
     return True
 

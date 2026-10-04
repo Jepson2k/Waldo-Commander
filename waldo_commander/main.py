@@ -1058,6 +1058,7 @@ def build_page_content() -> None:
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
     ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
     ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
+    ui.add_head_html('<script src="/static/js/live-chart.js" defer></script>')
 
     with ui.column().classes(
         "commander-workspace relative w-screen h-screen overflow-hidden gap-0"

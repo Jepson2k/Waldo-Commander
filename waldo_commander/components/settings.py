@@ -147,14 +147,9 @@ _settings_views: weakref.WeakSet["SettingsContent"] = weakref.WeakSet()
 
 
 def _live_views() -> list["SettingsContent"]:
-    """Settings views whose page still exists. A gone page's view lingers
-    until it is collected: its inputs are deleted, and its lock can be held
-    by a task that will never finish."""
-    return [
-        view
-        for view in _settings_views
-        if view._page is not None and view._page.id in Client.instances
-    ]
+    """Settings views whose page is still up. A view outlives its page until
+    it is collected, and one that went away mid-push never releases its lock."""
+    return [view for view in _settings_views if view._page.id in Client.instances]
 
 
 class SettingsContent:
@@ -162,8 +157,8 @@ class SettingsContent:
 
     def __init__(self, client: RobotClient) -> None:
         self.client = client
+        self._page = context.client
         self.dialog: ui.dialog | None = None
-        self._page: Client | None = None
         self._shortcuts_box: ui.column | None = None
         self._tour_box: ui.column | None = None
         self._tcp_inputs: tuple[str, OffsetInputs, Client] | None = None
@@ -1260,7 +1255,6 @@ class SettingsContent:
         at the end so none of them sits beside a live one.
         """
         prefs = self._load_preferences()
-        self._page = context.client
         context.client.on_disconnect(self._drop_queued_push)
 
         categories: list[tuple[str, str, str, list[Callable[[], None]]]] = []

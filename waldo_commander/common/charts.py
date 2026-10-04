@@ -1,9 +1,19 @@
-"""Readable chart styling and an expanded view of the same observations."""
+"""Readable chart styling, live pushes that send only new samples, and an
+expanded view of the same observations."""
+
+import weakref
+from bisect import bisect_right
+from collections.abc import Sequence
 
 from nicegui import json, ui
 
 from waldo_commander.common.panel_theme import chart_grid, chart_text, joint_colors
 from waldo_commander.common.theme import hex_of
+
+#: Expanded views of a live chart, which receive its pushes too.
+_mirrors: weakref.WeakKeyDictionary[ui.echart, weakref.WeakSet[ui.echart]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def chart_options(
@@ -42,7 +52,42 @@ def chart_options(
     }
 
 
+def fresh_since(timestamps: Sequence[float], after: float) -> int:
+    """Index of the first sample in ``timestamps`` (ascending) newer than ``after``."""
+    return bisect_right(timestamps, after)
+
+
+def push_live(chart: ui.echart, rows: list[list[float | None]], keep: int) -> None:
+    """Append ``rows`` to the chart's series and keep its newest ``keep`` points.
+
+    A row is ``[time, value for series 0, value for series 1, ...]``; ``None``
+    adds nothing to that series. The browser receives the rows alone, not the
+    history, and so does any expanded view of the chart. While an expanded view
+    covers the chart, only the view is drawn.
+    """
+    if not rows:
+        return
+    mirrors = list(_mirrors.get(chart, ()))
+    for target in [chart, *mirrors]:
+        # The props keep the history for a remount, without sending it.
+        with target.props.suspend_updates():
+            for index, series in enumerate(target.options["series"]):
+                data = series["data"]
+                for row in rows:
+                    if index + 1 < len(row) and row[index + 1] is not None:
+                        data.append([row[0], row[index + 1]])
+                if len(data) > keep:
+                    del data[: len(data) - keep]
+    for target in mirrors or [chart]:
+        target.client.run_javascript(
+            f"liveChartAppend({target.id}, {json.dumps(rows)}, {keep})"
+        )
+
+
 def expand_chart_button(chart: ui.echart, title: str) -> ui.button:
+    """A button that opens ``chart`` large in a dialog; a chart fed by
+    :func:`push_live` keeps streaming into it."""
+
     def expand() -> None:
         with (
             ui.dialog() as dialog,
@@ -62,19 +107,17 @@ def expand_chart_button(chart: ui.echart, title: str) -> ui.button:
                 .style("height: min(65vh, 650px)")
             )
 
-            # Only replace data, so focusing a series in this view remains stable.
-            def refresh() -> None:
-                data = {
-                    key: chart.options[key]
-                    for key in ("dataset", "series")
-                    if key in chart.options
-                }
-                expanded.run_chart_method("setOption", data)
-
-            timer = ui.timer(0.3, refresh)
+            _mirrors.setdefault(chart, weakref.WeakSet()).add(expanded)
 
         def close() -> None:
-            timer.cancel()
+            mirrors = _mirrors.get(chart, weakref.WeakSet())
+            mirrors.discard(expanded)
+            if not mirrors:
+                # The chart was covered and not drawn; bring it up to date.
+                history = [series["data"] for series in chart.options["series"]]
+                chart.client.run_javascript(
+                    f"liveChartLoad({chart.id}, {json.dumps(history)})"
+                )
             dialog.delete()
 
         dialog.on("hide", close)
