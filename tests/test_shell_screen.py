@@ -16,6 +16,7 @@ import waldoctl
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
+    TimeoutException,
 )
 from selenium.webdriver.common.action_chains import ActionChains
 from nicegui import Client, core
@@ -654,7 +655,11 @@ class TestShellLayout:
             const control=document.querySelector('.overlay-br');
             const readings=[...footer.querySelectorAll('.pose-cell')];
             const robotName=footer.querySelector('.readout-robot-name');
+            const published = parseFloat(getComputedStyle(document.documentElement)
+                .getPropertyValue('--wc-control-height'));
             return {footer:box(footer), control:box(control), id:control.id,
+                settled:published === Math.ceil(control.getBoundingClientRect().height),
+                published:published, offsetHeight:control.offsetHeight,
                 robotClipped:robotName.scrollWidth > robotName.clientWidth,
                 editor:visible(document.querySelector('.program-panel')),
                 scene:visible(document.querySelector('.nicegui-scene')),
@@ -677,9 +682,25 @@ class TestShellLayout:
             try:
                 for width, height in ((390, 844), (667, 375), (844, 390), (568, 320)):
                     with viewport(screen, width, height, mobile=True):
-                        layout = wait(screen).until(
-                            lambda _: (g := js(screen, measure))["width"] == width and g
-                        )
+                        # The footer is sized from the controls' height, which
+                        # the page publishes a frame after they lay out.
+                        seen: list[dict] = []
+                        try:
+                            layout = wait(screen).until(
+                                lambda _: (
+                                    seen.append(g := js(screen, measure)) is None
+                                    and g["width"] == width
+                                    and g["settled"]
+                                    and g
+                                )
+                            )
+                        except TimeoutException:
+                            last = seen[-1]
+                            raise AssertionError(
+                                f"{width}x{height} never settled: published "
+                                f"{last['published']}, control {last['control']}, "
+                                f"offsetHeight {last['offsetHeight']}"
+                            ) from None
                         assert not layout["editor"] and not layout["scene"], layout
                         assert len(layout["readings"]) == 7, layout
                         assert not layout["robotClipped"], layout
