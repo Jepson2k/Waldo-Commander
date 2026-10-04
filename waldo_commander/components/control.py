@@ -983,9 +983,9 @@ class ControlPanel:
     def apply_jog_inversion(self, axis: str) -> str:
         """Flip an X/Y translation axis string when its invert switch is on.
 
-        Single flip point shared by the arrow slots (via ``_axis_string_for``)
-        and the WASD jog keys, so labels, enablement keys, and motion stay
-        coherent. Rotation axes pass through unchanged.
+        Single flip point for the arrow slots (via ``_axis_string_for``),
+        which the WASD/QE jog keys press too, so labels, enablement keys, and
+        motion stay coherent. Rotation axes pass through unchanged.
         """
         letter = axis[:-1]
         if (letter == "X" and self.invert_x) or (letter == "Y" and self.invert_y):
@@ -1047,6 +1047,22 @@ class ControlPanel:
         """Return CSS class for axis letter using theme tokens."""
         k = ("r" if rotation else "") + letter.lower()
         return self._axis_classes.get(k, "tcp-x")
+
+    # Translation arrows of the cartesian pad: slot -> (assignment, sign).
+    # The WASD/QE jog keys press these same arrows.
+    PAD_TRANSLATION_SLOTS: ClassVar[dict[str, tuple[str, str]]] = {
+        "ud1_up": ("ud1", "-"),
+        "ud1_down": ("ud1", "+"),
+        "lr_neg": ("lr", "+"),
+        "lr_pos": ("lr", "-"),
+        "ud2_up": ("ud2", "+"),
+        "ud2_down": ("ud2", "-"),
+    }
+
+    def pad_axis(self, slot_id: str) -> str:
+        """Axis a translation arrow drives right now, e.g. 'ud1_up' -> 'Y-'."""
+        assign_key, sign = self.PAD_TRANSLATION_SLOTS[slot_id]
+        return self._axis_string_for(assign_key, sign)
 
     def _axis_string_for(
         self, assign_key: str, sign: str, rotation: bool = False
@@ -1120,6 +1136,7 @@ class ControlPanel:
         self._cart_assignment["lr"] = (lr or "Y").upper()
         self._cart_assignment["ud2"] = (ud2 or "Z").upper()
         self._refresh_cartesian_icons()
+        refresh_jog_key_descriptions(self)
 
     def _refresh_cartesian_icons(self) -> None:
         """Re-derive label text, color class, and marker for every slot; update axis->element mapping."""
@@ -2726,13 +2743,23 @@ class ControlPanel:
                     .style("place-items: center")
                 ):
                     # Row 1:    [UD2+, UD1-, empty, RUD2+, empty, RUD1+, empty]
-                    _add_slot("ud2_up", "arrow-small-up-cropped.svg", "ud2", "+", False)
+                    _add_slot(
+                        "ud2_up",
+                        "arrow-small-up-cropped.svg",
+                        *self.PAD_TRANSLATION_SLOTS["ud2_up"],
+                        False,
+                    )
                     # Z chevrons hug the column's outer edge, keeping a clear
                     # gap to the XY arrow pad beside them.
                     self._cart_slot_elems["ud2_up"].classes(
                         "justify-self-start cart-z-top"
                     )
-                    _add_slot("ud1_up", "arrow-small-up.svg", "ud1", "-", False)
+                    _add_slot(
+                        "ud1_up",
+                        "arrow-small-up.svg",
+                        *self.PAD_TRANSLATION_SLOTS["ud1_up"],
+                        False,
+                    )
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_plus", "curved-arrow-down.svg", "ud2", "+", True)
                     ui.element("div").style("width:30px;height:30px")  # empty
@@ -2740,9 +2767,19 @@ class ControlPanel:
                     ui.element("div").style("width:30px;height:30px")  # empty
 
                     # Row 2:    [LR+, empty, LR-, empty, empty, RLR+, empty, RLR-]
-                    _add_slot("lr_neg", "arrow-small-left.svg", "lr", "+", False)
+                    _add_slot(
+                        "lr_neg",
+                        "arrow-small-left.svg",
+                        *self.PAD_TRANSLATION_SLOTS["lr_neg"],
+                        False,
+                    )
                     ui.element("div").style("width:30px;height:30px")  # center empty
-                    _add_slot("lr_pos", "arrow-small-right.svg", "lr", "-", False)
+                    _add_slot(
+                        "lr_pos",
+                        "arrow-small-right.svg",
+                        *self.PAD_TRANSLATION_SLOTS["lr_pos"],
+                        False,
+                    )
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_lr_plus", "curved-arrow-right.svg", "lr", "+", True)
                     ui.element("div").style("width:30px;height:30px")  # empty
@@ -2750,12 +2787,20 @@ class ControlPanel:
 
                     # Row 3:    [UD2-, UD1+, empty, RUD2-, empty, RUD1-, empty]
                     _add_slot(
-                        "ud2_down", "arrow-small-down-cropped.svg", "ud2", "-", False
+                        "ud2_down",
+                        "arrow-small-down-cropped.svg",
+                        *self.PAD_TRANSLATION_SLOTS["ud2_down"],
+                        False,
                     )
                     self._cart_slot_elems["ud2_down"].classes(
                         "justify-self-start cart-z-bottom"
                     )
-                    _add_slot("ud1_down", "arrow-small-down.svg", "ud1", "+", False)
+                    _add_slot(
+                        "ud1_down",
+                        "arrow-small-down.svg",
+                        *self.PAD_TRANSLATION_SLOTS["ud1_down"],
+                        False,
+                    )
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_minus", "curved-arrow-up.svg", "ud2", "-", True)
                     ui.element("div").style("width:30px;height:30px")  # empty
