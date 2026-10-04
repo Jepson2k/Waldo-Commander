@@ -249,6 +249,25 @@ def _poll(screen, script: str, predicate, timeout: float, what: str, *args):
     raise AssertionError(f"{what}; last value: {value!r}")
 
 
+def _held(
+    screen, script: str, predicate, hold_s: float, timeout: float, what: str, *args
+):
+    """The script's value once *predicate* has held for *hold_s*."""
+    deadline = time.time() + timeout
+    since = None
+    value = None
+    while time.time() < deadline:
+        value = screen.selenium.execute_script(script, *args)
+        if value is not None and predicate(value):
+            since = since or time.time()
+            if time.time() - since >= hold_s:
+                return value
+        else:
+            since = None
+        time.sleep(0.05)
+    raise AssertionError(f"{what}; last value: {value!r}")
+
+
 @pytest.mark.browser
 class TestAnimations:
     def test_waldo_blinks_follows_the_jog_and_startles_on_estop(
@@ -707,20 +726,31 @@ class TestAnimations:
             run_in_app(lambda: SceneFx.fade_in(scene, [dot]))
             time.sleep(0.15)
             run_in_app(lambda: dot.material("#888888", opacity=0.4))
-            time.sleep(1.0)
-            faded = driver.execute_script(read, "fx-dot")
-            assert faded["opacity"] == pytest.approx(0.4), (
-                f"the fade ended on opacity {faded['opacity']}, not Python's 0.4"
+            # Mid-fade the opacity is below what it fades to, so it is
+            # Python's only once the fade has ended on it.
+            _held(
+                screen,
+                read,
+                lambda v: v["opacity"] == pytest.approx(0.4),
+                0.3,
+                5,
+                "the fade never ended on Python's opacity 0.4",
+                "fx-dot",
             )
 
             run_in_app(lambda: SceneFx.pulse(scene, [dot]))
             time.sleep(0.3)
             run_in_app(lambda: dot.scale(2.0))
-            # Two waves run about 3.3 s.
-            time.sleep(3.5)
-            rippled = driver.execute_script(read, "fx-dot")
-            assert rippled["scale"] == pytest.approx(2.0), (
-                f"the ripple ended on scale {rippled['scale']}, not Python's 2.0"
+            # Between waves the scale rests on its own for about 0.8 s, so
+            # one held longer than that is where the ripple ended.
+            _held(
+                screen,
+                read,
+                lambda v: v["scale"] == pytest.approx(2.0),
+                1.2,
+                10,
+                "the ripple never ended on Python's scale 2.0",
+                "fx-dot",
             )
 
             # The first ripple waits for a model still downloading; the
