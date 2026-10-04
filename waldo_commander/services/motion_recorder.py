@@ -1,5 +1,6 @@
 """Motion recorder for capturing robot actions as code during teaching."""
 
+import ast
 import asyncio
 import contextlib
 import logging
@@ -136,6 +137,19 @@ def move_snippet(
     return f"rbt.{method}([{vals}], speed={speed}, accel={accel}{r}{wait_str}){tail}"
 
 
+def _module_scope_imports(tree: ast.Module) -> Iterator[ast.Import | ast.ImportFrom]:
+    """Import statements that bind in the module's namespace, where recorded
+    lines run: those inside a function or class body bind only there."""
+    pending: list[ast.AST] = list(tree.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            yield node
+        pending.extend(ast.iter_child_nodes(node))
+
+
 def _imported_waldoctl_names(text: str) -> set[str]:
     """Names bound by plain ``from waldoctl import X`` statements in *text*.
 
@@ -144,14 +158,12 @@ def _imported_waldoctl_names(text: str) -> set[str]:
     name). An unparseable program yields the empty set: prepending an import
     that turns out redundant is harmless, omitting a needed one is a NameError.
     """
-    import ast
-
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return set()
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in _module_scope_imports(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "waldoctl":
             names.update(a.name for a in node.names if a.asname is None)
     return names
@@ -161,15 +173,13 @@ def _imported_modules(text: str) -> set[str]:
     """Modules bound under their own name by plain ``import X`` statements
     in *text*; an unparseable program yields the empty set, for the reason
     :func:`_imported_waldoctl_names` gives."""
-    import ast
-
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return set()
     return {
         alias.name
-        for node in ast.walk(tree)
+        for node in _module_scope_imports(tree)
         if isinstance(node, ast.Import)
         for alias in node.names
         if alias.asname is None
