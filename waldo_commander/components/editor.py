@@ -53,9 +53,11 @@ from waldo_commander.services.programs import (
     insert_below_line,
     is_any_program_recording,
     is_any_program_running,
+    preview_is_current,
 )
 from waldo_commander.services.python_source import (
     SetupBinding,
+    delete_statement,
     loads_setup,
     preamble_statements,
     program_setup,
@@ -270,8 +272,7 @@ class EditorPanel(FileOperationsMixin):
             logger.warning("Sync failed: Target %s not found", target_id)
             return
 
-        content = current_value
-        lines = content.splitlines()
+        lines = current_value.split("\n")
         found_line_idx = line_number - 1
 
         if found_line_idx < 0 or found_line_idx >= len(lines):
@@ -539,37 +540,35 @@ class EditorPanel(FileOperationsMixin):
         line_number = textarea.line_anchors.get(target_id) if textarea else None
         if line_number is not None:
             return line_number
-        # Only a mounted editor reports anchors; with the program column closed
-        # the last preview's line is the only one there is.
+        # Only a mounted editor reports anchors. Without one the last preview's
+        # line stands in, but only until an edit moves lines under it.
         tab = waldoctl.commander.programs.active
-        targets = tab.dry_run.targets if tab is not None else []
-        return next((t.line_number for t in targets if t.id == target_id), None)
+        if tab is None or not preview_is_current(tab):
+            return None
+        return next(
+            (t.line_number for t in tab.dry_run.targets if t.id == target_id), None
+        )
 
     def delete_target_code(self, target_id: str) -> None:
-        """Delete the code line corresponding to the target and re-simulate.
-
-        Uses CM6 StateField position tracking to find the line.
-        """
+        """Delete the statement a target sits on; the edit re-simulates."""
         textarea = ui_state.active_textarea
-        if not textarea:
+        tab = waldoctl.commander.programs.active
+        if not textarea or tab is None:
             return
 
         line_number = self._target_line(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
-
-        content = textarea.value or ""
-        lines = content.splitlines()
-        line_idx = line_number - 1
-
-        if 0 <= line_idx < len(lines):
-            del lines[line_idx]
-            textarea.value = "\n".join(lines)
-            logger.info("Deleted target %s from code (line %d)", target_id, line_number)
-            # Re-simulation will trigger automatically via debounced on_change
-        else:
-            logger.warning("Target %s line %d out of range", target_id, line_number)
+        try:
+            textarea.value = delete_statement(textarea.value or "", line_number)
+        except ValueError as error:
+            logger.warning("Target %s not deleted: %s", target_id, error)
+            return
+        logger.info("Deleted target %s from code (line %d)", target_id, line_number)
+        # Its marker would offer the deleted move until the re-preview lands.
+        tab.dry_run.targets = [t for t in tab.dry_run.targets if t.id != target_id]
+        simulation_state.notify_changed()
 
     def add_target_code(self, pose: list[float], move_type: str) -> int | None:
         """Add a move command to the editor.
