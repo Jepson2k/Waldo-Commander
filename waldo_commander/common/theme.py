@@ -839,6 +839,8 @@ html, body {
    shows ticks at the jog step and the jog caps either side of its name, clear
    of the ring. */
 .joint-dials { padding: var(--wc-space-2) 0; }
+/* Room around the dials where the screen has it to spare. */
+@media (min-height: 600px) { .joint-dials { padding: var(--wc-space-3) 0; } }
 .joint-dial-cell {
   width: var(--wc-size-joint-dial);
   position: relative;
@@ -906,7 +908,7 @@ html, body {
 .joint-dial-name-row {
   position: relative;
   max-width: 100%;
-  margin-top: 2px;
+  margin-top: var(--wc-space-1);
 }
 .joint-dial-name {
   max-width: 100%;

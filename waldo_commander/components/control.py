@@ -2730,7 +2730,13 @@ class ControlPanel:
         )
         with chip:
             tooltip = ui.tooltip(storage_key.replace("_", " ").title())
-            with ui.menu().classes("level-menu").mark(f"menu-{marker}") as menu:
+            # Beside the chip, in its row, rather than over the controls below.
+            with (
+                ui.menu()
+                .props('anchor="center right" self="center left" :offset="[6, 0]"')
+                .classes("level-menu")
+                .mark(f"menu-{marker}") as menu
+            ):
                 rating = (
                     ui.rating(max=10, icon="circle", size="16px", value=v_init)
                     .props("color=wc-progress")

@@ -177,12 +177,15 @@ class TestShellLayout:
                 const panels = document.querySelector('.cp-jog-panels').getBoundingClientRect();
                 const cells = [...document.querySelectorAll('.joint-dial-cell')].map(c => c.getBoundingClientRect());
                 if (!cells.length) return null;
-                return {panelsHeight: panels.height,
-                        dialsHeight: Math.max(...cells.map(c => c.bottom)) - panels.top};
+                return {above: Math.min(...cells.map(c => c.top)) - panels.top,
+                        below: panels.bottom - Math.max(...cells.map(c => c.bottom))};
                 """,
             )
         )
-        assert sizes["panelsHeight"] <= sizes["dialsHeight"] + 8, sizes
+        # A little room either side of the dials, the same above as below,
+        # and no empty band.
+        assert 4 <= sizes["below"] <= 16, sizes
+        assert abs(sizes["above"] - sizes["below"]) <= 2, sizes
 
     def test_a_hovered_dial_magnifies_in_place_with_its_caps_beside_the_name(
         self, class_screen
@@ -289,7 +292,7 @@ class TestShellLayout:
             "but its dial does not show it on the Joint tab",
         )
 
-    def test_an_open_level_menu_is_not_covered_by_its_tooltip(
+    def test_an_open_level_menu_sits_beside_its_chip_clear_of_its_tooltip(
         self, class_screen
     ) -> None:
         screen = class_screen
@@ -308,6 +311,21 @@ class TestShellLayout:
                 lambda _: js(screen, NO_TOOLTIP),
                 message="the tooltip stays over the open rating menu",
             )
+            # In the chip's own row, to its right, not over the controls below.
+            spots = js(
+                screen,
+                """
+                const box = e => e.getBoundingClientRect();
+                const chip = box(arguments[0]);
+                const menu = box(arguments[1].closest('.q-menu'));
+                return {chipRight: chip.right, chipMid: (chip.top + chip.bottom) / 2,
+                        menuLeft: menu.left, menuMid: (menu.top + menu.bottom) / 2};
+                """,
+                marked_element(screen, "chip-jog-speed"),
+                marked_element(screen, "rating-jog-speed"),
+            )
+            assert spots["menuLeft"] >= spots["chipRight"] - 1, spots
+            assert abs(spots["menuMid"] - spots["chipMid"]) <= 4, spots
         finally:
 
             def close_menu() -> None:
