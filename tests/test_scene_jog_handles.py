@@ -208,8 +208,12 @@ async def test_hover_reveals_one_handle_at_a_time_and_the_grace_hides_it(
         "hits": [],
         "intersections": {},
     }
+    # What the browser sends for a right-click: the press, the scene's hits,
+    # and a release that has not moved.
+    page = UserInteraction(user, {urdf.scene.client.layout}, None)
+    page.trigger("wc_right_press", {})
     scene.trigger("click3d", {**click, "click_type": "contextmenu"})
-    scene.trigger("click3d", {**click, "click_type": "mouseup"})
+    page.trigger("wc_right_release", {"moved": 0.0})
     user.find(marker="scene-target-at-robot").click()
     assert await wait_until(lambda: waldoctl.commander.status.editing_mode, 5)
     _hover(user, urdf, "L2")

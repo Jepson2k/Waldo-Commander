@@ -66,7 +66,7 @@ class EditingMixin(ShapeEditingMixin):
     _editing_rotation: list[float]
     _editing_rotation_set: bool
     _editing_target_id: str | None
-    _right_click_start_pos: tuple[float, float] | None
+    _right_release_moved: float | None
 
     # Methods from other mixins / main class
     set_editing_angles: Any
@@ -91,7 +91,7 @@ class EditingMixin(ShapeEditingMixin):
 
         self.context_menu: Any | None = None
         self._last_click_coords: tuple[float, float, float] | None = None
-        self._right_click_start_pos: tuple[float, float] | None = None
+        self._right_release_moved: float | None = None
         self._right_click_drag_threshold: float = 5.0
         self._pending_context_menu_event: Any | None = None
 

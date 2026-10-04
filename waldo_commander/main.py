@@ -297,7 +297,7 @@ async def initialize_urdf_scene() -> None:
         background_color=scene_config.background_color,
     )
     if ui_state.urdf_scene.scene:
-        _attach_scene_framing(ui_state.urdf_scene.scene)
+        _attach_scene_scripts(ui_state.urdf_scene.scene)
 
     # Align TCP and load tool mesh from the controller's active tool.
     try:
@@ -352,13 +352,19 @@ async def initialize_urdf_scene() -> None:
         ui_state.urdf_scene.set_simulator_appearance(True)
 
 
-def _attach_scene_framing(scene: ui.scene) -> None:
-    """Frame the camera on the part of the view the column and footer leave clear.
+def _attach_scene_scripts(scene: ui.scene) -> None:
+    """Frame the camera on the part of the view the column and footer leave
+    clear, and tell right-drags from right-clicks.
 
     Registered before the page yields, so it catches the first init; a remount
-    after WebGL context loss inits again with a new camera.
+    after WebGL context loss inits again with a new camera and canvas.
     """
-    scene.on("init", lambda: ui.run_javascript(f"SceneFraming.attach({scene.id})"))
+    scene.on(
+        "init",
+        lambda: ui.run_javascript(
+            f"SceneFraming.attach({scene.id}); SceneRightDrag.attach({scene.id})"
+        ),
+    )
 
 
 async def start_controller(com_port: str | None) -> None:
@@ -1054,6 +1060,7 @@ def build_page_content() -> None:
 
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
     ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
+    ui.add_head_html('<script src="/static/js/scene-right-drag.js" defer></script>')
     ui.add_head_html('<script src="/static/js/live-chart.js" defer></script>')
 
     with ui.column().classes(

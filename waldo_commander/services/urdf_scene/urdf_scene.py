@@ -27,6 +27,7 @@ import numpy as np
 import waldoctl
 from nicegui import app, ui
 from nicegui.elements.scene.scene_object3d import Object3D
+from nicegui.events import GenericEventArguments
 from scipy.spatial.transform import Rotation
 from waldoctl import LinearMotion, MeshRole, PartMotion, RotaryMotion
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, TOOL_PREFIX, pose_matrix
@@ -439,7 +440,7 @@ class UrdfScene(
                     hover_opacity=0.2,
                     hover_scale=1.5,
                     on_click=self._handle_scene_click,
-                    click_events=["mouseup", "contextmenu"],
+                    click_events=["contextmenu"],
                 )
                 # ui.scene sizes its canvas once, shortly after mount, from
                 # whatever height this element resolves to at that instant, and
@@ -508,6 +509,8 @@ class UrdfScene(
             # Continuous events drive live ghost robot updates.
             self.scene.on_transform(self._handle_transform_continuous)
             self._register_hover_sources()
+            ui.on("wc_right_press", self._on_right_press)
+            ui.on("wc_right_release", self._on_right_release)
 
     def _handle_transform_continuous(self, e) -> None:
         """Handle continuous transform events for TCP ball and joint controls.
@@ -599,41 +602,31 @@ class UrdfScene(
         if object_name.startswith("shape:"):
             self._on_shape_transform(e)
 
-    @staticmethod
-    def _screen_pos(evt) -> tuple[float, float]:
-        """Extract screen position from event, falling back to client coords."""
-        sx = getattr(evt, "screen_x", None)
-        sy = getattr(evt, "screen_y", None)
-        if sx is not None and sy is not None:
-            return float(sx), float(sy)
-        return float(getattr(evt, "client_x", 0)), float(getattr(evt, "client_y", 0))
-
     def _handle_scene_click(self, e) -> None:
-        """Open the scene menu on a right-click, but not after a right-drag."""
-        click_type = getattr(e, "click_type", "")
-
-        if click_type == "contextmenu":
-            # Record position/event now; whether to populate (and thus show) the
-            # menu is decided on mouseup based on drag distance.
-            self._right_click_start_pos = self._screen_pos(e)
+        """Keep a right-click's hits for the menu it may open."""
+        if getattr(e, "click_type", "") == "contextmenu":
             self._pending_context_menu_event = e
+            self._settle_right_click()
 
-        elif click_type == "mouseup":
-            button = getattr(e, "button", 0)
-            if button == 2 and self._right_click_start_pos is not None:
-                screen_x, screen_y = self._screen_pos(e)
-                start_x, start_y = self._right_click_start_pos
-                distance = math.hypot(screen_x - start_x, screen_y - start_y)
+    def _on_right_press(self, _e: GenericEventArguments) -> None:
+        self._pending_context_menu_event = None
+        self._right_release_moved = None
 
-                self._right_click_start_pos = None
+    def _on_right_release(self, e: GenericEventArguments) -> None:
+        self._right_release_moved = float(e.args["moved"])
+        self._settle_right_click()
 
-                # A simple click populates (shows) the menu; a drag leaves it
-                # empty so it stays hidden.
-                if distance <= self._right_click_drag_threshold:
-                    if self._pending_context_menu_event:
-                        self._populate_context_menu(self._pending_context_menu_event)
-
-                self._pending_context_menu_event = None
+    def _settle_right_click(self) -> None:
+        """Fill the menu for a right-click, and leave it empty, so hidden, for a
+        right-drag. Browsers send the contextmenu event on press or on release,
+        so the menu waits for both."""
+        event, moved = self._pending_context_menu_event, self._right_release_moved
+        if event is None or moved is None:
+            return
+        self._pending_context_menu_event = None
+        self._right_release_moved = None
+        if moved <= self._right_click_drag_threshold:
+            self._populate_context_menu(event)
 
     def _update_simulation_view(self) -> None:
         """Update simulation visualization (paths, etc.) based on state."""
