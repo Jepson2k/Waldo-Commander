@@ -424,6 +424,56 @@ class TestScene:
                 " = window.__viewHelperRender;",
             )
 
+    def test_the_scene_draws_only_when_something_in_it_moves(
+        self, class_screen: Screen
+    ) -> None:
+        """Where WebGL is software-rendered a frame takes ~170 ms, so a
+        scene redrawn while nothing changes pins the page. At rest it draws
+        nothing; the arm moving draws."""
+        screen = class_screen
+        screen_wait_for_scene_ready(screen)
+        frames = (
+            "return getElement(document.querySelector('.nicegui-scene'))"
+            ".renderer.info.render.frame"
+        )
+        assert core.loop is not None
+
+        async def ready():
+            client = waldoctl.commander.client
+            assert await client.simulator(True) == 1
+            assert await client.reset() == 1
+            assert await client.wait_command(await client.home(), timeout=15)
+
+        asyncio.run_coroutine_threadsafe(ready(), core.loop).result(30)
+
+        def settled(window_s: float) -> int:
+            """The frame count once it has held for *window_s*."""
+            deadline = time.monotonic() + 15
+            count = js(screen, frames)
+            since = time.monotonic()
+            while time.monotonic() < deadline:
+                time.sleep(0.1)
+                now = js(screen, frames)
+                if now != count:
+                    count, since = now, time.monotonic()
+                elif time.monotonic() - since >= window_s:
+                    return count
+            raise AssertionError(f"the scene kept drawing at rest ({count} frames)")
+
+        at_rest = settled(1.0)
+
+        async def nudge():
+            client = waldoctl.commander.client
+            q = list(await client.angles())
+            q[0] += 3.0
+            assert await client.wait_command(
+                await client.move_j(q, duration=0.6), timeout=10
+            )
+
+        asyncio.run_coroutine_threadsafe(nudge(), core.loop).result(15)
+        moved = settled(0.5)
+        assert moved > at_rest + 2, (at_rest, moved)
+
     def test_zoomed_out_the_fog_starts_beyond_the_robot(
         self, class_screen: Screen
     ) -> None:
