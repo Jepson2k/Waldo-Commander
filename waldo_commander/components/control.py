@@ -2572,7 +2572,7 @@ class ControlPanel:
                     .classes("joint-readout-input")
                     .mark(f"joint-readout-{idx}")
                 )
-                _num_ref: dict[str, Any] = {"focused": False, "el": num}
+                _num_ref: dict[str, Any] = {"focused": False, "el": num, "shown": None}
 
                 def _num_backward(a, i=idx, r=_num_ref) -> float | None:
                     if r["focused"]:
@@ -2583,16 +2583,22 @@ class ControlPanel:
                     # within it leaves the field, and its websocket, alone.
                     return round(float(a[i]), 1)
 
-                num.on("focus", lambda _e, r=_num_ref: r.__setitem__("focused", True))
+                num.on(
+                    "focus",
+                    lambda _e, r=_num_ref: r.update(focused=True, shown=r["el"].value),
+                )
                 num.on("blur", lambda _e, r=_num_ref: r.__setitem__("focused", False))
                 num.bind_value_from(joints, "angles", backward=_num_backward)
 
-                def _submit_exact(e=None, i=idx, n=num):
+                def _submit_exact(e=None, i=idx, n=num, r=_num_ref):
                     try:
                         val = float(n.value) if n.value is not None else None
                     except (ValueError, TypeError):
                         val = None
-                    if val is not None:
+                    # Left as shown, the rounded angle is no target: moving
+                    # to it would nudge the joint by up to 0.05°.
+                    if val is not None and val != r["shown"]:
+                        r["shown"] = val
                         _safe_task(self.move_joint_to_angle(i, val))
 
                 num.on("blur", _submit_exact)
