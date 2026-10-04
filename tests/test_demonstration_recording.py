@@ -601,3 +601,14 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
     assert set_positions(gripping([1.0] * 6 + [0.7, None, 0.3, 0.0] + [0.0] * 10)) == [
         "0.000"
     ]
+    # Still closing as the arm comes to rest at sample 20: set once, where it
+    # settled during the hold, not also where the motion ended.
+    arriving = gripping([1.0] * 16 + ramp + [0.0] * 20)
+    arriving = replace(
+        arriving,
+        samples=tuple(
+            replace(s, joints_deg=(90.0 + 0.5 * min(n, 20), *s.joints_deg[1:]))
+            for n, s in enumerate(arriving.samples)
+        ),
+    )
+    assert set_positions(arriving) == ["0.000"]
