@@ -9,6 +9,7 @@ it runs last.
 
 import asyncio
 import math
+import time
 
 import pytest
 import waldoctl
@@ -168,6 +169,39 @@ def _wait_view(screen, predicate) -> dict:
 @pytest.mark.browser
 @skip_webgl_macos_ci
 class TestShellLayout:
+    def test_the_scene_redraws_sparingly_behind_a_dialog(self, class_screen) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        frames = (
+            "const el = document.querySelector('.nicegui-scene');"
+            "return getElement(el).renderer.info.render.frame;"
+        )
+
+        def frames_in_a_second() -> int:
+            start = js(screen, frames)
+            time.sleep(1.0)
+            return js(screen, frames) - start
+
+        dialog = ui_state.settings_content.dialog
+        assert dialog is not None
+        run_in_app(dialog.open)
+        try:
+            wait(screen, 5).until(
+                lambda _: js(
+                    screen, "return !!document.querySelector('.q-dialog__backdrop')"
+                )
+            )
+            covered = frames_in_a_second()
+        finally:
+            run_in_app(dialog.close)
+        wait(screen, 5).until(
+            lambda _: js(
+                screen, "return !document.querySelector('.q-dialog__backdrop')"
+            )
+        )
+        # Each drawn frame is two render calls: the scene, then its axis helper.
+        assert covered <= 10, f"{covered} render calls in a second behind the dialog"
+
     def test_the_joint_tab_is_as_tall_as_its_dials(self, class_screen) -> None:
         screen_wait_for_scene_ready(class_screen, timeout_s=40.0)
         sizes = wait(class_screen).until(
