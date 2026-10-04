@@ -97,11 +97,12 @@ class SceneFx:
 
     @staticmethod
     def pulse(scene: ui.scene, objects: Iterable[Any]) -> None:
-        """Ripple *objects* in order until the next call; empty stops it."""
+        """Ripple *objects* in order for a few waves; the next call replaces
+        them, and an empty one stops it."""
         ids = [obj.id for obj in objects]
         _run(scene, f"SceneFx.pulse({scene.id}, {json.dumps(ids)})")
 
     @staticmethod
-    def ease_camera(scene: ui.scene, duration: float) -> None:
-        """Ease the ``move_camera`` tween of *duration* seconds that was just started."""
-        _run(scene, f"SceneFx.easeCamera({scene.id}, {round(duration * 1000)})")
+    def ease_camera(scene: ui.scene) -> None:
+        """Ease the ``move_camera`` tween that was just started."""
+        _run(scene, f"SceneFx.easeCamera({scene.id})")

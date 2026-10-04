@@ -53,6 +53,17 @@ def mount_js(root: ui.element, mood: RobotFace, **opts: object) -> str:
     )
 
 
+class _GuestRoot(ui.element):
+    """A guest face's mount, which the page lets go of with it."""
+
+    def _handle_delete(self) -> None:
+        if self.client.has_socket_connection:
+            self.client.run_javascript(
+                face_js(f"WaldoFace.forget({json.dumps(self.html_id)});")
+            )
+        super()._handle_delete()
+
+
 def waldo(
     mood: RobotFace,
     *,
@@ -68,7 +79,7 @@ def waldo(
     it). *hold* sets held states such as ``{"estop": True}``; *react* plays
     one reaction once the face is up."""
     root = (
-        ui.element("div")
+        _GuestRoot("div")
         .classes(f"robot-face robot-face-{mood.value} waldo-guest text-wc-{color}")
         .style(f"width: {size}px; height: {size}px; --face-cut: var(--wc-{cut})")
     )

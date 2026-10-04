@@ -137,6 +137,8 @@ class _EStopManager:
             self._dialog = ui.dialog()
             self._is_physical = is_physical
             self._dialog.props("persistent")
+            # A new dialog per E-STOP: each closed one goes with its Waldo.
+            self._dialog.on("hide", self._dialog.delete)
 
             with (
                 self._dialog,
@@ -3099,7 +3101,7 @@ class ControlPanel:
                     if ui_state.urdf_scene and ui_state.urdf_scene.scene:
                         scene = ui_state.urdf_scene.scene
                         scene.move_camera(**DEFAULT_CAMERA, duration=0.8)
-                        SceneFx.ease_camera(scene, 0.8)
+                        SceneFx.ease_camera(scene)
                 except Exception as e:
                     logger.error("Reset camera failed: %s", e)
 

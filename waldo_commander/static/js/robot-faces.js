@@ -1067,7 +1067,9 @@ const POP_IN = [
 
 /* Faces mounted by element id, re-mounted whenever their element (re)enters
  * the DOM: a face in a closed panel or an unopened dialog is not rendered
- * yet, and closing a panel throws its face away. */
+ * yet, and closing a panel throws its face away. An id stays until the page
+ * deletes its element (WaldoFace.forget), and the page is watched only
+ * while an id is held. */
 const _registry = new Map(); // root id -> { mood, opts }
 let _mountQueued = false;
 
@@ -1146,6 +1148,15 @@ window.WaldoFace = {
     _observer.observe(document.body, { childList: true, subtree: true });
     mountRegistered();
     return null;
+  },
+
+  /** Let go of the face mounted by id *root*: its element was deleted. */
+  forget(root) {
+    _registry.delete(root);
+    const el = document.getElementById(root);
+    const r = el && _faces.get(el);
+    if (r) r.stop();
+    if (!_registry.size) _observer.disconnect();
   },
 
   /** Play a one-shot reaction on the face inside *root*. */

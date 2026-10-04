@@ -277,6 +277,21 @@ class TestAnimations:
             "face did not settle after the E-STOP reset",
             _FOOTER,
         )
+
+        # Every E-STOP builds its own dialog; a closed one goes with its Waldo.
+        def estop_cards() -> int:
+            from nicegui import Client
+
+            return sum(
+                "estop-card" in element.classes
+                for client in Client.instances.values()
+                for element in list(client.elements.values())
+            )
+
+        deadline = time.monotonic() + 5
+        while run_in_app(estop_cards) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert run_in_app(estop_cards) == 0, "the closed E-STOP dialog was kept"
         screen.selenium.execute_script(_WATCH_BLINK_JS)
         _poll(
             screen,
@@ -501,6 +516,56 @@ class TestAnimations:
             assert state["sampled"]["minScale"] < 0.5, (
                 "markers appeared without popping in"
             )
+
+            # The editor cursor on the path's line ripples its cones for a few
+            # waves, and then the scene stops drawing again.
+            driver.execute_script("window.__fx.maxScale = 0;")
+            driver.execute_script("""
+                const canvas = document.querySelector('canvas');
+                const comp = getElement(canvas.closest('[id^="c"]').id.slice(1));
+                let paths = null;
+                comp.scene.traverse(o => { if (o.name === 'simulation:paths') paths = o; });
+                (function sample() {
+                  if (!window.__fx.run) return;
+                  paths.traverse(o => {
+                    if (o !== paths && o.isMesh)
+                      window.__fx.maxScale = Math.max(window.__fx.maxScale, o.scale.x);
+                  });
+                  requestAnimationFrame(sample);
+                })();
+            """)
+
+            def _cursor_on_path() -> None:
+                from waldo_commander.state import ui_state
+
+                program = waldoctl.commander.programs.active
+                assert program is not None and ui_state.urdf_scene is not None
+                program.dry_run.playback.active_cursor_line = 1
+                ui_state.urdf_scene.update_cursor_line_highlight()
+
+            run_in_app(_cursor_on_path)
+            _poll(
+                screen,
+                "return window.__fx.maxScale",
+                lambda m: m > 1.2,
+                5,
+                "the cursor's line did not ripple",
+            )
+            frames = """
+                const canvas = document.querySelector('canvas');
+                return getElement(canvas.closest('[id^="c"]').id.slice(1))
+                  .renderer.info.render.frame;
+            """
+            deadline = time.monotonic() + 10
+            count, since = driver.execute_script(frames), time.monotonic()
+            while time.monotonic() - since < 1.0:
+                assert time.monotonic() < deadline, (
+                    f"the scene kept drawing after the ripple ({count} frames)"
+                )
+                time.sleep(0.1)
+                now = driver.execute_script(frames)
+                if now != count:
+                    count, since = now, time.monotonic()
         finally:
             driver.execute_script("window.__fx.run = false;")
             driver.execute_cdp_cmd(
@@ -582,6 +647,30 @@ class TestAnimations:
             assert redrawn["minScale"] > 0.99, (
                 f"the resized keep-out shrank to {redrawn['minScale']:.3f} and "
                 "popped back in"
+            )
+
+            # A collision flash starting part-way through another still ends
+            # on the box's own glow, not the first flash's in-between red.
+            glow = """
+                const canvas = document.querySelector('canvas');
+                const host = canvas.closest('[id^="c"]');
+                let box = null;
+                getElement(host.id.slice(1)).scene.traverse(o => {
+                  if (o.name === 'shape:fx-box') box = o;
+                });
+                if (arguments[0]) {
+                  const id = Number(host.id.slice(1));
+                  SceneFx.alarm(id, [box.object_id], '#ff0000');
+                  setTimeout(() => SceneFx.alarm(id, [box.object_id], '#ff0000'), 200);
+                }
+                return box.material.emissive.getHex();
+            """
+            own = driver.execute_script(glow, True)
+            time.sleep(1.5)
+            left = driver.execute_script(glow, False)
+            assert left == own, (
+                f"overlapping flashes left the keep-out glowing #{left:06x}, "
+                f"not its own #{own:06x}"
             )
         finally:
             driver.execute_script("window.__box.run = false;")

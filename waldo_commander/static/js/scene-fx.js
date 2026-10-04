@@ -7,7 +7,8 @@
  *
  * The scene draws only when asked, so while a one-shot effect runs its
  * scene is redrawn on every animation frame, and whatever changes an object
- * outside that (a ripple, a restore) asks for a frame.
+ * outside that (a ripple, a restore) asks for a frame. A ripple runs a few
+ * waves and stops, so the scene goes back to drawing nothing.
  */
 (function () {
   const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -23,10 +24,38 @@
 
   /* ---- One frame loop for every scene ---- */
   const tweens = new Set();
-  const pulses = new Map(); // scene element id -> [{ mesh, base, phase }]
-  const restScale = new WeakMap(); // mesh -> its own scale while a pop-in runs
+  const pulses = new Map(); // scene element id -> { items: [{ mesh, base, phase }], start, until }
   const rushUntil = new Map(); // scene element id -> when its one-shot effects end
   let raf = 0;
+
+  // A ripple wave: sin(t / RIPPLE_RATE), staggered RIPPLE_STAGGER per object.
+  const RIPPLE_RATE = 260;
+  const RIPPLE_STAGGER = 0.55;
+  const RIPPLE_WAVES = 2;
+
+  /* An animated property's own value, kept while any effect on it runs: an
+   * effect starting part-way through another returns to this value, not to
+   * the other's in-between one. */
+  const rests = new WeakMap(); // object -> { property: { value, holds } }
+
+  function hold(obj, property, read) {
+    let held = rests.get(obj);
+    if (!held) rests.set(obj, (held = {}));
+    const entry = held[property] || (held[property] = { value: read(), holds: 0 });
+    entry.holds++;
+    return entry.value;
+  }
+
+  function release(obj, property) {
+    const held = rests.get(obj);
+    const entry = held && held[property];
+    if (entry && --entry.holds === 0) delete held[property];
+  }
+
+  function shown(mesh) {
+    for (let o = mesh; o; o = o.parent) if (!o.visible) return false;
+    return true;
+  }
 
   function wake() {
     if (!raf) raf = requestAnimationFrame(tick);
@@ -50,11 +79,14 @@
     return tw;
   }
 
-  /* The scene's own render pass, minus the controls update (its damping
-   * steps per call, so extra calls would speed it up). */
+  /* The scene's own draw, as its loop makes it: views of the scene and its
+   * hover effects follow, and the loop does not draw the frame again. Not
+   * the controls or the camera tween: the loop steps those on its clock. */
   function renderNow(comp) {
     if (!comp || !comp.renderer || !comp.camera) return;
-    if (comp.camera_tween) comp.camera_tween.update();
+    comp.render_requested = false;
+    if (typeof comp.scene_version === 'number') comp.scene_version++;
+    if (comp._syncEffectsIfDirty) comp._syncEffectsIfDirty();
     comp.renderer.render(comp.scene, comp.camera);
     if (comp.text_renderer) comp.text_renderer.render(comp.scene, comp.camera);
     if (comp.text3d_renderer) comp.text3d_renderer.render(comp.scene, comp.camera);
@@ -77,14 +109,21 @@
         requestRender(tw.sceneId);
       }
     }
-    for (const [sceneId, items] of pulses) {
-      const live = items.filter(p => p.mesh.parent);
-      if (live.length !== items.length) pulses.set(sceneId, live);
-      for (const p of live) {
-        const s = Math.sin(now / 260 - p.phase);
-        p.mesh.scale.copy(p.base).multiplyScalar(1 + 0.45 * Math.max(0, s) ** 3);
+    for (const [sceneId, pulse] of pulses) {
+      if (now >= pulse.until) {
+        stopPulse(sceneId);
+        continue;
       }
-      requestRender(sceneId);
+      let drawn = false;
+      for (const p of pulse.items) {
+        if (!p.mesh.parent) continue;
+        // From a trough, so each object starts and ends at its own size.
+        const a = (now - pulse.start) / RIPPLE_RATE - p.phase;
+        const s = a < 0 || a > RIPPLE_WAVES * 2 * Math.PI ? -1 : Math.sin(a - Math.PI / 2);
+        p.mesh.scale.copy(p.base).multiplyScalar(1 + 0.45 * Math.max(0, s) ** 3);
+        drawn = drawn || shown(p.mesh);
+      }
+      if (drawn) requestRender(sceneId);
     }
     for (const [sceneId, until] of rushUntil) {
       if (now > until) rushUntil.delete(sceneId);
@@ -123,13 +162,12 @@
   }
 
   function popIn(sceneId, mesh, delayMs, ms) {
-    const base = (restScale.get(mesh) || mesh.scale).clone();
-    restScale.set(mesh, base);
+    const base = hold(mesh, 'scale', () => mesh.scale.clone());
     tween(sceneId, delayMs, ms,
       t => mesh.scale.copy(base).multiplyScalar(Math.max(1e-3, easeOutBack(t))),
       () => {
         mesh.scale.copy(base);
-        restScale.delete(mesh);
+        release(mesh, 'scale');
       });
   }
 
@@ -137,13 +175,20 @@
     const mats = [];
     mesh.traverse(child => {
       const m = child.material;
-      if (m && m.emissive) mats.push({ m, emissive: m.emissive.clone() });
+      if (m && m.emissive) mats.push({ m, emissive: hold(m, 'emissive', () => m.emissive.clone()) });
     });
     return mats;
   }
 
+  function restoreEmissives(mats) {
+    for (const { m, emissive } of mats) {
+      m.emissive.copy(emissive);
+      release(m, 'emissive');
+    }
+  }
+
   function glowPop(sceneId, mesh) {
-    const base = mesh.scale.clone();
+    const base = hold(mesh, 'scale', () => mesh.scale.clone());
     const mats = emissives(mesh);
     tween(sceneId, 0, 750, t => {
       const k = t < 0.3 ? 0.88 + 0.2 * easeOutCubic(t / 0.3) : 1.08 - 0.08 * easeOutCubic((t - 0.3) / 0.7);
@@ -154,7 +199,8 @@
       }
     }, () => {
       mesh.scale.copy(base);
-      for (const { m, emissive } of mats) m.emissive.copy(emissive);
+      release(mesh, 'scale');
+      restoreEmissives(mats);
     });
   }
 
@@ -166,16 +212,20 @@
     tween(sceneId, 0, 700, t => {
       const k = Math.max(0, Math.sin(t * 2 * Math.PI * 2 - Math.PI / 2) * 0.5 + 0.5) * (1 - t);
       for (const { m, emissive } of mats) m.emissive.copy(emissive).lerp(hot, k);
-    }, () => {
-      for (const { m, emissive } of mats) m.emissive.copy(emissive);
-    });
+    }, () => restoreEmissives(mats));
   }
 
   function fadeIn(sceneId, mesh, ms) {
     const mats = [];
     mesh.traverse(child => {
       const m = child.material;
-      if (m && typeof m.opacity === 'number') mats.push({ m, opacity: m.opacity, transparent: m.transparent });
+      if (m && typeof m.opacity === 'number') {
+        mats.push({
+          m,
+          opacity: hold(m, 'opacity', () => m.opacity),
+          transparent: hold(m, 'transparent', () => m.transparent),
+        });
+      }
     });
     if (!mats.length) return;
     // Blending is compiled into the material's program, so flipping
@@ -194,14 +244,19 @@
       for (const { m, opacity, transparent } of mats) {
         m.opacity = opacity;
         setTransparent(m, transparent);
+        release(m, 'opacity');
+        release(m, 'transparent');
       }
     });
   }
 
   function stopPulse(sceneId) {
-    const items = pulses.get(sceneId);
-    if (!items) return;
-    for (const p of items) p.mesh.scale.copy(p.base);
+    const pulse = pulses.get(sceneId);
+    if (!pulse) return;
+    for (const p of pulse.items) {
+      p.mesh.scale.copy(p.base);
+      release(p.mesh, 'scale');
+    }
     pulses.delete(sceneId);
     requestRender(sceneId);
   }
@@ -280,12 +335,12 @@
         for (const { m, emissive } of mats) m.emissive.copy(emissive).lerp(hot, k);
       }, () => {
         mesh.position.copy(rest);
-        for (const { m, emissive } of mats) m.emissive.copy(emissive);
+        restoreEmissives(mats);
       });
     },
 
     /**
-     * Ripple a set of objects in order, a wave travelling along them, until
+     * Ripple a set of objects in order, a few waves travelling along them;
      * the next call for this scene replaces the set (an empty list stops it).
      */
     async pulse(sceneId, ids) {
@@ -296,23 +351,25 @@
       const items = [];
       meshes.forEach((mesh, i) => {
         if (mesh) {
-          const base = (restScale.get(mesh) || mesh.scale).clone();
-          items.push({ mesh, base, phase: i * 0.55 });
+          const base = hold(mesh, 'scale', () => mesh.scale.clone());
+          items.push({ mesh, base, phase: i * RIPPLE_STAGGER });
         }
       });
       if (items.length) {
-        pulses.set(sceneId, items);
+        const start = performance.now();
+        const span = RIPPLE_WAVES * 2 * Math.PI + (items.length - 1) * RIPPLE_STAGGER;
+        pulses.set(sceneId, { items, start, until: start + span * RIPPLE_RATE });
         wake();
       }
     },
 
-    /** Ease the camera move of *ms* started just before this call. */
-    easeCamera(sceneId, ms) {
+    /** Ease the camera move started just before this call; the scene draws
+     * it on its own clock. */
+    easeCamera(sceneId) {
       const comp = getElement(sceneId);
       const tw = comp ? comp.camera_tween : null;
       if (tw && typeof tw.easing === 'function') {
         tw.easing(reducedMotion() ? () => 1 : easeInOutCubic);
-        if (!reducedMotion()) rush(sceneId, performance.now() + ms + 50);
       }
     },
   };
