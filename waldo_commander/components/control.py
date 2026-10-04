@@ -688,9 +688,6 @@ class ControlPanel:
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
         self._joint_right_btns: dict[int, ui.button] = {}
-        self._joint_limit_btns: dict[
-            tuple[int, str], ui.button
-        ] = {}  # (joint_idx, "min"/"max") -> button
         self._dials: list[JointDial] = []
         self._joint_tab_shown = True
         self._cart_axis_imgs: dict[str, ui.element] = {}
@@ -1126,8 +1123,9 @@ class ControlPanel:
         if not self._joint_tab_shown:
             return
         angles = waldoctl.commander.status.joints.angles.deg
+        step = float(waldoctl.commander.settings.jog.joint_step_deg)
         for dial, angle in zip(self._dials, angles):
-            dial.show(float(angle))
+            dial.show(float(angle), step)
 
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
@@ -2193,29 +2191,6 @@ class ControlPanel:
         except Exception as e:
             logger.error("Go to joint angle failed: %s", e)
 
-    async def go_to_joint_limit(self, joint_index: int, which: str) -> None:
-        """Move to min or max joint limit for a specific joint while holding others."""
-        # Skip if in editing mode (target editor controls robot)
-        if waldoctl.commander.status.editing_mode:
-            return
-
-        if not self._movement_allowed():
-            return
-
-        try:
-            angles = list(waldoctl.commander.status.joints.angles.deg)
-            lo, hi = self._get_joint_limits(joint_index)
-
-            target = angles[: self._n_joints]
-            target[joint_index] = float(lo if which == "min" else hi)
-            spd = _norm_speed()
-
-            self._begin_jog_record("joint", f"J{joint_index + 1}{which}")
-            await self._dial_move(target, spd)
-        except Exception as e:
-            logger.error("Go to joint limit failed: %s", e)
-            ui.notify(f"Failed joint move: {e}", color="negative")
-
     # ---- Gizmo control methods ----
 
     def sync_gizmo_to_urdf(self) -> None:
@@ -2523,8 +2498,9 @@ class ControlPanel:
         self._joint_tab_shown = not cartesian
         if not cartesian:
             angles = waldoctl.commander.status.joints.angles.deg
+            step = float(waldoctl.commander.settings.jog.joint_step_deg)
             for dial, angle in zip(self._dials, angles):
-                dial.redraw(float(angle))
+                dial.redraw(float(angle), step)
         if self._step_input is not None:
             if cartesian:
                 self._step_input.props('suffix="mm"')
@@ -2539,8 +2515,8 @@ class ControlPanel:
             self._step_input.update()
 
     def _make_joint_dial(self, idx: int, name: str) -> None:
-        """One joint: minus cap, dial ring with the readout in its centre, plus cap,
-        the name, and a limits row revealed with the caps on hover."""
+        """One joint: the dial ring with the readout in its centre, and under it
+        the name, flanked on hover by the jog caps."""
         lo, hi = self._get_joint_limits(idx)
         joints = waldoctl.commander.status.joints
 
@@ -2557,9 +2533,9 @@ class ControlPanel:
             .mark(f"joint-dial-{idx}")
         ):
             with ui.element("div").classes("joint-dial"):
-                left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
-
-                self._dials.append(JointDial(lo, hi))
+                self._dials.append(
+                    JointDial(lo, hi, waldoctl.commander.settings.jog.joint_step_deg)
+                )
 
                 num = (
                     ui.number(
@@ -2593,35 +2569,10 @@ class ControlPanel:
                 num.on("blur", _submit_exact)
                 num.on("keydown.enter", _submit_exact)
 
+            with ui.element("div").classes("joint-dial-name-row"):
+                left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
+                ui.label(name).classes("joint-dial-name")
                 right_btn = _cap("add", "plus").mark(f"btn-j{idx + 1}-plus")
-
-            ui.label(name).classes("joint-dial-name")
-
-            with ui.row().classes("joint-dial-limits no-wrap gap-0"):
-                min_btn = (
-                    ui.button(
-                        icon="first_page",
-                        on_click=lambda e, i=idx: _safe_task(
-                            self.go_to_joint_limit(i, "min")
-                        ),
-                    )
-                    .props("round flat dense size=sm color=wc-text-muted")
-                    .tooltip("Move to minimum joint limit")
-                    .mark(f"btn-j{idx + 1}-min-limit")
-                )
-                max_btn = (
-                    ui.button(
-                        icon="last_page",
-                        on_click=lambda e, i=idx: _safe_task(
-                            self.go_to_joint_limit(i, "max")
-                        ),
-                    )
-                    .props("round flat dense size=sm color=wc-text-muted")
-                    .tooltip("Move to maximum joint limit")
-                    .mark(f"btn-j{idx + 1}-max-limit")
-                )
-                self._joint_limit_btns[(idx, "min")] = min_btn
-                self._joint_limit_btns[(idx, "max")] = max_btn
 
         def check_lower_limit(a, i=idx, lo=lo):
             if len(a) <= i:
@@ -2711,7 +2662,7 @@ class ControlPanel:
                 with (
                     ui.grid(
                         rows="72px 30px 72px",
-                        columns="90px 30px 72px 42px 72px 30px 72px",
+                        columns="90px 30px 72px 34px 72px 30px 72px",
                     )
                     .classes("gap-0")
                     .style("place-items: center")
@@ -2720,7 +2671,9 @@ class ControlPanel:
                     _add_slot("ud2_up", "arrow-small-up-cropped.svg", "ud2", "+", False)
                     # Z chevrons hug the column's outer edge, keeping a clear
                     # gap to the XY arrow pad beside them.
-                    self._cart_slot_elems["ud2_up"].classes("justify-self-start")
+                    self._cart_slot_elems["ud2_up"].classes(
+                        "justify-self-start cart-z-top"
+                    )
                     _add_slot("ud1_up", "arrow-small-up.svg", "ud1", "-", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_plus", "curved-arrow-down.svg", "ud2", "+", True)
@@ -2741,7 +2694,9 @@ class ControlPanel:
                     _add_slot(
                         "ud2_down", "arrow-small-down-cropped.svg", "ud2", "-", False
                     )
-                    self._cart_slot_elems["ud2_down"].classes("justify-self-start")
+                    self._cart_slot_elems["ud2_down"].classes(
+                        "justify-self-start cart-z-bottom"
+                    )
                     _add_slot("ud1_down", "arrow-small-down.svg", "ud1", "+", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_minus", "curved-arrow-up.svg", "ud2", "-", True)
@@ -2789,12 +2744,20 @@ class ControlPanel:
         )
         with chip:
             tooltip = ui.tooltip(storage_key.replace("_", " ").title())
-            with ui.menu().classes("level-menu").mark(f"menu-{marker}"):
+            # Beside the chip, in its row, rather than over the controls below.
+            with (
+                ui.menu()
+                .props('anchor="center right" self="center left" :offset="[6, 0]"')
+                .classes("level-menu")
+                .mark(f"menu-{marker}") as menu
+            ):
                 rating = (
                     ui.rating(max=10, icon="circle", size="16px", value=v_init)
                     .props("color=wc-progress")
                     .mark(f"rating-{marker}")
                 )
+            # The open menu sits where the tooltip shows, so the tooltip gives way.
+            menu.on("show", lambda _e, t=tooltip: t.run_method("hide"))
         self._rating_widgets[ui_attr] = {
             "rating": rating,
             "label": chip,
