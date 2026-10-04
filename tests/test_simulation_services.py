@@ -627,7 +627,8 @@ with RobotClient() as rbt:
     async def test_sys_exit_entry_point_previews(self):
         """A script ending in ``sys.exit(main())`` previews its motion: exit
         status 0 is a normal finish, a failure status is the preview's error,
-        and neither exit reaches the app."""
+        and neither exit reaches the app. An exit part-way through keeps the
+        motion planned before it and none after."""
         visualizer = PathVisualizer()
         program = """
 import asyncio
@@ -655,6 +656,24 @@ if __name__ == "__main__":
         )
         assert error is not None and "status 3" in error
         assert len(self._active_dry_run().path_segments) >= 1
+
+        # An exit part-way through ends the preview where the real run ends.
+        exits_early = """
+import asyncio
+import sys
+
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+        sys.exit(0)
+        await rbt.move_j([100, -100, 190, -10, -10, 190], speed=1.0)
+
+asyncio.run(main())
+"""
+        assert await visualizer.update_path_visualization(exits_early) is None
+        assert len(self._active_dry_run().path_segments) == 1
 
     @pytest.mark.asyncio
     async def test_moves_draw_in_metres_and_mark_literal_and_refused_targets(self):
@@ -973,14 +992,14 @@ class TestScriptExecutionLifecycle:
         try:
             await se.script_exec.start()
             await user.should_see("subdirectory program finished", retries=100)
-            # The exit code lands while the program's links are still closing;
-            # the run ends after them.
             deadline = time.monotonic() + 10
-            while (
-                se.script_exec.last_exit_code is None or is_any_program_running()
-            ) and time.monotonic() < deadline:
+            while se.script_exec.last_exit_code is None and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
             assert se.script_exec.last_exit_code == 0
+            # The exit code lands before the run lets go of the program.
+            deadline = time.monotonic() + 5
+            while is_any_program_running() and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
             assert not is_any_program_running()
             written = tmp_path / ".runtime" / "sub" / "regression.py"
             assert written.read_text(encoding="utf-8") == content

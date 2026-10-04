@@ -72,7 +72,11 @@ def review_layout(screen, tmp_path, monkeypatch, backend):
             screen.selenium,
             10,
             poll_frequency=0.05,
-            ignored_exceptions=(StaleElementReferenceException,),
+            # A neighbour can still overlap a target that is settling into place.
+            ignored_exceptions=(
+                ElementClickInterceptedException,
+                StaleElementReferenceException,
+            ),
         ).until(click_visible)
         screen.selenium.execute_cdp_cmd(
             "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 600, "y": 4}

@@ -5,6 +5,8 @@ from collections.abc import Callable
 
 from nicegui import app as ng_app, ui
 
+from waldo_commander.components.readout import CHIP_COLORS
+from waldo_commander.components.robot_buddy import Mood, Reaction, RobotBuddy
 from waldo_commander.services.keybindings import keybindings_manager
 
 
@@ -130,13 +132,10 @@ class HelpMenu:
             {
                 "title": "Connecting Your Robot",
                 "description": """
-                    Open **Settings** from the gear in the bottom-left rail and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the footer.
-
-                    - <span style="color: var(--wc-positive)">■</span> Connected to robot hardware
-                    - <span style="color: var(--wc-error)">■</span> Robot mode but disconnected
-                    - <span style="color: var(--wc-mode-sim)">■</span> Simulator mode (amber)
+                    Open **Settings** from the gear in the bottom-left rail and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown by Waldo, the little robot at the left end of the footer:
                 """,
                 "video": "connecting_to_robot.mp4",
+                "status_legend": True,
             },
             {
                 "title": "Programming, Recording, and Path Visualization",
@@ -211,11 +210,9 @@ class HelpMenu:
                             "w-full rounded-lg"
                         ).props('preload="none"').style("max-height: 360px;")
 
-                        # sanitize=False: content is a hardcoded literal whose inline status-marker
-                        # color spans DOMPurify would otherwise strip.
-                        ui.markdown(step["description"], sanitize=False).classes(
-                            "text-md text-wc-text"
-                        )
+                        ui.markdown(step["description"]).classes("text-md text-wc-text")
+                        if step.get("status_legend"):
+                            self._build_status_legend()
 
                         with ui.stepper_navigation():
                             if i < len(steps) - 1:
@@ -231,6 +228,20 @@ class HelpMenu:
                                 ui.button("Back", on_click=stepper.previous).props(
                                     "flat color=wc-text"
                                 )
+
+    def _build_status_legend(self) -> None:
+        """The footer's status chip in each state, drawn as the footer draws it."""
+        with ui.column().classes("gap-1 ml-2").mark("status-legend"):
+            for mood, text in (
+                (Mood.HAPPY, "Connected to robot hardware"),
+                (Mood.SAD, "Robot mode but disconnected"),
+                (Mood.NEUTRAL, "Simulator mode"),
+            ):
+                fill, ink = CHIP_COLORS[mood]
+                with ui.row().classes("items-center gap-3 no-wrap"):
+                    with ui.chip().props(f"dense color={fill} text-color={ink}"):
+                        RobotBuddy(mood, size=20, color="currentColor")
+                    ui.label(text).classes("text-md text-wc-text")
 
     def _on_finish(self, on_finish: Callable[[], None] | None) -> None:
         """Mark the tour seen, then hand over or close the first-visit dialog."""
@@ -261,7 +272,12 @@ class HelpMenu:
         with self._dialog:
             with ui.card().classes("overlay-card tutorial-dialog-card"):
                 with ui.column().classes("w-full h-full gap-0"):
-                    ui.label("Welcome to PAROL Commander!").classes("text-xl font-bold")
+                    with ui.row().classes("items-center gap-3 no-wrap"):
+                        buddy = RobotBuddy(Mood.HAPPY, size=44, interactive=True)
+                        buddy.react(Reaction.GREET)
+                        ui.label("Welcome to PAROL Commander!").classes(
+                            "text-xl font-bold"
+                        )
 
                     ui.label(
                         "Let's get you started with a quick tour of the interface."

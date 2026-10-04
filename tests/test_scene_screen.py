@@ -314,8 +314,7 @@ class TestScene:
             assert ball is not None and ball["type"] == "Mesh" and ball["visible"], ball
 
             js(screen, _ZOOM, 0.4)
-            # Translation and rotation snaps arrive as two updates, so wait
-            # for both rather than read one between them.
+            # Translation and rotation snaps can land a frame apart.
             snap = _wait(
                 lambda: (s := js(screen, _GIZMO_SNAP, False))
                 and s["t"] == pytest.approx(0.001)

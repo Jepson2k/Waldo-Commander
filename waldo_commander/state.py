@@ -150,6 +150,9 @@ class RobotState(ChangeNotifierMixin):
     standing_error: RobotError | None = None
     executing_index: int = -1
     completed_index: int = -1
+    # Held jogs the control panel ended because the direction ran out of
+    # travel; the status buddy shrugs at each one.
+    jog_limit_stops: int = 0
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
@@ -169,6 +172,7 @@ class RobotState(ChangeNotifierMixin):
         self.standing_error = None
         self.executing_index = -1
         self.completed_index = -1
+        self.jog_limit_stops = 0
 
 
 @dataclass
