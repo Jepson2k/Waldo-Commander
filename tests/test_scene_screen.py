@@ -280,6 +280,37 @@ for (const o of c.objects.values()) {{
 return shown;
 """
 
+_FRAMES = f"return {_SCENE}.renderer.info.render.frame"
+
+# A pixel on the orientation inset's sprite for the level axis that faces
+# the viewer most, and that axis.
+_INSET_AXIS = f"""
+const c = {_SCENE};
+const vh = c.viewHelper;
+if (!vh) return null;
+const canvas = c.renderer.domElement;
+const rect = canvas.getBoundingClientRect();
+const loc = vh.location;
+const dim = 128;
+const left = rect.left + (loc.left !== null ? loc.left : canvas.offsetWidth - dim - loc.right);
+const top = rect.top + (loc.top !== null ? loc.top : canvas.offsetHeight - dim - loc.bottom);
+const toInset = c.camera.quaternion.clone().invert();
+let best = null;
+for (const axis of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]]) {{
+  const v = c.camera.position.clone().set(...axis).applyQuaternion(toInset);
+  const x = left + (v.x / 2 + 1) / 2 * dim;
+  const y = top + (1 - v.y / 2) / 2 * dim;
+  if (document.elementFromPoint(x, y) !== canvas) continue;
+  if (!best || v.z > best.z) best = {{ x, y, z: v.z, axis }};
+}}
+return best && [best.x, best.y, best.axis];
+"""
+
+_VIEW_DIRECTION = f"""
+const c = {_SCENE};
+return c.camera.position.clone().sub(c.controls.target).normalize().toArray();
+"""
+
 _GLOWING = f"""
 const c = {_SCENE};
 for (const [id, o] of c.objects) {{
@@ -466,6 +497,21 @@ def _caught_up() -> None:
 def _tcp_mm() -> np.ndarray:
     pose = waldoctl.commander.status.pose
     return np.array([pose.x, pose.y, pose.z], dtype=float)
+
+
+def _frames_at_rest(screen: Screen, window_s: float) -> int:
+    """The scene's frame count once it has held for *window_s*."""
+    deadline = time.monotonic() + 15
+    count = js(screen, _FRAMES)
+    since = time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        now = js(screen, _FRAMES)
+        if now != count:
+            count, since = now, time.monotonic()
+        elif time.monotonic() - since >= window_s:
+            return count
+    raise AssertionError(f"the scene kept drawing at rest ({count} frames)")
 
 
 def _drag_along(
@@ -727,6 +773,23 @@ class TestScene:
                 " = window.__viewHelperRender;",
             )
 
+    def test_clicking_an_axis_in_the_inset_turns_the_camera_to_it(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen)
+        with _camera_kept(screen):
+            x, y, axis = _wait(lambda: js(screen, _INSET_AXIS), 5.0, "an inset axis")
+            actions = ActionChains(screen.selenium, duration=0)
+            pointer_to(screen, x, y, actions)
+            actions.click()
+            actions.perform()
+            _wait(
+                lambda: np.dot(js(screen, _VIEW_DIRECTION), axis) > 0.999,
+                5.0,
+                f"the camera to look along {axis}",
+            )
+
     def test_the_scene_draws_only_when_something_in_it_moves(
         self, class_screen: Screen
     ) -> None:
@@ -735,10 +798,6 @@ class TestScene:
         nothing; the arm moving draws."""
         screen = class_screen
         screen_wait_for_scene_ready(screen)
-        frames = (
-            "return getElement(document.querySelector('.nicegui-scene'))"
-            ".renderer.info.render.frame"
-        )
         assert core.loop is not None
 
         async def ready():
@@ -749,31 +808,17 @@ class TestScene:
 
         asyncio.run_coroutine_threadsafe(ready(), core.loop).result(30)
 
-        def settled(window_s: float) -> int:
-            """The frame count once it has held for *window_s*."""
-            deadline = time.monotonic() + 15
-            count = js(screen, frames)
-            since = time.monotonic()
-            while time.monotonic() < deadline:
-                time.sleep(0.1)
-                now = js(screen, frames)
-                if now != count:
-                    count, since = now, time.monotonic()
-                elif time.monotonic() - since >= window_s:
-                    return count
-            raise AssertionError(f"the scene kept drawing at rest ({count} frames)")
-
-        at_rest = settled(1.0)
+        at_rest = _frames_at_rest(screen, 1.0)
         # The footer's Waldo moving its eyes is no change to the scene.
         run_in_app(lambda: ui_state.readout_panel.look((1.0, 0.0, 0.0)))
         try:
-            looked = settled(1.0)
+            looked = _frames_at_rest(screen, 1.0)
         finally:
             run_in_app(lambda: ui_state.readout_panel.look(None))
         assert looked == at_rest, (
             f"the scene drew {looked - at_rest} frames for a glance"
         )
-        at_rest = settled(1.0)
+        at_rest = _frames_at_rest(screen, 1.0)
 
         async def nudge():
             client = waldoctl.commander.client
@@ -784,7 +829,7 @@ class TestScene:
             )
 
         asyncio.run_coroutine_threadsafe(nudge(), core.loop).result(15)
-        moved = settled(0.5)
+        moved = _frames_at_rest(screen, 0.5)
         assert moved > at_rest + 2, (at_rest, moved)
 
     def test_zoomed_out_the_fog_starts_beyond_the_robot(
@@ -852,15 +897,18 @@ class TestScene:
     ) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen)
+        _teleport_to_jog_pose()
         with _camera_kept(screen), _program_previewed(_TARGET_PROGRAM) as targets:
             assert targets, "the program shows no targets"
             group = f"targetgroup:{targets[-1]}"
             _wait(lambda: screen_get_scene_object(screen, group), 15.0, "the target")
             x, y = scene_object_pixel(screen, group)
+            before = _frames_at_rest(screen, 0.5)
             actions = ActionChains(screen.selenium, duration=0)
             pointer_to(screen, x, y, actions)
             actions.perform()
             _wait(lambda: js(screen, _GLOWING, group), 5.0, "the target to glow")
+            assert _frames_at_rest(screen, 0.5) > before, "the glow was never drawn"
 
             ActionChains(screen.selenium).context_click().perform()
             items = _wait(lambda: js(screen, _MENU_ITEMS), 5.0, "the target's menu")
@@ -871,10 +919,12 @@ class TestScene:
             ActionChains(screen.selenium).move_to_element(canvas).click().perform()
             wait(screen, 5).until(lambda _: no_visible(screen, ".q-menu"))
 
+            before = _frames_at_rest(screen, 0.5)
             screen.selenium.execute_cdp_cmd(
                 "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
             )
             _wait(lambda: not js(screen, _GLOWING, group), 5.0, "the glow to go")
+            assert _frames_at_rest(screen, 0.5) > before, "the glow stayed drawn"
 
     def test_the_gizmo_arrow_jogs_on_a_drag_and_a_tap_keeps_it_pinned(
         self, class_screen: Screen
