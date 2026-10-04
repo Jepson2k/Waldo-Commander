@@ -554,9 +554,14 @@ class StatusFooter:
                 .tooltip("Settings")
             )
 
-        # A fresh page has fresh face JS: resend held states, animate only
-        # actions that land from here on, and start the idles.
+        # A fresh page has fresh face JS and fresh elements: resend held
+        # states, redraw the AI session, tool chip and I/O dots, animate
+        # only actions that land from here on, and start the idles.
         self._face_held = {}
+        self._ai_shown = None
+        self._last_tool_key = None
+        self._last_io_inputs = None
+        self._last_io_outputs = None
         latest = waldoctl.commander.status.action.latest
         self._action_newest = (
             (latest.timestamp, latest.count, latest.status) if latest else None

@@ -17,7 +17,7 @@ from fastmcp.exceptions import ToolError
 from nicegui.testing import User
 
 from tests.helpers.mcp import payload as _payload
-from tests.helpers.wait import reload_page, wait_for_app_ready
+from tests.helpers.wait import reload_page, wait_for_app_ready, wait_until
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.services import control_lease as cl
 from waldo_commander.services.control_lease import (
@@ -203,6 +203,11 @@ async def test_page_reload_does_not_steal_lease_from_live_mcp_holder(
         async with Client(mcp) as client:
             took = _payload(await client.call_tool("control.take_control"))
             assert took["you_hold_it"] is True
+            footer = ui_state._readout_panel
+            assert footer is not None
+            assert await wait_until(
+                lambda: footer.take_control_btn and footer.take_control_btn.visible
+            ), "the chip never offered Take control while the AI drove"
 
             await reload_page(user)
 
@@ -210,6 +215,10 @@ async def test_page_reload_does_not_steal_lease_from_live_mcp_holder(
             assert controller["you_hold_it"] is True, (
                 "page reload must not steal the lease from a live MCP holder"
             )
+            # The reloaded page's chip carries the session the old one showed.
+            assert await wait_until(
+                lambda: footer.take_control_btn and footer.take_control_btn.visible
+            ), "the reloaded chip lost Take control while the AI still drives"
 
         # Once the MCP holder has aged out, a reload claims as usual.
         assert control_lease._holder is not None
