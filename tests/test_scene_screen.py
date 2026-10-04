@@ -34,6 +34,8 @@ from tests.helpers.browser_helpers import (
     pointer_to,
     project_local,
     run_in_app,
+    scene_object_pixel,
+    tap,
 )
 from tests.helpers.browser_session import no_visible, wait, window_size
 from tests.helpers.wait import (
@@ -43,6 +45,7 @@ from tests.helpers.wait import (
     screen_wait_for_tcp_ball,
 )
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
+from waldo_commander.services.urdf_scene.jog_handles_mixin import GIZMO
 from waldo_commander.state import ui_state
 
 if TYPE_CHECKING:
@@ -114,6 +117,92 @@ if (!tc) return null;
 if (arguments[0]) tc.wcProbe = true;
 return {{t: tc.translationSnap, r: tc.rotationSnap, probe: !!tc.wcProbe}};
 """
+
+# The middle of the stretch of the gizmo's X arrow that sticks out past the
+# tool, where a press grabs the arrow and hits nothing else, and the arrow's
+# direction on screen.
+_ARROW_TIP = f"""
+const c = {_SCENE};
+let id = null;
+for (const [oid, o] of c.objects) if (o.mesh && o.mesh.name === 'tcp:ball') id = oid;
+const tc = id === null ? null : c.transform_controls.get(id);
+if (!tc || !tc.object) return null;
+const ball = tc.object;
+ball.updateWorldMatrix(true, false);
+const origin = ball.position.clone().setFromMatrixPosition(ball.matrixWorld);
+const axis = ball.position.clone().set(1, 0, 0).applyQuaternion(ball.getWorldQuaternion(ball.quaternion.clone()));
+const canvas = c.renderer.domElement;
+const rect = canvas.getBoundingClientRect();
+const toPixel = (d) => {{
+  const v = origin.clone().addScaledVector(axis, d).project(c.camera);
+  return [v.x, v.y, rect.left + (v.x + 1) / 2 * rect.width, rect.top + (1 - v.y) / 2 * rect.height];
+}};
+const outside = [];
+for (let d = 0.002; d < 0.5; d += 0.002) {{
+  const [x, y, px, py] = toPixel(d);
+  if (Math.abs(x) > 0.95 || Math.abs(y) > 0.95 || document.elementFromPoint(px, py) !== canvas) continue;
+  tc.pointerHover({{ x, y, button: 0 }});
+  if (tc.axis !== 'X') continue;
+  c._raycaster.setFromCamera({{ x, y }}, c.camera);
+  if (c._raycaster.intersectObjects(c.interactiveObjects, true).length) continue;
+  outside.push(d);
+}}
+tc.pointerHover({{ x: 2, y: 2, button: 0 }});
+if (!outside.length) return null;
+const d = outside[Math.floor(outside.length / 2)];
+const [, , px, py] = toPixel(d);
+const [, , qx, qy] = toPixel(d + 0.01);
+const n = Math.hypot(qx - px, qy - py);
+return [px, py, (qx - px) / n, (qy - py) / n];
+"""
+
+# A pixel away from the canvas edges where a press hits neither an
+# interactive object nor a gizmo.
+_EMPTY_SPOT = f"""
+const c = {_SCENE};
+const canvas = c.renderer.domElement;
+const rect = canvas.getBoundingClientRect();
+const gizmos = [...c.transform_controls.values()];
+let spot = null;
+for (let fy = 0.3; fy <= 0.7 && !spot; fy += 0.1) {{
+  for (let fx = 0.2; fx <= 0.8 && !spot; fx += 0.1) {{
+    const px = rect.left + fx * rect.width;
+    const py = rect.top + fy * rect.height;
+    if (document.elementFromPoint(px, py) !== canvas) continue;
+    const pointer = {{ x: fx * 2 - 1, y: 1 - fy * 2, button: 0 }};
+    c._raycaster.setFromCamera(pointer, c.camera);
+    if (c._raycaster.intersectObjects(c.interactiveObjects, true).length) continue;
+    if (gizmos.some((tc) => (tc.pointerHover(pointer), tc.axis !== null))) continue;
+    spot = [px, py];
+  }}
+}}
+for (const tc of gizmos) tc.pointerHover({{ x: 2, y: 2, button: 0 }});
+return spot;
+"""
+
+_GLOWING = f"""
+const c = {_SCENE};
+for (const [id, o] of c.objects) {{
+  if (!o.mesh || o.mesh.name !== arguments[0]) continue;
+  const a = c.effectArtifacts.get(id);
+  return !!(a && a.effect === 'glow' && a.group.parent && a.group.children.length);
+}}
+return false;
+"""
+
+_MENU_ITEMS = """
+return [...document.querySelectorAll('.q-menu')]
+  .filter((m) => m.getClientRects().length > 0)
+  .flatMap((m) => [...m.querySelectorAll('.q-item')].map((i) => i.textContent.trim()));
+"""
+
+# A program with two targets, the last of them a move_l in front of the arm.
+_TARGET_PROGRAM = (
+    "from parol6 import RobotClient\n"
+    "rbt = RobotClient()\n"
+    "rbt.move_j([85.000, -85.000, 175.000, 5.000, 5.000, 175.000], speed=0.5)\n"
+    "rbt.move_l([0.000, 280.000, 250.000, 90.000, 0.000, 90.000], speed=0.5)\n"
+)
 
 _HELD_MATRIX = """
 const el = document.querySelector('.nicegui-scene');
@@ -214,6 +303,37 @@ def _camera_kept(screen: Screen) -> Iterator[None]:
         screen.selenium.execute_cdp_cmd(
             "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
         )
+
+
+@contextmanager
+def _program_previewed(source: str) -> Iterator[list[str]]:
+    """Preview ``source`` in the scene and yield its target ids; the program
+    that was there comes back afterwards."""
+    from waldo_commander.components.simulation_engine import simulation
+
+    async def preview(text: str) -> list[str]:
+        tab = waldoctl.commander.programs.active
+        textarea = ui_state.active_textarea
+        assert tab is not None and textarea is not None
+        textarea.value = text
+        tab.source = text
+        await simulation.run_simulation()
+        return [t.id for t in tab.dry_run.targets]
+
+    def run(text: str) -> list[str]:
+        assert core.loop is not None
+        return asyncio.run_coroutine_threadsafe(preview(text), core.loop).result(60)
+
+    saved = run_in_app(lambda: ui_state.active_textarea.value)
+    try:
+        yield run(source)
+    finally:
+        run(saved)
+
+
+def _tcp_mm() -> np.ndarray:
+    pose = waldoctl.commander.status.pose
+    return np.array([pose.x, pose.y, pose.z], dtype=float)
 
 
 def _records(
@@ -478,6 +598,85 @@ class TestScene:
             lambda _: no_visible(screen, ".q-menu"),
             message="Context menu should close when clicking outside",
         )
+
+    def test_a_target_glows_under_the_pointer_and_right_clicks_to_its_menu(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen)
+        with _camera_kept(screen), _program_previewed(_TARGET_PROGRAM) as targets:
+            assert targets, "the program shows no targets"
+            group = f"targetgroup:{targets[-1]}"
+            _wait(lambda: screen_get_scene_object(screen, group), 15.0, "the target")
+            x, y = scene_object_pixel(screen, group)
+            actions = ActionChains(screen.selenium, duration=0)
+            pointer_to(screen, x, y, actions)
+            actions.perform()
+            _wait(lambda: js(screen, _GLOWING, group), 5.0, "the target to glow")
+
+            ActionChains(screen.selenium).context_click().perform()
+            items = _wait(lambda: js(screen, _MENU_ITEMS), 5.0, "the target's menu")
+            assert "Edit Target..." in items and "Delete Target" in items, items
+            canvas = screen.selenium.find_element(
+                By.CSS_SELECTOR, ".nicegui-scene canvas"
+            )
+            ActionChains(screen.selenium).move_to_element(canvas).click().perform()
+            wait(screen, 5).until(lambda _: no_visible(screen, ".q-menu"))
+
+            screen.selenium.execute_cdp_cmd(
+                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
+            )
+            _wait(lambda: not js(screen, _GLOWING, group), 5.0, "the glow to go")
+
+    def test_the_gizmo_arrow_jogs_on_a_drag_and_a_tap_keeps_it_pinned(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        _teleport_to_jog_pose()
+        urdf = ui_state.urdf_scene
+        assert urdf is not None
+
+        def shown() -> object:
+            return run_in_app(lambda: urdf._shown_handle)
+
+        with _camera_kept(screen):
+            # A mouse drag along the arrow, from where it sticks out past the
+            # tool, jogs the tool.
+            hover_scene_object(screen, "link:L6")
+            _wait(lambda: js(screen, _GIZMO_SNAP, False), 5.0, "the gizmo")
+            x, y, dx, dy = _wait(lambda: js(screen, _ARROW_TIP), 5.0, "the X arrow")
+            start = _tcp_mm()
+            actions = ActionChains(screen.selenium, duration=20)
+            pointer_to(screen, x, y, actions)
+            actions.click_and_hold()
+            for step in range(1, 9):
+                pointer_to(screen, x + dx * 5 * step, y + dy * 5 * step, actions)
+            actions.release()
+            actions.perform()
+            _wait(
+                lambda: np.linalg.norm(_tcp_mm() - start) > 2.0,
+                15.0,
+                "the tool to move",
+            )
+            assert shown() == GIZMO, "the drag hid the gizmo"
+
+            # Touch has no hover: a tap on the arm pins the gizmo, and a tap
+            # on its arrow grabs the arrow, so it must not count as a tap on
+            # empty space that unpins it.
+            screen.selenium.execute_cdp_cmd(
+                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
+            )
+            _wait(lambda: shown() is None, 5.0, "the gizmo to hide")
+            tap(screen, *scene_object_pixel(screen, "link:L6"))
+            _wait(lambda: js(screen, _GIZMO_SNAP, False), 5.0, "the pinned gizmo")
+            x, y, _, _ = _wait(lambda: js(screen, _ARROW_TIP), 5.0, "the X arrow")
+            tap(screen, x, y)
+            time.sleep(1.0)  # long enough for the tap's events to reach the app
+            assert shown() == GIZMO, "a tap on the gizmo's arrow unpinned it"
+
+            tap(screen, *_wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space"))
+            _wait(lambda: shown() is None, 5.0, "a tap on empty space to unpin")
 
     def test_held_object_follows_the_flange(self, class_screen: Screen) -> None:
         """A shape attached to the flange is parented to the last actuated
