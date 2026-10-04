@@ -148,6 +148,16 @@ async def test_chip_buddy_shrugs_at_a_joint_limit_and_nods_when_homed(
     await ensure_robot_ready_for_motion()
     chip = _buddy(user, "readout-robot-buddy")
     client = ui_state.control_panel.client
+    # Every reaction, not only the latest: another (a warning's startle) can
+    # follow the shrug before the check looks.
+    reactions: list[Reaction] = []
+    react = chip.react
+
+    def recording(reaction: Reaction) -> None:
+        reactions.append(reaction)
+        react(reaction)
+
+    chip.react = recording
 
     try:
         # Park J1 a step short of its upper limit, then hold J1+ into it.
@@ -163,13 +173,14 @@ async def test_chip_buddy_shrugs_at_a_joint_limit_and_nods_when_homed(
         assert await _wait_for(
             lambda: not ui_state.joint_jog_timer.active, timeout=10.0
         ), "the panel never stopped the jog at J1's limit"
-        assert await _wait_for(lambda: chip.last_reaction == Reaction.SHRUG)
+        assert await _wait_for(lambda: Reaction.SHRUG in reactions), reactions
     finally:
         user.find(marker="btn-j1-plus").trigger("mouseup")
         await teleport_to_jog_pose(client)
 
     assert await _wait_for(lambda: robot_state.homed, timeout=15.0)
     btn = user.find(marker="btn-home")
+    reactions.clear()
     btn.trigger("pointerdown")
     deadline = time.monotonic() + HOME_LONG_PRESS_S + 3.0
     while robot_state.homed and time.monotonic() < deadline:
@@ -178,7 +189,7 @@ async def test_chip_buddy_shrugs_at_a_joint_limit_and_nods_when_homed(
     btn.trigger("pointerup")
     btn.trigger("click")
     assert await _wait_for(lambda: robot_state.homed, timeout=30.0)
-    assert await _wait_for(lambda: chip.last_reaction == Reaction.NOD)
+    assert await _wait_for(lambda: Reaction.NOD in reactions), reactions
 
 
 @pytest.mark.integration

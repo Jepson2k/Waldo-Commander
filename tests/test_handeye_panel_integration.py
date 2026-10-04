@@ -137,6 +137,18 @@ async def _wait_for(condition, timeout: float = 5.0, message: str = "") -> None:
     raise AssertionError(message or "condition not met in time")
 
 
+async def _capture(panel) -> None:
+    """Take one sample the way the panel's own runs do: a frame that came late
+    is refused and tried again; any other refusal stands."""
+    for attempt in range(3):
+        try:
+            await panel._capture_sample()
+            return
+        except _CaptureRefused as refused:
+            if "camera frame" not in str(refused) or attempt == 2:
+                raise
+
+
 async def _current_pose() -> np.ndarray:
     st = await waldoctl.commander.client.status()
     assert isinstance(st, StatusSnapshot)
@@ -330,7 +342,7 @@ async def test_handeye_panel_workflow(
             )
             await user.should_see("Board detected")
             n_before = len(panel._samples)
-            await panel._capture_sample()
+            await _capture(panel)
             assert len(panel._samples) == n_before + 1
             return frame
 
@@ -532,7 +544,7 @@ async def test_handeye_panel_workflow(
             timeout=15.0,
             message="detect tick did not report the board after the reload",
         )
-        await panel._capture_sample()
+        await _capture(panel)
         n_views += 1
         assert len(panel._samples) == n_views
         # The rebuilt panel solves the enlarged set by itself too.
