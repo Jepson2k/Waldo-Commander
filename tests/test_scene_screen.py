@@ -23,17 +23,22 @@ import waldoctl
 from nicegui import core
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.actions.action_builder import ActionBuilder
+from selenium.webdriver.common.actions.mouse_button import MouseButton
+from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
 from selenium.webdriver.common.by import By
 from waldoctl import Box
 
 from tests.conftest import skip_webgl_macos_ci
 from tests.helpers.browser_helpers import (
     click_tab,
+    click_marked,
     hover_scene_object,
     js,
     pointer_to,
     project_local,
     run_in_app,
+    scene_canvas,
     scene_object_pixel,
     tap,
 )
@@ -45,6 +50,7 @@ from tests.helpers.wait import (
     screen_wait_for_tcp_ball,
 )
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
+from waldo_commander.constants import DEFAULT_CAMERA
 from waldo_commander.services.urdf_scene.jog_handles_mixin import GIZMO
 from waldo_commander.state import ui_state
 
@@ -178,6 +184,47 @@ for (let fy = 0.3; fy <= 0.7 && !spot; fy += 0.1) {{
 }}
 for (const tc of gizmos) tc.pointerHover({{ x: 2, y: 2, button: 0 }});
 return spot;
+"""
+
+# A pixel on the given ring of the rotate gizmo, past the tool, and the
+# ring's direction on screen there.
+_RING_SPOT = f"""
+const c = {_SCENE};
+let id = null;
+for (const [oid, o] of c.objects) if (o.mesh && o.mesh.name === 'tcp:ball') id = oid;
+const tc = id === null ? null : c.transform_controls.get(id);
+if (!tc || !tc.object || tc.mode !== 'rotate') return null;
+const center = tc.object.getWorldPosition(tc.object.position.clone()).project(c.camera);
+const canvas = c.renderer.domElement;
+const rect = canvas.getBoundingClientRect();
+const cx = rect.left + (center.x + 1) / 2 * rect.width;
+const cy = rect.top + (1 - center.y) / 2 * rect.height;
+let spot = null;
+for (let r = 20; r <= 200 && !spot; r += 4) {{
+  for (let a = 0; a < 360 && !spot; a += 5) {{
+    const t = a * Math.PI / 180;
+    const px = cx + r * Math.cos(t);
+    const py = cy + r * Math.sin(t);
+    if (document.elementFromPoint(px, py) !== canvas) continue;
+    const pointer = {{ x: (px - rect.left) / rect.width * 2 - 1, y: 1 - (py - rect.top) / rect.height * 2, button: 0 }};
+    tc.pointerHover(pointer);
+    if (tc.axis !== arguments[0]) continue;
+    c._raycaster.setFromCamera(pointer, c.camera);
+    if (c._raycaster.intersectObjects(c.interactiveObjects, true).length) continue;
+    spot = [px, py, -Math.sin(t), Math.cos(t)];
+  }}
+}}
+tc.pointerHover({{ x: 2, y: 2, button: 0 }});
+return spot;
+"""
+
+_DIALS_SHOWN = f"""
+const c = {_SCENE};
+const shown = [];
+for (const o of c.objects.values()) {{
+  if (o.mesh && /^jog:dial:\\d+$/.test(o.mesh.name) && o.mesh.parent && o.mesh.visible) shown.push(o.mesh.name);
+}}
+return shown;
 """
 
 _GLOWING = f"""
@@ -647,6 +694,7 @@ class TestScene:
             _wait(lambda: js(screen, _GIZMO_SNAP, False), 5.0, "the gizmo")
             x, y, dx, dy = _wait(lambda: js(screen, _ARROW_TIP), 5.0, "the X arrow")
             start = _tcp_mm()
+            camera = js(screen, _CAMERA)
             actions = ActionChains(screen.selenium, duration=20)
             pointer_to(screen, x, y, actions)
             actions.click_and_hold()
@@ -660,6 +708,9 @@ class TestScene:
                 "the tool to move",
             )
             assert shown() == GIZMO, "the drag hid the gizmo"
+            assert js(screen, _CAMERA) == pytest.approx(camera, abs=1e-6), (
+                "the drag orbited the camera"
+            )
 
             # Touch has no hover: a tap on the arm pins the gizmo, and a tap
             # on its arrow grabs the arrow, so it must not count as a tap on
@@ -677,6 +728,178 @@ class TestScene:
 
             tap(screen, *_wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space"))
             _wait(lambda: shown() is None, 5.0, "a tap on empty space to unpin")
+
+    def test_a_right_drag_pans_without_opening_the_menu(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen)
+        with _camera_kept(screen):
+            x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
+            camera = js(screen, _CAMERA)
+            actions = ActionBuilder(screen.selenium)
+            actions.pointer_action.move_to_location(round(x), round(y))
+            actions.pointer_action.pointer_down(button=MouseButton.RIGHT)
+            for step in range(1, 7):
+                actions.pointer_action.move_to_location(round(x) + 10 * step, round(y))
+            actions.pointer_action.pointer_up(button=MouseButton.RIGHT)
+            actions.perform()
+            _wait(lambda: js(screen, _CAMERA) != camera, 5.0, "the camera to pan")
+            time.sleep(0.5)  # long enough for the release to reach the app
+            assert not js(screen, _MENU_ITEMS), "a right-drag opened the menu"
+
+    def test_moving_between_links_shows_one_handle_at_a_time(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        _teleport_to_jog_pose()
+        with _camera_kept(screen):
+            hover_scene_object(screen, "link:L2")
+            _wait(lambda: js(screen, _DIALS_SHOWN) == ["jog:dial:1"], 5.0, "J2's ring")
+            hover_scene_object(screen, "link:L3")
+            _wait(
+                lambda: js(screen, _DIALS_SHOWN) == ["jog:dial:2"],
+                5.0,
+                "J3's ring, and J2's gone",
+            )
+
+    def test_the_rotate_gizmo_turns_the_tool_and_leaves_the_camera(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        _teleport_to_jog_pose()
+
+        def rpy() -> np.ndarray:
+            pose = waldoctl.commander.status.pose
+            return np.array([pose.rx, pose.ry, pose.rz], dtype=float)
+
+        click_marked(screen, "gizmo-mode-rotate")
+        try:
+            with _camera_kept(screen):
+                hover_scene_object(screen, "link:L6")
+                deadline = time.monotonic() + 5.0
+                while not (
+                    spot := next(
+                        (s for a in "ZXY" if (s := js(screen, _RING_SPOT, a))), None
+                    )
+                ):
+                    assert time.monotonic() < deadline, "no ring of the gizmo is free"
+                    time.sleep(0.1)
+                x, y, dx, dy = spot
+                start = rpy()
+                camera = js(screen, _CAMERA)
+                actions = ActionChains(screen.selenium, duration=20)
+                pointer_to(screen, x, y, actions)
+                actions.click_and_hold()
+                for step in range(1, 9):
+                    pointer_to(screen, x + dx * 5 * step, y + dy * 5 * step, actions)
+                actions.release()
+                actions.perform()
+                _wait(
+                    lambda: np.abs(rpy() - start).max() > 2.0,
+                    15.0,
+                    "the tool to turn",
+                )
+                assert js(screen, _CAMERA) == pytest.approx(camera, abs=1e-6), (
+                    "the drag orbited the camera"
+                )
+        finally:
+            click_marked(screen, "gizmo-mode-move")
+
+    def test_orbit_wheel_and_reset_move_the_camera_and_its_snap(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen)
+        urdf = ui_state.urdf_scene
+        assert urdf is not None
+        default = [
+            DEFAULT_CAMERA["x"],
+            DEFAULT_CAMERA["y"],
+            DEFAULT_CAMERA["z"],
+            0.0,
+            0.0,
+            DEFAULT_CAMERA["look_at_z"],
+        ]
+        with _camera_kept(screen):
+            click_marked(screen, "reset-camera")
+            _wait(
+                lambda: js(screen, _CAMERA) == pytest.approx(default, abs=1e-6),
+                5.0,
+                "the default view",
+            )
+            _wait(lambda: urdf.snap.joint_deg == 1.0, 5.0, "the 1° band")
+
+            x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
+            actions = ActionChains(screen.selenium, duration=20)
+            pointer_to(screen, x, y, actions)
+            actions.click_and_hold()
+            for step in range(1, 9):
+                pointer_to(screen, x + 10 * step, y, actions)
+            actions.release()
+            actions.perform()
+            orbited = js(screen, _CAMERA)
+            assert orbited[:3] != pytest.approx(default[:3], abs=1e-3), "no orbit"
+            assert orbited[3:] == pytest.approx(default[3:], abs=1e-6), (
+                "orbiting moved the target"
+            )
+
+            canvas = scene_canvas(screen)
+            deadline = time.monotonic() + 10.0
+            while urdf.snap.joint_deg != 5.0:
+                assert time.monotonic() < deadline, "zooming out never reached 5°"
+                ActionChains(screen.selenium).scroll_from_origin(
+                    ScrollOrigin.from_element(canvas), 0, 200
+                ).perform()
+                time.sleep(0.2)
+
+            click_marked(screen, "reset-camera")
+            _wait(
+                lambda: js(screen, _CAMERA) == pytest.approx(default, abs=1e-6),
+                5.0,
+                "the default view again",
+            )
+            _wait(lambda: urdf.snap.joint_deg == 1.0, 5.0, "the 1° band again")
+
+    def test_a_ring_drag_keeps_turning_the_joint_off_the_ring(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        _teleport_to_jog_pose()
+        urdf = ui_state.urdf_scene
+        assert urdf is not None
+        with _camera_kept(screen):
+            js(screen, _ZOOM, 1.3)
+            _wait(lambda: urdf.snap.joint_deg == 5.0, 1.0, "the 5° band")
+            hover_scene_object(screen, "link:L2")
+            dial = _wait(lambda: js(screen, _DIAL, "jog:dial:1:knob"), 5.0, "J2's ring")
+            start = _settled(1)
+            grab = js(screen, _GRAB, "jog:dial:1", dial["q"], dial["r"])
+            assert grab is not None, "no part of J2's ring is uncovered"
+            # Grab the ring, then sweep 30° around it at 1.6 times its radius,
+            # well off the ring: the captured pointer keeps turning the joint.
+            angles = [dial["q"] + math.radians(grab + a) for a in range(0, 31, 3)]
+            points = [
+                [dial["r"] * math.cos(angles[0]), dial["r"] * math.sin(angles[0]), 0.0]
+            ]
+            points += [
+                [1.6 * dial["r"] * math.cos(t), 1.6 * dial["r"] * math.sin(t), 0.0]
+                for t in angles[1:]
+            ]
+            path = project_local(screen, "jog:dial:1", points)
+            assert path is not None
+            actions = ActionChains(screen.selenium, duration=20)
+            pointer_to(screen, path[0][0], path[0][1], actions)
+            actions.click_and_hold()
+            for px, py in path[1:]:
+                pointer_to(screen, px, py, actions)
+            actions.release()
+            actions.perform()
+            moved = abs(_settled(1) - start)
+            assert moved >= 15.0, f"J2 stopped at {moved:.1f}° off the ring"
 
     def test_held_object_follows_the_flange(self, class_screen: Screen) -> None:
         """A shape attached to the flange is parented to the last actuated
