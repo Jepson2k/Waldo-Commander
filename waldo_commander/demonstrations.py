@@ -272,6 +272,10 @@ def load_demonstration(path: str | Path) -> Demonstration:
 STILL_DEG = 0.05
 #: A gripper at rest reports positions closer together than this (0–1).
 STILL_TOOL = 1e-3
+#: A gripper has settled once it holds a position this long (seconds). Tool
+#: feedback can lag the status rate, so a gripper still travelling can repeat
+#: a position in consecutive publications.
+TOOL_SETTLE_S = 0.25
 #: A span whose path stays this close to its chord is one linear move (mm).
 STRAIGHT_MM = 3.0
 BLEND_MM = (1.0, 10.0)
@@ -612,14 +616,35 @@ def _convert_spans(
     orientation_error = 0.0
     planned_total = 0.0
     tool_position = _tool_position(samples[0])
+    # The last sample a written tool position accounts for: a change can
+    # settle past the span it began in.
+    tool_settled_at = 0
     needs_tool = False
+
+    def settled(index: int) -> bool:
+        """Whether the gripper holds *index*'s position for
+        ``TOOL_SETTLE_S``, or for the rest of the recording. A span's end is
+        no bound: a gripper still closing as the arm stops settles in the
+        hold after it. A publication without a reading says nothing about
+        where it is."""
+        position = _tool_position(samples[index])
+        assert position is not None
+        for later in range(index + 1, len(samples)):
+            now = _tool_position(samples[later])
+            if now is None:
+                continue
+            if abs(now - position) > STILL_TOOL:
+                return False
+            if _seconds(recording, index, later) >= TOOL_SETTLE_S:
+                return True
+        return True
 
     def tool_changes(start: int, stop: int) -> list[tuple[int, str]]:
         """Where the gripper started moving within *start*..*stop*, each with
         the line that puts it where it settled."""
-        nonlocal tool_position, needs_tool
+        nonlocal tool_position, tool_settled_at, needs_tool
         changes: list[tuple[int, str]] = []
-        index = start
+        index = max(start, tool_settled_at + 1)
         while index <= stop:
             position = _tool_position(samples[index])
             if position is None or (
@@ -629,14 +654,17 @@ def _convert_spans(
                 index += 1
                 continue
             began = index
-            while index < stop:
-                following = _tool_position(samples[index + 1])
-                if following is None or abs(following - position) <= STILL_TOOL:
-                    break
-                index += 1
-                position = following
+            while not settled(index):
+                index = next(
+                    later
+                    for later in range(index + 1, len(samples))
+                    if _tool_position(samples[later]) is not None
+                )
+            position = _tool_position(samples[index])
+            assert position is not None
             changes.append((began, f"rbt.tool.set_position({position:.3f})"))
             tool_position = position
+            tool_settled_at = index
             needs_tool = True
             index += 1
         return changes

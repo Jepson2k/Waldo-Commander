@@ -126,6 +126,31 @@ async def test_joint_jog_steps_dials_and_editing(user: User) -> None:
         f"{_j1():.2f}° (angles binding is not tracking in-place set_deg)"
     )
 
+    # The readout shows the angle to a tenth, so clicking into it and out
+    # again without an edit is not a move: J1 sits off a tenth and stays.
+    client = waldoctl.commander.client
+    q = list(await client.angles())
+    q[0] = round(q[0], 1) + 0.04
+    assert await client.wait_command(await client.move_j(q, duration=0.5), timeout=10)
+    off_tenth = await settled(_j1, tolerance=0.005)
+    user.find(marker="joint-readout-0").trigger("focus").trigger("blur")
+    assert not await wait_until(lambda: abs(_j1() - off_tenth) > 0.02, timeout_s=2.0), (
+        f"leaving the J1 readout unedited moved J1 from {off_tenth:.3f}° to "
+        f"{_j1():.3f}°"
+    )
+    # An edit is a target: J1 goes where it was typed.
+    readout_field = user.find(marker="joint-readout-0").trigger("focus")
+    typed = round(off_tenth, 1) + 2.0
+    for element in readout_field.elements:
+        element.value = typed
+    readout_field.trigger("blur")
+    await wait_moved(
+        _j1,
+        off_tenth,
+        lambda d: abs(off_tenth + d - typed) < 0.1,
+        what=f"J1 moving to the typed {typed:.1f}°",
+    )
+
     # -3° with the minus button (mousedown/mouseup — jog buttons don't
     # listen for a raw click).
     waldoctl.commander.settings.jog.joint_step_deg = 3.0
@@ -259,30 +284,55 @@ async def test_rapid_clicks_drop_no_press(user: User) -> None:
         for i in range(num_clicks):
             await simulate_click(user, "btn-j1-plus", hold_ms=30)
             await _wait_issued(joint_targets, i + 1)
+        j1_targets = [t[0] for t in joint_targets]
+        assert len(joint_targets) == num_clicks, (
+            f"the panel dropped a click: {len(joint_targets)} move_j "
+            f"for {num_clicks} presses"
+        )
+        # Never backwards: a click read a stale pose at worst, never an older one.
+        assert all(b >= a for a, b in zip(j1_targets, j1_targets[1:])), (
+            f"a click targeted behind its predecessor: {j1_targets}"
+        )
+        # A joint step is ABSOLUTE — `measured + step`, read when the click is
+        # handled — so clicks that overlap the motion resolve to the same
+        # target and the arm ends on the last one rather than five steps
+        # along. That is the behaviour; asserting a sum here is what made the
+        # old test flaky.
+        await poll_until(
+            _j1,
+            lambda v: abs(v - j1_targets[-1]) < 0.5 and idle(),
+            timeout_s=20.0,
+            interval=0.05,
+            what=f"J1 settling on the last commanded {j1_targets[-1]:.3f}°",
+        )
+        # The rapid clicks can all land before a status shows the arm moving,
+        # so they may share a target. A click once a status has shown the arm
+        # partway along a step must step from there, not from where it began.
+        waldoctl.commander.settings.jog.joint_step_deg = 10.0
+        began = await settled(_j1)
+        await simulate_click(user, "btn-j1-minus", hold_ms=30)
+        await _wait_issued(joint_targets, num_clicks + 1)
+        assert await wait_until(lambda: began - _j1() >= 1.0, timeout_s=10.0), (
+            f"J1 never started its 10° step down from {began:.3f}°"
+        )
+        await simulate_click(user, "btn-j1-minus", hold_ms=30)
+        await _wait_issued(joint_targets, num_clicks + 2)
     finally:
         cp.client.move_j = orig_move_j
-
-    j1_targets = [t[0] for t in joint_targets]
-    assert len(joint_targets) == num_clicks, (
-        f"the panel dropped a click: {len(joint_targets)} move_j for {num_clicks} presses"
+    first, second = joint_targets[-2][0], joint_targets[-1][0]
+    assert first == pytest.approx(began - 10.0, abs=0.1), (
+        f"a click with J1 at rest on {began:.3f}° did not step from it: {first:.3f}°"
     )
-    # Never backwards: a click read a stale pose at worst, never an older one.
-    assert all(b >= a for a, b in zip(j1_targets, j1_targets[1:])), (
-        f"a click targeted behind its predecessor: {j1_targets}"
+    assert second <= first - 0.9, (
+        f"a click with J1 a degree or more along its step targeted {second:.3f}°, "
+        f"no further than the step's own {first:.3f}°: it read a stale pose"
     )
-    assert j1_targets[-1] > j1_targets[0], (
-        f"five presses left the target where it started: {j1_targets}"
-    )
-    # A joint step is ABSOLUTE — `measured + step`, read when the click is
-    # handled — so clicks that overlap the motion resolve to the same target
-    # and the arm ends on the last one rather than five steps along. That is
-    # the behaviour; asserting a sum here is what made the old test flaky.
     await poll_until(
         _j1,
-        lambda v: abs(v - j1_targets[-1]) < 0.5 and idle(),
+        lambda v: abs(v - joint_targets[-1][0]) < 0.5 and idle(),
         timeout_s=20.0,
         interval=0.05,
-        what=f"J1 settling on the last commanded {j1_targets[-1]:.3f}°",
+        what=f"J1 settling on {joint_targets[-1][0]:.3f}°",
     )
 
     user.find("Cartesian Jog").click()
