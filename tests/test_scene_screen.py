@@ -403,9 +403,15 @@ class TestScene:
             "};",
         )
         try:
-            # A few frames of the render loop.
+            # A few frames of the render loop; the scene draws only when asked.
             wait(screen, 5).until(
-                lambda _: js(screen, "return window.__autoClearLog.length") >= 2
+                lambda _: js(
+                    screen,
+                    "getElement(document.querySelector('.nicegui-scene'))"
+                    ".request_render();"
+                    "return window.__autoClearLog.length",
+                )
+                >= 2
             )
             log = js(screen, "return window.__autoClearLog")
             assert all(v is False for v in log), (
