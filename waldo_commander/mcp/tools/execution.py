@@ -15,7 +15,11 @@ import waldoctl
 from waldo_commander.components.playback import playback
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.mcp.server import get_mcp
-from waldo_commander.mcp.tools.control import require_actuation, require_control
+from waldo_commander.mcp.tools.control import (
+    refuse,
+    require_actuation,
+    require_control,
+)
 from waldo_commander.mcp.tools.simulation import _page_client
 from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.programs import is_any_program_running
@@ -25,7 +29,7 @@ mcp = get_mcp()
 
 def _ensure_active() -> None:
     if waldoctl.commander.programs.active is None:
-        raise RuntimeError("no active program to run")
+        refuse("no active program to run")
 
 
 @mcp.tool(name="execution.run_active")
@@ -41,9 +45,9 @@ async def run_active() -> None:
     Inspect/Auto-edits, auto in Autopilot with a hardware consent floor).
     """
     if is_any_program_running():
-        raise RuntimeError("a program is already running; stop it first")
+        refuse("a program is already running; stop it first")
     if (busy := motion_guard.busy_reason()) is not None:
-        raise RuntimeError(f"{busy}; stop it first")
+        refuse(f"{busy}; stop it first")
     _ensure_active()
     require_actuation("run the active program")
     with _page_client():

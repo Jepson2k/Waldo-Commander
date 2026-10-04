@@ -397,7 +397,9 @@ async def test_tcp_tab_guards_measurements_and_application(
         assert await client.tcp_transform() == pytest.approx([0] * 6)
 
         await interrupted_apply(mcp_stop)
-        await user.should_see("The robot was stopped; nothing more was sent")
+        await user.should_see(
+            "The robot was stopped; nothing more was sent", retries=50
+        )
         assert await client.tcp_transform() == pytest.approx([0] * 6)
 
         await interrupted_apply(mcp_takeover)

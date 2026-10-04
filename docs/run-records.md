@@ -1,6 +1,6 @@
-# Run records
+# Run history
 
-Open **Run records** (the bug icon in the program toolbar) and enable
+Open **Run history…** from the program toolbar's ⋮ menu and enable
 **Record future program runs**. Recording is off when Commander starts. Changing
 the checkbox affects the next launch; it does not change a running program.
 

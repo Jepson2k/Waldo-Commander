@@ -20,7 +20,7 @@ import waldoctl
 from waldoctl.types import Axis, Frame
 
 from waldo_commander.mcp.server import get_mcp
-from waldo_commander.mcp.tools.control import require_actuation
+from waldo_commander.mcp.tools.control import refuse, require_actuation
 from waldo_commander.services.motion_guard import motion_guard
 
 mcp = get_mcp()
@@ -33,7 +33,7 @@ def _require_robot_free() -> None:
     instead of asking the human to approve a move that can't run.
     """
     if (busy := motion_guard.busy_reason()) is not None:
-        raise RuntimeError(f"{busy}; stop it first")
+        refuse(f"{busy}; stop it first")
 
 
 def _dispatched(index: int, verb: str) -> int:

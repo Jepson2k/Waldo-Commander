@@ -9,6 +9,7 @@ from nicegui.testing import User
 
 from tests.helpers.wait import (
     poll_until,
+    reload_page,
     wait_for_app_ready,
     wait_for_tool_key,
     wait_until,
@@ -231,10 +232,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         # controller's offset wins and the inputs show it.
         await client.set_tcp_offset(1.0, 2.0, 3.0)
         await expect_controller_offset([1.0, 2.0, 3.0])
-        # The old tab's disconnect clears the active slot before the reload.
-        ui_state.active_client_id = None
-        await user.open("/")
-        await wait_for_app_ready()
+        await reload_page(user)
         user.find(marker="tab-settings").click()
         await asyncio.sleep(0)
         await user.should_see("TCP offset")
@@ -395,13 +393,6 @@ async def _reconciled() -> None:
     ), "the TCP offset reconcile never finished"
 
 
-async def _reopen(user: User) -> None:
-    # The old tab's disconnect clears the active slot before the reload.
-    ui_state.active_client_id = None
-    await user.open("/")
-    await wait_for_app_ready()
-
-
 @pytest.mark.integration
 async def test_opening_a_page_adopts_only_what_is_safe(
     user: User, monkeypatch: pytest.MonkeyPatch
@@ -427,7 +418,7 @@ async def test_opening_a_page_adopts_only_what_is_safe(
         app_storage.general["tcp_offset_PNEUMATIC"] = {"x": 5.0, "y": 0.0, "z": 0.0}
         control_lease.seize(MCP, "settings-review", "AI")
 
-        await _reopen(user)
+        await reload_page(user)
         await _reconciled()
 
         assert [float(v) for v in await client.tcp_offset()] == [0.0, 0.0, 0.0]
@@ -445,7 +436,7 @@ async def test_opening_a_page_adopts_only_what_is_safe(
         app_storage.general["selected_tool"] = "PNEUMATIC"
         app_storage.general["tcp_offset_PNEUMATIC"] = {"x": 0.0, "y": 0.0, "z": 0.0}
 
-        await _reopen(user)
+        await reload_page(user)
         await _reconciled()
 
         assert app_storage.general["tcp_offset_PNEUMATIC"] == {
@@ -510,3 +501,27 @@ async def test_an_edit_queued_when_the_page_goes_is_dropped(
         gate.set()
         await client.set_tcp_offset(0.0, 0.0, 0.0)
         await client.select_tool("NONE")
+
+
+@pytest.mark.integration
+async def test_a_page_that_is_gone_does_not_hold_up_the_tcp_refresh(
+    user: User,
+) -> None:
+    """A run's end or a reconnect re-reads the controller's TCP, after any
+    Settings push in flight. A page that went away mid-push takes its push
+    task with it, so its lock is never released; the refresh must not wait
+    on it."""
+    from waldo_commander.components.settings import refresh_applied_tcp
+
+    await user.open("/")
+    await wait_for_app_ready()
+    gone = ui_state.settings_content
+    assert gone is not None
+    await gone._tool_lock.acquire()
+    try:
+        await reload_page(user)
+        await asyncio.wait_for(
+            refresh_applied_tcp(ui_state.control_panel.client), timeout=5.0
+        )
+    finally:
+        gone._tool_lock.release()

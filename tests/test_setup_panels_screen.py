@@ -11,7 +11,10 @@ rendered board. The camera test saves into that setup, so it runs last.
 import numpy as np
 import pytest
 from nicegui import Client
-from selenium.common.exceptions import ElementClickInterceptedException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
+)
 from selenium.webdriver.common.by import By
 from waldoctl.setup import Frame, SetupSnapshot, TcpCalibration
 from waldoctl.signals import DigitalSignal
@@ -77,7 +80,8 @@ def _click(screen, marker: str) -> None:
         try:
             driver.find_element(By.ID, f"c{id}").click()
             return True
-        except ElementClickInterceptedException:
+        except (ElementClickInterceptedException, ElementNotInteractableException):
+            # The tab's panel is still opening.
             return False
 
     wait(screen).until(try_click)

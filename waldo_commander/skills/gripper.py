@@ -23,7 +23,7 @@ def _gripper(rbt: RobotClient) -> GripperTool:
 
 @skill(id="waldo.gripper_open", version="1.0.0")
 async def gripper_open(rbt: RobotClient, *, timeout: float = 10.0) -> int:
-    """Open the selected gripper and wait for its native command completion."""
+    """Open the gripper and wait until it has finished."""
     validate_motion(1.0, timeout)
     gripper = _gripper(rbt)
     report_progress("Opening gripper", fraction=0.0)
@@ -34,7 +34,7 @@ async def gripper_open(rbt: RobotClient, *, timeout: float = 10.0) -> int:
 
 @skill(id="waldo.gripper_close", version="1.0.0")
 async def gripper_close(rbt: RobotClient, *, timeout: float = 10.0) -> int:
-    """Close the selected gripper; completion does not imply a sensed grasp."""
+    """Close the gripper and wait until it has finished; this does not confirm a grasp."""
     validate_motion(1.0, timeout)
     gripper = _gripper(rbt)
     report_progress("Closing gripper", fraction=0.0)

@@ -17,7 +17,7 @@ from fastmcp.exceptions import ToolError
 from nicegui.testing import User
 
 from tests.helpers.mcp import payload as _payload
-from tests.helpers.wait import wait_for_app_ready
+from tests.helpers.wait import reload_page, wait_for_app_ready
 from waldo_commander.mcp.server import get_mcp
 from waldo_commander.services import control_lease as cl
 from waldo_commander.services.control_lease import (
@@ -204,11 +204,7 @@ async def test_page_reload_does_not_steal_lease_from_live_mcp_holder(
             took = _payload(await client.call_tool("control.take_control"))
             assert took["you_hold_it"] is True
 
-            # Refresh: the old tab's disconnect clears the active slot (as
-            # _on_disconnect does), then the page loads anew.
-            ui_state.active_client_id = None
-            await user.open("/")
-            await wait_for_app_ready()
+            await reload_page(user)
 
             controller = _payload(await client.call_tool("control.get_controller"))
             assert controller["you_hold_it"] is True, (
@@ -218,9 +214,7 @@ async def test_page_reload_does_not_steal_lease_from_live_mcp_holder(
         # Once the MCP holder has aged out, a reload claims as usual.
         assert control_lease._holder is not None
         control_lease._holder.last_seen -= MCP_TTL_SECONDS + 1
-        ui_state.active_client_id = None
-        await user.open("/")
-        await wait_for_app_ready()
+        await reload_page(user)
         assert control_lease.held_by(BROWSER, ui_state.active_client_id or "")
     finally:
         control_lease.reset()

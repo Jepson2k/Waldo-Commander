@@ -79,7 +79,7 @@ async def read_signal(
     timeout: float = 1.0,
     fixture: SignalFixture | None = None,
 ) -> SignalObservation:
-    """Read a mapped logical level with a host receipt timestamp."""
+    """Read a named input or output once."""
     _seconds(timeout, "Observation timeout")
     return await _observe(rbt, signal, timeout, fixture)
 
@@ -93,7 +93,7 @@ async def wait_signal(
     timeout: float = 5.0,
     fixture: SignalFixture | None = None,
 ) -> SignalWaitResult:
-    """Wait for a logical level; timeout is distinct from lost communication.
+    """Wait until a named signal reaches a value.
 
     The wait reads the status broadcast the controller already sends, so it
     sees a level the tick it is published and never asks for I/O the stream
@@ -157,7 +157,7 @@ async def write_signal(
     timeout: float = 2.0,
     fixture: SignalFixture | None = None,
 ) -> SignalObservation:
-    """Write one mapped output and confirm its reported electrical level.
+    """Set a named output and confirm the controller reports it.
 
     Each phase -- acceptance, the queued write, the level -- gets the whole
     ``timeout``: a managed program holds the write at a step boundary for as

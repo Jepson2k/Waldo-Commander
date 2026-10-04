@@ -12,6 +12,10 @@ import math
 
 import pytest
 import waldoctl
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
+)
 from nicegui import Client, core
 
 from tests.conftest import skip_webgl_macos_ci
@@ -25,6 +29,7 @@ from tests.helpers.browser_helpers import (
 )
 from tests.helpers.browser_session import no_visible, wait, window_size
 from tests.helpers.wait import JOG_SAFE_POSE_DEG, screen_wait_for_scene_ready
+
 from waldo_commander.components.joint_dial import DIAL_RADIUS, dial_angle
 from waldo_commander.services.control_lease import (
     BROWSER,
@@ -33,6 +38,15 @@ from waldo_commander.services.control_lease import (
     control_lease,
 )
 from waldo_commander.state import ui_state
+
+
+def _clicked(element) -> bool:
+    try:
+        element.click()
+    except (ElementClickInterceptedException, ElementNotInteractableException):
+        return False
+    return True
+
 
 MEASURE = """
     const footer = document.querySelector('.status-footer');
@@ -551,8 +565,15 @@ class TestShellLayout:
                             ), placed
                             gear.click()
                             wait(screen).until(lambda _: _settings_open())
-                            marked_element(screen, "settings-close").click()
-                            wait(screen).until(lambda _: not _settings_open())
+                            # A click while the dialog is still sliding in can
+                            # be dropped; close it until it is closed.
+                            wait(screen).until(
+                                lambda _: not _settings_open()
+                                or (
+                                    _clicked(marked_element(screen, "settings-close"))
+                                    and not _settings_open()
+                                )
+                            )
                             wait(screen, 5).until(
                                 lambda _: no_visible(screen, ".q-dialog__backdrop")
                             )

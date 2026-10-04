@@ -1600,15 +1600,13 @@ class EditorPanel(FileOperationsMixin):
 
                     records_btn = (
                         ui.button(
-                            "Run records",
-                            icon="bug_report",
+                            "Run history…",
+                            icon="history",
                             on_click=show_run_records,
                         )
                         .props("flat dense no-caps align=left color=wc-text")
                         .classes("w-full")
-                        .tooltip(
-                            "What recent runs did, and exporting it for a bug report"
-                        )
+                        .tooltip("What each recorded run did")
                     )
                     records_btn.mark("editor-records-btn")
 
@@ -1618,13 +1616,15 @@ class EditorPanel(FileOperationsMixin):
 
                     restart_btn = (
                         ui.button(
-                            "Supervised restart",
+                            "Start from a function…",
                             icon="restart_alt",
                             on_click=show_supervised_restart,
                         )
                         .props("flat dense no-caps align=left color=wc-text")
                         .classes("w-full")
-                        .tooltip("Restart a stopped program from a chosen entry")
+                        .tooltip(
+                            "Restart at a chosen function after checking the setup"
+                        )
                         .mark("editor-restart-btn")
                     )
                 self._toolbar_btns = [

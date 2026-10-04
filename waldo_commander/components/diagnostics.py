@@ -29,7 +29,12 @@ from typing import Any, Callable
 import waldoctl
 from nicegui import background_tasks, ui
 
-from waldo_commander.common.charts import chart_options, expand_chart_button
+from waldo_commander.common.charts import (
+    chart_options,
+    expand_chart_button,
+    fresh_since,
+    push_live,
+)
 from waldo_commander.common.panel_theme import joint_colors
 from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S
@@ -164,6 +169,8 @@ class DiagnosticsPage:
         self._constants_retry_at = 0.0
         self._constants_backoff_s = _CONSTANTS_RETRY_MIN_S
         self._chart_pushed_at = 0.0
+        # The newest sample the chart has, so a push sends only what follows.
+        self._chart_sent_until = float("-inf")
 
     # ---- availability ----
     #
@@ -291,18 +298,11 @@ class DiagnosticsPage:
             self._row("Scheduling", "diag-loop-sched")
 
     def _build_link_section(self) -> None:
-        lh = waldoctl.commander.status.link_health
         with self._section("link", "Motor bus"):
-            self._row("State", "diag-link-state").bind_text_from(lh, "state")
-            self._row("Restarts", "diag-link-restarts").bind_text_from(
-                lh, "restarts", backward=str
-            )
-            self._row("TX errors", "diag-link-tx-errors").bind_text_from(
-                lh, "tx_errors", backward=str
-            )
-            self._row("RX frames", "diag-link-rx-frames").bind_text_from(
-                lh, "rx_frames", backward=str
-            )
+            self._row("State", "diag-link-state")
+            self._row("Restarts", "diag-link-restarts")
+            self._row("TX errors", "diag-link-tx-errors")
+            self._row("RX frames", "diag-link-rx-frames")
 
     def _build_drives_section(self) -> None:
         """A row per actuator, plus the tool drive some backends report.
@@ -425,7 +425,7 @@ class DiagnosticsPage:
                 {"data": [f"J{i + 1}" for i in range(n)], "selectedMode": False}
             )
             self._chart = (
-                ui.echart(options, renderer="svg")
+                ui.echart(options)
                 .classes("w-full")
                 .style("height: 230px")
                 .mark("diag-torque-chart")
@@ -678,9 +678,14 @@ class DiagnosticsPage:
 
     def _update_link(self, worst: int, reasons: _Reasons) -> tuple[int, _Reasons]:
         """Bus state, where anything but Up is the whole story."""
-        state = waldoctl.commander.status.link_health.state
+        lh = waldoctl.commander.status.link_health
+        state = lh.state
         if not state:
             return worst, reasons
+        self._set("diag-link-state", state)
+        self._set("diag-link-restarts", str(lh.restarts))
+        self._set("diag-link-tx-errors", str(lh.tx_errors))
+        self._set("diag-link-rx-frames", str(lh.rx_frames))
         # Backends spell the CAN states either way: ErrorPassive, ERROR_PASSIVE.
         normalised = state.lower().replace("_", "")
         level = OK if normalised in ("up", "unknown") else FAULT
@@ -848,23 +853,18 @@ class DiagnosticsPage:
             return
         self._chart_pushed_at = now
         timestamps, measured, external = result
-        ts_ms = [t * 1000.0 for t in timestamps]
-        series: list[dict[str, Any]] = []
-        for rows in (measured, external):
-            for j in range(self._joint_count):
-                series.append(
-                    {
-                        "data": [
-                            [t, round(row[j], 3)]
-                            for t, row in zip(ts_ms, rows)
-                            if j < len(row)
-                        ]
-                    }
-                )
-        with self._chart.props.suspend_updates():
-            for destination, values in zip(self._chart.options["series"], series):
-                destination["data"] = values["data"]
-        self._chart.run_chart_method("setOption", {"series": series})
+        start = fresh_since(timestamps, self._chart_sent_until)
+        if start == len(timestamps):
+            return
+        self._chart_sent_until = timestamps[-1]
+        n = self._joint_count
+        rows = [
+            [round(t * 1000.0)]
+            + [round(m[j], 3) if j < len(m) else None for j in range(n)]
+            + [round(e[j], 3) if j < len(e) else None for j in range(n)]
+            for t, m, e in zip(timestamps[start:], measured[start:], external[start:])
+        ]
+        push_live(self._chart, rows, len(timestamps))
 
     # ---- actions ----
 

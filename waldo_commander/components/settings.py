@@ -93,7 +93,7 @@ def adopt_applied_tcp(calibration: TcpCalibration) -> None:
         simulation.schedule_debounced_simulation()
     except RuntimeError:
         pass
-    for view in list(_settings_views):
+    for view in _live_views():
         view.show_applied_tcp(calibration)
 
 
@@ -106,7 +106,7 @@ async def refresh_applied_tcp(client: RobotClient) -> None:
     async with AsyncExitStack() as stack:
         # A Settings push in flight adopts its own readback; wait for it.
         # One lock order, so two refreshes never hold each other's locks.
-        for view in sorted(_settings_views, key=id):
+        for view in sorted(_live_views(), key=id):
             await stack.enter_async_context(view._tool_lock)
         try:
             applied = await read_applied_tcp(client)
@@ -146,11 +146,18 @@ def _setting_row(title: str, description: str):
 _settings_views: weakref.WeakSet["SettingsContent"] = weakref.WeakSet()
 
 
+def _live_views() -> list["SettingsContent"]:
+    """Settings views whose page is still up. A view outlives its page until
+    it is collected, and one that went away mid-push never releases its lock."""
+    return [view for view in _settings_views if view._page.id in Client.instances]
+
+
 class SettingsContent:
     """The settings rows, one category per tab of the Settings dialog."""
 
     def __init__(self, client: RobotClient) -> None:
         self.client = client
+        self._page = context.client
         self.dialog: ui.dialog | None = None
         self._shortcuts_box: ui.column | None = None
         self._tour_box: ui.column | None = None

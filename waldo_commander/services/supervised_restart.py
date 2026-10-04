@@ -14,6 +14,9 @@ from typing import Any
 from waldoctl.client import RobotClient
 from waldoctl.status import ActionState
 
+# The joint speed a status may still report for an arm at rest (0.01 rad/s).
+_AT_REST_DEG_S = math.degrees(0.01)
+
 
 BEFORE_RESTART = "before_restart"
 """A program's pre-start hook, by name: the controller vendors' restart event
@@ -255,7 +258,7 @@ class RestartState:
     tool_variant: str
     tcp: tuple[float, ...]
     angles_deg: tuple[float, ...]
-    speeds_rad_s: tuple[float, ...]
+    speeds_deg_s: tuple[float, ...]
     homed: bool
     enabled: bool
     executing_index: int
@@ -278,14 +281,14 @@ class RestartState:
         if (
             any(
                 not math.isfinite(v)
-                for v in (*self.angles_deg, *self.speeds_rad_s, *self.tcp)
+                for v in (*self.angles_deg, *self.speeds_deg_s, *self.tcp)
             )
             or not self.angles_deg
-            or len(self.speeds_rad_s) != len(self.angles_deg)
+            or len(self.speeds_deg_s) != len(self.angles_deg)
             or len(self.tcp) != 6
         ):
             raise ValueError("Controller state is unavailable")
-        if any(abs(v) > 0.01 for v in self.speeds_rad_s):
+        if any(abs(v) > _AT_REST_DEG_S for v in self.speeds_deg_s):
             raise ValueError("Wait for the arm to stop before restarting")
 
     def require_same_setup(self, previous: RestartState) -> None:

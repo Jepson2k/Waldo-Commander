@@ -216,6 +216,22 @@ async def wait_for_app_ready(timeout_s: float = 45.0) -> None:
         ) from None
 
 
+async def reload_page(user: User) -> None:
+    """Reload the page as a browser does: the old tab disconnects and is gone.
+
+    A simulated client outlives its page, and its timers would keep acting
+    through ``user``: the old tab's watchdog sees the slot it just released
+    and reloads, landing the user on a takeover page later in the test.
+    """
+    old = user.client
+    for socket_id, document_id in list(old._socket_to_document_id.items()):
+        old.handle_disconnect(socket_id)
+        old._cancel_delete_task(document_id)
+    old.delete()
+    await user.open("/")
+    await wait_for_app_ready()
+
+
 async def wait_for_urdf_ready(timeout_s: float = 5.0) -> None:
     """Wait for URDF scene initialization to complete.
 
