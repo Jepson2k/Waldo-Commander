@@ -230,6 +230,11 @@ class KeybindingsManager:
         """Called from JS when editor/input focus changes."""
         self._editor_focused = focused
 
+    @property
+    def editor_focused(self) -> bool:
+        """Whether a text editor or input has the keyboard."""
+        return self._editor_focused
+
     def get_all_bindings(self) -> dict[str, list[Keybinding]]:
         """Get all bindings grouped by category for help menu."""
         categories: dict[str, list[Keybinding]] = {}

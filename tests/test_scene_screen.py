@@ -33,8 +33,11 @@ from waldoctl import Box
 
 from tests.conftest import skip_webgl_macos_ci
 from tests.helpers.browser_helpers import (
-    click_tab,
     click_marked,
+    click_tab,
+    close_panel,
+    defocus_editor,
+    focus_editor,
     hover_scene_object,
     js,
     pointer_to,
@@ -54,6 +57,8 @@ from tests.helpers.wait import (
 )
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 from waldo_commander.constants import DEFAULT_CAMERA
+from waldo_commander.services.keybindings import keybindings_manager
+from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.urdf_scene.jog_handles_mixin import GIZMO
 from waldo_commander.state import ui_state
 
@@ -237,6 +242,36 @@ const py = rect.top + (1 - v.y) / 2 * rect.height;
 return document.elementFromPoint(px, py) === c.renderer.domElement ? [px, py] : null;
 """
 
+# A whole viewport pixel on the floor near the arm where a press hits neither
+# an interactive object nor a gizmo, and the floor point under it.
+_FLOOR_SPOT = f"""
+const c = {_SCENE};
+const canvas = c.renderer.domElement;
+const rect = canvas.getBoundingClientRect();
+const gizmos = [...c.transform_controls.values()];
+const p = c.camera.position.clone();
+const ray = c._raycaster.ray;
+let spot = null;
+for (let r = 0.25; r <= 0.45 && !spot; r += 0.05) {{
+  for (let a = 0; a < 360 && !spot; a += 15) {{
+    const t = a * Math.PI / 180;
+    p.set(r * Math.cos(t), r * Math.sin(t), 0).project(c.camera);
+    const px = Math.round(rect.left + (p.x + 1) / 2 * rect.width);
+    const py = Math.round(rect.top + (1 - p.y) / 2 * rect.height);
+    if (document.elementFromPoint(px, py) !== canvas) continue;
+    const pointer = {{ x: (px - rect.left) / rect.width * 2 - 1, y: 1 - (py - rect.top) / rect.height * 2, button: 0 }};
+    c._raycaster.setFromCamera(pointer, c.camera);
+    if (c._raycaster.intersectObjects(c.interactiveObjects, true).length) continue;
+    if (gizmos.some((tc) => (tc.pointerHover(pointer), tc.axis !== null))) continue;
+    c._raycaster.setFromCamera(pointer, c.camera);
+    const k = -ray.origin.z / ray.direction.z;
+    spot = [px, py, ray.origin.x + k * ray.direction.x, ray.origin.y + k * ray.direction.y];
+  }}
+}}
+for (const tc of gizmos) tc.pointerHover({{ x: 2, y: 2, button: 0 }});
+return spot;
+"""
+
 _DIALS_SHOWN = f"""
 const c = {_SCENE};
 const shown = [];
@@ -374,42 +409,36 @@ def _camera_kept(screen: Screen) -> Iterator[None]:
 @contextmanager
 def _program_previewed(source: str) -> Iterator[list[str]]:
     """Preview ``source`` in the scene and yield its target ids; the program
-    that was there comes back afterwards, as an edit would bring it back."""
+    that was there comes back afterwards, each through the editor as an edit
+    would come."""
     from waldo_commander.components.simulation_engine import simulation
 
-    async def preview(text: str) -> list[str]:
-        tab = waldoctl.commander.programs.active
-        textarea = ui_state.active_textarea
-        assert tab is not None and textarea is not None
-        textarea.value = text
-        tab.source = text
-        await simulation.run_simulation()
-        return [t.id for t in tab.dry_run.targets]
+    def edit(text: str) -> None:
+        ui_state.active_textarea.value = text  # schedules the preview
+
+    def previewing() -> bool:
+        return (
+            simulation._simulation_debounce_timer is not None
+            or simulation._physics_timer is not None
+        )
 
     def saved() -> tuple[str, object]:
         tab = waldoctl.commander.programs.active
         assert tab is not None
         return ui_state.active_textarea.value, tab.dry_run.last_sim_joints_deg
 
-    def restore() -> None:
-        tab = waldoctl.commander.programs.active
-        assert tab is not None
-        ui_state.active_textarea.value = text  # schedules the preview, as an edit does
-        tab.source = text
-
-    assert core.loop is not None
     text, sim_joints = run_in_app(saved)
+    run_in_app(lambda: edit(source))
+    _wait(lambda: not run_in_app(previewing), 30.0, "the program's preview")
     try:
-        yield asyncio.run_coroutine_threadsafe(preview(source), core.loop).result(60)
+        yield run_in_app(
+            lambda: [t.id for t in waldoctl.commander.programs.active.dry_run.targets]
+        )
     finally:
-        run_in_app(restore)
+        run_in_app(lambda: edit(text))
         # A preview still running when the next test injects its records
         # would overwrite them.
-        _wait(
-            lambda: run_in_app(lambda: simulation._simulation_debounce_timer is None),
-            15.0,
-            "the restored program's preview",
-        )
+        _wait(lambda: not run_in_app(previewing), 30.0, "the restored preview")
         # A previewed program re-previews whenever the arm moves; the program
         # that was there had not been previewed.
         run_in_app(
@@ -419,6 +448,18 @@ def _program_previewed(source: str) -> Iterator[list[str]]:
                 sim_joints,
             )
         )
+
+
+def _caught_up() -> None:
+    """Return once every event the browser has sent so far has reached the
+    app: the reply to a round trip started now comes back behind them."""
+    client = ui_state.urdf_scene.scene.client
+
+    async def round_trip() -> None:
+        await client.run_javascript("0", timeout=5.0)
+
+    assert core.loop is not None
+    asyncio.run_coroutine_threadsafe(round_trip(), core.loop).result(10)
 
 
 def _tcp_mm() -> np.ndarray:
@@ -441,19 +482,29 @@ def _drag_along(
     actions.perform()
 
 
-def _choose(screen: Screen, x: float, y: float, item: str) -> None:
-    """Right-click at (x, y) and pick ``item`` from the scene's menu."""
+def _choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
+    """Right-click at (x, y), pick ``item`` from the scene's menu and return
+    the items the menu offered."""
     actions = ActionChains(screen.selenium, duration=0)
     pointer_to(screen, x, y, actions)
     actions.context_click()
     actions.perform()
 
+    offered: list[str] = []
+
     def shown_item(driver):
-        for element in driver.find_elements(By.CSS_SELECTOR, ".q-menu .q-item"):
-            if element.is_displayed() and element.text.strip() == item:
-                element.click()
-                return True
-        return False
+        shown = [
+            e
+            for e in driver.find_elements(By.CSS_SELECTOR, ".q-menu .q-item")
+            if e.is_displayed()
+        ]
+        texts = [e.text.strip() for e in shown]
+        # The menu fills in after it opens; pick from it once it stops changing.
+        settled, offered[:] = texts == offered, texts
+        if not settled or item not in texts:
+            return False
+        shown[texts.index(item)].click()
+        return True
 
     # The menu is filled in after it opens, so its items can go stale while read.
     WebDriverWait(
@@ -464,6 +515,7 @@ def _choose(screen: Screen, x: float, y: float, item: str) -> None:
     ).until(shown_item, message=f"no {item!r} in the menu")
     # A closing menu still covers the canvas and would swallow the next press.
     wait(screen, 5).until(lambda _: no_visible(screen, ".q-menu"))
+    return offered
 
 
 def _records(
@@ -780,13 +832,7 @@ class TestScene:
             )
             start = _tcp_mm()
             camera = js(screen, _CAMERA)
-            actions = ActionChains(screen.selenium, duration=20)
-            pointer_to(screen, x, y, actions)
-            actions.click_and_hold()
-            for step in range(1, 9):
-                pointer_to(screen, x + dx * 5 * step, y + dy * 5 * step, actions)
-            actions.release()
-            actions.perform()
+            _drag_along(screen, x, y, dx, dy)
             _wait(
                 lambda: np.linalg.norm(_tcp_mm() - start) > 2.0,
                 15.0,
@@ -810,7 +856,7 @@ class TestScene:
                 lambda: js(screen, _ARROW_TIP, "tcp:ball"), 5.0, "the X arrow"
             )
             tap(screen, x, y)
-            time.sleep(1.0)  # long enough for the tap's events to reach the app
+            _caught_up()
             assert shown() == GIZMO, "a tap on the gizmo's arrow unpinned it"
 
             tap(screen, *_wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space"))
@@ -821,19 +867,40 @@ class TestScene:
     ) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen)
-        with _camera_kept(screen):
-            x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
-            camera = js(screen, _CAMERA)
+
+        def right_drag(x: float, y: float, offsets: list[int]) -> None:
             actions = ActionBuilder(screen.selenium)
             actions.pointer_action.move_to_location(round(x), round(y))
             actions.pointer_action.pointer_down(button=MouseButton.RIGHT)
-            for step in range(1, 7):
-                actions.pointer_action.move_to_location(round(x) + 10 * step, round(y))
+            for dx in offsets:
+                actions.pointer_action.move_to_location(round(x) + dx, round(y))
             actions.pointer_action.pointer_up(button=MouseButton.RIGHT)
             actions.perform()
+
+        with _camera_kept(screen):
+            x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
+            # A menu left open by a right-click must not come back with a pan.
+            # A press may show the menu for a moment; its release closes it.
+            actions = ActionChains(screen.selenium, duration=0)
+            pointer_to(screen, x, y, actions)
+            actions.context_click()
+            actions.perform()
+            _wait(lambda: js(screen, _MENU_ITEMS), 5.0, "the menu")
+            camera = js(screen, _CAMERA)
+            right_drag(x, y, [10, 20, 30, 40, 50, 60])
             _wait(lambda: js(screen, _CAMERA) != camera, 5.0, "the camera to pan")
-            time.sleep(0.5)  # long enough for the release to reach the app
-            assert not js(screen, _MENU_ITEMS), "a right-drag opened the menu"
+            wait(screen, 5).until(
+                lambda _: no_visible(screen, ".q-menu"),
+                message="a right-drag left a menu open",
+            )
+
+            # A pan that comes back to where it started is still a pan.
+            x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
+            right_drag(x, y, [20, 40, 60, 40, 20, 0])
+            wait(screen, 5).until(
+                lambda _: no_visible(screen, ".q-menu"),
+                message="a pan back to its start opened the menu",
+            )
 
     def test_moving_between_links_shows_one_handle_at_a_time(
         self, class_screen: Screen
@@ -877,13 +944,7 @@ class TestScene:
                 x, y, dx, dy = spot
                 start = rpy()
                 camera = js(screen, _CAMERA)
-                actions = ActionChains(screen.selenium, duration=20)
-                pointer_to(screen, x, y, actions)
-                actions.click_and_hold()
-                for step in range(1, 9):
-                    pointer_to(screen, x + dx * 5 * step, y + dy * 5 * step, actions)
-                actions.release()
-                actions.perform()
+                _drag_along(screen, x, y, dx, dy)
                 _wait(
                     lambda: np.abs(rpy() - start).max() > 2.0,
                     15.0,
@@ -920,13 +981,7 @@ class TestScene:
             _wait(lambda: urdf.snap.joint_deg == 1.0, 5.0, "the 1° band")
 
             x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
-            actions = ActionChains(screen.selenium, duration=20)
-            pointer_to(screen, x, y, actions)
-            actions.click_and_hold()
-            for step in range(1, 9):
-                pointer_to(screen, x + 10 * step, y, actions)
-            actions.release()
-            actions.perform()
+            _drag_along(screen, x, y, 1, 0, 80)
             orbited = js(screen, _CAMERA)
             assert orbited[:3] != pytest.approx(default[:3], abs=1e-3), "no orbit"
             assert orbited[3:] == pytest.approx(default[3:], abs=1e-6), (
@@ -1060,24 +1115,48 @@ class TestScene:
                 )
                 assert "move_l(" in lines()[added], lines()[added]
 
-                # Escape cancels a new placement, and does not stop the arm.
+                # Escape in the code editor is the editor's own; anywhere else
+                # it cancels a new placement, and neither stops the arm.
                 _choose(screen, x, y, "Place Target at Robot Position...")
                 _wait(lambda: js(screen, _GIZMO_SNAP, False), 10.0, "the editing gizmo")
+                stops = motion_guard.stop_generation
+                click_tab(screen, "program")
+                try:
+                    editor = focus_editor(screen)
+                    _wait(
+                        lambda: keybindings_manager.editor_focused,
+                        5.0,
+                        "the editor to have the keyboard",
+                    )
+                    editor.send_keys(Keys.ESCAPE)
+                    _caught_up()
+                    assert run_in_app(lambda: urdf._editing_unified_target), (
+                        "Escape in the editor cancelled the placement"
+                    )
+                finally:
+                    close_panel(screen, "program-panel")
+                defocus_editor(screen)
                 send_global_key(screen, Keys.ESCAPE)
                 _wait(
                     lambda: not run_in_app(lambda: urdf._editing_unified_target),
                     5.0,
                     "Escape to cancel",
                 )
-                assert not run_in_app(lambda: ui_state.control_panel.estop.active), (
-                    "Escape stopped the arm"
-                )
+                _caught_up()
+                assert motion_guard.stop_generation == stops, "Escape stopped the arm"
                 assert len(lines()) == len(after), "the cancelled target was kept"
 
                 # Delete it, straight from the menu.
                 group = target_on(added + 1)
                 _choose(screen, *scene_object_pixel(screen, group), "Delete Target")
                 _wait(lambda: lines() == before, 10.0, "the line to go")
+                # Its marker goes with it, not a second later with the next
+                # preview, so it cannot be deleted twice.
+                _wait(
+                    lambda: screen_get_scene_object(screen, group) is None,
+                    0.3,
+                    "the marker to go",
+                )
             finally:
                 if run_in_app(lambda: urdf._editing_unified_target):
                     click_marked(screen, "edit-bar-cancel")
@@ -1105,11 +1184,17 @@ class TestScene:
         before = shapes()
         with _camera_kept(screen):
             try:
-                x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
-                _choose(screen, x, y, "Box Here...")
+                x, y, *floor = _wait(
+                    lambda: js(screen, _FLOOR_SPOT), 5.0, "floor near the arm"
+                )
+                offered = _choose(screen, x, y, "Box Here...")
+                assert any(i.startswith("Place Target Here") for i in offered), offered
                 click_marked(screen, "shape-dialog-save")
                 (name,) = _wait(
                     lambda: set(shapes()) - set(before), 5.0, "the new keep-out"
+                )
+                assert shapes()[name][:2] == pytest.approx(floor, abs=0.003), (
+                    "the keep-out is not where the floor was clicked"
                 )
                 obj = f"shape:{name}"
                 centre = _wait(lambda: js(screen, _CENTRE_PIXEL, obj), 10.0, obj)

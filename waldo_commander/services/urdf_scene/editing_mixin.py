@@ -26,6 +26,9 @@ from waldo_commander.state import (
     ui_state,
 )
 
+from waldo_commander.services.keybindings import keybindings_manager
+from waldo_commander.services.programs import preview_is_current
+
 from .config import RobotAppearanceMode
 from .ik_solver import EditingIKSolver
 from .loader import normalize_axis
@@ -333,13 +336,10 @@ class EditingMixin(ShapeEditingMixin):
                 target_id = name.split("target:", 1)[1]
                 break
 
-        ground_point = getattr(e, "ground_point", None)
-        if ground_point:
-            self._last_click_coords = (
-                float(ground_point.x),
-                float(ground_point.y),
-                float(ground_point.z),
-            )
+        ground = e.intersections.get("ground")
+        self._last_click_coords = (
+            None if ground is None else (ground.x, ground.y, ground.z)
+        )
 
         shape_name = self._shape_hit_name(hits)
         draft_name = self._draft_hit_name(hits)
@@ -366,8 +366,20 @@ class EditingMixin(ShapeEditingMixin):
                     def make_delete(t=tid):
                         return lambda: ui_state.editor_panel.delete_target_code(t)
 
-                    ui.menu_item("Edit Target...", on_click=make_edit())
-                    ui.menu_item("Delete Target", on_click=make_delete())
+                    # The target's line is only known while no other edit is
+                    # open and the preview answers the current source.
+                    program = waldoctl.commander.programs.active
+                    settled = (
+                        not self._editing_unified_target
+                        and program is not None
+                        and preview_is_current(program)
+                    )
+                    ui.menu_item("Edit Target...", on_click=make_edit()).set_enabled(
+                        settled
+                    )
+                    ui.menu_item("Delete Target", on_click=make_delete()).set_enabled(
+                        settled
+                    )
             else:
                 ui.item("Add Target").classes("font-bold text-sm")
                 ui.separator()
@@ -519,7 +531,10 @@ class EditingMixin(ShapeEditingMixin):
         self.exit_editing_mode()
 
     def _handle_keyboard(self, e) -> None:
-        """Handle keyboard events."""
+        """Escape cancels a target edit or a keep-out move."""
+        # In the editor, Escape closes the editor's own popups.
+        if keybindings_manager.editor_focused:
+            return
         if e.key == "Escape" and e.action.keydown:
             if self._editing_unified_target:
                 self._end_editing_session()

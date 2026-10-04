@@ -27,7 +27,7 @@ import numpy as np
 import waldoctl
 from nicegui import app, ui
 from nicegui.elements.scene.scene_object3d import Object3D
-from nicegui.events import GenericEventArguments
+from nicegui.events import GenericEventArguments, SceneIntersectionPlane
 from scipy.spatial.transform import Rotation
 from waldoctl import LinearMotion, MeshRole, PartMotion, RotaryMotion
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, TOOL_PREFIX, pose_matrix
@@ -448,6 +448,8 @@ class UrdfScene(
                     hover_scale=1.5,
                     on_click=self._handle_scene_click,
                     click_events=["contextmenu"],
+                    # Where a right-click meets the floor: where "… Here" places.
+                    intersection_planes=[SceneIntersectionPlane(name="ground")],
                 )
                 # ui.scene sizes its canvas once, shortly after mount, from
                 # whatever height this element resolves to at that instant, and
@@ -620,6 +622,9 @@ class UrdfScene(
     def _on_right_press(self, _e: GenericEventArguments) -> None:
         self._pending_context_menu_event = None
         self._right_release_moved = None
+        # A menu left open would otherwise reopen here with its old items.
+        if self.context_menu:
+            self.context_menu.clear()
 
     def _on_right_release(self, e: GenericEventArguments) -> None:
         self._right_release_moved = float(e.args["moved"])
@@ -636,6 +641,8 @@ class UrdfScene(
         self._right_release_moved = None
         if moved <= self._right_click_drag_threshold:
             self._populate_context_menu(event)
+        elif self.context_menu:
+            self.context_menu.close()
 
     def _update_simulation_view(self) -> None:
         """Update simulation visualization (paths, etc.) based on state."""
