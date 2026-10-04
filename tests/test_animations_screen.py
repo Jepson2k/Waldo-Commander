@@ -698,26 +698,44 @@ class TestAnimations:
 
             # A collision flash starting part-way through another still ends
             # on the box's own glow, not the first flash's in-between red.
-            glow = """
+            # The glow is sampled every frame and read once it has held still
+            # for a few frames past both flashes: a loaded runner draws slowly
+            # enough that a fixed wait can land inside the second flash, and a
+            # glow left stuck holds still on the wrong colour.
+            driver.execute_script("""
                 const canvas = document.querySelector('canvas');
                 const host = canvas.closest('[id^="c"]');
                 let box = null;
                 getElement(host.id.slice(1)).scene.traverse(o => {
                   if (o.name === 'shape:fx-box') box = o;
                 });
-                if (arguments[0]) {
-                  const id = Number(host.id.slice(1));
-                  SceneFx.alarm(id, [box.object_id], '#ff0000');
-                  setTimeout(() => SceneFx.alarm(id, [box.object_id], '#ff0000'), 200);
-                }
-                return box.material.emissive.getHex();
-            """
-            own = driver.execute_script(glow, True)
-            time.sleep(1.5)
-            left = driver.execute_script(glow, False)
-            assert left == own, (
-                f"overlapping flashes left the keep-out glowing #{left:06x}, "
-                f"not its own #{own:06x}"
+                const glow = () => box.material.emissive.getHex();
+                const s = window.__glow = {
+                  own: glow(), last: glow(), still: 0, start: performance.now(), run: true,
+                };
+                (function sample() {
+                  if (!s.run) return;
+                  const now = glow();
+                  s.still = now === s.last ? s.still + 1 : 0;
+                  s.last = now;
+                  s.elapsed = performance.now() - s.start;
+                  requestAnimationFrame(sample);
+                })();
+                const id = Number(host.id.slice(1));
+                SceneFx.alarm(id, [box.object_id], '#ff0000');
+                setTimeout(() => SceneFx.alarm(id, [box.object_id], '#ff0000'), 200);
+            """)
+            glow = _poll(
+                screen,
+                "return window.__glow",
+                lambda g: g["elapsed"] > 1000 and g["still"] >= 5,
+                15,
+                "the keep-out's glow never settled after the flashes",
+            )
+            driver.execute_script("window.__glow.run = false;")
+            assert glow["last"] == glow["own"], (
+                f"overlapping flashes left the keep-out glowing #{glow['last']:06x}, "
+                f"not its own #{glow['own']:06x}"
             )
         finally:
             driver.execute_script("window.__box.run = false;")
