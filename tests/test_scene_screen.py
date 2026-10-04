@@ -452,14 +452,16 @@ def _program_previewed(source: str) -> Iterator[list[str]]:
 
 def _caught_up() -> None:
     """Return once every event the browser has sent so far has reached the
-    app: the reply to a round trip started now comes back behind them."""
+    app, and every update the app sent in answer has reached the browser:
+    each round trip's reply comes back behind what was sent before it."""
     client = ui_state.urdf_scene.scene.client
 
-    async def round_trip() -> None:
+    async def round_trips() -> None:
+        await client.run_javascript("0", timeout=5.0)
         await client.run_javascript("0", timeout=5.0)
 
     assert core.loop is not None
-    asyncio.run_coroutine_threadsafe(round_trip(), core.loop).result(10)
+    asyncio.run_coroutine_threadsafe(round_trips(), core.loop).result(15)
 
 
 def _tcp_mm() -> np.ndarray:
@@ -889,6 +891,8 @@ class TestScene:
             camera = js(screen, _CAMERA)
             right_drag(x, y, [10, 20, 30, 40, 50, 60])
             _wait(lambda: js(screen, _CAMERA) != camera, 5.0, "the camera to pan")
+            _caught_up()
+            assert not js(screen, _MENU_ITEMS), "a right-drag brought back the menu"
             wait(screen, 5).until(
                 lambda _: no_visible(screen, ".q-menu"),
                 message="a right-drag left a menu open",
@@ -897,10 +901,30 @@ class TestScene:
             # A pan that comes back to where it started is still a pan.
             x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
             right_drag(x, y, [20, 40, 60, 40, 20, 0])
-            wait(screen, 5).until(
-                lambda _: no_visible(screen, ".q-menu"),
-                message="a pan back to its start opened the menu",
+            _caught_up()
+            assert not js(screen, _MENU_ITEMS), (
+                "a pan back to its start opened the menu"
             )
+
+            # The menu key or a long press opens the menu with no right press
+            # before it; headless Chrome makes no contextmenu from a synthetic
+            # long press, so the event comes straight to the canvas.
+            x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
+            js(
+                screen,
+                "document.querySelector('.nicegui-scene canvas').dispatchEvent("
+                "new MouseEvent('contextmenu', {clientX: arguments[0],"
+                " clientY: arguments[1], bubbles: true, cancelable: true}));",
+                x,
+                y,
+            )
+            _wait(
+                lambda: js(screen, _MENU_ITEMS), 5.0, "the menu without a right press"
+            )
+            ActionChains(screen.selenium).move_to_element(
+                scene_canvas(screen)
+            ).click().perform()
+            wait(screen, 5).until(lambda _: no_visible(screen, ".q-menu"))
 
     def test_moving_between_links_shows_one_handle_at_a_time(
         self, class_screen: Screen
@@ -1040,6 +1064,7 @@ class TestScene:
                 pointer_to(screen, px, py, actions)
             actions.release()
             actions.perform()
+            _wait(lambda: abs(_joint(1) - start) > 4.0, 15.0, "J2 to move")
             moved = abs(_settled(1) - start)
             assert moved >= 15.0, f"J2 stopped at {moved:.1f}° off the ring"
 

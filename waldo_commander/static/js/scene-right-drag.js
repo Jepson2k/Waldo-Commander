@@ -3,7 +3,8 @@
  * scene's menu the way a right-click does. The scene's click events carry no
  * pointer position, so this reports each right press, and on its release the
  * farthest the pointer got from the press. The release lands before the
- * mouseup and the contextmenu events that follow it.
+ * mouseup and the contextmenu events that follow it. A menu opened another
+ * way (the menu key, a long press) is reported as a release that did not move.
  */
 
 (function() {
@@ -18,6 +19,8 @@
         attached.add(canvas);
         let start = null;
         let farthest = 0;
+        // Set by a right release whose contextmenu may still follow (Windows).
+        let released = false;
         canvas.addEventListener('pointerdown', function(e) {
             if (e.button !== 2) return;
             start = [e.clientX, e.clientY];
@@ -35,6 +38,14 @@
             const moved = Math.max(farthest, Math.hypot(e.clientX - start[0], e.clientY - start[1]));
             start = null;
             emitEvent('wc_right_release', { moved: moved });
+            released = true;
+            setTimeout(function() { released = false; });
+        });
+        canvas.addEventListener('pointercancel', function() { start = null; });
+        // Runs before the scene's own contextmenu handler reports the hits.
+        canvas.addEventListener('contextmenu', function() {
+            if (start === null && !released) emitEvent('wc_right_release', { moved: 0 });
+            released = false;
         });
     }
 
