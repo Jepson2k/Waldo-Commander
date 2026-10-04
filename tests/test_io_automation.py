@@ -55,6 +55,13 @@ async def _wait_for(condition, timeout: float = 10.0) -> bool:
     return False
 
 
+def _ran_cleanly() -> bool:
+    """The program exited 0 and its run is over. The exit code lands first;
+    the run stays marked running while the program's links close, and a
+    pulse in that window is refused as one arriving mid-run."""
+    return script_exec.last_exit_code == 0 and not is_any_program_running()
+
+
 @pytest.mark.integration
 async def test_cycle_start_input_runs_active_program(user: User) -> None:
     """Rising edge on Input 1 runs the active program; guards and the re-arm
@@ -101,7 +108,7 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
 
     # All guards pass: the pulse starts the program and it runs to completion.
     _pulse_input_1()
-    assert await _wait_for(lambda: script_exec.last_exit_code == 0, timeout=15.0), (
+    assert await _wait_for(_ran_cleanly, timeout=15.0), (
         "rising edge on Input 1 should run the active program to completion"
     )
 
@@ -116,7 +123,7 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     # Once the window has passed, the input is re-armed and fires again.
     automation_state._cycle_last_fire = time.monotonic() - 2.0
     _pulse_input_1()
-    assert await _wait_for(lambda: script_exec.last_exit_code == 0, timeout=15.0)
+    assert await _wait_for(_ran_cleanly, timeout=15.0)
 
     # An AI/MCP control holder does not block the hardware trigger — the
     # cell input starts the program regardless of who holds the lease.
@@ -125,7 +132,7 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
         automation_state._cycle_last_fire = time.monotonic() - 2.0
         script_exec.last_exit_code = None
         _pulse_input_1()
-        assert await _wait_for(lambda: script_exec.last_exit_code == 0, timeout=15.0), (
+        assert await _wait_for(_ran_cleanly, timeout=15.0), (
             "cycle start must fire even while an MCP session holds control"
         )
     finally:

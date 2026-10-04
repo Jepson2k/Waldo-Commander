@@ -851,7 +851,13 @@
         const watched = [config.selectors.controlPanel, ...config.selectors.bottomCovers];
         for (const selector of watched) {
             const element = selector ? document.querySelector(selector) : null;
-            if (element) layoutObserver.observe(element);
+            if (!element) continue;
+            layoutObserver.observe(element);
+            // A transform scales what is published without resizing the
+            // box, so a resize can publish a size mid-transition and nothing
+            // would republish the size it settles at.
+            element.addEventListener('transitionend', scheduleLayout);
+            element.addEventListener('transitioncancel', scheduleLayout);
         }
     }
 

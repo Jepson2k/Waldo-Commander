@@ -415,26 +415,28 @@ def _register_default_keybindings() -> None:
     )
 
 
-# Map keys to axes: W/S = Y, A/D = X, Q/E = Z
-_JOG_KEY_MAP = {
-    "w": "Y+",
-    "s": "Y-",
-    "a": "X-",
-    "d": "X+",
-    "q": "Z-",
-    "e": "Z+",
+# Each jog key presses one translation arrow of the cartesian pad
+# (ControlPanel.PAD_TRANSLATION_SLOTS), so a key and its arrow always drive
+# the same axis, whatever the axis assignment and X/Y inversion.
+_JOG_KEY_SLOTS = {
+    "w": "ud1_up",
+    "s": "ud1_down",
+    "a": "lr_neg",
+    "d": "lr_pos",
+    "e": "ud2_up",
+    "q": "ud2_down",
 }
 
 
 def _register_cartesian_jog_keybindings(cp: Any) -> None:
     """Register WASD + Q/E keybindings for cartesian jogging."""
-    for key, axis in _JOG_KEY_MAP.items():
-        action, release = _make_jog_callbacks(cp, axis)
+    for key, slot in _JOG_KEY_SLOTS.items():
+        action, release = _make_jog_callbacks(cp, slot)
         keybindings_manager.register(
             Keybinding(
                 key=key,
                 display=key.upper(),
-                description=f"Jog {axis}",
+                description=f"Jog {cp.pad_axis(slot)}",
                 action=action,
                 on_release=release,
                 category="Cartesian Jog",
@@ -445,24 +447,23 @@ def _register_cartesian_jog_keybindings(cp: Any) -> None:
 
 
 def refresh_jog_key_descriptions(cp: Any) -> None:
-    """Sync the help-menu descriptions of the jog keys with the control
-    panel's X/Y inversion, so help never advertises the wrong direction."""
-    for key, axis in _JOG_KEY_MAP.items():
+    """Sync the help-menu descriptions of the jog keys with the pad arrows
+    they press, so help never advertises the wrong direction."""
+    for key, slot in _JOG_KEY_SLOTS.items():
         binding = keybindings_manager._bindings.get(key)
         if binding is not None and binding.category == "Cartesian Jog":
-            binding.description = f"Jog {cp.apply_jog_inversion(axis)}"
+            binding.description = f"Jog {cp.pad_axis(slot)}"
 
 
-def _make_jog_callbacks(cp: Any, base_axis: str) -> tuple[Callable, Callable]:
-    """Create press/release callbacks that apply the control panel's X/Y
-    inversion at press time, matching the arrow buttons. The resolved axis
-    is captured on press so a mid-hold settings change still releases the
-    axis that is actually streaming."""
-    resolved = base_axis
+def _make_jog_callbacks(cp: Any, slot: str) -> tuple[Callable, Callable]:
+    """Create press/release callbacks for the pad arrow *slot*. The axis is
+    resolved at press time and captured, so a mid-hold settings change still
+    releases the axis that is actually streaming."""
+    resolved = cp.pad_axis(slot)
 
     def action(is_press: bool = True, is_click: bool = False) -> None:
         nonlocal resolved
-        resolved = cp.apply_jog_inversion(base_axis)
+        resolved = cp.pad_axis(slot)
         _handle_jog_key(cp, resolved, is_press, is_click)
 
     def release() -> None:

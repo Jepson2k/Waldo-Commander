@@ -1,6 +1,7 @@
 """Observed motion survives export and capture ends on controller disable."""
 
 import asyncio
+import re
 import time
 import textwrap
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ import pytest
 from nicegui import run
 import waldoctl
 import numpy as np
-from waldoctl.recordings import Demonstration, RecordedSample
+from waldoctl.recordings import Demonstration, RecordedSample, RecordedTool
 from waldoctl.skills import MissingCapability, SkillError
 
 from waldo_commander.demonstrations import (
@@ -310,7 +311,8 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
     """Observed motion becomes an ordinary program: moves where the planner
     reproduces the recorded path, delays where the arm waited, and a replay
     call over a span it cannot. A wrist that swings out and back while the
-    tool point barely moves is not a short move to where it ended, and a
+    tool point barely moves is not a short move to where it ended, a gripper
+    is set where it settled rather than where its feedback paused, and a
     recording from another backend is not converted for this one."""
     monkeypatch.setenv("WALDO_RECORDING_DIR", str(tmp_path))
     robot = session_controller
@@ -555,3 +557,58 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         span_to_lines(elsewhere, robot, program="swing", directory=tmp_path)
     with pytest.raises(ValueError, match="belongs to par6"):
         to_program(elsewhere, robot, name="swing")
+
+    # A gripper whose feedback lags the status rate repeats a position while
+    # it is still travelling; it is set where it came to rest, not there. One
+    # that does rest partway, then moves on, is set at both stops. A
+    # publication without a tool reading (None) says nothing about where the
+    # gripper is.
+    def gripping(positions: list[float | None]) -> Demonstration:
+        return replace(
+            swung,
+            samples=tuple(
+                RecordedSample(
+                    seq=n + 1,
+                    observed_ns=1_000_000_000 + n * 50_000_000,
+                    received_ns=1_000_000_000 + n * 50_000_000,
+                    joints_deg=swung.samples[0].joints_deg,
+                    tool=None
+                    if position is None
+                    else RecordedTool(
+                        key="PNEUMATIC",
+                        variant_key="",
+                        positions=(position,),
+                        engaged=False,
+                        part_detected=False,
+                        fault_code=0,
+                        state=1,
+                        channels=(),
+                    ),
+                )
+                for n, position in enumerate(positions)
+            ),
+        )
+
+    def set_positions(recording: Demonstration) -> list[str]:
+        lines = span_to_lines(recording, robot, program="grip", directory=tmp_path)
+        return re.findall(r"rbt\.tool\.set_position\(([0-9.]+)\)", lines.source)
+
+    ramp = [0.8, 0.6, 0.6, 0.4, 0.2, 0.0]
+    assert set_positions(gripping([1.0] * 6 + ramp + [0.0] * 10)) == ["0.000"]
+    assert set_positions(
+        gripping([1.0] * 6 + [0.8, 0.6] + [0.6] * 10 + ramp[3:] + [0.0] * 10)
+    ) == ["0.600", "0.000"]
+    assert set_positions(gripping([1.0] * 6 + [0.7, None, 0.3, 0.0] + [0.0] * 10)) == [
+        "0.000"
+    ]
+    # Still closing as the arm comes to rest at sample 20: set once, where it
+    # settled during the hold, not also where the motion ended.
+    arriving = gripping([1.0] * 16 + ramp + [0.0] * 20)
+    arriving = replace(
+        arriving,
+        samples=tuple(
+            replace(s, joints_deg=(90.0 + 0.5 * min(n, 20), *s.joints_deg[1:]))
+            for n, s in enumerate(arriving.samples)
+        ),
+    )
+    assert set_positions(arriving) == ["0.000"]
