@@ -5,8 +5,9 @@
  * transforms. Every effect restores the object's own scale/material when it
  * ends, and nothing runs under prefers-reduced-motion.
  *
- * The scene itself redraws at a low rate to spare the GPU, so while a
- * one-shot effect runs its scene is also redrawn on every animation frame.
+ * The scene draws only when asked, so while a one-shot effect runs its
+ * scene is redrawn on every animation frame, and whatever changes an object
+ * outside that (a ripple, a restore) asks for a frame.
  */
 (function () {
   const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -36,8 +37,13 @@
     wake();
   }
 
+  function requestRender(sceneId) {
+    const comp = getElement(sceneId);
+    if (comp && comp.request_render) comp.request_render();
+  }
+
   function tween(sceneId, delayMs, ms, step, done) {
-    const tw = { start: performance.now() + delayMs, ms, step, done };
+    const tw = { sceneId, start: performance.now() + delayMs, ms, step, done };
     step(0);
     tweens.add(tw);
     rush(sceneId, tw.start + ms + 50);
@@ -68,6 +74,7 @@
       if (t >= 1) {
         tweens.delete(tw);
         if (tw.done) tw.done();
+        requestRender(tw.sceneId);
       }
     }
     for (const [sceneId, items] of pulses) {
@@ -77,6 +84,7 @@
         const s = Math.sin(now / 260 - p.phase);
         p.mesh.scale.copy(p.base).multiplyScalar(1 + 0.45 * Math.max(0, s) ** 3);
       }
+      requestRender(sceneId);
     }
     for (const [sceneId, until] of rushUntil) {
       if (now > until) rushUntil.delete(sceneId);
@@ -195,6 +203,7 @@
     if (!items) return;
     for (const p of items) p.mesh.scale.copy(p.base);
     pulses.delete(sceneId);
+    requestRender(sceneId);
   }
 
   window.SceneFx = {

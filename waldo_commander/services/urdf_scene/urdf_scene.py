@@ -447,6 +447,9 @@ class UrdfScene(
                     hover_color=hex_of("scene-hover"),
                     hover_opacity=0.2,
                     hover_scale=1.5,
+                    # A frame takes ~170 ms where WebGL is software-rendered;
+                    # drawing an unchanged scene 20 times a second pins the page.
+                    render_on_demand=True,
                     on_click=self._handle_scene_click,
                     click_events=[
                         "mousedown",

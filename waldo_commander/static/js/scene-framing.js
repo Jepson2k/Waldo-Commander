@@ -39,6 +39,7 @@
             cam.setViewOffset(W + left, H + bottom, 0, bottom, W, H);
         }
         cam.updateProjectionMatrix();
+        if (c.request_render) c.request_render();
     }
 
     function follow(layout) {
