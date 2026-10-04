@@ -21,12 +21,13 @@ import numpy as np
 import pytest
 import waldoctl
 from nicegui import core
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.actions.mouse_button import MouseButton
 from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl import Box
 
 from tests.conftest import skip_webgl_macos_ci
@@ -125,7 +126,7 @@ return {{t: tc.translationSnap, r: tc.rotationSnap, probe: !!tc.wcProbe}};
 """
 
 # The middle of the stretch of the gizmo's X arrow that sticks out past the
-# tool, where a press grabs the arrow and hits nothing else, and the arrow's
+# tool, where a press grabs the arrow and nothing else, and the arrow's
 # direction on screen.
 _ARROW_TIP = f"""
 const c = {_SCENE};
@@ -143,6 +144,8 @@ const toPixel = (d) => {{
   const v = origin.clone().addScaledVector(axis, d).project(c.camera);
   return [v.x, v.y, rect.left + (v.x + 1) / 2 * rect.width, rect.top + (1 - v.y) / 2 * rect.height];
 }};
+// Other gizmos (the joint rings while editing) must not have a handle there.
+const others = [...c.transform_controls.values()].filter((o) => o !== tc);
 const outside = [];
 for (let d = 0.002; d < 0.5; d += 0.002) {{
   const [x, y, px, py] = toPixel(d);
@@ -151,9 +154,10 @@ for (let d = 0.002; d < 0.5; d += 0.002) {{
   if (tc.axis !== 'X') continue;
   c._raycaster.setFromCamera({{ x, y }}, c.camera);
   if (c._raycaster.intersectObjects(c.interactiveObjects, true).length) continue;
+  if (others.some((o) => (o.pointerHover({{ x, y, button: 0 }}), o.axis !== null))) continue;
   outside.push(d);
 }}
-tc.pointerHover({{ x: 2, y: 2, button: 0 }});
+for (const t of [tc, ...others]) t.pointerHover({{ x: 2, y: 2, button: 0 }});
 if (!outside.length) return null;
 const d = outside[Math.floor(outside.length / 2)];
 const [, , px, py] = toPixel(d);
@@ -381,6 +385,44 @@ def _program_previewed(source: str) -> Iterator[list[str]]:
 def _tcp_mm() -> np.ndarray:
     pose = waldoctl.commander.status.pose
     return np.array([pose.x, pose.y, pose.z], dtype=float)
+
+
+def _drag_along(
+    screen: Screen, x: float, y: float, dx: float, dy: float, length: float = 40
+) -> None:
+    """A left-button drag from (x, y) along the unit direction (dx, dy)."""
+    actions = ActionChains(screen.selenium, duration=20)
+    pointer_to(screen, x, y, actions)
+    actions.click_and_hold()
+    for step in range(1, 9):
+        pointer_to(
+            screen, x + dx * length * step / 8, y + dy * length * step / 8, actions
+        )
+    actions.release()
+    actions.perform()
+
+
+def _choose(screen: Screen, x: float, y: float, item: str) -> None:
+    """Right-click at (x, y) and pick ``item`` from the scene's menu."""
+    actions = ActionChains(screen.selenium, duration=0)
+    pointer_to(screen, x, y, actions)
+    actions.context_click()
+    actions.perform()
+
+    def shown_item(driver):
+        for element in driver.find_elements(By.CSS_SELECTOR, ".q-menu .q-item"):
+            if element.is_displayed() and element.text.strip() == item:
+                element.click()
+                return True
+        return False
+
+    # The menu is filled in after it opens, so its items can go stale while read.
+    WebDriverWait(
+        screen.selenium,
+        5,
+        poll_frequency=0.05,
+        ignored_exceptions=(StaleElementReferenceException,),
+    ).until(shown_item, message=f"no {item!r} in the menu")
 
 
 def _records(
@@ -900,6 +942,106 @@ class TestScene:
             actions.perform()
             moved = abs(_settled(1) - start)
             assert moved >= 15.0, f"J2 stopped at {moved:.1f}° off the ring"
+
+    def test_a_target_is_placed_edited_and_deleted_from_the_scene(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        _teleport_to_jog_pose()
+        urdf = ui_state.urdf_scene
+        assert urdf is not None
+
+        def lines() -> list[str]:
+            return run_in_app(lambda: ui_state.active_textarea.value).splitlines()
+
+        def editing_angles() -> list[float]:
+            return run_in_app(lambda: list(urdf._editing_angles))
+
+        def drag_the_gizmo_and_confirm() -> None:
+            _wait(lambda: js(screen, _GIZMO_SNAP, False), 10.0, "the editing gizmo")
+            start = editing_angles()
+            x, y, dx, dy = _wait(lambda: js(screen, _ARROW_TIP), 5.0, "the X arrow")
+            _drag_along(screen, x, y, dx, dy)
+            _wait(lambda: editing_angles() != start, 10.0, "the arm to follow")
+            click_marked(screen, "edit-bar-confirm")
+            _wait(
+                lambda: not run_in_app(lambda: urdf._editing_unified_target),
+                5.0,
+                "the edit to end",
+            )
+
+        def target_on(line_number: int) -> str:
+            def find() -> str | None:
+                tab = waldoctl.commander.programs.active
+                assert tab is not None
+                for target in tab.dry_run.targets:
+                    if target.line_number == line_number and not target.id.startswith(
+                        "pending_"
+                    ):
+                        return f"targetgroup:{target.id}"
+                return None
+
+            group = _wait(
+                lambda: run_in_app(find), 15.0, f"a target on line {line_number}"
+            )
+            _wait(lambda: screen_get_scene_object(screen, group), 15.0, group)
+            return group
+
+        with _camera_kept(screen), _program_previewed(_TARGET_PROGRAM):
+            try:
+                before = lines()
+
+                # Place a target at the arm, drag it away, and keep it.
+                x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
+                _choose(screen, x, y, "Place Target at Robot Position...")
+                drag_the_gizmo_and_confirm()
+                after = _wait(
+                    lambda: len(now := lines()) == len(before) + 1 and now,
+                    10.0,
+                    "a new line",
+                )
+                (added,) = [i for i, line in enumerate(after) if line not in before]
+                assert "move_l(" in after[added], after[added]
+
+                # Edit it: dragging its gizmo rewrites its line.
+                group = target_on(added + 1)
+                _choose(screen, *scene_object_pixel(screen, group), "Edit Target...")
+                drag_the_gizmo_and_confirm()
+                _wait(
+                    lambda: lines()[added] != after[added], 10.0, "the line to change"
+                )
+                assert "move_l(" in lines()[added], lines()[added]
+
+                # Delete it.
+                group = target_on(added + 1)
+                _choose(screen, *scene_object_pixel(screen, group), "Delete Target")
+
+                def delete(driver) -> bool:
+                    for button in driver.find_elements(
+                        By.CSS_SELECTOR, ".q-dialog button"
+                    ):
+                        if (
+                            button.is_displayed()
+                            and button.text.strip().lower() == "delete"
+                        ):
+                            try:
+                                button.click()
+                            except StaleElementReferenceException:
+                                pass  # the dialog closed under the click
+                            return True
+                    return False
+
+                WebDriverWait(
+                    screen.selenium,
+                    5,
+                    poll_frequency=0.05,
+                    ignored_exceptions=(StaleElementReferenceException,),
+                ).until(delete, message="no Delete button in the dialog")
+                _wait(lambda: lines() == before, 10.0, "the line to go")
+            finally:
+                if run_in_app(lambda: urdf._editing_unified_target):
+                    click_marked(screen, "edit-bar-cancel")
 
     def test_held_object_follows_the_flange(self, class_screen: Screen) -> None:
         """A shape attached to the flange is parented to the last actuated
