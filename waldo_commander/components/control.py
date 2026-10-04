@@ -17,6 +17,7 @@ from waldoctl.types import Axis
 
 from waldo_commander.components.joint_dial import JointDial
 from waldo_commander.components.playback import playback
+from waldo_commander.components.robot_buddy import Mood, RobotBuddy
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import _setting_row
 from waldo_commander.constants import (
@@ -52,6 +53,9 @@ from waldo_commander.state import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ESTOP_BUDDY_PX = 160
+_DIGITAL_ESTOP_COLOR = "var(--wc-warning)"
 
 # Module-level constants and precompiled regexes: avoid recreating them every frame.
 _AXIS_ORDER = (
@@ -116,8 +120,13 @@ class _EStopManager:
         self._last_io_state: int = 1
         self._digital_active: bool = False
 
+    @property
+    def active(self) -> bool:
+        """An E-STOP dialog is up: a physical or digital stop is latched."""
+        return self._dialog is not None
+
     def show(self, is_physical: bool) -> None:
-        """Show E-STOP dialog with Lottie animation."""
+        """Show the E-STOP dialog with an alarmed robot buddy."""
         ui_client = self._ui_client_fn()
         if not ui_client:
             return
@@ -140,10 +149,13 @@ class _EStopManager:
                 .classes("overlay-card gap-4 items-center")
                 .mark("estop-dialog"),
             ):
-                ui.html(
-                    """<lottie-player src="https://lottie.host/b9d2fa51-2204-454e-a882-7647c6712b03/d7w0e81TRh.json" autoplay loop />""",
-                    sanitize=False,
-                ).classes("w-96")
+                # Error red for the hardware button, warning yellow for the
+                # software stop, matching the headline below.
+                RobotBuddy(
+                    Mood.ALARMED,
+                    size=_ESTOP_BUDDY_PX,
+                    color=None if is_physical else _DIGITAL_ESTOP_COLOR,
+                ).classes("my-4").mark("estop-buddy")
 
                 if is_physical:
                     ui.label("Physical E-STOP Active").classes(
@@ -1695,6 +1707,7 @@ class ControlPanel:
             if intent is not None:
                 j, d = intent
                 if not self._joint_jog_allowed(j, d):
+                    robot_state.jog_limit_stops += 1
                     self._release_joint_jog(j, d)
                     return
                 signed_speed = speed if d == "pos" else -speed
@@ -1994,6 +2007,7 @@ class ControlPanel:
             # Priority 2: cart jog buttons (streamed)
             axis = self._get_first_pressed_axis()
             if axis is not None and not self._cart_axis_allowed(axis):
+                robot_state.jog_limit_stops += 1
                 self._release_cart_jog(axis)
                 axis = None
             if axis is not None:

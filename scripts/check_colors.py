@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "waldo_commander"
-SUFFIXES = {".py", ".js", ".svg", ".css"}
+SUFFIXES = {".py", ".js", ".svg", ".css", ".vue"}
 ALLOWED = {PACKAGE / "common" / "theme.py"}
 # Pictograms load as <img>, where the page's tokens can't reach.
 ALLOWED_DIRS = {PACKAGE / "static" / "icons" / "skills"}

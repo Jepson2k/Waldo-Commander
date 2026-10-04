@@ -695,6 +695,10 @@ class ScriptExecutionController:
                 self._reset_state()
                 logger.info("Script %s finished with code %s", filename, rc)
                 self._refresh_tcp()
+                if ui_state._readout_panel is not None:
+                    ui_state.readout_panel.on_script_finished(
+                        rc == 0 and not monitor_failed
+                    )
 
     def _finish_record(self, outcome: str, exit_code: int | None = None) -> None:
         if self.last_outcome == "running":
