@@ -10,13 +10,8 @@ from nicegui.events import ValueChangeEventArguments
 from waldoctl import ActionStatus
 
 from waldo_commander.common.tab_flash import replay
-from waldo_commander.components.waldo import Light, Mood, Reaction, Waldo
-from waldo_commander.services.control_lease import (
-    MCP,
-    ControlMode,
-    control_lease,
-    control_mode,
-)
+from waldo_commander.components.waldo import Agent, Light, Mood, Reaction, Waldo
+from waldo_commander.services.control_lease import ControlMode, control_mode
 from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
@@ -29,15 +24,16 @@ _MOOD_WORDS = {
     Mood.SAD: "Disconnected",
     Mood.ALARMED: "E-STOP",
 }
-_LIGHT_WORDS = {
-    Light.RECORDING: "Recording",
-    Light.AGENT: "AI agent in control",
+_LIGHT_WORDS = {Light.RECORDING: "Recording"}
+_AGENT_WORDS = {
+    Agent.PRESENT: "AI agent connected",
+    Agent.DRIVING: "AI agent in control",
 }
 #: Status chip (fill, text) per mood; the simulator is the app's amber mode
 #: colour. Waldo is drawn in the chip's text colour.
 CHIP_COLORS = {
     Mood.HAPPY: ("wc-positive-soft", "wc-positive"),
-    Mood.NEUTRAL: ("wc-mode-sim", "wc-on-bright"),
+    Mood.NEUTRAL: ("wc-mode-sim-soft", "wc-mode-sim"),
     Mood.SAD: ("wc-error-soft", "wc-error"),
     Mood.ALARMED: ("wc-error-soft", "wc-error"),
 }
@@ -77,17 +73,16 @@ def _status_mood() -> Mood:
 
 def _status_light() -> Light | None:
     """The standing condition the chip Waldo's antennae show, if any."""
-    holder = control_lease.holder()
-    if holder is not None and holder.channel == MCP:
-        return Light.AGENT
-    if is_any_program_recording():
-        return Light.RECORDING
-    return None
+    return Light.RECORDING if is_any_program_recording() else None
 
 
-def _tooltip(mood: Mood, light: Light | None) -> str:
-    text = _MOOD_WORDS[mood]
-    return f"{text} · {_LIGHT_WORDS[light]}" if light else text
+def _tooltip(mood: Mood, light: Light | None, agent: Agent | None) -> str:
+    words = [_MOOD_WORDS[mood]]
+    if light:
+        words.append(_LIGHT_WORDS[light])
+    if agent:
+        words.append(_AGENT_WORDS[agent])
+    return " · ".join(words)
 
 
 def _fmt_1f(v: float) -> str:
@@ -233,10 +228,16 @@ class StatusFooter:
             chip.classes(remove="ai-driving")
         label.set_visibility(present)
         button.set_visibility(driving)
+        if self._waldo is not None:
+            self._waldo.set_agent(
+                Agent.DRIVING if driving else Agent.PRESENT if present else None
+            )
         if label.text != mode.label:
             label.text = mode.label
             if was is not None and present:
                 replay(label, "ai-swap")
+                if self._waldo is not None:
+                    self._waldo.react(Reaction.AI_MODE)
 
     # ---- I/O ----
 
@@ -267,6 +268,8 @@ class StatusFooter:
 
         tool_key = waldoctl.commander.status.tool.key
         if tool_key != self._last_tool_key:
+            if self._last_tool_key is not None:
+                self.react(Reaction.TOOL)
             self._last_tool_key = tool_key
             if self._tool_chip is not None and self._tool_label is not None:
                 if tool_key and tool_key != "NONE":
@@ -325,7 +328,7 @@ class StatusFooter:
                 self._robot_chip.props(f"color={fill} text-color={text}")
         self._waldo.set_light(light)
         if self._waldo_tooltip is not None:
-            text = _tooltip(mood, light)
+            text = _tooltip(mood, light, self._waldo.agent)
             if self._waldo_tooltip.text != text:
                 self._waldo_tooltip.text = text
                 self._waldo_tooltip.update()
@@ -344,12 +347,15 @@ class StatusFooter:
             self._waldo.react(Reaction.STARTLE)
         self._last_collision = collision
 
-        # Only news startles Waldo: clearing the log bumps the version
-        # too, and leaves it empty.
+        # Only news alarms Waldo: clearing the log bumps the version too,
+        # and leaves it empty.
         if robot_events.version != self._seen_events_version:
             self._seen_events_version = robot_events.version
             if robot_events.entries:
-                self._waldo.react(Reaction.STARTLE)
+                severity = robot_events.entries[-1][6]
+                self._waldo.react(
+                    Reaction.ERROR if severity == "error" else Reaction.WARNING
+                )
 
         # The status loop replaces these lists only when a limit changes, so
         # an identity check keeps the per-tick cost at two comparisons.
@@ -369,12 +375,28 @@ class StatusFooter:
 
         homed = robot_state.homed
         if homed and self._last_homed is False:
-            self._waldo.react(Reaction.NOD)
+            self._waldo.react(Reaction.HOME)
         self._last_homed = homed
 
     def set_waldo_calm(self, calm: bool) -> None:
         if self._waldo is not None:
             self._waldo.set_calm(calm)
+
+    def react(self, reaction: Reaction) -> None:
+        """Play a one-shot reaction on the chip's Waldo."""
+        if self._waldo is not None:
+            self._waldo.react(reaction)
+
+    def look(self, look: tuple[float, float, float] | None) -> None:
+        """Hold the chip Waldo's gaze (and head tilt) along a jog; ``None``
+        lets go."""
+        if self._waldo is not None:
+            self._waldo.set_look(look)
+
+    def ask(self, asking: bool) -> None:
+        """Show that an AI request is waiting for the human's approval."""
+        if self._waldo is not None:
+            self._waldo.set_asking(asking)
 
     def greet(self) -> None:
         """Wave hello once the page has finished loading."""
@@ -394,6 +416,8 @@ class StatusFooter:
             return
         latest = waldoctl.commander.status.action.latest
         motion = self._newest_action_motion()
+        if motion == "log-fail":
+            self.react(Reaction.ERROR)
         self._action_line.set_content(
             f'<span class="action-line {motion}">{_entry_html(latest)}</span>'
             if latest
@@ -529,7 +553,7 @@ class StatusFooter:
                     .mark("btn-take-control")
                 )
                 self.take_control_btn.set_visibility(False)
-                self._waldo_tooltip = ui.tooltip(_tooltip(mood, None))
+                self._waldo_tooltip = ui.tooltip(_tooltip(mood, None, None))
             self._seen_events_version = robot_events.version
             self._seen_jog_limit_stops = robot_state.jog_limit_stops
             ui.label(ui_state.active_robot.name).classes("wc-label readout-robot-name")

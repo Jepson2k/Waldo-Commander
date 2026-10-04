@@ -3,8 +3,10 @@
 One element per appearance (status chip, e-stop dialog, loading screen, ...).
 Each instance animates on its own in the browser — blinking, glancing
 around, dozing off, following the pointer — while the server only sets its
-``mood``, whether it is ``busy``, which antenna ``light`` is on, and asks for
-one-shot reactions.
+``mood``, whether it is ``busy``, which antenna ``light`` is on, an AI
+``agent``'s part in the session, where a jog holds its ``look``, and asks
+for one-shot reactions. Its eyes, mouth and LEDs are cut out of its body,
+so whatever it sits on shows through them.
 """
 
 from enum import StrEnum
@@ -38,9 +40,17 @@ class Light(StrEnum):
     """A steady antenna light for a standing condition."""
 
     RECORDING = "rec"
-    """Red dot on one bulb: the motion recorder is capturing."""
-    AGENT = "agent"
-    """Both bulbs pulse: an AI agent holds control of the arm."""
+    """Red bulb: the motion recorder is capturing."""
+
+
+class Agent(StrEnum):
+    """An AI agent's part in the session, drawn in its control mode's colour
+    (``--waldo-ai``) on the antenna tips."""
+
+    PRESENT = "present"
+    """An MCP client is connected: the tips light up."""
+    DRIVING = "driving"
+    """It holds control of the arm: the tips pulse and the eyes take its colour."""
 
 
 class Reaction(StrEnum):
@@ -52,6 +62,21 @@ class Reaction(StrEnum):
     STARTLE = "startle"
     SHRUG = "shrug"
     NOD = "nod"
+    HEADSHAKE = "headshake"
+    WARNING = "warning"
+    """Wide eyes darting about and a bead of sweat."""
+    ERROR = "error"
+    """Squeezed-shut eyes, a gritted mouth and a shake."""
+    START = "start"
+    """A program starts: Waldo focuses and settles in."""
+    HOME = "home"
+    """The eyes roll once around, then a nod."""
+    GRIP_OPEN = "grip-open"
+    GRIP_CLOSE = "grip-close"
+    TOOL = "tool"
+    """A spin and a sparkle for a new tool."""
+    AI_MODE = "ai-mode"
+    """The antenna tips flash in a new AI control mode's colour."""
 
 
 class Waldo(ui.element, component="waldo.vue"):
@@ -88,6 +113,9 @@ class Waldo(ui.element, component="waldo.vue"):
         self._props["sleepAfter"] = sleep_after_s
         self._props["roam"] = roam_avoid is not None
         self._props["roamAvoid"] = roam_avoid or ""
+        self._props["agent"] = ""
+        self._props["asking"] = False
+        self._props["look"] = None
         self._props["reaction"] = None
         self._reaction_seq = 0
         self.style(f"width: {size}px; height: {size}px")
@@ -113,9 +141,28 @@ class Waldo(ui.element, component="waldo.vue"):
         return self._props["sleepAfter"]
 
     @property
+    def agent(self) -> Agent | None:
+        return Agent(self._props["agent"]) if self._props["agent"] else None
+
+    @property
+    def asking(self) -> bool:
+        return self._props["asking"]
+
+    @property
+    def look(self) -> tuple[float, float, float] | None:
+        look = self._props["look"]
+        return (look[0], look[1], look[2]) if look else None
+
+    @property
     def last_reaction(self) -> Reaction | None:
         reaction = self._props["reaction"]
         return Reaction(reaction["name"]) if reaction else None
+
+    @property
+    def peeked(self) -> bool:
+        """Whether the last reaction was played as a peek."""
+        reaction = self._props["reaction"]
+        return bool(reaction and reaction.get("peek"))
 
     def _set(self, prop: str, value: object) -> None:
         if self._props[prop] != value:
@@ -141,7 +188,35 @@ class Waldo(ui.element, component="waldo.vue"):
         """Doze off after this long idle; 0 keeps it awake (and wakes it)."""
         self._set("sleepAfter", seconds)
 
+    def set_agent(self, agent: Agent | None) -> None:
+        """Arriving, leaving, taking control and handing it back each play
+        their own reaction."""
+        self._set("agent", agent.value if agent else "")
+
+    def set_asking(self, asking: bool) -> None:
+        """A question mark in the AI's colour while a request waits for the
+        human; it tilts its head and looks up at it as one arrives."""
+        self._set("asking", asking)
+
+    def set_look(self, look: tuple[float, float, float] | None) -> None:
+        """Hold the eyes along ``(dx, dy)`` in -1..1 and tilt the head by the
+        third value in degrees, until ``None`` lets go; a hold shorter than a
+        glance is kept long enough to read."""
+        self._set("look", list(look) if look else None)
+
     def react(self, reaction: Reaction) -> None:
+        self._send(reaction, peek=False)
+
+    def peek(self, reaction: Reaction) -> None:
+        """Rise into view from below the clipping element this Waldo rests
+        under, play *reaction*, and sink back out of sight."""
+        self._send(reaction, peek=True)
+
+    def _send(self, reaction: Reaction, *, peek: bool) -> None:
         self._reaction_seq += 1
-        self._props["reaction"] = {"name": reaction.value, "seq": self._reaction_seq}
+        self._props["reaction"] = {
+            "name": reaction.value,
+            "seq": self._reaction_seq,
+            "peek": peek,
+        }
         self.update()

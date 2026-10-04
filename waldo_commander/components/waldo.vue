@@ -10,58 +10,24 @@
         <clipPath v-for="e in EYES" :key="e.side" :id="uid + e.side">
           <circle :cx="e.cx" cy="12" r="1.8" />
         </clipPath>
-      </defs>
-      <g class="waldo-pose" :style="poseStyle">
-        <g class="waldo-rig" :class="rigAnim ? 'waldo-anim-' + rigAnim : ''">
+        <!-- Eyes, mouth and LEDs are holes in the body, so whatever is
+             behind Waldo shows through them. -->
+        <mask :id="uid + 'cut'" maskUnits="userSpaceOnUse" x="-2" y="-2" width="28" height="26">
+          <rect class="waldo-keep" x="-2" y="-2" width="28" height="26" />
           <g
             v-for="a in ANTENNAE"
             :key="a.side"
             class="waldo-antenna"
-            :class="'waldo-antenna-' + a.side + (antennaWave === a.side ? ' waldo-wave' : '')"
-            :style="{ transformOrigin: a.x + 'px 7.5px', transform: 'rotate(' + antenna[a.side] + 'deg)' }"
+            :class="antennaClass(a)"
+            :style="antennaStyle(a)"
           >
-            <rect :x="a.x - 0.5" y="4.5" width="1" height="3" rx="0.5" fill="currentColor" />
-            <circle class="waldo-halo" :cx="a.x" cy="4.2" r="1.6" />
-            <circle class="waldo-bulb" :cx="a.x" cy="4.2" r="0.8" fill="currentColor" />
             <circle class="waldo-led" :cx="a.x" cy="4.2" r="0.45" />
           </g>
 
-          <rect x="4.5" y="8.5" width="15" height="10" rx="2" fill="currentColor" />
-          <rect class="waldo-gloss" x="5.6" y="9.3" width="4.4" height="0.6" rx="0.3" />
-
           <g class="waldo-eyes">
-            <g class="waldo-eyes-open" :style="{ opacity: eyes === 'open' || eyes === 'wink' ? 1 : 0 }">
-              <g
-                v-for="e in EYES"
-                :key="e.side"
-                class="waldo-eye"
-                :style="{
-                  transformOrigin: e.cx + 'px 12px',
-                  transform: 'scale(' + eyeScale + ')',
-                  opacity: e.side === 'R' && eyes === 'wink' ? 0 : 1,
-                }"
-              >
+            <g class="waldo-eyes-open" :style="{ opacity: eyesOpen ? 1 : 0 }">
+              <g v-for="e in EYES" :key="e.side" class="waldo-eye" :style="eyeStyle(e)">
                 <circle class="waldo-cut" :cx="e.cx" cy="12" r="1.8" />
-                <g class="waldo-pupil" :style="pupilStyle">
-                  <circle
-                    :cx="e.cx"
-                    cy="12"
-                    r="0.75"
-                    fill="currentColor"
-                    :style="{ transformOrigin: e.cx + 'px 12px', transform: 'scale(' + pupilScale + ')' }"
-                  />
-                </g>
-                <g :clip-path="'url(#' + uid + e.side + ')'">
-                  <rect
-                    class="waldo-lid"
-                    :x="e.cx - 3"
-                    y="6"
-                    width="6"
-                    height="6"
-                    fill="currentColor"
-                    :style="lidStyle(e)"
-                  />
-                </g>
               </g>
             </g>
             <g class="waldo-eyes-alt waldo-eyes-happy waldo-stroke" :style="{ opacity: eyes === 'happy' ? 1 : 0 }">
@@ -79,26 +45,101 @@
               <path d="M6.9 10.9 L9.1 13.1 M9.1 10.9 L6.9 13.1" />
               <path d="M14.9 10.9 L17.1 13.1 M17.1 10.9 L14.9 13.1" />
             </g>
+            <g class="waldo-eyes-alt waldo-eyes-squeeze waldo-stroke" :style="{ opacity: eyes === 'squeeze' ? 1 : 0 }">
+              <path d="M6.7 10.9 L9.3 12 L6.7 13.1" />
+              <path d="M17.3 10.9 L14.7 12 L17.3 13.1" />
+            </g>
+            <g v-if="eyes === 'hearts'" class="waldo-eyes-alt waldo-eyes-hearts">
+              <path class="waldo-cut waldo-heart" d="M8 13.6 C5.4 11.9 6.6 9.6 8 11.1 C9.4 9.6 10.6 11.9 8 13.6 Z" />
+              <path class="waldo-cut waldo-heart" d="M16 13.6 C13.4 11.9 14.6 9.6 16 11.1 C17.4 9.6 18.6 11.9 16 13.6 Z" />
+            </g>
             <g class="waldo-eyes-alt waldo-eyes-scan" :style="{ opacity: eyes === 'scan' ? 1 : 0 }">
               <rect class="waldo-cut" x="5.8" y="11" width="12.4" height="2" rx="1" opacity="0.22" />
               <rect class="waldo-scan-bar waldo-cut" x="5.8" y="11" width="2.6" height="2" rx="1" />
             </g>
           </g>
+          <rect v-if="fx.scan" class="waldo-cut waldo-sweep" x="5.2" y="8.5" width="13.6" height="0.45" />
 
           <g class="waldo-mouth">
-            <path class="waldo-stroke" :style="m('smile')" d="M9 15.5 Q12 17.8 15 15.5" />
-            <path class="waldo-stroke" :style="m('grin')" stroke-width="1.2" d="M8.2 15 Q12 18.8 15.8 15" />
-            <path class="waldo-fill" :style="m('open')" d="M9 15.2 Q12 18.2 15 15.2 Z" />
-            <path class="waldo-stroke" :style="m('flat')" d="M9 16 H15" />
-            <path class="waldo-stroke" :style="m('slant')" d="M9 16.3 L15 15.7" />
-            <path class="waldo-stroke" :style="m('zigzag')" stroke-width="0.8" d="M9 16 L10.2 15.2 L11.4 16.8 L12.6 15.2 L13.8 16.8 L15 16" />
-            <path class="waldo-stroke" :style="m('frown')" d="M9 16.8 Q12 14.5 15 16.8" />
-            <path class="waldo-stroke" :style="m('deep-frown')" stroke-width="1.2" d="M9.5 17.2 Q12 13.5 14.5 17.2" />
-            <path class="waldo-stroke" :style="m('wavy')" stroke-width="0.8" d="M9 16.2 Q10 15.3 11 16.2 T13 16.2 T15 16.2" />
-            <ellipse class="waldo-fill" :style="m('o')" cx="12" cy="16.1" rx="0.9" ry="1" />
-            <ellipse class="waldo-fill" :style="m('small-o')" cx="12" cy="16.2" rx="0.5" ry="0.55" />
-            <ellipse class="waldo-fill" :style="m('yawn')" cx="12" cy="16.2" rx="1.3" ry="1.55" />
+            <path class="waldo-stroke" :style="m('smile')" data-mouth="smile" d="M9 15.5 Q12 17.8 15 15.5" />
+            <path class="waldo-stroke" :style="m('grin')" data-mouth="grin" stroke-width="1.2" d="M8.2 15 Q12 18.8 15.8 15" />
+            <path class="waldo-fill" :style="m('open')" data-mouth="open" d="M9 15.2 Q12 18.2 15 15.2 Z" />
+            <path class="waldo-stroke" :style="m('flat')" data-mouth="flat" d="M9 16 H15" />
+            <path class="waldo-stroke" :style="m('slant')" data-mouth="slant" d="M9 16.3 L15 15.7" />
+            <path class="waldo-stroke" :style="m('zigzag')" data-mouth="zigzag" stroke-width="0.8" d="M9 16 L10.2 15.2 L11.4 16.8 L12.6 15.2 L13.8 16.8 L15 16" />
+            <path class="waldo-stroke" :style="m('frown')" data-mouth="frown" d="M9 16.8 Q12 14.5 15 16.8" />
+            <path class="waldo-stroke" :style="m('deep-frown')" data-mouth="deep-frown" stroke-width="1.2" d="M9.5 17.2 Q12 13.5 14.5 17.2" />
+            <path class="waldo-stroke" :style="m('tremble')" data-mouth="tremble" stroke-width="0.8" d="M9.2 17 Q12 14.8 14.8 17" />
+            <path class="waldo-stroke" :style="m('wavy')" data-mouth="wavy" stroke-width="0.8" d="M9 16.2 Q10 15.3 11 16.2 T13 16.2 T15 16.2" />
+            <ellipse class="waldo-fill" :style="m('o')" data-mouth="o" cx="12" cy="16.1" rx="0.9" ry="1" />
+            <ellipse class="waldo-fill" :style="m('small-o')" data-mouth="small-o" cx="12" cy="16.2" rx="0.5" ry="0.55" />
+            <ellipse class="waldo-fill" :style="m('yawn')" data-mouth="yawn" cx="12" cy="16.2" rx="1.3" ry="1.55" />
           </g>
+        </mask>
+      </defs>
+
+      <g class="waldo-pose" :style="poseStyle">
+        <g class="waldo-rig" :class="rigAnim ? 'waldo-anim-' + rigAnim : ''">
+          <g :mask="'url(#' + uid + 'cut)'">
+            <g
+              v-for="a in ANTENNAE"
+              :key="a.side"
+              class="waldo-antenna"
+              :class="antennaClass(a)"
+              :style="antennaStyle(a)"
+            >
+              <rect :x="a.x - 0.5" y="4.5" width="1" height="3" rx="0.5" fill="currentColor" />
+              <circle class="waldo-halo" :cx="a.x" cy="4.2" r="1.6" />
+              <circle class="waldo-bulb" :cx="a.x" cy="4.2" r="0.8" fill="currentColor" />
+            </g>
+            <rect x="4.5" y="8.5" width="15" height="10" rx="2" fill="currentColor" />
+          </g>
+
+          <!-- An AI agent's colour on the antenna tips. -->
+          <g
+            v-for="a in ANTENNAE"
+            :key="'tip' + a.side"
+            class="waldo-antenna"
+            :class="antennaClass(a)"
+            :style="antennaStyle(a)"
+          >
+            <circle class="waldo-tip" :cx="a.x" cy="4.2" r="0.95" />
+          </g>
+          <g v-if="fx.waves" class="waldo-waves">
+            <path d="M6.5 3.36 A1.3 1.3 0 0 1 8.5 3.36" style="transform-origin: 7.5px 4.2px" />
+            <path d="M15.5 3.36 A1.3 1.3 0 0 1 17.5 3.36" style="transform-origin: 16.5px 4.2px" />
+            <path class="waldo-wave-outer" d="M5.89 2.85 A2.1 2.1 0 0 1 9.11 2.85" style="transform-origin: 7.5px 4.2px" />
+            <path class="waldo-wave-outer" d="M14.89 2.85 A2.1 2.1 0 0 1 18.11 2.85" style="transform-origin: 16.5px 4.2px" />
+          </g>
+
+          <g class="waldo-eyes-open" :style="{ opacity: eyesOpen ? 1 : 0 }">
+            <g v-for="e in EYES" :key="e.side" class="waldo-eye" :style="eyeStyle(e)">
+              <g class="waldo-pupil" :style="pupilStyle">
+                <circle
+                  :cx="e.cx"
+                  cy="12"
+                  r="0.75"
+                  fill="currentColor"
+                  :style="{ transformOrigin: e.cx + 'px 12px', transform: 'scale(' + pupilScale + ')' }"
+                />
+              </g>
+              <g :clip-path="'url(#' + uid + e.side + ')'">
+                <rect
+                  class="waldo-lid"
+                  :x="e.cx - 3"
+                  y="6"
+                  width="6"
+                  height="6"
+                  fill="currentColor"
+                  :style="lidStyle(e)"
+                />
+              </g>
+            </g>
+          </g>
+          <rect v-if="fx.aiScan" class="waldo-ai-scan" x="5.2" y="8.5" width="13.6" height="0.45" />
+          <path v-if="mood === 'alarmed'" class="waldo-drop" d="M18.2 9.3 Q17.4 10.6 18.2 11.1 Q19 10.6 18.2 9.3 Z" />
+          <path v-if="fx.sweat" class="waldo-drop waldo-sweat-slide" d="M18.2 9.3 Q17.4 10.6 18.2 11.1 Q19 10.6 18.2 9.3 Z" />
+          <path v-if="fx.tear" class="waldo-drop waldo-tear" d="M7.4 13.9 Q6.75 14.95 7.4 15.45 Q8.05 14.95 7.4 13.9 Z" />
         </g>
       </g>
 
@@ -114,11 +155,24 @@
             <circle class="waldo-alert" cx="0" cy="1" r="0.5" />
           </g>
         </g>
-        <g v-if="fx.question" transform="translate(20.4 5)">
+        <g v-if="fx.question || asking" transform="translate(20.4 5)" :class="{ 'waldo-ask': asking }">
           <g class="waldo-pop">
             <path class="waldo-glyph" d="M-0.8 -1.3 Q-0.8 -2.5 0.2 -2.5 Q1.2 -2.5 1.1 -1.5 Q1 -0.8 0.2 -0.5 L0.2 0.2" />
             <circle class="waldo-glyph-dot" cx="0.2" cy="1.1" r="0.32" />
           </g>
+        </g>
+        <g v-if="fx.sparkle" class="waldo-sparkle">
+          <path d="M5.2 4.7 L5.45 5.35 L6.1 5.6 L5.45 5.85 L5.2 6.5 L4.95 5.85 L4.3 5.6 L4.95 5.35 Z" />
+          <path d="M19.2 5.5 L19.4 6.05 L19.95 6.25 L19.4 6.45 L19.2 7 L19 6.45 L18.45 6.25 L19 6.05 Z" />
+        </g>
+        <g v-if="fx.note" class="waldo-note">
+          <ellipse class="waldo-glyph-dot" cx="18.9" cy="7.3" rx="0.75" ry="0.6" />
+          <path class="waldo-glyph" d="M19.55 7.2 V4.4 Q20.7 4.9 20.4 6.1" />
+        </g>
+        <g v-if="fx.dots" class="waldo-dots">
+          <circle class="waldo-glyph-dot" cx="18.3" cy="6.6" r="0.4" />
+          <circle class="waldo-glyph-dot" cx="19.35" cy="6.6" r="0.4" />
+          <circle class="waldo-glyph-dot" cx="20.4" cy="6.6" r="0.4" />
         </g>
       </g>
     </svg>
@@ -144,6 +198,9 @@ const IDLE_GAP_S = { happy: [3, 7], neutral: [3.5, 8], sad: [4, 9], alarmed: [1.
 const TRACK_RADIUS_PX = 360;
 const POKE_WINDOW_MS = 1600;
 const POKES_TO_DIZZY = 4;
+// A jog click lets go within milliseconds; hold its glance long enough to read.
+const LOOK_MIN_MS = 450;
+const PEEK_HOLD_MS = 1600;
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const pick = (weighted) => {
@@ -160,6 +217,14 @@ const ignoreSuperseded = (e) => {
   if (!(e instanceof Superseded)) throw e;
 };
 
+// The reaction to an AI agent arriving, leaving, or changing hands.
+const agentReaction = (was, now) => {
+  if (now === was) return "";
+  if (now === "driving") return "ai-take";
+  if (was === "driving") return "ai-release";
+  return now ? "ai-hello" : "ai-bye";
+};
+
 let nextUid = 0;
 
 export default {
@@ -174,11 +239,14 @@ export default {
     roamAvoid: { type: String, default: "" },
     calm: { type: Boolean, default: false },
     light: { type: String, default: "" },
+    agent: { type: String, default: "" },
+    asking: { type: Boolean, default: false },
+    look: { type: Array, default: null },
   },
 
   data() {
     return {
-      uid: "bb" + nextUid++,
+      uid: "waldo" + nextUid++,
       EYES: [
         { side: "L", cx: 8 },
         { side: "R", cx: 16 },
@@ -199,15 +267,21 @@ export default {
       lidSpeed: 0.25,
       eyeScale: 1,
       pupilScale: 1,
-      look: [0, 0],
-      lookSpeed: 0.4,
+      gaze: [0, 0],
+      gazeSpeed: 0.4,
       leds: "",
       antenna: { l: 0, r: 0 },
       antennaWave: "",
       rigAnim: "",
       headTilt: 0,
       sink: 0,
-      fx: { zzz: false, exclaim: false, question: false },
+      aiLit: "",
+      held: null,
+      fx: {
+        zzz: false, exclaim: false, question: false, sparkle: false, note: false, dots: false,
+        tear: false, sweat: false, scan: false, aiScan: false, waves: false, tipFlash: false,
+        tipsFade: false,
+      },
       asleep: false,
     };
   },
@@ -220,6 +294,9 @@ export default {
         this.asleep ? "waldo-asleep" : "",
         this.calm ? "waldo-calm" : "",
         this.roam ? "waldo-roam" : "",
+        this.aiLit ? "waldo-ai-" + this.aiLit : "",
+        this.fx.tipFlash ? "waldo-tip-flash" : "",
+        this.fx.tipsFade ? "waldo-tips-fade" : "",
       ];
     },
     rootStyle() {
@@ -230,9 +307,12 @@ export default {
     },
     pupilStyle() {
       return {
-        transform: "translate(" + this.look[0] + "px, " + this.look[1] + "px)",
-        transitionDuration: this.lookSpeed + "s",
+        transform: "translate(" + this.gaze[0] + "px, " + this.gaze[1] + "px)",
+        transitionDuration: this.gazeSpeed + "s",
       };
+    },
+    eyesOpen() {
+      return this.eyes === "open" || this.eyes === "wink";
     },
   },
 
@@ -251,8 +331,29 @@ export default {
     busy() {
       if (!this.acting) this.restFace();
     },
-    light() {
-      if (!this.acting) this.restFace();
+    light(now, before) {
+      if (now === "rec" && before !== "rec") this.react("cheese");
+      else if (!this.acting) this.restFace();
+    },
+    agent(now, was) {
+      const kind = agentReaction(was, now);
+      if (kind) this.react(kind);
+    },
+    asking(now, was) {
+      if (now && !was) this.react("ai-ask");
+      else if (!this.acting) this.restFace();
+    },
+    look(now, was) {
+      if (JSON.stringify(now) === JSON.stringify(was)) return;
+      clearTimeout(this.lookTimer);
+      if (now) {
+        this.lookSince = Date.now();
+        this.holdLook(now);
+        return;
+      }
+      const left = LOOK_MIN_MS - (Date.now() - this.lookSince);
+      if (left > 0) this.lookTimer = setTimeout(() => this.holdLook(null), left);
+      else this.holdLook(null);
     },
     calm(now) {
       if (now) {
@@ -271,7 +372,7 @@ export default {
     // NiceGUI resends every prop on each update, so a fresh object alone is
     // not a new reaction; the server bumps `seq` for each one it sends.
     reaction(r, old) {
-      if (r && r.name && (!old || r.seq !== old.seq)) this.react(r.name);
+      if (r && r.name && (!old || r.seq !== old.seq)) this.start(r);
     },
   },
 
@@ -283,6 +384,8 @@ export default {
     this.blinkTimer = null;
     this.idleTimer = null;
     this.sleepTimer = null;
+    this.lookTimer = null;
+    this.lookSince = 0;
     this.trackFrame = null;
     this.tracking = false;
     this.lastTrackAt = 0;
@@ -293,6 +396,7 @@ export default {
   },
 
   mounted() {
+    this.held = this.look;
     this.restFace();
     this.scheduleBlink();
     this.scheduleIdle();
@@ -306,7 +410,8 @@ export default {
       this.sleepTimer = setInterval(() => this.checkSleep(), 1000);
     }
     if (this.roam) this.startRoaming();
-    if (this.reaction && this.reaction.name) this.react(this.reaction.name);
+    if (this.reaction && this.reaction.name) this.start(this.reaction);
+    else if (this.asking) this.react("ai-ask");
   },
 
   unmounted() {
@@ -314,6 +419,7 @@ export default {
     for (const id of this.timers) clearTimeout(id);
     clearTimeout(this.blinkTimer);
     clearTimeout(this.idleTimer);
+    clearTimeout(this.lookTimer);
     clearInterval(this.sleepTimer);
     cancelAnimationFrame(this.trackFrame);
     cancelAnimationFrame(this.roamFrame);
@@ -329,6 +435,22 @@ export default {
 
     m(name) {
       return { opacity: this.mouth === name ? 1 : 0 };
+    },
+
+    antennaClass(a) {
+      return "waldo-antenna-" + a.side + (this.antennaWave === a.side ? " waldo-wave" : "");
+    },
+
+    antennaStyle(a) {
+      return { transformOrigin: a.x + "px 7.5px", transform: "rotate(" + this.antenna[a.side] + "deg)" };
+    },
+
+    eyeStyle(e) {
+      return {
+        transformOrigin: e.cx + "px 12px",
+        transform: "scale(" + this.eyeScale + ")",
+        opacity: e.side === "R" && this.eyes === "wink" ? 0 : 1,
+      };
     },
 
     lidStyle(e) {
@@ -347,6 +469,7 @@ export default {
     // ---------- face state ----------
 
     restLook() {
+      if (this.held) return [this.held[0] * 0.55, this.held[1] * 0.45];
       if (this.busy && LIVELY.has(this.mood)) {
         // Watch the arm: it is drawn in the middle of the viewport.
         const r = this.$el.getBoundingClientRect();
@@ -367,21 +490,34 @@ export default {
       this.tilt = face.tilt;
       this.eyeScale = face.eyeScale;
       this.pupilScale = face.pupilScale;
-      this.lookSpeed = 0.4;
-      if (!this.tracking) this.look = this.restLook();
+      this.gazeSpeed = this.held ? 0.25 : 0.4;
+      if (!this.tracking) this.gaze = this.restLook();
       this.leds = face.leds || this.light || (this.busy && LIVELY.has(this.mood) ? "chase" : "");
+      this.aiLit = this.agent;
       const droop = this.asleep ? 14 : this.mood === "sad" ? 5 : 0;
       this.antenna = { l: -droop, r: droop };
       this.antennaWave = "";
-      this.headTilt = this.asleep ? 6 : 0;
+      this.headTilt = this.asleep ? 6 : this.held ? this.held[2] || 0 : 0;
       this.sink = this.asleep ? 0.5 : 0;
       for (const k of Object.keys(this.fx)) this.fx[k] = false;
       this.fx.zzz = this.asleep;
     },
 
     lookAt(x, y, speed = 0.4) {
-      this.lookSpeed = speed;
-      this.look = [x, y];
+      this.gazeSpeed = speed;
+      this.gaze = [x, y];
+    },
+
+    // A jog's direction holds the eyes (and a rotation, the head) until the
+    // jog lets go; whatever is playing gives way to it.
+    holdLook(look) {
+      this.held = look;
+      if (look && this.acting) {
+        this.token++;
+        this.acting = false;
+        this.current = "";
+      }
+      if (!this.acting) this.restFace();
     },
 
     // ---------- sequencing ----------
@@ -441,7 +577,7 @@ export default {
       const gap = BLINK_GAP_S[this.mood];
       if (!gap) return;
       this.blinkTimer = setTimeout(() => {
-        if (!this.acting && !this.asleep && this.eyes === "open") {
+        if (!this.acting && !this.asleep && !this.held && this.eyes === "open") {
           const hold = this.mood === "sad" ? 200 : this.mood === "neutral" ? 130 : 90;
           const token = this.token;
           this.blinkOnce((ms) => this.wait(ms, token), hold).catch(ignoreSuperseded);
@@ -462,7 +598,8 @@ export default {
       if (!gap || this.still()) return;
       this.idleTimer = setTimeout(() => {
         const trackedRecently = Date.now() - this.lastTrackAt < 2500;
-        if (!this.acting && !this.asleep && !this.busy && !trackedRecently && !this.still()) {
+        const free = !this.acting && !this.asleep && !this.busy && !this.held;
+        if (free && !trackedRecently && !this.still()) {
           const fn = pick(this.idleActions()[this.mood] || [[1, async () => {}]]);
           this.play(fn);
         }
@@ -479,6 +616,18 @@ export default {
           [3, async (wait) => { this.lookAt(rand(-0.7, 0.7), rand(-0.5, 0.4), 0.35); await wait(rand(800, 1500)); }],
           [2, async (wait) => { this.wiggleAntennae(); await wait(700); }],
           [1, async (wait) => { this.headTilt = -5; await wait(900); this.headTilt = 5; await wait(900); }],
+          [2, async (wait) => { this.mouth = "grin"; this.eyes = "wink"; await wait(450); }],
+          [1, async (wait) => { this.eyes = "hearts"; this.mouth = "open"; await wait(1600); }],
+          [1, async (wait) => {
+            this.eyes = "happy"; this.mouth = "o"; this.fx.note = true;
+            await this.anim("sway", 2600, wait);
+          }],
+          [1, async (wait) => {
+            this.mouth = "open";
+            await this.anim("hop", 450, wait);
+            this.wiggleAntennae(0.5);
+            await this.anim("hop", 450, wait);
+          }],
         ],
         neutral: [
           [3, async (wait) => {
@@ -494,6 +643,24 @@ export default {
           [2, async (wait) => { this.mouth = "slant"; await wait(600); }],
           [2, async (wait) => { this.headTilt = 7; this.lookAt(0.2, -0.1); await wait(1300); }],
           [1, async (wait) => { this.wiggleAntennae(0.6); await wait(500); }],
+          [1, async (wait) => {
+            this.lid = 0.45; this.lookAt(0.45, 0.35, 0.5); this.mouth = "slant";
+            await wait(1800);
+          }],
+          [1, async (wait) => { this.lookAt(0.4, -0.45, 0.4); this.fx.dots = true; await wait(2000); }],
+          [1, async (wait) => {
+            this.eyeScale = 0.83; this.fx.scan = true;
+            await wait(1100);
+            this.fx.scan = false; this.eyeScale = 1;
+            await this.blinkOnce(wait);
+          }],
+          [1, async (wait) => {
+            this.lid = 0.7; this.lidSpeed = 0.5; this.mouth = "yawn";
+            await this.anim("yawn", 1800, wait);
+            this.mouth = "flat"; this.lid = 0.08;
+            await wait(250);
+            await this.blinkOnce(wait);
+          }],
         ],
         sad: [
           [3, async (wait) => { this.lookAt(0, 0.55, 0.6); await wait(1800); }],
@@ -502,6 +669,22 @@ export default {
           [2, async (wait) => {
             this.mouth = "small-o"; this.sink = 0.6; this.antenna = { l: -12, r: 12 };
             await wait(1300); this.mouth = "frown"; await wait(700);
+          }],
+          [1, async (wait) => { this.eyeScale = 1.17; this.mouth = "tremble"; await wait(1800); }],
+          [1, async (wait) => {
+            this.eyeScale = 1.14; this.lookAt(0, 0.25, 0.4); this.mouth = "tremble";
+            await wait(400);
+            this.fx.tear = true;
+            await wait(1800);
+          }],
+          [1, async (wait) => { this.eyeScale = 0.89; this.mouth = "tremble"; await this.anim("shiver", 700, wait); }],
+          [1, async (wait) => {
+            this.eyeScale = 1.14; this.lookAt(0.45, -0.5, 0.4); this.mouth = "o";
+            this.antenna = { l: 3, r: -3 };
+            await wait(1500);
+            this.eyeScale = 1; this.antenna = { l: -5, r: 5 };
+            this.lookAt(0, 0.45, 0.6); this.mouth = "frown";
+            await wait(900);
           }],
         ],
         alarmed: [
@@ -560,8 +743,9 @@ export default {
         },
         celebrate: async (wait) => {
           this.eyes = "happy";
-          this.mouth = "open";
+          this.mouth = "grin";
           this.leds = "party";
+          this.fx.sparkle = true;
           await this.anim("hop2", 900, wait);
           this.antennaWave = "l";
           await wait(1200);
@@ -590,10 +774,32 @@ export default {
           this.antenna = { l: 0, r: 0 };
           await wait(900);
         },
+        warning: async (wait) => {
+          this.lid = 0;
+          this.eyeScale = 1.22;
+          this.pupilScale = 0.73;
+          this.mouth = "o";
+          this.fx.sweat = true;
+          this.lookAt(-0.5, 0, 0.15);
+          await wait(250);
+          this.lookAt(0.5, 0, 0.2);
+          await wait(300);
+          this.lookAt(0, 0, 0.2);
+          await wait(700);
+        },
+        error: async (wait) => {
+          this.eyes = "squeeze";
+          this.mouth = "zigzag";
+          this.fx.sweat = true;
+          await this.anim("shake", 450, wait);
+          await this.anim("shake", 450, wait);
+          await wait(500);
+        },
         relief: async (wait) => {
           this.eyes = "closed";
           this.mouth = "small-o";
           this.sink = 0.7;
+          this.fx.sweat = true;
           await wait(900);
           this.sink = 0;
           this.mouth = "smile";
@@ -601,6 +807,51 @@ export default {
           this.eyes = "open";
           await this.blinkOnce(wait);
           await wait(300);
+        },
+        start: async (wait) => {
+          this.eyeScale = 0.86;
+          this.wiggleAntennae(0.5);
+          await this.anim("dip", 450, wait);
+          await wait(400);
+        },
+        home: async (wait) => {
+          // The eyes roll once around, then a nod: back where it started.
+          for (let i = 0; i <= 8; i++) {
+            const a = (i / 8) * 2 * Math.PI - Math.PI / 2;
+            this.lookAt(0.5 * Math.cos(a), 0.45 * Math.sin(a), 0.09);
+            await wait(90);
+          }
+          this.lookAt(0, 0, 0.15);
+          this.eyes = "happy";
+          this.mouth = "smile";
+          await this.anim("nod", 720, wait);
+          await wait(200);
+        },
+        "grip-close": async (wait) => {
+          this.mouth = "o";
+          await wait(160);
+          this.mouth = "zigzag";
+          await this.anim("squeeze", 320, wait);
+          await wait(350);
+        },
+        "grip-open": async (wait) => {
+          this.eyeScale = 1.17;
+          this.mouth = "o";
+          await wait(500);
+        },
+        tool: async (wait) => {
+          this.fx.sparkle = true;
+          this.mouth = "o";
+          await this.anim("spin", 650, wait);
+          this.mouth = "grin";
+          await wait(500);
+        },
+        cheese: async (wait) => {
+          this.eyeScale = 1.22;
+          this.mouth = "grin";
+          await wait(450);
+          await this.blinkOnce(wait, 80);
+          await wait(200);
         },
         giggle: async (wait) => {
           this.eyes = "happy";
@@ -631,6 +882,11 @@ export default {
           await this.anim("nod", 720, wait);
           await wait(200);
         },
+        headshake: async (wait) => {
+          this.mouth = "slant";
+          await this.anim("headshake", 650, wait);
+          await wait(300);
+        },
         bonk: async (wait) => {
           this.lid = 1;
           this.lidSpeed = 0.05;
@@ -654,9 +910,109 @@ export default {
           await wait(120);
           await this.blinkOnce(wait, 60);
         },
+        // An AI agent connects: its colour lights the tips and it sends a hello.
+        "ai-hello": async (wait) => {
+          this.eyeScale = 1.19;
+          this.mouth = "o";
+          this.fx.waves = true;
+          await this.anim("lift", 450, wait);
+          await wait(850);
+          this.fx.waves = false;
+          this.eyeScale = 1;
+          this.mouth = "grin";
+          await wait(450);
+        },
+        // It leaves: the tips go dark and the antennae droop.
+        "ai-bye": async (wait) => {
+          this.aiLit = "present";
+          this.fx.tipsFade = true;
+          this.lookAt(0, 0.4, 0.4);
+          this.antenna = { l: -12, r: 12 };
+          await wait(600);
+          this.aiLit = "";
+          await wait(600);
+        },
+        // It takes the controls: a scan sweeps down the face, then the eyes
+        // take its colour.
+        "ai-take": async (wait) => {
+          this.aiLit = "present";
+          this.eyeScale = 0.86;
+          this.mouth = "flat";
+          this.fx.aiScan = true;
+          await wait(750);
+          this.fx.aiScan = false;
+          this.aiLit = "driving";
+          this.fx.waves = true;
+          await wait(650);
+        },
+        // The human takes them back: shake it off, blink, breathe out.
+        "ai-release": async (wait) => {
+          this.mouth = "zigzag";
+          await this.anim("shake", 450, wait);
+          await this.blinkOnce(wait, 140);
+          this.mouth = "o";
+          await this.anim("sigh", 700, wait);
+        },
+        // A request waits for approval: a tilt and a look up at the question.
+        "ai-ask": async (wait) => {
+          this.mouth = "slant";
+          this.lookAt(0.5, -0.4, 0.3);
+          await this.anim("ask", 1100, wait);
+        },
+        // A new AI control mode: the tips flash in its colour.
+        "ai-mode": async (wait) => {
+          this.wiggleAntennae(0.5);
+          this.fx.tipFlash = true;
+          await wait(650);
+        },
       };
       const sequence = sequences[name];
-      if (sequence) this.play(sequence, name);
+      return sequence ? this.play(sequence, name) : Promise.resolve();
+    },
+
+    start(r) {
+      if (r.peek) this.peek(r.name);
+      else this.react(r.name);
+    },
+
+    sleepMs(ms) {
+      return new Promise((resolve) => {
+        const id = setTimeout(() => {
+          this.timers.delete(id);
+          resolve();
+        }, ms);
+        this.timers.add(id);
+      });
+    },
+
+    // Rise out of the clipping window this Waldo rests below, play a
+    // reaction, and sink back out of sight.
+    async peek(name) {
+      const el = this.$el;
+      const frame = el.parentElement;
+      if (!frame || typeof el.animate !== "function" || frame.classList.contains("waldo-peeking")) {
+        this.react(name);
+        return;
+      }
+      const up = [{ transform: "translateY(105%)" }, { transform: "translateY(0)" }];
+      frame.classList.add("waldo-peeking");
+      const rise = el.animate(up, {
+        duration: this.reducedMotion ? 0 : 320,
+        easing: "cubic-bezier(0.34, 1.56, 0.64, 1)",
+        fill: "forwards",
+      });
+      await rise.finished.catch(() => {});
+      await this.react(name);
+      await this.sleepMs(PEEK_HOLD_MS);
+      const sink = el.animate([...up].reverse(), {
+        duration: this.reducedMotion ? 0 : 260,
+        easing: "ease-in",
+        fill: "forwards",
+      });
+      await sink.finished.catch(() => {});
+      frame.classList.remove("waldo-peeking");
+      rise.cancel();
+      sink.cancel();
     },
 
     // ---------- pointer, sleep, pokes ----------
@@ -685,7 +1041,7 @@ export default {
       const dx = this.pointer[0] - (r.left + r.width / 2);
       const dy = this.pointer[1] - (r.top + r.height * 0.55);
       const d = Math.hypot(dx, dy);
-      const free = !this.acting && !this.busy && !this.calm && LIVELY.has(this.mood);
+      const free = !this.acting && !this.busy && !this.calm && !this.held && LIVELY.has(this.mood);
       if (d > TRACK_RADIUS_PX || !free) {
         if (this.tracking) {
           this.tracking = false;
@@ -798,9 +1154,6 @@ export default {
   line-height: 0;
   color: var(--waldo-color);
   transition: color 0.6s ease;
-  /* Eyes, mouth and LEDs are drawn in on-fill; a chip whose fill shows
-     through instead sets its own. */
-  --waldo-cut: var(--wc-on-fill);
   /* Floating glyphs sit on the page, not the body: follow the theme's text. */
   --waldo-glyph: var(--wc-text);
 }
@@ -834,26 +1187,30 @@ export default {
 .waldo .waldo-pupil,
 .waldo .waldo-lid { transition: transform 0.25s ease; }
 .waldo .waldo-eyes > g,
+.waldo .waldo-eyes-open,
 .waldo .waldo-eye,
 .waldo .waldo-mouth > * { transition: opacity 0.15s ease, transform 0.3s ease; }
 
+/* The cut mask: keep the body, cut the features out of it. */
+.waldo .waldo-keep { fill: var(--wc-mask-keep); }
+.waldo .waldo-cut { fill: var(--wc-mask-cut); }
 .waldo .waldo-stroke,
-.waldo .waldo-stroke path,
-.waldo .waldo-glyph {
+.waldo .waldo-stroke path {
   fill: none;
-  stroke: var(--waldo-cut);
+  stroke: var(--wc-mask-cut);
   stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+.waldo .waldo-fill { fill: var(--wc-mask-cut); stroke: var(--wc-mask-cut); stroke-width: 0.4; stroke-linejoin: round; }
 .waldo .waldo-eyes-alt.waldo-stroke path { stroke-width: 1.1; }
 .waldo .waldo-eyes-alt.waldo-eyes-x path { stroke-width: 0.75; }
-.waldo .waldo-cut { fill: var(--waldo-cut); }
-.waldo .waldo-fill { fill: var(--waldo-cut); stroke: var(--waldo-cut); stroke-width: 0.4; stroke-linejoin: round; }
-.waldo .waldo-gloss { fill: var(--wc-on-fill); opacity: 0.16; }
+.waldo .waldo-eyes-alt.waldo-eyes-squeeze path { stroke-width: 0.9; }
 .waldo .waldo-scan-bar { animation: waldo-scan 1.1s ease-in-out infinite alternate; }
+.waldo .waldo-sweep { animation: waldo-sweep 1.1s ease-in-out forwards; }
+.waldo .waldo-heart { transform-box: fill-box; transform-origin: center; animation: waldo-heart 1.6s ease-out; }
 
-.waldo .waldo-led { fill: var(--waldo-cut); opacity: 0; }
+.waldo .waldo-led { fill: var(--wc-mask-cut); opacity: 0; }
 .waldo .waldo-halo { fill: none; stroke: currentColor; stroke-width: 0.35; opacity: 0; }
 .waldo.waldo-leds-chase .waldo-led { animation: waldo-led 1.2s ease-in-out infinite; }
 .waldo.waldo-leds-chase .waldo-antenna-r .waldo-led { animation-delay: 0.6s; }
@@ -866,32 +1223,100 @@ export default {
 .waldo.waldo-leds-party .waldo-led { animation: waldo-led 0.3s ease-in-out infinite; }
 .waldo.waldo-leds-party .waldo-antenna-r .waldo-led { animation-delay: 0.15s; }
 
-/* Steady lights for standing conditions, big enough to read at chip size:
-   the left bulb turns record red while recording, and both bulbs pulse while
-   an AI agent drives (the screen-edge glow is what says who has control). */
+/* The left bulb turns record red while the motion recorder runs. */
 .waldo.waldo-leds-rec .waldo-antenna-l .waldo-bulb { fill: var(--wc-record); }
-.waldo.waldo-leds-rec .waldo-antenna-l .waldo-led,
-.waldo.waldo-leds-agent .waldo-led { animation: waldo-glow 2s ease-in-out infinite; }
+.waldo.waldo-leds-rec .waldo-antenna-l .waldo-led { animation: waldo-glow 2s ease-in-out infinite; }
 @keyframes waldo-glow {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 0; }
 }
 
+/* An AI agent: its control mode's colour on the antenna tips while it is
+   connected; while it drives, the tips pulse and the eyes take it too. A
+   placement outside the status chip has no mode and keeps Waldo's colour. */
+.waldo .waldo-tip {
+  fill: var(--waldo-ai, currentColor);
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: opacity 0.3s ease;
+}
+.waldo.waldo-ai-present .waldo-tip,
+.waldo.waldo-ai-driving .waldo-tip { opacity: 1; }
+.waldo.waldo-ai-driving .waldo-tip { animation: waldo-tip-pulse 0.9s ease-in-out infinite; }
+.waldo.waldo-ai-driving .waldo-pupil circle { fill: var(--waldo-ai, currentColor); }
+.waldo.waldo-tip-flash .waldo-tip { animation: waldo-tip-flash 0.45s ease-out; }
+.waldo.waldo-tips-fade .waldo-tip { animation: waldo-tip-fade 0.6s ease-in forwards; }
+.waldo .waldo-waves path {
+  fill: none;
+  stroke: var(--waldo-ai, currentColor);
+  stroke-width: 0.35;
+  stroke-linecap: round;
+  opacity: 0;
+  animation: waldo-wave-out 0.65s ease-out 2;
+}
+.waldo .waldo-waves .waldo-wave-outer { animation-delay: 0.14s; }
+.waldo .waldo-ai-scan {
+  fill: var(--waldo-ai, currentColor);
+  opacity: 0;
+  animation: waldo-sweep 0.75s ease-in-out forwards;
+}
+.waldo .waldo-ask .waldo-glyph { stroke: var(--waldo-ai, var(--waldo-glyph)); }
+.waldo .waldo-ask .waldo-glyph-dot { fill: var(--waldo-ai, var(--waldo-glyph)); }
+
+.waldo .waldo-drop { fill: var(--wc-info); }
+.waldo .waldo-sweat-slide { animation: waldo-sweat 1.2s ease-in forwards; }
+.waldo .waldo-tear {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: waldo-tear 1.8s ease-in forwards;
+}
+
 .waldo .waldo-alert { fill: var(--wc-warning); stroke: var(--wc-scrim); stroke-width: 0.15; }
-.waldo .waldo-glyph { stroke: var(--waldo-glyph); stroke-width: 0.45; }
+.waldo .waldo-glyph {
+  fill: none;
+  stroke: var(--waldo-glyph);
+  stroke-width: 0.45;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .waldo .waldo-glyph-dot { fill: var(--waldo-glyph); }
 .waldo .waldo-z { stroke-width: 0.42; opacity: 0; animation: waldo-z 2.7s ease-out infinite; }
 .waldo .waldo-pop { transform-box: fill-box; transform-origin: bottom center; animation: waldo-pop 0.35s cubic-bezier(0.3, 1.8, 0.5, 1); }
+.waldo .waldo-note { animation: waldo-float 1.3s ease-out 2 forwards; opacity: 0; }
+.waldo .waldo-note .waldo-glyph { stroke-width: 0.35; }
+.waldo .waldo-dots circle { opacity: 0; animation: waldo-dot 0.9s ease-in-out 2; }
+.waldo .waldo-dots circle:nth-child(2) { animation-delay: 0.18s; }
+.waldo .waldo-dots circle:nth-child(3) { animation-delay: 0.36s; }
+.waldo .waldo-sparkle path {
+  fill: currentColor;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: waldo-sparkle 1.1s ease-out forwards;
+}
+.waldo .waldo-sparkle path:nth-child(2) { animation-delay: 0.12s; }
 
 .waldo .waldo-rig { transform-origin: 12px 18.5px; }
 .waldo .waldo-anim-hop { animation: waldo-hop 0.45s ease-out; }
 .waldo .waldo-anim-hop2 { animation: waldo-hop 0.45s ease-out 2; }
 .waldo .waldo-anim-jolt { animation: waldo-jolt 0.35s ease-out; }
 .waldo .waldo-anim-shake { animation: waldo-shake 0.45s linear; }
+.waldo .waldo-anim-shiver { animation: waldo-shiver 0.7s linear; }
 .waldo .waldo-anim-wobble { animation: waldo-wobble 0.6s ease-in-out 3; }
 .waldo .waldo-anim-squash { animation: waldo-squash 0.3s ease-out; }
+.waldo .waldo-anim-squeeze { animation: waldo-squeeze 0.32s ease-out; }
 .waldo .waldo-anim-shrug { animation: waldo-shrug 0.52s ease-in-out; }
 .waldo .waldo-anim-nod { animation: waldo-nod 0.36s ease-in-out 2; }
+.waldo .waldo-anim-dip { animation: waldo-dip 0.45s ease-in-out; }
+.waldo .waldo-anim-lift { animation: waldo-lift 0.45s ease-out; }
+.waldo .waldo-anim-sigh { animation: waldo-sigh 0.7s ease-in-out; }
+.waldo .waldo-anim-headshake { animation: waldo-headshake 0.65s ease-in-out; }
+.waldo .waldo-anim-ask { animation: waldo-ask 1.1s ease-in-out; }
+.waldo .waldo-anim-sway { animation: waldo-sway 2.6s ease-in-out; }
+.waldo .waldo-anim-yawn { animation: waldo-yawn 1.8s ease-in-out; }
+.waldo .waldo-anim-spin { transform-origin: 12px 11px; animation: waldo-spin 0.65s ease-in-out; }
 .waldo .waldo-wave { animation: waldo-wave 0.45s ease-in-out 3; }
 
 @keyframes waldo-hop {
@@ -911,6 +1336,11 @@ export default {
   20%, 60% { transform: translateX(-0.6px); }
   40%, 80% { transform: translateX(0.6px); }
 }
+@keyframes waldo-shiver {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-0.28px); }
+  20%, 40%, 60%, 80% { transform: translateX(0.28px); }
+}
 @keyframes waldo-wobble {
   0%, 100% { transform: rotate(0); }
   25% { transform: rotate(-9deg); }
@@ -929,11 +1359,58 @@ export default {
   35% { transform: scale(1.14, 0.84); }
   100% { transform: scale(1, 1); }
 }
+@keyframes waldo-squeeze {
+  0%, 100% { transform: scale(1, 1); }
+  40% { transform: scale(1.05, 0.94); }
+}
+@keyframes waldo-dip {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(0.7px); }
+}
+@keyframes waldo-lift {
+  0%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-0.6px); }
+}
+@keyframes waldo-sigh {
+  0%, 100% { transform: translateY(0) scale(1, 1); }
+  50% { transform: translateY(0.5px) scale(1.03, 0.96); }
+}
+@keyframes waldo-headshake {
+  0%, 100% { transform: rotate(0); }
+  20% { transform: rotate(-8deg); }
+  45% { transform: rotate(8deg); }
+  70% { transform: rotate(-5deg); }
+}
+@keyframes waldo-ask {
+  0%, 100% { transform: rotate(0); }
+  40% { transform: rotate(-7deg); }
+  80% { transform: rotate(-5deg); }
+}
+@keyframes waldo-sway {
+  0%, 100% { transform: rotate(0); }
+  25% { transform: rotate(-4deg); }
+  75% { transform: rotate(4deg); }
+}
+@keyframes waldo-yawn {
+  0%, 100% { transform: rotate(0) scale(1); }
+  50% { transform: rotate(-5deg) scale(1.03); }
+}
+@keyframes waldo-spin {
+  0% { transform: rotate(0) scale(1); }
+  50% { transform: rotate(180deg) scale(0.85); }
+  100% { transform: rotate(360deg) scale(1); }
+}
 @keyframes waldo-wave {
   0%, 100% { transform: rotate(0); }
   50% { transform: rotate(28deg); }
 }
 @keyframes waldo-scan { to { transform: translateX(9.8px); } }
+@keyframes waldo-sweep {
+  0% { opacity: 0; transform: translateY(0); }
+  10% { opacity: 0.9; transform: translateY(1px); }
+  90% { opacity: 0.9; transform: translateY(8.6px); }
+  100% { opacity: 0; transform: translateY(9.55px); }
+}
 @keyframes waldo-led {
   0%, 100% { opacity: 0; }
   50% { opacity: 0.95; }
@@ -943,10 +1420,62 @@ export default {
   100% { opacity: 0; transform: scale(1.4); }
 }
 .waldo .waldo-halo { transform-box: fill-box; transform-origin: center; }
+@keyframes waldo-tip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@keyframes waldo-tip-flash {
+  40% { transform: scale(1.8); }
+}
+@keyframes waldo-tip-fade {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes waldo-wave-out {
+  0% { opacity: 0; transform: scale(0.6); }
+  35% { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.3); }
+}
+@keyframes waldo-sweat {
+  0% { opacity: 0; transform: translateY(-0.3px); }
+  20% { opacity: 1; transform: translateY(0); }
+  70% { opacity: 1; transform: translateY(0.8px); }
+  100% { opacity: 0; transform: translateY(1.8px); }
+}
+@keyframes waldo-tear {
+  0% { opacity: 0; transform: translateY(-0.4px) scale(0.6); }
+  20% { opacity: 0.95; transform: translateY(0) scale(1); }
+  75% { opacity: 0.9; transform: translateY(1.6px); }
+  100% { opacity: 0; transform: translateY(2.5px); }
+}
+@keyframes waldo-heart {
+  0% { transform: scale(0.2); }
+  25% { transform: scale(1.2); }
+  40%, 75% { transform: scale(1); }
+  60%, 90% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
 @keyframes waldo-z {
   0% { opacity: 0; transform: translate(0, 0.6px); }
   25% { opacity: 1; }
   100% { opacity: 0; transform: translate(0.9px, -1.4px); }
+}
+@keyframes waldo-float {
+  0% { opacity: 0; transform: translate(0, 0.6px); }
+  30% { opacity: 1; transform: translate(-0.3px, -0.4px); }
+  70% { opacity: 1; transform: translate(0.2px, -1.4px); }
+  100% { opacity: 0; transform: translate(-0.2px, -2.2px); }
+}
+@keyframes waldo-dot {
+  0%, 100% { opacity: 0; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-0.5px); }
+}
+@keyframes waldo-sparkle {
+  0% { opacity: 0; transform: scale(0.3) rotate(0); }
+  20% { opacity: 1; }
+  40% { transform: scale(1.25) rotate(45deg); }
+  70% { opacity: 1; }
+  100% { opacity: 0; transform: scale(0.8) rotate(90deg); }
 }
 @keyframes waldo-pop {
   from { transform: scale(0); }
@@ -964,6 +1493,8 @@ export default {
   .waldo svg,
   .waldo .waldo-rig,
   .waldo .waldo-scan-bar,
+  .waldo .waldo-heart,
+  .waldo .waldo-tip,
   .waldo .waldo-wave { animation: none !important; }
 }
 </style>

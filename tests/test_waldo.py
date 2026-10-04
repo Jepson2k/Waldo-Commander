@@ -14,6 +14,7 @@ from collections.abc import Callable
 import pytest
 import waldoctl
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from nicegui import app as ng_app
 from nicegui.testing import User
 
@@ -26,6 +27,7 @@ from tests.helpers.wait import (
 )
 from waldo_commander.components.waldo import (
     CALM_STORAGE_KEY,
+    Agent,
     Light,
     Mood,
     Reaction,
@@ -44,6 +46,20 @@ def _waldo(user: User, marker: str) -> Waldo:
     return element
 
 
+def _record_reactions(waldo: Waldo) -> list[Reaction]:
+    """Every reaction *waldo* is sent from here on, not only the latest: one
+    can follow another before a check looks."""
+    reactions: list[Reaction] = []
+    react = waldo.react
+
+    def recording(reaction: Reaction) -> None:
+        reactions.append(reaction)
+        react(reaction)
+
+    waldo.react = recording
+    return reactions
+
+
 async def _wait_for(condition: Callable[[], bool], timeout: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -56,8 +72,10 @@ async def _wait_for(condition: Callable[[], bool], timeout: float = 10.0) -> boo
 @pytest.mark.integration
 async def test_chip_waldo_follows_estop_and_watches_the_arm_move(user: User) -> None:
     """Neutral in the simulator, alarmed for as long as an E-STOP is latched
-    (with its own alarmed Waldo in the dialog), and focused on the arm
-    while it moves."""
+    (with its own alarmed Waldo in the dialog), focused on the arm while it
+    moves, and looking the way each jog goes while it is pressed: along the
+    arm for J1, a head tilt for the wrist's roll. A new tool and its gripper
+    each get a reaction."""
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
@@ -67,6 +85,15 @@ async def test_chip_waldo_follows_estop_and_watches_the_arm_move(user: User) -> 
     assert await _wait_for(lambda: chip.mood == Mood.NEUTRAL)
     assert await _wait_for(lambda: not chip.busy), "idle arm, idle Waldo"
 
+    looks: list[tuple[float, float, float] | None] = []
+    set_look = chip.set_look
+
+    def recording(look: tuple[float, float, float] | None) -> None:
+        looks.append(look)
+        set_look(look)
+
+    chip.set_look = recording
+
     waldoctl.commander.settings.jog.joint_step_deg = 10.0
     await simulate_click(user, "btn-j1-plus")
     assert await _wait_for(lambda: chip.busy, timeout=5.0), (
@@ -75,6 +102,13 @@ async def test_chip_waldo_follows_estop_and_watches_the_arm_move(user: User) -> 
     assert await _wait_for(lambda: not chip.busy, timeout=10.0), (
         "Waldo should relax once the arm has settled"
     )
+    assert looks == [(1.0, 0.0, 0.0), None], looks
+    assert chip.look is None
+
+    looks.clear()
+    await simulate_click(user, "btn-j4-minus")
+    assert await _wait_for(lambda: len(looks) == 2), looks
+    assert looks == [(0.0, 0.0, -10.0), None], looks
 
     user.find(marker="btn-estop").click()
     assert await _wait_for(lambda: chip.mood == Mood.ALARMED)
@@ -85,17 +119,37 @@ async def test_chip_waldo_follows_estop_and_watches_the_arm_move(user: User) -> 
         "Reset clears the E-STOP, so Waldo calms back down"
     )
 
+    # A new tool gets a spin; its gripper closing and opening get their own.
+    reactions = _record_reactions(chip)
+    client = waldoctl.commander.client
+    try:
+        assert await client.wait_command(await client.select_tool("PNEUMATIC"), 5)
+        assert await _wait_for(lambda: Reaction.TOOL in reactions), reactions
+        # From open, whichever way the tool came up.
+        assert await client.wait_command(await client.tool.open(), 5)
+        assert await _wait_for(lambda: waldoctl.commander.status.tool.position < 0.5)
+        assert await client.wait_command(await client.tool.close(), 5)
+        assert await _wait_for(lambda: Reaction.GRIP_CLOSE in reactions), reactions
+        assert await client.wait_command(await client.tool.open(), 5)
+        assert await _wait_for(lambda: Reaction.GRIP_OPEN in reactions), reactions
+    finally:
+        assert await client.wait_command(await client.select_tool("NONE"), 5)
+
 
 @pytest.mark.integration
 async def test_chip_waldo_reacts_to_how_programs_end_and_to_new_warnings(
     user: User,
 ) -> None:
-    """A clean exit is celebrated, a crash is winced at, Waldo works
-    along while the program runs, and a new warning startles it."""
+    """A run starts with Waldo settling in; a clean exit is celebrated and a
+    crash winced at, in the chip and by the run bar's Waldo peeking over the
+    bar. Waldo works along while the program runs, and a new warning or error
+    gets the reaction of its severity."""
     await user.open("/")
     await wait_for_app_ready()
 
     chip = _waldo(user, "readout-waldo")
+    peek = _waldo(user, "run-bar-waldo")
+    reactions = _record_reactions(chip)
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
     program = waldoctl.commander.programs.active
@@ -123,41 +177,39 @@ async def test_chip_waldo_reacts_to_how_programs_end_and_to_new_warnings(
     watcher.cancel()
     assert busy_seen, "Waldo should be busy while a program runs"
     assert await _wait_for(lambda: chip.last_reaction == Reaction.CELEBRATE)
+    assert reactions.index(Reaction.START) < reactions.index(Reaction.CELEBRATE)
+    assert await _wait_for(
+        lambda: peek.last_reaction == Reaction.CELEBRATE and peek.peeked
+    ), "the run bar's Waldo should peek up to cheer a clean run"
     assert await _wait_for(lambda: not chip.busy)
 
     assert await run("raise RuntimeError('boom')\n") != 0
     assert await _wait_for(lambda: chip.last_reaction == Reaction.OOPS)
+    assert await _wait_for(lambda: peek.last_reaction == Reaction.OOPS and peek.peeked)
 
     # The fake-serial backend reports no warnings of its own; add one the
     # way the status consumer does when a new condition arrives. The log is
     # process-global, and an entry repeating the last one is not news.
     robot_events.clear()
     robot_events.add(code=70, title="Control loop degraded", cause="p99 over band")
-    assert await _wait_for(lambda: chip.last_reaction == Reaction.STARTLE)
+    assert await _wait_for(lambda: chip.last_reaction == Reaction.WARNING)
+    robot_events.add(code=12, title="Bus off", cause="CAN error", severity="error")
+    assert await _wait_for(lambda: chip.last_reaction == Reaction.ERROR)
 
 
 @pytest.mark.integration
-async def test_chip_waldo_shrugs_at_a_joint_limit_and_nods_when_homed(
+async def test_chip_waldo_shrugs_at_a_joint_limit_and_rolls_its_eyes_when_homed(
     user: User,
 ) -> None:
     """Jogging a joint into its limit gets a shrug; a calibration homing that
-    completes gets a nod."""
+    completes gets the homing reaction."""
     await user.open("/")
     await wait_for_app_ready()
     await enable_sim(user)
     await ensure_robot_ready_for_motion()
     chip = _waldo(user, "readout-waldo")
     client = ui_state.control_panel.client
-    # Every reaction, not only the latest: another (a warning's startle) can
-    # follow the shrug before the check looks.
-    reactions: list[Reaction] = []
-    react = chip.react
-
-    def recording(reaction: Reaction) -> None:
-        reactions.append(reaction)
-        react(reaction)
-
-    chip.react = recording
+    reactions = _record_reactions(chip)
 
     try:
         # Park J1 a step short of its upper limit, then hold J1+ into it.
@@ -189,19 +241,22 @@ async def test_chip_waldo_shrugs_at_a_joint_limit_and_nods_when_homed(
     btn.trigger("pointerup")
     btn.trigger("click")
     assert await _wait_for(lambda: robot_state.homed, timeout=30.0)
-    assert await _wait_for(lambda: Reaction.NOD in reactions), reactions
+    assert await _wait_for(lambda: Reaction.HOME in reactions), reactions
 
 
 @pytest.mark.integration
-async def test_chip_waldo_lights_up_for_recording_and_for_an_agent_in_control(
+async def test_chip_waldo_lights_up_for_recording_and_follows_an_ai_session(
     user: User,
 ) -> None:
-    """A REC light while the motion recorder runs, and a steady glow while an
-    MCP session holds control of the arm."""
+    """A REC light while the motion recorder runs. An MCP session lights the
+    antenna tips and, holding control, drives them; a request it makes waits
+    with a question on both the chip and the approval card, and the human's
+    answer gets a nod or a head shake; a new control mode flashes the tips."""
     await user.open("/")
     await wait_for_app_ready()
     chip = _waldo(user, "readout-waldo")
     assert chip.light is None
+    reactions = _record_reactions(chip)
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -213,9 +268,35 @@ async def test_chip_waldo_lights_up_for_recording_and_for_an_agent_in_control(
     try:
         async with Client(get_mcp()) as client:
             await client.call_tool("control.take_control")
-            assert await _wait_for(lambda: chip.light == Light.AGENT)
+            assert await _wait_for(lambda: chip.agent == Agent.DRIVING)
+            assert chip.light is None, "the agent shows on the tips, not the bulbs"
+
+            jog = {"joint": 0, "speed": 0.1, "duration": 0.01}
+            for answer, nod in (
+                ("btn-consent-allow", Reaction.NOD),
+                ("btn-consent-deny", Reaction.HEADSHAKE),
+            ):
+                with pytest.raises(ToolError):
+                    await client.call_tool("motion.jog_j", jog)
+                assert await _wait_for(lambda: chip.asking), (
+                    "the chip should ask while the move waits for approval"
+                )
+                await user.should_see(marker="approval-waldo")
+                assert _waldo(user, "approval-waldo").asking
+                user.find(marker=answer).click()
+                assert await _wait_for(lambda: not chip.asking)
+                assert await _wait_for(lambda nod=nod: chip.last_reaction == nod)
+                if nod == Reaction.NOD:
+                    # The retry spends the one-shot grant.
+                    await client.call_tool("motion.jog_j", jog)
+
+            user.find(marker="footer-ai-mode").click()
+            assert await _wait_for(lambda: Reaction.AI_MODE in reactions), reactions
+
             await client.call_tool("control.release_control")
-            assert await _wait_for(lambda: chip.light is None)
+            assert await _wait_for(lambda: chip.agent == Agent.PRESENT), (
+                "a connected agent that hands control back stays on the tips"
+            )
     finally:
         control_lease.reset()
 

@@ -1,7 +1,7 @@
 """Browser-level checks for the client-side animations.
 
-The readout face and the scene effects are JavaScript: whether Python asked
-for a reaction says nothing about what the browser shows. These drive real
+Waldo and the scene effects are JavaScript: whether Python asked for a
+reaction says nothing about what the browser shows. These drive real
 events — a page load, taps on the jog pad, a digital E-STOP, a fresh path,
 an AI session taking control — and read the resulting DOM and three.js
 state.
@@ -12,9 +12,11 @@ itself through CDP, since reduced motion skips the scene effects entirely.
 """
 
 import time
+from io import BytesIO
 
 import pytest
 import waldoctl
+from PIL import Image
 from selenium.webdriver.common.by import By
 
 from tests.helpers.browser_helpers import (
@@ -26,35 +28,41 @@ from tests.helpers.browser_helpers import (
 )
 from tests.helpers.browser_session import window_size
 
-# Eye radius, left pupil offset and visible mouth of the face under the
-# selector arguments[0].
+# Eye scale, left pupil offset, visible mouth and sweat drop of the Waldo at
+# the selector arguments[0].
 _FACE_JS = """
-const svg = document.querySelector(arguments[0] + ' svg[data-mood]');
-if (!svg) return null;
-const eye = svg.querySelector('.eye-white');
-const pupil = svg.querySelector('.pupil');
+const root = document.querySelector(arguments[0]);
+if (!root) return null;
+const scale = (root.querySelector('.waldo-eye').style.transform || '')
+  .match(/scale\\((-?[\\d.]+)\\)/);
+const pupil = root.querySelector('.waldo-pupil');
 const m = (pupil.style.transform || '').match(/translate\\((-?[\\d.]+)px, (-?[\\d.]+)px\\)/);
-const mouth = [...svg.querySelectorAll('[data-state]')]
-  .find(el => el.getAttribute('opacity') !== '0');
+const mouth = [...root.querySelectorAll('[data-mouth]')]
+  .find(el => getComputedStyle(el).opacity === '1');
 return {
-  eyeR: parseFloat(eye.getAttribute('r')),
+  eyeScale: scale ? parseFloat(scale[1]) : 1,
   pupilX: m ? parseFloat(m[1]) : 0,
-  mouth: mouth ? mouth.dataset.state : null,
+  mouth: mouth ? mouth.dataset.mouth : null,
+  sweat: !!root.querySelector('.waldo-drop'),
 };
 """
+_CHIP = ".footer-mode .waldo"
 _FOOTER = ".footer-mode"
 
 # What the status chip shows of an AI session: the antenna tips lit, the
-# eyes in the mode's colour, the mode's label and the Take control button.
+# pupils in the mode's colour rather than the body's, the mode's label and
+# the Take control button.
 _AI_JS = """
 const chip = document.querySelector(arguments[0]);
-const svg = chip && chip.querySelector('svg[data-mood]');
-if (!svg) return null;
+const root = chip && chip.querySelector('.waldo');
+if (!root) return null;
 const shown = el => !!el && el.getClientRects().length > 0;
 const mode = chip.querySelector('.footer-ai-mode');
+const fill = el => getComputedStyle(el).fill;
 return {
-  tips: svg.querySelector('[data-part="ai-tips"]').getAttribute('opacity'),
-  driving: svg.querySelector('.pupil').style.fill.includes('face-ai'),
+  tips: getComputedStyle(root.querySelector('.waldo-tip')).opacity,
+  driving: fill(root.querySelector('.waldo-pupil circle'))
+    !== fill(root.querySelector('g[mask] > rect')),
   mode: shown(mode) ? mode.textContent.trim() : '',
   take: shown(chip.querySelector('.btn-take-control')),
 };
@@ -109,10 +117,10 @@ window.__peek = {mouths: [], peeking: false, hidden: hidden()};
   window.__peek.peeking = peeking;
   window.__peek.hidden = hidden();
   if (peeking) {
-    const mouth = [...root.querySelectorAll('[data-state]')]
-      .find(el => el.getAttribute('opacity') !== '0');
-    if (mouth && !window.__peek.mouths.includes(mouth.dataset.state)) {
-      window.__peek.mouths.push(mouth.dataset.state);
+    const mouth = [...root.querySelectorAll('[data-mouth]')]
+      .find(el => getComputedStyle(el).opacity === '1');
+    if (mouth && !window.__peek.mouths.includes(mouth.dataset.mouth)) {
+      window.__peek.mouths.push(mouth.dataset.mouth);
     }
   }
   requestAnimationFrame(sample);
@@ -120,11 +128,11 @@ window.__peek = {mouths: [], peeking: false, hidden: hidden()};
 """
 )
 
-# Records how far the footer face's left pupil swings either way, every
+# Records how far the chip Waldo's left pupil swings either way, every
 # frame: a tap holds the look for under half a second, which a loaded
 # runner's WebDriver round trips can step right over.
 _WATCH_LOOK_JS = """
-const pupil = document.querySelector('.footer-mode svg[data-mood] .pupil');
+const pupil = document.querySelector('.footer-mode .waldo .waldo-pupil');
 window.__look = {min: 0, max: 0};
 (function sample() {
   const m = (pupil.style.transform || '').match(/translate\\((-?[\\d.]+)px/);
@@ -135,14 +143,40 @@ window.__look = {min: 0, max: 0};
 })();
 """
 
-# Records whether the face blinks: the blink overlay turning opaque.
+# Records whether the chip Waldo blinks: its lid dropping over the eye.
 _WATCH_BLINK_JS = """
 window.__faceBlinked = false;
-const blink = document.querySelector('.footer-mode svg [data-part="blink"]');
+const lid = document.querySelector('.footer-mode .waldo .waldo-lid');
 new MutationObserver(() => {
-  if (blink.getAttribute('opacity') === '1') window.__faceBlinked = true;
-}).observe(blink, {attributes: true, attributeFilter: ['opacity']});
+  const m = (lid.style.transform || '').match(/translateY\\((-?[\\d.]+)px\\)/);
+  if (m && parseFloat(m[1]) > 1.5) window.__faceBlinked = true;
+}).observe(lid, {attributes: true, attributeFilter: ['style']});
 """
+
+
+def _waldo_pixels(screen, css: str) -> dict[str, tuple[int, ...]]:
+    """Colours drawn inside the Waldo at *css*: beside the left pupil (in the
+    eye), on the lower-left of the head, and in the element's top corner,
+    which Waldo leaves bare."""
+    element = screen.selenium.find_element(By.CSS_SELECTOR, css)
+    image = Image.open(BytesIO(element.screenshot_as_png)).convert("RGB")
+    side = image.width
+    # The 18 x 16 viewBox from (3, 3) is fitted to the square and centred.
+    unit = side / 18
+    top = (side - 16 * unit) / 2
+
+    def at(x: float, y: float) -> tuple[int, ...]:
+        return image.getpixel((round((x - 3) * unit), round(top + (y - 3) * unit)))
+
+    return {
+        "eye": at(6.8, 12),
+        "head": at(5.0, 17.5),
+        "outside": image.getpixel((2, 2)),
+    }
+
+
+def _close(a: tuple[int, ...], b: tuple[int, ...], tolerance: int = 12) -> bool:
+    return all(abs(x - y) <= tolerance for x, y in zip(a, b))
 
 
 def _pad_arrow(screen, slot_id: str):
@@ -195,7 +229,7 @@ def _poll(screen, script: str, predicate, timeout: float, what: str, *args):
 
 @pytest.mark.browser
 class TestAnimations:
-    def test_face_idles_follows_the_jog_and_startles_on_estop(
+    def test_waldo_blinks_follows_the_jog_and_startles_on_estop(
         self, class_screen
     ) -> None:
         screen = class_screen
@@ -205,14 +239,23 @@ class TestAnimations:
         ensure_robot_homed()
         _teleport_to_jog_pose()
         face = _FACE_JS
-        _poll(screen, face, bool, 15, "no face", _FOOTER)
+        _poll(screen, face, bool, 15, "no Waldo", _CHIP)
 
-        # Idle behaviours start with the page, not only after a mood change:
-        # a reload once the connection state has settled builds the face in
-        # its final mood, so no mood change follows to start them.
+        # Blinking starts with the page, not only after a mood change: a
+        # reload once the connection state has settled builds Waldo in its
+        # final mood, so no mood change follows to start it. The simulator's
+        # resting face is a flat mouth and unscaled eyes, once the greeting
+        # is over.
         screen.selenium.refresh()
-        rest = _poll(screen, face, bool, 30, "no face after reload", _FOOTER)
-        # The first idle blink is watched for through the jogs below: a look
+        _poll(
+            screen,
+            face,
+            lambda f: f["mouth"] == "flat" and f["eyeScale"] == 1,
+            30,
+            "Waldo never came to rest after the reload",
+            _CHIP,
+        )
+        # The first blink is watched for through the jogs below: a look
         # never blinks, so any blink by then is the idle loop's.
         screen.selenium.execute_script(_WATCH_BLINK_JS)
 
@@ -243,9 +286,9 @@ class TestAnimations:
                 screen,
                 face,
                 lambda f: f["pupilX"] == 0,
-                3,
+                5,
                 f"eyes did not recenter after the {slot_id} arrow",
-                _FOOTER,
+                _CHIP,
             )
 
         _poll(
@@ -253,29 +296,33 @@ class TestAnimations:
             "return window.__faceBlinked",
             bool,
             15,
-            "the face never blinked after page load",
+            "Waldo never blinked after page load",
         )
 
-        # Digital E-STOP: wide eyes and an open mouth until reset, on the
-        # footer face and on the dialog's own Waldo, each driving its own SVG.
+        # Digital E-STOP: wide eyes, an open mouth and a bead of sweat until
+        # reset, on the chip's Waldo and on the dialog's own.
         marked_element(screen, "btn-estop").click()
-        for root in (_FOOTER, ".estop-card .waldo-guest"):
+        for root in (_CHIP, ".estop-card .waldo"):
             _poll(
                 screen,
                 face,
-                lambda f: f["eyeR"] > rest["eyeR"] and f["mouth"] == "o",
+                lambda f: f["eyeScale"] > 1 and f["mouth"] == "o" and f["sweat"],
                 5,
-                f"{root} face did not startle on E-STOP",
+                f"{root} did not startle on E-STOP",
                 root,
             )
+        # The eyes are holes: the card shows through them, not a fill.
+        pixels = _waldo_pixels(screen, ".estop-card .waldo")
+        assert _close(pixels["eye"], pixels["outside"]), pixels
+        assert not _close(pixels["eye"], pixels["head"], 40), pixels
         screen.click("Reset")
         _poll(
             screen,
             face,
-            lambda f: f["eyeR"] == rest["eyeR"] and f["mouth"] == rest["mouth"],
-            5,
-            "face did not settle after the E-STOP reset",
-            _FOOTER,
+            lambda f: f["eyeScale"] == 1 and f["mouth"] == "flat" and not f["sweat"],
+            8,
+            "Waldo did not settle after the E-STOP reset",
+            _CHIP,
         )
 
         # Every E-STOP builds its own dialog; a closed one goes with its Waldo.
@@ -298,7 +345,7 @@ class TestAnimations:
             "return window.__faceBlinked",
             bool,
             15,
-            "the footer face stopped idling once the dialog's Waldo was gone",
+            "the chip Waldo stopped blinking once the dialog's was gone",
         )
 
     def test_an_ai_session_takes_over_the_status_chip(self, class_screen) -> None:

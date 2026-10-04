@@ -17,6 +17,7 @@ from waldo_commander.common.theme import hex_of
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
+from waldo_commander.components.waldo import Mood, Reaction, Waldo
 from waldo_commander.services.control_lease import (
     BROWSER,
     control_lease,
@@ -113,6 +114,7 @@ class PlaybackController:
         self._scrub_slider: ui.slider | None = None
         self._sim_loading_progress: ui.element | None = None
         self._sim_timer: ui.timer | None = None
+        self._peek_waldo: Waldo | None = None
         self._timeline: Timeline | None = None
         self._updating_slider: bool = False
         self._last_tick_time: float = 0.0
@@ -171,6 +173,9 @@ class PlaybackController:
             .classes("w-full items-center gap-2 bottom-playback-bar")
             .style("min-height: 48px;")
         ):
+            with ui.element("div").classes("waldo-peek"):
+                self._peek_waldo = Waldo(Mood.HAPPY, size=36).mark("run-bar-waldo")
+                self._peek_waldo.set_calm(True)
             self.play_btn = ui.button(
                 icon="play_arrow", on_click=self.toggle_play
             ).props("round dense color=wc-run unelevated text-color=wc-on-bright")
@@ -742,6 +747,8 @@ class PlaybackController:
         self._execution_speed = None
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
+        if ui_state._readout_panel is not None:
+            ui_state._readout_panel.react(Reaction.START)
 
     @staticmethod
     def _segment_of(program, command: int) -> int:
@@ -796,6 +803,12 @@ class PlaybackController:
 
     def _handle_script_stop_edge(self) -> None:
         """Reset playback bar after a script finishes or is stopped."""
+        # Only a run that reached its end gets Waldo's verdict over the bar.
+        outcome = script_exec.last_outcome
+        if self._peek_waldo is not None and outcome in ("completed", "failed"):
+            self._peek_waldo.peek(
+                Reaction.CELEBRATE if outcome == "completed" else Reaction.OOPS
+            )
         self._exec_step_index = -1
         if self._sim_timer:
             self._sim_timer.active = False

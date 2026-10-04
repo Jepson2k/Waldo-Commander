@@ -99,6 +99,9 @@ FIXED_COLOR: dict[str, str] = {
     "on-fill": "oklch(98.5% 0 0)",
     "on-bright": "oklch(20.5% 0 0)",
     "scrim": "oklch(0% 0 0 / 0.5)",
+    # An SVG luminance mask keeps what it draws white and cuts what it draws black.
+    "mask-keep": "#ffffff",
+    "mask-cut": "#000000",
     "editor-exec-line": "#ffff004d",
 }
 
@@ -1002,7 +1005,7 @@ html, body {
 /* The status chip carries the AI session: Waldo's antenna tips, and its
    eyes while it drives, take the mode's accent; its label sits beside the
    connection word, and Take control pops out once the AI drives. */
-.status-footer .footer-mode { --face-ai: var(--mode-accent); }
+.status-footer .footer-mode { --waldo-ai: var(--mode-accent); }
 .status-footer .footer-ai-mode {
   position: relative; color: var(--mode-accent-text); font-weight: 600; cursor: pointer;
   padding: 1px 6px; margin-left: 4px; border-radius: var(--wc-radius-pill);
@@ -1726,9 +1729,20 @@ html, body {
 
 /* ========== Waldo ========== */
 
-/* On the simulator's amber fill Waldo is drawn in on-bright, so its eyes
-   and mouth cut through to the fill rather than to the glass. */
-.bg-wc-mode-sim .waldo { --waldo-cut: var(--wc-mode-sim); }
+/* Run-bar peek: Waldo rests below the bar's top edge and rises over it
+   when a program ends. The padding leaves room for hops and sparkles inside
+   the clip. */
+.bottom-playback-bar { position: relative; }
+.waldo-peek {
+  position: absolute;
+  bottom: 100%;
+  left: var(--wc-space-2);
+  box-sizing: content-box;
+  padding: var(--wc-space-2) var(--wc-space-2) 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.waldo-peek > .waldo { display: block; transform: translateY(105%); }
 
 
 /* ========== Status footer ========== */
