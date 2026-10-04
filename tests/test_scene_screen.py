@@ -127,13 +127,13 @@ if (arguments[0]) tc.wcProbe = true;
 return {{t: tc.translationSnap, r: tc.rotationSnap, probe: !!tc.wcProbe}};
 """
 
-# The middle of the stretch of the gizmo's X arrow that sticks out past the
-# tool, where a press grabs the arrow and nothing else, and the arrow's
-# direction on screen.
+# The middle of the stretch of the X arrow of the named object's gizmo that
+# sticks out past the object, where a press grabs the arrow and nothing else,
+# and the arrow's direction on screen.
 _ARROW_TIP = f"""
 const c = {_SCENE};
 let id = null;
-for (const [oid, o] of c.objects) if (o.mesh && o.mesh.name === 'tcp:ball') id = oid;
+for (const [oid, o] of c.objects) if (o.mesh && o.mesh.name === arguments[0]) id = oid;
 const tc = id === null ? null : c.transform_controls.get(id);
 if (!tc || !tc.object) return null;
 const ball = tc.object;
@@ -222,6 +222,19 @@ for (let r = 20; r <= 200 && !spot; r += 4) {{
 }}
 tc.pointerHover({{ x: 2, y: 2, button: 0 }});
 return spot;
+"""
+
+# The pixel at the named object's origin, if the canvas is there.
+_CENTRE_PIXEL = f"""
+const c = {_SCENE};
+let root = null;
+for (const o of c.objects.values()) if (o.mesh && o.mesh.name === arguments[0]) root = o.mesh;
+if (!root) return null;
+const v = root.getWorldPosition(root.position.clone()).project(c.camera);
+const rect = c.renderer.domElement.getBoundingClientRect();
+const px = rect.left + (v.x + 1) / 2 * rect.width;
+const py = rect.top + (1 - v.y) / 2 * rect.height;
+return document.elementFromPoint(px, py) === c.renderer.domElement ? [px, py] : null;
 """
 
 _DIALS_SHOWN = f"""
@@ -736,7 +749,9 @@ class TestScene:
             # tool, jogs the tool.
             hover_scene_object(screen, "link:L6")
             _wait(lambda: js(screen, _GIZMO_SNAP, False), 5.0, "the gizmo")
-            x, y, dx, dy = _wait(lambda: js(screen, _ARROW_TIP), 5.0, "the X arrow")
+            x, y, dx, dy = _wait(
+                lambda: js(screen, _ARROW_TIP, "tcp:ball"), 5.0, "the X arrow"
+            )
             start = _tcp_mm()
             camera = js(screen, _CAMERA)
             actions = ActionChains(screen.selenium, duration=20)
@@ -765,7 +780,9 @@ class TestScene:
             _wait(lambda: shown() is None, 5.0, "the gizmo to hide")
             tap(screen, *scene_object_pixel(screen, "link:L6"))
             _wait(lambda: js(screen, _GIZMO_SNAP, False), 5.0, "the pinned gizmo")
-            x, y, _, _ = _wait(lambda: js(screen, _ARROW_TIP), 5.0, "the X arrow")
+            x, y, _, _ = _wait(
+                lambda: js(screen, _ARROW_TIP, "tcp:ball"), 5.0, "the X arrow"
+            )
             tap(screen, x, y)
             time.sleep(1.0)  # long enough for the tap's events to reach the app
             assert shown() == GIZMO, "a tap on the gizmo's arrow unpinned it"
@@ -963,7 +980,9 @@ class TestScene:
         def drag_the_gizmo_and_confirm() -> None:
             _wait(lambda: js(screen, _GIZMO_SNAP, False), 10.0, "the editing gizmo")
             start = editing_angles()
-            x, y, dx, dy = _wait(lambda: js(screen, _ARROW_TIP), 5.0, "the X arrow")
+            x, y, dx, dy = _wait(
+                lambda: js(screen, _ARROW_TIP, "tcp:ball"), 5.0, "the X arrow"
+            )
             _drag_along(screen, x, y, dx, dy)
             _wait(lambda: editing_angles() != start, 10.0, "the arm to follow")
             click_marked(screen, "edit-bar-confirm")
@@ -1036,6 +1055,64 @@ class TestScene:
             finally:
                 if run_in_app(lambda: urdf._editing_unified_target):
                     click_marked(screen, "edit-bar-cancel")
+
+    def test_a_keep_out_is_placed_moved_and_deleted_from_the_scene(
+        self, class_screen: Screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen)
+        handle = waldoctl.commander.scene
+
+        def shapes() -> dict[str, tuple[float, ...]]:
+            return run_in_app(lambda: {s.name: tuple(s.pose) for s in handle.shapes})
+
+        def gizmo_on(name: str) -> bool:
+            return js(
+                screen,
+                f"const c = {_SCENE};"
+                "for (const [id, o] of c.objects)"
+                "  if (o.mesh && o.mesh.name === arguments[0]) return c.transform_controls.has(id);"
+                "return false;",
+                name,
+            )
+
+        before = shapes()
+        with _camera_kept(screen):
+            try:
+                x, y = _wait(lambda: js(screen, _EMPTY_SPOT), 5.0, "empty space")
+                _choose(screen, x, y, "Box Here...")
+                click_marked(screen, "shape-dialog-save")
+                (name,) = _wait(
+                    lambda: set(shapes()) - set(before), 5.0, "the new keep-out"
+                )
+                obj = f"shape:{name}"
+                centre = _wait(lambda: js(screen, _CENTRE_PIXEL, obj), 10.0, obj)
+
+                # Move it by its gizmo's arrow; the drop is its new pose.
+                _choose(screen, *centre, "Move (drag arrows)")
+                _wait(lambda: gizmo_on(obj), 5.0, "the keep-out's gizmo")
+                start = shapes()[name]
+                x, y, dx, dy = _wait(
+                    lambda: js(screen, _ARROW_TIP, obj), 5.0, "the X arrow"
+                )
+                _drag_along(screen, x, y, dx, dy)
+                _wait(
+                    lambda: shapes()[name][0] != start[0], 10.0, "the keep-out to move"
+                )
+                assert shapes()[name][1:] == pytest.approx(start[1:], abs=1e-6)
+                centre = _wait(lambda: js(screen, _CENTRE_PIXEL, obj), 10.0, obj)
+                _choose(screen, *centre, "Stop Moving")
+                _wait(lambda: not gizmo_on(obj), 5.0, "the gizmo to go")
+
+                _choose(screen, *centre, "Delete Keep-out")
+                click_marked(screen, "shape-delete-confirm")
+                _wait(lambda: name not in shapes(), 5.0, "the keep-out to go")
+            finally:
+                run_in_app(
+                    lambda: setattr(
+                        handle, "shapes", [s for s in handle.shapes if s.name in before]
+                    )
+                )
 
     def test_held_object_follows_the_flange(self, class_screen: Screen) -> None:
         """A shape attached to the flange is parented to the last actuated
