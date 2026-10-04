@@ -184,14 +184,9 @@ class TestAnimations:
         # its final mood, so no mood change follows to start them.
         screen.selenium.refresh()
         rest = _poll(screen, face, bool, 30, "no face after reload", _FOOTER)
+        # The first idle blink is watched for through the jogs below: a look
+        # never blinks, so any blink by then is the idle loop's.
         screen.selenium.execute_script(_WATCH_BLINK_JS)
-        _poll(
-            screen,
-            "return window.__faceBlinked",
-            bool,
-            15,
-            "the face never blinked after page load",
-        )
 
         # A tap on a pad arrow turns the eyes the way the arrow points. The
         # pair also returns the arm to where it started.
@@ -224,6 +219,14 @@ class TestAnimations:
                 f"eyes did not recenter after the {slot_id} arrow",
                 _FOOTER,
             )
+
+        _poll(
+            screen,
+            "return window.__faceBlinked",
+            bool,
+            15,
+            "the face never blinked after page load",
+        )
 
         # Digital E-STOP: wide eyes and an open mouth until reset, on the
         # footer face and on the dialog's own Waldo, each driving its own SVG.
