@@ -1789,7 +1789,10 @@ class UrdfScene(
                                 continue
                             obj.with_name(key)
                             self._shape_objects[key] = obj
-                            self.fx.queue_marker(obj)
+                            # One redrawn for new geometry, or grasped or
+                            # released, was on screen already.
+                            if last is None:
+                                self.fx.queue_marker(obj)
                             last = None
                             changed = True
                         moved = last is None or last.pose != pose

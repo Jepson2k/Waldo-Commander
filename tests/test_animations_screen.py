@@ -436,3 +436,85 @@ class TestAnimations:
                 {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
             )
             run_in_app(_restore)
+
+    def test_a_keep_out_pops_in_once_and_keeps_its_size_when_redrawn(
+        self, class_screen
+    ) -> None:
+        """A new keep-out pops in. Resized, it is redrawn as a new mesh, but it
+        was on screen all along: no shrinking to nothing and popping back."""
+        from waldoctl import Box
+
+        screen = class_screen
+        dismiss_dialogs(screen)
+        driver = screen.selenium
+        driver.execute_cdp_cmd(
+            "Emulation.setEmulatedMedia",
+            {
+                "features": [
+                    {"name": "prefers-reduced-motion", "value": "no-preference"}
+                ]
+            },
+        )
+        # Every frame: the box's mesh, and the smallest scale it was drawn at.
+        driver.execute_script("""
+            const canvas = document.querySelector('canvas');
+            const comp = getElement(canvas.closest('[id^="c"]').id.slice(1));
+            window.__box = {uuid: null, scale: null, minScale: Infinity, run: true};
+            (function sample() {
+              if (!window.__box.run) return;
+              comp.scene.traverse(o => {
+                if (o.name !== 'shape:fx-box') return;
+                window.__box.uuid = o.uuid;
+                window.__box.scale = o.scale.x;
+                window.__box.minScale = Math.min(window.__box.minScale, o.scale.x);
+              });
+              requestAnimationFrame(sample);
+            })();
+        """)
+        pose = (0.5, 0.4, 0.1, 0.0, 0.0, 0.0)
+
+        def _declare(size: float):
+            def assign() -> None:
+                scene = waldoctl.commander.scene
+                assert scene is not None
+                scene.shapes = [Box(name="fx-box", x=size, y=0.1, z=0.1, pose=pose)]
+
+            return assign
+
+        def _clear() -> None:
+            scene = waldoctl.commander.scene
+            if scene is not None:
+                scene.shapes = []
+
+        run_in_app(_declare(0.1))
+        try:
+            first = _poll(
+                screen,
+                "return window.__box",
+                lambda b: b["uuid"] and b["minScale"] < 0.5 and b["scale"] == 1,
+                10,
+                "the new keep-out never popped in and settled",
+            )
+            driver.execute_script("window.__box.minScale = Infinity;")
+            run_in_app(_declare(0.15))
+            _poll(
+                screen,
+                "return window.__box",
+                lambda b: b["uuid"] != first["uuid"],
+                10,
+                "the resized keep-out was never redrawn",
+            )
+            # Longer than a pop-in, which is where a redrawn mesh shrank.
+            time.sleep(1.0)
+            redrawn = driver.execute_script("return window.__box")
+            assert redrawn["minScale"] > 0.99, (
+                f"the resized keep-out shrank to {redrawn['minScale']:.3f} and "
+                "popped back in"
+            )
+        finally:
+            driver.execute_script("window.__box.run = false;")
+            driver.execute_cdp_cmd(
+                "Emulation.setEmulatedMedia",
+                {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
+            )
+            run_in_app(_clear)
