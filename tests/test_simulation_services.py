@@ -996,6 +996,10 @@ class TestScriptExecutionLifecycle:
             while se.script_exec.last_exit_code is None and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
             assert se.script_exec.last_exit_code == 0
+            # The exit code lands before the run lets go of the program.
+            deadline = time.monotonic() + 5
+            while is_any_program_running() and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
             assert not is_any_program_running()
             written = tmp_path / ".runtime" / "sub" / "regression.py"
             assert written.read_text(encoding="utf-8") == content
