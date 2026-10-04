@@ -536,18 +536,20 @@ class EditorPanel(FileOperationsMixin):
 
     def _target_line(self, target_id: str) -> int | None:
         """The 1-indexed line of a target in the active program."""
-        textarea = ui_state.active_textarea
-        line_number = textarea.line_anchors.get(target_id) if textarea else None
-        if line_number is not None:
-            return line_number
-        # Only a mounted editor reports anchors. Without one the last preview's
-        # line stands in, but only until an edit moves lines under it.
         tab = waldoctl.commander.programs.active
-        if tab is None or not preview_is_current(tab):
+        if tab is None:
             return None
-        return next(
-            (t.line_number for t in tab.dry_run.targets if t.id == target_id), None
-        )
+        # A preview that answers the current source has the exact line. The
+        # anchors the editor last reported can still belong to the previous
+        # preview, whose ids named other lines.
+        if preview_is_current(tab):
+            return next(
+                (t.line_number for t in tab.dry_run.targets if t.id == target_id),
+                None,
+            )
+        # After an edit, only the editor's anchors have followed the lines.
+        textarea = ui_state.active_textarea
+        return textarea.line_anchors.get(target_id) if textarea else None
 
     def delete_target_code(self, target_id: str) -> None:
         """Delete the statement a target sits on; the edit re-simulates."""

@@ -89,5 +89,13 @@ def test_deleting_a_targets_statement_keeps_the_program_valid():
     for shared in ("for i in r: rbt.move_l([1])\n", "a = 1; rbt.move_l([1])\n"):
         with pytest.raises(ValueError, match="shares its line"):
             delete_statement(shared, 1)
+    # The AST counts columns in UTF-8 bytes, so wide text before the end of
+    # the statement must not hide what follows it.
+    with pytest.raises(ValueError, match="shares its line"):
+        delete_statement('f(\n    "中文中文"); x = 1\n', 1)
+    # A line in a block's header would take the whole block with it.
+    for header in ("@guard\ndef f():\n    pass\n", "for i in r:\n    pass\n"):
+        with pytest.raises(ValueError, match="header"):
+            delete_statement(header, header.count("\n") - 1)
     with pytest.raises(ValueError, match="syntax"):
         delete_statement("rbt.move_l([1\n", 1)

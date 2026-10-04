@@ -353,9 +353,9 @@ def delete_statement(source: str, line: int) -> str:
     """Remove the statement on the 1-indexed ``line``, every line of it.
 
     A block the statement leaves empty keeps a ``pass`` in its place. Raises
-    ValueError when the source does not parse, no statement is on that line, or
-    the statement shares a line with other code, which removing whole lines
-    would take with it.
+    ValueError when the source does not parse, no statement is on that line,
+    the line belongs to a block's header (removing it would take the block),
+    or the statement shares a line with other code.
     """
     try:
         module = ast.parse(source)
@@ -381,14 +381,25 @@ def delete_statement(source: str, line: int) -> str:
     if found is None:
         raise ValueError(f"No statement is on line {line}")
     statement, block = found
+    if hasattr(statement, "body"):
+        raise ValueError(f"Line {line} is part of a block's header")
     first, last = statement.lineno, statement.end_lineno or statement.lineno
     lines = source.split("\n")
-    before = lines[first - 1][: statement.col_offset]
-    after = lines[last - 1][statement.end_col_offset or 0 :].strip()
+    # The AST counts columns in UTF-8 bytes.
+    before = lines[first - 1].encode()[: statement.col_offset].decode()
+    after = lines[last - 1].encode()[statement.end_col_offset or 0 :].decode()
+    after = after.strip()
     if before.strip() or (after and not after.startswith("#")):
         raise ValueError(
             f"The statement on line {line} shares its line with other code"
         )
     alone = len(block) == 1 and block is not module.body
     lines[first - 1 : last] = [before + "pass"] if alone else []
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    try:
+        ast.parse(result)
+    except SyntaxError as error:
+        raise ValueError(
+            f"Deleting line {line} would break the program: {error.msg}"
+        ) from error
+    return result
