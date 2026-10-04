@@ -24,6 +24,7 @@ from tests.helpers.browser_helpers import (
     marked_element,
     run_in_app,
 )
+from tests.helpers.browser_session import window_size
 
 # Eye radius, left pupil offset and visible mouth of the face under the
 # selector arguments[0].
@@ -56,6 +57,33 @@ return {
   driving: svg.querySelector('.pupil').style.fill.includes('face-ai'),
   mode: shown(mode) ? mode.textContent.trim() : '',
   take: shown(chip.querySelector('.btn-take-control')),
+};
+"""
+
+# Whether everything the status chip shows stays inside it, and the chip
+# clear of the footer cells beside it.
+_CHIP_FITS_JS = """
+const footer = document.querySelector('.status-footer');
+const chip = footer.querySelector('.footer-mode').getBoundingClientRect();
+const inside = r => r.width === 0 || (r.left >= chip.left - 0.5
+  && r.right <= chip.right + 0.5 && r.top >= chip.top - 0.5
+  && r.bottom <= chip.bottom + 0.5);
+const parts = [...footer.querySelectorAll(
+  '.footer-mode .footer-ai-mode, .footer-mode .footer-mode-word, '
+  + '.footer-mode .btn-take-control .q-btn__content')];
+const beside = ['.readout-robot-name', '.footer-tool', '.footer-empty-tool']
+  .map(s => footer.querySelector(s))
+  .filter(e => e && e.getClientRects().length > 0)
+  .map(e => e.getBoundingClientRect());
+// The text's own extent: a squeezed label keeps its box and spills its text.
+const extent = e => {
+  const range = document.createRange();
+  range.selectNodeContents(e);
+  return range.getBoundingClientRect();
+};
+return {
+  spilled: parts.filter(e => !inside(extent(e))).map(e => e.className),
+  overlapped: beside.filter(r => r.left < chip.right && r.right > chip.left).length,
 };
 """
 
@@ -284,6 +312,31 @@ class TestAnimations:
                 _FOOTER,
             )
             assert not around["driving"] and not around["take"], around
+            # The wrapped footer gives the chip room for the session, in each
+            # mode a click on it cycles to.
+            with window_size(screen, 900, 900):
+                for step, mode in enumerate(
+                    ("Inspect", "Auto-edits", "Autopilot", "Inspect")
+                ):
+                    if step:
+                        screen.selenium.find_element(
+                            By.CSS_SELECTOR, ".footer-ai-mode"
+                        ).click()
+                    _poll(
+                        screen,
+                        _AI_JS,
+                        lambda v, mode=mode: v["mode"] == mode,
+                        5,
+                        f"clicking the mode did not cycle to {mode}",
+                        _FOOTER,
+                    )
+                    _poll(
+                        screen,
+                        _CHIP_FITS_JS,
+                        lambda f: not f["spilled"] and not f["overlapped"],
+                        5,
+                        f"the wrapped chip spilled {mode}",
+                    )
             run_in_app(
                 lambda: control_lease.seize(MCP, "anim-mcp", "MCP session anim-mc")
             )
@@ -294,6 +347,24 @@ class TestAnimations:
                 10,
                 "an AI holding control did not take the eyes or offer Take control",
                 _FOOTER,
+            )
+            with window_size(screen, 900, 900):
+                _poll(
+                    screen,
+                    _CHIP_FITS_JS,
+                    lambda f: not f["spilled"] and not f["overlapped"],
+                    5,
+                    "the wrapped chip spilled Take control",
+                )
+            # Reachable over an open dialog, as the capsule it replaced was:
+            # Selenium refuses a click a backdrop would take.
+            marked_element(screen, "tab-settings").click()
+            _poll(
+                screen,
+                "return !!document.querySelector('.q-dialog__backdrop')",
+                bool,
+                10,
+                "Settings did not open",
             )
             screen.selenium.find_element(By.CSS_SELECTOR, ".btn-take-control").click()
             _poll(
@@ -309,6 +380,7 @@ class TestAnimations:
             )
         finally:
             run_in_app(control_lease.reset)
+            dismiss_dialogs(screen)
 
     def test_a_finished_run_raises_waldo_over_the_run_bar(self, class_screen) -> None:
         screen = class_screen

@@ -249,6 +249,51 @@ class TestShellLayout:
         finally:
             _teleport(list(JOG_SAFE_POSE_DEG))
 
+    def test_a_pressed_joint_cap_stays_on_its_dial(self, class_screen) -> None:
+        """A pressed button sinks in place. A joint cap centres itself with a
+        transform; pressed, it must keep it, or it drops half its height out
+        from under the pointer and the next movement ends a held jog."""
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        driver = screen.selenium
+        cap = marked_element(screen, "btn-j1-plus")
+        centre = """
+            const r = arguments[0].getBoundingClientRect();
+            return [r.left + r.width / 2, r.top + r.height / 2];
+        """
+        x, y = js(screen, centre, cap)
+        mouse = {"x": x, "y": y, "button": "left", "clickCount": 1}
+        try:
+            for motion in ("reduce", "no-preference"):
+                driver.execute_cdp_cmd(
+                    "Emulation.setEmulatedMedia",
+                    {"features": [{"name": "prefers-reduced-motion", "value": motion}]},
+                )
+                driver.execute_cdp_cmd(
+                    "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}
+                )
+                driver.execute_cdp_cmd(
+                    "Input.dispatchMouseEvent", {"type": "mousePressed", **mouse}
+                )
+                try:
+                    pressed = js(screen, centre, cap)
+                finally:
+                    driver.execute_cdp_cmd(
+                        "Input.dispatchMouseEvent", {"type": "mouseReleased", **mouse}
+                    )
+                assert math.dist(pressed, (x, y)) < 1.0, (
+                    f"with motion {motion}, the pressed J1 cap moved from "
+                    f"{(x, y)} to {pressed}"
+                )
+        finally:
+            driver.execute_cdp_cmd(
+                "Emulation.setEmulatedMedia",
+                {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
+            )
+            driver.execute_cdp_cmd(
+                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 5, "y": 5}
+            )
+
     def test_view_offset_follows_the_column_and_footer(self, class_screen) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)

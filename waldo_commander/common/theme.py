@@ -1011,6 +1011,9 @@ html, body {
    pulses on the glow-breathe clock. Drawn 2px inside the chip, so the global
    button minimum is overridden; the ::after keeps the touch target. */
 .status-footer .footer-mode.ai-driving { padding-right: 2px; }
+/* Take control reclaims the arm, so while the AI drives the footer stays
+   above any open dialog, on the layer the AI capsule used. */
+.status-footer:has(.footer-mode.ai-driving) { z-index: var(--wc-z-capsule); }
 .status-footer .footer-mode .btn-take-control {
   background: var(--mode-accent) !important;
   color: var(--wc-on-bright) !important;
@@ -1609,9 +1612,9 @@ html, body {
 
 /* ========== Micro-interactions ========== */
 
-/* Buttons sink while pressed; Quasar's own transform transition springs
-   them back on release. */
-.q-btn--actionable:active { transform: scale(0.95); transition-duration: var(--wc-duration-instant); }
+/* Buttons sink while pressed. The scale property composes with a button's
+   own transform, which the joint caps centre themselves with. */
+.q-btn--actionable:active { scale: 0.95; transition-duration: var(--wc-duration-instant); }
 
 /* The mode chip recolours with the face's mood; the tool chip pops in on
    every hidden -> visible flip. */
@@ -1858,6 +1861,10 @@ html, body {
   }
   .status-footer .footer-mode { grid-area: 1 / 1 / 2 / 5; justify-self: start; }
   .status-footer .readout-robot-name { grid-area: 1 / 5 / 2 / 7; }
+  /* An AI session's mode and Take control widen the chip over the name. */
+  .status-footer:has(.footer-ai-mode:not(.hidden)) .footer-mode { grid-area: 1 / 1 / 2 / 7; }
+  .status-footer:has(.footer-ai-mode:not(.hidden)) .readout-robot-name { display: none; }
+  .status-footer:has(.footer-ai-mode:not(.hidden)) :is(.footer-tool, .footer-empty-tool) { margin-left: 6px; }
   .status-footer .footer-tool, .status-footer .footer-empty-tool { grid-area: 1 / 7 / 2 / 10; max-width: 100%; }
   .status-footer .footer-empty-tool { display: block; }
   .status-footer .footer-btn:not(.footer-log):not(.footer-settings) { grid-area: 1 / 10 / 2 / 12; padding: 0 !important; }
@@ -1976,7 +1983,7 @@ body:has(.panels-wrap.column-open) .bottom-panel {
   .icon-swap-a .q-icon, .icon-swap-b .q-icon, .diag-event-new,
   .editor-tab.tab-saved-a, .editor-tab.tab-saved-b, .gripper-fault { animation: none !important; }
   [class*="q-transition--"] { --q-transition-duration: 0s !important; }
-  .q-btn--actionable:active { transform: none; }
+  .q-btn--actionable:active { scale: none; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
 }
 """
