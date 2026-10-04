@@ -1091,6 +1091,11 @@ class TestScene:
                 5.0,
                 "the default view again",
             )
+            # Once there, the camera is free to orbit at once.
+            _drag_along(screen, x, y, 1, 0, 80)
+            assert js(screen, _CAMERA)[:3] != pytest.approx(default[:3], abs=1e-3), (
+                "the reset held the camera at the default view"
+            )
             _wait(lambda: urdf.snap.joint_deg == 1.0, 5.0, "the 1° band again")
 
     def test_a_ring_drag_keeps_turning_the_joint_off_the_ring(
