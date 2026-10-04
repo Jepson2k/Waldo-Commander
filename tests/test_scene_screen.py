@@ -27,6 +27,7 @@ from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.actions.mouse_button import MouseButton
 from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl import Box
 
@@ -41,6 +42,7 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     scene_canvas,
     scene_object_pixel,
+    send_global_key,
     tap,
 )
 from tests.helpers.browser_session import no_visible, wait, window_size
@@ -1013,31 +1015,23 @@ class TestScene:
                 )
                 assert "move_l(" in lines()[added], lines()[added]
 
-                # Delete it.
+                # Escape cancels a new placement, and does not stop the arm.
+                _choose(screen, x, y, "Place Target at Robot Position...")
+                _wait(lambda: js(screen, _GIZMO_SNAP, False), 10.0, "the editing gizmo")
+                send_global_key(screen, Keys.ESCAPE)
+                _wait(
+                    lambda: not run_in_app(lambda: urdf._editing_unified_target),
+                    5.0,
+                    "Escape to cancel",
+                )
+                assert not run_in_app(lambda: ui_state.control_panel.estop.active), (
+                    "Escape stopped the arm"
+                )
+                assert len(lines()) == len(after), "the cancelled target was kept"
+
+                # Delete it, straight from the menu.
                 group = target_on(added + 1)
                 _choose(screen, *scene_object_pixel(screen, group), "Delete Target")
-
-                def delete(driver) -> bool:
-                    for button in driver.find_elements(
-                        By.CSS_SELECTOR, ".q-dialog button"
-                    ):
-                        if (
-                            button.is_displayed()
-                            and button.text.strip().lower() == "delete"
-                        ):
-                            try:
-                                button.click()
-                            except StaleElementReferenceException:
-                                pass  # the dialog closed under the click
-                            return True
-                    return False
-
-                WebDriverWait(
-                    screen.selenium,
-                    5,
-                    poll_frequency=0.05,
-                    ignored_exceptions=(StaleElementReferenceException,),
-                ).until(delete, message="no Delete button in the dialog")
                 _wait(lambda: lines() == before, 10.0, "the line to go")
             finally:
                 if run_in_app(lambda: urdf._editing_unified_target):

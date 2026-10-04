@@ -344,16 +344,6 @@ def _register_default_keybindings() -> None:
 
     keybindings_manager.register(
         Keybinding(
-            key="Escape",
-            display="Esc",
-            description="Emergency Stop",
-            action=lambda: asyncio.create_task(cp.on_estop_click()),
-            category="Robot Control",
-        )
-    )
-
-    keybindings_manager.register(
-        Keybinding(
             key="m",
             display="Alt+M",
             requires_alt=True,

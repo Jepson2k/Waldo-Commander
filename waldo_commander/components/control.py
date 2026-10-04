@@ -3036,7 +3036,7 @@ class ControlPanel:
                 "round unelevated color=wc-estop text-color=wc-on-fill"
             ).classes("text-2xl").style(
                 "position: absolute; right: 0; top: 50%; transform: translateY(-50%);"
-            ).tooltip("E-Stop (Esc)").mark("btn-estop")
+            ).tooltip("E-Stop").mark("btn-estop")
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""
