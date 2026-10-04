@@ -439,12 +439,7 @@ class UrdfScene(
                     hover_opacity=0.2,
                     hover_scale=1.5,
                     on_click=self._handle_scene_click,
-                    click_events=[
-                        "mousedown",
-                        "mouseup",
-                        "mouseleave",
-                        "contextmenu",
-                    ],
+                    click_events=["mouseup", "contextmenu"],
                 )
                 # ui.scene sizes its canvas once, shortly after mount, from
                 # whatever height this element resolves to at that instant, and
@@ -682,36 +677,10 @@ class UrdfScene(
         return float(getattr(evt, "client_x", 0)), float(getattr(evt, "client_y", 0))
 
     def _handle_scene_click(self, e) -> None:
-        """Handle mouse events for target deselection, context menu, and joint target editing."""
+        """Open the scene menu on a right-click, but not after a right-drag."""
         click_type = getattr(e, "click_type", "")
-        hits = getattr(e, "hits", []) or []
 
-        if click_type == "mousedown":
-            clicked_transform_controls = False
-            clicked_ghost_part = False
-
-            for h in hits:
-                name = getattr(h, "object_name", "") or ""
-                object_id = getattr(h, "object_id", "") or ""
-
-                if (
-                    name.startswith("ghost:")
-                    or name.startswith("ghost_ring_")
-                    or name.startswith("ghost_joint_group:")
-                ):
-                    clicked_ghost_part = True
-                    continue
-
-                if object_id.startswith("transformcontrols:"):
-                    clicked_transform_controls = True
-                    continue
-
-            # While editing a target, clicking away does NOT auto-confirm.
-            if self._editing_unified_target:
-                if not clicked_ghost_part and not clicked_transform_controls:
-                    return
-
-        elif click_type == "contextmenu":
+        if click_type == "contextmenu":
             # Record position/event now; whether to populate (and thus show) the
             # menu is decided on mouseup based on drag distance.
             self._right_click_start_pos = self._screen_pos(e)
