@@ -129,8 +129,8 @@ CLICK_HOLD_THRESHOLD_S: float = 0.15
 # unmistakably deliberate.
 HOME_LONG_PRESS_S: float = 0.8
 
-# Live charts redraw from their whole history, and a trace only visibly moves
-# a few times a second — far slower than status ticks arrive.
+# Live charts batch the status ticks between redraws; a push carries only the
+# samples since the last one.
 CHART_PUSH_INTERVAL_S: float = 0.1
 
 # Core panel tab ids a plugin panel may never claim. Lives here (not main.py)

@@ -130,9 +130,12 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
         )
     finally:
         control_lease.reset()
+    # The exit code lands before the run lets go of the program.
+    assert await _wait_for(lambda: not is_any_program_running(), timeout=15.0)
 
     # Guard: a pulse while a program is running neither starts nor queues one.
-    slow_script = "import time\ntime.sleep(1.5)\n"
+    # The program outlasts any status stall, so the pulse is read mid-run.
+    slow_script = "import time\ntime.sleep(60)\n"
     ui_state.active_textarea.value = slow_script
     tab.source = slow_script
     automation_state._cycle_last_fire = time.monotonic() - 2.0
@@ -140,6 +143,11 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     assert await _wait_for(is_any_program_running, timeout=15.0)
     automation_state._cycle_last_fire = time.monotonic() - 2.0
     _pulse_input_1()
+    assert await _wait_for(
+        lambda: waldoctl.commander.status.io.inputs[0] == 0, timeout=10.0
+    ), "no status tick read the mid-run pulse"
+    assert is_any_program_running()
+    user.find(marker="editor-stop-btn").click()
     assert await _wait_for(lambda: not is_any_program_running(), timeout=15.0)
     await _settle()
     assert not is_any_program_running(), "consumed mid-run pulse must not queue a run"
