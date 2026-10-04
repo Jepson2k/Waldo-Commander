@@ -17,7 +17,6 @@ from waldo_commander.common.theme import hex_of
 from waldo_commander.components.editor_decorations import decorations
 from waldo_commander.components.log_panel import log_panel
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.waldo import RobotFace, peek, waldo
 from waldo_commander.services.control_lease import (
     BROWSER,
     control_lease,
@@ -96,7 +95,6 @@ class PlaybackController:
     """Owns the bottom playback bar UI and all simulation/script playback logic."""
 
     def __init__(self) -> None:
-        self._peek_waldo: ui.element | None = None
         self.play_btn: ui.button | None = None
         self.play_btn_tooltip: ui.tooltip | None = None
         self.stop_btn: ui.button | None = None
@@ -173,11 +171,6 @@ class PlaybackController:
             .classes("w-full items-center gap-2 bottom-playback-bar")
             .style("min-height: 48px;")
         ):
-            self._peek_waldo = (
-                waldo(RobotFace.HAPPY, size=36, idles=False)
-                .classes("waldo-peek")
-                .mark("run-bar-waldo")
-            )
             self.play_btn = ui.button(
                 icon="play_arrow", on_click=self.toggle_play
             ).props("round dense color=wc-run unelevated text-color=wc-on-bright")
@@ -749,8 +742,6 @@ class PlaybackController:
         self._execution_speed = None
         if self._scrub_slider:
             self._scrub_slider.props("label-always")
-        if ui_state._readout_panel is not None:
-            ui_state._readout_panel.face_react("start")
 
     @staticmethod
     def _segment_of(program, command: int) -> int:
@@ -805,14 +796,6 @@ class PlaybackController:
 
     def _handle_script_stop_edge(self) -> None:
         """Reset playback bar after a script finishes or is stopped."""
-        # A user stop leaves no exit code; only a finished run gets a reaction.
-        rc = script_exec.last_exit_code
-        if rc is not None:
-            kind = "success" if rc == 0 else "failure"
-            if ui_state._readout_panel is not None:
-                ui_state._readout_panel.face_react(kind)
-            if self._peek_waldo is not None:
-                peek(self._peek_waldo, kind)
         self._exec_step_index = -1
         if self._sim_timer:
             self._sim_timer.active = False

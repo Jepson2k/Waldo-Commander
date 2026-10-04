@@ -17,6 +17,7 @@ from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
 from waldoctl.setup import PoseValues, TcpCalibration
 
 from waldo_commander.components.help_menu import HelpMenu
+from waldo_commander.components.robot_buddy import CALM_STORAGE_KEY, calm_preferred
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.common.theme import (
     STORAGE_KEY as THEME_STORAGE_KEY,
@@ -663,6 +664,21 @@ class SettingsContent:
                 theme_names(), value=stored_theme(), on_change=_on_theme_change
             ).props("dense options-dense").mark("select-theme")
 
+    def _build_calm_buddy(self) -> None:
+        def _on_calm_change(e) -> None:
+            calm = bool(e.value)
+            ng_app.storage.general[CALM_STORAGE_KEY] = calm
+            if ui_state._readout_panel is not None:
+                ui_state.readout_panel.set_buddy_calm(calm)
+
+        with _setting_row(
+            "Calm robot",
+            "No idle fidgets; Waldo still reacts to the robot",
+        ):
+            ui.switch(value=calm_preferred(), on_change=_on_calm_change).props(
+                "dense"
+            ).mark("switch-calm-buddy")
+
     def _build_envelope(self, prefs: dict) -> None:
         async def _on_envelope_mode_change(e):
             mode = EnvelopeMode(e.value)
@@ -1293,6 +1309,7 @@ class SettingsContent:
                     lambda: self._build_show_route(prefs),
                     lambda: self._build_envelope(prefs),
                     *([self._build_theme] if len(theme_names()) > 1 else []),
+                    self._build_calm_buddy,
                 ],
             ),
             (

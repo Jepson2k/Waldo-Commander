@@ -791,6 +791,10 @@ html, body {
   height: var(--wc-size-jog-slot);
   cursor: pointer;
 }
+/* Z sits at the pad's top and bottom edges, level with Y's arrow tips and
+   clear of X; the panel clips the empty part of each slot that crosses it. */
+.cart-jog-slot.cart-z-top { top: -17px; }
+.cart-jog-slot.cart-z-bottom { top: 17px; }
 
 .cart-jog-slot .cart-jog-glyph {
   position: absolute;
@@ -831,11 +835,32 @@ html, body {
 }
 
 /* Joint dials: a ring per joint on a control track with the travelled arc in
-   progress; the jog caps and limit buttons appear when the dial is hovered or
-   holds focus */
+   a quiet neutral. Hovering a dial (or focusing it, which a tap does) magnifies
+   it in place, so nothing reflows, while the others fade and blur behind it: it
+   shows ticks at the jog step and the jog caps either side of its name, clear
+   of the ring. */
+.joint-dials { padding: var(--wc-space-2) 0; }
+/* Room around the dials where the screen has it to spare. */
+@media (min-height: 600px) { .joint-dials { padding: var(--wc-space-3) 0; } }
 .joint-dial-cell {
   width: var(--wc-size-joint-dial);
   position: relative;
+  transform-origin: 50% 50%;
+  transition: transform var(--wc-duration-fast) var(--wc-ease-enter),
+    opacity var(--wc-duration-fast), filter var(--wc-duration-fast);
+}
+.joint-dial-cell:first-child { transform-origin: 0 50%; }
+.joint-dial-cell:last-child { transform-origin: 100% 50%; }
+.joint-dial-cell:is(:hover, :focus-within) { transform: scale(1.3); z-index: 3; }
+.joint-dials:has(.joint-dial-cell:is(:hover, :focus-within))
+  .joint-dial-cell:not(:hover):not(:focus-within) {
+  opacity: 0.35;
+  filter: blur(1.5px);
+}
+/* The magnified dial reaches past the panel; the panels clip only while none is. */
+.cp-jog-panels:has(.joint-dial-cell:is(:hover, :focus-within)),
+.cp-jog-panels:has(.joint-dial-cell:is(:hover, :focus-within)) :is(.q-panel, .q-tab-panel) {
+  overflow: visible;
 }
 .joint-dial {
   position: relative;
@@ -855,37 +880,36 @@ html, body {
   stroke-linecap: round;
 }
 .dial-track { stroke: var(--wc-control); }
-.dial-fill { stroke: var(--wc-progress); }
-.dial-tick { stroke: var(--wc-text-muted); stroke-width: 1.5; }
+.dial-fill { stroke: var(--wc-text-muted); }
+.dial-steps {
+  stroke: var(--wc-text);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  opacity: 0;
+  transition: opacity var(--wc-duration-fast);
+}
+.joint-dial-cell:is(:hover, :focus-within) .dial-steps { opacity: 0.8; }
 .dial-knob { fill: var(--wc-text); }
 .joint-dial .joint-readout-input {
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 44px;
+  max-width: 48px;
   color: var(--wc-text);
   font-variant-numeric: tabular-nums;
 }
-.joint-cap {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 24px;
-  height: 24px;
-  min-height: 0;
-  padding: 0;
-  color: var(--wc-text) !important;
-  background: var(--wc-glass);
-  opacity: 0;
-  transition: opacity var(--wc-duration-fast);
-  z-index: 1;
+/* The field is as wide as its number, so the degree sign sits right after it. */
+.joint-dial .joint-readout-input .q-field__native {
+  field-sizing: content;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 1ch;
 }
-.joint-cap-minus { left: -6px; }
-.joint-cap-plus { right: -6px; }
-.joint-cap.q-btn--disabled {
-  color: var(--wc-text-disabled) !important;
-  pointer-events: none;
+.joint-dial-name-row {
+  position: relative;
+  max-width: 100%;
+  margin-top: var(--wc-space-1);
 }
 .joint-dial-name {
   max-width: 100%;
@@ -896,20 +920,30 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.joint-dial-limits {
+.joint-cap {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  font-size: 11px;
+  background: var(--wc-control);
   opacity: 0;
   transition: opacity var(--wc-duration-fast);
+  z-index: 1;
 }
-.joint-dial-cell:hover .joint-cap,
-.joint-dial-cell:focus-within .joint-cap,
-.joint-dial-cell:hover .joint-dial-limits,
-.joint-dial-cell:focus-within .joint-dial-limits {
-  opacity: 1;
+.joint-cap { top: 50%; color: var(--wc-text) !important; }
+.joint-cap-minus { right: calc(100% + 3px); transform: translateY(-50%); }
+.joint-cap-plus { left: calc(100% + 3px); transform: translateY(-50%); }
+.joint-cap.q-btn--disabled {
+  color: var(--wc-text-disabled) !important;
+  pointer-events: none;
 }
+.joint-dial-cell:is(:hover, :focus-within) .joint-cap { opacity: 1; }
 /* Visibility, not opacity: Quasar's disabled opacity is !important inside a cascade
    layer, which outranks any unlayered rule, so a cap at its limit would show */
-.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap,
-.joint-dial-cell:not(:hover):not(:focus-within) .joint-dial-limits { visibility: hidden; }
+.joint-dial-cell:not(:hover):not(:focus-within) .joint-cap { visibility: hidden; }
 
 /* Level chips: percentage beside the icon, the rating in the popover */
 .level-chip { font-variant-numeric: tabular-nums; }
@@ -1690,71 +1724,11 @@ html, body {
   80% { transform: translateX(2px); }
 }
 
-/* ========== Robot Face Indicator ========== */
+/* ========== Robot buddy ========== */
 
-/* The face is drawn in the chip's text colour; eyes and mouth are cut-outs
-   in the surface behind it. */
-.robot-face { --face-cut: var(--wc-glass-end); }
-
-/* Hops, head tilts and floating notes/Zs reach past the viewBox. */
-.robot-face svg { overflow: visible; }
-
-/* Robot face SVG transitions */
-.robot-face .pupil { transition: transform 0.45s ease; }
-.robot-face .eye-white { transition: opacity 0.25s ease; }
-
-/* Breathing animations */
-@keyframes breathe-happy {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
-}
-@keyframes breathe-neutral {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-1.5px); }
-}
-@keyframes breathe-sad {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2.5px); }
-}
-.robot-face-happy svg { animation: breathe-happy 6s ease-in-out infinite; }
-.robot-face-neutral svg { animation: breathe-neutral 7s ease-in-out infinite; animation-delay: -2s; }
-.robot-face-sad svg { animation: breathe-sad 8s ease-in-out infinite; animation-delay: -4s; }
-
-
-/* ========== Takeover Overlay ========== */
-
-/* Wandering sad robot — DVD-screensaver-style bounce around the viewport.
-   Dimensions and fixed positioning are load-bearing: robot-faces.js uses
-   FACE_SIZE = 96 for collision math, and the JS sets `transform` directly
-   to compose translate + rotate without browser animation interference. */
-.takeover-face {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 96px;
-  height: 96px;
-  pointer-events: none;
-}
-
-
-/* ========== Guest Waldos ========== */
-
-.waldo-guest { flex-shrink: 0; }
-.waldo-guest > div, .waldo-guest svg { width: 100%; height: 100%; display: block; }
-
-/* Run-bar peek: Waldo rises over the bar's top edge when a script ends.
-   The padding leaves room for hops and sparkles inside the clip. */
-.bottom-playback-bar { position: relative; }
-.waldo-peek {
-  position: absolute;
-  bottom: 100%;
-  left: var(--wc-space-2);
-  box-sizing: content-box;
-  padding: var(--wc-space-2) var(--wc-space-2) 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-.waldo-peek > div { transform: translateY(105%); }
+/* On the simulator's amber fill the buddy is drawn in on-bright, so its eyes
+   and mouth cut through to the fill rather than to the glass. */
+.bg-wc-mode-sim .robot-buddy { --bb-cut: var(--wc-mode-sim); }
 
 
 /* ========== Status footer ========== */
@@ -1781,8 +1755,6 @@ html, body {
   box-shadow: none;
 }
 .status-footer .footer-mode { border-radius: var(--wc-radius-pill); padding: 0 8px 0 4px; }
-.status-footer .footer-mode .robot-face { width: 20px; height: 20px; flex-shrink: 0; }
-.status-footer .footer-mode .robot-face svg { width: 20px; height: 20px; display: block; }
 .status-footer .footer-mode .q-chip__content { gap: 4px; flex-wrap: nowrap; }
 .status-footer .readout-robot-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .status-footer .footer-tool { max-width: 160px; }
@@ -1796,7 +1768,7 @@ html, body {
 }
 .io-dot.io-dot-on { background: var(--wc-action); }
 .status-footer .pose-well {
-  display: flex; align-items: baseline; gap: 6px;
+  display: flex; align-items: center; gap: 6px;
   height: calc(var(--wc-size-footer) - 6px);
   padding: 0 10px;
   border-radius: var(--wc-radius-pill);
@@ -1805,7 +1777,7 @@ html, body {
 }
 .status-footer .pose-well .wc-caption { line-height: 1; }
 .status-footer .pose-cell { display: flex; align-items: baseline; gap: 6px; }
-.status-footer .pose-value { display: inline-block; text-align: right; }
+.status-footer .pose-value { display: inline-block; text-align: center; }
 .status-footer .footer-action {
   flex: 1 1 0; min-width: 0;
   overflow: hidden; text-overflow: ellipsis;
@@ -1976,7 +1948,7 @@ body:has(.panels-wrap.column-open) .bottom-panel {
 @media (prefers-reduced-motion: reduce) {
   .control-glow-breathe, .status-footer .btn-take-control, .status-footer .footer-mode.ai-driving,
   .status-footer .footer-ai-mode, .recording-notification .q-notification__icon,
-  .record-btn.recording .q-icon, .robot-face-happy svg, .robot-face-neutral svg, .robot-face-sad svg,
+  .record-btn.recording .q-icon,
   .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next,
   .status-footer .footer-tool, .io-pop-a, .io-pop-b, .action-line, .action-line *,
   .status-footer .footer-btn, .estop-card, .bottom-playback-bar > .q-btn,
@@ -1985,6 +1957,7 @@ body:has(.panels-wrap.column-open) .bottom-panel {
   [class*="q-transition--"] { --q-transition-duration: 0s !important; }
   .q-btn--actionable:active { scale: none; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
+  .joint-dial-cell, .dial-steps { transition: none; }
 }
 """
     )

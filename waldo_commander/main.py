@@ -52,8 +52,7 @@ from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import StatusFooter
 from waldo_commander.components.script_execution import script_exec
-from waldo_commander.components.waldo import FACE_SVGS, RobotFace, waldo
-from waldo_commander.components.waldo import react as waldo_react
+from waldo_commander.components.robot_buddy import Mood, RobotBuddy
 from waldo_commander.components.settings import (
     adopt_applied_tcp,
     refresh_applied_tcp,
@@ -1054,7 +1053,6 @@ def build_page_content() -> None:
     """Build the Move page UI."""
 
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
-    ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
     ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
     ui.add_head_html('<script src="/static/js/scene-fx.js" defer></script>')
     ui.add_head_html('<script src="/static/js/live-chart.js" defer></script>')
@@ -1073,7 +1071,7 @@ def build_page_content() -> None:
                     # No STATUS frame (com_port configured but no robot wired).
                     # The scene only needs local URDF assets and guarded client
                     # calls, so render it anyway instead of blocking the page.
-                    waldo_react(loading_waldo, "warning")
+                    loading_buddy.set_mood(Mood.SAD)
                     loading_status.text = (
                         "Robot disconnected — proceeding without live data"
                     )
@@ -1112,6 +1110,7 @@ def build_page_content() -> None:
                 scene_loading_overlay.classes("opacity-0 pointer-events-none")
                 await asyncio.sleep(0.4)
                 scene_loading_overlay.delete()
+                readout_panel.greet()
 
             ui.timer(0.05, _init, once=True)
 
@@ -1124,9 +1123,7 @@ def build_page_content() -> None:
                 " transition: opacity 0.4s ease;"
             ) as scene_loading_overlay
         ):
-            loading_waldo = waldo(
-                RobotFace.NEUTRAL, size=72, color="text-muted", cut="scene-bg"
-            ).mark("loading-waldo")
+            loading_buddy = RobotBuddy(Mood.BOOTING, size=96).mark("loading-buddy")
             loading_status = ui.label("Connecting to controller...").classes(
                 "wc-body text-wc-text-muted"
             )
@@ -1466,8 +1463,6 @@ def _build_takeover_overlay(message: str) -> None:
 
     Used as the entire page body for fresh shadow tabs, and as a top-layer
     overlay for previously-active tabs that have been evicted by another tab.
-    All visual styling lives in theme.py under the `Takeover Overlay` section;
-    this function only assigns class names.
 
     Idempotent per-client: sets a flag on the current Client instance so
     repeat callers (e.g. check_ping firing on a shadow tab that was already
@@ -1478,24 +1473,18 @@ def _build_takeover_overlay(message: str) -> None:
         return
     c._waldo_overlay_shown = True  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
 
-    # robot-faces.js is normally loaded by build_page_content, which the
-    # shadow branch skips. Load it here so startRobotMope is defined when
-    # the run_javascript bootstrap fires below.
-    ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
-
     with (
         ui.column()
         .classes("fixed inset-0 items-center justify-center")
         .style("z-index: var(--wc-z-capsule); background: var(--wc-scrim);")
     ):
-        # Wandering sad robot — sibling of the card. JS sets transform to
-        # mope around the viewport, avoiding the centered card's footprint.
-        with ui.element("div").classes("robot-face robot-face-sad takeover-face"):
-            ui.html(FACE_SVGS[RobotFace.SAD], sanitize=False).style(
-                "width: 96px; height: 96px;"
-            )
+        # Moping buddy — a sibling of the card, wandering the viewport and
+        # bouncing off its edges and the card.
+        RobotBuddy(Mood.SAD, size=96, roam_avoid=".takeover-card")
 
-        with ui.column().classes("overlay-card items-center max-w-sm p-8"):
+        with ui.column().classes(
+            "overlay-card takeover-card items-center max-w-sm p-8"
+        ):
             ui.label("Waldo Commander").classes("text-xl font-semibold")
             ui.label(message).classes("text-sm text-center")
 
@@ -1506,23 +1495,6 @@ def _build_takeover_overlay(message: str) -> None:
             ui.button("Take over", on_click=_take_over).props(
                 "color=wc-action unelevated rounded text-color=wc-on-bright"
             ).classes("mt-2")
-
-    # Bootstrap face animations + wandering. The robot-faces.js script tag
-    # uses `defer`, so the functions may not be defined yet when this JS
-    # arrives over the websocket. Poll briefly for them.
-    ui.run_javascript(
-        """
-        (function bootstrap(retries) {
-          if (typeof window.startRobotMope === 'function') {
-            window.startRobotMope();
-          } else if (retries > 0) {
-            setTimeout(() => bootstrap(retries - 1), 50);
-          } else {
-            console.warn('takeover overlay: robot-faces.js never loaded');
-          }
-        })(60);
-        """
-    )
 
 
 @ui.page("/")

@@ -17,11 +17,10 @@ from waldoctl.types import Axis
 
 from waldo_commander.components.joint_dial import JointDial
 from waldo_commander.components.playback import playback
+from waldo_commander.components.robot_buddy import Mood, RobotBuddy
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import _setting_row
 from waldo_commander.components.readout import AI_MODE_CLASS
-from waldo_commander.components.waldo import RobotFace, current_mood, waldo
-from waldo_commander.components.waldo import react as waldo_react
 from waldo_commander.constants import (
     CLICK_HOLD_THRESHOLD_S,
     DEFAULT_CAMERA,
@@ -56,6 +55,9 @@ from waldo_commander.state import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ESTOP_BUDDY_PX = 160
+_DIGITAL_ESTOP_COLOR = "var(--wc-warning)"
 
 # Module-level constants and precompiled regexes: avoid recreating them every frame.
 _AXIS_ORDER = (
@@ -120,8 +122,13 @@ class _EStopManager:
         self._last_io_state: int = 1
         self._digital_active: bool = False
 
+    @property
+    def active(self) -> bool:
+        """An E-STOP dialog is up: a physical or digital stop is latched."""
+        return self._dialog is not None
+
     def show(self, is_physical: bool) -> None:
-        """Show the E-STOP dialog, with a startled Waldo."""
+        """Show the E-STOP dialog with an alarmed robot buddy."""
         ui_client = self._ui_client_fn()
         if not ui_client:
             return
@@ -146,13 +153,13 @@ class _EStopManager:
                 .classes("overlay-card estop-card gap-4 items-center")
                 .mark("estop-dialog"),
             ):
-                waldo(
-                    current_mood(),
-                    size=160,
-                    color="error" if is_physical else "warning",
-                    hold={"estop": True},
-                    react="shock",
-                ).mark("estop-waldo")
+                # Error red for the hardware button, warning yellow for the
+                # software stop, matching the headline below.
+                RobotBuddy(
+                    Mood.ALARMED,
+                    size=_ESTOP_BUDDY_PX,
+                    color=None if is_physical else _DIGITAL_ESTOP_COLOR,
+                ).classes("my-4").mark("estop-buddy")
 
                 if is_physical:
                     ui.label("Physical E-STOP Active").classes(
@@ -186,11 +193,6 @@ class _EStopManager:
                         ).mark("btn-estop-resume")
 
             self._dialog.open()
-
-    @property
-    def active(self) -> bool:
-        """Whether an E-STOP (physical or digital) is latched in the UI."""
-        return self._dialog is not None
 
     def close(self) -> None:
         """Close the E-STOP dialog if open."""
@@ -241,7 +243,6 @@ class _ToolQuickActions:
         self._adjust_minus_tooltip: ui.tooltip | None = None
         self._adjust_plus_tooltip: ui.tooltip | None = None
         self._last_visual: tuple = ()
-        self._last_grip: tuple[str | None, bool] | None = None
 
     def _get_active_tool(self) -> "ToolSpec | None":
         try:
@@ -342,19 +343,6 @@ class _ToolQuickActions:
         if visual_key == self._last_visual:
             return
         self._last_visual = visual_key
-
-        if isinstance(tool, GripperTool):
-            grip = (pub_tool.key, tool.is_open(tool_position))
-            last, self._last_grip = self._last_grip, grip
-            if (
-                last is not None
-                and last[0] == grip[0]
-                and last[1] != grip[1]
-                and ui_state._readout_panel is not None
-            ):
-                ui_state._readout_panel.face_react(
-                    "grip-open" if grip[1] else "grip-close"
-                )
 
         # Left action button
         if tool.action_l_icons:
@@ -686,7 +674,6 @@ class ControlPanel:
         # live in the status footer's chip.
         self._control_glow: ui.element | None = None
         self._mode_scope: ui.element | None = None
-        self._approval_face: ui.element | None = None
         self._consent_dialog: ui.dialog | None = None
         self._approval_card: ui.card | None = None
         self._approval_title: ui.label | None = None
@@ -701,9 +688,6 @@ class ControlPanel:
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
         self._joint_right_btns: dict[int, ui.button] = {}
-        self._joint_limit_btns: dict[
-            tuple[int, str], ui.button
-        ] = {}  # (joint_idx, "min"/"max") -> button
         self._dials: list[JointDial] = []
         self._joint_tab_shown = True
         self._cart_axis_imgs: dict[str, ui.element] = {}
@@ -769,9 +753,6 @@ class ControlPanel:
 
         # E-STOP manager (initialized with ui_client in build())
         self.estop: _EStopManager | None = None
-
-        # Jog axis the status face is currently looking along
-        self._face_look_axis: str | None = None
 
         # TCP TransformControls drag state
         self._tcp_latest_pose: list[float] | None = None
@@ -869,8 +850,6 @@ class ControlPanel:
         for timer in (ui_state._joint_jog_timer, ui_state._cart_jog_timer):
             if timer is not None:
                 timer.active = False
-        if self._face_look_axis is not None:
-            self._face_look(self._face_look_axis, False)
         for elements in (
             self._joint_left_btns,
             self._joint_right_btns,
@@ -886,63 +865,6 @@ class ControlPanel:
             self._jog_end_wait_task.cancel()
             self._jog_end_wait_task = None
         motion_recorder.on_jog_start(kind, axis)
-        self._face_look(axis, True)
-
-    # ---- Status face: eyes follow the jog ----
-
-    # (dx, dy, tilt degrees) per cartesian pad slot, by the arrow's on-screen
-    # direction; rotations tilt the head instead of moving the eyes.
-    _SLOT_LOOK: ClassVar[dict[str, tuple[float, float, float]]] = {
-        "ud1_up": (0.0, -1.0, 0.0),
-        "ud2_up": (0.0, -1.0, 0.0),
-        "ud1_down": (0.0, 1.0, 0.0),
-        "ud2_down": (0.0, 1.0, 0.0),
-        "lr_neg": (-1.0, 0.0, 0.0),
-        "lr_pos": (1.0, 0.0, 0.0),
-        "r_ud1_plus": (0.0, 0.0, 10.0),
-        "r_ud2_plus": (0.0, 0.0, 10.0),
-        "r_lr_plus": (0.0, 0.0, 10.0),
-        "r_ud1_minus": (0.0, 0.0, -10.0),
-        "r_ud2_minus": (0.0, 0.0, -10.0),
-        "r_lr_minus": (0.0, 0.0, -10.0),
-    }
-
-    def _look_for_axis(self, axis: str) -> tuple[float, float, float] | None:
-        """Face eye direction for a jog axis string ('J2+', 'X-', 'RZ+').
-
-        Dial and gizmo drags carry no direction ('J3', 'TCP') and get none.
-        """
-        if axis[-1:] not in ("+", "-"):
-            return None
-        sign = 1.0 if axis.endswith("+") else -1.0
-        if axis.startswith("J"):
-            joint = int(axis[1:-1])
-            if joint == 1:
-                return (sign, 0.0, 0.0)
-            if joint in (4, 6):
-                return (0.0, 0.0, 10.0 * sign)
-            return (0.0, -sign, 0.0)
-        for slot_id, meta in self._cart_slot_meta.items():
-            slot_axis = self._axis_string_for(
-                meta["assign_key"], meta["sign"], meta["rotation"]
-            )
-            if slot_axis == axis:
-                return self._SLOT_LOOK.get(slot_id)
-        return None
-
-    def _face_look(self, axis: str, pressed: bool) -> None:
-        """Hold the status face's gaze along *axis* while its jog is pressed."""
-        readout = ui_state._readout_panel
-        if readout is None:
-            return
-        if pressed:
-            look = self._look_for_axis(axis)
-            if look is not None:
-                self._face_look_axis = axis
-                readout.face_hold("look", look)
-        elif axis == self._face_look_axis:
-            self._face_look_axis = None
-            readout.face_hold("look", None)
 
     def _get_cart_axis_lookup(self) -> dict[str, tuple[Axis, float, str]]:
         """Build cartesian axis lookup from the active robot's frame names.
@@ -1201,8 +1123,9 @@ class ControlPanel:
         if not self._joint_tab_shown:
             return
         angles = waldoctl.commander.status.joints.angles.deg
+        step = float(waldoctl.commander.settings.jog.joint_step_deg)
         for dial, angle in zip(self._dials, angles):
-            dial.show(float(angle))
+            dial.show(float(angle), step)
 
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
@@ -1393,9 +1316,7 @@ class ControlPanel:
             ui.card().classes("ai-approval-card gap-2") as self._approval_card,
         ):
             with ui.row().classes("items-center gap-2 no-wrap"):
-                self._approval_face = waldo(
-                    RobotFace.NEUTRAL, size=30, hold={"ask": True}
-                ).classes("ai-approval-icon")
+                RobotBuddy(Mood.NEUTRAL, size=30).classes("ai-approval-icon")
                 self._approval_title = ui.label("Allow AI action?").classes(
                     "text-base font-medium"
                 )
@@ -1424,12 +1345,6 @@ class ControlPanel:
         if not e.value and self._approval_sid is not None:
             self._approval_sid = None
             self._approval_kind = None
-            self._face_ask(False)
-
-    def _face_ask(self, asking: bool) -> None:
-        readout = ui_state._readout_panel
-        if readout is not None:
-            readout.face_hold("ask", asking)
 
     async def take_control(self) -> None:
         """Hard reclaim: seize the lease for this browser tab and stop any
@@ -1490,7 +1405,7 @@ class ControlPanel:
                     card.classes(remove="consent-hw")
                 desc_label.text = desc
                 hint.text = "Approve this AI action to let it proceed."
-                self._open_approval(dlg)
+                dlg.open()
             elif consents:
                 sid, label = next(iter(consents.items()))
                 self._approval_sid = sid
@@ -1504,13 +1419,7 @@ class ControlPanel:
                     "First real hardware move of this AI session — make sure "
                     "the workspace is clear before allowing."
                 )
-                self._open_approval(dlg)
-
-    def _open_approval(self, dialog: ui.dialog) -> None:
-        dialog.open()
-        if self._approval_face is not None:
-            waldo_react(self._approval_face, "ai-ask")
-        self._face_ask(True)
+                dlg.open()
 
     def _resolve_approval(self, granted: bool) -> None:
         sid = self._approval_sid
@@ -1521,10 +1430,6 @@ class ControlPanel:
             self._consent_dialog.close()
         if sid is None:
             return
-        self._face_ask(False)
-        readout = ui_state._readout_panel
-        if readout is not None:
-            readout.face_react("nod" if granted else "headshake")
         if kind == "action":
             if granted:
                 grant_action(sid)
@@ -1598,8 +1503,6 @@ class ControlPanel:
         """Hybrid click/hold: quick click => single step, press-and-hold => stream until release."""
         sign = "+" if direction == "pos" else "-"
         axis_info = f"J{j + 1}{sign}"
-        if not is_pressed:
-            self._face_look(axis_info, False)
         if waldoctl.commander.status.editing_mode:
             return
         if not is_pressed and not self._drag_allowed():
@@ -1759,6 +1662,7 @@ class ControlPanel:
             if intent is not None:
                 j, d = intent
                 if not self._joint_jog_allowed(j, d):
+                    robot_state.jog_limit_stops += 1
                     self._release_joint_jog(j, d)
                     return
                 signed_speed = speed if d == "pos" else -speed
@@ -1868,8 +1772,6 @@ class ControlPanel:
 
     async def set_axis_pressed(self, axis: str, is_pressed: bool) -> None:
         """Hybrid click/hold for cartesian axes: click => single step, hold => stream."""
-        if not is_pressed:
-            self._face_look(axis, False)
         if waldoctl.commander.status.editing_mode:
             return
         if not is_pressed and not self._drag_allowed():
@@ -2060,6 +1962,7 @@ class ControlPanel:
             # Priority 2: cart jog buttons (streamed)
             axis = self._get_first_pressed_axis()
             if axis is not None and not self._cart_axis_allowed(axis):
+                robot_state.jog_limit_stops += 1
                 self._release_cart_jog(axis)
                 axis = None
             if axis is not None:
@@ -2242,29 +2145,6 @@ class ControlPanel:
             await self._dial_move(pose, spd)
         except Exception as e:
             logger.error("Go to joint angle failed: %s", e)
-
-    async def go_to_joint_limit(self, joint_index: int, which: str) -> None:
-        """Move to min or max joint limit for a specific joint while holding others."""
-        # Skip if in editing mode (target editor controls robot)
-        if waldoctl.commander.status.editing_mode:
-            return
-
-        if not self._movement_allowed():
-            return
-
-        try:
-            angles = list(waldoctl.commander.status.joints.angles.deg)
-            lo, hi = self._get_joint_limits(joint_index)
-
-            target = angles[: self._n_joints]
-            target[joint_index] = float(lo if which == "min" else hi)
-            spd = _norm_speed()
-
-            self._begin_jog_record("joint", f"J{joint_index + 1}{which}")
-            await self._dial_move(target, spd)
-        except Exception as e:
-            logger.error("Go to joint limit failed: %s", e)
-            ui.notify(f"Failed joint move: {e}", color="negative")
 
     # ---- Gizmo control methods ----
 
@@ -2573,8 +2453,9 @@ class ControlPanel:
         self._joint_tab_shown = not cartesian
         if not cartesian:
             angles = waldoctl.commander.status.joints.angles.deg
+            step = float(waldoctl.commander.settings.jog.joint_step_deg)
             for dial, angle in zip(self._dials, angles):
-                dial.redraw(float(angle))
+                dial.redraw(float(angle), step)
         if self._step_input is not None:
             if cartesian:
                 self._step_input.props('suffix="mm"')
@@ -2589,8 +2470,8 @@ class ControlPanel:
             self._step_input.update()
 
     def _make_joint_dial(self, idx: int, name: str) -> None:
-        """One joint: minus cap, dial ring with the readout in its centre, plus cap,
-        the name, and a limits row revealed with the caps on hover."""
+        """One joint: the dial ring with the readout in its centre, and under it
+        the name, flanked on hover by the jog caps."""
         lo, hi = self._get_joint_limits(idx)
         joints = waldoctl.commander.status.joints
 
@@ -2607,9 +2488,9 @@ class ControlPanel:
             .mark(f"joint-dial-{idx}")
         ):
             with ui.element("div").classes("joint-dial"):
-                left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
-
-                self._dials.append(JointDial(lo, hi))
+                self._dials.append(
+                    JointDial(lo, hi, waldoctl.commander.settings.jog.joint_step_deg)
+                )
 
                 num = (
                     ui.number(
@@ -2651,35 +2532,10 @@ class ControlPanel:
                 num.on("blur", _submit_exact)
                 num.on("keydown.enter", _submit_exact)
 
+            with ui.element("div").classes("joint-dial-name-row"):
+                left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
+                ui.label(name).classes("joint-dial-name")
                 right_btn = _cap("add", "plus").mark(f"btn-j{idx + 1}-plus")
-
-            ui.label(name).classes("joint-dial-name")
-
-            with ui.row().classes("joint-dial-limits no-wrap gap-0"):
-                min_btn = (
-                    ui.button(
-                        icon="first_page",
-                        on_click=lambda e, i=idx: _safe_task(
-                            self.go_to_joint_limit(i, "min")
-                        ),
-                    )
-                    .props("round flat dense size=sm color=wc-text-muted")
-                    .tooltip("Move to minimum joint limit")
-                    .mark(f"btn-j{idx + 1}-min-limit")
-                )
-                max_btn = (
-                    ui.button(
-                        icon="last_page",
-                        on_click=lambda e, i=idx: _safe_task(
-                            self.go_to_joint_limit(i, "max")
-                        ),
-                    )
-                    .props("round flat dense size=sm color=wc-text-muted")
-                    .tooltip("Move to maximum joint limit")
-                    .mark(f"btn-j{idx + 1}-max-limit")
-                )
-                self._joint_limit_btns[(idx, "min")] = min_btn
-                self._joint_limit_btns[(idx, "max")] = max_btn
 
         def check_lower_limit(a, i=idx, lo=lo):
             if len(a) <= i:
@@ -2770,7 +2626,7 @@ class ControlPanel:
                 with (
                     ui.grid(
                         rows="72px 30px 72px",
-                        columns="90px 30px 72px 42px 72px 30px 72px",
+                        columns="90px 30px 72px 34px 72px 30px 72px",
                     )
                     .classes("gap-0")
                     .style("place-items: center")
@@ -2779,7 +2635,9 @@ class ControlPanel:
                     _add_slot("ud2_up", "arrow-small-up-cropped.svg", "ud2", "+", False)
                     # Z chevrons hug the column's outer edge, keeping a clear
                     # gap to the XY arrow pad beside them.
-                    self._cart_slot_elems["ud2_up"].classes("justify-self-start")
+                    self._cart_slot_elems["ud2_up"].classes(
+                        "justify-self-start cart-z-top"
+                    )
                     _add_slot("ud1_up", "arrow-small-up.svg", "ud1", "-", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_plus", "curved-arrow-down.svg", "ud2", "+", True)
@@ -2800,7 +2658,9 @@ class ControlPanel:
                     _add_slot(
                         "ud2_down", "arrow-small-down-cropped.svg", "ud2", "-", False
                     )
-                    self._cart_slot_elems["ud2_down"].classes("justify-self-start")
+                    self._cart_slot_elems["ud2_down"].classes(
+                        "justify-self-start cart-z-bottom"
+                    )
                     _add_slot("ud1_down", "arrow-small-down.svg", "ud1", "+", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_minus", "curved-arrow-up.svg", "ud2", "-", True)
@@ -2848,12 +2708,20 @@ class ControlPanel:
         )
         with chip:
             tooltip = ui.tooltip(storage_key.replace("_", " ").title())
-            with ui.menu().classes("level-menu").mark(f"menu-{marker}"):
+            # Beside the chip, in its row, rather than over the controls below.
+            with (
+                ui.menu()
+                .props('anchor="center right" self="center left" :offset="[6, 0]"')
+                .classes("level-menu")
+                .mark(f"menu-{marker}") as menu
+            ):
                 rating = (
                     ui.rating(max=10, icon="circle", size="16px", value=v_init)
                     .props("color=wc-progress")
                     .mark(f"rating-{marker}")
                 )
+            # The open menu sits where the tooltip shows, so the tooltip gives way.
+            menu.on("show", lambda _e, t=tooltip: t.run_method("hide"))
         self._rating_widgets[ui_attr] = {
             "rating": rating,
             "label": chip,

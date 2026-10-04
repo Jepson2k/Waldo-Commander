@@ -10,7 +10,12 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable
 
 from nicegui import core
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+)
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
@@ -94,6 +99,27 @@ def marked_element(screen: "Screen", marker: str) -> WebElement:
     if identifier is None:
         raise NoSuchElementException(marker)
     return screen.selenium.find_element(By.ID, f"c{identifier}")
+
+
+def click_marked(screen: "Screen", marker: str, timeout: float = 10.0) -> None:
+    """Click the marked element once it takes the click: a control still
+    sliding or fading in can be covered, or not yet interactable."""
+
+    def clicked(_) -> bool:
+        try:
+            marked_element(screen, marker).click()
+        except (
+            ElementClickInterceptedException,
+            ElementNotInteractableException,
+            NoSuchElementException,
+            StaleElementReferenceException,
+        ):
+            return False
+        return True
+
+    WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(
+        clicked, message=f"{marker} never took a click"
+    )
 
 
 @contextmanager

@@ -9,6 +9,7 @@ it runs last.
 
 import asyncio
 import math
+import time
 
 import pytest
 import waldoctl
@@ -16,6 +17,7 @@ from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
 )
+from selenium.webdriver.common.action_chains import ActionChains
 from nicegui import Client, core
 
 from tests.helpers.browser_helpers import (
@@ -54,7 +56,18 @@ MEASURE = """
     const children = [...footer.querySelectorAll(':scope > *')]
         .filter(e => e.offsetParent !== null)
         .map(e => e.getBoundingClientRect());
-    return {height: f.height, top: f.top, bottom: f.bottom, left: f.left, right: f.right,
+    const values = [...footer.querySelectorAll('.pose-well .pose-value')]
+        .filter(v => v.offsetParent !== null)
+        .map(v => {
+            const slot = v.getBoundingClientRect();
+            const range = document.createRange();
+            range.selectNodeContents(v);
+            const text = range.getBoundingClientRect();
+            return {text: v.textContent,
+                    dx: (text.left + text.right - slot.left - slot.right) / 2,
+                    dy: (text.top + text.bottom - well.top - well.bottom) / 2};
+        });
+    return {height: f.height, top: f.top, bottom: f.bottom, left: f.left, right: f.right, values,
             viewport: innerHeight, viewportWidth: innerWidth,
             wellRight: well.right, wellLeft: well.left, wellTop: well.top, wellBottom: well.bottom,
             lowest: Math.max(...children.map(r => r.bottom)),
@@ -154,6 +167,39 @@ def _wait_view(screen, predicate) -> dict:
 
 @pytest.mark.browser
 class TestShellLayout:
+    def test_the_scene_redraws_sparingly_behind_a_dialog(self, class_screen) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        frames = (
+            "const el = document.querySelector('.nicegui-scene');"
+            "return getElement(el).renderer.info.render.frame;"
+        )
+
+        def frames_in_a_second() -> int:
+            start = js(screen, frames)
+            time.sleep(1.0)
+            return js(screen, frames) - start
+
+        dialog = ui_state.settings_content.dialog
+        assert dialog is not None
+        run_in_app(dialog.open)
+        try:
+            wait(screen, 5).until(
+                lambda _: js(
+                    screen, "return !!document.querySelector('.q-dialog__backdrop')"
+                )
+            )
+            covered = frames_in_a_second()
+        finally:
+            run_in_app(dialog.close)
+        wait(screen, 5).until(
+            lambda _: js(
+                screen, "return !document.querySelector('.q-dialog__backdrop')"
+            )
+        )
+        # Each drawn frame is two render calls: the scene, then its axis helper.
+        assert covered <= 10, f"{covered} render calls in a second behind the dialog"
+
     def test_the_joint_tab_is_as_tall_as_its_dials(self, class_screen) -> None:
         screen_wait_for_scene_ready(class_screen, timeout_s=40.0)
         sizes = wait(class_screen).until(
@@ -163,12 +209,72 @@ class TestShellLayout:
                 const panels = document.querySelector('.cp-jog-panels').getBoundingClientRect();
                 const cells = [...document.querySelectorAll('.joint-dial-cell')].map(c => c.getBoundingClientRect());
                 if (!cells.length) return null;
-                return {panelsHeight: panels.height,
-                        dialsHeight: Math.max(...cells.map(c => c.bottom)) - panels.top};
+                return {above: Math.min(...cells.map(c => c.top)) - panels.top,
+                        below: panels.bottom - Math.max(...cells.map(c => c.bottom))};
                 """,
             )
         )
-        assert sizes["panelsHeight"] <= sizes["dialsHeight"] + 8, sizes
+        # A little room either side of the dials, the same above as below,
+        # and no empty band.
+        assert 4 <= sizes["below"] <= 16, sizes
+        assert abs(sizes["above"] - sizes["below"]) <= 2, sizes
+
+    def test_a_hovered_dial_magnifies_in_place_with_its_caps_beside_the_name(
+        self, class_screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        measure = """
+            const box = e => { const r = e.getBoundingClientRect();
+                return {left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width}; };
+            const cells = [...document.querySelectorAll('.joint-dial-cell')];
+            const cell = cells[2];
+            const shown = e => getComputedStyle(e).visibility !== 'hidden'
+                && getComputedStyle(e).opacity !== '0';
+            return {panel: box(document.querySelector('.cp-jog-panels')),
+                    cell: box(cell), ring: box(cell.querySelector('.joint-dial-svg')),
+                    name: box(cell.querySelector('.joint-dial-name')),
+                    neighbours: [box(cells[1]), box(cells[3])],
+                    caps: [...cell.querySelectorAll('.joint-cap')].map(c => ({...box(c), shown: shown(c)})),
+                    steps: +getComputedStyle(cell.querySelector('.dial-steps')).opacity,
+                    ticks: (cell.querySelector('.dial-steps').getAttribute('d') || '').split('M').length - 1};
+        """
+        rest = js(screen, measure)
+        assert not any(c["shown"] for c in rest["caps"]), rest
+
+        cell = screen.selenium.execute_script(
+            "return document.querySelectorAll('.joint-dial-cell')[2];"
+        )
+        ActionChains(screen.selenium).move_to_element(cell).perform()
+        hot = wait(screen).until(
+            lambda _: (m := js(screen, measure))["cell"]["width"]
+            > rest["cell"]["width"] * 1.2
+            and m["steps"] > 0.5
+            and m
+        )
+        try:
+            # Magnified in place: the panel and the neighbours stay where they were.
+            assert abs(hot["panel"]["top"] - rest["panel"]["top"]) < 0.5, (rest, hot)
+            assert abs(hot["panel"]["bottom"] - rest["panel"]["bottom"]) < 0.5
+            for before, after in zip(rest["neighbours"], hot["neighbours"]):
+                assert abs(before["left"] - after["left"]) < 0.5, (before, after)
+            # The caps flank the name and stay off the ring.
+            minus, plus = hot["caps"]
+            assert minus["shown"] and plus["shown"], hot
+            assert minus["right"] <= hot["name"]["left"] + 0.5, hot
+            assert plus["left"] >= hot["name"]["right"] - 0.5, hot
+            for cap in (minus, plus):
+                assert cap["top"] >= hot["ring"]["bottom"] - 0.5, (cap, hot["ring"])
+            # Ticks mark the steps around the knob.
+            assert hot["ticks"] >= 3, hot
+        finally:
+            screen.selenium.execute_cdp_cmd(
+                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 5, "y": 5}
+            )
+        wait(screen).until(
+            lambda _: abs(js(screen, measure)["cell"]["width"] - rest["cell"]["width"])
+            < 0.5
+        )
 
     def test_a_dial_shows_a_move_made_while_the_cartesian_tab_was_open(
         self, class_screen
@@ -217,6 +323,55 @@ class TestShellLayout:
             message="J1 moved to 40° while the Cartesian tab was open, "
             "but its dial does not show it on the Joint tab",
         )
+
+    def test_an_open_level_menu_sits_beside_its_chip_clear_of_its_tooltip(
+        self, class_screen
+    ) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        chip = marked_element(screen, "chip-jog-speed")
+        ActionChains(screen.selenium).move_to_element(chip).perform()
+        wait(screen, 5).until(
+            lambda _: not js(screen, NO_TOOLTIP), message="no tooltip on hover"
+        )
+        chip.click()
+        try:
+            wait(screen, 5).until(
+                lambda _: marked_element(screen, "rating-jog-speed").is_displayed()
+            )
+            wait(screen, 5).until(
+                lambda _: js(screen, NO_TOOLTIP),
+                message="the tooltip stays over the open rating menu",
+            )
+            # In the chip's own row, to its right, not over the controls below.
+            spots = js(
+                screen,
+                """
+                const box = e => e.getBoundingClientRect();
+                const chip = box(arguments[0]);
+                const menu = box(arguments[1].closest('.q-menu'));
+                return {chipRight: chip.right, chipMid: (chip.top + chip.bottom) / 2,
+                        menuLeft: menu.left, menuMid: (menu.top + menu.bottom) / 2};
+                """,
+                marked_element(screen, "chip-jog-speed"),
+                marked_element(screen, "rating-jog-speed"),
+            )
+            assert spots["menuLeft"] >= spots["chipRight"] - 1, spots
+            assert abs(spots["menuMid"] - spots["chipMid"]) <= 4, spots
+        finally:
+
+            def close_menu() -> None:
+                client = Client.instances[ui_state.active_client_id]
+                next(
+                    e
+                    for e in client.elements.values()
+                    if "menu-jog-speed" in e._markers
+                ).close()
+
+            run_in_app(close_menu)
+            wait(screen, 5).until(
+                lambda _: js(screen, "return !document.querySelector('.q-menu')")
+            )
 
     def test_idle_dials_hide_their_caps_even_at_a_limit(self, class_screen) -> None:
         screen = class_screen
@@ -370,6 +525,10 @@ class TestShellLayout:
         with window_size(screen, 1366, 768):
             before = _measure_with(screen, 4)
             assert before["height"] <= 29, before
+            # Each pose value sits in the middle of the well and of its slot.
+            assert before["values"], before
+            for value in before["values"]:
+                assert abs(value["dx"]) <= 1.5 and abs(value["dy"]) <= 1.5, value
 
             try:
                 _show_lines(12)

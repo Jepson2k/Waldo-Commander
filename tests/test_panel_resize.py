@@ -15,6 +15,7 @@ from nicegui import ui
 from waldoctl import Commander, Panel, PanelSlot
 
 from tests.helpers.browser_helpers import (
+    click_marked,
     click_tab,
     close_panel,
     js,
@@ -335,7 +336,8 @@ class TestProgramColumn:
             # The standing Recording notice sits over the middle of the header;
             # it must not take the close button's click either.
             click_tab(screen, "program")
-            marked_element(screen, "editor-record-btn").click()
+            # The panel slides back in; its record button takes clicks after.
+            click_marked(screen, "editor-record-btn")
             notice = wait(screen).until(
                 lambda _: js(
                     screen,
