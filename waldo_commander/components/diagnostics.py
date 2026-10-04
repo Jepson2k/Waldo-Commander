@@ -37,6 +37,7 @@ from waldo_commander.common.charts import (
 )
 from waldo_commander.common.panel_theme import joint_colors
 from waldo_commander.common.tab_flash import flash_tab
+from waldo_commander.components.waldo import Mood, Waldo
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S
 from waldo_commander.state import robot_events, robot_state, ui_state
 
@@ -164,6 +165,7 @@ class DiagnosticsPage:
         self._chart: ui.echart | None = None
         self._events_html: ui.html | None = None
         self._events_version = -1
+        self._events_newest: tuple | None = None
         self._target_hz = 0.0
         self._constants_asked = False
         self._constants_retry_at = 0.0
@@ -480,11 +482,15 @@ class DiagnosticsPage:
             # An empty log is a claim, not a blank: it says the backend has
             # reported nothing since this session started, which is different
             # from the panel having nowhere to put it.
-            self._events_empty = (
-                ui.label("Nothing reported since start.")
-                .classes("text-xs text-wc-text-muted")
-                .mark("diag-events-empty")
-            )
+            with (
+                ui.row()
+                .classes("items-center no-wrap gap-2")
+                .mark("diag-events-empty") as self._events_empty
+            ):
+                Waldo(Mood.HAPPY, size=28, color="var(--wc-text-muted)")
+                ui.label("Nothing reported since start.").classes(
+                    "text-xs text-wc-text-muted"
+                )
 
     # ---- visibility ----
 
@@ -814,9 +820,15 @@ class DiagnosticsPage:
         """
         if self._events_html is None or robot_events.version == self._events_version:
             return
+        # Only an event that just landed slides in, not the log a page opens on.
+        first_draw = self._events_version == -1
         self._events_version = robot_events.version
         if not self._is_open():
             flash_tab(self._attention)
+        newest = robot_events.entries[-1] if robot_events.entries else None
+        arrived = not first_draw and newest is not None
+        arrived = arrived and newest is not self._events_newest
+        self._events_newest = newest
         parts: list[str] = []
         for ts, code, title, cause, effect, remedy, severity in reversed(
             robot_events.entries
@@ -825,8 +837,9 @@ class DiagnosticsPage:
             colour = _SEVERITY_COLOUR.get(severity, "text-wc-warning")
             esc = html_mod.escape
             detail = " → ".join(x for x in (esc(cause), esc(effect)) if x)
+            fresh = " diag-event-new" if arrived and not parts else ""
             parts.append(
-                f'<div class="diag-event">'
+                f'<div class="diag-event{fresh}">'
                 f'<span class="material-symbols-outlined {colour}">{icon}</span>'
                 f'<span class="diag-event-time">{ts}</span>'
                 f"<b>{esc(title)}</b>"

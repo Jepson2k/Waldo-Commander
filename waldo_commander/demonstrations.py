@@ -270,8 +270,9 @@ def load_demonstration(path: str | Path) -> Demonstration:
 
 #: An encoder at rest wanders less than this between publications (degrees).
 STILL_DEG = 0.05
-#: A gripper at rest reports positions closer together than this (0–1).
-STILL_TOOL = 1e-3
+#: A gripper at rest reports positions closer together than this (0–1): a
+#: gripper holding a part can wander a count or two of its 0–255 reading.
+STILL_TOOL = 0.01
 #: A gripper has settled once it holds a position this long (seconds). Tool
 #: feedback can lag the status rate, so a gripper still travelling can repeat
 #: a position in consecutive publications.

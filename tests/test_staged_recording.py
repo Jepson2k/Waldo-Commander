@@ -529,3 +529,46 @@ async def test_a_take_survives_a_page_reload(user: User):
     await asyncio.sleep(0)
     assert str(rebuilt.value) == original, rebuilt.value
     assert program.source == original
+
+
+@pytest.mark.integration
+async def test_a_recorded_pause_runs_in_a_program_that_never_imported_time(
+    user: User,
+):
+    """The time between two recorded steps is written as a sleep. A program
+    that never imported ``time`` where the sleeps run, only inside a function
+    of its own and below them, gets the import with the first one, and only
+    once, and the kept take runs to the end."""
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+
+    textarea = await _open_program(
+        user,
+        PROGRAM
+        + "\n\ndef settle():\n    import time\n    time.sleep(0.1)\n"
+        + "\n\nimport time\n",
+    )
+    program = waldoctl.commander.programs.active
+    assert program is not None
+    _set_cursor_line(textarea, 3)
+    await _toggle_record(user, True)
+    for state in (1, 0, 1):
+        motion_recorder.record_action("io", port=0, state=state)
+        await asyncio.sleep(0.2)
+    user.find(marker="staged-keep").click()
+    await asyncio.sleep(0)
+    assert not is_any_program_recording()
+
+    lines = [line.strip() for line in str(textarea.value).split("\n")]
+    assert sum(line.startswith("time.sleep(") for line in lines) == 3, textarea.value
+    # The take's own, settle()'s, and the one below the take.
+    assert lines.count("import time") == 3, textarea.value
+
+    await script_exec.start()
+    async with asyncio.timeout(60):
+        while is_any_program_running():
+            await asyncio.sleep(0.05)
+    stderr = "\n".join(
+        entry.text for entry in program.log.entries if entry.stream == "stderr"
+    )
+    assert script_exec.last_exit_code == 0, stderr

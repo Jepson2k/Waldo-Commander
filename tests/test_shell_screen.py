@@ -19,9 +19,8 @@ from selenium.common.exceptions import (
     TimeoutException,
 )
 from selenium.webdriver.common.action_chains import ActionChains
-from nicegui import Client, core
+from nicegui import Client, core, ui
 
-from tests.conftest import skip_webgl_macos_ci
 from tests.helpers.browser_helpers import (
     click_tab,
     close_panel,
@@ -168,7 +167,6 @@ def _wait_view(screen, predicate) -> dict:
 
 
 @pytest.mark.browser
-@skip_webgl_macos_ci
 class TestShellLayout:
     def test_the_scene_redraws_sparingly_behind_a_dialog(self, class_screen) -> None:
         screen = class_screen
@@ -183,6 +181,12 @@ class TestShellLayout:
             time.sleep(1.0)
             return js(screen, frames) - start
 
+        def marker():
+            assert ui_state.urdf_scene is not None
+            with ui_state.urdf_scene.scene:
+                return ui.scene.sphere(0.01).move(0.0, 0.0, -5.0)
+
+        dot = run_in_app(marker)
         dialog = ui_state.settings_content.dialog
         assert dialog is not None
         run_in_app(dialog.open)
@@ -193,8 +197,18 @@ class TestShellLayout:
                 )
             )
             covered = frames_in_a_second()
+            # A change landing just after a covered frame is drawn a little
+            # later, not left on screen stale until something else draws.
+            wait(screen, 5).until(lambda _: frames_in_a_second() == 0)
+            before = js(screen, frames)
+            run_in_app(lambda: dot.move(0.0, 0.0, -4.9))
+            time.sleep(0.05)
+            run_in_app(lambda: dot.move(0.0, 0.0, -4.8))
+            time.sleep(1.0)
+            drawn = js(screen, frames) - before
         finally:
             run_in_app(dialog.close)
+            run_in_app(dot.delete)
         wait(screen, 5).until(
             lambda _: js(
                 screen, "return !document.querySelector('.q-dialog__backdrop')"
@@ -202,6 +216,7 @@ class TestShellLayout:
         )
         # Each drawn frame is two render calls: the scene, then its axis helper.
         assert covered <= 10, f"{covered} render calls in a second behind the dialog"
+        assert drawn >= 4, f"the second of two changes was never drawn ({drawn} calls)"
 
     def test_the_joint_tab_is_as_tall_as_its_dials(self, class_screen) -> None:
         screen_wait_for_scene_ready(class_screen, timeout_s=40.0)
@@ -406,6 +421,65 @@ class TestShellLayout:
             assert caps["shown"] == 0, f"an idle dial shows its caps: {caps}"
         finally:
             _teleport(list(JOG_SAFE_POSE_DEG))
+
+    def test_a_pressed_joint_cap_stays_on_its_dial(self, class_screen) -> None:
+        """A pressed button sinks in place. A joint cap centres itself with a
+        transform; pressed, it must keep it, or it drops half its height out
+        from under the pointer and the next movement ends a held jog."""
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        driver = screen.selenium
+        cap = marked_element(screen, "btn-j1-plus")
+        centre = """
+            const r = arguments[0].getBoundingClientRect();
+            return [r.left + r.width / 2, r.top + r.height / 2];
+        """
+
+        def hover() -> tuple[float, float]:
+            """Rest the pointer on the cap until it stops moving: a hovered
+            dial magnifies and brings its caps beside the joint's name."""
+            deadline = time.monotonic() + 5
+            last = None
+            while time.monotonic() < deadline:
+                x, y = js(screen, centre, cap)
+                driver.execute_cdp_cmd(
+                    "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}
+                )
+                if last is not None and math.dist(last, (x, y)) < 0.5:
+                    return x, y
+                last = (x, y)
+                time.sleep(0.3)
+            raise AssertionError(f"the hovered J1 cap never settled, last at {last}")
+
+        try:
+            for motion in ("reduce", "no-preference"):
+                driver.execute_cdp_cmd(
+                    "Emulation.setEmulatedMedia",
+                    {"features": [{"name": "prefers-reduced-motion", "value": motion}]},
+                )
+                x, y = hover()
+                mouse = {"x": x, "y": y, "button": "left", "clickCount": 1}
+                driver.execute_cdp_cmd(
+                    "Input.dispatchMouseEvent", {"type": "mousePressed", **mouse}
+                )
+                try:
+                    pressed = js(screen, centre, cap)
+                finally:
+                    driver.execute_cdp_cmd(
+                        "Input.dispatchMouseEvent", {"type": "mouseReleased", **mouse}
+                    )
+                assert math.dist(pressed, (x, y)) < 1.0, (
+                    f"with motion {motion}, the pressed J1 cap moved from "
+                    f"{(x, y)} to {pressed}"
+                )
+        finally:
+            driver.execute_cdp_cmd(
+                "Emulation.setEmulatedMedia",
+                {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
+            )
+            driver.execute_cdp_cmd(
+                "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 5, "y": 5}
+            )
 
     def test_view_offset_follows_the_column_and_footer(self, class_screen) -> None:
         screen = class_screen

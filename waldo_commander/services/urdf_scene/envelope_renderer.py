@@ -29,6 +29,7 @@ from waldo_commander.common.theme import SceneColors
 from waldo_commander.state import simulation_state
 
 from .objects import Stl
+from .scene_fx import SceneFx
 
 
 logger = logging.getLogger(__name__)
@@ -651,10 +652,13 @@ class EnvelopeRenderer:
         if not workspace_envelope.is_ready:
             workspace_envelope.generate(tool_offset_z=self._current_tool_offset_z)
         if not self.envelope_object and workspace_envelope.is_ready:
-            self._create_envelope_object()
+            if self._create_envelope_object() and self.scene:
+                SceneFx.fade_in(self.scene, [self.envelope_object])
         elif self.envelope_object and not self._envelope_visible:
             self.envelope_object.visible(True)
             self._envelope_visible = True
+            if self.scene:
+                SceneFx.fade_in(self.scene, [self.envelope_object])
 
         if self.envelope_object and self.scene:
             if clipped and approaching_positions:

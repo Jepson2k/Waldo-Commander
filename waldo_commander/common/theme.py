@@ -99,6 +99,9 @@ FIXED_COLOR: dict[str, str] = {
     "on-fill": "oklch(98.5% 0 0)",
     "on-bright": "oklch(20.5% 0 0)",
     "scrim": "oklch(0% 0 0 / 0.5)",
+    # An SVG luminance mask keeps what it draws white and cuts what it draws black.
+    "mask-keep": "#ffffff",
+    "mask-cut": "#000000",
     "editor-exec-line": "#ffff004d",
 }
 
@@ -280,14 +283,17 @@ def _derive(p: Palette) -> dict[str, str]:
         "focus-ring": _shift(p.accent, L=0.75),
         "control": p.surface_2,
         "progress": _shift(p.accent, L=0.75),
-        "positive": _shift(p.green, L=0.88, C=0.6),
+        # The status colours are saturated like the simulator's amber, and
+        # still past 4.5:1 as small text on the glass.
+        "positive": _shift(p.green, L=0.72),
         "positive-soft": _alpha(p.green, 0.12),
-        "warning": _shift(p.yellow, L=0.92, C=0.7),
+        "warning": _shift(p.yellow, L=0.88),
         "warning-fill": _shift(p.yellow, L=0.85),
         "warning-soft": _alpha(p.yellow, 0.1),
-        "error": _shift(p.red, L=0.86, C=0.5),
+        "error": _shift(p.red, L=0.66),
         "error-soft": _alpha(p.red, 0.08),
-        "info": _shift(p.accent, L=0.88, C=0.5),
+        "mode-sim-soft": _alpha(FIXED_COLOR["mode-sim"], 0.12),
+        "info": _shift(p.accent, L=0.75),
         "run": _shift(p.green, L=0.7),
         "fill-positive": _shift(p.green, L=0.5),
         "fill-warning": _shift(p.orange, L=0.55),
@@ -498,7 +504,7 @@ def _inject_tokens_css() -> None:
 
 
 _GLASS_SELECTORS = (
-    ".glass, .overlay-card, .side-tab-bar, .ai-cluster, .ai-approval-card,"
+    ".glass, .overlay-card, .side-tab-bar, .ai-approval-card,"
     " .tutorial-dialog-card, .bottom-playback-bar, .q-dialog__inner > .q-card, .q-menu,"
     " .status-footer, .bottom-panel"
 )
@@ -979,15 +985,15 @@ html, body {
 }
 .control-glow-breathe { animation: wc-glow-breathe var(--wc-duration-ambient) var(--wc-ease-loop) infinite; }
 
-/* ---- AI control cluster ----
+/* ---- AI control mode ----
    One --mode-accent per control mode themes the perimeter glow and the
-   top-center capsule. The accents live only here. */
+   status chip's AI parts. The accents live only here. */
 .wc-mode-inspect    { --mode-accent: var(--wc-ai-inspect);    --mode-accent-text: var(--wc-ai-inspect-text); }
 .wc-mode-auto-edits { --mode-accent: var(--wc-ai-auto-edits); --mode-accent-text: var(--wc-ai-auto-edits-text); }
 .wc-mode-autopilot  { --mode-accent: var(--wc-ai-autopilot);  --mode-accent-text: var(--wc-ai-autopilot-text); }
 
-/* CSS-variable scope over glow + capsule; generates no box, so the fixed
-   children still position against the viewport. */
+/* CSS-variable scope over the glow; generates no box, so the fixed glow
+   still positions against the viewport. */
 .ai-mode-scope { display: contents; }
 
 .control-lease-glow {
@@ -998,42 +1004,68 @@ html, body {
 /* An MCP client is connected but the human drives. */
 .control-lease-glow.glow-faint { opacity: 0.35; }
 
-/* Glass capsule holding the mode chip + Take-control button. Its own
-   backdrop-filter makes it a containing block — fine while it has no
-   position:fixed descendants (the glow is a sibling). */
-.ai-cluster {
-  position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: var(--wc-z-capsule);
-  display: flex; align-items: center; gap: var(--wc-space-1); padding: 3px 4px;
-  border-radius: var(--wc-radius-pill);
-  border-color: color-mix(in srgb, var(--mode-accent) 35%, transparent) !important;
-  transition: border-color var(--wc-duration-base) var(--wc-ease-enter);
+/* The status chip carries the AI session: Waldo's antenna tips, and its
+   eyes while it drives, take the mode's accent; its label sits beside the
+   connection word, and Take control pops out once the AI drives. */
+.status-footer .footer-mode { --waldo-ai: var(--mode-accent); }
+.status-footer .footer-ai-mode {
+  position: relative; color: var(--mode-accent-text); font-weight: 600; cursor: pointer;
+  padding: 1px 6px; margin-left: 4px; border-radius: var(--wc-radius-pill);
+  transition: background-color var(--wc-duration-fast) var(--wc-ease-enter);
+  animation: wc-ai-slide var(--wc-duration-base) var(--wc-ease-pop);
 }
-.ai-cluster.ai-driving { border-color: color-mix(in srgb, var(--mode-accent) 65%, transparent) !important; }
+/* A straight divider from the connection word; the label's own border
+   would follow its pill corners. */
+.status-footer .footer-ai-mode::before {
+  content: ""; position: absolute; left: -2px; top: 3px; bottom: 3px; width: 1px;
+  background: color-mix(in srgb, currentColor 35%, transparent);
+}
+.status-footer .footer-ai-mode:hover { background: color-mix(in srgb, var(--mode-accent) 18%, transparent); }
+@keyframes wc-ai-slide {
+  from { transform: translateX(-6px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+/* A new mode flips in. */
+.status-footer .footer-ai-mode.ai-swap-a { animation: wc-ai-swap-a var(--wc-duration-base) var(--wc-ease-pop); }
+.status-footer .footer-ai-mode.ai-swap-b { animation: wc-ai-swap-b var(--wc-duration-base) var(--wc-ease-pop); }
+@keyframes wc-ai-swap-a { from { transform: rotateX(90deg); opacity: 0.3; } to { transform: none; opacity: 1; } }
+@keyframes wc-ai-swap-b { from { transform: rotateX(90deg); opacity: 0.3; } to { transform: none; opacity: 1; } }
 
-/* Text-only at rest so the capsule reads as one pill (no pill-in-pill);
-   the hover tint is the click affordance. */
-.ai-cluster .control-mode-chip {
-  background: transparent !important;
-  color: var(--mode-accent-text) !important;
-  border-radius: var(--wc-radius-pill); font-weight: 500; margin: 0;
+/* While the AI drives, an accent ring breathes on the glow's clock. The
+   connection word stays: it says whether the AI moves the arm or the
+   simulator. */
+.status-footer .footer-mode.ai-driving {
+  box-shadow: inset 0 0 0 1.5px var(--mode-accent);
+  animation: wc-ai-ring var(--wc-duration-ambient) var(--wc-ease-loop) infinite;
 }
-.ai-cluster .control-mode-chip:hover {
-  background: color-mix(in srgb, var(--mode-accent) 15%, transparent) !important;
+@keyframes wc-ai-ring {
+  0%, 100% { box-shadow: inset 0 0 0 1.5px var(--mode-accent); }
+  50%      { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--mode-accent) 35%, transparent); }
 }
 
-/* The only solid-filled element in the capsule: pops out when the AI takes
-   the lease (the entry animation replays on every hidden -> visible flip)
-   and pulses on the glow-breathe clock. */
-.ai-cluster .btn-take-control {
+/* Solid-filled: pops out as the chip's right-hand cap when the AI takes the
+   lease (the entry animation replays on every hidden -> visible flip) and
+   pulses on the glow-breathe clock. Drawn 2px inside the chip, so the global
+   button minimum is overridden; the ::after keeps the touch target. */
+.status-footer .footer-mode.ai-driving { padding-right: 2px; }
+/* Take control reclaims the arm, so while the AI drives the footer stays
+   above any open dialog, on the layer the AI capsule used. Over a dialog it
+   is the only part of the footer that answers the pointer. */
+.status-footer:has(.footer-mode.ai-driving) { z-index: var(--wc-z-capsule); }
+body:has(.q-dialog__backdrop) .status-footer:has(.footer-mode.ai-driving) { pointer-events: none; }
+body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events: auto; }
+.status-footer .footer-mode .btn-take-control {
   background: var(--mode-accent) !important;
   color: var(--wc-on-bright) !important;
-  border-radius: var(--wc-radius-pill); font-weight: 600;
-  /* Chip-height so the capsule doesn't grow when the button pops in. */
-  font-size: 0.75rem; min-height: 0; padding: 1px 10px;
+  position: relative; border-radius: var(--wc-radius-pill); font-weight: 600; font-size: 0.7rem;
+  min-height: 0 !important; height: 20px; padding: 0 8px 0 6px !important; margin-left: 6px;
   animation: wc-popout var(--wc-duration-base) var(--wc-ease-pop),
              wc-btn-pulse var(--wc-duration-ambient) var(--wc-ease-loop) infinite;
 }
-.ai-cluster .btn-take-control .q-icon { font-size: 1.3em; }
+.status-footer .footer-mode .btn-take-control::after {
+  content: ""; position: absolute; inset: -6px 0;
+}
+.status-footer .footer-mode .btn-take-control .q-icon { font-size: 1.2em; margin-right: 3px; }
 @keyframes wc-popout {
   from { transform: translateX(-10px) scale(0.85); opacity: 0; }
   to   { transform: none; opacity: 1; }
@@ -1060,7 +1092,8 @@ html, body {
 .ai-approval-card .btn-consent-allow:hover {
   background: var(--wc-action-hover) !important;
 }
-.ai-approval-card.consent-hw .ai-approval-icon { color: var(--wc-warning); }
+/* Over the guest Waldo's text colour class, which Quasar marks !important. */
+.ai-approval-card.consent-hw .ai-approval-icon { color: var(--wc-warning) !important; }
 .ai-approval-card.consent-hw .ai-approval-desc { border-left-color: var(--wc-warning-fill); }
 .ai-approval-card.consent-hw .btn-consent-allow {
   background: var(--wc-warning-fill) !important;
@@ -1617,11 +1650,102 @@ html, body {
 .file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 .file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
-/* ========== Robot buddy ========== */
+/* ========== Micro-interactions ========== */
 
-/* On the simulator's amber fill the buddy is drawn in on-bright, so its eyes
-   and mouth cut through to the fill rather than to the glass. */
-.bg-wc-mode-sim .robot-buddy { --bb-cut: var(--wc-mode-sim); }
+/* Buttons sink while pressed. The scale property composes with a button's
+   own transform, which the joint caps centre themselves with. */
+.q-btn--actionable:active { scale: 0.95; transition-duration: var(--wc-duration-instant); }
+
+/* The mode chip recolours with the face's mood; the tool chip pops in on
+   every hidden -> visible flip. */
+.status-footer .footer-mode {
+  transition: background-color var(--wc-duration-base) var(--wc-ease-enter),
+              color var(--wc-duration-base) var(--wc-ease-enter);
+}
+.status-footer .footer-tool { animation: wc-pop-in var(--wc-duration-base) var(--wc-ease-pop); }
+
+/* I/O dots pop when their line flips. Two identical animations so swapping
+   the class restarts it. */
+.io-pop-a { animation: wc-io-pop-a var(--wc-duration-base) var(--wc-ease-pop); }
+.io-pop-b { animation: wc-io-pop-b var(--wc-duration-base) var(--wc-ease-pop); }
+@keyframes wc-io-pop-a { 40% { transform: scale(1.7); } }
+@keyframes wc-io-pop-b { 40% { transform: scale(1.7); } }
+
+/* The last action slides in when it is new, bumps its count on a repeat,
+   pops its check mark on completion and shakes on failure. */
+.status-footer .action-line {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.action-line.log-enter { animation: wc-slide-in var(--wc-duration-base) var(--wc-ease-enter); }
+.action-line.log-bump .log-count,
+.action-line.log-done .action-icon {
+  display: inline-block;
+  animation: wc-bump var(--wc-duration-base) var(--wc-ease-pop);
+}
+.action-line.log-fail { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter); }
+
+/* A new warning or error draws the eye to the Diagnostics button. */
+.status-footer .footer-btn.unread-warning { animation: wc-bump var(--wc-duration-base) var(--wc-ease-pop); }
+.status-footer .footer-btn.unread-error { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter); }
+
+/* The run bar's buttons pop in as they appear; a button's icon spins in
+   when it changes. Twin classes so swapping between them restarts it. */
+.bottom-playback-bar > .q-btn { animation: wc-pop-in var(--wc-duration-base) var(--wc-ease-pop); }
+.icon-swap-a .q-icon { animation: wc-icon-swap-a var(--wc-duration-base) var(--wc-ease-pop); }
+.icon-swap-b .q-icon { animation: wc-icon-swap-b var(--wc-duration-base) var(--wc-ease-pop); }
+@keyframes wc-icon-swap-a { from { transform: rotate(-90deg) scale(0.4); opacity: 0; } }
+@keyframes wc-icon-swap-b { from { transform: rotate(-90deg) scale(0.4); opacity: 0; } }
+
+/* A saved editor tab glows once; a gripper fault shakes as it appears. */
+.editor-tab.tab-saved-a { animation: wc-saved-a var(--wc-duration-flash) var(--wc-ease-enter); }
+.editor-tab.tab-saved-b { animation: wc-saved-b var(--wc-duration-flash) var(--wc-ease-enter); }
+@keyframes wc-saved-a { 15% { background-color: var(--wc-positive-soft); } }
+@keyframes wc-saved-b { 15% { background-color: var(--wc-positive-soft); } }
+.gripper-fault { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter); }
+
+/* A diagnostics event that just landed drops in at the top of the log. */
+.diag-event-new { animation: wc-drop-in var(--wc-duration-base) var(--wc-ease-enter); }
+
+/* The E-STOP card shakes for attention as its dialog opens. */
+.estop-card { animation: wc-shake var(--wc-duration-base) var(--wc-ease-enter) var(--wc-duration-fast) both; }
+
+@keyframes wc-pop-in {
+  from { transform: scale(0.6); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+@keyframes wc-slide-in {
+  from { transform: translateY(6px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+@keyframes wc-drop-in {
+  from { transform: translateY(-6px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+@keyframes wc-bump { 40% { transform: scale(1.3); } }
+@keyframes wc-shake {
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(2px); }
+}
+
+/* ========== Waldo ========== */
+
+/* Run-bar peek: Waldo rests below the bar's top edge and rises over it
+   when a program ends. The padding leaves room for hops and sparkles inside
+   the clip. */
+.bottom-playback-bar { position: relative; }
+.waldo-peek {
+  position: absolute;
+  bottom: 100%;
+  left: var(--wc-space-2);
+  box-sizing: content-box;
+  padding: var(--wc-space-2) var(--wc-space-2) 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.waldo-peek > .waldo { display: block; transform: translateY(105%); }
 
 
 /* ========== Status footer ========== */
@@ -1726,6 +1850,10 @@ html, body {
   }
   .status-footer .footer-mode { grid-area: 1 / 1 / 2 / 5; justify-self: start; }
   .status-footer .readout-robot-name { grid-area: 1 / 5 / 2 / 7; }
+  /* An AI session's mode and Take control widen the chip over the name. */
+  .status-footer:has(.footer-ai-mode:not(.hidden)) .footer-mode { grid-area: 1 / 1 / 2 / 7; }
+  .status-footer:has(.footer-ai-mode:not(.hidden)) .readout-robot-name { display: none; }
+  .status-footer:has(.footer-ai-mode:not(.hidden)) :is(.footer-tool, .footer-empty-tool) { margin-left: 6px; }
   .status-footer .footer-tool, .status-footer .footer-empty-tool { grid-area: 1 / 7 / 2 / 10; max-width: 100%; }
   .status-footer .footer-empty-tool { display: block; }
   .status-footer .footer-btn:not(.footer-log):not(.footer-settings) { grid-area: 1 / 10 / 2 / 12; padding: 0 !important; }
@@ -1750,6 +1878,12 @@ html, body {
 }
 @media (max-width: 640px) {
   .status-footer { left: 0; right: 0; width: 100%; }
+}
+/* With Take control beside the connection word and the mode, the stacked
+   footer's chip needs the tool's columns too while an AI drives. */
+@media (max-width: 960px) and (min-height: 441px), (max-width: 499px) {
+  .status-footer:has(.footer-mode.ai-driving) .footer-mode { grid-area: 1 / 1 / 2 / 10; }
+  .status-footer:has(.footer-mode.ai-driving) :is(.footer-tool, .footer-empty-tool) { display: none; }
 }
 /* Use the extra width in short landscape viewports before requiring scrolling. */
 @media (min-width: 500px) and (max-width: 960px) and (max-height: 440px) {
@@ -1835,9 +1969,16 @@ body:has(.panels-wrap.column-open) .bottom-panel {
 
 /* ========== Reduced motion ========== */
 @media (prefers-reduced-motion: reduce) {
-  .control-glow-breathe, .ai-cluster .btn-take-control, .recording-notification .q-notification__icon,
+  .control-glow-breathe, .status-footer .btn-take-control, .status-footer .footer-mode.ai-driving,
+  .status-footer .footer-ai-mode, .recording-notification .q-notification__icon,
   .record-btn.recording .q-icon,
-  .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next { animation: none !important; }
+  .tab-flash, .cm-line.cm-line-flash, .handeye-coverage-next,
+  .status-footer .footer-tool, .io-pop-a, .io-pop-b, .action-line, .action-line *,
+  .status-footer .footer-btn, .estop-card, .bottom-playback-bar > .q-btn,
+  .icon-swap-a .q-icon, .icon-swap-b .q-icon, .diag-event-new,
+  .editor-tab.tab-saved-a, .editor-tab.tab-saved-b, .gripper-fault { animation: none !important; }
+  [class*="q-transition--"] { --q-transition-duration: 0s !important; }
+  .q-btn--actionable:active { scale: none; }
   .left-panels-container .q-panel.scroll[class*="q-transition--slide"] { animation-duration: 0s !important; }
   .joint-dial-cell, .dial-steps { transition: none; }
 }

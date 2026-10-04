@@ -1,6 +1,6 @@
-"""Browser-level check that the robot buddy actually animates.
+"""Browser-level check that Waldo actually animates.
 
-Everything the buddy does between the server's mood/reaction updates —
+Everything Waldo does between the server's mood/reaction updates —
 greeting, following the pointer, answering pokes, raising the alarm —
 happens in its Vue component, so only a real browser can see it. Each
 expression is a layer whose opacity the component drives; the checks
@@ -17,8 +17,8 @@ from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import dismiss_dialogs, js
 
-CHIP = ".status-footer .robot-buddy"
-DIALOG = ".q-dialog .robot-buddy"
+CHIP = ".status-footer .waldo"
+DIALOG = ".q-dialog .waldo"
 
 
 def _layer_shown(screen, root: str, layer: str) -> bool:
@@ -45,7 +45,7 @@ def _wait(condition, timeout: float, what: str) -> None:
 def _pupil_offset(screen) -> tuple[float, float]:
     transform = js(
         screen,
-        "return document.querySelector(arguments[0] + ' .bb-pupil').style.transform;",
+        "return document.querySelector(arguments[0] + ' .waldo-pupil').style.transform;",
         CHIP,
     )
     x, y = (float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", transform)[:2])
@@ -53,29 +53,29 @@ def _pupil_offset(screen) -> tuple[float, float]:
 
 
 @pytest.mark.browser
-def test_chip_buddy_greets_watches_the_pointer_and_answers_pokes(screen) -> None:
+def test_chip_waldo_greets_watches_the_pointer_and_answers_pokes(screen) -> None:
     screen.open("/")
 
     # The page waves hello once it has loaded: a wink from the chip.
     _wait(
-        lambda: _layer_shown(screen, CHIP, ".bb-eyes-wink"),
+        lambda: _layer_shown(screen, CHIP, ".waldo-eyes-wink"),
         timeout=30.0,
-        what="the chip buddy's greeting wink",
+        what="the chip Waldo's greeting wink",
     )
     dismiss_dialogs(screen)
     _wait(
         lambda: (
-            _layer_shown(screen, CHIP, ".bb-eyes-open")
-            and not _layer_shown(screen, CHIP, ".bb-eyes-wink")
+            _layer_shown(screen, CHIP, ".waldo-eyes-open")
+            and not _layer_shown(screen, CHIP, ".waldo-eyes-wink")
         ),
         timeout=5.0,
         what="the greeting to finish",
     )
     assert js(
         screen,
-        "return !!document.querySelector(arguments[0] + '.bb-mood-neutral');",
+        "return !!document.querySelector(arguments[0] + '.waldo-mood-neutral');",
         CHIP,
-    ), "the simulator's buddy wears the neutral mood"
+    ), "the simulator's Waldo wears the neutral mood"
 
     # Pointer up and to the right of the footer's chip: the pupils follow it.
     chip = screen.selenium.find_element(By.CSS_SELECTOR, CHIP)
@@ -89,7 +89,7 @@ def test_chip_buddy_greets_watches_the_pointer_and_answers_pokes(screen) -> None
     # One poke giggles; a flurry makes it dizzy.
     ActionChains(screen.selenium).move_to_element(chip).click().perform()
     _wait(
-        lambda: _layer_shown(screen, CHIP, ".bb-eyes-happy"),
+        lambda: _layer_shown(screen, CHIP, ".waldo-eyes-happy"),
         timeout=2.0,
         what="a giggle after one poke",
     )
@@ -97,7 +97,7 @@ def test_chip_buddy_greets_watches_the_pointer_and_answers_pokes(screen) -> None
     # inside the poke window: pokes are ignored while it is dizzy.
     ActionChains(screen.selenium).click(chip).click().click().click().perform()
     _wait(
-        lambda: _layer_shown(screen, CHIP, ".bb-eyes-x"),
+        lambda: _layer_shown(screen, CHIP, ".waldo-eyes-x"),
         timeout=2.0,
         what="X eyes after a flurry of pokes",
     )
@@ -108,13 +108,13 @@ def test_chip_buddy_greets_watches_the_pointer_and_answers_pokes(screen) -> None
     _wait(
         lambda: js(
             screen,
-            "return !!document.querySelector(arguments[0] + '.bb-mood-alarmed.bb-leds-alarm')"
-            " && !!document.querySelector(arguments[1] + '.bb-leds-alarm');",
+            "return !!document.querySelector(arguments[0] + '.waldo-mood-alarmed.waldo-leds-alarm')"
+            " && !!document.querySelector(arguments[1] + '.waldo-leds-alarm');",
             CHIP,
             DIALOG,
         ),
         timeout=5.0,
-        what="alarmed buddies in the chip and the E-STOP dialog",
+        what="alarmed Waldos in the chip and the E-STOP dialog",
     )
     js(
         screen,
@@ -124,9 +124,9 @@ def test_chip_buddy_greets_watches_the_pointer_and_answers_pokes(screen) -> None
     _wait(
         lambda: js(
             screen,
-            "return !!document.querySelector(arguments[0] + '.bb-mood-neutral');",
+            "return !!document.querySelector(arguments[0] + '.waldo-mood-neutral');",
             CHIP,
         ),
         timeout=5.0,
-        what="the chip buddy to calm down after Reset",
+        what="the chip Waldo to calm down after Reset",
     )
