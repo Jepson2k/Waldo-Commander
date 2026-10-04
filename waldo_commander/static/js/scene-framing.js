@@ -9,10 +9,11 @@
  * fork's ui.scene resets the camera aspect on every window resize, so the
  * view offset is re-applied a frame later.
  *
- * The scene redraws every frame whether or not anything changed. Behind a
- * modal dialog's backdrop it is dimmed and mostly hidden, so it redraws a few
- * times a second instead: an arm moving behind a dialog still shows, without
- * the frames competing with the dialog for a software-rendered browser.
+ * Behind a modal dialog's backdrop the scene is dimmed and mostly hidden, so
+ * it draws at most a few times a second: an arm moving behind a dialog still
+ * shows, without the frames competing with the dialog for a software-rendered
+ * browser. The scene draws only when asked, so a frame skipped there is asked
+ * for again once the next one may draw.
  */
 
 (function() {
@@ -45,6 +46,7 @@
             cam.setViewOffset(W + left, H + bottom, 0, bottom, W, H);
         }
         cam.updateProjectionMatrix();
+        if (c.request_render) c.request_render();
     }
 
     function follow(layout) {
@@ -71,6 +73,7 @@
         let decidedAt = -Infinity;
         let draw = true;
         let lastDrawn = 0;
+        let retry = 0;
         const drawNow = function() {
             const now = performance.now();
             if (now - decidedAt > 5) {
@@ -78,6 +81,12 @@
                 draw = !document.querySelector('.q-dialog__backdrop')
                     || now - lastDrawn >= COVERED_FRAME_MS;
                 if (draw) lastDrawn = now;
+                else if (!retry && c.request_render) {
+                    retry = setTimeout(function() {
+                        retry = 0;
+                        c.request_render();
+                    }, COVERED_FRAME_MS - (now - lastDrawn));
+                }
             }
             return draw;
         };

@@ -50,7 +50,11 @@ class BottomPanel:
                 ui.button(icon="close", on_click=self.close).props(
                     "flat round dense color=wc-text"
                 ).mark("bottom-panel-close")
-            with ui.tab_panels(self.tabs, value="diagnostics").classes("w-full"):
+            with (
+                ui.tab_panels(self.tabs, value="diagnostics")
+                .props("animated")
+                .classes("w-full")
+            ):
                 with ui.tab_panel("diagnostics"):
                     self.diagnostics = DiagnosticsPage(
                         self.client,

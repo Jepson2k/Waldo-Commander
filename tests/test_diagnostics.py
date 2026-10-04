@@ -65,13 +65,14 @@ async def test_diagnostics_reports_only_what_the_backend_reports(
         remedy="check the bus wiring",
     )
     assert robot_events.unread_severity == "warning"
+    # Both counts at once: a page built over an earlier test's entries can
+    # already read one warning before the clear reaches its labels.
     await poll_until(
-        lambda: _text(user, "footer-warnings"),
-        lambda t: t == "1",
+        lambda: (_text(user, "footer-warnings"), _text(user, "footer-errors")),
+        lambda counts: counts == ("1", "0"),
         timeout_s=3.0,
-        what="the footer's warning count",
+        what="the footer's counts",
     )
-    assert _text(user, "footer-errors") == "0"
     assert await wait_until(
         lambda: "unread-warning" in _classes(user, "footer-events")
     ), "an unseen entry tints the footer button"

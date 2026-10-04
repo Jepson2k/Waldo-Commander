@@ -992,8 +992,12 @@ class TestScriptExecutionLifecycle:
         try:
             await se.script_exec.start()
             await user.should_see("subdirectory program finished", retries=100)
+            # The exit code lands while the program's links are still closing;
+            # the run ends after them.
             deadline = time.monotonic() + 10
-            while se.script_exec.last_exit_code is None and time.monotonic() < deadline:
+            while (
+                se.script_exec.last_exit_code is None or is_any_program_running()
+            ) and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
             assert se.script_exec.last_exit_code == 0
             # The exit code lands before the run lets go of the program.

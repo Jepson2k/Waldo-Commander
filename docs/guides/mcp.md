@@ -60,11 +60,12 @@ the program-side motion API instead of guessing it.
 ## Control modes
 
 You decide how much the LLM can do on its own, from the **AI control mode**
-selector under Settings → Automation, by clicking the mode chip at the
-top of the screen, or by cycling with **Alt+M**. A perimeter glow appears
-whenever an MCP client is connected — faint while you hold control, breathing
-at full strength while the AI is driving — and its color tracks the mode
-(emerald Inspect, sky Auto-edits, violet Autopilot).
+selector under Settings → Automation, by clicking the mode beside Waldo in
+the status bar's connection chip, or by cycling with **Alt+M**. Whenever an
+MCP client is connected, the mode shows there, Waldo's antenna tips light up
+and a perimeter glow appears — faint while you hold control, breathing at full
+strength while the AI is driving, when Waldo's eyes light up too. Their color
+tracks the mode (emerald Inspect, sky Auto-edits, violet Autopilot).
 
 | Mode | Program edits | Robot motion |
 |------|---------------|--------------|
@@ -75,8 +76,9 @@ at full strength while the AI is driving — and its color tracks the mode
 \* In simulator mode everything is automatic. On **real hardware**, the first
 move of an AI session always asks for a one-time confirmation, even in Autopilot.
 
-At any time the amber **Take control** button (top-right, shown while an AI
-holds control) seizes control back for you and halts any motion the AI started.
+At any time the **Take control** button (in the connection chip, shown while
+an AI holds control) seizes control back for you and halts any motion the AI
+started.
 `motion.halt` and status reads are never gated.
 
 ## World tools

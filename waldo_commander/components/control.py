@@ -17,9 +17,10 @@ from waldoctl.types import Axis
 
 from waldo_commander.components.joint_dial import JointDial
 from waldo_commander.components.playback import playback
-from waldo_commander.components.robot_buddy import Mood, RobotBuddy
+from waldo_commander.components.waldo import Mood, Reaction, Waldo
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.settings import _setting_row
+from waldo_commander.components.readout import AI_MODE_CLASS
 from waldo_commander.constants import (
     CLICK_HOLD_THRESHOLD_S,
     DEFAULT_CAMERA,
@@ -46,6 +47,7 @@ from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.startup_mode import set_startup_mode
+from waldo_commander.services.urdf_scene.scene_fx import SceneFx
 from waldo_commander.state import (
     global_phase_timer,
     robot_state,
@@ -54,8 +56,7 @@ from waldo_commander.state import (
 
 logger = logging.getLogger(__name__)
 
-_ESTOP_BUDDY_PX = 160
-_DIGITAL_ESTOP_COLOR = "var(--wc-warning)"
+_ESTOP_WALDO_PX = 160
 
 # Module-level constants and precompiled regexes: avoid recreating them every frame.
 _AXIS_ORDER = (
@@ -126,7 +127,7 @@ class _EStopManager:
         return self._dialog is not None
 
     def show(self, is_physical: bool) -> None:
-        """Show the E-STOP dialog with an alarmed robot buddy."""
+        """Show the E-STOP dialog with an alarmed Waldo."""
         ui_client = self._ui_client_fn()
         if not ui_client:
             return
@@ -142,20 +143,18 @@ class _EStopManager:
             self._dialog = ui.dialog()
             self._is_physical = is_physical
             self._dialog.props("persistent")
+            # A new dialog per E-STOP: each closed one goes with its Waldo.
+            self._dialog.on("hide", self._dialog.delete)
 
             with (
                 self._dialog,
                 ui.card()
-                .classes("overlay-card gap-4 items-center")
+                .classes("overlay-card estop-card gap-4 items-center")
                 .mark("estop-dialog"),
             ):
-                # Error red for the hardware button, warning yellow for the
-                # software stop, matching the headline below.
-                RobotBuddy(
-                    Mood.ALARMED,
-                    size=_ESTOP_BUDDY_PX,
-                    color=None if is_physical else _DIGITAL_ESTOP_COLOR,
-                ).classes("my-4").mark("estop-buddy")
+                Waldo(Mood.ALARMED, size=_ESTOP_WALDO_PX).classes("my-4").mark(
+                    "estop-waldo"
+                )
 
                 if is_physical:
                     ui.label("Physical E-STOP Active").classes(
@@ -169,7 +168,7 @@ class _EStopManager:
                     )
                 else:
                     ui.label("Digital E-STOP Active").classes(
-                        "text-xl font-bold text-wc-warning text-center"
+                        "text-xl font-bold text-wc-error text-center"
                     )
                     ui.label("Robot motion has been stopped.").classes("text-center")
 
@@ -239,6 +238,7 @@ class _ToolQuickActions:
         self._adjust_minus_tooltip: ui.tooltip | None = None
         self._adjust_plus_tooltip: ui.tooltip | None = None
         self._last_visual: tuple = ()
+        self._last_grip: tuple[str | None, bool] | None = None
 
     def _get_active_tool(self) -> "ToolSpec | None":
         try:
@@ -339,6 +339,19 @@ class _ToolQuickActions:
         if visual_key == self._last_visual:
             return
         self._last_visual = visual_key
+
+        if isinstance(tool, GripperTool):
+            grip = (pub_tool.key, tool.is_open(tool_position))
+            last, self._last_grip = self._last_grip, grip
+            if (
+                last is not None
+                and last[0] == grip[0]
+                and last[1] != grip[1]
+                and ui_state._readout_panel is not None
+            ):
+                ui_state._readout_panel.react(
+                    Reaction.GRIP_OPEN if grip[1] else Reaction.GRIP_CLOSE
+                )
 
         # Left action button
         if tool.action_l_icons:
@@ -665,13 +678,11 @@ class ControlPanel:
         self.client = client
         self._ui_client: Any = None  # NiceGUI client for background task UI ops
 
-        # Control-lease indicator (glow + edge Take-control button + consent
-        # dialog), built lazily in _build_control_indicator; shown only when an
-        # MCP/AI session holds the lease.
+        # Control-lease indicator (perimeter glow + consent dialog), built
+        # lazily in _build_control_indicator. The AI mode and Take control
+        # live in the status footer's chip.
         self._control_glow: ui.element | None = None
-        self._take_control_btn: ui.button | None = None
         self._mode_scope: ui.element | None = None
-        self._cluster_row: ui.row | None = None
         self._consent_dialog: ui.dialog | None = None
         self._approval_card: ui.card | None = None
         self._approval_title: ui.label | None = None
@@ -682,8 +693,6 @@ class ControlPanel:
         # AI control-mode selector (built in _build_control_mode_selector).
         self._mode_toggle: ui.select | None = None
         self._suppress_mode_toggle: bool = False
-        # Always-visible mode chip in the action row (click to cycle).
-        self._mode_chip: ui.chip | None = None
 
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
@@ -753,6 +762,9 @@ class ControlPanel:
 
         # E-STOP manager (initialized with ui_client in build())
         self.estop: _EStopManager | None = None
+
+        # Jog axis the status Waldo is currently looking along
+        self._look_axis: str | None = None
 
         # TCP TransformControls drag state
         self._tcp_latest_pose: list[float] | None = None
@@ -850,6 +862,8 @@ class ControlPanel:
         for timer in (ui_state._joint_jog_timer, ui_state._cart_jog_timer):
             if timer is not None:
                 timer.active = False
+        if self._look_axis is not None:
+            self._waldo_look(self._look_axis, False)
         for elements in (
             self._joint_left_btns,
             self._joint_right_btns,
@@ -865,6 +879,63 @@ class ControlPanel:
             self._jog_end_wait_task.cancel()
             self._jog_end_wait_task = None
         motion_recorder.on_jog_start(kind, axis)
+        self._waldo_look(axis, True)
+
+    # ---- Status Waldo: eyes follow the jog ----
+
+    # (dx, dy, tilt degrees) per cartesian pad slot, by the arrow's on-screen
+    # direction; rotations tilt the head instead of moving the eyes.
+    _SLOT_LOOK: ClassVar[dict[str, tuple[float, float, float]]] = {
+        "ud1_up": (0.0, -1.0, 0.0),
+        "ud2_up": (0.0, -1.0, 0.0),
+        "ud1_down": (0.0, 1.0, 0.0),
+        "ud2_down": (0.0, 1.0, 0.0),
+        "lr_neg": (-1.0, 0.0, 0.0),
+        "lr_pos": (1.0, 0.0, 0.0),
+        "r_ud1_plus": (0.0, 0.0, 10.0),
+        "r_ud2_plus": (0.0, 0.0, 10.0),
+        "r_lr_plus": (0.0, 0.0, 10.0),
+        "r_ud1_minus": (0.0, 0.0, -10.0),
+        "r_ud2_minus": (0.0, 0.0, -10.0),
+        "r_lr_minus": (0.0, 0.0, -10.0),
+    }
+
+    def _look_for_axis(self, axis: str) -> tuple[float, float, float] | None:
+        """Waldo's gaze for a jog axis string ('J2+', 'X-', 'RZ+').
+
+        Dial and gizmo drags carry no direction ('J3', 'TCP') and get none.
+        """
+        if axis[-1:] not in ("+", "-"):
+            return None
+        sign = 1.0 if axis.endswith("+") else -1.0
+        if axis.startswith("J"):
+            joint = int(axis[1:-1])
+            if joint == 1:
+                return (sign, 0.0, 0.0)
+            if joint in (4, 6):
+                return (0.0, 0.0, 10.0 * sign)
+            return (0.0, -sign, 0.0)
+        for slot_id, meta in self._cart_slot_meta.items():
+            slot_axis = self._axis_string_for(
+                meta["assign_key"], meta["sign"], meta["rotation"]
+            )
+            if slot_axis == axis:
+                return self._SLOT_LOOK.get(slot_id)
+        return None
+
+    def _waldo_look(self, axis: str, pressed: bool) -> None:
+        """Hold the status Waldo's gaze along *axis* while its jog is pressed."""
+        readout = ui_state._readout_panel
+        if readout is None:
+            return
+        if pressed:
+            look = self._look_for_axis(axis)
+            if look is not None:
+                self._look_axis = axis
+                readout.look(look)
+        elif axis == self._look_axis:
+            self._look_axis = None
+            readout.look(None)
 
     def _get_cart_axis_lookup(self) -> dict[str, tuple[Axis, float, str]]:
         """Build cartesian axis lookup from the active robot's frame names.
@@ -1268,29 +1339,38 @@ class ControlPanel:
 
     # ---- Control-lease indicator ----
 
-    # Per-mode theme class (theme.py) setting --mode-accent, the single
-    # source of truth for the glow, capsule, and approval-dialog colors.
-    _MODE_CLASS = {
-        ControlMode.INSPECT: "wc-mode-inspect",
-        ControlMode.AUTO_EDITS: "wc-mode-auto-edits",
-        ControlMode.AUTOPILOT: "wc-mode-autopilot",
-    }
-
     def _set_mode_theme(self, mode: ControlMode) -> None:
-        """Swap the mode class on the capsule/glow scope. The approval card
-        is deliberately unthemed — it uses the app's standard panel style."""
+        """Swap the mode class on the glow's scope. The approval card is
+        deliberately unthemed — it uses the app's standard panel style."""
         el = getattr(self, "_mode_scope", None)
         if el is not None:
             el.classes(
-                remove=" ".join(self._MODE_CLASS.values()),
-                add=self._MODE_CLASS[mode],
+                remove=" ".join(AI_MODE_CLASS.values()),
+                add=AI_MODE_CLASS[mode],
             )
 
+    @staticmethod
+    def _ai_driving() -> bool:
+        """Whether someone other than this browser tab holds the lease."""
+        h = control_lease.holder()
+        return h is not None and not control_lease.held_by(
+            BROWSER, ui_state.active_client_id or ""
+        )
+
+    def _show_ai(self) -> None:
+        """The AI session as the status footer's chip shows it: around (an MCP
+        client connected, or holding the lease) and driving (holding it)."""
+        readout = ui_state._readout_panel
+        if readout is None:
+            return
+        driving = self._ai_driving()
+        readout.show_ai(driving or mcp_connected(), driving, control_mode())
+
     def _build_control_indicator(self) -> None:
-        """Page-perimeter glow (colored by control mode) + an edge Take-control
-        button, shown only while another controller (an MCP/AI session) holds
-        the lease, plus the approval dialog (per-action move approvals and the
-        one-time hardware-consent floor). Driven by the 1 Hz ping.
+        """Page-perimeter glow (colored by control mode) while an MCP/AI
+        session is around, plus the approval dialog (per-action move
+        approvals and the one-time hardware-consent floor). Driven by the
+        1 Hz ping; the mode and Take control sit in the footer's chip.
 
         Parented at the page root: the overlay-card's ``backdrop-filter``
         creates a containing block that would trap these ``position:fixed``
@@ -1299,10 +1379,10 @@ class ControlPanel:
             self._build_control_indicator_elements()
 
     def _build_control_indicator_elements(self) -> None:
-        # display:contents scope carrying the wc-mode-* class: one place themes
-        # the glow and the capsule together.
+        # display:contents scope carrying the wc-mode-* class the glow is
+        # coloured by.
         self._mode_scope = ui.element("div").classes(
-            f"ai-mode-scope {self._MODE_CLASS[control_mode()]}"
+            f"ai-mode-scope {AI_MODE_CLASS[control_mode()]}"
         )
         with self._mode_scope:
             # Ambient glow around the viewport while an AI session drives; its
@@ -1315,43 +1395,6 @@ class ControlPanel:
                 .mark("control-lease-glow")
             )
             self._control_glow.set_visibility(False)
-            # Glass capsule at top-center: the mode chip and, while an AI
-            # session drives, the Take-control button popping out beside it.
-            # Hidden with its contents — an empty capsule is a floating blob.
-            self._cluster_row = ui.row().classes("ai-cluster items-center no-wrap")
-            self._cluster_row.set_visibility(False)
-            with self._cluster_row:
-                self._mode_chip = (
-                    ui.chip(
-                        control_mode().label,
-                        icon="smart_toy",
-                        # None skips Quasar's bg-primary (!important) class so
-                        # the .ai-cluster background can take effect.
-                        color=None,
-                        on_click=self.cycle_mode,
-                    )
-                    .props("dense clickable")
-                    .classes("control-mode-chip")
-                    .tooltip("AI control mode — click or press Alt+M to cycle")
-                    .mark("control-mode-chip")
-                )
-                # Hidden until an MCP client is around, like the glow.
-                self._mode_chip.set_visibility(False)
-                self._take_control_btn = (
-                    ui.button(
-                        "Take control",
-                        icon="back_hand",
-                        # None skips Quasar's bg-primary/text-white (!important)
-                        # so the .ai-cluster mode-accent styling can take effect.
-                        color=None,
-                        on_click=self._take_control,
-                    )
-                    .props("dense unelevated")
-                    .classes("btn-take-control")
-                    .tooltip("Reclaim control and stop the robot")
-                    .mark("btn-take-control")
-                )
-                self._take_control_btn.set_visibility(False)
         # Approval dialog. Persistent so ESC / a backdrop click can't dismiss it
         # into limbo; the value handler below catches any non-button close and
         # re-arms the prompt. Serves both per-action move approvals (Inspect /
@@ -1361,7 +1404,12 @@ class ControlPanel:
             ui.card().classes("ai-approval-card gap-2") as self._approval_card,
         ):
             with ui.row().classes("items-center gap-2 no-wrap"):
-                ui.icon("smart_toy", size="sm").classes("ai-approval-icon")
+                waldo = (
+                    Waldo(Mood.NEUTRAL, size=30)
+                    .classes("ai-approval-icon")
+                    .mark("approval-waldo")
+                )
+                waldo.set_asking(True)
                 self._approval_title = ui.label("Allow AI action?").classes(
                     "text-base font-medium"
                 )
@@ -1390,8 +1438,14 @@ class ControlPanel:
         if not e.value and self._approval_sid is not None:
             self._approval_sid = None
             self._approval_kind = None
+            self._waldo_ask(False)
 
-    async def _take_control(self) -> None:
+    def _waldo_ask(self, asking: bool) -> None:
+        readout = ui_state._readout_panel
+        if readout is not None:
+            readout.ask(asking)
+
+    async def take_control(self) -> None:
         """Hard reclaim: seize the lease for this browser tab and stop any
         motion the AI started — the robot stays enabled so the human can
         drive immediately."""
@@ -1412,35 +1466,20 @@ class ControlPanel:
             )
 
     def refresh_control_indicator(self) -> None:
-        """Drive the ambient glow, Take-control button, and pending approvals
-        from the 1 Hz ping loop. Glow states: hidden (no MCP client around),
-        faint (a client is connected but the human holds control), breathing
-        at full strength (an AI session holds the lease)."""
+        """Drive the ambient glow, the footer chip's AI state, and pending
+        approvals from the 1 Hz ping loop. Glow states: hidden (no MCP client
+        around), faint (a client is connected but the human holds control),
+        breathing at full strength (an AI session holds the lease)."""
         glow = getattr(self, "_control_glow", None)
-        btn = getattr(self, "_take_control_btn", None)
-        if glow is None or btn is None:
+        if glow is None:
             return
-        h = control_lease.holder()
-        other = h is not None and not control_lease.held_by(
-            BROWSER, ui_state.active_client_id or ""
-        )
-        connected = mcp_connected()
-        glow.set_visibility(other or connected)
-        btn.set_visibility(other)
-        chip = getattr(self, "_mode_chip", None)
-        if chip is not None:
-            chip.set_visibility(other or connected)
+        other = self._ai_driving()
+        glow.set_visibility(other or mcp_connected())
         if other:
             glow.classes(add="control-glow-breathe", remove="glow-faint")
         else:
             glow.classes(add="glow-faint", remove="control-glow-breathe")
-        cluster = getattr(self, "_cluster_row", None)
-        if cluster is not None:
-            cluster.set_visibility(other or connected)
-            if other:
-                cluster.classes(add="ai-driving")
-            else:
-                cluster.classes(remove="ai-driving")
+        self._show_ai()
 
         dlg = self._consent_dialog
         desc_label = self._approval_label
@@ -1465,7 +1504,7 @@ class ControlPanel:
                     card.classes(remove="consent-hw")
                 desc_label.text = desc
                 hint.text = "Approve this AI action to let it proceed."
-                dlg.open()
+                self._open_approval(dlg)
             elif consents:
                 sid, label = next(iter(consents.items()))
                 self._approval_sid = sid
@@ -1479,7 +1518,11 @@ class ControlPanel:
                     "First real hardware move of this AI session — make sure "
                     "the workspace is clear before allowing."
                 )
-                dlg.open()
+                self._open_approval(dlg)
+
+    def _open_approval(self, dialog: ui.dialog) -> None:
+        dialog.open()
+        self._waldo_ask(True)
 
     def _resolve_approval(self, granted: bool) -> None:
         sid = self._approval_sid
@@ -1490,6 +1533,10 @@ class ControlPanel:
             self._consent_dialog.close()
         if sid is None:
             return
+        self._waldo_ask(False)
+        readout = ui_state._readout_panel
+        if readout is not None:
+            readout.react(Reaction.NOD if granted else Reaction.HEADSHAKE)
         if kind == "action":
             if granted:
                 grant_action(sid)
@@ -1517,9 +1564,7 @@ class ControlPanel:
         set_control_mode(mode)
         ui.notify(f"AI control mode: {mode.label}", color="info")
         self._set_mode_theme(mode)
-        chip = getattr(self, "_mode_chip", None)
-        if chip is not None:
-            chip.text = mode.label
+        self._show_ai()
         toggle = getattr(self, "_mode_toggle", None)
         if toggle is not None and toggle.value != mode.value:
             self._suppress_mode_toggle = True
@@ -1563,6 +1608,10 @@ class ControlPanel:
 
     async def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
         """Hybrid click/hold: quick click => single step, press-and-hold => stream until release."""
+        sign = "+" if direction == "pos" else "-"
+        axis_info = f"J{j + 1}{sign}"
+        if not is_pressed:
+            self._waldo_look(axis_info, False)
         if waldoctl.commander.status.editing_mode:
             return
         if not is_pressed and not self._drag_allowed():
@@ -1572,8 +1621,6 @@ class ControlPanel:
             return
         assert self._joint_click_hold is not None
 
-        sign = "+" if direction == "pos" else "-"
-        axis_info = f"J{j + 1}{sign}"
         if is_pressed:
             if (
                 self._ring_joint is not None
@@ -1834,6 +1881,8 @@ class ControlPanel:
 
     async def set_axis_pressed(self, axis: str, is_pressed: bool) -> None:
         """Hybrid click/hold for cartesian axes: click => single step, hold => stream."""
+        if not is_pressed:
+            self._waldo_look(axis, False)
         if waldoctl.commander.status.editing_mode:
             return
         if not is_pressed and not self._drag_allowed():
@@ -2562,7 +2611,12 @@ class ControlPanel:
                     .classes("joint-readout-input")
                     .mark(f"joint-readout-{idx}")
                 )
-                _num_ref: dict[str, Any] = {"focused": False, "el": num, "shown": None}
+                _num_ref: dict[str, Any] = {
+                    "focused": False,
+                    "el": num,
+                    "edited": False,
+                    "sent": None,
+                }
 
                 def _num_backward(a, i=idx, r=_num_ref) -> float | None:
                     if r["focused"]:
@@ -2575,24 +2629,35 @@ class ControlPanel:
 
                 num.on(
                     "focus",
-                    lambda _e, r=_num_ref: r.update(focused=True, shown=r["el"].value),
+                    lambda _e, r=_num_ref: r.update(
+                        focused=True, edited=False, sent=None
+                    ),
                 )
                 num.on("blur", lambda _e, r=_num_ref: r.__setitem__("focused", False))
                 num.bind_value_from(joints, "angles", backward=_num_backward)
+                # While focused the binding holds the field, so a change is
+                # the user's edit.
+                num.on_value_change(
+                    lambda _e, r=_num_ref: r["focused"] and r.update(edited=True)
+                )
 
-                def _submit_exact(e=None, i=idx, n=num, r=_num_ref):
+                def _submit_exact(retry: bool, i=idx, n=num, r=_num_ref):
                     try:
                         val = float(n.value) if n.value is not None else None
                     except (ValueError, TypeError):
                         val = None
                     # Left as shown, the rounded angle is no target: moving
-                    # to it would nudge the joint by up to 0.05°.
-                    if val is not None and val != r["shown"]:
-                        r["shown"] = val
+                    # to it would nudge the joint by up to 0.05°. Enter
+                    # sends an edit again (a refused move, an arm moved
+                    # since); leaving the field sends it once.
+                    if val is None or not r["edited"]:
+                        return
+                    if retry or val != r["sent"]:
+                        r["sent"] = val
                         _safe_task(self.move_joint_to_angle(i, val))
 
-                num.on("blur", _submit_exact)
-                num.on("keydown.enter", _submit_exact)
+                num.on("blur", lambda _e, submit=_submit_exact: submit(False))
+                num.on("keydown.enter", lambda _e, submit=_submit_exact: submit(True))
 
             with ui.element("div").classes("joint-dial-name-row"):
                 left_btn = _cap("remove", "minus").mark(f"btn-j{idx + 1}-minus")
@@ -2633,6 +2698,7 @@ class ControlPanel:
 
         with (
             ui.tab_panels(jog_mode_tabs, value=joint_tab)
+            .props("animated")
             .classes("cp-jog-panels")
             .style("width: 400px")
         ):
@@ -3056,9 +3122,9 @@ class ControlPanel:
             def _reset_cam():
                 try:
                     if ui_state.urdf_scene and ui_state.urdf_scene.scene:
-                        ui_state.urdf_scene.scene.move_camera(
-                            **DEFAULT_CAMERA, duration=0.0
-                        )
+                        scene = ui_state.urdf_scene.scene
+                        scene.move_camera(**DEFAULT_CAMERA, duration=0.8)
+                        SceneFx.ease_camera(scene)
                 except Exception as e:
                     logger.error("Reset camera failed: %s", e)
 

@@ -32,6 +32,7 @@ from waldo_commander.common.theme import SceneColors, linear_rgb
 from .config import RobotAppearanceMode
 from .ik_solver import EditingIKSolver
 from .jog_handles_mixin import GIZMO, HANDLE_LABEL_STYLE, signed
+from .scene_fx import SceneFx
 from .snap import SceneSnap
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ _IDENTITY = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 _GIZMO_TICKS_EACH_SIDE = 10
 _GIZMO_TICK_RING_M = 0.06
 _GIZMO_LABEL_LIFT_M = 0.03
+# A release nearer its frame than this needs no spring back.
+_SPRING_MIN_M = 0.001
 
 
 def _local_angle(R: np.ndarray, axis: str) -> float:
@@ -113,6 +116,11 @@ class TCPControlsMixin:
         # What the label shows, in tenths of its unit plus the step, so an
         # unchanged reading is not reformatted.
         self._tcp_label_key: list[float] = [math.nan] * 4
+        # Whether the drag's latest IK solve failed, leaving the ball where
+        # the arm cannot follow.
+        self._tcp_ik_missed: bool = False
+        # World point where the latest drag let go of the ball.
+        self._tcp_release_p: np.ndarray | None = None
         self._ik_solver: EditingIKSolver | None = None
         self._editing_rotation: list[float] = [0.0, 0.0, 0.0]
         self._editing_rotation_set: bool = False
@@ -563,6 +571,7 @@ class TCPControlsMixin:
         if result is None:
             return
 
+        self._tcp_ik_missed = not result.success
         if result.success:
             # Update angles without repositioning the TCP ball; the user is dragging it.
             n = len(self.joint_names)
@@ -582,6 +591,7 @@ class TCPControlsMixin:
         self._tcp_local_p[:] = 0.0
         self._tcp_local_R[:] = np.eye(3)
         self._tcp_label_key[:] = [math.nan] * 4
+        self._tcp_ik_missed = False
         ball = self._tcp_ball
         if ball is None or not self.scene:
             return
@@ -607,6 +617,29 @@ class TCPControlsMixin:
         self._tcp_drag_axis = None
         ball.move(0.0, 0.0, 0.0)
         ball.rotate_R(_IDENTITY)
+        self._tcp_release_p = self._tcp_frame_p + self._tcp_frame_R @ np.array(
+            (e.x, e.y, e.z), dtype=np.float64
+        )
+
+    def _spring_tcp_ball(self) -> None:
+        """Spring the ball from where the drag let go of it onto its frame,
+        which may have moved on release, tinted when the drag asked for a
+        pose the arm could not reach."""
+        release = self._tcp_release_p
+        ball = self._tcp_ball
+        self._tcp_release_p = None
+        if release is None or ball is None or not self.scene:
+            return
+        self._update_tcp_ball_position()
+        local = self._tcp_frame_R.T @ (release - self._tcp_frame_p)
+        if float(np.linalg.norm(local)) <= _SPRING_MIN_M:
+            return
+        SceneFx.spring_back(
+            self.scene,
+            ball,
+            (float(local[0]), float(local[1]), float(local[2])),
+            SceneColors.COLLISION_HEX if self._tcp_ik_missed else None,
+        )
 
     def _draw_gizmo_ticks(self) -> None:
         """Dots at whole steps along the dragged axis (or around it, rotating), in the TCP frame."""

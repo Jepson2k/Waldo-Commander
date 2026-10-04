@@ -612,3 +612,10 @@ async def test_a_recorded_sequence_converts_to_moves_and_replays_what_it_cannot(
         ),
     )
     assert set_positions(arriving) == ["0.000"]
+    # Holding a part, a gripper wanders a count of its 0–255 reading; it has
+    # still settled, and opening later is a step of its own.
+    count = 1 / 255
+    holding = [0.0, count] * 10
+    assert set_positions(
+        gripping([1.0] * 6 + ramp + holding + ramp[::-1] + [1.0] * 10)
+    ) == ["0.000", "1.000"]

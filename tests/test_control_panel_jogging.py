@@ -150,6 +150,31 @@ async def test_joint_jog_steps_dials_and_editing(user: User) -> None:
         lambda d: abs(off_tenth + d - typed) < 0.1,
         what=f"J1 moving to the typed {typed:.1f}°",
     )
+    # Enter sends the edit again: with the field still focused on it, J1
+    # moved away goes back to it.
+    readout_field = user.find(marker="joint-readout-0").trigger("focus")
+    retyped = typed - 1.0
+    for element in readout_field.elements:
+        element.value = retyped
+    readout_field.trigger("keydown.enter")
+    await wait_moved(
+        _j1,
+        typed,
+        lambda d: abs(typed + d - retyped) < 0.1,
+        what=f"J1 moving to the entered {retyped:.1f}°",
+    )
+    q = list(await client.angles())
+    q[0] = retyped + 1.5
+    assert await client.wait_command(await client.move_j(q, duration=0.5), timeout=10)
+    away = await settled(_j1)
+    readout_field.trigger("keydown.enter")
+    await wait_moved(
+        _j1,
+        away,
+        lambda d: abs(away + d - retyped) < 0.1,
+        what=f"J1 going back to the entered {retyped:.1f}° on a second Enter",
+    )
+    readout_field.trigger("blur")
 
     # -3° with the minus button (mousedown/mouseup — jog buttons don't
     # listen for a raw click).

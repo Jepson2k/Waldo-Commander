@@ -31,7 +31,6 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl import Box
 
-from tests.conftest import skip_webgl_macos_ci
 from tests.helpers.browser_helpers import (
     click_marked,
     click_tab,
@@ -584,7 +583,6 @@ def _records(
 
 
 @pytest.mark.browser
-@skip_webgl_macos_ci
 class TestScene:
     def test_gizmo_snap_follows_the_zoom_without_reattaching(
         self, class_screen: Screen
@@ -708,9 +706,15 @@ class TestScene:
             "};",
         )
         try:
-            # A few frames of the render loop.
+            # A few frames of the render loop; the scene draws only when asked.
             wait(screen, 5).until(
-                lambda _: js(screen, "return window.__autoClearLog.length") >= 2
+                lambda _: js(
+                    screen,
+                    "getElement(document.querySelector('.nicegui-scene'))"
+                    ".request_render();"
+                    "return window.__autoClearLog.length",
+                )
+                >= 2
             )
             log = js(screen, "return window.__autoClearLog")
             assert all(v is False for v in log), (
@@ -722,6 +726,66 @@ class TestScene:
                 "getElement(document.querySelector('.nicegui-scene')).viewHelper.render"
                 " = window.__viewHelperRender;",
             )
+
+    def test_the_scene_draws_only_when_something_in_it_moves(
+        self, class_screen: Screen
+    ) -> None:
+        """Where WebGL is software-rendered a frame takes ~170 ms, so a
+        scene redrawn while nothing changes pins the page. At rest it draws
+        nothing; the arm moving draws."""
+        screen = class_screen
+        screen_wait_for_scene_ready(screen)
+        frames = (
+            "return getElement(document.querySelector('.nicegui-scene'))"
+            ".renderer.info.render.frame"
+        )
+        assert core.loop is not None
+
+        async def ready():
+            client = waldoctl.commander.client
+            assert await client.simulator(True) == 1
+            assert await client.reset() == 1
+            assert await client.wait_command(await client.home(), timeout=15)
+
+        asyncio.run_coroutine_threadsafe(ready(), core.loop).result(30)
+
+        def settled(window_s: float) -> int:
+            """The frame count once it has held for *window_s*."""
+            deadline = time.monotonic() + 15
+            count = js(screen, frames)
+            since = time.monotonic()
+            while time.monotonic() < deadline:
+                time.sleep(0.1)
+                now = js(screen, frames)
+                if now != count:
+                    count, since = now, time.monotonic()
+                elif time.monotonic() - since >= window_s:
+                    return count
+            raise AssertionError(f"the scene kept drawing at rest ({count} frames)")
+
+        at_rest = settled(1.0)
+        # The footer's Waldo moving its eyes is no change to the scene.
+        run_in_app(lambda: ui_state.readout_panel.look((1.0, 0.0, 0.0)))
+        try:
+            looked = settled(1.0)
+        finally:
+            run_in_app(lambda: ui_state.readout_panel.look(None))
+        assert looked == at_rest, (
+            f"the scene drew {looked - at_rest} frames for a glance"
+        )
+        at_rest = settled(1.0)
+
+        async def nudge():
+            client = waldoctl.commander.client
+            q = list(await client.angles())
+            q[0] += 3.0
+            assert await client.wait_command(
+                await client.move_j(q, duration=0.6), timeout=10
+            )
+
+        asyncio.run_coroutine_threadsafe(nudge(), core.loop).result(15)
+        moved = settled(0.5)
+        assert moved > at_rest + 2, (at_rest, moved)
 
     def test_zoomed_out_the_fog_starts_beyond_the_robot(
         self, class_screen: Screen
