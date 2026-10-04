@@ -1031,11 +1031,9 @@ html, body {
 @keyframes wc-ai-swap-a { from { transform: rotateX(90deg); opacity: 0.3; } to { transform: none; opacity: 1; } }
 @keyframes wc-ai-swap-b { from { transform: rotateX(90deg); opacity: 0.3; } to { transform: none; opacity: 1; } }
 
-/* While the AI drives, the chip is handed over: the connection word steps
-   aside for the mode, and an accent ring breathes on the glow's clock. */
-.status-footer .footer-mode.ai-driving .footer-mode-word { display: none; }
-.status-footer .footer-mode.ai-driving .footer-ai-mode { margin-left: 0; }
-.status-footer .footer-mode.ai-driving .footer-ai-mode::before { display: none; }
+/* While the AI drives, an accent ring breathes on the glow's clock. The
+   connection word stays: it says whether the AI moves the arm or the
+   simulator. */
 .status-footer .footer-mode.ai-driving {
   box-shadow: inset 0 0 0 1.5px var(--mode-accent);
   animation: wc-ai-ring var(--wc-duration-ambient) var(--wc-ease-loop) infinite;
@@ -1880,6 +1878,12 @@ body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events:
 }
 @media (max-width: 640px) {
   .status-footer { left: 0; right: 0; width: 100%; }
+}
+/* With Take control beside the connection word and the mode, the stacked
+   footer's chip needs the tool's columns too while an AI drives. */
+@media (max-width: 960px) and (min-height: 441px), (max-width: 499px) {
+  .status-footer:has(.footer-mode.ai-driving) .footer-mode { grid-area: 1 / 1 / 2 / 10; }
+  .status-footer:has(.footer-mode.ai-driving) :is(.footer-tool, .footer-empty-tool) { display: none; }
 }
 /* Use the extra width in short landscape viewports before requiring scrolling. */
 @media (min-width: 500px) and (max-width: 960px) and (max-height: 440px) {

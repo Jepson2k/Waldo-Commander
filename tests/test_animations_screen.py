@@ -51,20 +51,22 @@ _CHIP = ".footer-mode .waldo"
 _FOOTER = ".footer-mode"
 
 # What the status chip shows of an AI session: the antenna tips lit, the
-# pupils in the mode's colour rather than the body's, the mode's label and
-# the Take control button.
+# pupils in the mode's colour rather than the body's, the mode's label, the
+# connection word and the Take control button.
 _AI_JS = """
 const chip = document.querySelector(arguments[0]);
 const root = chip && chip.querySelector('.waldo');
 if (!root) return null;
 const shown = el => !!el && el.getClientRects().length > 0;
 const mode = chip.querySelector('.footer-ai-mode');
+const word = chip.querySelector('.footer-mode-word');
 const fill = el => getComputedStyle(el).fill;
 return {
   tips: getComputedStyle(root.querySelector('.waldo-tip')).opacity,
   driving: fill(root.querySelector('.waldo-pupil circle'))
     !== fill(root.querySelector('g[mask] > rect')),
   mode: shown(mode) ? mode.textContent.trim() : '',
+  word: shown(word) ? word.textContent.trim() : '',
   take: shown(chip.querySelector('.btn-take-control')),
 };
 """
@@ -422,7 +424,7 @@ class TestAnimations:
             run_in_app(
                 lambda: control_lease.seize(MCP, "anim-mcp", "MCP session anim-mc")
             )
-            _poll(
+            driving = _poll(
                 screen,
                 _AI_JS,
                 lambda v: v["driving"] and v["take"],
@@ -430,6 +432,8 @@ class TestAnimations:
                 "an AI holding control did not take the eyes or offer Take control",
                 _FOOTER,
             )
+            # Whether the AI moves the arm or the simulator stays in words.
+            assert driving["word"] == "Simulator", driving
             with window_size(screen, 900, 900):
                 _poll(
                     screen,
