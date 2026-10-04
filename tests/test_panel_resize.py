@@ -432,8 +432,6 @@ class TestProgramColumn:
         assert shown["columnBottom"] > shown["columnTop"] + 100, shown
 
         js(screen, "PanelResize.clearAllSizes()")
-        marked_element(screen, "tab-tall").click()
-        marked_element(screen, "tab-notes").click()
         measure = """
             const top = document.querySelector('.top-panels-container').getBoundingClientRect();
             const bottom = document.querySelector('.bottom-panels-container').getBoundingClientRect();
@@ -441,9 +439,18 @@ class TestProgramColumn:
                     notes: !!document.querySelector('.notes-panel')?.offsetParent,
                     topBottom: top.bottom, bottomTop: bottom.top};
         """
+
+        # A tab click while the other panel is still opening can miss; a tab
+        # never closes its own panel, so click whichever is not up yet.
+        def both_open(_):
+            r = js(screen, measure)
+            for shown, tab in ((r["plugin"], "tab-tall"), (r["notes"], "tab-notes")):
+                if not shown:
+                    marked_element(screen, tab).click()
+            return r["plugin"] and r["notes"] and r
+
+        wait(screen).until(both_open)
         wait(screen).until(
-            lambda _: (r := js(screen, measure))["plugin"]
-            and r["notes"]
-            and r["topBottom"] <= r["bottomTop"] + 1
+            lambda _: (r := js(screen, measure))["topBottom"] <= r["bottomTop"] + 1
             and r
         )
