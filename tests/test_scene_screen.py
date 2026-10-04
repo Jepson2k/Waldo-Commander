@@ -314,14 +314,15 @@ class TestScene:
             assert ball is not None and ball["type"] == "Mesh" and ball["visible"], ball
 
             js(screen, _ZOOM, 0.4)
+            # Translation and rotation snaps can land a frame apart.
             snap = _wait(
                 lambda: (s := js(screen, _GIZMO_SNAP, False))
                 and s["t"] == pytest.approx(0.001)
+                and s["r"] == pytest.approx(math.radians(0.5))
                 and s,
                 2.0,
-                "the 1 mm band on the gizmo",
+                "the 1 mm and 0.5° bands on the gizmo",
             )
-            assert snap["r"] == pytest.approx(math.radians(0.5))
             assert snap["probe"], "the gizmo was re-attached instead of updated"
 
     def test_ring_drag_moves_the_joint_by_whole_steps_and_leaves_the_camera(
