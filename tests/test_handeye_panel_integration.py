@@ -1057,13 +1057,7 @@ async def test_handeye_auto_calibration(
         )
 
         async def disconnect_and_reopen() -> None:
-            page = user.client
-            assert page is not None
-            for socket_id in list(page._socket_to_document_id):
-                page.handle_disconnect(socket_id)
-            assert not page.has_socket_connection
-            await user.open("/")
-            await wait_for_app_ready()
+            await reload_page(user)
 
         await interrupt_second_view(35.0, disconnect_and_reopen)
         await user.should_see(marker="handeye-auto")

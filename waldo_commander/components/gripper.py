@@ -11,6 +11,7 @@ from waldoctl import (
     RobotClient,
 )
 
+from waldo_commander.common.charts import fresh_since, push_live
 from waldo_commander.common.panel_theme import chart_grid, chart_text
 from waldo_commander.common.theme import css, hex_of
 from waldo_commander.constants import CHART_PUSH_INTERVAL_S, config
@@ -167,6 +168,8 @@ class GripperPage:
         # Defer markLine-only changes to the next update_chart tick to avoid competing update() calls.
         self._mark_lines_dirty: bool = False
         self._chart_pushed_at: float = 0.0
+        # The newest sample the chart has, so a push sends only what follows.
+        self._chart_sent_until = float("-inf")
 
         _tile = "well p-2"
         with ui.column().classes("w-full gap-2"):
@@ -275,9 +278,6 @@ class GripperPage:
                         },
                     ],
                 },
-                # The legend's colour is a CSS variable, which only a DOM
-                # element resolves — a canvas fillStyle ignores it.
-                renderer="svg",
             )
             .classes("w-full")
             .style("height: 100px;")
@@ -308,7 +308,8 @@ class GripperPage:
         if now - self._chart_pushed_at < CHART_PUSH_INTERVAL_S:
             return
         result = robot_state.tool_time_series.get_series_if_dirty()
-        if result is None and not self._mark_lines_dirty:
+        mark_lines = self._mark_lines_dirty
+        if result is None and not mark_lines:
             return
         self._chart_pushed_at = now
         self._mark_lines_dirty = False
@@ -326,23 +327,27 @@ class GripperPage:
         chart = self._combined_chart
         if chart is None:
             return
-        with chart.props.suspend_updates():
-            if result is not None:
-                timestamps, positions, currents = result
-                ts_ms = [t * 1000 for t in timestamps]
-                chart.options["series"][0]["data"] = [
-                    [t, round(p * 100, 1)] for t, p in zip(ts_ms, positions)
+        if result is not None:
+            timestamps, positions, currents = result
+            start = fresh_since(timestamps, self._chart_sent_until)
+            if start < len(timestamps):
+                self._chart_sent_until = timestamps[-1]
+                rows = [
+                    [round(t * 1000), round(p * 100, 1), round(c, 1)]
+                    for t, p, c in zip(
+                        timestamps[start:], positions[start:], currents[start:]
+                    )
                 ]
-                chart.options["series"][1]["data"] = [
-                    [t, round(c, 1)] for t, c in zip(ts_ms, currents)
-                ]
-            chart.options["series"][0]["markLine"] = _make_mark_line(
-                target_pos_pct, clr_pos, "target"
-            )
-            chart.options["series"][1]["markLine"] = _make_mark_line(
-                current_limit, clr_cur, "limit"
-            )
-        chart.run_chart_method("setOption", {"series": chart.options["series"]})
+                push_live(chart, rows, len(timestamps))
+        if mark_lines:
+            marks = [
+                {"markLine": _make_mark_line(target_pos_pct, clr_pos, "target")},
+                {"markLine": _make_mark_line(current_limit, clr_cur, "limit")},
+            ]
+            with chart.props.suspend_updates():
+                for series, mark in zip(chart.options["series"], marks):
+                    series["markLine"] = mark["markLine"]
+            chart.run_chart_method("setOption", {"series": marks})
 
     def set_target_position(self, position: float) -> None:
         """Set target position and update the slider. Called by control panel actions."""

@@ -29,7 +29,12 @@ from typing import Any, Callable
 import waldoctl
 from nicegui import background_tasks, ui
 
-from waldo_commander.common.charts import chart_options, expand_chart_button
+from waldo_commander.common.charts import (
+    chart_options,
+    expand_chart_button,
+    fresh_since,
+    push_live,
+)
 from waldo_commander.common.panel_theme import joint_colors
 from waldo_commander.common.tab_flash import flash_tab
 from waldo_commander.components.waldo import RobotFace, waldo
@@ -129,12 +134,6 @@ def _faults(drive_health: Any) -> Sequence[Sequence[str]]:
     return getattr(drive_health, "faults", ())
 
 
-def _cells(reading: list[float], n: int) -> list[float | None]:
-    """A torque reading as *n* chart cells, blank where it has no joint."""
-    cells: list[float | None] = [round(v, 3) for v in reading[:n]]
-    return cells + [None] * (n - len(cells))
-
-
 class DiagnosticsPage:
     """The Diagnostics tab of the bottom panel."""
 
@@ -172,6 +171,8 @@ class DiagnosticsPage:
         self._constants_retry_at = 0.0
         self._constants_backoff_s = _CONSTANTS_RETRY_MIN_S
         self._chart_pushed_at = 0.0
+        # The newest sample the chart has, so a push sends only what follows.
+        self._chart_sent_until = float("-inf")
 
     # ---- availability ----
     #
@@ -393,8 +394,7 @@ class DiagnosticsPage:
                         | ({} if measured else {"type": "dashed"})
                         | {"color": color},
                         "itemStyle": {"color": color},
-                        # Column 0 of the dataset is the time.
-                        "encode": {"x": 0, "y": len(series) + 1},
+                        "data": [],
                     }
                 )
         with self._section("torques", "Joint torque"):
@@ -423,13 +423,11 @@ class DiagnosticsPage:
                 )
             options = chart_options(y_name="Nm")
             options["series"] = series
-            # One row per sample, the time once rather than once per series.
-            options["dataset"] = {"source": []}
             options["legend"].update(
                 {"data": [f"J{i + 1}" for i in range(n)], "selectedMode": False}
             )
             self._chart = (
-                ui.echart(options, renderer="svg")
+                ui.echart(options)
                 .classes("w-full")
                 .style("height: 230px")
                 .mark("diag-torque-chart")
@@ -868,14 +866,18 @@ class DiagnosticsPage:
             return
         self._chart_pushed_at = now
         timestamps, measured, external = result
+        start = fresh_since(timestamps, self._chart_sent_until)
+        if start == len(timestamps):
+            return
+        self._chart_sent_until = timestamps[-1]
         n = self._joint_count
-        source = [
-            [round(t * 1000.0), *_cells(m, n), *_cells(e, n)]
-            for t, m, e in zip(timestamps, measured, external)
+        rows = [
+            [round(t * 1000.0)]
+            + [round(m[j], 3) if j < len(m) else None for j in range(n)]
+            + [round(e[j], 3) if j < len(e) else None for j in range(n)]
+            for t, m, e in zip(timestamps[start:], measured[start:], external[start:])
         ]
-        with self._chart.props.suspend_updates():
-            self._chart.options["dataset"]["source"] = source
-        self._chart.run_chart_method("setOption", {"dataset": {"source": source}})
+        push_live(self._chart, rows, len(timestamps))
 
     # ---- actions ----
 
