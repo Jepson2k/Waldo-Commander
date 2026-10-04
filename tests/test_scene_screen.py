@@ -58,7 +58,7 @@ from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 from waldo_commander.constants import DEFAULT_CAMERA
 from waldo_commander.services.keybindings import keybindings_manager
 from waldo_commander.services.motion_guard import motion_guard
-from waldo_commander.services.urdf_scene.jog_handles_mixin import GIZMO
+from waldo_commander.services.urdf_scene.jog_handles_mixin import GIZMO, HOVER_GRACE_S
 from waldo_commander.state import ui_state
 
 if TYPE_CHECKING:
@@ -946,6 +946,14 @@ class TestScene:
             x, y, dx, dy = _wait(
                 lambda: js(screen, _ARROW_TIP, "tcp:ball"), 5.0, "the X arrow"
             )
+            # The gizmo stays while the pointer rests on its arrow, off the arm.
+            actions = ActionChains(screen.selenium, duration=0)
+            pointer_to(screen, x, y, actions)
+            actions.perform()
+            _caught_up()
+            time.sleep(HOVER_GRACE_S + 0.3)
+            _caught_up()
+            assert shown() == GIZMO, "the gizmo went from under the pointer"
             start = _tcp_mm()
             camera = js(screen, _CAMERA)
             _drag_along(screen, x, y, dx, dy)

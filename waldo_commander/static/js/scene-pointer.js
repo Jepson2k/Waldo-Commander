@@ -1,22 +1,54 @@
 /**
+ * Pointer input the scene's own events leave out.
+ *
  * Right-drag: a right-button drag pans the 3D view and must not open the
  * scene's menu the way a right-click does. The scene's click events carry no
  * pointer position, so this reports each right press, and on its release the
  * farthest the pointer got from the press. The release lands before the
  * mouseup and the contextmenu events that follow it. A menu opened another
  * way (the menu key, a long press) is reported as a release that did not move.
+ *
+ * Gizmo hover: a gizmo's handles reach past the object it moves, so leaving
+ * the arm for one of them is not leaving the gizmo. TransformControls marks
+ * the handle under a mouse as its axis; this reports whose gizmo that is
+ * whenever it changes. It listens on the scene's wrapper, so the canvas's own
+ * listeners have already updated the axis.
  */
 
 (function() {
     'use strict';
 
     const attached = new WeakSet();
+    const hoverWatched = new WeakSet();
 
     function attach(id) {
         const c = getElement(id);
         const canvas = c && c.renderer && c.renderer.domElement;
         if (!canvas || attached.has(canvas)) return;
         attached.add(canvas);
+        watchGizmoHover(id, c.$el);
+        watchRightDrag(canvas);
+    }
+
+    function watchGizmoHover(id, wrapper) {
+        if (hoverWatched.has(wrapper)) return;
+        hoverWatched.add(wrapper);
+        let over = null;
+        function report(name) {
+            if (name === over) return;
+            over = name;
+            emitEvent('wc_gizmo_hover', { name: name });
+        }
+        wrapper.addEventListener('pointermove', function(e) {
+            const c = getElement(id);
+            if (e.pointerType === 'touch' || e.target !== c.renderer.domElement) return;
+            const tc = [...c.transform_controls.values()].find(function(t) { return t.object && t.axis !== null; });
+            report(tc ? tc.object.name : null);
+        });
+        wrapper.addEventListener('pointerleave', function() { report(null); });
+    }
+
+    function watchRightDrag(canvas) {
         let start = null;
         let farthest = 0;
         // Set by a right release whose contextmenu may still follow (Windows).
@@ -49,5 +81,5 @@
         });
     }
 
-    window.SceneRightDrag = { attach: attach };
+    window.ScenePointer = { attach: attach };
 })();

@@ -354,7 +354,8 @@ async def initialize_urdf_scene() -> None:
 
 def _attach_scene_scripts(scene: ui.scene) -> None:
     """Frame the camera on the part of the view the column and footer leave
-    clear, and tell right-drags from right-clicks.
+    clear, tell right-drags from right-clicks, and report the gizmo handle
+    under the pointer.
 
     Registered before the page yields, so it catches the first init; a remount
     after WebGL context loss inits again with a new camera and canvas.
@@ -362,7 +363,7 @@ def _attach_scene_scripts(scene: ui.scene) -> None:
     scene.on(
         "init",
         lambda: ui.run_javascript(
-            f"SceneFraming.attach({scene.id}); SceneRightDrag.attach({scene.id})"
+            f"SceneFraming.attach({scene.id}); ScenePointer.attach({scene.id})"
         ),
     )
 
@@ -1060,7 +1061,7 @@ def build_page_content() -> None:
 
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
     ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
-    ui.add_head_html('<script src="/static/js/scene-right-drag.js" defer></script>')
+    ui.add_head_html('<script src="/static/js/scene-pointer.js" defer></script>')
     ui.add_head_html('<script src="/static/js/scene-fx.js" defer></script>')
     ui.add_head_html('<script src="/static/js/live-chart.js" defer></script>')
 

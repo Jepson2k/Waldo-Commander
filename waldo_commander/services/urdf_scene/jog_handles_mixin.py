@@ -127,6 +127,9 @@ class JogHandlesMixin:
         self._hover_suspended = False
         self._handles_available = False
         self._hover_pinned = False
+        # Whether the pointer is on one of the gizmo's handles, which reach
+        # past the arm.
+        self._gizmo_hovered = False
         self._dial: _Dial | None = None
         self._dial_drag: _DialDrag | None = None
         self._dial_axes: dict[str, list[list[float]]] = {}
@@ -171,9 +174,10 @@ class JogHandlesMixin:
             self._watch_hover(self._tool_meshes_group, GIZMO)
         self.scene.on_pointer_missed(self._on_pointer_missed)
         ui.on("wc_camera_distance", self._on_camera_distance)
+        ui.on("wc_gizmo_hover", self._on_gizmo_hover)
 
     def _watch_hover(self, obj: Any, target: str) -> None:
-        obj.on_pointer_over(lambda e: self._hover_enter(target, e))
+        obj.on_pointer_over(lambda e: self._hover_enter(target, e.pointer_type))
         obj.on_pointer_out(lambda e: self._hover_leave(target))
         obj.on_click(lambda e: self._on_source_click(target, e))
 
@@ -226,8 +230,8 @@ class JogHandlesMixin:
 
     # ---- Hover state machine ----
 
-    def _hover_enter(self, target: str, e: ScenePointerEventArguments) -> None:
-        if e.pointer_type == "mouse":
+    def _hover_enter(self, target: str, pointer_type: str) -> None:
+        if pointer_type == "mouse":
             self._hover_pinned = False
         self._hover_target = target
         if self._shown_handle == target:
@@ -239,6 +243,8 @@ class JogHandlesMixin:
             self._arm_grace()
 
     def _hover_leave(self, target: str) -> None:
+        if target == GIZMO and self._gizmo_hovered:
+            return
         if self._hover_target == target:
             self._hover_target = None
         if self._shown_handle is not None:
@@ -271,10 +277,23 @@ class JogHandlesMixin:
             self._hover_grace.cancel()
             self._hover_grace = None
 
+    def _on_gizmo_hover(self, e: GenericEventArguments) -> None:
+        hovered = e.args["name"] == "tcp:ball"
+        if hovered == self._gizmo_hovered:
+            return
+        self._gizmo_hovered = hovered
+        if hovered:
+            self._hover_enter(GIZMO, "mouse")
+        else:
+            self._hover_leave(GIZMO)
+
     def _on_grace(self) -> None:
         self._hover_grace = None
         # A drag keeps its handle; the drag's end settles the hover again.
         if self._hover_pinned or self._handle_dragging():
+            return
+        # The gizmo under the pointer wins over the arm behind it.
+        if self._gizmo_hovered and self._shown_handle == GIZMO:
             return
         target = self._hover_target
         if target == self._shown_handle:
@@ -368,7 +387,7 @@ class JogHandlesMixin:
                         .with_name(f"jog:dial:{u}:label")
                         .move(radius + _LABEL_GAP_M, 0.0, 0.0)
                     )
-            group.on_pointer_over(lambda e: self._hover_enter(target, e))
+            group.on_pointer_over(lambda e: self._hover_enter(target, e.pointer_type))
             group.on_pointer_out(lambda e: self._hover_leave(target))
             group.on_pointer_down(self._on_dial_down)
             group.on_pointer_move(self._on_dial_move)
