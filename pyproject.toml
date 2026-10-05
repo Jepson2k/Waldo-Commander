@@ -104,7 +104,7 @@ where = ["."]
 include = ["waldo_commander*"]
 
 [tool.setuptools.package-data]
-waldo_commander = ["static/**/*"]
+waldo_commander = ["static/**/*", "scene3d/*.js", "scene3d/js/*.js", "scene3d/vendor/**/*"]
 
 # ty 0.0.74 mis-binds ParamSpec *args on numba's Dispatcher.__call__ stub:
 # every argument at a jitted call site is compared against the full parameter

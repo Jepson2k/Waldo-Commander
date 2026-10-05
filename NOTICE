@@ -10,3 +10,7 @@ for the full terms.
 "Waldo Commander" is a project name used by its author to identify this
 software. Modified or derivative versions should be distributed under a
 different name to avoid confusion about their origin.
+
+This product includes three.js (https://threejs.org), copyright 2010-2026
+three.js authors, licensed under the MIT License. Its license is in
+waldo_commander/scene3d/vendor/three/LICENSE.
