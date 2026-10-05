@@ -28,6 +28,7 @@ export default {
       if (this.connected) this.$emit("init");
       this.connected = true;
     };
+    this.onDisconnect = () => this.core.disconnected();
     const hook = () => {
       if (this.unmounted) return;
       if (!window.socket) {
@@ -36,6 +37,7 @@ export default {
       }
       this.connected = window.socket.connected;
       window.socket.on("connect", this.onConnect);
+      window.socket.on("disconnect", this.onDisconnect);
     };
     hook();
     this.$emit("init");
@@ -44,7 +46,10 @@ export default {
   beforeUnmount() {
     this.unmounted = true;
     clearTimeout(this.hookTimer);
-    if (window.socket) window.socket.off("connect", this.onConnect);
+    if (window.socket) {
+      window.socket.off("connect", this.onConnect);
+      window.socket.off("disconnect", this.onDisconnect);
+    }
     this.core.dispose();
   },
 

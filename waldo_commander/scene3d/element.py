@@ -20,8 +20,9 @@ from typing import Any, Literal
 from nicegui import ui
 from nicegui.dependencies import register_esm
 
+from .interaction import Gestures
 from .node import ClipPlane, Node, current_parent
-from .protocol import fixed, fixed_all
+from .protocol import fixed, fixed_all, quaternion
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,15 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         self._loop = asyncio.get_running_loop()
         self._token: list[Any] = []
         self.fx = Effects(self)
+        self.gestures = Gestures(self)
+        self._interaction: dict[str, Any] = {}
+        self._tcp_rev = 0
+        self._tcp_history: dict[int, tuple[list[float], list[list[float]]]] = {}
+        self._context_handler: Callable[[dict[str, Any]], None] | None = None
         self.on("init", self._handle_init)
+        self.on("gesture", lambda e: self.gestures.handle(e.args))
+        self.on("context", self._handle_context)
+        self.client.on_disconnect(self._handle_disconnect)
 
     # -- parenting ----------------------------------------------------------
 
@@ -278,6 +287,68 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         self._camera = pose
         self._command(lambda: ["cam", pose, float(duration), bool(ease)])
 
+    # -- interaction --------------------------------------------------------
+
+    def set_interaction(self, **changes: Any) -> None:
+        """What the browser's pointer handling needs: hover sources, rings,
+        handle rules, edit and keep-out move state, colours and snap bands."""
+        self._own()
+        changed = {k: v for k, v in changes.items() if self._interaction.get(k) != v}
+        if not changed:
+            return
+        self._interaction.update(changed)
+        self._command(lambda: ["ix", changed])
+
+    @property
+    def interaction(self) -> dict[str, Any]:
+        return dict(self._interaction)
+
+    def set_tcp(self, position: Sequence[float], R: Sequence[Sequence[float]]) -> int:
+        """Place the gizmo's frame on the TCP; returns the placement's revision."""
+        self._own()
+        self._tcp_rev += 1
+        self._tcp_history[self._tcp_rev] = (
+            [float(v) for v in position],
+            [list(map(float, r)) for r in R],
+        )
+        self._tcp_history.pop(self._tcp_rev - 64, None)
+        rev = self._tcp_rev
+        self._command(lambda: self._tcp_op(rev))
+        return rev
+
+    def tcp_at(self, rev: Any) -> tuple[list[float], list[list[float]]] | None:
+        """The TCP placement the browser showed at revision *rev*, if recent."""
+        return self._tcp_history.get(rev) if isinstance(rev, int) else None
+
+    def _tcp_op(self, rev: int) -> list[Any] | None:
+        if rev != self._tcp_rev:
+            return None
+        p, R = self._tcp_history[rev]
+        return ["tcp", rev, fixed_all(p), quaternion(R)]
+
+    def set_gizmo_miss(self, missed: bool) -> None:
+        """Whether the drag's last pose was out of reach: its spring back is tinted."""
+        self._command(lambda: ["miss", int(missed)])
+
+    def on_context(self, handler: Callable[[dict[str, Any]], None]) -> None:
+        """Call *handler* with a right-click's ``hits``, ``ground`` and request ``gen``."""
+        self._context_handler = handler
+
+    def open_menu(self, gen: int, cx: float, cy: float) -> None:
+        """Open the context menu at viewport point (cx, cy) for request *gen*."""
+        self._command(lambda: ["menu", gen, float(cx), float(cy)])
+
+    def _handle_context(self, e: Any) -> None:
+        args = e.args if isinstance(e.args, dict) else {}
+        if args.get("epoch") != self.gestures.epoch or not self.gestures.authorized():
+            return
+        if self._context_handler is not None:
+            self._context_handler(args)
+
+    def _handle_disconnect(self) -> None:
+        if not self.is_deleted:
+            self.gestures.bump()
+
     def _command(self, build: Callable[[], list[Any] | None]) -> None:
         """Queue an op built at send time; a build that returns None is dropped."""
         self._own()
@@ -397,6 +468,11 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         ops += self._joint_ops(full=True)
         if self._camera is not None:
             ops.append(["cam", self._camera, 0.0, False])
+        ops.append(["epoch", self.gestures.epoch])
+        if self._interaction:
+            ops.append(["ix", self._interaction])
+        if self._tcp_rev:
+            ops.append(self._tcp_op(self._tcp_rev))
         return ops
 
     def _handle_init(self) -> None:
@@ -404,6 +480,8 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
             self._flush_handle.cancel()
             self._flush_handle = None
         self.live = True
+        self.gestures.epoch += 1
+        self.gestures.abort_all()
         self._clear_changes()
         self._send(self._snapshot())
 
@@ -415,6 +493,8 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         if self._flush_handle is not None:
             self._flush_handle.cancel()
             self._flush_handle = None
+        self.gestures.abort_all()
+        self.gestures.cancel_watch()
         self.live = False
         super()._handle_delete()
 

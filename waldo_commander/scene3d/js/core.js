@@ -10,8 +10,12 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
 import { CameraMove } from "./camera.js";
 import { Fx } from "./fx.js";
+import { Gestures } from "./gestures.js";
+import { Gizmos } from "./gizmo.js";
 import { Inset } from "./inset.js";
+import { Menu } from "./menu.js";
 import { Nodes } from "./nodes.js";
+import { Pointer } from "./pointer.js";
 import { surface } from "./testing.js";
 
 const COVERED_FRAME_MS = 250;
@@ -55,13 +59,32 @@ export class SceneCore {
     this.casters = NaN;
     this.labels = new CSS2DRenderer({ element: root.querySelector(".wc-scene-labels") });
     this.controls = new OrbitControls(this.camera, this.canvas);
-    this.controls.addEventListener("change", () => this.requestRender());
+    this.controls.addEventListener("change", () => {
+      this.pointer.updateSnap();
+      this.requestRender();
+    });
 
+    this.ix = {};
+    this.snap = [1, 5];
     this.nodes = new Nodes(this);
     this.fx = new Fx(this);
     this.cameraMove = new CameraMove(this);
     this.inset = new Inset(this);
+    this.gestures = new Gestures(this);
+    this.pointer = new Pointer(this);
+    this.gizmos = new Gizmos(this);
+    this.menu = new Menu(this);
     this.surface = surface(this);
+
+    // A drag must not outlive the page's attention.
+    this.onBlur = () => this.gestures.abort("blur");
+    this.onVisibility = () => {
+      if (document.visibilityState === "hidden") this.gestures.abort("hidden");
+    };
+    this.onPageHide = () => this.gestures.abort("pagehide");
+    window.addEventListener("blur", this.onBlur);
+    document.addEventListener("visibilitychange", this.onVisibility);
+    window.addEventListener("pagehide", this.onPageHide);
 
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(root);
@@ -113,6 +136,24 @@ export class SceneCore {
         case "fx":
           this.fx.run(op[1], op.slice(2));
           break;
+        case "epoch":
+          this.gestures.setEpoch(op[1]);
+          break;
+        case "reject":
+          this.gestures.reject(op[1]);
+          break;
+        case "ix":
+          this.interact(op[1]);
+          break;
+        case "tcp":
+          this.gizmos.place(op[1], op[2], op[3]);
+          break;
+        case "miss":
+          this.gizmos.miss = !!op[1];
+          break;
+        case "menu":
+          this.menu.open(op[1], op[2], op[3]);
+          break;
         default:
           console.warn(`scene: unknown op ${code}`);
       }
@@ -121,11 +162,30 @@ export class SceneCore {
   }
 
   reset() {
+    this.gestures.abort("reset");
+    this.pointer.hideRing();
     this.nodes.reset();
     this.fx.tweens.clear();
     this.fx.stopPulse();
+    this.ix = {};
     this.live = true;
     this.resets++;
+    if (!this.lost) this.gestures.unblock();
+    this.requestRender();
+  }
+
+  // What the pointer handling works from: hover sources, rings, handle
+  // rules, edit and keep-out move state, colours and snap bands.
+  interact(changes) {
+    Object.assign(this.ix, changes);
+    if ("bands" in changes) {
+      this.snap = [NaN, NaN];
+      this.pointer.updateSnap();
+    }
+    if ("rings" in changes && this.pointer.ring) this.pointer.hideRing();
+    if ("edit" in changes) this.gizmos.setJoints(this.ix.edit);
+    if ("shapeMove" in changes) this.gizmos.setShape(this.ix.shapeMove);
+    this.pointer.refresh();
     this.requestRender();
   }
 
@@ -140,9 +200,11 @@ export class SceneCore {
     this.requestRender();
   }
 
-  // A node is gone: nothing may keep animating it.
+  // A node is gone: nothing may keep animating or holding it.
   forget(rec) {
     this.fx.forget(rec);
+    this.gizmos.forget(rec);
+    this.pointer.forget(rec);
   }
 
   // ---- drawing ----------------------------------------------------------
@@ -157,7 +219,7 @@ export class SceneCore {
   }
 
   get animating() {
-    return this.fx.active || this.cameraMove.active || this.inset.active;
+    return this.fx.active || this.cameraMove.active || this.inset.active || this.gizmos.active;
   }
 
   schedule() {
@@ -181,6 +243,9 @@ export class SceneCore {
     const delta = this.clock.getDelta();
     this.fx.step(now);
     this.cameraMove.step(now);
+    this.gizmos.step(now);
+    this.pointer.follow();
+    this.pointer.syncGlow();
     this.wantFrame = false;
     this.draw(delta);
     this.lastFrame = now;
@@ -254,6 +319,7 @@ export class SceneCore {
 
   contextLost() {
     this.lost = true;
+    this.gestures.block("context lost");
     this.root.setAttribute("data-gl", "lost");
     this.lostNotice.style.display = "grid";
     this.restoreTimer = setTimeout(() => this.offerRemount(), RESTORE_WAIT_MS);
@@ -269,7 +335,14 @@ export class SceneCore {
     if (this.config.background) this.renderer.setClearColor(this.config.background);
     this.renderer.shadowMap.needsUpdate = true;
     this.casters = NaN;
+    if (this.live) this.gestures.unblock();
     this.requestRender();
+  }
+
+  // The socket dropped: no drag goes on, and none starts until the app has
+  // sent the scene again.
+  disconnected() {
+    this.gestures.block("disconnect");
   }
 
   offerRemount() {
@@ -284,6 +357,13 @@ export class SceneCore {
     clearTimeout(this.retry);
     clearTimeout(this.restoreTimer);
     this.observer.disconnect();
+    this.gestures.abort("unmount");
+    window.removeEventListener("blur", this.onBlur);
+    document.removeEventListener("visibilitychange", this.onVisibility);
+    window.removeEventListener("pagehide", this.onPageHide);
+    this.menu.dispose();
+    this.pointer.dispose();
+    this.gizmos.dispose();
     window.removeEventListener("wc:layout", this.onLayout);
     this.canvas.removeEventListener("webglcontextlost", this.onLost);
     this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
