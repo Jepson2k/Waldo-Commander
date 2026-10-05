@@ -42,7 +42,7 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
 
     from waldo_commander.common.theme import SceneColors
     from waldo_commander.services.path_visualizer import _mark_colliding_commands
-    from waldo_commander.state import ui_state
+    from waldo_commander.state import simulation_state, ui_state
 
     await user.open("/")
     await wait_for_urdf_ready()
@@ -255,6 +255,12 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
         for handler in previous_page.disconnect_handlers:
             previous_page.safe_invoke(handler)
         previous_page.delete()
+        # The closed page's scene stops listening, so it is not kept alive
+        # and redrawn on every program change for as long as the app runs.
+        assert not any(
+            getattr(listener, "__self__", None) is scene
+            for listener in simulation_state._change_listeners
+        ), "the closed page's scene still listens for simulation changes"
         await user.open("/")
         await wait_for_urdf_ready()
         rebuilt = ui_state.urdf_scene

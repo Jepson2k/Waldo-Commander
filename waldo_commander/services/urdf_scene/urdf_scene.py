@@ -527,6 +527,9 @@ class UrdfScene(
             self._register_hover_sources()
             ui.on("wc_right_press", self._on_right_press)
             ui.on("wc_right_release", self._on_right_release)
+        # A closed page's scene would otherwise keep listening, and be redrawn
+        # on every program change, for as long as the app runs.
+        self.scene.client.on_delete(self.cleanup)
 
     def _handle_transform_continuous(self, e) -> None:
         """Handle continuous transform events for TCP ball and joint controls.
