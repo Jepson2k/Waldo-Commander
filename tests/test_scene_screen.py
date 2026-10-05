@@ -44,6 +44,7 @@ from tests.helpers.browser_helpers import (
 )
 from tests.helpers.browser_session import no_visible, wait, window_size
 from tests.helpers.scene_surface import (
+    emits_during,
     frames_at_rest,
     hover_scene_object,
     pointer_to,
@@ -805,6 +806,32 @@ class TestScene:
                 5.0,
                 "J3's ring, and J2's gone",
             )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="ui.scene reports each hover to the app and the app shows the handle",
+    )
+    def test_hovering_the_arm_sends_the_app_nothing(self, class_screen: Screen) -> None:
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        _teleport_to_jog_pose()
+        with _camera_kept(screen):
+
+            def tour() -> None:
+                for link, shown in (
+                    ("L2", "ring:1"),
+                    ("L3", "ring:2"),
+                    ("L6", "gizmo"),
+                ):
+                    hover_scene_object(screen, f"link:{link}")
+                    _wait(lambda: shown_handles(screen) == [shown], 5.0, shown)
+                screen.selenium.execute_cdp_cmd(
+                    "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
+                )
+                _wait(lambda: shown_handles(screen) == [], 5.0, "the handles to go")
+
+            sent = emits_during(screen, tour)
+        assert sent == [], f"hovering sent the app {len(sent)} events: {sent[:5]}"
 
     def test_the_rotate_gizmo_turns_the_tool_and_leaves_the_camera(
         self, class_screen: Screen

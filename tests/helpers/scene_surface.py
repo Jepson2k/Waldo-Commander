@@ -9,6 +9,7 @@ a press grabs a given handle. Tests never touch the component's internals.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from selenium.webdriver.common.action_chains import ActionChains
@@ -419,6 +420,30 @@ def hover_scene_object(screen: Screen, name: str, timeout: float = 20.0) -> None
     actions = ActionChains(screen.selenium, duration=0)
     pointer_to(screen, x, y, actions)
     actions.perform()
+
+
+def emits_during(screen: Screen, action: Callable[[], None]) -> list[str]:
+    """The events the page sends the app while *action* runs, each as
+    ``<element id>:<listener id>``."""
+    js(
+        screen,
+        "if (!window.__wcEmits) {"
+        "  const emit = window.socket.emit.bind(window.socket);"
+        "  window.__wcEmits = {on: false, log: []};"
+        "  window.socket.emit = (name, ...rest) => {"
+        "    const e = rest[0];"
+        "    if (name === 'event' && window.__wcEmits.on)"
+        "      window.__wcEmits.log.push(e ? e.id + ':' + e.listener_id : '?');"
+        "    return emit(name, ...rest);"
+        "  };"
+        "}"
+        "window.__wcEmits.log = []; window.__wcEmits.on = true;",
+    )
+    try:
+        action()
+    finally:
+        log = js(screen, "window.__wcEmits.on = false; return window.__wcEmits.log;")
+    return log
 
 
 def shown_handles(screen: Screen) -> list[str]:
