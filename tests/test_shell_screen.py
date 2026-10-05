@@ -30,6 +30,7 @@ from tests.helpers.browser_helpers import (
     viewport,
 )
 from tests.helpers.browser_session import no_visible, wait, window_size
+from tests.helpers.scene_surface import SCENE_ROOT, frames, scene_js
 from tests.helpers.wait import JOG_SAFE_POSE_DEG, screen_wait_for_scene_ready
 
 from waldo_commander.components.joint_dial import DIAL_RADIUS, dial_angle
@@ -88,16 +89,15 @@ LAUNCHERS = """
 """
 
 VIEW = """
-    const cam = window.SceneFraming && SceneFraming.camera();
-    if (!cam) return null;
-    const el = document.querySelector('.nicegui-scene');
+    const f = S.framing();
+    if (!f) return null;
     const footer = document.querySelector('.status-footer').getBoundingClientRect();
-    return {enabled: !!(cam.view && cam.view.enabled),
-            fullWidth: cam.view ? cam.view.fullWidth : null,
-            fullHeight: cam.view ? cam.view.fullHeight : null,
-            offsetY: cam.view ? cam.view.offsetY : null,
-            aspect: cam.aspect,
-            width: el.clientWidth, height: el.clientHeight,
+    return {enabled: !!(f.view && f.view.enabled),
+            fullWidth: f.view ? f.view.fullWidth : null,
+            fullHeight: f.view ? f.view.fullHeight : null,
+            offsetY: f.view ? f.view.offsetY : null,
+            aspect: f.aspect,
+            width: S.root.clientWidth, height: S.root.clientHeight,
             columnRight: PanelResize.layout().columnRight,
             footerCover: Math.round(innerHeight - footer.top)};
 """
@@ -157,8 +157,8 @@ def _settings_open() -> bool:
 
 
 def _view(screen) -> dict:
-    view = js(screen, VIEW)
-    assert view is not None, "scene-framing.js is not attached to the scene"
+    view = scene_js(screen, VIEW)
+    assert view is not None, "the scene does not frame its view"
     return view
 
 
@@ -171,15 +171,11 @@ class TestShellLayout:
     def test_the_scene_redraws_sparingly_behind_a_dialog(self, class_screen) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        frames = (
-            "const el = document.querySelector('.nicegui-scene');"
-            "return getElement(el).renderer.info.render.frame;"
-        )
 
         def frames_in_a_second() -> int:
-            start = js(screen, frames)
+            start = frames(screen)
             time.sleep(1.0)
-            return js(screen, frames) - start
+            return frames(screen) - start
 
         def marker():
             assert ui_state.urdf_scene is not None
@@ -200,12 +196,12 @@ class TestShellLayout:
             # A change landing just after a covered frame is drawn a little
             # later, not left on screen stale until something else draws.
             wait(screen, 5).until(lambda _: frames_in_a_second() == 0)
-            before = js(screen, frames)
+            before = frames(screen)
             run_in_app(lambda: dot.move(0.0, 0.0, -4.9))
             time.sleep(0.05)
             run_in_app(lambda: dot.move(0.0, 0.0, -4.8))
             time.sleep(1.0)
-            drawn = js(screen, frames) - before
+            drawn = frames(screen) - before
         finally:
             run_in_app(dialog.close)
             run_in_app(dot.delete)
@@ -621,13 +617,13 @@ class TestShellLayout:
             const box = s => { const e = document.querySelector(s); if (!e || e.offsetParent === null) return null;
                                const b = e.getBoundingClientRect(); return {left: b.left, right: b.right, top: b.top, bottom: b.bottom}; };
             return {panel: box('.bottom-panel'), column: box('.program-panel'), control: box('.overlay-br'),
-                    viewport: innerHeight, framedBottom: SceneFraming.getInset().bottom};
+                    viewport: innerHeight, framedBottom: S.framing().inset.bottom};
         """
         with window_size(screen, 1366, 768):
             click_tab(screen, "program")
             click_tab(screen, "diagnostics")
             opened = wait(screen).until(
-                lambda _: (g := js(screen, geometry))["panel"]
+                lambda _: (g := scene_js(screen, geometry))["panel"]
                 and g["column"]["bottom"] <= g["panel"]["top"] - 11
                 and g
             )
@@ -655,7 +651,7 @@ class TestShellLayout:
 
             close_panel(screen, "bottom-panel")
             closed = wait(screen).until(
-                lambda _: (g := js(screen, geometry))["panel"] is None
+                lambda _: (g := scene_js(screen, geometry))["panel"] is None
                 and g["column"]["bottom"] > opened["column"]["bottom"] + 300
                 and g
             )
@@ -721,7 +717,8 @@ class TestShellLayout:
     ) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=60.0)
-        measure = """
+        measure = (
+            """
             const visible = e => !!e && !!e.getClientRects().length && e.offsetParent !== null;
             const box = e => { const r=e.getBoundingClientRect();
                 return {left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height}; };
@@ -736,11 +733,14 @@ class TestShellLayout:
                 published:published, offsetHeight:control.offsetHeight,
                 robotClipped:robotName.scrollWidth > robotName.clientWidth,
                 editor:visible(document.querySelector('.program-panel')),
-                scene:visible(document.querySelector('.nicegui-scene')),
+                scene:visible(document.querySelector('"""
+            + SCENE_ROOT
+            + """')),
                 readings:readings.map(e=>({visible:visible(e), ...box(e)})),
                 dials:[...control.querySelectorAll('.joint-dial')].map(box),
                 width:innerWidth, height:innerHeight};
         """
+        )
 
         def rest_the_pointer() -> None:
             screen.selenium.execute_cdp_cmd(
@@ -893,5 +893,22 @@ class TestShellLayout:
                         )
                         close_panel(screen, "bottom-panel")
                         rest_the_pointer()
+                # Loaded at phone width, the scene mounted hidden; widened, it
+                # draws into a buffer as large as its box.
+                with viewport(screen, 1366, 900):
+                    buffer = wait(screen).until(
+                        lambda _: (
+                            b := scene_js(
+                                screen,
+                                "return {w: S.canvas.width, h: S.canvas.height,"
+                                " cw: S.canvas.clientWidth, ch: S.canvas.clientHeight};",
+                            )
+                        )
+                        and b["cw"] > 0
+                        and abs(b["w"] - b["cw"]) <= 1
+                        and abs(b["h"] - b["ch"]) <= 1
+                        and b
+                    )
+                    assert buffer["w"] > 0 and buffer["h"] > 0, buffer
             finally:
                 _select_tool("NONE")

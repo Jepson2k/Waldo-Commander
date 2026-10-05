@@ -28,6 +28,7 @@ from tests.helpers.browser_helpers import (
     run_in_app,
 )
 from tests.helpers.browser_session import window_size
+from tests.helpers.scene_surface import frames, with_surface
 
 # Eye scale, left pupil offset, visible mouth and sweat drop of the Waldo at
 # the selector arguments[0].
@@ -534,11 +535,9 @@ class TestAnimations:
         )
         # Sample the path group every frame: did any line draw partially, and
         # how small did any mesh get while it popped in?
-        driver.execute_script("""
-            const canvas = document.querySelector('canvas');
-            const comp = getElement(canvas.closest('[id^="c"]').id.slice(1));
-            let paths = null;
-            comp.scene.traverse(o => { if (o.name === 'simulation:paths') paths = o; });
+        driver.execute_script(
+            with_surface("""
+            const paths = S.byName('simulation:paths');
             window.__fx = {partial: false, minScale: Infinity, lines: 0, meshes: 0, run: true};
             (function sample() {
               if (!window.__fx.run) return;
@@ -550,6 +549,7 @@ class TestAnimations:
               requestAnimationFrame(sample);
             })();
         """)
+        )
         saved_paths_visible = waldoctl.commander.settings.view.paths_visible
 
         def _populate() -> None:
@@ -586,11 +586,8 @@ class TestAnimations:
         try:
             # Settled: every line fully drawn and every mesh back to its own
             # (unit) scale, after the reveal visibly ran.
-            settled = """
-                const canvas = document.querySelector('canvas');
-                const comp = getElement(canvas.closest('[id^="c"]').id.slice(1));
-                let paths = null;
-                comp.scene.traverse(o => { if (o.name === 'simulation:paths') paths = o; });
+            settled = with_surface("""
+                const paths = S.byName('simulation:paths');
                 let lines = 0, meshes = 0, done = true;
                 paths.traverse(o => {
                   if (o === paths) return;
@@ -598,7 +595,7 @@ class TestAnimations:
                   if (o.isMesh) { meshes++; if (Math.abs(o.scale.x - 1) > 1e-6) done = false; }
                 });
                 return {lines, meshes, done, sampled: window.__fx};
-            """
+            """)
             state = _poll(
                 screen,
                 settled,
@@ -614,11 +611,9 @@ class TestAnimations:
             # The editor cursor on the path's line ripples its cones for a few
             # waves, and then the scene stops drawing again.
             driver.execute_script("window.__fx.maxScale = 0;")
-            driver.execute_script("""
-                const canvas = document.querySelector('canvas');
-                const comp = getElement(canvas.closest('[id^="c"]').id.slice(1));
-                let paths = null;
-                comp.scene.traverse(o => { if (o.name === 'simulation:paths') paths = o; });
+            driver.execute_script(
+                with_surface("""
+                const paths = S.byName('simulation:paths');
                 (function sample() {
                   if (!window.__fx.run) return;
                   paths.traverse(o => {
@@ -628,6 +623,7 @@ class TestAnimations:
                   requestAnimationFrame(sample);
                 })();
             """)
+            )
 
             def _cursor_on_path() -> None:
                 from waldo_commander.state import ui_state
@@ -645,19 +641,14 @@ class TestAnimations:
                 5,
                 "the cursor's line did not ripple",
             )
-            frames = """
-                const canvas = document.querySelector('canvas');
-                return getElement(canvas.closest('[id^="c"]').id.slice(1))
-                  .renderer.info.render.frame;
-            """
             deadline = time.monotonic() + 10
-            count, since = driver.execute_script(frames), time.monotonic()
+            count, since = frames(screen), time.monotonic()
             while time.monotonic() - since < 1.0:
                 assert time.monotonic() < deadline, (
                     f"the scene kept drawing after the ripple ({count} frames)"
                 )
                 time.sleep(0.1)
-                now = driver.execute_script(frames)
+                now = frames(screen)
                 if now != count:
                     count, since = now, time.monotonic()
         finally:
@@ -710,15 +701,10 @@ class TestAnimations:
             return build
 
         dot = run_in_app(make("fx-dot"))
-        read = """
-            const canvas = document.querySelector('canvas');
-            const host = canvas.closest('[id^="c"]');
-            let found = null;
-            getElement(host.id.slice(1)).scene.traverse(o => {
-              if (o.name === arguments[0]) found = o;
-            });
+        read = with_surface("""
+            const found = S.byName(arguments[0]);
             return found && {scale: found.scale.x, opacity: found.material.opacity};
-        """
+        """)
         try:
             _poll(screen, read, bool, 10, "the sphere was never drawn", "fx-dot")
             scene = ui_state.urdf_scene.scene
@@ -760,13 +746,9 @@ class TestAnimations:
                 return Response(_TRIANGLE_STL, media_type="model/stl")
 
             ng_app.add_api_route("/test/slow.stl", slow_stl)
-            driver.execute_script("""
-                const canvas = document.querySelector('canvas');
-                const host = canvas.closest('[id^="c"]');
-                let dot = null;
-                getElement(host.id.slice(1)).scene.traverse(o => {
-                  if (o.name === 'fx-dot') dot = o;
-                });
+            driver.execute_script(
+                with_surface("""
+                const dot = S.byName('fx-dot');
                 // From the first swell (0.4 s into the ripple): the earlier
                 // call gives up about 0.6 s later, and the second wave peaks
                 // 2 s later.
@@ -784,6 +766,7 @@ class TestAnimations:
                   requestAnimationFrame(sample);
                 })();
             """)
+            )
 
             def ripple_twice() -> None:
                 with scene:
@@ -836,21 +819,21 @@ class TestAnimations:
             },
         )
         # Every frame: the box's mesh, and the smallest scale it was drawn at.
-        driver.execute_script("""
-            const canvas = document.querySelector('canvas');
-            const comp = getElement(canvas.closest('[id^="c"]').id.slice(1));
+        driver.execute_script(
+            with_surface("""
             window.__box = {uuid: null, scale: null, minScale: Infinity, run: true};
             (function sample() {
               if (!window.__box.run) return;
-              comp.scene.traverse(o => {
-                if (o.name !== 'shape:fx-box') return;
+              const o = S.byName('shape:fx-box');
+              if (o) {
                 window.__box.uuid = o.uuid;
                 window.__box.scale = o.scale.x;
                 window.__box.minScale = Math.min(window.__box.minScale, o.scale.x);
-              });
+              }
               requestAnimationFrame(sample);
             })();
         """)
+        )
         pose = (0.5, 0.4, 0.1, 0.0, 0.0, 0.0)
 
         def _declare(size: float):
@@ -898,13 +881,9 @@ class TestAnimations:
             # for a few frames past both flashes: a loaded runner draws slowly
             # enough that a fixed wait can land inside the second flash, and a
             # glow left stuck holds still on the wrong colour.
-            driver.execute_script("""
-                const canvas = document.querySelector('canvas');
-                const host = canvas.closest('[id^="c"]');
-                let box = null;
-                getElement(host.id.slice(1)).scene.traverse(o => {
-                  if (o.name === 'shape:fx-box') box = o;
-                });
+            driver.execute_script(
+                with_surface("""
+                const box = S.byName('shape:fx-box');
                 const glow = () => box.material.emissive.getHex();
                 const s = window.__glow = {
                   own: glow(), last: glow(), still: 0, start: performance.now(), run: true,
@@ -917,10 +896,10 @@ class TestAnimations:
                   s.elapsed = performance.now() - s.start;
                   requestAnimationFrame(sample);
                 })();
-                const id = Number(host.id.slice(1));
-                SceneFx.alarm(id, [box.object_id], '#ff0000');
-                setTimeout(() => SceneFx.alarm(id, [box.object_id], '#ff0000'), 200);
+                S.fx.alarm(['shape:fx-box'], '#ff0000');
+                setTimeout(() => S.fx.alarm(['shape:fx-box'], '#ff0000'), 200);
             """)
+            )
             glow = _poll(
                 screen,
                 "return window.__glow",
