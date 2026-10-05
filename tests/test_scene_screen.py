@@ -121,6 +121,36 @@ for (let a = 0; a < 360; a += 10) {{
 return null;
 """
 
+# What stops each point _GRAB tries from being a grip: what is on top of the
+# canvas there, or what the pointer ray hits first.
+_RING_COVER = f"""
+const [name, q, r] = arguments;
+const c = {_SCENE};
+let dial = null;
+for (const o of c.objects.values()) if (o.mesh && o.mesh.name === name) dial = o.mesh;
+if (!dial) return 'no dial';
+dial.updateWorldMatrix(true, true);
+const canvas = c.renderer.domElement;
+const rect = canvas.getBoundingClientRect();
+const v = dial.position.clone();
+const seen = {{}};
+const count = (k) => {{ seen[k] = (seen[k] || 0) + 1; }};
+for (let a = 0; a < 360; a += 10) {{
+  const t = q + a * Math.PI / 180;
+  v.set(r * Math.cos(t), r * Math.sin(t), 0).applyMatrix4(dial.matrixWorld).project(c.camera);
+  const el = document.elementFromPoint(
+    rect.left + (v.x + 1) / 2 * rect.width, rect.top + (1 - v.y) / 2 * rect.height);
+  if (el !== canvas) {{ count('under ' + (el ? String(el.className || el.tagName).slice(0, 40) : 'nothing')); continue; }}
+  c._raycaster.setFromCamera({{ x: v.x, y: v.y }}, c.camera);
+  const hits = c._raycaster.intersectObjects(c.interactiveObjects, true);
+  let o = hits.length ? hits[0].object : null;
+  while (o && !o.name) o = o.parent;
+  count(o ? 'hits ' + o.name : 'hits nothing');
+}}
+seen.dialog = !!document.querySelector('.q-dialog');
+return seen;
+"""
+
 _GIZMO_SNAP = f"""
 const c = {_SCENE};
 let id = null;
@@ -514,6 +544,28 @@ def _frames_at_rest(screen: Screen, window_s: float) -> int:
     raise AssertionError(f"the scene kept drawing at rest ({count} frames)")
 
 
+def _grab_ring(screen: Screen, link: str, u: int) -> tuple[dict, float]:
+    """Reveal joint *u*'s ring by hovering *link*; its dial, and the first
+    angle from its knob where a press grabs the ring. A hover aimed while a
+    pose is still being drawn can land beside the link, so aim again."""
+    deadline = time.monotonic() + 10.0
+    while True:
+        hover_scene_object(screen, link)
+        dial = _wait(
+            lambda: js(screen, _DIAL, f"jog:dial:{u}:knob"), 5.0, f"J{u + 1}'s ring"
+        )
+        grab = js(screen, _GRAB, f"jog:dial:{u}", dial["q"], dial["r"])
+        if grab is not None:
+            return dial, grab
+        if time.monotonic() > deadline:
+            cover = js(screen, _RING_COVER, f"jog:dial:{u}", dial["q"], dial["r"])
+            shown = run_in_app(lambda: ui_state.urdf_scene._shown_handle)
+            raise AssertionError(
+                f"no part of J{u + 1}'s ring is uncovered: {cover}, showing {shown}"
+            )
+        time.sleep(0.2)
+
+
 def _drag_along(
     screen: Screen, x: float, y: float, dx: float, dy: float, length: float = 40
 ) -> None:
@@ -688,16 +740,13 @@ class TestScene:
             assert urdf is not None
             _wait(lambda: urdf.snap.joint_deg == 5.0, 1.0, "the 5° band")
 
-            hover_scene_object(screen, "link:L2")
-            dial = _wait(lambda: js(screen, _DIAL, "jog:dial:1:knob"), 5.0, "J2's ring")
+            dial, grab = _grab_ring(screen, "link:L2", 1)
             start = _settled(1)
             camera = js(screen, _CAMERA)
 
             # Grab the ring where nothing covers it and sweep 21° around it in
             # 3° moves; a drag turns the joint by how far it goes, not where it
             # starts.
-            grab = js(screen, _GRAB, "jog:dial:1", dial["q"], dial["r"])
-            assert grab is not None, "no part of J2's ring is uncovered"
             path = project_local(
                 screen,
                 "jog:dial:1",
@@ -1167,11 +1216,8 @@ class TestScene:
         with _camera_kept(screen):
             js(screen, _ZOOM, 1.3)
             _wait(lambda: urdf.snap.joint_deg == 5.0, 1.0, "the 5° band")
-            hover_scene_object(screen, "link:L2")
-            dial = _wait(lambda: js(screen, _DIAL, "jog:dial:1:knob"), 5.0, "J2's ring")
+            dial, grab = _grab_ring(screen, "link:L2", 1)
             start = _settled(1)
-            grab = js(screen, _GRAB, "jog:dial:1", dial["q"], dial["r"])
-            assert grab is not None, "no part of J2's ring is uncovered"
             # Grab the ring, then sweep 30° around it at 1.6 times its radius,
             # well off the ring: the captured pointer keeps turning the joint.
             angles = [dial["q"] + math.radians(grab + a) for a in range(0, 31, 3)]
