@@ -318,6 +318,18 @@ if (!window.__wcSurface) window.__wcSurface = function () {
 _PRELUDE = _SURFACE + "const S = window.__wcSurface();\nif (!S) return null;\n"
 
 
+_WC_PRELUDE = (
+    "const S = (() => { const root = document.querySelector('.wc-scene');"
+    " const c = root && getElement(root); return c && c.core ? c.core.surface : null; })();\n"
+    "if (!S) return null;\n"
+)
+
+
+def wc_scene_js(screen: Screen, body: str, *args: Any) -> Any:
+    """``scene_js`` for the WC scene element."""
+    return js(screen, _WC_PRELUDE + body, *args)
+
+
 def with_surface(body: str) -> str:
     """``body`` as a page script with the scene's surface bound to ``S``."""
     return _PRELUDE + body
