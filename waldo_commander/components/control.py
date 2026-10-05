@@ -3130,7 +3130,7 @@ class ControlPanel:
 
             ui.button(icon="view_in_ar", on_click=_reset_cam).props(
                 "round unelevated dense color=wc-control text-color=wc-text"
-            ).tooltip("Reset camera")
+            ).tooltip("Reset camera").mark("reset-camera")
             with ui.row(align_items="center").classes("gap-0 no-wrap"):
                 self._step_input = (
                     ui.number(
@@ -3155,7 +3155,7 @@ class ControlPanel:
                 "round unelevated color=wc-estop text-color=wc-on-fill"
             ).classes("text-2xl").style(
                 "position: absolute; right: 0; top: 50%; transform: translateY(-50%);"
-            ).tooltip("E-Stop (Esc)").mark("btn-estop")
+            ).tooltip("E-Stop").mark("btn-estop")
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""

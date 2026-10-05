@@ -109,7 +109,6 @@ _STATUS_ICONS = {
 
 _TIPS = [
     "Press H to home the robot",
-    "Press Esc for emergency stop",
     "Use [ and ] to adjust jog speed",
     "Click the last action for the history",
     "Press Space to play/pause the script",

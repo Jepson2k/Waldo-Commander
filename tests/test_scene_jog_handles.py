@@ -129,6 +129,22 @@ def _transform(
     }
     for key in ("x", "y", "z", "rx", "ry", "rz", "wx", "wy", "wz"):
         args[key] = pose.get(key, 0.0)
+    # The browser also sends the rotation matrix of three.js' XYZ Euler angles, and the scale.
+    rx, ry, rz = args["rx"], args["ry"], args["rz"]
+    cx, sx, cy, sy, cz, sz = (
+        math.cos(rx),
+        math.sin(rx),
+        math.cos(ry),
+        math.sin(ry),
+        math.cos(rz),
+        math.sin(rz),
+    )
+    args["R"] = [
+        [cy * cz, -cy * sz, sy],
+        [cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy],
+        [sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy],
+    ]
+    args["sx"] = args["sy"] = args["sz"] = 1.0
     _scene(user, urdf).trigger(type_, args)
 
 
@@ -192,8 +208,12 @@ async def test_hover_reveals_one_handle_at_a_time_and_the_grace_hides_it(
         "hits": [],
         "intersections": {},
     }
+    # What the browser sends for a right-click: the press, the scene's hits,
+    # and a release that has not moved.
+    page = UserInteraction(user, {urdf.scene.client.layout}, None)
+    page.trigger("wc_right_press", {})
     scene.trigger("click3d", {**click, "click_type": "contextmenu"})
-    scene.trigger("click3d", {**click, "click_type": "mouseup"})
+    page.trigger("wc_right_release", {"moved": 0.0})
     user.find(marker="scene-target-at-robot").click()
     assert await wait_until(lambda: waldoctl.commander.status.editing_mode, 5)
     _hover(user, urdf, "L2")

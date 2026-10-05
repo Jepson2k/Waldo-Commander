@@ -347,3 +347,59 @@ def loads_setup(source: str, name: str) -> bool:
         if not isinstance(argument, ast.Constant) or argument.value == name:
             return True
     return False
+
+
+def delete_statement(source: str, line: int) -> str:
+    """Remove the statement on the 1-indexed ``line``, every line of it.
+
+    A block the statement leaves empty keeps a ``pass`` in its place. Raises
+    ValueError when the source does not parse, no statement is on that line,
+    the line belongs to a block's header (removing it would take the block),
+    or the statement shares a line with other code.
+    """
+    try:
+        module = ast.parse(source)
+    except SyntaxError as error:
+        raise ValueError(
+            f"Correct the Python syntax before deleting code: {error.msg}"
+        ) from error
+    found: tuple[ast.stmt, list[ast.stmt]] | None = None
+    for node in ast.walk(module):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            for statement in block:
+                if (
+                    isinstance(statement, ast.stmt)
+                    and statement.lineno
+                    <= line
+                    <= (statement.end_lineno or statement.lineno)
+                    and (found is None or statement.lineno >= found[0].lineno)
+                ):
+                    found = statement, block
+    if found is None:
+        raise ValueError(f"No statement is on line {line}")
+    statement, block = found
+    if hasattr(statement, "body"):
+        raise ValueError(f"Line {line} is part of a block's header")
+    first, last = statement.lineno, statement.end_lineno or statement.lineno
+    lines = source.split("\n")
+    # The AST counts columns in UTF-8 bytes.
+    before = lines[first - 1].encode()[: statement.col_offset].decode()
+    after = lines[last - 1].encode()[statement.end_col_offset or 0 :].decode()
+    after = after.strip()
+    if before.strip() or (after and not after.startswith("#")):
+        raise ValueError(
+            f"The statement on line {line} shares its line with other code"
+        )
+    alone = len(block) == 1 and block is not module.body
+    lines[first - 1 : last] = [before + "pass"] if alone else []
+    result = "\n".join(lines)
+    try:
+        ast.parse(result)
+    except SyntaxError as error:
+        raise ValueError(
+            f"Deleting line {line} would break the program: {error.msg}"
+        ) from error
+    return result

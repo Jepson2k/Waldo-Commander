@@ -26,6 +26,9 @@ from waldo_commander.state import (
     ui_state,
 )
 
+from waldo_commander.services.keybindings import keybindings_manager
+from waldo_commander.services.programs import preview_is_current
+
 from .config import RobotAppearanceMode
 from .ik_solver import EditingIKSolver
 from .loader import normalize_axis
@@ -66,7 +69,7 @@ class EditingMixin(ShapeEditingMixin):
     _editing_rotation: list[float]
     _editing_rotation_set: bool
     _editing_target_id: str | None
-    _right_click_start_pos: tuple[float, float] | None
+    _right_release_moved: float | None
 
     # Methods from other mixins / main class
     set_editing_angles: Any
@@ -91,7 +94,7 @@ class EditingMixin(ShapeEditingMixin):
 
         self.context_menu: Any | None = None
         self._last_click_coords: tuple[float, float, float] | None = None
-        self._right_click_start_pos: tuple[float, float] | None = None
+        self._right_release_moved: float | None = None
         self._right_click_drag_threshold: float = 5.0
         self._pending_context_menu_event: Any | None = None
 
@@ -259,15 +262,11 @@ class EditingMixin(ShapeEditingMixin):
             self._unified_target_mode = "joint"
 
         object_name = getattr(e, "object_name", "") or ""
-        if object_name.startswith("edit_joint_group:"):
-            prefix = "edit_joint_group:"
-        elif object_name.startswith("ghost_joint_group:"):
-            prefix = "ghost_joint_group:"
-        else:
+        if not object_name.startswith("edit_joint_group:"):
             return
 
         try:
-            joint_index = int(object_name.split(prefix)[1])
+            joint_index = int(object_name.split("edit_joint_group:")[1])
         except (ValueError, IndexError):
             return
 
@@ -283,19 +282,6 @@ class EditingMixin(ShapeEditingMixin):
         if 0 <= joint_index < len(self._editing_angles):
             self._editing_angles[joint_index] = angle_change
             self._update_tcp_ball_position()
-            self._sync_robot_state_from_editing()
-            self._update_collision_highlight()
-            if self._current_editing_type:
-                self._update_edit_bar_values(self._current_editing_type)
-
-    def _on_ik_solved(self, e) -> None:
-        """Handle IK solution event."""
-        args = e.args if hasattr(e, "args") else {}
-        if args.get("chain_id") != "ghost_ik":
-            return
-        angles = args.get("angles", [])
-        if angles is not None and len(angles) >= len(self.joint_names):
-            self._editing_angles = list(angles)
             self._sync_robot_state_from_editing()
             self._update_collision_highlight()
             if self._current_editing_type:
@@ -350,13 +336,10 @@ class EditingMixin(ShapeEditingMixin):
                 target_id = name.split("target:", 1)[1]
                 break
 
-        ground_point = getattr(e, "ground_point", None)
-        if ground_point:
-            self._last_click_coords = (
-                float(ground_point.x),
-                float(ground_point.y),
-                float(ground_point.z),
-            )
+        ground = e.intersections.get("ground")
+        self._last_click_coords = (
+            None if ground is None else (ground.x, ground.y, ground.z)
+        )
 
         shape_name = self._shape_hit_name(hits)
         draft_name = self._draft_hit_name(hits)
@@ -381,10 +364,22 @@ class EditingMixin(ShapeEditingMixin):
                         )
 
                     def make_delete(t=tid):
-                        return lambda: self._delete_target(t)
+                        return lambda: ui_state.editor_panel.delete_target_code(t)
 
-                    ui.menu_item("Edit Target...", on_click=make_edit())
-                    ui.menu_item("Delete Target", on_click=make_delete())
+                    # The target's line is only known while no other edit is
+                    # open and the preview answers the current source.
+                    program = waldoctl.commander.programs.active
+                    settled = (
+                        not self._editing_unified_target
+                        and program is not None
+                        and preview_is_current(program)
+                    )
+                    ui.menu_item("Edit Target...", on_click=make_edit()).set_enabled(
+                        settled
+                    )
+                    ui.menu_item("Delete Target", on_click=make_delete()).set_enabled(
+                        settled
+                    )
             else:
                 ui.item("Add Target").classes("font-bold text-sm")
                 ui.separator()
@@ -414,23 +409,6 @@ class EditingMixin(ShapeEditingMixin):
     def _is_envelope_hit(self, object_name: str) -> bool:
         """Check if object is the workspace envelope."""
         return object_name == "envelope:hull"
-
-    def _delete_target(self, target_id: str) -> None:
-        """Delete a target after confirmation."""
-
-        def confirm():
-            ui_state.editor_panel.delete_target_code(target_id)
-            dialog.close()
-
-        dialog = ui.dialog()
-        with dialog, ui.card():
-            ui.label("Delete Target?")
-            with ui.row():
-                ui.button("Cancel", on_click=dialog.close).props("flat color=wc-text")
-                ui.button("Delete", on_click=confirm).props(
-                    "color=wc-control text-color=wc-error"
-                )
-        dialog.open()
 
     # -------------------------------------------------------------------------
     # Unified target editor
@@ -553,7 +531,10 @@ class EditingMixin(ShapeEditingMixin):
         self.exit_editing_mode()
 
     def _handle_keyboard(self, e) -> None:
-        """Handle keyboard events."""
+        """Escape cancels a target edit or a keep-out move."""
+        # In the editor, Escape closes the editor's own popups.
+        if keybindings_manager.editor_focused:
+            return
         if e.key == "Escape" and e.action.keydown:
             if self._editing_unified_target:
                 self._end_editing_session()

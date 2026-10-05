@@ -24,7 +24,6 @@ from typing import Any, Callable
 import numpy as np
 import waldoctl
 from nicegui import ui
-from nicegui.elements.scene.scene_object3d import Object3D
 from nicegui.helpers import is_user_simulation
 from pinokin import arrays_equal_n, so3_from_rpy, so3_rpy
 
@@ -463,7 +462,7 @@ class TCPControlsMixin:
             return
 
         object_name = getattr(e, "object_name", "") or ""
-        if object_name not in ("tcp:ball", "tcp:jog_ball", "tcp:offset"):
+        if object_name != "tcp:ball":
             return
 
         self._compose_tcp_pose(e)
@@ -616,10 +615,6 @@ class TCPControlsMixin:
         self._tcp_ticks = None
         self._tcp_label = None
         self._tcp_drag_axis = None
-        # TransformControls moved the ball in the browser only; record where,
-        # so the reset below is not skipped as a no-op.
-        ball.x, ball.y, ball.z = e.x, e.y, e.z
-        ball.R = Object3D.rotation_matrix_from_euler(e.rx, e.ry, e.rz, "ZYX")
         ball.move(0.0, 0.0, 0.0)
         ball.rotate_R(_IDENTITY)
         self._tcp_release_p = self._tcp_frame_p + self._tcp_frame_R @ np.array(

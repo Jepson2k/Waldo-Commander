@@ -13,9 +13,8 @@ import time
 import pytest
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 
-from tests.helpers.browser_helpers import dismiss_dialogs, js
+from tests.helpers.browser_helpers import click_marked, dismiss_dialogs, js
 
 CHIP = ".status-footer .waldo"
 DIALOG = ".q-dialog .waldo"
@@ -103,8 +102,7 @@ def test_chip_waldo_greets_watches_the_pointer_and_answers_pokes(screen) -> None
     )
 
     # E-STOP: the chip sounds the alarm and the dialog brings a big one.
-    ActionChains(screen.selenium).move_by_offset(400, -300).perform()
-    ActionChains(screen.selenium).send_keys(Keys.ESCAPE).perform()
+    click_marked(screen, "btn-estop")
     _wait(
         lambda: js(
             screen,

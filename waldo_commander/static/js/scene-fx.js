@@ -412,13 +412,14 @@
     },
 
     /** Ease the camera move started just before this call; the scene draws
-     * it on its own clock. */
+     * it on its own clock. With reduced motion the camera jumps there, and
+     * the move ends so it doesn't hold the camera for the rest of its time. */
     easeCamera(sceneId) {
       const comp = getElement(sceneId);
       const tw = comp ? comp.camera_tween : null;
-      if (tw && typeof tw.easing === 'function') {
-        tw.easing(reducedMotion() ? () => 1 : easeInOutCubic);
-      }
+      if (!tw || !tw.isPlaying()) return;
+      if (reducedMotion()) tw.end();
+      else tw.easing(easeInOutCubic);
     },
   };
 })();

@@ -139,6 +139,12 @@ def active_dry_run() -> DryRun | None:
     return active.dry_run if active is not None else None
 
 
+def preview_is_current(program: Program) -> bool:
+    """Whether the program's last preview answers its current source; until
+    then its targets carry the line numbers from before the latest edit."""
+    return program.dry_run.commanded_revision == program.dry_run.revision
+
+
 def active_cursor_line() -> int:
     """1-indexed cursor line of the active program; 0 when unset."""
     dry_run = active_dry_run()

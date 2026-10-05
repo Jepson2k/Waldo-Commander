@@ -17,6 +17,9 @@ from selenium.common.exceptions import (
     StaleElementReferenceException,
 )
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.actions import interaction
+from selenium.webdriver.common.actions.action_builder import ActionBuilder
+from selenium.webdriver.common.actions.pointer_input import PointerInput
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
@@ -288,19 +291,35 @@ def project_local(
     return js(screen, _PROJECT_LOCAL, name, points)
 
 
-def hover_scene_object(screen: "Screen", name: str, timeout: float = 20.0) -> None:
-    """Rest the real mouse on a pixel where ``name`` is the first thing the scene's
-    pointer ray hits, so the scene reports it as hovered."""
+def scene_object_pixel(
+    screen: "Screen", name: str, timeout: float = 20.0
+) -> tuple[float, float]:
+    """A viewport pixel where ``name`` is the first thing the scene's pointer ray hits."""
     deadline = _time.monotonic() + timeout
     while True:
         pixel = js(screen, _FIND_HOVER_PIXEL, name)
         if pixel is not None:
-            break
+            return pixel[0], pixel[1]
         if _time.monotonic() > deadline:
             raise AssertionError(f"no pixel of {name!r} is hit first on the canvas")
         _time.sleep(0.2)
+
+
+def hover_scene_object(screen: "Screen", name: str, timeout: float = 20.0) -> None:
+    """Rest the real mouse on ``name``, so the scene reports it as hovered."""
+    x, y = scene_object_pixel(screen, name, timeout)
     actions = ActionChains(screen.selenium, duration=0)
-    pointer_to(screen, pixel[0], pixel[1], actions)
+    pointer_to(screen, x, y, actions)
+    actions.perform()
+
+
+def tap(screen: "Screen", x: float, y: float) -> None:
+    """A touch tap at viewport point (x, y)."""
+    actions = ActionBuilder(
+        screen.selenium, mouse=PointerInput(interaction.POINTER_TOUCH, "finger")
+    )
+    actions.pointer_action.move_to_location(round(x), round(y)).pointer_down()
+    actions.pointer_action.pointer_up()
     actions.perform()
 
 

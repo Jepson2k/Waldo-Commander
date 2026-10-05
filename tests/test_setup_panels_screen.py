@@ -14,6 +14,7 @@ from nicegui import Client
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
+    TimeoutException,
 )
 from selenium.webdriver.common.by import By
 from waldoctl.setup import Frame, SetupSnapshot, TcpCalibration
@@ -131,7 +132,17 @@ class TestSetupPanels:
             == "valve"
         )
         _click(screen, "signal-read")
-        wait(screen).until(lambda _: "Observed logical value:" in _page_text(screen))
+
+        def panel_says() -> str:
+            with Client.instances[ui_state.active_client_id]:
+                return _marked("signal-message").text
+
+        try:
+            wait(screen).until(
+                lambda _: "Observed logical value:" in _page_text(screen)
+            )
+        except TimeoutException:
+            pytest.fail(f"no reading; the panel says {run_in_app(panel_says)!r}")
         js(
             screen,
             "document.getElementById(arguments[0]).scrollIntoView({block: 'nearest'});",
