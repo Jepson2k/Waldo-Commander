@@ -2142,14 +2142,15 @@ class ControlPanel:
             t.active = True
 
     def _handle_tcp_cartesian_move_end(self) -> None:
-        """End of a TCP TransformControls drag: wait for motion to stop, then record."""
+        """End of a TCP TransformControls drag: drive the tool to the last pose
+        dragged to, then record once it settles."""
         logger.debug("TCP Drag: END event received")
         if not self._drag_allowed():
             self.cancel_drags()
             return
         if self._tcp_drag_active:
             self._tcp_drag_active = False
-            self._schedule_jog_end_wait()
+            self._schedule_jog_end_wait(self._tcp_latest_pose, cartesian=True)
         self._tcp_last_sent_pose = None
         # If no cart axis buttons are pressed, allow timer to stop
         t = ui_state.cart_jog_timer
@@ -2170,22 +2171,32 @@ class ControlPanel:
             )
         )
 
-    def _schedule_jog_end_wait(self, target: list[float] | None = None) -> None:
-        """Schedule a jog end wait task, cancelling any stale one."""
+    def _schedule_jog_end_wait(
+        self, target: list[float] | None = None, *, cartesian: bool = False
+    ) -> None:
+        """Schedule a jog end wait task, cancelling any stale one. A *target*
+        is joint degrees, or with *cartesian* a TCP pose in mm and degrees."""
         if self._jog_end_wait_task is not None and not self._jog_end_wait_task.done():
             self._jog_end_wait_task.cancel()
         self._jog_end_wait_task = asyncio.create_task(
-            self._wait_and_record_jog_end(list(target) if target is not None else None)
+            self._wait_and_record_jog_end(
+                list(target) if target is not None else None, cartesian=cartesian
+            )
         )
 
-    async def _wait_and_record_jog_end(self, target: list[float] | None = None) -> None:
+    async def _wait_and_record_jog_end(
+        self, target: list[float] | None = None, *, cartesian: bool = False
+    ) -> None:
         """Wait for robot motion to stop, then record the jog end position."""
+        servo = self.client.servo_l if cartesian else self.client.servo_j
         try:
-            # A released joint ring still owns its final target. Keep the
+            # A released ring or gizmo still owns its final target. Keep the
             # expiring stream alive until arrival, with the same cancellation
             # gates as the held drag and a bounded completion budget.
             deadline = time.monotonic() + 30
-            while target is not None and not self._at_drag_target(target):
+            while target is not None and not self._at_drag_target(
+                target, cartesian=cartesian
+            ):
                 if (
                     not self._drag_allowed()
                     or waldoctl.commander.status.action.state
@@ -2194,12 +2205,7 @@ class ControlPanel:
                 ):
                     self.cancel_drags()
                     return
-                if (
-                    await self.client.servo_j(
-                        target, speed=_norm_speed(), accel=_norm_accel()
-                    )
-                    < 0
-                ):
+                if await servo(target, speed=_norm_speed(), accel=_norm_accel()) < 0:
                     self.cancel_drags()
                     return
                 await asyncio.sleep(self.JOG_TICK_S)

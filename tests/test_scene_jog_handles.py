@@ -425,6 +425,60 @@ async def test_gizmo_drag_shows_ticks_and_label_and_moves_in_the_tool_frame(
 
 
 @pytest.mark.integration
+async def test_a_released_gizmo_drag_reaches_where_it_was_let_go(user: User) -> None:
+    """A gizmo let go before the jog timer sent its last pose still drives the
+    tool there, though the move outlasts a servo target's life, and the
+    recording names that pose."""
+    urdf = await _open(user)
+    await teleport_to_jog_pose(ui_state.control_panel.client)
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+    textarea = ui_state.active_textarea
+    textarea.value = (
+        "from parol6 import RobotClient\nwith RobotClient() as rbt:\n    pass\n"
+    )
+    from tests.test_editor_integration import _set_cursor_line
+
+    _set_cursor_line(textarea, 3)
+    await asyncio.sleep(0)
+    user.find(marker="editor-record-btn").click()
+    assert await wait_until(is_any_program_recording, 2.0)
+    try:
+        _camera_at(user, 2.0)
+        _hover(user, urdf, "L6")
+        frame = _one(urdf, "tcp:ball_frame")
+        assert await wait_until(
+            lambda: np.linalg.norm(
+                np.array([frame.x, frame.y, frame.z]) * 1000 - _tcp_mm()
+            )
+            < 0.5,
+            5.0,
+        )
+        target = (
+            np.array([frame.x, frame.y, frame.z]) * 1000.0
+            + np.array(frame.R)[:, 0] * 40.0
+        )
+
+        # The last move and the release arrive together, between two ticks.
+        _transform(user, urdf, "transform_start", "translate", "X")
+        _transform(user, urdf, "transform", "translate", "X", x=0.040)
+        _transform(user, urdf, "transform_end", "translate", "X", x=0.040)
+
+        assert await wait_until(
+            lambda: np.linalg.norm(_tcp_mm() - target) < 0.5, 20.0
+        ), f"TCP {_tcp_mm()}, expected {target}"
+        assert await wait_until(lambda: "move_l(" in str(textarea.value), 30.0), (
+            textarea.value
+        )
+        recorded = re.findall(r"move_l\(\[([^\]]*)\]", str(textarea.value))
+        xyz = np.array([float(v) for v in recorded[-1].split(",")[:3]])
+        assert np.linalg.norm(xyz - target) < 0.5, (xyz, target)
+    finally:
+        if is_any_program_recording():
+            motion_recorder.toggle_recording()
+
+
+@pytest.mark.integration
 async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
     """Grabbing the next ring before the first joint arrives keeps the first
     joint's commanded target. A ring drag interrupted from elsewhere — a
@@ -603,10 +657,17 @@ async def test_gizmo_lifecycle_never_moves_the_arm_on_its_own(user: User) -> Non
     assert await wait_until(lambda: not _objects(urdf, "tcp:ball"), 2)
 
     mesh = _hover(user, urdf, "L6")
+    frame = _one(urdf, "tcp:ball_frame")
+    released = (
+        np.array([frame.x, frame.y, frame.z]) * 1000.0 + np.array(frame.R)[:, 0] * 5.0
+    )
     _transform(user, urdf, "transform_start", "translate", "X")
     _transform(user, urdf, "transform", "translate", "X", x=0.005)
     await panel.cart_jog_tick()
     _transform(user, urdf, "transform_end", "translate", "X", x=0.005)
+    # The release drives the tool the rest of the way.
+    assert await wait_until(lambda: np.linalg.norm(_tcp_mm() - released) < 0.5, 10)
+    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
     _unhover(user, urdf, mesh)
     assert await wait_until(lambda: not _objects(urdf, "tcp:ball"), 2)
     await teleport_to_jog_pose(panel.client)
