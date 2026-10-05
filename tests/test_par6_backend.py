@@ -285,9 +285,18 @@ async def test_commander_runs_on_the_par6_runtime(
         assert all(float(t) > 0 for t in temps), f"drive temperatures read {temps}"
         assert status.drive_health.bus_voltage_v is not None
         assert _text("diag-drive-supply").endswith(" V")
-        # The tool drive answers a temperature but no current, and an
-        # unanswered register must read as unknown rather than as zero.
-        assert _text("diag-drive-current-7") == "—"
+        # The tool drive's combined telemetry carries its jaw current too, so
+        # it reads as a number like the arm's (an unanswered register reading
+        # as unknown is test_diagnostics' to cover).
+        currents = await poll_until(
+            lambda: [_text(f"diag-drive-current-{j}") for j in range(1, 8)],
+            lambda c: all(v != "—" for v in c),
+            timeout_s=10.0,
+            what="drive currents on STATUS",
+        )
+        assert all(abs(float(c)) < 10_000 for c in currents), (
+            f"drive currents read {currents}"
+        )
 
         await poll_until(
             lambda: _text("diag-loop-p99"),
