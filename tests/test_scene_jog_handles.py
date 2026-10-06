@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import time
 from typing import Any
 
 import numpy as np
@@ -369,13 +370,16 @@ async def test_gizmo_drags_move_the_tool_in_its_own_frame_and_nothing_else(
         solver.solve = counted
         try:
             drag = gizmo(user, scene)
+            began = time.monotonic()
             for i in range(1, 21):
                 drag.move(**ball(x=0.001 * i))
                 await asyncio.sleep(0.005)
             drag.release(**ball(x=0.030))
+            took = time.monotonic() - began
         finally:
             solver.solve = solve
-        assert 1 <= solves <= 6, solves
+        # Twenty samples, however long the platform's timer made them take.
+        assert 1 <= solves <= 30 * took + 2 and solves < 20, (solves, took)
         landed = origin + R_frame[:, 0] * 30.0
         assert np.linalg.norm(_shown_frame(urdf)[0] - landed) < 0.5, (
             _shown_frame(urdf)[0],
