@@ -70,6 +70,7 @@ class JogHandlesMixin:
     _tool_meshes_group: Any
     _chain_reach: Callable[[], float]
     _push_interaction: Callable[[], None]
+    _admitted: Callable[[], None]
 
     def _init_jog_handles_state(self) -> None:
         self._joint_q = np.zeros(len(self.joint_names), dtype=np.float64)
@@ -183,24 +184,26 @@ class JogHandlesMixin:
         }
 
     @staticmethod
-    def _jog_handles(rules: dict[str, Any] | None) -> tuple[str, ...]:
-        """What a jog may grab under *rules*."""
-        if rules is None or not rules["available"] or rules["suspended"]:
-            return ()
-        return ("rings", rules["gizmo"])
+    def _jogging(rules: dict[str, Any] | None) -> bool:
+        """Whether *rules* let the handles jog the robot."""
+        return rules is not None and rules["available"] and not rules["suspended"]
 
     def _rules_changed(self) -> None:
-        """Send the handles' rules; a jog that began under rules that no
-        longer allow it ends. A target edit or keep-out move is not a jog:
-        what jogging may do while it suspends the handles leaves it alone."""
+        """Send the handles' rules; a drag that began under rules that no
+        longer allow it ends. Jogging stopping or starting again ends every
+        drag; the gizmo changing ends only its own. A target edit or keep-out
+        move is not a jog: what jogging may do while it suspends the handles
+        leaves it alone."""
         if self.scene is None:
             return
         rules = self._handle_rules()
         old = self.scene.interaction.get("rules")
         if old == rules:
             return
-        if self._jog_handles(old) != self._jog_handles(rules):
+        if self._jogging(old) != self._jogging(rules):
             self.scene.gestures.bump()
+        elif old is not None and old["gizmo"] != rules["gizmo"]:
+            self.scene.gestures.abort("tcp")
         self.scene.set_interaction(rules=rules)
 
     def set_handles_available(self, available: bool) -> None:
@@ -240,6 +243,7 @@ class JogHandlesMixin:
             return False
         anchor = urdf_to_panel(u, self._joint_q[u])[1]
         gesture.data.update(panel=panel, anchor=anchor, token=token)
+        self._admitted()
         return True
 
     def _ring_move(self, gesture: Gesture, args: dict[str, Any]) -> None:

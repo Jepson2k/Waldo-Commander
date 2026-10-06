@@ -71,7 +71,8 @@ export class Gizmos {
     tc.addEventListener("objectChange", () => this.changed(kind, tc));
     tc.addEventListener("mouseUp", () => this.up(kind, tc));
     tc.addEventListener("dragging-changed", (e) => {
-      this.core.controls.enabled = !e.value && !this.core.pointer.capturing;
+      if (e.value) this.core.controls.enabled = false;
+      else this.core.pointer.restoreOrbit();
     });
     const helper = tc.getHelper();
     helper.visible = false;
@@ -90,7 +91,7 @@ export class Gizmos {
   attach(tc, object) {
     if (tc.object !== object) tc.attach(object);
     tc.getHelper().visible = true;
-    tc.enabled = true;
+    tc.enabled = !(tc === this.tcp && this.spring);
   }
 
   // Taken off, so nothing can grab it; a drag through it ends aborted first.
@@ -191,6 +192,8 @@ export class Gizmos {
     if (!this.shape) {
       const tc = this.controls("shape", 0.5);
       tc.setMode("translate");
+      // Along the world's axes, whatever way the keep-out is turned.
+      tc.setSpace("world");
       this.shape = { tc, node: move.node, session: move.session };
     }
     this.attach(this.shape.tc, rec.obj);
@@ -213,6 +216,7 @@ export class Gizmos {
     }
     let fields;
     let rec = null;
+    const extra = {};
     if (kind === "tcp") {
       this.endSpring();
       fields = { mode: tc.mode, axis: tc.axis, rev: this.rev };
@@ -221,12 +225,13 @@ export class Gizmos {
       rec = entry && core.nodes.get(entry.node);
       if (!rec) return;
       fields = { session: core.ix.edit.session, joint: entry.index, q: rec.q };
+      extra.q0 = rec.q;
     } else {
       rec = core.nodes.get(this.shape.node);
       if (!rec) return;
       fields = { session: this.shape.session, node: this.shape.node };
     }
-    const drag = { kind, tc, rec, ending: null };
+    const drag = { kind, tc, rec, ending: null, ...extra };
     const g = core.gestures.begin(kind, fields, core.pointer.lastPointerId, (reason) => this.letGo(tc, reason));
     if (!g) {
       this.letGo(tc, "blocked");
@@ -263,9 +268,12 @@ export class Gizmos {
       const p = drag.rec.obj.position;
       fields = { session: this.shape.session, node: this.shape.node, x: p.x, y: p.y, z: p.z };
     }
-    this.finishDrag(true);
-    this.core.gestures.release(drag.g, fields);
+    // The spring starts before the frame moves to where the arm is now, so
+    // the ball springs back from where it was let go.
     if (kind === "tcp") this.springBack();
+    this.finishDrag(true);
+    if (this.spring) this.tcp.enabled = false;
+    this.core.gestures.release(drag.g, fields);
     this.core.pointer.settle();
   }
 
@@ -287,7 +295,7 @@ export class Gizmos {
         this.ball.quaternion.identity();
       }
     }
-    this.core.controls.enabled = !this.core.pointer.capturing;
+    this.core.pointer.restoreOrbit();
     this.core.requestRender();
   }
 
@@ -306,7 +314,7 @@ export class Gizmos {
         else rec.obj.position.fromArray(rec.base.p);
       }
       if (drag.kind === "joint") {
-        if (released) rec.q = this.jointAngle(rec);
+        if (released) rec.q = this.jointAngle(rec, drag.q0);
         this.core.nodes.applyJoint(rec);
       }
     }
@@ -324,16 +332,28 @@ export class Gizmos {
     return { x: p.x, y: p.y, z: p.z, rx: r.x, ry: r.y, rz: r.z };
   }
 
-  // A joint node's turn about its own axis, in (-π, π].
-  jointAngle(rec) {
+  // A joint node's turn about its own axis, within half a turn of `near`:
+  // a joint past ±180° stays where it is rather than wrapping.
+  jointAngle(rec, near) {
     const q = rec.obj.quaternion;
     const value = 2 * Math.atan2(q.x * rec.axis.x + q.y * rec.axis.y + q.z * rec.axis.z, q.w);
-    return Math.atan2(Math.sin(value), Math.cos(value));
+    const d = value - near;
+    return near + Math.atan2(Math.sin(d), Math.cos(d));
   }
 
   jointPose(drag) {
     const entry = this.joints.get(drag.rec.id);
-    return { session: this.core.ix.edit.session, joint: entry.index, q: this.jointAngle(drag.rec) };
+    return { session: this.core.ix.edit.session, joint: entry.index, q: this.jointAngle(drag.rec, drag.q0) };
+  }
+
+  // Whether the drag's last pose was out of reach, which tints its spring
+  // back, though the answer comes after the spring has begun.
+  setMiss(missed) {
+    this.miss = missed;
+    const colors = this.core.ix.colors || {};
+    if (this.spring && missed && !this.spring.hot && colors.miss) {
+      this.spring.hot = new THREE.Color(colors.miss);
+    }
   }
 
   // ---- marks and spring -------------------------------------------------
@@ -426,6 +446,7 @@ export class Gizmos {
     this.spring = null;
     this.ball.position.set(0, 0, 0);
     this.ball.material.emissive.copy(s.own);
+    if (!this.drag) this.tcp.enabled = true;
   }
 
   dispose() {

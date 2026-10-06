@@ -107,6 +107,16 @@ async def test_the_scene_sends_what_changed_once_per_pass(user: User) -> None:
     scene.set_joint_values([math.nan])
     assert await one_pass() == []
 
+    # A camera or a shape with a non-finite number is refused where it is
+    # asked for, and leaves what else changed in the pass to go out.
+    arm.move(0.4, 0, 0)
+    for bad in (math.nan, math.inf):
+        with pytest.raises(ValueError):
+            scene.move_camera(bad, 0, 1)
+        with pytest.raises(ValueError):
+            scene.box(bad, 0.1, 0.1)
+    assert await one_pass() == [["u", arm.id, {"p": [0.4, 0, 0]}]]
+
     # An effect on a node deleted before it is sent is dropped; a ripple asked
     # to stop is not.
     scene.fx.alarm([added], hex_of("axis-x"))
@@ -227,6 +237,19 @@ async def test_gestures_are_admitted_once_kept_in_order_and_end_once(
     assert ["reject", 2] in await ops()
     probe.admitting = True
 
+    # A begin ends a drag still open: the browser holds one at a time.
+    probe.log.clear()
+    gesture("begin", 8, 1)
+    gesture("begin", 9, 1)
+    gesture("move", 8, 2)
+    gesture("end", 9, 2, aborted=False)
+    assert probe.log == [
+        ("admit", 8, 1),
+        ("end", 8, True),
+        ("admit", 9, 1),
+        ("end", 9, False),
+    ]
+
     # A drag that goes quiet ends aborted.
     probe.log.clear()
     gesture("begin", 3, 1)
@@ -254,3 +277,13 @@ async def test_gestures_are_admitted_once_kept_in_order_and_end_once(
     gesture("move", 6, 2)
     gesture("begin", 7, 1)
     assert probe.log == [("admit", 6, 1), ("end", 6, True)]
+
+    # A view mounted again numbers its drags from 1 once more, and its drags
+    # are taken though their ids were used before.
+    scene.gestures.authorized = lambda: True
+    events.trigger("init", {})
+    epoch = scene.gestures.epoch
+    probe.log.clear()
+    gesture("begin", 1, 1)
+    gesture("end", 1, 2, aborted=False)
+    assert probe.log == [("admit", 1, 1), ("end", 1, False)]

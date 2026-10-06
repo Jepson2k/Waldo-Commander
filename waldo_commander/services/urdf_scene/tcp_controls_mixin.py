@@ -58,6 +58,7 @@ class TCPControlsMixin:
     # here would shadow the real method.
     _apply_joint_angles: Callable[[list[float]], None]
     _rules_changed: Callable[[], None]
+    _admitted: Callable[[], None]
 
     def _init_tcp_controls_state(self) -> None:
         self._tcp_cartesian_move_callback: Callable[[list[float]], None] | None = None
@@ -198,7 +199,9 @@ class TCPControlsMixin:
         if mode not in ("translate", "rotate") or not self._gizmo_shown():
             return False
         # The frame the drag's delta is measured from must be the one the
-        # browser showed: a display behind the arm would aim it backwards.
+        # browser showed, and that must be where the TCP is now: a display
+        # behind the arm would aim it backwards.
+        self._push_tcp_pose()
         shown = self.scene.tcp_at(args.get("rev"))
         placed = self._tcp_placed_pose
         if shown is None or placed is None or not self._frame_matches(shown, placed):
@@ -216,6 +219,7 @@ class TCPControlsMixin:
                 return False
             gesture.data["token"] = token
             self._tcp_drag_start_rot_deg = tuple(robot_state.orientation.deg)
+            self._admitted()
         self._tcp_drag = gesture.drag
         return True
 
@@ -247,7 +251,6 @@ class TCPControlsMixin:
         if gesture.drag != self._tcp_drag:
             return
         self._tcp_drag = None
-        self._tcp_drag_start_rot_deg = None
         if self._ik_handle is not None:
             self._ik_handle.cancel()
             self._ik_handle = None
@@ -270,12 +273,15 @@ class TCPControlsMixin:
             self._push_tcp_pose(force=True)
             return
         if pose is None:
+            self._tcp_drag_start_rot_deg = None
             cancel = self._tcp_cartesian_move_cancel_callback
             if cancel is not None:
                 cancel(token)
             return
+        # The release holds the orientation every sample of the drag held.
         self._compose_tcp_pose(pose)
         self._handle_tcp_transform_for_cartesian()
+        self._tcp_drag_start_rot_deg = None
         end = self._tcp_cartesian_move_end_callback
         if end is not None:
             end(token)

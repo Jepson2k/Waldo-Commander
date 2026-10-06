@@ -902,8 +902,8 @@ class PlaybackController:
         if predicted is not None and predicted.objects and ui_state.urdf_scene:
             ui_state.urdf_scene.set_object_poses(tl.sample_objects(t))
 
-        # The predicted record's annotations for this instant, inside
-        # the same batch so contacts and the arm land in one frame.
+        # The predicted record's annotations for this instant, in the same
+        # pass, so contacts and the arm reach the browser in one message.
         if ui_state.urdf_scene is not None and predicted is not None:
             view = waldoctl.commander.settings.view
             ui_state.urdf_scene.physics_overlay.update_frame(

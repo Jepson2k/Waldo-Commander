@@ -752,6 +752,9 @@ class ControlPanel:
         self.CADENCE_WARN_WINDOW: int = max(1, int(config.webapp_control_rate_hz))
         self.CADENCE_TOLERANCE: float = 0.015  # 15mm
         self.STREAM_TIMEOUT_S: float = 0.1
+        # How long a released drag's arm may sit still short of its target
+        # before it counts as arrived.
+        self.JOG_END_STILL_S: float = 0.5
 
         self._joint_cadence = _CadenceTracker()
         self._cart_cadence = _CadenceTracker()
@@ -2166,18 +2169,19 @@ class ControlPanel:
             any_pressed = any(bool(v) for v in self._cart_pressed_axes.values())
             t.active = bool(any_pressed)
 
-    def _at_drag_target(self, target: list[float], *, cartesian: bool = False) -> bool:
+    @staticmethod
+    def _drag_position(cartesian: bool) -> np.ndarray:
+        """Where the arm is: TCP mm and degrees, or joint degrees."""
         if cartesian:
             pose = waldoctl.commander.status.pose
-            current = [pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz]
-            delta = np.array(current) - target
+            return np.array([pose.x, pose.y, pose.z, pose.rx, pose.ry, pose.rz])
+        return np.array(waldoctl.commander.status.joints.angles.deg, dtype=float)
+
+    def _at_drag_target(self, target: list[float], *, cartesian: bool = False) -> bool:
+        delta = self._drag_position(cartesian)[: len(target)] - target
+        if cartesian:
             delta[3:] = (delta[3:] + 180) % 360 - 180
-            return bool(np.all(np.abs(delta) <= 0.01))
-        return bool(
-            np.allclose(
-                waldoctl.commander.status.joints.angles.deg, target, atol=0.01, rtol=0
-            )
-        )
+        return bool(np.all(np.abs(delta) <= 0.01))
 
     def _schedule_jog_end_wait(
         self, target: list[float] | None = None, *, cartesian: bool = False
@@ -2200,8 +2204,11 @@ class ControlPanel:
         try:
             # A released ring or gizmo still owns its final target. Keep the
             # expiring stream alive until arrival, with the same cancellation
-            # gates as the held drag and a bounded completion budget.
+            # gates as the held drag and a bounded completion budget. An arm
+            # that stops short (a motor step from the target, or held at the
+            # edge of its reach) has got as close as it will.
             deadline = time.monotonic() + 30
+            last, still_since = None, time.monotonic()
             while target is not None and not self._at_drag_target(
                 target, cartesian=cartesian
             ):
@@ -2213,6 +2220,11 @@ class ControlPanel:
                 ):
                     self.cancel_drags()
                     return
+                now = self._drag_position(cartesian)
+                if last is None or np.abs(now - last).max() > 0.001:
+                    last, still_since = now, time.monotonic()
+                elif time.monotonic() - still_since >= self.JOG_END_STILL_S:
+                    break
                 if await servo(target, speed=_norm_speed(), accel=_norm_accel()) < 0:
                     self.cancel_drags()
                     return

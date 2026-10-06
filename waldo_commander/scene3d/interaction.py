@@ -9,6 +9,7 @@ the gesture's drag id and sequence number:
 - A begin starts nothing until the app's ``admit`` says it may.
 - Samples arrive in order; a repeat or an older one is dropped.
 - A gesture ends once, released or aborted; what follows its end is dropped.
+- The browser holds one gesture at a time, so a begin ends any still open.
 - A gesture the browser stops reporting on for ``LIVENESS_S`` is aborted, so a
   lost release cannot leave the robot chasing its last target.
 """
@@ -78,6 +79,7 @@ class Gestures:
         self._open: dict[int, Gesture] = {}
         self._ended: set[int] = set()
         self._watch: Any = None
+        self._watch_due = 0.0
 
     @property
     def open(self) -> list[Gesture]:
@@ -86,9 +88,16 @@ class Gestures:
     def bump(self) -> None:
         """Start a new epoch: every open gesture ends aborted, and events the
         browser sent before hearing of it are stale."""
+        self.restart()
+        self._scene._command(lambda epoch=self.epoch: ["epoch", epoch])
+
+    def restart(self) -> None:
+        """A new epoch, which the caller tells the browser of."""
         self.epoch += 1
         self.abort_all()
-        self._scene._command(lambda epoch=self.epoch: ["epoch", epoch])
+        # Drag ids from before can only come with the old epoch, which is
+        # refused; a view mounted again numbers its drags from 1.
+        self._ended.clear()
 
     def abort_all(self) -> None:
         for gesture in list(self._open.values()):
@@ -97,7 +106,7 @@ class Gestures:
     def abort(self, kind: str) -> None:
         for gesture in list(self._open.values()):
             if gesture.kind == kind:
-                self._finish(gesture, None, aborted=True)
+                self._end_here(gesture)
 
     def handle(self, args: Any) -> None:
         if not isinstance(args, dict):
@@ -122,12 +131,13 @@ class Gestures:
             else:
                 gesture = self._open.get(drag)
                 if gesture is not None:
-                    self._finish(gesture, None, aborted=True)
+                    self._end_here(gesture)
             return
         gesture = self._open.get(drag)
         if phase == "begin":
             if gesture is not None or drag in self._ended:
                 return
+            self.abort_all()
             gesture = Gesture(kind, drag, seq, time.monotonic())
             if not self.handlers[kind].admit(gesture, args):
                 self._ended.add(drag)
@@ -156,20 +166,29 @@ class Gestures:
         except Exception:
             logger.exception("ending a %s gesture failed", gesture.kind)
 
+    def _end_here(self, gesture: Gesture) -> None:
+        """End *gesture* from the app's side; the browser hears to let go."""
+        self._finish(gesture, None, aborted=True)
+        self._reject(gesture.drag)
+
     def _reject(self, drag: int) -> None:
         self._scene._command(lambda: ["reject", drag])
 
     def _arm_watch(self) -> None:
         if self._watch is None and self._open:
+            self._watch_due = time.monotonic() + _WATCH_S
             self._watch = self._scene._loop.call_later(_WATCH_S, self._check)
 
     def _check(self) -> None:
         self._watch = None
         now = time.monotonic()
-        for gesture in list(self._open.values()):
-            if now - gesture.seen > LIVENESS_S:
-                logger.info("a %s drag went quiet; ending it", gesture.kind)
-                self._finish(gesture, None, aborted=True)
+        # A check that ran late found the loop stalled, with keep-alives
+        # perhaps still queued behind it: they get one more round.
+        if now - self._watch_due <= _WATCH_S:
+            for gesture in list(self._open.values()):
+                if now - gesture.seen > LIVENESS_S:
+                    logger.info("a %s drag went quiet; ending it", gesture.kind)
+                    self._end_here(gesture)
         self._arm_watch()
 
     def cancel_watch(self) -> None:

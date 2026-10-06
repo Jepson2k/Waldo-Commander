@@ -9,6 +9,7 @@ it mounts, or mounts again, it is sent the whole scene.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import logging
@@ -17,11 +18,12 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 from nicegui import ui
 from nicegui.dependencies import register_esm
 
 from .interaction import Gestures
-from .node import ClipPlane, Node, current_parent
+from .node import ClipPlane, Node, _finite, current_parent
 from .protocol import fixed, fixed_all, quaternion
 
 logger = logging.getLogger(__name__)
@@ -289,6 +291,7 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         ease: bool = False,
     ) -> None:
         """Move the camera over *duration* seconds; *ease* starts and ends it gently."""
+        _finite(x, y, z, look_at_x, look_at_y, look_at_z, duration)
         pose = fixed_all((x, y, z, look_at_x, look_at_y, look_at_z))
         self._camera = pose
         self._command(lambda: ["cam", pose, float(duration), bool(ease)])
@@ -312,6 +315,7 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
     def set_tcp(self, position: Sequence[float], R: Sequence[Sequence[float]]) -> int:
         """Place the gizmo's frame on the TCP; returns the placement's revision."""
         self._own()
+        _finite(*position, *(v for row in R for v in row))
         self._tcp_rev += 1
         self._tcp_history[self._tcp_rev] = (
             [float(v) for v in position],
@@ -489,13 +493,14 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
             self._flush_handle.cancel()
             self._flush_handle = None
         self.live = True
-        self.gestures.epoch += 1
-        self.gestures.abort_all()
+        self.gestures.restart()
         self._clear_changes()
         self._send(self._snapshot())
 
     def _send(self, ops: list[list[Any]]) -> None:
-        payload = json.dumps(ops, separators=(",", ":"), allow_nan=False)
+        payload = json.dumps(
+            ops, separators=(",", ":"), allow_nan=False, default=_plain
+        )
         self.client.run_javascript(f"runMethod({self.id},'apply',[{payload}])")
 
     def _handle_delete(self) -> None:
@@ -505,7 +510,16 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         self.gestures.abort_all()
         self.gestures.cancel_watch()
         self.live = False
+        with contextlib.suppress(ValueError):
+            self.client.disconnect_handlers.remove(self._handle_disconnect)
         super()._handle_delete()
+
+
+def _plain(value: Any) -> Any:
+    """A numpy number or array as plain JSON."""
+    if isinstance(value, np.generic | np.ndarray):
+        return value.tolist()
+    raise TypeError(f"{type(value).__name__} is not something to send")
 
 
 class Effects:

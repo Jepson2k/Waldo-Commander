@@ -224,6 +224,15 @@ class EditingMixin(ShapeEditingMixin):
             return
         self._set_editing_joint(gesture.data["index"], values[0])
 
+    def _within_travel(self, index: int, q: float) -> float:
+        limits = self.joint_pos_limits.get(self.joint_names[index], {})
+        lo, hi = limits.get("min"), limits.get("max")
+        if lo is not None:
+            q = max(lo, q)
+        if hi is not None:
+            q = min(hi, q)
+        return q
+
     def _joint_finish(
         self, gesture: Gesture, args: dict[str, Any] | None, aborted: bool
     ) -> None:
@@ -244,6 +253,7 @@ class EditingMixin(ShapeEditingMixin):
     def _set_editing_joint(self, index: int, q: float) -> None:
         if self._appearance_mode != RobotAppearanceMode.EDITING:
             return
+        q = self._within_travel(index, q)
         if not self._joint_ring_touched:
             self._joint_ring_touched = True
             self._editing_target_type = "joint"

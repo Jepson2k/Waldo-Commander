@@ -507,22 +507,31 @@ class UrdfScene(
             and ui_state.active_client_id == self.scene.client.id
         ):
             return False
-        self._check_drag_context()
+        self.check_drag_context()
         return True
 
-    def _check_drag_context(self) -> None:
-        """Start a new epoch if a Stop, a simulator switch or a change of
-        control has happened since the last check."""
-        context = (
+    @staticmethod
+    def _drag_context_now() -> tuple:
+        return (
             motion_guard.stop_generation,
             waldoctl.commander.status.simulator_active,
             control_lease.generation,
             ui_state.active_client_id or "",
         )
+
+    def check_drag_context(self) -> None:
+        """Start a new epoch if a Stop, a simulator switch or a change of
+        control has happened since the last check."""
+        context = self._drag_context_now()
         if context != self._drag_context and self.scene is not None:
             if self._drag_context is not None:
                 self.scene.gestures.bump()
             self._drag_context = context
+
+    def _admitted(self) -> None:
+        """A drag was just admitted: taking control for it is no change of
+        control that should end it."""
+        self._drag_context = self._drag_context_now()
 
     def _register_gestures(self) -> None:
         handlers = self.scene.gestures.handlers
@@ -1400,7 +1409,6 @@ class UrdfScene(
         Called directly from the status update loop in main.py for reliable
         updates without context issues.
         """
-        self._check_drag_context()
         if self._appearance_mode != RobotAppearanceMode.EDITING:
             self._push_tcp_pose()
         self._update_envelope_from_robot_state()
@@ -1447,7 +1455,7 @@ class UrdfScene(
 
         Red overrides the appearance-mode tint and is restored to the saved
         (mode) color when it clears. A signature short-circuits the unchanged
-        50 Hz case; only newly (un)colliding meshes are touched, batched.
+        50 Hz case; only newly (un)colliding meshes are touched.
         """
         if not self.scene:
             return
@@ -1645,8 +1653,8 @@ class UrdfScene(
 
     def set_object_poses(self, poses: Mapping[str, ObjectSample] | None) -> None:
         """Put world objects where the preview says they are at a playback
-        instant — a pose-only move of the drawn program shapes, one batched
-        frame, never a re-render — or restore their declared poses with
+        instant — a pose-only move of the drawn program shapes, never a
+        re-render — or restore their declared poses with
         None. An object whose track is a guess rather than physics is drawn
         at half opacity while overridden.
         """

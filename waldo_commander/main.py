@@ -533,6 +533,10 @@ def update_ui_from_status() -> None:
         skip_position_updates or playback_coordination.sim_pose_override
     )
 
+    if ui_state.urdf_scene:
+        # A Stop or change of control reaches the scene's drags at once,
+        # whatever the scene is drawing.
+        ui_state.urdf_scene.check_drag_context()
     if not skip_scene_updates:
         with global_phase_timer.phase("scene"):
             update_urdf_angles(waldoctl.commander.status.joints.angles.deg)

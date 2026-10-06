@@ -684,7 +684,8 @@ class ShapeEditingMixin:
             and args is not None
             and args.get("session") == self._shape_move_session
             and self._shape_move_active == name
-            and self._program_shape(name) is shape
+            # The same keep-out, though a readback may have rebuilt it.
+            and self._program_shape(name) == shape
             and self._shape_objects.get(f"{SHAPE_PREFIX}{name}") is obj
         )
         if not landed:
@@ -692,7 +693,6 @@ class ShapeEditingMixin:
             obj.resend_pose()
             return
         assert handle is not None and values is not None
-        obj.adopt_position(*values)
         moved = _KINDS[shape.kind](
             **{
                 f.name: getattr(shape, f.name)
@@ -701,4 +701,10 @@ class ShapeEditingMixin:
             },
             pose=(values[0], values[1], values[2], *shape.pose[3:]),
         )
-        handle.shapes = [moved if s.name == name else s for s in handle.shapes]
+        try:
+            handle.shapes = [moved if s.name == name else s for s in handle.shapes]
+        except Exception:
+            logger.exception("moving keep-out %r failed", name)
+            obj.resend_pose()
+            return
+        obj.adopt_position(*values)

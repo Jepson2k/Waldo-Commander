@@ -21,6 +21,7 @@ export class Pointer {
     this.ring = null;
     this.ringDrag = null; // {g, drag: RingDrag, pointerId}
     this.capturing = false;
+    this.pressed = new Set(); // pointers down on the canvas
     this.lastPointerId = null;
     this.taps = new Map(); // pointerId -> {x, y, suppressed}
     this.graceTimer = 0;
@@ -44,6 +45,10 @@ export class Pointer {
       [window, "pointercancel", (e) => this.cancel(e)],
       [window, "pointermove", (e) => this.dragMove(e)],
       [canvas, "lostpointercapture", (e) => this.lostCapture(e)],
+      [window, "pointerup", (e) => this.lift(e)],
+      [window, "pointercancel", (e) => this.lift(e)],
+      [window, "pointermove", (e) => e.pointerType === "mouse" && e.buttons === 0 && this.lift(e)],
+      [window, "blur", () => this.lift(null)],
     ];
     for (const [target, type, fn, opts] of this.listeners) target.addEventListener(type, fn, opts);
   }
@@ -222,6 +227,7 @@ export class Pointer {
       return;
     }
     if (e.type === "pointerdown") {
+      this.pressed.add(e.pointerId);
       this.lastPointerId = e.pointerId;
       this.taps.set(e.pointerId, { x: e.clientX, y: e.clientY, suppressed: false });
     }
@@ -241,6 +247,13 @@ export class Pointer {
     if (!g) return;
     this.ringDrag = { g, drag, ring, pointerId: e.pointerId };
     this.capturing = true;
+    try {
+      this.core.canvas.setPointerCapture(e.pointerId);
+    } catch (err) {
+      // A pointer the browser no longer tracks: its release cannot come.
+      this.core.gestures.abort("capture");
+      return;
+    }
     this.core.controls.enabled = false;
     this.core.menu.cancel();
     ring.grab();
@@ -250,6 +263,11 @@ export class Pointer {
   dragMove(e) {
     const rd = this.ringDrag;
     if (!rd || e.pointerId !== rd.pointerId) return;
+    // The button came up where this page never heard it.
+    if (e.pointerType === "mouse" && e.buttons === 0) {
+      this.core.gestures.abort("released unseen");
+      return;
+    }
     this.trackRing(e);
   }
 
@@ -297,7 +315,8 @@ export class Pointer {
   }
 
   lostCapture(e) {
-    if (this.owner !== null && e.pointerId === this.owner && this.core.gizmos.drag) this.core.gestures.abort("capture");
+    if (this.owner === null || e.pointerId !== this.owner) return;
+    if (this.core.gizmos.drag || this.ringDrag) this.core.gestures.abort("capture");
   }
 
   endRing(released) {
@@ -305,7 +324,7 @@ export class Pointer {
     if (!rd) return;
     this.ringDrag = null;
     this.capturing = false;
-    this.core.controls.enabled = !this.core.gizmos.drag;
+    this.restoreOrbit();
     rd.ring.letGo();
     if (!released) this.follow();
   }
@@ -331,6 +350,27 @@ export class Pointer {
     }
     this.setGlow(hit && hit.glow ? hit.glow : null);
     this.schedule();
+  }
+
+  // A pointer is up (null: all of them).
+  lift(e) {
+    if (e) this.pressed.delete(e.pointerId);
+    else this.pressed.clear();
+    this.restoreOrbit();
+  }
+
+  // The camera orbits again once no drag holds it and no press is still
+  // down: a press the orbit took before a drag let go of it would turn the
+  // camera by everything since.
+  restoreOrbit() {
+    this.core.controls.enabled = !this.core.gizmos.drag && !this.capturing && this.pressed.size === 0;
+  }
+
+  forgetHover() {
+    clearTimeout(this.graceTimer);
+    this.hover.clear();
+    this.hovered = null;
+    this.setGlow(null);
   }
 
   leaveCanvas() {
@@ -361,7 +401,7 @@ export class Pointer {
   // ---- glow ---------------------------------------------------------------
 
   setGlow(rec) {
-    if (this.glowing && this.glowing.rec === rec) return;
+    if ((this.glowing ? this.glowing.rec : null) === rec) return;
     if (this.glowing) {
       const { group } = this.glowing;
       group.removeFromParent();

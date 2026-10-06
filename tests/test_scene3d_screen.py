@@ -760,6 +760,46 @@ class TestSceneElement:
                 },
             )
             wait(page, 5).until(lambda _: ("end", False) in tcp.log)
+
+            # A ring whose release this page never heard ends aborted at the
+            # next move made with no button down.
+            ring = arm["recorders"]["ring"]
+            pixel = wait(page, 10).until(
+                lambda _: scene_js(page, "return S.hoverPixel('link:L2')")
+            )
+            _mouse_to(page, *pixel)
+            wait(page, 5).until(lambda _: _handles(page) == ["ring:1"])
+            dial = scene_js(page, "return S.dial(1)")
+            (angle,) = wait(page, 5).until(
+                lambda _: (a := scene_js(page, "return S.ringGrab(1)")) is not None
+                and [a]
+            )
+            t = dial["q"] + np.radians(angle)
+            gx, gy = scene_js(
+                page,
+                "return S.project('jog:dial:1', [arguments[0]])[0]",
+                [dial["r"] * np.cos(t), dial["r"] * np.sin(t), 0.0],
+            )
+            run_in_app(ring.log.clear)
+            for kind, dx, button, buttons in (
+                ("mousePressed", 0, "left", 1),
+                ("mouseMoved", 6, "left", 1),
+                ("mouseMoved", 12, "none", 0),
+            ):
+                page.selenium.execute_cdp_cmd(
+                    "Input.dispatchMouseEvent",
+                    {
+                        "type": kind,
+                        "x": round(gx + dx),
+                        "y": round(gy),
+                        "button": button,
+                        "buttons": buttons,
+                        "clickCount": 1,
+                    },
+                )
+            wait(page, 5).until(lambda _: ("end", True) in ring.log)
+            assert ring.log[0][0] == "admit", ring.log
+            assert [e for e in ring.log if e[0] == "end"] == [("end", True)], ring.log
         finally:
             _rest_pointer(page)
 
@@ -827,6 +867,16 @@ class TestSceneElement:
             )
         time.sleep(0.3)
         assert ring.log == [], "a hidden ring took a press"
+
+        # The scene sent again under a shown ring: the view forgets what it
+        # showed, so the pointer still on the link brings the ring back.
+        _mouse_to(page, *pixel)
+        wait(page, 5).until(lambda _: _handles(page) == ["ring:1"])
+        resets = scene_js(page, "return S.resets")
+        scene_js(page, "getElement(S.root).$emit('init')")
+        wait(page, 5).until(lambda _: scene_js(page, "return S.resets") == resets + 1)
+        _mouse_to(page, pixel[0] + 1, pixel[1])
+        wait(page, 5).until(lambda _: _handles(page) == ["ring:1"])
         _rest_pointer(page)
 
     def test_the_menu_opens_once_at_the_pointer_for_each_way_of_asking(

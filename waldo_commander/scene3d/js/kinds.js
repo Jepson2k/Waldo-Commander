@@ -339,6 +339,7 @@ function lights(radius) {
 // is never the object's own, since each mesh draws a clone of it.
 export function dispose(object) {
   object.traverse((child) => {
+    if (child.isLight && child.shadow) child.shadow.dispose();
     if (child.geometry) child.geometry.dispose();
     const m = child.material;
     if (!m) return;

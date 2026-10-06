@@ -149,7 +149,7 @@ export class SceneCore {
           this.gizmos.place(op[1], op[2], op[3]);
           break;
         case "miss":
-          this.gizmos.miss = !!op[1];
+          this.gizmos.setMiss(!!op[1]);
           break;
         case "menu":
           this.menu.open(op[1], op[2], op[3]);
@@ -164,6 +164,7 @@ export class SceneCore {
   reset() {
     this.gestures.abort("reset");
     this.pointer.hideRing();
+    this.pointer.forgetHover();
     this.nodes.reset();
     this.fx.tweens.clear();
     this.fx.stopPulse();
@@ -266,6 +267,8 @@ export class SceneCore {
 
   // The shadow map is redrawn only when a shadow caster moves, appears or hides.
   updateShadows() {
+    // The render brings world matrices up to date, after this has looked.
+    this.scene.updateMatrixWorld();
     let sum = 0;
     this.scene.traverseVisible((o) => {
       if (!o.castShadow) return;

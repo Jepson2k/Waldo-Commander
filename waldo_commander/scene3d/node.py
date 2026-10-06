@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import logging
 import math
+import numbers
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Self
+
+import numpy as np
 
 from .protocol import euler_matrix, fixed, fixed_all, quaternion, significant
 
@@ -49,6 +52,17 @@ class ClipPlane(NamedTuple):
 def _finite(*values: float) -> None:
     if not all(math.isfinite(v) for v in values):
         raise ValueError(f"non-finite scene value in {values}")
+
+
+def _numbers(value: Any) -> list[float]:
+    """Every number in a node's arguments, however nested."""
+    if isinstance(value, bool | np.bool_):
+        return []
+    if isinstance(value, numbers.Real):
+        return [float(value)]
+    if isinstance(value, list | tuple | np.ndarray):
+        return [n for item in value for n in _numbers(item)]
+    return []
 
 
 class Node:
@@ -91,6 +105,7 @@ class Node:
         *,
         wireframe: bool = False,
     ) -> None:
+        _finite(*_numbers(args))
         self.scene = scene
         self.id = scene._new_id()
         self.kind = kind

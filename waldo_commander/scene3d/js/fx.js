@@ -60,11 +60,13 @@ export class Fx {
 
   async each(ids, start, waitMs) {
     const recs = await Promise.all(ids.map((id) => this.ready(id, waitMs)));
-    for (const rec of recs) if (rec) start(rec);
+    // One that loaded early may have gone while the others loaded.
+    for (const rec of recs) if (rec && !rec.deleted) start(rec);
   }
 
-  tween(delayMs, ms, step, done) {
-    const tw = { start: performance.now() + delayMs, ms, step, done };
+  // An effect on `rec` ends, undone or not, once `rec` is deleted.
+  tween(delayMs, ms, step, done, rec) {
+    const tw = { start: performance.now() + delayMs, ms, step, done, rec };
     step(0);
     this.tweens.add(tw);
     this.core.animate();
@@ -73,6 +75,10 @@ export class Fx {
   // One frame of every running effect; whether any is still running.
   step(now) {
     for (const tw of this.tweens) {
+      if (tw.rec.deleted) {
+        this.tweens.delete(tw);
+        continue;
+      }
       if (now < tw.start) continue;
       const t = Math.min(1, (now - tw.start) / tw.ms);
       tw.step(t);
@@ -111,9 +117,9 @@ export class Fx {
     segments.forEach(async (ids, k) => {
       const delay = Math.min(k * 70, 700);
       const [line, ...cones] = await Promise.all(ids.map((id) => this.ready(id, lineMs)));
-      if (line) this.drawIn(line, delay, lineMs);
+      if (line && !line.deleted) this.drawIn(line, delay, lineMs);
       cones.forEach((cone, j) => {
-        if (cone) this.popIn(cone, delay + ((j + 1) / (cones.length + 1)) * lineMs, 260);
+        if (cone && !cone.deleted) this.popIn(cone, delay + ((j + 1) / (cones.length + 1)) * lineMs, 260);
       });
     });
     markers.forEach(async (id, k) => {
@@ -131,6 +137,7 @@ export class Fx {
       ms,
       (t) => g.setDrawRange(0, t <= 0 ? 0 : Math.max(2, Math.ceil(n * easeOutCubic(t)))),
       () => g.setDrawRange(0, Infinity),
+      rec,
     );
   }
 
@@ -142,6 +149,7 @@ export class Fx {
       ms,
       (t) => scale.fromArray(rec.base.s).multiplyScalar(Math.max(1e-3, easeOutBack(t))),
       () => this.release(rec, "scale"),
+      rec,
     );
   }
 
@@ -181,6 +189,7 @@ export class Fx {
         this.release(rec, "scale");
         this.restoreEmissives(mats);
       },
+      rec,
     );
   }
 
@@ -197,6 +206,7 @@ export class Fx {
         for (const { m, own } of mats) m.emissive.copy(own.value).lerp(hot, k);
       },
       () => this.restoreEmissives(mats),
+      rec,
     );
   }
 
@@ -231,6 +241,7 @@ export class Fx {
           setTransparent(m, transparent[i]);
         });
       },
+      rec,
     );
   }
 

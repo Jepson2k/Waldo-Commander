@@ -208,12 +208,24 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
         20,
     ), list(angles.deg)
 
-    # Release commits an angle, but it must not refresh that servo after a
-    # takeover, even if this browser immediately regains the lease.
-    start = np.array(await panel.client.angles())
     speed = waldoctl.commander.settings.jog.speed
     waldoctl.commander.settings.jog.speed = 10
     try:
+        # A grab while another ring is still held ends that one first: the
+        # target it sent is dropped, not carried into the new drag.
+        start = np.array(await panel.client.angles())
+        held = ring(user, scene, 0)
+        ui_state.joint_jog_timer.active = False
+        held.move(delta=10.0)
+        await panel.jog_tick()
+        await _released(ring(user, scene, 1).move(delta=5.0), delta=5.0)
+        assert await wait_until(lambda: abs(angles.deg[1] - start[1] - 5) < 0.1, 20)
+        assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+        assert angles.deg[0] < start[0] + 3, "the held ring's target was carried"
+
+        # Release commits an angle, but it must not refresh that servo after
+        # a takeover, even if this browser immediately regains the lease.
+        start = np.array(await panel.client.angles())
         ring(user, scene, 0).move(delta=25.0).release(delta=25.0)
         assert await wait_until(lambda: angles.deg[0] > start[0] + 1, 5)
         take_over()

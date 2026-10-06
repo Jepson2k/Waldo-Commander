@@ -541,14 +541,13 @@ class TestScene:
             assert path is not None
 
             def drag() -> None:
+                # One chain, so the button stays down through the pause.
                 actions = ActionChains(screen.selenium, duration=20)
                 pointer_to(screen, path[0][0], path[0][1], actions)
                 actions.click_and_hold()
                 for x, y in path[1:]:
                     pointer_to(screen, x, y, actions)
-                actions.perform()
-                time.sleep(0.35)
-                actions = ActionChains(screen.selenium, duration=20)
+                actions.pause(0.35)
                 pointer_to(screen, outside[0], outside[1], actions)
                 actions.release()
                 actions.perform()

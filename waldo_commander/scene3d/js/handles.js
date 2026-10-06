@@ -108,6 +108,15 @@ export class Hover {
     if (this.shown === null && this.target !== null && this.allowed(this.target)) this.show(this.target);
   }
 
+  // What was shown is gone (the scene was sent again): start from nothing.
+  clear() {
+    this.target = null;
+    this.shown = null;
+    this.pinned = false;
+    this.gizmoHovered = false;
+    this.graceAt = null;
+  }
+
   show(target) {
     this.shown = target;
     this.onShow(target);
