@@ -189,9 +189,16 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
         control_lease.seize("mcp", "other", "Other driver")
         control_lease.seize(BROWSER, ui_state.active_client_id, "Browser")
 
+    # A target that is not a number is no target: the release sends the
+    # joint where it was.
+    await teleport_to_jog_pose(panel.client)
+    start = np.array(await panel.client.angles())
+    await _released(ring(user, scene, 1).move(delta=float("nan")), delta=float("inf"))
+    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
+    assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1)
+
     # Grab the next ring before the first joint has reached its target: the
     # first joint's commanded target is kept, and both arrive.
-    await teleport_to_jog_pose(panel.client)
     start = np.array(await panel.client.angles())
     await _released(ring(user, scene, 0).move(delta=10.0), delta=10.0)
     await _released(ring(user, scene, 1).move(delta=5.0), delta=5.0)
@@ -200,14 +207,6 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
         and abs(angles.deg[1] - start[1] - 5) < 0.1,
         20,
     ), list(angles.deg)
-
-    # A target that is not a number is no target: the release sends the
-    # joint where it was.
-    await teleport_to_jog_pose(panel.client)
-    start = np.array(await panel.client.angles())
-    await _released(ring(user, scene, 1).move(delta=float("nan")), delta=float("inf"))
-    assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
-    assert np.array(await panel.client.angles()) == pytest.approx(start, abs=0.1)
 
     # Release commits an angle, but it must not refresh that servo after a
     # takeover, even if this browser immediately regains the lease.
