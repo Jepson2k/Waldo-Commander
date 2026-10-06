@@ -214,6 +214,17 @@ class Node:
     def clear_clipping_planes(self) -> Self:
         return self.set_clipping_planes([])
 
+    def adopt_position(self, x: float, y: float, z: float) -> Self:
+        """Take a position the browser already shows, without sending it back."""
+        _finite(x, y, z)
+        self.x, self.y, self.z = float(x), float(y), float(z)
+        return self
+
+    def resend_pose(self) -> Self:
+        """Send the position and rotation again, over whatever the browser shows."""
+        self._changed(POSITION | ROTATION)
+        return self
+
     def delete(self) -> None:
         """Remove this object and everything under it."""
         if self.deleted:

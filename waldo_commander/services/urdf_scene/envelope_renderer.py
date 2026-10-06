@@ -20,16 +20,13 @@ from typing import Any
 
 import numpy as np
 from nicegui import app, background_tasks, run
-from nicegui.events import SceneClipPlane
 
 import waldoctl
 from waldoctl import EnvelopeMode
 
 from waldo_commander.common.theme import SceneColors
+from waldo_commander.scene3d import ClipPlane
 from waldo_commander.state import simulation_state
-
-from .objects import Stl
-from .scene_fx import SceneFx
 
 
 logger = logging.getLogger(__name__)
@@ -151,8 +148,10 @@ class WorkspaceEnvelope:
             pass
 
     def _get_stl_url(self) -> str:
-        """Get URL for the cached STL file."""
-        return f"/waldo-commander-cache/{HULL_STL_FILENAME}"
+        """URL of the cached STL file, versioned by when it was written: the
+        hull is regenerated in place, and a browser keeps what it loaded."""
+        version = HULL_STL_PATH.stat().st_mtime_ns if HULL_STL_PATH.exists() else 0
+        return f"/waldo-commander-cache/{HULL_STL_FILENAME}?v={version}"
 
     def _load_from_cache(self, tool_offset_z: float) -> bool:
         """Try to load hull from cache.
@@ -603,7 +602,7 @@ class EnvelopeRenderer:
             return False
         try:
             with self.simulation_group:
-                self.envelope_object = Stl(
+                self.envelope_object = self.scene.stl(
                     workspace_envelope.stl_url, wireframe=True
                 ).with_name("envelope:hull")
                 self.envelope_object.material(SceneColors.ENVELOPE_HEX, 0.8)
@@ -653,12 +652,12 @@ class EnvelopeRenderer:
             workspace_envelope.generate(tool_offset_z=self._current_tool_offset_z)
         if not self.envelope_object and workspace_envelope.is_ready:
             if self._create_envelope_object() and self.scene:
-                SceneFx.fade_in(self.scene, [self.envelope_object])
+                self.scene.fx.fade_in([self.envelope_object])
         elif self.envelope_object and not self._envelope_visible:
             self.envelope_object.visible(True)
             self._envelope_visible = True
             if self.scene:
-                SceneFx.fade_in(self.scene, [self.envelope_object])
+                self.scene.fx.fade_in([self.envelope_object])
 
         if self.envelope_object and self.scene:
             if clipped and approaching_positions:
@@ -681,7 +680,7 @@ class EnvelopeRenderer:
         self,
         approaching_positions: list[tuple[float, float, float]],
         max_reach: float,
-    ) -> list[SceneClipPlane]:
+    ) -> list[ClipPlane]:
         """Calculate clipping planes to show only nearby portions of the envelope.
 
         For each approaching object, creates a clipping plane that reveals a
@@ -694,7 +693,7 @@ class EnvelopeRenderer:
         Returns:
             List of plane definitions for set_clipping_planes()
         """
-        planes: list[SceneClipPlane] = []
+        planes: list[ClipPlane] = []
 
         for pos in approaching_positions:
             x, y, z = pos
@@ -726,7 +725,7 @@ class EnvelopeRenderer:
 
             plane_d = -(max_reach - cap_depth)
 
-            planes.append(SceneClipPlane(nx=nx, ny=ny, nz=nz, d=plane_d))
+            planes.append(ClipPlane(nx=nx, ny=ny, nz=nz, d=plane_d))
 
         return planes
 

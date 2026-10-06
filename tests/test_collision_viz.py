@@ -1,9 +1,8 @@
 """Collision visualization: red-tint of colliding parts + keep-out shape render.
 
-The ``user`` fixture has no WebGL, but the scene's Python ``Object3D`` colors are
-the exact input three.js renders from — asserting them verifies the highlight
-logic (name mapping, recolor, restore) deterministically. A browser-level render
-check lives in ``test_collision_viz_screen.py``.
+The ``user`` fixture has no WebGL, but the colours on the scene's Python
+``Node`` mirror are the exact input three.js renders from — asserting them
+verifies the highlight logic (name mapping, recolor, restore) deterministically.
 """
 
 import asyncio
@@ -12,6 +11,7 @@ import pytest
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
 
+from tests.helpers.scene_events import Drag, right_click
 from tests.helpers.wait import wait_for_urdf_ready
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 
@@ -142,16 +142,24 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
     assert bench_obj.color == SceneColors.SHAPE_INSTALL_HEX
 
     # Re-rendering reconciles against what is drawn: a no-op sends nothing, a
-    # pose-only change moves the same object, a geometry change recreates it
-    # and a dropped shape is deleted — the group persists throughout.
+    # pose-only change moves the same object in one message, a geometry
+    # change recreates it and a dropped shape is deleted — the group persists
+    # throughout. The page's view mounts first: before it does, nothing is
+    # sent at all.
     group = scene._shapes_group
+    UserInteraction(user, {scene.scene}, None).trigger("init")
+    await asyncio.sleep(0)
     with patch.object(scene.scene.client, "run_javascript") as sent:
         scene.render_shapes([wall, post], installation=[bench])
+        await asyncio.sleep(0)
     assert sent.call_count == 0, "an unchanged world must not be re-sent"
     assert scene._shape_objects["shape:wall"] is wall_obj
     assert scene._shapes_group is group
     moved = replace(wall, pose=(0.5, 0.0, 0.3, 0, 0, 0))
-    scene.render_shapes([moved, post], installation=[bench])
+    with patch.object(scene.scene.client, "run_javascript") as sent:
+        scene.render_shapes([moved, post], installation=[bench])
+        await asyncio.sleep(0)
+    assert sent.call_count == 1, "a moved shape goes out in one message"
     assert scene._shape_objects["shape:wall"] is wall_obj, "pose-only: same object"
     assert wall_obj.x == pytest.approx(0.5)
     bigger = Box(name="wall", x=0.2, y=0.1, z=0.1, pose=moved.pose)
@@ -209,20 +217,12 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
 
         # A joint-ring drag must also refresh the highlight — the status loop
         # is skipped in EDITING.
-        ring = scene.joint_groups[scene.joint_names[0]].with_name("edit_joint_group:0")
-        UserInteraction(user, {scene.scene}, None).trigger(
-            "transform",
-            {
-                "type": "transform",
-                "mode": "rotate",
-                "object_id": ring.id,
-                "object_name": "edit_joint_group:0",
-                **dict.fromkeys(("x", "y", "z", "wx", "wy", "wz"), 0.0),
-                **dict.fromkeys(("rx", "ry", "rz"), 0.3),
-            },
-        )
+        session = scene._edit_session
+        turn = Drag(user, scene.scene, "joint").begin(session=session, joint=0, q=0.0)
+        turn.move(session=session, joint=0, q=0.3)
         assert scene._editing_angles[0] == pytest.approx(0.3)
         assert scene._editing_collision_q == tuple(scene._editing_angles)
+        turn.release(session=session, joint=0, q=0.3)
 
         # A command whose rows pass through the box is reported with its first
         # colliding row; a command that owns no rows is never checked. The
@@ -920,13 +920,12 @@ async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world
 
 @pytest.mark.integration
 async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None:
-    """The viewer's keep-out editor, end to end: place a box at a clicked
-    point through the dialog, drag it via the scene's transform dispatch,
-    resize it through the edit dialog (bad input refused), delete it with
-    confirmation — asserting the request path (``commander.scene.shapes``)
+    """The viewer's keep-out editor, end to end from its context menu: place a
+    box at a right-clicked floor point through the dialog, drag it by its
+    arrows, resize it through the edit dialog (bad input refused), delete it
+    with confirmation — asserting the request path (``commander.scene.shapes``)
     and the rendered scene object at every step."""
     import asyncio
-    from types import SimpleNamespace
 
     import waldoctl
 
@@ -938,9 +937,11 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     handle = waldoctl.commander.scene
     assert scene is not None and handle is not None
 
-    # Place — exactly what the context menu's "Box Here..." item runs.
-    with scene.scene.client:
-        scene._show_shape_dialog(kind="box", at=(0.4, 0.1, 0.0))
+    def menu(hits: list[str], item: str, ground: list[float] | None = None) -> None:
+        right_click(user, scene.scene, hits, ground)
+        user.find(marker=item).click()
+
+    menu([], "scene-add-box", [0.4, 0.1, 0.0])
     await user.should_see(marker="shape-dialog-save")
     name_el = list(user.find(marker="shape-dialog-name").elements)[-1]
     name_el.set_value("bench")
@@ -953,31 +954,26 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     assert bench.pose[:3] == pytest.approx((0.4, 0.1, 0.05))
     assert "shape:bench" in scene._shape_objects
 
-    # Drag — through the scene's transform_end dispatch, the entry the JS
-    # controls hit (same event fields the target handler consumes).
-    scene._start_shape_move("bench")
-    scene._handle_transform_event(
-        SimpleNamespace(
-            type="transform_end",
-            object_name="shape:bench",
-            x=0.25,
-            y=-0.1,
-            z=0.05,
-            rx=None,
-            ry=None,
-            rz=None,
-        )
+    # Drag — its arrows, as the browser reports the drag let go.
+    menu(["shape:bench"], "shape-menu-move")
+    arrows = scene.scene.interaction["shapeMove"]
+    assert arrows["node"] == scene._shape_objects["shape:bench"].id
+    Drag(user, scene.scene, "shape").begin(**arrows).release(
+        **arrows, x=0.25, y=-0.1, z=0.05
     )
     bench = next(s for s in handle.shapes if s.name == "bench")
     assert bench.pose[:3] == pytest.approx((0.25, -0.1, 0.05))
-    # The setter re-rendered the layer and the move re-armed on the new object.
-    assert "shape:bench" in scene._shape_objects
-    scene._end_shape_move()
+    # The setter re-rendered the layer as a diff: the arrows stay on the
+    # same object, now drawn where it was let go.
+    obj = scene._shape_objects["shape:bench"]
+    assert scene.scene.interaction["shapeMove"]["node"] == obj.id
+    assert (obj.x, obj.y, obj.z) == pytest.approx((0.25, -0.1, 0.05))
+    menu(["shape:bench"], "shape-menu-stop-move")
+    assert scene.scene.interaction["shapeMove"] is None
 
     # Edit — grow x to 300 mm through the dialog. A negative dimension must
     # be refused by the shape's own validation, leaving the world untouched.
-    with scene.scene.client:
-        scene._show_shape_dialog(shape=bench)
+    menu(["shape:bench"], "shape-menu-edit")
     await asyncio.sleep(0)
     dim_x = list(user.find(marker="shape-dialog-dim-x").elements)[-1]
     dim_x.set_value(-50)
@@ -990,8 +986,7 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.3)
 
     # Delete — with confirmation.
-    with scene.scene.client:
-        scene._delete_shape("bench")
+    menu(["shape:bench"], "shape-menu-delete")
     await user.should_see(marker="shape-delete-confirm")
     user.find(marker="shape-delete-confirm").click()
     await asyncio.sleep(0)

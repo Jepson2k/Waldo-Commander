@@ -668,10 +668,8 @@ class TestAnimations:
         that runs, though the earlier one finishes waiting for its objects
         last."""
         from nicegui import app as ng_app
-        from nicegui import ui
         from starlette.responses import Response
 
-        from waldo_commander.services.urdf_scene.scene_fx import SceneFx
         from waldo_commander.state import ui_state
 
         screen = class_screen
@@ -690,13 +688,12 @@ class TestAnimations:
             def build():
                 urdf = ui_state.urdf_scene
                 assert urdf is not None
-                with urdf.scene:
-                    return (
-                        ui.scene.sphere(0.02)
-                        .material("#888888", opacity=1.0)
-                        .move(0.3, 0.3, 0.3)
-                        .with_name(name)
-                    )
+                return (
+                    urdf.scene.sphere(0.02)
+                    .material("#888888", opacity=1.0)
+                    .move(0.3, 0.3, 0.3)
+                    .with_name(name)
+                )
 
             return build
 
@@ -709,7 +706,7 @@ class TestAnimations:
             _poll(screen, read, bool, 10, "the sphere was never drawn", "fx-dot")
             scene = ui_state.urdf_scene.scene
 
-            run_in_app(lambda: SceneFx.fade_in(scene, [dot]))
+            run_in_app(lambda: scene.fx.fade_in([dot]))
             time.sleep(0.15)
             run_in_app(lambda: dot.material("#888888", opacity=0.4))
             # Mid-fade the opacity is below what it fades to, so it is
@@ -724,7 +721,7 @@ class TestAnimations:
                 "fx-dot",
             )
 
-            run_in_app(lambda: SceneFx.pulse(scene, [dot]))
+            run_in_app(lambda: scene.fx.pulse([dot]))
             time.sleep(0.3)
             run_in_app(lambda: dot.scale(2.0))
             # Between waves the scale rests on its own for about 0.8 s, so
@@ -769,10 +766,9 @@ class TestAnimations:
             )
 
             def ripple_twice() -> None:
-                with scene:
-                    model = ui.scene.stl("/test/slow.stl").with_name("fx-model")
-                SceneFx.pulse(scene, [model])
-                SceneFx.pulse(scene, [dot])
+                model = scene.stl("/test/slow.stl").with_name("fx-model")
+                scene.fx.pulse([model])
+                scene.fx.pulse([dot])
 
             run_in_app(ripple_twice)
             ripple = _poll(

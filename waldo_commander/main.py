@@ -296,8 +296,6 @@ async def initialize_urdf_scene() -> None:
         material=scene_config.material,
         background_color=scene_config.background_color,
     )
-    if ui_state.urdf_scene.scene:
-        _attach_scene_scripts(ui_state.urdf_scene.scene)
 
     # Align TCP and load tool mesh from the controller's active tool.
     try:
@@ -308,7 +306,7 @@ async def initialize_urdf_scene() -> None:
         logger.error("Failed to sync TCP tool pose: %s", e)
 
     if ui_state.urdf_scene.scene:
-        scene: ui.scene = ui_state.urdf_scene.scene
+        scene = ui_state.urdf_scene.scene
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
 
         # World coordinate frame at origin (fixed).
@@ -350,22 +348,6 @@ async def initialize_urdf_scene() -> None:
     # Scene wasn't ready earlier, so apply simulator appearance now.
     if waldoctl.commander.status.simulator_active:
         ui_state.urdf_scene.set_simulator_appearance(True)
-
-
-def _attach_scene_scripts(scene: ui.scene) -> None:
-    """Frame the camera on the part of the view the column and footer leave
-    clear, tell right-drags from right-clicks, and report the gizmo handle
-    under the pointer.
-
-    Registered before the page yields, so it catches the first init; a remount
-    after WebGL context loss inits again with a new camera and canvas.
-    """
-    scene.on(
-        "init",
-        lambda: ui.run_javascript(
-            f"SceneFraming.attach({scene.id}); ScenePointer.attach({scene.id})"
-        ),
-    )
 
 
 async def start_controller(com_port: str | None) -> None:
@@ -1060,9 +1042,6 @@ def build_page_content() -> None:
     """Build the Move page UI."""
 
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
-    ui.add_head_html('<script src="/static/js/scene-framing.js" defer></script>')
-    ui.add_head_html('<script src="/static/js/scene-pointer.js" defer></script>')
-    ui.add_head_html('<script src="/static/js/scene-fx.js" defer></script>')
     ui.add_head_html('<script src="/static/js/live-chart.js" defer></script>')
 
     with ui.column().classes(

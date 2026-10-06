@@ -88,7 +88,7 @@ def adopt_applied_tcp(calibration: TcpCalibration) -> None:
         ui_state.urdf_scene.apply_tool(
             calibration.tool_key, variant_key=calibration.variant_key or None
         )
-        ui_state.urdf_scene.refresh_tcp_ball()
+        ui_state.urdf_scene.refresh_tcp_pose()
     simulation_state.notify_changed()
     try:
         simulation.schedule_debounced_simulation()
@@ -276,7 +276,7 @@ class SettingsContent:
         )
         if ui_state.urdf_scene:
             ui_state.urdf_scene.apply_tool(tool_key, variant_key=variant_key)
-            ui_state.urdf_scene.refresh_tcp_ball()
+            ui_state.urdf_scene.refresh_tcp_pose()
 
     def _rebuild_variant_selector(self, tool_key: str) -> None:
         """Rebuild variant sub-selector for the current tool."""

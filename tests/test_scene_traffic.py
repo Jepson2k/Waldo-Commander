@@ -9,23 +9,17 @@ from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
 
 from tests.helpers.wait import teleport_to_jog_pose
-from tests.test_scene_jog_handles import _hover, _open
+from tests.test_scene_jog_handles import _open
 from waldo_commander.state import ui_state
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason="ui.scene sends the joints, the gizmo frame's position and its "
-    "rotation as separate messages",
-)
 async def test_a_status_tick_sends_the_scene_one_message(user: User) -> None:
-    """With the gizmo on screen and the arm moving, each status tick reaches
-    the scene as at most one message."""
+    """With the gizmo free to show and the arm moving, each status tick
+    reaches the scene as at most one message."""
     urdf = await _open(user)
     panel = ui_state.control_panel
     await teleport_to_jog_pose(panel.client)
-    _hover(user, urdf, "L6")
     scene = urdf.scene
     UserInteraction(user, {scene}, None).trigger("init", {})
     await asyncio.sleep(0.2)

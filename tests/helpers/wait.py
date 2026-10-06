@@ -796,8 +796,8 @@ def screen_wait_for_scene_ready(screen: "Screen", timeout_s: float = 30.0) -> No
     dismiss_dialogs(screen)
 
     js = f"""(() => {{
-        const root = document.querySelector('{SCENE_ROOT}');
-        return !!root && !root.closest('[data-initializing]') && !!root.querySelector('canvas');
+        const root = document.querySelector('{SCENE_ROOT}[data-ready]');
+        return !!root && !root.closest('[data-initializing]');
     }})()"""
     if not screen_wait_for_condition(screen, js, timeout_s, label="3D scene ready"):
         raise AssertionError(f"3D scene not ready after {timeout_s}s")

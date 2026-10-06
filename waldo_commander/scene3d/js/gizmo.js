@@ -126,13 +126,18 @@ export class Gizmos {
 
   showGizmo(on) {
     const edit = this.core.ix.edit;
-    const mode = edit && edit.active ? "translate" : (this.core.ix.rules || {}).gizmo;
+    const rule = (this.core.ix.rules || {}).gizmo;
+    // A target edit always has its gizmo, turning it when the panel says Rotate.
+    const mode = edit && edit.active ? (rule === "rotate" ? "rotate" : "translate") : rule;
     const visible = on && mode !== "hidden";
     this.frame.visible = visible;
     const colors = this.core.ix.colors || {};
     this.ball.material.color.set(edit && edit.active ? colors.active : colors.ball);
     if (visible) {
-      if (mode === "translate" || mode === "rotate") this.tcp.setMode(mode);
+      if ((mode === "translate" || mode === "rotate") && this.tcp.mode !== mode) {
+        if (this.drag && this.drag.tc === this.tcp) this.core.gestures.abort("mode");
+        this.tcp.setMode(mode);
+      }
       this.attach(this.tcp, this.ball);
     } else this.detach(this.tcp, "hidden");
     this.core.requestRender();

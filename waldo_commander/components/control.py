@@ -11,7 +11,7 @@ from typing import Any, Callable, ClassVar
 
 import numpy as np
 import waldoctl
-from nicegui import Client, app, ui
+from nicegui import app, ui
 from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
@@ -47,7 +47,6 @@ from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.programs import is_any_program_running
 from waldo_commander.services.startup_mode import set_startup_mode
-from waldo_commander.services.urdf_scene.scene_fx import SceneFx
 from waldo_commander.state import (
     global_phase_timer,
     robot_state,
@@ -766,7 +765,7 @@ class ControlPanel:
         # Jog axis the status Waldo is currently looking along
         self._look_axis: str | None = None
 
-        # TCP TransformControls drag state
+        # Gizmo drag state
         self._tcp_latest_pose: list[float] | None = None
         self._tcp_last_sent_pose: list[float] | None = (
             None  # Track last sent to avoid duplicates
@@ -835,6 +834,12 @@ class ControlPanel:
             and not waldoctl.commander.status.editing_mode
             and self._movement_allowed(notify=False)
         )
+
+    def cancel_drag(self, token: int) -> None:
+        """Forget the drag ``token``, unless another has replaced it: a page
+        that lost control ends only its own drag."""
+        if token == self._drag_generation:
+            self.cancel_drags()
 
     def cancel_drags(self, *, abort_recording: bool = True) -> None:
         """Forget manual input without sending a pending target or click."""
@@ -1791,13 +1796,14 @@ class ControlPanel:
 
     # ---- Ring drag (3D view) ----
 
-    def ring_drag_begin(self, j: int) -> bool:
-        """A ring drag on joint ``j`` starts; returns whether it may move the robot."""
+    def ring_drag_begin(self, j: int) -> int | None:
+        """A ring drag on joint ``j`` starts; returns the drag's token, or None
+        when it may not move the robot."""
         if waldoctl.commander.status.editing_mode or not self._movement_allowed():
-            return False
+            return None
         angles = waldoctl.commander.status.joints.angles.deg
         if len(angles) < self._n_joints or not 0 <= j < self._n_joints:
-            return False
+            return None
         commanded = self._ring_commanded
         self.cancel_drags(abort_recording=False)
         self._ring_angles = (
@@ -1813,7 +1819,7 @@ class ControlPanel:
         if not ui_state.joint_jog_timer.active:
             self._joint_cadence.reset()
         ui_state.joint_jog_timer.active = True
-        return True
+        return self._drag_generation
 
     def ring_drag_target(self, j: int, deg: float) -> None:
         """The ring's snapped target for joint ``j``, clamped to its limits and
@@ -1832,9 +1838,10 @@ class ControlPanel:
             deg = current
         self._ring_angles[j] = deg
 
-    async def ring_drag_end(self) -> None:
-        """The ring was released: send its last target, then record the jog once it settles."""
-        if self._ring_joint is None:
+    async def ring_drag_end(self, token: int) -> None:
+        """The ring drag ``token`` was released: send its last target, then
+        record the jog once it settles."""
+        if self._ring_joint is None or token != self._drag_generation:
             return
         generation = self._drag_generation
         if not self._drag_allowed():
@@ -2002,7 +2009,7 @@ class ControlPanel:
             t.active = any(bool(v) for v in self._cart_pressed_axes.values())
 
     async def cart_jog_tick(self) -> None:
-        """Timer callback: unified movement timer for TransformControls drag or cartesian jog."""
+        """Timer callback: unified movement timer for a gizmo drag or cartesian jog."""
         with global_phase_timer.phase("jog"):
             if self._drag_context is not None and not self._drag_allowed():
                 self.cancel_drags()
@@ -2012,7 +2019,7 @@ class ControlPanel:
 
             speed = _norm_speed()
 
-            # Priority 1: TransformControls drag actively providing absolute poses
+            # Priority 1: a gizmo drag actively providing absolute poses
             if self._tcp_drag_active and self._tcp_latest_pose:
                 # Skip resending an unchanged pose to avoid flooding duplicates.
                 limits = (speed, _norm_accel())
@@ -2093,14 +2100,12 @@ class ControlPanel:
                 "cart",
             )
 
-    def _handle_tcp_cartesian_move_start(self) -> None:
-        """Handle start of a TCP TransformControls drag.
-
-        Ensures drag state is reset so that even small initial movements are registered.
-        """
+    def _handle_tcp_cartesian_move_start(self) -> int | None:
+        """Start of a gizmo drag; returns the drag's token, or None when it
+        may not move the robot."""
         logger.debug("TCP Drag: START event received")
         if not self._movement_allowed(notify=False):
-            return
+            return None
 
         self.cancel_drags(abort_recording=False)
         self._drag_context = self._current_drag_context()
@@ -2114,14 +2119,15 @@ class ControlPanel:
         if t and not t.active:
             self._cart_cadence.reset()
             t.active = True
+        return self._drag_generation
 
     def _handle_tcp_cartesian_move(self, pose: list[float]) -> None:
-        """Handle TCP Cartesian move events from TransformControls drag operations.
+        """Take a gizmo drag's latest target for the Cartesian jog stream.
 
         Drag-start setup (arming _tcp_drag_active and the recorder) lives in
-        _handle_tcp_cartesian_move_start, which is fired by transform_start.
-        Stale pose updates that arrive after drag-end are ignored — the timer
-        is already deactivated and the cached pose isn't streamed.
+        _handle_tcp_cartesian_move_start. Stale pose updates that arrive after
+        drag-end are ignored — the timer is already deactivated and the cached
+        pose isn't streamed.
         """
         if not self._drag_allowed():
             self.cancel_drags()
@@ -2141,10 +2147,12 @@ class ControlPanel:
             self._cart_cadence.reset()
             t.active = True
 
-    def _handle_tcp_cartesian_move_end(self) -> None:
-        """End of a TCP TransformControls drag: drive the tool to the last pose
+    def _handle_tcp_cartesian_move_end(self, token: int) -> None:
+        """End of the gizmo drag ``token``: drive the tool to the last pose
         dragged to, then record once it settles."""
         logger.debug("TCP Drag: END event received")
+        if token != self._drag_generation:
+            return
         if not self._drag_allowed():
             self.cancel_drags()
             return
@@ -2284,11 +2292,12 @@ class ControlPanel:
             ui_state.urdf_scene.on_tcp_cartesian_move_end(
                 self._handle_tcp_cartesian_move_end
             )
+            ui_state.urdf_scene.on_tcp_cartesian_move_cancel(self.cancel_drag)
             ui_state.urdf_scene.on_ring_drag(
                 self.ring_drag_begin,
                 self.ring_drag_target,
                 self.ring_drag_end,
-                self.cancel_drags,
+                self.cancel_drag,
             )
             self._handles_available = self._jog_possible()
             ui_state.urdf_scene.set_handles_available(self._handles_available)
@@ -2300,8 +2309,6 @@ class ControlPanel:
             return
         internal_mode = "TRANSLATE" if mode == "Move" else "ROTATE"
         ui_state.urdf_scene.set_gizmo_display_mode(internal_mode)
-        tcp_mode = "translate" if mode == "Move" else "rotate"
-        ui_state.urdf_scene.set_tcp_transform_mode(tcp_mode)
 
     def on_gizmo_toggle(self, visible: bool) -> None:
         """Allow the gizmo on hover, or never show it (Hidden)."""
@@ -2443,19 +2450,9 @@ class ControlPanel:
         await self.send_home()
 
     def _is_urdf_scene_valid(self) -> bool:
-        """Check if urdf_scene exists and its client is still valid."""
-        if not ui_state.urdf_scene:
-            return False
-        scene = ui_state.urdf_scene.scene
-        if not scene:
-            return False
-        try:
-            scene_client = scene._client()
-            if scene_client is None or scene_client.id not in Client.instances:
-                return False
-        except (RuntimeError, AttributeError):
-            return False
-        return True
+        """Whether the urdf_scene exists and its page is still open."""
+        scene = ui_state.urdf_scene.scene if ui_state.urdf_scene else None
+        return scene is not None and not scene.is_deleted
 
     async def on_freedrive_click(self) -> None:
         """Ask the backend to release the arm for hand guiding, or take it
@@ -3129,8 +3126,7 @@ class ControlPanel:
                 try:
                     if ui_state.urdf_scene and ui_state.urdf_scene.scene:
                         scene = ui_state.urdf_scene.scene
-                        scene.move_camera(**DEFAULT_CAMERA, duration=0.8)
-                        SceneFx.ease_camera(scene)
+                        scene.move_camera(**DEFAULT_CAMERA, duration=0.8, ease=True)
                 except Exception as e:
                     logger.error("Reset camera failed: %s", e)
 

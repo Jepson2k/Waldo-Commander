@@ -22,7 +22,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 
 from tests.helpers.browser_helpers import js, run_in_app
 from tests.helpers.browser_session import no_visible, wait
-from tests.helpers.scene_surface import wc_scene_js
+from tests.helpers.scene_surface import scene_js
 from waldo_commander.common.theme import SceneColors, hex_of, linear_rgb
 from waldo_commander.scene3d import ClipPlane, Node, WcScene
 
@@ -132,7 +132,7 @@ def _chain(urdf: URDF, prefix: str) -> tuple[list[Node], dict[str, Node]]:
 
 
 def _world(screen: Screen, names: list[str]) -> dict[str, np.ndarray]:
-    found = wc_scene_js(
+    found = scene_js(
         screen,
         "return Object.fromEntries(arguments[0].map(n => { const o = S.byName(n);"
         " if (!o) return [n, null]; o.updateWorldMatrix(true, false);"
@@ -269,18 +269,18 @@ def _touch(screen: Screen, kind: str, points: list[tuple[int, float, float]]) ->
 
 
 def _handles(screen: Screen) -> list[str]:
-    return wc_scene_js(screen, "return S.handles()") or []
+    return scene_js(screen, "return S.handles()") or []
 
 
 def _show_gizmo(screen: Screen) -> tuple[float, float, float, float]:
     """Hover the last link until the gizmo shows; its X arrow's tip."""
     pixel = wait(screen, 10).until(
-        lambda _: wc_scene_js(screen, "return S.hoverPixel('link:L6')")
+        lambda _: scene_js(screen, "return S.hoverPixel('link:L6')")
     )
     _mouse_to(screen, *pixel)
     wait(screen, 5).until(lambda _: _handles(screen) == ["gizmo"])
     return wait(screen, 5).until(
-        lambda _: wc_scene_js(screen, "return S.arrowTip('tcp:ball')")
+        lambda _: scene_js(screen, "return S.arrowTip('tcp:ball')")
     )
 
 
@@ -302,7 +302,7 @@ class TestSceneElement:
     def test_joints_draw_where_forward_kinematics_puts_them(
         self, page: Screen, tmp_path: Path
     ) -> None:
-        frames = wait(page, 10).until(lambda _: wc_scene_js(page, "return S.frames()"))
+        frames = wait(page, 10).until(lambda _: scene_js(page, "return S.frames()"))
         assert frames > 0
         fetched = js(
             page,
@@ -392,7 +392,7 @@ class TestSceneElement:
         """
         try:
             loaded = wait(page, 10).until(
-                lambda _: (s := wc_scene_js(page, state, "kept")) and s["meshes"] and s
+                lambda _: (s := scene_js(page, state, "kept")) and s["meshes"] and s
             )
             assert loaded == {
                 "meshes": 1,
@@ -402,8 +402,8 @@ class TestSceneElement:
                 "planes": 1,
             }, loaded
             time.sleep(1.0)
-            assert wc_scene_js(page, state, "dropped") is None
-            triangles = wc_scene_js(
+            assert scene_js(page, state, "dropped") is None
+            triangles = scene_js(
                 page,
                 "let n = 0; S.scene.traverse(o => { if (o.isMesh &&"
                 " o.geometry.attributes.position.count === 3) n++; }); return n;",
@@ -418,16 +418,16 @@ class TestSceneElement:
 
             run_in_app(again)
             time.sleep(0.2)
-            resets = wc_scene_js(page, "return S.resets")
-            wc_scene_js(page, "getElement(S.root).$emit('init')")
+            resets = scene_js(page, "return S.resets")
+            scene_js(page, "getElement(S.root).$emit('init')")
             wait(page, 10).until(
-                lambda _: wc_scene_js(page, "return S.resets") == resets + 1
+                lambda _: scene_js(page, "return S.resets") == resets + 1
             )
             wait(page, 10).until(
-                lambda _: (s := wc_scene_js(page, state, "again")) and s["meshes"]
+                lambda _: (s := scene_js(page, state, "again")) and s["meshes"]
             )
             time.sleep(1.0)
-            assert wc_scene_js(page, state, "again")["meshes"] == 1
+            assert scene_js(page, state, "again")["meshes"] == 1
         finally:
 
             def remove() -> None:
@@ -449,24 +449,22 @@ class TestSceneElement:
         assert 10 <= drawn <= 30 * 2 + 3, f"{drawn} frames in 2 s"
 
         box = _page["box"]
-        wc_scene_js(page, "S.root.style.display = 'none'")
+        scene_js(page, "S.root.style.display = 'none'")
         time.sleep(0.3)
-        before = wc_scene_js(page, "return S.frames()")
+        before = scene_js(page, "return S.frames()")
         try:
             run_in_app(lambda: box.move(0.0, 0.25, 0.1))
             time.sleep(0.5)
-            assert wc_scene_js(page, "return S.frames()") == before, (
-                "a hidden view drew"
-            )
+            assert scene_js(page, "return S.frames()") == before, "a hidden view drew"
         finally:
-            wc_scene_js(page, "S.root.style.display = ''")
-        wait(page, 5).until(lambda _: wc_scene_js(page, "return S.frames()") > before)
-        y = wc_scene_js(page, "return S.byName('box').position.y")
+            scene_js(page, "S.root.style.display = ''")
+        wait(page, 5).until(lambda _: scene_js(page, "return S.frames()") > before)
+        y = scene_js(page, "return S.byName('box').position.y")
         run_in_app(lambda: box.move(0.0, 0.0, 0.1))
         assert y == pytest.approx(0.25)
 
     def test_a_lost_context_is_drawn_again(self, page: Screen) -> None:
-        if not wc_scene_js(
+        if not scene_js(
             page, "return !!S.renderer.getContext().getExtension('WEBGL_lose_context')"
         ):
             pytest.skip("this browser cannot lose a WebGL context on request")
@@ -482,29 +480,25 @@ class TestSceneElement:
             return {background: read(r.right - 5, r.top + 5), box: at && read(at[0], at[1])};
         """
         background = [int(hex_of("scene-bg")[i : i + 2], 16) for i in (1, 3, 5)]
-        resets = wc_scene_js(page, "return S.resets")
-        wait(page, 10).until(lambda _: wc_scene_js(page, pixels)["box"])
+        resets = scene_js(page, "return S.resets")
+        wait(page, 10).until(lambda _: scene_js(page, pixels)["box"])
 
-        wc_scene_js(page, "S.renderer.forceContextLoss()")
+        scene_js(page, "S.renderer.forceContextLoss()")
         wait(page, 5).until(
             lambda _: js(page, "return !!document.querySelector('.wc-scene[data-gl]')")
         )
-        wc_scene_js(page, "S.renderer.forceContextRestore()")
+        scene_js(page, "S.renderer.forceContextRestore()")
         wait(page, 5).until(
             lambda _: js(page, "return !document.querySelector('.wc-scene[data-gl]')")
         )
-        seen = wait(page, 5).until(
-            lambda _: (p := wc_scene_js(page, pixels))["box"] and p
-        )
+        seen = wait(page, 5).until(lambda _: (p := scene_js(page, pixels))["box"] and p)
         assert seen["background"] == pytest.approx(background, abs=2), seen
         assert seen["box"] != pytest.approx(background, abs=8), seen
-        assert wc_scene_js(page, "return S.resets") == resets, (
-            "restoring resent the scene"
-        )
+        assert scene_js(page, "return S.resets") == resets, "restoring resent the scene"
 
         # Not restored, it offers a click that mounts the view again, which
         # asks for the whole scene.
-        wc_scene_js(page, "S.renderer.forceContextLoss()")
+        scene_js(page, "S.renderer.forceContextLoss()")
         notice = page.selenium.find_element("css selector", ".wc-scene-lost")
         wait(page, 10).until(
             lambda _: notice.value_of_css_property("cursor") == "pointer"
@@ -517,7 +511,7 @@ class TestSceneElement:
             )
         )
         seen = wait(page, 10).until(
-            lambda _: (p := wc_scene_js(page, pixels))["box"] and p
+            lambda _: (p := scene_js(page, pixels))["box"] and p
         )
         assert seen["background"] == pytest.approx(background, abs=2), seen
 
@@ -558,9 +552,9 @@ class TestSceneElement:
                 == 1
             )
         assert js(page, "return window.__layout") == start, "removed views still listen"
-        assert not wc_scene_js(
-            page, "return S.renderer.getContext().isContextLost()"
-        ), "removed views kept their WebGL contexts"
+        assert not scene_js(page, "return S.renderer.getContext().isContextLost()"), (
+            "removed views kept their WebGL contexts"
+        )
 
     def test_handle_logic(self, page: Screen) -> None:
         """The handles' rules, driven with a clock of the test's own."""
@@ -685,9 +679,7 @@ class TestSceneElement:
             assert tcp.log[0][0] == "admit" and tcp.log[-1] == ("end", True), tcp.log
 
             # A second finger neither moves nor ends the first one's drag.
-            spot = wait(page, 5).until(
-                lambda _: wc_scene_js(page, "return S.emptySpot()")
-            )
+            spot = wait(page, 5).until(lambda _: scene_js(page, "return S.emptySpot()"))
             x, y, dx, dy = _show_gizmo(page)
             run_in_app(tcp.log.clear)
             _touch(page, "touchStart", [(1, x, y)])
@@ -726,7 +718,7 @@ class TestSceneElement:
                 },
             )
             _mouse_to(page, x + dx * 10, y + dy * 10)
-            wc_scene_js(page, "S.renderer.forceContextLoss()")
+            scene_js(page, "S.renderer.forceContextLoss()")
             wait(page, 5).until(lambda _: ("end", True) in tcp.log)
             page.selenium.execute_cdp_cmd(
                 "Input.dispatchMouseEvent",
@@ -738,7 +730,7 @@ class TestSceneElement:
                     "clickCount": 1,
                 },
             )
-            wc_scene_js(page, "S.renderer.forceContextRestore()")
+            scene_js(page, "S.renderer.forceContextRestore()")
             wait(page, 5).until(
                 lambda _: js(
                     page, "return !document.querySelector('.wc-scene[data-gl]')"
@@ -805,17 +797,16 @@ class TestSceneElement:
             )
         # A ring that went with the pointer takes no press where it was.
         pixel = wait(page, 10).until(
-            lambda _: wc_scene_js(page, "return S.hoverPixel('link:L2')")
+            lambda _: scene_js(page, "return S.hoverPixel('link:L2')")
         )
         _mouse_to(page, *pixel)
         wait(page, 5).until(lambda _: _handles(page) == ["ring:1"])
-        dial = wc_scene_js(page, "return S.dial(1)")
+        dial = scene_js(page, "return S.dial(1)")
         (angle,) = wait(page, 5).until(
-            lambda _: (a := wc_scene_js(page, "return S.ringGrab(1)")) is not None
-            and [a]
+            lambda _: (a := scene_js(page, "return S.ringGrab(1)")) is not None and [a]
         )
         t = dial["q"] + np.radians(angle)
-        grab = wc_scene_js(
+        grab = scene_js(
             page,
             "return S.project('jog:dial:1', [arguments[0]])[0]",
             [dial["r"] * np.cos(t), dial["r"] * np.sin(t), 0.0],
@@ -868,9 +859,9 @@ class TestSceneElement:
                 )
 
         def synthetic(script: str, x: float, y: float) -> None:
-            wc_scene_js(page, script, x, y)
+            scene_js(page, script, x, y)
 
-        spot = wait(page, 5).until(lambda _: wc_scene_js(page, "return S.emptySpot()"))
+        spot = wait(page, 5).until(lambda _: scene_js(page, "return S.emptySpot()"))
         x, y = spot
 
         # A right-click, as this browser sends it: one request, the menu at
@@ -922,7 +913,7 @@ class TestSceneElement:
 
         # A right-drag with the menu open: it closes and asks for nothing.
         n = len(contexts)
-        camera = wc_scene_js(page, "return S.cameraPose()")
+        camera = scene_js(page, "return S.cameraPose()")
         page.selenium.execute_cdp_cmd(
             "Input.dispatchMouseEvent",
             {
@@ -956,7 +947,7 @@ class TestSceneElement:
         wait(page, 5).until(lambda _: no_visible(page, ".q-menu"))
         time.sleep(0.3)
         assert len(contexts) == n and no_visible(page, ".q-menu")
-        wc_scene_js(page, "S.setCameraPose(arguments[0])", camera)
+        scene_js(page, "S.setCameraPose(arguments[0])", camera)
 
         # macOS's ctrl+click: the menu, and no orbit.
         page.selenium.execute_cdp_cmd(
@@ -979,7 +970,7 @@ class TestSceneElement:
                 y,
             )
             wait(page, 5).until(lambda _: len(contexts) == n + 1)
-            assert wc_scene_js(page, "return S.cameraPose()") == pytest.approx(camera)
+            assert scene_js(page, "return S.cameraPose()") == pytest.approx(camera)
         finally:
             page.selenium.execute_cdp_cmd(
                 "Emulation.setUserAgentOverride",
@@ -989,7 +980,7 @@ class TestSceneElement:
                     )
                 },
             )
-        wc_scene_js(
+        scene_js(
             page, "getElement(" + str(run_in_app(lambda: _page["menu"].id)) + ").hide()"
         )
         wait(page, 5).until(lambda _: no_visible(page, ".q-menu"))

@@ -101,7 +101,7 @@ export function surface(core) {
     },
     dial(u) {
       const ring = core.pointer.ring;
-      return ring && ring.u === u ? { q: ring.q, r: ring.spec.radius } : null;
+      return ring && ring.u === u ? { q: ring.q, r: ring.spec.radius, lo: ring.spec.lo, hi: ring.spec.hi } : null;
     },
     label(name) {
       const o = byName(name);
@@ -161,7 +161,7 @@ export function surface(core) {
         if (Math.abs(v.x) > 0.95 || Math.abs(v.y) > 0.95) continue;
         const [px, py] = pixel(v);
         const hit = S.pick(px, py);
-        if (!hit.covered && hit.names.includes(name)) best = [px, py];
+        if (!hit.covered && !hit.handles.length && hit.names.includes(name)) best = [px, py];
       }
     });
     return best;
@@ -244,6 +244,43 @@ export function surface(core) {
       }
     }
     return null;
+  };
+
+  // A pixel on the rotate control of edit joint `index`, past the arm, and
+  // the control's direction on screen there.
+  S.jointSpot = (index) => {
+    const entry = [...core.gizmos.joints.values()].find((j) => j.index === index);
+    if (!entry || !entry.tc.object) return null;
+    const [cx, cy] = pixel(entry.tc.object.getWorldPosition(new THREE.Vector3()).project(core.camera));
+    for (let rad = 20; rad <= 240; rad += 4) {
+      for (let a = 0; a < 360; a += 5) {
+        const t = (a * Math.PI) / 180;
+        const px = cx + rad * Math.cos(t);
+        const py = cy + rad * Math.sin(t);
+        if (document.elementFromPoint(px, py) !== canvas) continue;
+        const handles = core.pointer.handlesAt(px, py);
+        if (handles.length !== 1 || handles[0].tc !== entry.tc) continue;
+        if (core.pointer.hit(px, py)) continue;
+        return [px, py, -Math.sin(t), Math.cos(t)];
+      }
+    }
+    return null;
+  };
+
+  // Pixels where something covers the canvas, each with the angle (radians)
+  // at which a pointer there meets the plane of joint u's shown ring.
+  S.coveredSpots = (u) => {
+    const ring = core.pointer.ring;
+    if (!ring || ring.u !== u) return null;
+    const out = [];
+    for (let y = 8; y < innerHeight - 4; y += 24) {
+      for (let x = 8; x < innerWidth - 4; x += 24) {
+        if (document.elementFromPoint(x, y) === canvas) continue;
+        const at = ring.onPlane(core.pointer.aim(x, y));
+        if (at && Math.hypot(at[0], at[1]) > ring.spec.radius) out.push([x, y, Math.atan2(at[1], at[0])]);
+      }
+    }
+    return out;
   };
 
   // The first angle from joint u's knob, in degrees, where a press grabs its

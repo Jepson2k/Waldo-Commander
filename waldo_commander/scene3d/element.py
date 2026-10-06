@@ -256,6 +256,12 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         if self._joint_values_changed:
             self._schedule()
 
+    def resend_joints(self) -> None:
+        """Send every joint value again, over whatever the browser shows."""
+        self._own()
+        self._joint_values_changed.update(range(len(self._joints)))
+        self._schedule()
+
     # -- view ---------------------------------------------------------------
 
     def configure(self, **changes: Any) -> None:
@@ -340,7 +346,8 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
 
     def _handle_context(self, e: Any) -> None:
         args = e.args if isinstance(e.args, dict) else {}
-        if args.get("epoch") != self.gestures.epoch or not self.gestures.authorized():
+        authorized = self.gestures.authorized()
+        if args.get("epoch") != self.gestures.epoch or not authorized:
             return
         if self._context_handler is not None:
             self._context_handler(args)
@@ -360,11 +367,13 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
     # -- change tracking ----------------------------------------------------
 
     def _own(self) -> None:
+        """Refuse a change from outside the loop that runs the scene. A scene
+        whose loop has stopped is drawn nowhere, so what it is told is moot."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
-        if loop is not self._loop:
+        if loop is not self._loop and self._loop.is_running():
             raise RuntimeError("the 3D scene changed outside its event loop")
 
     def _created_node(self, node: Node) -> None:
@@ -402,7 +411,7 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         self._schedule()
 
     def _schedule(self) -> None:
-        if self.live and self._flush_handle is None:
+        if self.live and self._flush_handle is None and not self._loop.is_closed():
             self._flush_handle = self._loop.call_soon(self._flush)
 
     # -- wire ---------------------------------------------------------------

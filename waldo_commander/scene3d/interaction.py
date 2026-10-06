@@ -50,6 +50,15 @@ class GestureHandler(Protocol):
         """The gesture is over; *args* is None when the app ended it."""
 
 
+@dataclass
+class Handlers:
+    """A gesture kind's handler from three callables."""
+
+    admit: Callable[[Gesture, dict[str, Any]], bool]
+    move: Callable[[Gesture, dict[str, Any]], None]
+    end: Callable[[Gesture, dict[str, Any] | None, bool], None]
+
+
 def _number(value: Any) -> bool:
     return (
         isinstance(value, int | float)
@@ -104,7 +113,10 @@ class Gestures:
         ):
             logger.debug("malformed gesture event %r", args)
             return
-        if args.get("epoch") != self.epoch or not self.authorized():
+        # Authority first: a change it notices starts a new epoch, which
+        # makes this event stale.
+        authorized = self.authorized()
+        if args.get("epoch") != self.epoch or not authorized:
             if phase == "begin":
                 self._reject(drag)
             else:

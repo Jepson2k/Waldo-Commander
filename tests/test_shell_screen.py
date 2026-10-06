@@ -19,7 +19,7 @@ from selenium.common.exceptions import (
     TimeoutException,
 )
 from selenium.webdriver.common.action_chains import ActionChains
-from nicegui import Client, core, ui
+from nicegui import Client, core
 
 from tests.helpers.browser_helpers import (
     click_tab,
@@ -179,8 +179,7 @@ class TestShellLayout:
 
         def marker():
             assert ui_state.urdf_scene is not None
-            with ui_state.urdf_scene.scene:
-                return ui.scene.sphere(0.01).move(0.0, 0.0, -5.0)
+            return ui_state.urdf_scene.scene.sphere(0.01).move(0.0, 0.0, -5.0)
 
         dot = run_in_app(marker)
         dialog = ui_state.settings_content.dialog
@@ -210,9 +209,8 @@ class TestShellLayout:
                 screen, "return !document.querySelector('.q-dialog__backdrop')"
             )
         )
-        # Each drawn frame is two render calls: the scene, then its axis helper.
-        assert covered <= 10, f"{covered} render calls in a second behind the dialog"
-        assert drawn >= 4, f"the second of two changes was never drawn ({drawn} calls)"
+        assert covered <= 5, f"{covered} frames in a second behind the dialog"
+        assert drawn >= 2, f"the second of two changes was never drawn ({drawn} frames)"
 
     def test_the_joint_tab_is_as_tall_as_its_dials(self, class_screen) -> None:
         screen_wait_for_scene_ready(class_screen, timeout_s=40.0)

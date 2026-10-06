@@ -7,7 +7,7 @@ import asyncio
 import pytest
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_urdf_ready, wait_until
+from tests.helpers.wait import teleport_to_jog_pose, wait_for_urdf_ready, wait_until
 
 
 @pytest.mark.integration
@@ -18,6 +18,7 @@ async def test_scene_joints_plugin_overlays_and_envelope(
     from waldoctl import EnvelopeMode
 
     from waldo_commander.common.theme import hex_of
+    from waldo_commander.services.urdf_scene.angle_pipeline import urdf_to_panel
     from waldo_commander.services.urdf_scene.envelope_renderer import workspace_envelope
     from waldo_commander.state import ui_state
 
@@ -29,6 +30,19 @@ async def test_scene_joints_plugin_overlays_and_envelope(
     scene = ui_state.urdf_scene
     assert scene is not None, "Expected ui_state.urdf_scene to be initialized"
     assert len(scene.get_joint_names()) == 6
+
+    # The arm is drawn where the robot is.
+    await teleport_to_jog_pose(ui_state.control_panel.client)
+
+    def drawn_at_robot() -> bool:
+        angles = waldoctl.commander.status.joints.angles.deg
+        for u, name in enumerate(scene.joint_names):
+            panel, deg = urdf_to_panel(u, scene.joint_groups[name].q)
+            if abs(deg - angles[panel]) > 0.01:
+                return False
+        return True
+
+    assert await wait_until(drawn_at_robot, timeout_s=5.0), "the arm is drawn elsewhere"
 
     # A plugin draws into its own group; drawing again replaces what it drew,
     # and clearing removes it.

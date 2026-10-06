@@ -111,7 +111,7 @@ async def test_held_geometry_previews_lands_and_is_confirmed_by_the_controls(
             while "shape:part" not in scene._shape_objects:
                 await handle.refresh_from_backend()
                 await asyncio.sleep(0)
-        with scene.scene:
+        with scene.scene.client:
             scene._show_attachment_dialog("part")
         # The dialog opens with empty position fields; a blank one has to be
         # named, not reach the operator as a Python type error.
@@ -163,7 +163,7 @@ async def test_held_geometry_previews_lands_and_is_confirmed_by_the_controls(
             while not handle.attachments_valid:
                 await handle.refresh_from_backend()
                 await asyncio.sleep(0)
-        with scene.scene:
+        with scene.scene.client:
             scene._show_attachment_dialog("part", detach=True)
         control_lease.seize(MCP, "detach-review", "Review MCP")
         for axis in ("x", "y", "z"):
@@ -192,7 +192,7 @@ async def test_held_geometry_previews_lands_and_is_confirmed_by_the_controls(
             while handle.confirmed or "shape:ghost" not in scene._shape_objects:
                 await asyncio.sleep(0.05)
         assert all(s.name != "ghost" for s in (await client.shapes()).program)
-        with scene.scene:
+        with scene.scene.client:
             scene._show_attachment_dialog("ghost")
         for axis, value in zip(("x", "y", "z"), (0, 0, 250), strict=True):
             element(f"attachment-pos-{axis}").set_value(value)
