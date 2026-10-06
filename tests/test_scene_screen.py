@@ -64,6 +64,7 @@ from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 from waldo_commander.constants import DEFAULT_CAMERA
 from waldo_commander.services.keybindings import keybindings_manager
 from waldo_commander.services.motion_guard import motion_guard
+from waldo_commander.services.programs import preview_is_current
 from waldo_commander.state import ui_state
 
 if TYPE_CHECKING:
@@ -243,6 +244,20 @@ def _program_previewed(source: str) -> Iterator[list[str]]:
         )
 
 
+def _preview_settled() -> bool:
+    """Whether the active program's preview answers its source with no new
+    run pending."""
+    from waldo_commander.components.simulation_engine import simulation
+
+    tab = waldoctl.commander.programs.active
+    return (
+        tab is not None
+        and preview_is_current(tab)
+        and simulation._simulation_debounce_timer is None
+        and simulation._physics_timer is None
+    )
+
+
 def _caught_up() -> None:
     """Return once every event the browser has sent so far has reached the
     app, and every update the app sent in answer has reached the browser:
@@ -364,7 +379,9 @@ def _choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
         settled, offered[:] = texts == offered, texts
         if not settled or item not in texts:
             return False
-        shown[texts.index(item)].click()
+        choice = shown[texts.index(item)]
+        assert choice.get_attribute("aria-disabled") != "true", f"{item!r} is disabled"
+        choice.click()
         return True
 
     # The menu is filled in after it opens, so its items can go stale while read.
@@ -1147,9 +1164,14 @@ class TestScene:
             )
 
         def target_on(line_number: int) -> str:
+            """The marker of the target on *line_number*, once the preview
+            answers the source: until then the target's menu is disabled."""
+
             def find() -> str | None:
                 tab = waldoctl.commander.programs.active
                 assert tab is not None
+                if not _preview_settled():
+                    return None
                 for target in tab.dry_run.targets:
                     if target.line_number == line_number and not target.id.startswith(
                         "pending_"
@@ -1189,7 +1211,9 @@ class TestScene:
                 assert "move_l(" in lines()[added], lines()[added]
 
                 # Escape in the code editor is the editor's own; anywhere else
-                # it cancels a new placement, and neither stops the arm.
+                # it cancels a new placement, and neither stops the arm. The
+                # target placed above may now cover the first empty spot.
+                x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
                 _choose(screen, x, y, "Place Target at Robot Position...")
                 _wait(lambda: _gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
 
