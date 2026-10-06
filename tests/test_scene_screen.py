@@ -815,9 +815,10 @@ class TestScene:
             start = _tcp_mm()
             camera = _camera(screen)
 
-            # Sixty pointer moves along the arrow, as fast as they come: the
-            # label names the axis while it is held, the app hears at most
-            # thirty targets a second, and the marks go with the release.
+            # Sixty pointer moves along the arrow, a frame apart as a mouse
+            # sends them: the label names the axis while it is held, the app
+            # hears at most thirty targets a second, and the marks go with
+            # the release.
             scene_js(
                 screen,
                 "const seen = window.__gizmoLabels = new Set();"
@@ -830,7 +831,7 @@ class TestScene:
             )
 
             def drag() -> None:
-                actions = ActionChains(screen.selenium, duration=0)
+                actions = ActionChains(screen.selenium, duration=16)
                 pointer_to(screen, x, y, actions)
                 actions.click_and_hold()
                 for step in range(1, 61):
