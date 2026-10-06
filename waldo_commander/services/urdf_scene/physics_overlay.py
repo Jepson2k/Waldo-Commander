@@ -28,10 +28,10 @@ import math
 from typing import Any
 
 import numpy as np
-from nicegui import ui
 from scipy.spatial.transform import Rotation as ScipyRotation
 from waldoctl import TickIndex, following_error
 
+from waldo_commander import scene3d as s3d
 from waldo_commander.common.theme import hex_of, linear_rgb
 
 logger = logging.getLogger(__name__)
@@ -174,11 +174,8 @@ class PhysicsOverlay:
     ) -> None:
         """Build the group, the path, and the per-frame pool.
 
-        The pool is made here rather than on first use because a scene
-        object can only be constructed inside its scene's context, and
-        per-frame code runs from the playback batch, which is not one.
-        Making them once and only ever moving them afterwards is also
-        what keeps a frame cheap.
+        The pool is made here rather than on first use: making the objects
+        once and only ever moving them afterwards keeps a frame cheap.
         """
         scene = self._live_scene()
         if scene is None:
@@ -188,7 +185,7 @@ class PhysicsOverlay:
         contact_hex = hex_of("physics-contact")
         try:
             with scene:
-                with ui.scene.group().with_name("simulation:physics") as grp:
+                with s3d.group().with_name("simulation:physics") as grp:
                     self._group = grp
                     # One polyline over the whole run: where the TCP is
                     # predicted to go, coloured by how far that is from the
@@ -197,21 +194,21 @@ class PhysicsOverlay:
                     points, error = decimate(
                         predicted.tcp, following_error(commanded, predicted)
                     )
-                    self._predicted = ui.scene.polyline(
+                    self._predicted = s3d.polyline(
                         [[float(v) for v in row[:3]] for row in points],
                         colors=following_error_colors(error),
                     )
                     # color=None tells three.js to use the per-vertex colours.
                     self._predicted.material(None, 0.95)
                     self._predicted.visible(show_predicted)
-                    self._com = ui.scene.sphere(0.012).material(com_hex, 0.9)
+                    self._com = s3d.sphere(0.012).material(com_hex, 0.9)
                     self._com.visible(False)
                     # A drop line to the ground: a lone sphere in a
                     # perspective view gives no depth to read its height
                     # against. A thin cylinder rather than a line because
                     # a line's endpoints are fixed at creation, and this
                     # has to follow the marker every frame.
-                    self._com_drop = ui.scene.cylinder(
+                    self._com_drop = s3d.cylinder(
                         top_radius=_DROP_RADIUS_M,
                         bottom_radius=_DROP_RADIUS_M,
                         height=1.0,
@@ -219,7 +216,7 @@ class PhysicsOverlay:
                     ).material(com_hex, 0.35)
                     self._com_drop.visible(False)
                     self._contacts = [
-                        ui.scene.cylinder(
+                        s3d.cylinder(
                             top_radius=0.0,
                             bottom_radius=_ARROW_BASE_M * 0.35,
                             height=_ARROW_BASE_M,
@@ -260,8 +257,8 @@ class PhysicsOverlay:
     ) -> None:
         """Move this frame's annotations to *row*.
 
-        Called from inside the scene's existing per-frame batch, and only
-        ever moves, rotates or hides drawables it already made.
+        Called once per playback frame, and only ever moves, rotates or
+        hides drawables it already made.
         """
         if ticks is None or self._group is None or ticks.rows == 0:
             return

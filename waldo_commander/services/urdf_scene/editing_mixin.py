@@ -9,7 +9,6 @@ Provides target editing functionality:
 - Target CRUD operations
 """
 
-import asyncio
 import logging
 import math
 from typing import Any
@@ -18,7 +17,7 @@ import numpy as np
 import waldoctl
 from nicegui import ui
 
-from waldo_commander.common.theme import SceneColors
+from waldo_commander.scene3d.interaction import Gesture, finite
 from waldo_commander.state import (
     ProgramTarget,
     robot_state,
@@ -50,15 +49,12 @@ class EditingMixin(ShapeEditingMixin):
     joint_names: list[str]
     joint_axes: dict[str, np.ndarray]
     joint_groups: dict[str, Any]
-    joint_trafos: dict
     joint_pos_limits: dict[str, dict[str, float | None]]
     _stl_scale: float
     _robot_meshes: list[Any]
     _appearance_mode: RobotAppearanceMode
     _editing_angles: list[float]
     _pre_edit_angles: list[float]
-    _tcp_ball: Any
-    _tcp_ball_dragging: bool
     _ik_solver: EditingIKSolver | None
     config: Any
     targets_group: Any
@@ -69,34 +65,31 @@ class EditingMixin(ShapeEditingMixin):
     _editing_rotation: list[float]
     _editing_rotation_set: bool
     _editing_target_id: str | None
-    _right_release_moved: float | None
+    _tcp_drag: int | None
 
     # Methods from other mixins / main class
     set_editing_angles: Any
     get_editing_angles: Any
     set_appearance_mode: Any
-    _ensure_tcp_ball: Any
-    _update_tcp_ball_position: Any
-    enable_tcp_transform_controls: Any
+    _push_tcp_pose: Any
+    _push_interaction: Any
     invalidate_fk_cache: Any
     _update_envelope_from_robot_state: Any
     _apply_joint_angles: Any
     _ensure_ik_solver: Any
     _update_collision_highlight: Any
-    set_gizmo_visible: Any
     suspend_hover: Any
     resume_hover: Any
 
     def _init_editing_state(self) -> None:
         """Initialize all editing state variables."""
-        self._joint_control_groups: dict[int, Any] = {}
-        self._joint_controls_suspended: bool = False
+        # Numbers each edit, so a joint control's drag from an earlier edit
+        # cannot change the one open now.
+        self._edit_session = 0
+        self._edit_active = False
 
         self.context_menu: Any | None = None
         self._last_click_coords: tuple[float, float, float] | None = None
-        self._right_release_moved: float | None = None
-        self._right_click_drag_threshold: float = 5.0
-        self._pending_context_menu_event: Any | None = None
 
         self._target_objects: dict[str, dict[str, Any]] = {}
 
@@ -116,8 +109,6 @@ class EditingMixin(ShapeEditingMixin):
         self._edit_bar_mode_toggle: Any | None = None
         self._edit_bar_container: Any | None = None
         self._current_editing_type: str | None = None
-
-        self._cached_joint_axes_letters: list[str] | None = None
 
     # -------------------------------------------------------------------------
     # Core editing mode
@@ -143,18 +134,21 @@ class EditingMixin(ShapeEditingMixin):
 
         # Force FK recomputation — the cached pose is from LIVE mode
         self.invalidate_fk_cache()
-
-        self._ensure_tcp_ball()
-        if self._tcp_ball:
-            self._tcp_ball.visible(True)
-            self._tcp_ball.material(SceneColors.TCP_ACTIVE_HEX, 0.9)
-        self._update_tcp_ball_position()
-        self.enable_tcp_transform_controls("translate")
+        self._ensure_ik_solver()
+        self._edit_session += 1
+        self._edit_active = True
+        if self.scene is not None:
+            self.scene.gestures.bump()
+        self._push_tcp_pose(force=True)
+        self._push_interaction()
 
     def exit_editing_mode(self) -> None:
         """Exit editing mode and restore pre-edit state."""
-        self._disable_joint_transform_controls()
-        self.set_gizmo_visible(False)
+        self._edit_session += 1
+        self._edit_active = False
+        if self.scene is not None:
+            self.scene.gestures.bump()
+        self._push_interaction()
 
         self._apply_joint_angles(self._pre_edit_angles)
 
@@ -165,7 +159,6 @@ class EditingMixin(ShapeEditingMixin):
 
         self._joint_ring_touched = False
         self._editing_target_type = "cartesian"
-        self._joint_controls_suspended = False
         self._editing_rotation_set = False
 
         waldoctl.commander.status.editing_mode = False
@@ -174,34 +167,26 @@ class EditingMixin(ShapeEditingMixin):
         self.invalidate_fk_cache()
         self.resume_hover()
 
-    def _cleanup_editing(self) -> None:
-        """Clean up editing state."""
-        self._disable_joint_transform_controls()
-
-    # -------------------------------------------------------------------------
-    # Joint controls
-    # -------------------------------------------------------------------------
-
-    def _get_joint_axes_letters(self) -> list[str]:
-        """Get rotation axis letter for each joint (cached)."""
-        if self._cached_joint_axes_letters is not None:
-            return self._cached_joint_axes_letters
-
-        axis_letters: list[str] = []
-        for joint_name in self.joint_names:
-            if joint_name in self.joint_axes:
-                vec = self.joint_axes[joint_name]
-            else:
-                joint = next(
-                    (j for j in self.urdf_model.joints if j.name == joint_name), None
-                )
-                raw_axis = getattr(joint, "axis", None) if joint else None
-                vec = normalize_axis(raw_axis)
-            idx = int(np.argmax(np.abs(vec[:3])))
-            axis_letters.append(["X", "Y", "Z"][idx])
-
-        self._cached_joint_axes_letters = axis_letters
-        return axis_letters
+    def _edit_state(self) -> dict[str, Any] | None:
+        """The edit the browser draws joint controls for: each revolute joint
+        whose axis lies along one of its frame's axes, by that axis."""
+        if not self._edit_active:
+            return None
+        joints = []
+        urdf_joints = {j.name: j for j in self.urdf_model.joints}
+        for index, name in enumerate(self.joint_names):
+            node = self.joint_groups.get(name)
+            joint = urdf_joints.get(name)
+            if node is None or joint is None:
+                continue
+            if joint.joint_type not in ("revolute", "continuous"):
+                continue
+            axis = normalize_axis(joint.axis)
+            letter = int(np.argmax(np.abs(axis)))
+            if abs(axis[letter]) < 0.999:
+                continue
+            joints.append({"node": node.id, "index": index, "axis": "XYZ"[letter]})
+        return {"active": True, "session": self._edit_session, "joints": joints}
 
     def _get_joint_limits(self) -> list[tuple[float, float]]:
         """Get joint limits in radians."""
@@ -218,74 +203,68 @@ class EditingMixin(ShapeEditingMixin):
             )
         return limits
 
-    def _enable_joint_transform_controls(self) -> None:
-        """Enable rotation controls on each joint."""
-        if not self.scene or not self.joint_groups:
+    # ---- Joint controls ----
+
+    def _joint_admit(self, gesture: Gesture, args: dict[str, Any]) -> bool:
+        index = args.get("joint")
+        if (
+            self._appearance_mode != RobotAppearanceMode.EDITING
+            or args.get("session") != self._edit_session
+            or not isinstance(index, int)
+            or not 0 <= index < len(self._editing_angles)
+            or self._tcp_drag is not None
+        ):
+            return False
+        gesture.data.update(index=index, q0=self._editing_angles[index])
+        return True
+
+    def _joint_move(self, gesture: Gesture, args: dict[str, Any]) -> None:
+        values = finite(args, "q")
+        if values is None or args.get("session") != self._edit_session:
             return
-        self._joint_control_groups = {}
-        axes = self._get_joint_axes_letters()
-        rotation_snap = math.radians(5.0)
+        self._set_editing_joint(gesture.data["index"], values[0])
 
-        for i, joint_name in enumerate(self.joint_names):
-            group = self.joint_groups.get(joint_name)
-            if not group:
-                continue
-            group.with_name(f"edit_joint_group:{i}")
-            axis = axes[i] if i < len(axes) else "Z"
-            group.enable_transform_controls(
-                mode="rotate",
-                size=0.6,
-                visible_axes=[axis],
-                space="local",
-                rotation_snap=rotation_snap,
-            )
-            self._joint_control_groups[i] = group
+    def _within_travel(self, index: int, q: float) -> float:
+        limits = self.joint_pos_limits.get(self.joint_names[index], {})
+        lo, hi = limits.get("min"), limits.get("max")
+        if lo is not None:
+            q = max(lo, q)
+        if hi is not None:
+            q = min(hi, q)
+        return q
 
-    def _disable_joint_transform_controls(self) -> None:
-        """Disable rotation controls on all joints."""
-        if not self.scene or not self._joint_control_groups:
-            return
-        for _, group in list(self._joint_control_groups.items()):
-            group.disable_transform_controls()
-        self._joint_control_groups.clear()
+    def _joint_finish(
+        self, gesture: Gesture, args: dict[str, Any] | None, aborted: bool
+    ) -> None:
+        index = gesture.data["index"]
+        values = None if aborted or args is None else finite(args, "q")
+        current = args is not None and args.get("session") == self._edit_session
+        if values is not None and current:
+            self._set_editing_joint(index, values[0])
+        elif self._appearance_mode == RobotAppearanceMode.EDITING:
+            self._set_editing_joint(index, gesture.data["q0"])
+        # Whatever the browser shows now, the joints are where the edit has them.
+        if (
+            self.scene is not None
+            and self._appearance_mode == RobotAppearanceMode.EDITING
+        ):
+            self.scene.resend_joints()
 
-    def _on_joint_group_transform(self, e) -> None:
-        """Handle joint ring rotation events."""
+    def _set_editing_joint(self, index: int, q: float) -> None:
         if self._appearance_mode != RobotAppearanceMode.EDITING:
             return
-        if not self.scene or self._joint_controls_suspended:
-            return
-
+        q = self._within_travel(index, q)
         if not self._joint_ring_touched:
             self._joint_ring_touched = True
             self._editing_target_type = "joint"
             self._unified_target_mode = "joint"
-
-        object_name = getattr(e, "object_name", "") or ""
-        if not object_name.startswith("edit_joint_group:"):
-            return
-
-        try:
-            joint_index = int(object_name.split("edit_joint_group:")[1])
-        except (ValueError, IndexError):
-            return
-
-        axes = self._get_joint_axes_letters()
-        axis = axes[joint_index] if joint_index < len(axes) else "Z"
-
-        rx = e.rx if e.rx is not None else 0.0
-        ry = e.ry if e.ry is not None else 0.0
-        rz = e.rz if e.rz is not None else 0.0
-
-        angle_change = rx if axis == "X" else (ry if axis == "Y" else rz)
-
-        if 0 <= joint_index < len(self._editing_angles):
-            self._editing_angles[joint_index] = angle_change
-            self._update_tcp_ball_position()
-            self._sync_robot_state_from_editing()
-            self._update_collision_highlight()
-            if self._current_editing_type:
-                self._update_edit_bar_values(self._current_editing_type)
+        self._editing_angles[index] = q
+        self._apply_joint_angles(self._editing_angles)
+        self._push_tcp_pose()
+        self._sync_robot_state_from_editing()
+        self._update_collision_highlight()
+        if self._current_editing_type:
+            self._update_edit_bar_values(self._current_editing_type)
 
     def apply_editing_home(self) -> None:
         """Move editing robot to home position and sync state/UI."""
@@ -309,7 +288,6 @@ class EditingMixin(ShapeEditingMixin):
         result = self._ik_solver.solve(
             target_pos=np.array(target_pos, dtype=np.float64),
             current_angles=current_angles,
-            throttle=False,
         )
         if result and result.success:
             return list(result.angles)
@@ -319,27 +297,24 @@ class EditingMixin(ShapeEditingMixin):
     # Context menu
     # -------------------------------------------------------------------------
 
-    def _populate_context_menu(self, e) -> None:
-        """Populate context menu based on click target."""
+    def _populate_context_menu(
+        self, hits: list[str], ground: tuple[float, float, float] | None
+    ) -> None:
+        """Fill the context menu for a right-click on *hits* (names, nearest
+        first) where its ray met the floor at *ground*."""
         if not self.context_menu:
             return
-
-        hits = getattr(e, "hits", []) or []
         self.context_menu.clear()
 
         target_id = None
-        for h in hits:
-            name = getattr(h, "object_name", "") or ""
+        for name in hits:
             if self._is_envelope_hit(name):
                 continue
             if name.startswith("target:"):
                 target_id = name.split("target:", 1)[1]
                 break
 
-        ground = e.intersections.get("ground")
-        self._last_click_coords = (
-            None if ground is None else (ground.x, ground.y, ground.z)
-        )
+        self._last_click_coords = ground
 
         shape_name = self._shape_hit_name(hits)
         draft_name = self._draft_hit_name(hits)
@@ -458,17 +433,7 @@ class EditingMixin(ShapeEditingMixin):
         bar_type = "pose_edit" if edit_target_id else "unified"
         self._create_edit_bar(bar_type)
 
-        async def enable_controls():
-            await asyncio.sleep(0.15)
-            if not self._editing_unified_target:
-                return
-            self._ensure_ik_solver()
-            self.enable_tcp_transform_controls("translate")
-            self._enable_joint_transform_controls()
-            self._sync_robot_state_from_editing()
-
-        with self.scene:
-            ui.timer(0.0, enable_controls, once=True)
+        self._sync_robot_state_from_editing()
 
     def _confirm_unified_as_cartesian(self) -> None:
         """Confirm as cartesian target."""
@@ -526,7 +491,6 @@ class EditingMixin(ShapeEditingMixin):
         self._joint_ring_touched = False
         self._original_editing_joints = None
         self._original_editing_pose = None
-        self._cleanup_editing()
         self._hide_edit_bar()
         self.exit_editing_mode()
 

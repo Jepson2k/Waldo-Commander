@@ -3,8 +3,8 @@
 Lets plugins draw into named, plugin-owned groups of the shared 3D scene. The
 scene is created per page (and may not exist yet), so the handle resolves
 ``ui_state.urdf_scene`` lazily on each call and no-ops when there is no live
-scene. Each ``overlay`` deletes the group's prior contents and re-adds inside a
-``batch_scene`` so updates apply atomically.
+scene. Each ``overlay`` deletes the group's prior contents and draws anew; what
+one pass of the event loop draws reaches the browser as one update.
 """
 
 from __future__ import annotations
@@ -18,7 +18,8 @@ from typing import Any
 import waldoctl
 from waldoctl import Shape
 
-from waldo_commander.services.urdf_scene.scene_batch import batch_scene
+from nicegui import core
+
 from waldo_commander.state import ui_state
 
 logger = logging.getLogger(__name__)
@@ -186,9 +187,19 @@ class WcSceneHandle:
             self._record_snippet(shapes)
 
     def render(self) -> None:
-        """(Re)draw both layers on the live scene (no-op without one)."""
+        """(Re)draw both layers on the live scene (no-op without one).
+
+        Assigned from outside the UI loop (a worker thread), the drawing is
+        handed to the loop whole, since only the loop may change the scene.
+        """
         us = ui_state.urdf_scene
         if us is None:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if core.loop is not None and core.loop.is_running():
+                core.loop.call_soon_threadsafe(self.render)
             return
         try:
             us.render_shapes(
@@ -339,22 +350,27 @@ class WcSceneHandle:
 
     @contextmanager
     def overlay(self, group_id: str) -> Iterator[Any]:
+        """Draw into the plugin group *group_id*, replacing what it held.
+
+        Yields the 3D scene, whose ``group``, ``line``, ``polyline``,
+        ``box``, ``sphere``, ``cylinder``, ``capsule`` and ``stl`` draw into
+        the group; each returns an object with ``move``, ``rotate_R``,
+        ``scale``, ``material`` and ``visible``.
+        """
         scene = self._live_scene()
         if scene is None:
             yield _NULL_SCENE
             return
-        with batch_scene(scene):
-            with scene:
-                self._drop(group_id)
-                grp = scene.group().with_name(f"plugin:{group_id}")
-                self._groups[group_id] = grp
-                with grp:
-                    yield scene
+        with scene:
+            self._drop(group_id)
+            grp = scene.group().with_name(f"plugin:{group_id}")
+            self._groups[group_id] = grp
+            with grp:
+                yield scene
 
     def clear(self, group_id: str) -> None:
         scene = self._live_scene()
         if scene is None:
             self._groups.pop(group_id, None)
             return
-        with batch_scene(scene):
-            self._drop(group_id)
+        self._drop(group_id)

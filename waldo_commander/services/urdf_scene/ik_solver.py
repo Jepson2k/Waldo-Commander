@@ -1,6 +1,5 @@
 """IK solver for editing mode, using the Robot ABC for FK/IK."""
 
-import time
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -50,9 +49,6 @@ class EditingIKSolver:
         self._fk_result_buffer = np.zeros(6, dtype=np.float64)
         self._pose_buf = np.zeros(6, dtype=np.float64)
 
-        self._last_solve_time = 0.0
-        self._min_solve_interval = 0.033  # ~30Hz
-
         logger.debug(
             "EditingIKSolver initialized: %d joints",
             self.num_joints,
@@ -94,28 +90,20 @@ class EditingIKSolver:
         self,
         target_pos: np.ndarray,
         current_angles: list[float],
-        throttle: bool = True,
         target_orientation: np.ndarray | None = None,
-    ) -> EditingIKResult | None:
+    ) -> EditingIKResult:
         """
         Solve IK for the target position and optionally orientation.
 
         Args:
             target_pos: Target TCP position [x, y, z] in meters (world frame)
             current_angles: Current joint angles in radians
-            throttle: If True, skip solving if called too frequently
             target_orientation: Target orientation [rx, ry, rz] in radians (XYZ Euler).
                                If None, maintains current orientation.
 
         Returns:
-            EditingIKResult with computed angles, or None if throttled
+            EditingIKResult with computed angles
         """
-        if throttle:
-            now = time.time()
-            if now - self._last_solve_time < self._min_solve_interval:
-                return None
-            self._last_solve_time = now
-
         q_current = np.asarray(current_angles[: self.num_joints], dtype=np.float64)
 
         if target_orientation is not None:

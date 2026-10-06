@@ -1,7 +1,7 @@
 """Path renderer.
 
 Standalone class held by ``UrdfScene`` via composition. Stateless — all
-methods rely on the caller having an active ``ui.scene`` context (i.e.
+methods rely on the caller having an active 3D scene context (i.e.
 ``with urdf_scene.scene:`` block surrounding the call).
 """
 
@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation as ScipyRotation
-from nicegui import ui
 
+from waldo_commander import scene3d as s3d
 from waldo_commander.common.theme import hex_of
 
 if TYPE_CHECKING:
@@ -88,7 +88,7 @@ class PathRenderer:
                 vertex_colors.append(_hex_to_rgb(hex_c))
             vertex_colors.append(_hex_to_rgb(point_pair_colors[-1]))
 
-        line = ui.scene.polyline(
+        line = s3d.polyline(
             pts_list,
             colors=vertex_colors,
             dashed=is_dashed,
@@ -152,7 +152,7 @@ class PathRenderer:
             rot = ScipyRotation.from_rotvec(angle * axis)
             rpy = rot.as_euler("xyz", degrees=False).tolist()
 
-        cone = ui.scene.cylinder(
+        cone = s3d.cylinder(
             top_radius=0.0,
             bottom_radius=scale,
             height=scale * 2,
@@ -191,7 +191,7 @@ class PathRenderer:
         shaft_end = o + d * (length - head_length)
         head_pos = o + d * (length - head_length * 0.5)
 
-        line = ui.scene.line(o.tolist(), shaft_end.tolist())
+        line = s3d.line(o.tolist(), shaft_end.tolist())
         line.material(color, opacity)
 
         cone = self._create_direction_cone(

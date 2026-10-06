@@ -21,6 +21,7 @@ from typing import Any, cast
 import waldoctl
 from nicegui import ui
 
+from waldo_commander.scene3d.interaction import finite
 from waldo_commander.services.urdf_scene.config import DRAFT_PREFIX
 from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.state import ui_state
@@ -62,9 +63,12 @@ class ShapeEditingMixin:
     scene: Any
     context_menu: Any
     _shape_objects: dict[str, Any]
+    _push_interaction: Any
 
     def _init_shape_editing(self) -> None:
         self._shape_move_active: str | None = None
+        # Numbers each keep-out move, so a drag from an earlier one cannot land.
+        self._shape_move_session = 0
 
     # ------------------------------------------------------------------
     # Shape access (program layer only)
@@ -84,12 +88,11 @@ class ShapeEditingMixin:
         return None
 
     @staticmethod
-    def _hit_names(hits, prefix: str) -> Iterator[str]:
+    def _hit_names(hits: list[str], prefix: str) -> Iterator[str]:
         """Names of the clicked objects drawn under *prefix*, nearest first."""
-        for h in hits:
-            obj = getattr(h, "object_name", "") or ""
-            if obj.startswith(prefix):
-                yield obj[len(prefix) :]
+        for name in hits:
+            if name.startswith(prefix):
+                yield name[len(prefix) :]
 
     def _shape_hit_name(self, hits) -> str | None:
         """The clicked program-layer shape's name, if any."""
@@ -129,7 +132,7 @@ class ShapeEditingMixin:
         ui.menu_item(
             "Edit Keep-out...",
             on_click=lambda s=shape: self._show_shape_dialog(shape=s),
-        )
+        ).mark("shape-menu-edit")
         if shape.attachment is not None:
             ui.menu_item(
                 "Reconcile Attachment...",
@@ -145,16 +148,18 @@ class ShapeEditingMixin:
                 on_click=lambda: self._show_attachment_dialog(shape_name),
             )
         if self._shape_move_active == shape_name:
-            ui.menu_item("Stop Moving", on_click=self._end_shape_move)
+            ui.menu_item("Stop Moving", on_click=self._end_shape_move).mark(
+                "shape-menu-stop-move"
+            )
         else:
             ui.menu_item(
                 "Move (drag arrows)",
                 on_click=lambda n=shape_name: self._start_shape_move(n),
-            ).set_enabled(shape.attachment is None)
+            ).mark("shape-menu-move").set_enabled(shape.attachment is None)
         ui.menu_item(
             "Delete Keep-out",
             on_click=lambda n=shape_name: self._delete_shape(n),
-        )
+        ).mark("shape-menu-delete")
         ui.separator()
         ui.menu_item(
             "Propose as Installation",
@@ -291,7 +296,7 @@ class ShapeEditingMixin:
                 on_click=lambda k=kind, p=click_point: self._show_shape_dialog(
                     kind=k, at=p
                 ),
-            )
+            ).mark(f"scene-add-{kind}")
 
     # ------------------------------------------------------------------
     # Add / edit dialog
@@ -629,51 +634,77 @@ class ShapeEditingMixin:
         shape = self._program_shape(name)
         if shape is None or shape.attachment is not None:
             return
-        obj = self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
-        if obj is None:
+        if f"{SHAPE_PREFIX}{name}" not in self._shape_objects:
             return
-        if self._shape_move_active and self._shape_move_active != name:
-            self._end_shape_move()
-        obj.enable_transform_controls(mode="translate", size=0.5)
         self._shape_move_active = name
+        self._shape_move_session += 1
+        self._push_interaction()
 
     def _end_shape_move(self) -> None:
-        name = self._shape_move_active
+        if self._shape_move_active is None:
+            return
         self._shape_move_active = None
-        if name is None:
-            return
-        obj = self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
-        if obj is not None:
-            try:
-                obj.disable_transform_controls()
-            except Exception:
-                logger.debug("transform-control teardown raced a re-render")
+        self._shape_move_session += 1
+        self._push_interaction()
 
-    def _on_shape_transform(self, e) -> None:
-        """A dragged keep-out landed: write the new position through the
-        request path. The re-render is a diff, so the dragged object — and
-        the controls on it — survive for the next nudge."""
-        if getattr(e, "type", "") != "transform_end":
-            return
-        object_name = getattr(e, "object_name", "") or ""
-        name = object_name.split("shape:", 1)[1]
-        if name != self._shape_move_active:
-            return
-        handle = self._shape_handle()
+    def _shape_move_state(self) -> dict[str, Any] | None:
+        """The keep-out the browser shows move arrows on, and its session."""
+        name = self._shape_move_active
+        obj = None if name is None else self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
+        if obj is None:
+            return None
+        return {"session": self._shape_move_session, "node": obj.id}
+
+    def _shape_admit(self, gesture: Any, args: dict[str, Any]) -> bool:
+        name = self._shape_move_active
+        if name is None or args.get("session") != self._shape_move_session:
+            return False
+        obj = self._shape_objects.get(f"{SHAPE_PREFIX}{name}")
         shape = self._program_shape(name)
-        if (
-            handle is None
-            or shape is None
-            or shape.attachment is not None
-            or e.x is None
-        ):
+        if obj is None or obj.id != args.get("node") or shape is None:
+            return False
+        if shape.attachment is not None:
+            return False
+        gesture.data.update(name=name, node=obj, shape=shape)
+        return True
+
+    def _shape_finish(
+        self, gesture: Any, args: dict[str, Any] | None, aborted: bool
+    ) -> None:
+        """A dragged keep-out landed: write its new position through the
+        request path, unless the move or the shape changed since the drag
+        began. The re-render is a diff, so the dragged object, and the
+        arrows on it, survive for the next nudge."""
+        name, obj, shape = (gesture.data[k] for k in ("name", "node", "shape"))
+        values = None if aborted or args is None else finite(args, "x", "y", "z")
+        handle = self._shape_handle()
+        landed = (
+            values is not None
+            and handle is not None
+            and args is not None
+            and args.get("session") == self._shape_move_session
+            and self._shape_move_active == name
+            # The same keep-out, though a readback may have rebuilt it.
+            and self._program_shape(name) == shape
+            and self._shape_objects.get(f"{SHAPE_PREFIX}{name}") is obj
+        )
+        if not landed:
+            # The browser shows where it let go; the app's position stands.
+            obj.resend_pose()
             return
+        assert handle is not None and values is not None
         moved = _KINDS[shape.kind](
             **{
                 f.name: getattr(shape, f.name)
                 for f in fields(type(shape))
                 if f.name != "pose"
             },
-            pose=(float(e.x), float(e.y), float(e.z), *shape.pose[3:]),
+            pose=(values[0], values[1], values[2], *shape.pose[3:]),
         )
-        handle.shapes = [moved if s.name == name else s for s in handle.shapes]
+        try:
+            handle.shapes = [moved if s.name == name else s for s in handle.shapes]
+        except Exception:
+            logger.exception("moving keep-out %r failed", name)
+            obj.resend_pose()
+            return
+        obj.adopt_position(*values)
