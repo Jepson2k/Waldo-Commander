@@ -70,7 +70,20 @@ def scene_object(screen: Screen, name: str) -> dict | None:
 
 def wait_for_scene_idle(screen: Screen) -> None:
     """Return once every object the scene has been sent is loaded and drawn."""
-    scene_js_async(screen, "S.idle().then(() => done(true));")
+    scene_js_async(
+        screen,
+        """
+        S.idle().then(() => {
+            const core = getElement(S.root).core;
+            // A view with no size draws nothing, so there is no frame to wait for.
+            if (core.lost || !core.size[0] || !core.size[1]) return done(true);
+            const before = S.frames();
+            S.requestRender();
+            const drawn = () => S.frames() > before ? done(true) : requestAnimationFrame(drawn);
+            requestAnimationFrame(drawn);
+        });
+    """,
+    )
 
 
 def frames(screen: Screen) -> int:
@@ -94,13 +107,8 @@ def frames_at_rest(screen: Screen, window_s: float, timeout: float = 15.0) -> in
 
 def pointer_to(screen: Screen, x: float, y: float, actions: ActionChains) -> None:
     """Queue a real pointer move to viewport point (x, y) on ``actions``."""
-    canvas = scene_canvas(screen)
-    rect = canvas.rect
-    actions.move_to_element_with_offset(
-        canvas,
-        round(x - (rect["x"] + rect["width"] / 2)),
-        round(y - (rect["y"] + rect["height"] / 2)),
-    )
+    actions.w3c_actions.pointer_action.move_to_location(round(x), round(y))
+    actions.w3c_actions.key_action.pause()
 
 
 def project_local(

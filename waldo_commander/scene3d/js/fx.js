@@ -7,7 +7,8 @@
 // Python set during it is the one left showing. Nothing runs under reduced
 // motion.
 
-export const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+export const reducedMotion = () => motion.matches;
 
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 const easeOutBack = (t) => {
@@ -15,6 +16,10 @@ const easeOutBack = (t) => {
   const c3 = c1 + 1;
   return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
 };
+
+// How long an effect waits for its node's mesh to load: a cold STL can take
+// longer than the effect itself lasts.
+const LOAD_WAIT_MS = 2000;
 
 // A ripple wave: sin(t / RIPPLE_RATE), staggered RIPPLE_STAGGER per object.
 const RIPPLE_RATE = 260;
@@ -50,16 +55,16 @@ export class Fx {
     }
     const effect = {
       reveal: () => this.reveal(...args),
-      flash: () => this.each(args[0], (rec) => this.glowPop(rec), 750),
-      alarm: () => this.each(args[0], (rec) => this.alarm(rec, args[1]), 700),
-      fade: () => this.each(args[0], (rec) => this.fadeIn(rec, args[1]), args[1]),
+      flash: () => this.each(args[0], (rec) => this.glowPop(rec)),
+      alarm: () => this.each(args[0], (rec) => this.alarm(rec, args[1])),
+      fade: () => this.each(args[0], (rec) => this.fadeIn(rec, args[1])),
       pulse: () => this.startPulse(args[0]),
     }[name];
     if (effect) effect();
   }
 
-  async each(ids, start, waitMs) {
-    const recs = await Promise.all(ids.map((id) => this.ready(id, waitMs)));
+  async each(ids, start) {
+    const recs = await Promise.all(ids.map((id) => this.ready(id, LOAD_WAIT_MS)));
     // One that loaded early may have gone while the others loaded.
     for (const rec of recs) if (rec && !rec.deleted) start(rec);
   }
@@ -103,13 +108,11 @@ export class Fx {
   }
 
   hold(rec, property) {
-    rec.holds[property]++;
+    this.core.nodes.hold(rec, property);
   }
 
   release(rec, property) {
-    if (--rec.holds[property] > 0 || rec.deleted) return;
-    if (property === "scale") rec.obj.scale.fromArray(rec.base.s);
-    if (property === "position") rec.obj.position.fromArray(rec.base.p);
+    this.core.nodes.release(rec, property);
   }
 
   reveal(segments, markers) {
@@ -142,6 +145,7 @@ export class Fx {
   }
 
   popIn(rec, delayMs, ms) {
+    if (rec.held !== null) return;
     this.hold(rec, "scale");
     const scale = rec.obj.scale;
     this.tween(
@@ -174,6 +178,7 @@ export class Fx {
   }
 
   glowPop(rec) {
+    if (rec.held !== null) return;
     this.hold(rec, "scale");
     const mats = this.emissives(rec);
     this.tween(
@@ -251,12 +256,12 @@ export class Fx {
     const call = ++this.pulseCall;
     this.stopPulse();
     if (!ids.length) return;
-    const recs = await Promise.all(ids.map((id) => this.ready(id, 2000)));
+    const recs = await Promise.all(ids.map((id) => this.ready(id, LOAD_WAIT_MS)));
     if (call !== this.pulseCall) return;
     this.stopPulse();
     const items = [];
     recs.forEach((rec, i) => {
-      if (!rec) return;
+      if (!rec || rec.held !== null) return;
       this.hold(rec, "scale");
       items.push({ rec, phase: i * RIPPLE_STAGGER });
     });
@@ -272,6 +277,18 @@ export class Fx {
     for (const p of this.pulse.items) this.release(p.rec, "scale");
     this.pulse = null;
     this.core.requestRender();
+  }
+
+  finish(rec) {
+    for(const tw of this.tweens) {
+      if(tw.rec!==rec)continue;
+      this.tweens.delete(tw);tw.step(1);tw.done?.();
+    }
+    if(this.pulse) {
+      for(const item of this.pulse.items)if(item.rec===rec)this.release(rec,"scale");
+      this.pulse.items=this.pulse.items.filter(item=>item.rec!==rec);
+      if(!this.pulse.items.length)this.pulse=null;
+    }
   }
 
   // A node is gone: its effects stop touching it.

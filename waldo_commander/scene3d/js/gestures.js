@@ -6,6 +6,11 @@
 // Samples go out at most 30 times a second. While a gesture is open and
 // nothing else has gone out for KEEP_MS, a keep-alive does, so the app can
 // end a drag whose browser went quiet. A dialog covering the view ends it.
+//
+// The nodes a gesture moves are held: the app's state does not land on them
+// while the drag runs, and after its release they keep what the drag showed
+// until the app sends their state or refuses the drag. Any other end lets go
+// at once, and they return to the app's state.
 
 const KEEP_MS = 100;
 const SAMPLE_MS = 1000 / 30;
@@ -16,11 +21,16 @@ export class Gestures {
     this.epoch = 0;
     this.next = 1;
     this.current = null;
-    this.blocked = false;
+    this.blocks = new Set(); // why no gesture may start: "context lost", "disconnect"
+    this.pending = new Map(); // drag -> a released gesture still holding nodes
   }
 
   get active() {
     return this.current !== null;
+  }
+
+  get blocked() {
+    return this.blocks.size > 0;
   }
 
   // A new gesture; `onAbort(reason)` stops whatever drives it when it ends
@@ -28,14 +38,31 @@ export class Gestures {
   begin(kind, fields, pointerId, onAbort) {
     if (this.blocked) return null;
     if (this.current) this.abort("superseded");
-    const g = { kind, drag: this.next++, seq: 0, pointerId, onAbort, ended: null, pending: null, last: 0, timer: 0, flushTimer: 0 };
+    const g = { kind, drag: this.next++, seq: 0, pointerId, onAbort, ended: null, pending: null, last: 0, timer: 0, flushTimer: 0, held: [], settled: null };
     this.current = g;
     this.send(g, "begin", fields);
     g.timer = setInterval(() => {
-      if (document.querySelector(".q-dialog__backdrop")) this.abort("dialog");
+      if (this.core.covered) this.abort("dialog");
       else if (performance.now() - g.last >= KEEP_MS) this.send(g, "keep", {});
     }, KEEP_MS);
     return g;
+  }
+
+  // `rec`'s properties follow the drag, not the app, until the gesture ends.
+  // A node has one hold entry at a time: a drag on what an earlier drag still
+  // holds takes that entry over, holding before letting go so the node does
+  // not jump back to the app's state in between.
+  hold(g, rec, ...properties) {
+    this.core.nodes.hold(rec, ...properties);
+    const earlier = rec.held === g.drag ? g : rec.held !== null ? this.pending.get(rec.held) : null;
+    const i = earlier ? earlier.held.findIndex(([r]) => r === rec) : -1;
+    if (i >= 0) {
+      const [[, previous]] = earlier.held.splice(i, 1);
+      this.core.nodes.release(rec, ...previous);
+      if (earlier !== g && !earlier.held.length) this.settle(earlier, true);
+    }
+    rec.held = g.drag;
+    g.held.push([rec, properties]);
   }
 
   sample(g, fields) {
@@ -57,8 +84,14 @@ export class Gestures {
     this.send(g, "move", fields);
   }
 
-  release(g, fields) {
+  // `settled(confirmed)` runs once the held nodes have the app's answer:
+  // their state, or a refusal.
+  release(g, fields, settled = null) {
+    if (!g || g.ended) return;
+    g.settled = settled;
     this.finish(g, "release", fields);
+    if (g.held.length) this.pending.set(g.drag, g);
+    else this.settle(g, true);
   }
 
   // End the open gesture other than by its release: its driver stops first,
@@ -70,12 +103,44 @@ export class Gestures {
     this.finish(g, reason, {});
   }
 
-  // The app refused the gesture; it never started there, so nothing is sent.
+  // The app refused the gesture: an open one never started there, so nothing
+  // is sent; a released one's nodes go back to the app's state.
   reject(drag) {
     const g = this.current;
-    if (!g || g.drag !== drag) return;
-    if (g.onAbort) g.onAbort("rejected");
-    this.finish(g, "rejected", null);
+    if (g && g.drag === drag) {
+      if (g.onAbort) g.onAbort("rejected");
+      this.finish(g, "rejected", null);
+      return;
+    }
+    const released = this.pending.get(drag);
+    if (released) this.letGo(released);
+  }
+
+  // The app sent `rec`'s state: what it showed for the drag gives way to it.
+  confirm(rec) {
+    const g = this.pending.get(rec.held);
+    const i = g ? g.held.findIndex(([r]) => r === rec) : -1;
+    if (i < 0) return;
+    const [[, properties]] = g.held.splice(i, 1);
+    rec.held = null;
+    this.core.nodes.release(rec, ...properties);
+    if (!g.held.length) this.settle(g, true);
+  }
+
+  letGo(g) {
+    for (const [rec, properties] of g.held) {
+      if (rec.held === g.drag) rec.held = null;
+      this.core.nodes.release(rec, ...properties);
+    }
+    g.held = [];
+    this.settle(g, false);
+  }
+
+  settle(g, confirmed) {
+    this.pending.delete(g.drag);
+    const settled = g.settled;
+    g.settled = null;
+    if (settled) settled(confirmed);
   }
 
   finish(g, reason, fields) {
@@ -85,6 +150,8 @@ export class Gestures {
     clearTimeout(g.flushTimer);
     g.pending = null;
     if (this.current === g) this.current = null;
+    if (reason !== "release") this.letGo(g);
+    this.core.pointer.ended(g);
     if (fields !== null) this.send(g, "end", { ...fields, aborted: reason !== "release" });
   }
 
@@ -99,13 +166,19 @@ export class Gestures {
     this.abort("epoch");
   }
 
-  // Until the next reset or a restored context, no gesture starts.
+  // No gesture starts until every reason given here is withdrawn.
   block(reason) {
-    this.blocked = true;
+    this.blocks.add(reason);
     this.abort(reason);
   }
 
-  unblock() {
-    this.blocked = false;
+  unblock(reason) {
+    this.blocks.delete(reason);
+  }
+
+  // The scene was sent again: no node is held for an answer any more.
+  reset() {
+    for (const g of this.pending.values()) g.held = [];
+    this.pending.clear();
   }
 }

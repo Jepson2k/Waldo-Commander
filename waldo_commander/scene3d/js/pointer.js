@@ -1,30 +1,73 @@
 // The pointer over the view: hovering a link shows its joint's ring and the
-// tool shows the gizmo, a target glows under the pointer, a ring grabbed is
-// dragged with the pointer captured, and a touch tap pins a handle.
+// tool shows the gizmo, a target glows under the pointer, a touch tap pins a
+// handle, and a tap on an object selects it.
+//
+// A press goes to the first tool that claims it: drawing, a resize handle, a
+// gizmo handle, the shown ring, then a path. The drag it starts belongs to
+// the pointer that pressed, which is captured until the drag ends, and other
+// pointers do not reach the controls meanwhile. Escape, a cancelled pointer,
+// a lost capture or a button released out of sight end it aborted.
 //
 // Only what the pointer can act on is hit-tested: the links and the tool,
-// the shown ring's grip and the gizmo, and nodes that glow. A drag belongs to
-// the pointer that started it; other pointers do not reach the controls.
+// the shown ring's grip and the gizmo, and nodes that glow.
 
 import * as THREE from "three";
-import { GIZMO, Hover, RingDrag, panelDegrees, snapFor } from "./handles.js";
-import { Ring } from "./rings.js";
+import { GIZMO, Hover, RingDrag, panelDegrees } from "./handles.js";
+import { Ring, label } from "./rings.js";
+import { niceStep } from "./precision.js";
+import { overlap } from "./overlays.js";
+import { setStyle } from "./dom.js";
+import { shown, visibleHit } from "./section.js";
 
 const TAP_PX = 6;
+const NONE = [];
+const place = new THREE.Vector3();
+const at = [0, 0, 0];
+
+// The plane through `point` that holds `axis` and faces along `ray`, the one
+// a drag along the axis moves on; null where the axis points at the eye.
+export function facingPlane(ray, axis, point, out, least) {
+  const normal = place.copy(ray.direction).addScaledVector(axis, -ray.direction.dot(axis));
+  if (normal.length() < least) return null;
+  return out.setFromNormalAndCoplanarPoint(normal.normalize(), point);
+}
+
+// A turn is read from where the pointer is in the plane it turns in. Within
+// DEAD_PX of the plane's centre on screen nothing registers, and a plane seen
+// within EDGE_ON (the sine of about 8°) of edge-on is not grabbed, so a pixel
+// of jitter cannot become a large turn.
+const DEAD_PX = 20;
+// An Escape typed into the page's own fields, dialogs and menus is theirs.
+const escapeIsTheirs = (target) =>
+  target instanceof Element && !!target.closest("input, textarea, select, [contenteditable], .cm-editor, .q-dialog, .q-menu");
+const EDGE_ON = 0.14;
+const onScreen = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+const onPlane = new THREE.Plane();
 
 export class Pointer {
   constructor(core) {
     this.core = core;
     this.raycaster = new THREE.Raycaster();
+    this.point = new THREE.Vector2();
     this.hovered = null; // the hover source under the mouse
-    this.glowing = null; // {rec, group}
+    this.glowing = null;
     this.ring = null;
-    this.ringDrag = null; // {g, drag: RingDrag, pointerId}
-    this.capturing = false;
+    this.rings = new Map(); // joint -> its ring, once shown
+    this.ringDrag = null; // {g, drag: RingDrag, ring, rec, session, step}
+    this.drag = null; // {pointerId, g?, move, release, cancel}: the tool a press started
+    this.tools = [];
     this.pressed = new Set(); // pointers down on the canvas
     this.lastPointerId = null;
-    this.taps = new Map(); // pointerId -> {x, y, suppressed}
+    this.taps = new Map(); // pointerId -> {x, y, shift, suppressed}
     this.graceTimer = 0;
+    this.coarse = matchMedia("(pointer:coarse)");
+    this.badge = this.makeBadge();
+    this.badgeOccluded = false;
+    this.groundAt = null;
+    this.groundView = new THREE.Matrix4();
+    this.groundProjection = new THREE.Matrix4();
+    this.groundMarker=new THREE.Mesh(new THREE.RingGeometry(.72,1,40),new THREE.MeshBasicMaterial({transparent:true,opacity:.35,depthWrite:false,side:THREE.DoubleSide,forceSinglePass:true}));
+    this.groundMarker.name="placement:ground";this.groundMarker.visible=false;core.scene.add(this.groundMarker);
     this.hover = new Hover({
       allowed: (t) => this.allowed(t),
       show: (t) => this.show(t),
@@ -45,12 +88,14 @@ export class Pointer {
       [window, "pointercancel", (e) => this.cancel(e)],
       [window, "pointermove", (e) => this.dragMove(e)],
       [canvas, "lostpointercapture", (e) => this.lostCapture(e)],
-      [window, "pointerup", (e) => this.lift(e)],
-      [window, "pointercancel", (e) => this.lift(e)],
-      [window, "pointermove", (e) => e.pointerType === "mouse" && e.buttons === 0 && this.lift(e)],
-      [window, "blur", () => this.lift(null)],
+      [window, "keydown", (e) => this.key(e), { capture: true }],
     ];
     for (const [target, type, fn, opts] of this.listeners) target.addEventListener(type, fn, opts);
+  }
+
+  // The shown ring as a tool, after the gizmos.
+  get ringTool() {
+    return { hit: (x, y) => this.ringHit(x, y), begin: (e) => this.ringBegin(e) };
   }
 
   // ---- rules ------------------------------------------------------------
@@ -61,14 +106,15 @@ export class Pointer {
 
   allowed(target) {
     const rules = this.rules;
-    if (rules.suspended || !rules.available) return false;
+    if (!this.editing && (rules.suspended || !rules.available)) return false;
     if (target === GIZMO) return rules.gizmo !== "hidden";
     const u = Number(target.slice(5));
     return !!(this.core.ix.rings || {})[u];
   }
 
   refresh() {
-    if (this.rules.suspended) {
+    if(this.glowing?.source && !this.allowed(this.glowing.source))this.setGlow(null);
+    if (this.rules.suspended && !this.editing) {
       this.hover.target = null;
       this.hover.pinned = false;
       this.hover.graceAt = null;
@@ -101,20 +147,40 @@ export class Pointer {
     this.hideRing();
     const spec = (this.core.ix.rings || {})[u];
     const joint = spec && this.core.nodes.get(spec.joint);
-    if (!joint) return;
-    this.ring = new Ring(this.core, { ...spec, u }, joint.q, this.core.snap[0]);
+    const frame = spec && this.core.nodes.get(spec.frame);
+    if (!joint || !frame) return;
+    let ring = this.rings.get(u);
+    if (!ring) this.rings.set(u, (ring = new Ring(this.core, { ...spec, u })));
+    ring.show(frame.obj, joint.q, this.jointStep(spec), this.editing);
+    this.ring = ring;
   }
 
   hideRing() {
     if (this.ringDrag) this.core.gestures.abort("hidden");
-    if (this.ring) this.ring.dispose();
+    if (this.ring) this.ring.hide();
     this.ring = null;
   }
 
-  // The shown ring's knob follows its joint while it is not dragged.
+  // The rings were drawn from specs or colours that have changed.
+  forgetRings() {
+    this.hideRing();
+    for (const ring of this.rings.values()) ring.dispose();
+    this.rings.clear();
+  }
+
+  // Every frame: the badge follows the tool, the ground mark the camera, and
+  // the shown ring its joint while it is not dragged.
   follow() {
+    this.layoutBadge();
+    this.followGround();
+    this.followRing();
+  }
+
+  followRing() {
     const ring = this.ring;
     if (!ring || this.ringDrag) return;
+    ring.fitScreen();
+    ring.setStep(this.jointStep(ring.spec));
     const joint = this.core.nodes.get(this.core.ix.rings[ring.u].joint);
     if (joint && Math.abs(joint.q - ring.q) >= (0.05 * Math.PI) / 180) ring.place(joint.q);
   }
@@ -122,8 +188,33 @@ export class Pointer {
   // ---- picking ----------------------------------------------------------
 
   ndc(x, y) {
+    const r = this.core.overlays.framing ? this.core.overlays.view : this.core.canvas.getBoundingClientRect();
+    return this.point.set(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
+  }
+
+  // Where a point in normalised device coordinates is on the page.
+  screen(v) {
     const r = this.core.canvas.getBoundingClientRect();
-    return new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
+    return [r.left + ((v.x + 1) / 2) * r.width, r.top + ((1 - v.y) / 2) * r.height];
+  }
+
+  // Where the pointer at (x, y) meets the plane through `centre` spanned by
+  // the perpendicular world vectors `ex` and `ey`: [a, b] for
+  // centre + a·ex + b·ey. Null within DEAD_PX of the centre on screen, or
+  // when the plane is seen nearly edge-on from there.
+  planePoint(centre, ex, ey, x, y) {
+    const [c, normal, hit] = onScreen;
+    const r = this.core.overlays.framing ? this.core.overlays.view : this.core.canvas.getBoundingClientRect();
+    c.copy(centre).project(this.core.camera);
+    const p = this.ndc(x, y);
+    if (Math.hypot(((p.x - c.x) * r.width) / 2, ((p.y - c.y) * r.height) / 2) < DEAD_PX) return null;
+    const ray = this.aim(x, y).ray;
+    normal.crossVectors(ex, ey).normalize();
+    if (Math.abs(ray.direction.dot(normal)) < EDGE_ON) return null;
+    onPlane.setFromNormalAndCoplanarPoint(normal, centre);
+    if (!ray.intersectPlane(onPlane, hit)) return null;
+    hit.sub(centre);
+    return [hit.dot(ex) / ex.lengthSq(), hit.dot(ey) / ey.lengthSq()];
   }
 
   aim(x, y) {
@@ -145,22 +236,23 @@ export class Pointer {
       if (rec && shown(rec.obj)) list.push(rec.obj);
     }
     for (const rec of this.core.nodes.records.values()) if (rec.glow && !rec.deleted && shown(rec.obj)) list.push(rec.obj);
-    if (this.core.gizmos.gizmoShown) list.push(this.core.gizmos.ball);
+    if (this.core.gizmos.frame.visible) list.push(this.core.gizmos.ball);
     if (this.ring) list.push(...this.ring.grips);
     return list;
   }
 
-  // The pointer that started the open gesture.
+  // The pointer that owns what is under way: a drag, or an open gesture.
   get owner() {
+    if (this.drag) return this.drag.pointerId;
     const g = this.core.gestures.current;
     return g ? g.pointerId : null;
   }
 
   // The first thing a pointer at (x, y) would act on.
   hit(x, y) {
-    const grips = this.ring ? this.ring.grips : [];
+    const grips = this.ring ? this.ring.grips : NONE;
     for (const h of this.aim(x, y).intersectObjects(this.targets(), true)) {
-      if (grips.includes(h.object) || shown(h.object)) return this.classify(h.object);
+      if (grips.includes(h.object) || visibleHit(h)) return this.classify(h.object);
     }
     return null;
   }
@@ -172,8 +264,11 @@ export class Pointer {
     for (let o = object; o; o = o.parent) {
       const id = o.userData.wcId;
       if (id === undefined) continue;
-      if (sources[id] !== undefined) return { source: sources[id], object };
       const rec = this.core.nodes.get(id);
+      if (sources[id] !== undefined) {
+        const source=sources[id];
+        return {source,object,glow:source.startsWith("ring:") && this.allowed(source)?rec:null};
+      }
       if (rec && rec.glow) return { glow: rec, object };
     }
     return null;
@@ -184,11 +279,8 @@ export class Pointer {
     const p = this.ndc(x, y);
     const found = [];
     for (const tc of this.core.gizmos.all()) {
-      if (!tc.object || !tc.enabled) continue;
-      const axis = tc.axis;
-      tc.pointerHover({ x: p.x, y: p.y, button: 0 });
-      if (tc.axis !== null) found.push({ tc, axis: tc.axis });
-      tc.axis = axis;
+      const handle = tc.pick(p);
+      if (handle) found.push({ tc, axis: handle.axis, mode: handle.mode });
     }
     return found;
   }
@@ -200,133 +292,172 @@ export class Pointer {
     const objects = [];
     for (const rec of this.core.nodes.records.values()) if (rec.id !== 0 && rec.name && !rec.deleted) objects.push(rec.obj);
     const hits = [];
+    let surface = null;
     for (const h of raycaster.intersectObjects(objects, true)) {
-      if (!shown(h.object)) continue;
+      if (!visibleHit(h)) continue;
       for (let o = h.object; o; o = o.parent) {
         const rec = o.userData.wcId !== undefined ? this.core.nodes.get(o.userData.wcId) : null;
         if (rec && rec.name && !hits.includes(rec.name)) hits.push(rec.name);
+        if (!surface && rec && rec.object) {
+          surface={id:rec.name,x:h.point.x,y:h.point.y,z:h.point.z};
+        }
       }
     }
     const ray = raycaster.ray;
     const k = ray.direction.z !== 0 ? -ray.origin.z / ray.direction.z : -1;
     const ground = k > 0 ? [ray.origin.x + k * ray.direction.x, ray.origin.y + k * ray.direction.y, 0] : null;
-    return { hits, ground };
+    return { hits, ground, surface };
   }
 
-  // ---- events -----------------------------------------------------------
+  // ---- presses and drags ------------------------------------------------
 
   // A drag belongs to the pointer that started it: other pointers' events
-  // stop here, before the orbit and transform controls see them.
+  // stop here, before the orbit controls and the tools see them.
   gate(e) {
     if (this.core.gestures.blocked && e.type === "pointerdown") {
       e.stopImmediatePropagation();
       return;
     }
     if (this.owner !== null && e.pointerId !== this.owner) {
-      e.stopImmediatePropagation();
+      // Another pointer's lift still reaches the orbit and the press
+      // bookkeeping, or both would hold it down after the drag; it taps nothing.
+      if (e.type === "pointerup" || e.type === "pointercancel") this.taps.delete(e.pointerId);
+      else e.stopImmediatePropagation();
       return;
     }
     if (e.type === "pointerdown") {
       this.pressed.add(e.pointerId);
       this.lastPointerId = e.pointerId;
-      this.taps.set(e.pointerId, { x: e.clientX, y: e.clientY, suppressed: false });
+      this.taps.set(e.pointerId, { x: e.clientX, y: e.clientY, shift: e.shiftKey, suppressed: false });
     }
   }
 
   down(e) {
-    if (e.button !== 0 || e.ctrlKey || this.core.gestures.active || this.core.gestures.blocked) return;
-    const ring = this.ring;
-    if (!ring || this.handlesAt(e.clientX, e.clientY).length) return;
-    const hit = this.hit(e.clientX, e.clientY);
-    if (!hit || hit.ring !== ring) return;
-    const at = ring.onPlane(this.aim(e.clientX, e.clientY));
-    if (!at) return;
-    const spec = this.core.ix.rings[ring.u];
-    const drag = new RingDrag(ring.q, at[0], at[1], spec.radius, spec.lo, spec.hi);
-    const g = this.core.gestures.begin("ring", { joint: spec.panel[0] }, e.pointerId, () => this.endRing(false));
-    if (!g) return;
-    this.ringDrag = { g, drag, ring, pointerId: e.pointerId };
-    this.capturing = true;
+    if (e.button !== 0 || e.ctrlKey || this.drag || this.core.gestures.blocked) return;
+    const x = e.clientX, y = e.clientY;
+    for (const tool of this.tools) {
+      if (!tool.hit(x, y)) continue;
+      this.suppressTap(e.pointerId);
+      e.stopImmediatePropagation();
+      // The drag re-projects against the camera, which must hold still.
+      this.core.navigation.halt();
+      const drag = tool.begin(e);
+      if (drag) this.start(e, drag);
+      return;
+    }
+    this.core.inspection.missed(x, y);
+  }
+
+  start(e, drag) {
+    drag.pointerId = e.pointerId;
+    this.drag = drag;
+    this.core.controls.enabled = false;
+    this.core.menu.cancel();
+    this.setGlow(null);
     try {
       this.core.canvas.setPointerCapture(e.pointerId);
     } catch (err) {
       // A pointer the browser no longer tracks: its release cannot come.
-      this.core.gestures.abort("capture");
+      this.abortDrag("capture");
       return;
     }
-    this.core.controls.enabled = false;
-    this.core.menu.cancel();
-    ring.grab();
-    e.stopImmediatePropagation();
+    e.preventDefault();
+  }
+
+  // The drag is over for the pointer: it is let go and the orbit returns.
+  endDrag() {
+    const drag = this.drag;
+    if (!drag) return null;
+    this.drag = null;
+    const canvas = this.core.canvas;
+    if (canvas.hasPointerCapture(drag.pointerId)) canvas.releasePointerCapture(drag.pointerId);
+    this.restoreOrbit();
+    return drag;
+  }
+
+  abortDrag(reason) {
+    const drag = this.endDrag();
+    if (drag) drag.cancel(reason);
+  }
+
+  // A gesture ended elsewhere (a new epoch, a dialog, a refusal).
+  ended(g) {
+    if (this.drag && this.drag.g === g) this.endDrag();
   }
 
   dragMove(e) {
-    const rd = this.ringDrag;
-    if (!rd || e.pointerId !== rd.pointerId) return;
-    // The button came up where this page never heard it.
-    if (e.pointerType === "mouse" && e.buttons === 0) {
-      this.core.gestures.abort("released unseen");
-      return;
+    const drag = this.drag;
+    const unseen = e.pointerType === "mouse" && e.buttons === 0;
+    if (drag && e.pointerId === drag.pointerId) {
+      // The button came up where this page never heard it.
+      if (unseen) this.abortDrag("released unseen");
+      else drag.move(e);
     }
-    this.trackRing(e);
-  }
-
-  trackRing(e) {
-    const rd = this.ringDrag;
-    const at = rd.ring.onPlane(this.aim(e.clientX, e.clientY));
-    if (!at) return;
-    rd.drag.track(at[0], at[1]);
-    const q = rd.drag.value((this.core.snap[0] * Math.PI) / 180);
-    if (q === rd.ring.q) return;
-    rd.ring.place(q);
-    this.core.gestures.sample(rd.g, { delta: this.ringDelta(rd) });
-  }
-
-  ringDelta(rd) {
-    const spec = this.core.ix.rings[rd.ring.u];
-    return panelDegrees(spec.panel, rd.ring.q) - panelDegrees(spec.panel, rd.ring.q0);
+    if (unseen) this.lift(e);
   }
 
   up(e) {
-    const rd = this.ringDrag;
-    if (rd && e.pointerId === rd.pointerId) {
-      this.trackRing(e);
-      const delta = this.ringDelta(rd);
-      this.endRing(true);
-      this.core.gestures.release(rd.g, { delta });
-      this.settle();
-      return;
-    }
     const tap = this.taps.get(e.pointerId);
     this.taps.delete(e.pointerId);
-    if (!tap || tap.suppressed || e.button !== 0 || this.core.gestures.active) return;
+    const drag = this.drag;
+    if (drag && e.pointerId === drag.pointerId) {
+      this.endDrag();
+      drag.release(e);
+      this.settle();
+    } else if (tap) this.tapped(e, tap);
+    this.lift(e);
+  }
+
+  tapped(e, tap) {
+    if (tap.suppressed || e.button !== 0 || this.core.gestures.active) return;
     if (Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > TAP_PX) return;
     if (e.target !== this.core.canvas) return;
     if (this.handlesAt(e.clientX, e.clientY).length) return;
     const hit = this.hit(e.clientX, e.clientY);
     if (hit && hit.source !== undefined && e.pointerType === "touch") this.hover.tap(hit.source);
     else if (!hit) this.hover.miss();
+    this.core.selection.tap(e.clientX, e.clientY, tap.shift, hit);
     this.schedule();
   }
 
   cancel(e) {
     this.taps.delete(e.pointerId);
-    if (this.owner !== null && e.pointerId === this.owner) this.core.gestures.abort("cancelled");
+    if (this.drag && e.pointerId === this.drag.pointerId) this.abortDrag("cancelled");
+    this.lift(e);
   }
 
   lostCapture(e) {
-    if (this.owner === null || e.pointerId !== this.owner) return;
-    if (this.core.gizmos.drag || this.ringDrag) this.core.gestures.abort("capture");
+    if (this.drag && e.pointerId === this.drag.pointerId) this.abortDrag("capture");
   }
 
-  endRing(released) {
-    const rd = this.ringDrag;
-    if (!rd) return;
-    this.ringDrag = null;
-    this.capturing = false;
-    this.restoreOrbit();
-    rd.ring.letGo();
-    if (!released) this.follow();
+  key(e) {
+    const core = this.core;
+    if (e.key !== "Escape") {
+      core.inspection.key(e);
+      return;
+    }
+    if (this.drag) this.abortDrag("escape");
+    else if (escapeIsTheirs(e.target)) return;
+    else {
+      if (this.hover.pinned && !this.editing) {
+        this.hover.miss();
+        core.requestRender();
+      }
+      if (core.drawingTool.active) core.drawingTool.cancel();
+      else if (!core.inspection.escape()) return;
+    }
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+
+  // The page lost the user's attention: nothing pressed or dragged outlives it.
+  interrupt(reason) {
+    this.abortDrag(reason);
+    this.core.gestures.abort(reason);
+    this.core.drawingTool.cancel();
+    this.core.inspection.clear();
+    this.lift(null);
+    this.leaveCanvas();
   }
 
   suppressTap(pointerId) {
@@ -334,21 +465,107 @@ export class Pointer {
     if (tap) tap.suppressed = true;
   }
 
+  // ---- the ring ---------------------------------------------------------
+
+  ringHit(x, y) {
+    const ring = this.ring;
+    if (!ring || this.core.gestures.active) return false;
+    const hit = this.hit(x, y);
+    return !!hit && hit.ring === ring && !!ring.at(this, x, y);
+  }
+
+  ringBegin(e) {
+    const ring = this.ring;
+    const at = ring.at(this, e.clientX, e.clientY);
+    if (!at) return null;
+    const spec = this.core.ix.rings[ring.u];
+    const drag = new RingDrag(ring.q, at[0], at[1], spec.radius, spec.lo, spec.hi);
+    const edit = this.editing ? this.core.ix.edit : null;
+    const fields = edit ? {session: edit.session, joint: ring.u, q: ring.q} : {joint: spec.panel[0]};
+    const g = this.core.gestures.begin(edit ? "joint" : "ring", fields, e.pointerId, () => this.endRing(false));
+    if (!g) return null;
+    const rec = edit ? this.core.nodes.get(spec.joint) : null;
+    this.ringDrag = { g, drag, ring, rec, session: edit?.session, step: ring.stepDeg };
+    if (rec) {
+      rec.dragging = true;
+      this.core.gizmos.showGizmo(false);
+    }
+    ring.grab();
+    return { g, move: (event) => this.trackRing(event), release: (event) => this.releaseRing(event), cancel: (reason) => this.core.gestures.abort(reason) };
+  }
+
+  trackRing(e) {
+    const rd = this.ringDrag;
+    if (!rd) return;
+    const at = rd.ring.at(this, e.clientX, e.clientY);
+    if (!at) return;
+    rd.drag.track(at[0], at[1]);
+    const q = rd.drag.value(rd.step * Math.PI / 180);
+    if (q === rd.ring.q) return;
+    rd.ring.place(q);
+    if (rd.rec) {
+      rd.rec.obj.quaternion.setFromAxisAngle(rd.rec.axis, q);
+      this.core.requestRender();
+    }
+    this.core.gestures.sample(rd.g, this.ringFields(rd));
+  }
+
+  releaseRing(e) {
+    const rd = this.ringDrag;
+    if (!rd) return;
+    this.trackRing(e);
+    const fields = this.ringFields(rd);
+    this.endRing(true);
+    this.core.gestures.release(rd.g, fields);
+  }
+
+  ringFields(rd) {
+    return rd.rec ? {session: rd.session, joint: rd.ring.u, q: rd.ring.q} : {delta: this.ringDelta(rd)};
+  }
+
+  ringDelta(rd) {
+    const spec = this.core.ix.rings[rd.ring.u];
+    return panelDegrees(spec.panel, rd.ring.q) - panelDegrees(spec.panel, rd.ring.q0);
+  }
+
+  endRing(released) {
+    const rd = this.ringDrag;
+    if (!rd) return;
+    this.ringDrag = null;
+    if (rd.rec) {
+      rd.rec.dragging = false;
+      rd.rec.q = released ? rd.ring.q : rd.drag.q0;
+      this.core.nodes.applyJoint(rd.rec);
+      this.core.gizmos.showGizmo(this.editing);
+    }
+    rd.ring.letGo();
+    rd.ring.setStep(this.jointStep(rd.ring.spec));
+    if (!released) this.followRing();
+  }
+
+  // ---- hover --------------------------------------------------------------
+
   move(e) {
-    if (e.pointerType === "touch" || this.ringDrag || this.core.gestures.active) return;
-    if (e.target !== this.core.canvas) return;
+    const x = e.clientX, y = e.clientY;
+    const live = e.target === this.core.canvas && !this.drag && e.pointerType !== "touch" && !this.core.gestures.active;
+    const handles = live ? this.handlesAt(x, y) : NONE;
+    if (live) this.core.gizmos.highlight(handles);
+    const hit = live && !handles.length ? this.hit(x, y) : null;
+    this.placeGround(live && !e.buttons ? [x, y] : null, hit, handles);
+    if (!live) return;
+    const inspection=this.core.inspection;
+    if(inspection.current && inspection.pick(x,y,true).length) {
+      this.forgetHover();return;
+    }
     const now = performance.now();
-    const handles = this.handlesAt(e.clientX, e.clientY);
-    const onGizmo = handles.some((h) => h.tc === this.core.gizmos.tcp);
-    this.hover.gizmo(onGizmo, now);
-    const hit = handles.length ? null : this.hit(e.clientX, e.clientY);
+    this.hover.gizmo(handles.some((h) => h.tc === this.core.gizmos.tcp) || this.core.gizmos.springHandle(x, y), now);
     const source = hit ? (hit.ring ? `ring:${hit.ring.u}` : (hit.source ?? null)) : null;
     if (source !== this.hovered) {
       if (this.hovered !== null) this.hover.leave(this.hovered, now);
       this.hovered = source;
       if (source !== null) this.hover.enter(source, e.pointerType, now);
     }
-    this.setGlow(hit && hit.glow ? hit.glow : null);
+    this.setGlow(hit?.glow || null,hit?.glow && hit.source || null);
     this.schedule();
   }
 
@@ -363,17 +580,21 @@ export class Pointer {
   // down: a press the orbit took before a drag let go of it would turn the
   // camera by everything since.
   restoreOrbit() {
-    this.core.controls.enabled = !this.core.gizmos.drag && !this.capturing && this.pressed.size === 0;
+    this.core.controls.enabled = !this.drag && !this.core.drawingTool?.active && this.pressed.size === 0;
   }
 
   forgetHover() {
     clearTimeout(this.graceTimer);
+    this.hideRing();
+    this.core.gizmos.showGizmo(this.editing);
     this.hover.clear();
     this.hovered = null;
     this.setGlow(null);
   }
 
   leaveCanvas() {
+    this.placeGround(null, null, NONE);
+    this.core.gizmos.highlight(NONE);
     const now = performance.now();
     this.hover.gizmo(false, now);
     if (this.hovered !== null) this.hover.leave(this.hovered, now);
@@ -400,8 +621,8 @@ export class Pointer {
 
   // ---- glow ---------------------------------------------------------------
 
-  setGlow(rec) {
-    if ((this.glowing ? this.glowing.rec : null) === rec) return;
+  setGlow(rec, source=null) {
+    if((this.glowing?.source || null)===source && (source || (this.glowing?.rec || null)===rec))return;
     if (this.glowing) {
       const { group } = this.glowing;
       group.removeFromParent();
@@ -411,16 +632,21 @@ export class Pointer {
     if (rec) {
       const glow = this.core.config.glow || {};
       const group = new THREE.Group();
-      rec.obj.traverse((o) => {
+      group.name=source?"joint:hover":"hover:glow";
+      const records=source?Object.entries(this.core.ix.sources || {}).filter(([,target])=>target===source).map(([id])=>this.core.nodes.get(Number(id))).filter(Boolean):[rec];
+      for(const node of records)node.obj.traverse((o) => {
         if (!o.isMesh || !o.geometry) return;
         const mesh = new THREE.Mesh(
           o.geometry,
           new THREE.MeshBasicMaterial({
-            color: glow.color,
+            color: source?this.core.ix.colors.action:glow.color,
             transparent: true,
-            opacity: glow.opacity ?? 0.2,
-            side: THREE.BackSide,
+            opacity: source ? .28 : (glow.opacity ?? 0.2),
+            side: source?THREE.FrontSide:THREE.BackSide,
             depthWrite: false,
+            polygonOffset: !!source,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1,
           }),
         );
         mesh.renderOrder = 999;
@@ -428,7 +654,7 @@ export class Pointer {
         group.add(mesh);
       });
       this.core.scene.add(group);
-      this.glowing = { rec, group };
+      this.glowing = { rec, group, records, source };
       this.syncGlow();
     }
     this.core.requestRender();
@@ -438,56 +664,134 @@ export class Pointer {
   syncGlow() {
     const g = this.glowing;
     if (!g) return;
-    const scale = (this.core.config.glow || {}).scale ?? 1.5;
+    const scale = g.source?1:((this.core.config.glow || {}).scale ?? 1.5);
     for (const mesh of g.group.children) {
       const src = mesh.userData.source;
+      mesh.visible=shown(src);
+      const planes=src.material?.clippingPlanes||null;
+      if(mesh.material.clippingPlanes!==planes){mesh.material.clippingPlanes=planes;mesh.material.needsUpdate=true;}
       src.updateWorldMatrix(true, false);
       src.matrixWorld.decompose(mesh.position, mesh.quaternion, mesh.scale);
-      mesh.scale.multiplyScalar(scale);
+      // A glow larger than a sectioned node would show past its cut.
+      mesh.scale.multiplyScalar(!g.source && planes?.includes(this.core.nodes.section)?1.005:scale);
     }
   }
 
   // ---- snap ---------------------------------------------------------------
 
-  // The step for the camera's distance from its target; the handles hear of
-  // a change in band.
-  updateSnap() {
-    const bands = this.core.ix.bands;
-    if (!bands) return;
-    const d = this.core.camera.position.distanceTo(this.core.controls.target);
-    const [joint, cart] = snapFor(d, bands);
-    const [j0, c0] = this.core.snap;
-    if (joint === j0 && cart === c0) return;
-    this.core.snap = [joint, cart];
-    if (this.ring) this.ring.setStep(joint);
-    this.core.gizmos.setSnap(joint, cart);
-    if (this.ringDrag) this.trackRingAgain();
+  jointStep(spec) {
+    const frame=this.core.nodes.get(spec.frame)?.obj;
+    if(!frame)return 1;
+    const pixel=this.core.metresPerPixel(frame.getWorldPosition(place));
+    return Math.min(10,Math.max(.1,niceStep(pixel*2/spec.radius*180/Math.PI)));
   }
 
-  // A drag re-snaps where the pointer is when the step changes.
-  trackRingAgain() {
-    const rd = this.ringDrag;
-    const q = rd.drag.value((this.core.snap[0] * Math.PI) / 180);
-    if (q === rd.ring.q) return;
-    rd.ring.place(q);
-    this.core.gestures.sample(rd.g, { delta: this.ringDelta(rd) });
+  // ---- the TCP badge -------------------------------------------------------
+
+  makeBadge() {
+    const badge=label("tcp:affordance");badge.element.className="wc-tcp-affordance";badge.element.style.cssText="";
+    const button=document.createElement("button");button.textContent="TCP";
+    button.title="Move TCP";button.setAttribute("aria-label","Move TCP");
+    button.onpointerdown=e=>e.stopPropagation();
+    button.onclick=e=>{e.stopPropagation();this.hover.tap(GIZMO);this.hover.pinned=true;this.core.requestRender();};
+    button.onpointerenter=e=>{this.hovered=GIZMO;this.hover.enter(GIZMO,e.pointerType,performance.now());this.schedule();};
+    button.onpointerleave=()=>{
+      // Hiding the badge beneath a dial label must not dismiss that dial.
+      if(this.badgeOccluded)return;
+      if(this.hovered===GIZMO)this.hovered=null;
+      this.hover.leave(GIZMO,performance.now());this.schedule();
+    };
+    const leader=document.createElement("span");leader.className="wc-tcp-leader";
+    badge.element.append(button,leader);this.core.scene.add(badge);
+    badge.userData.coarse=null;
+    return badge;
+  }
+
+  // Where the badge's button sits from the tool, in pixels.
+  get badgeOffset() {
+    const gap=this.coarse.matches?46:30;
+    return [gap*.5,-gap*.5];
+  }
+
+  layoutBadge() {
+    const badge=this.badge;
+    this.core.gizmos.frame.getWorldPosition(badge.position);
+    badge.visible=this.allowed(GIZMO)&&!this.core.gestures.active&&!this.core.inspection.current&&!this.editing;
+    const coarse=this.coarse.matches;
+    if(badge.userData.coarse===coarse)return;
+    badge.userData.coarse=coarse;
+    const [dx,dy]=this.badgeOffset;
+    badge.element.firstChild.style.transform=`translate(${dx}px,${dy}px)`;
+    const leader=badge.element.lastChild;
+    leader.style.width=`${Math.max(0,Math.hypot(dx,dy)-(coarse?22:13))}px`;
+    leader.style.transform=`rotate(${Math.atan2(dy,dx)}rad)`;
+  }
+
+  // The badge hides where it would cover the shown dial's labels.
+  occludeBadge() {
+    const badge=this.badge,labels=this.core.overlays.marks.get("dial");
+    let covered=false;
+    if(badge.visible&&labels) {
+      const [x,y]=this.core.overlays.project(badge.position,at),[dx,dy]=this.badgeOffset,half=this.coarse.matches?22:13;
+      covered=overlap({left:x+dx-half,right:x+dx+half,top:y+dy-half,bottom:y+dy+half},labels,4)>0;
+    }
+    this.badgeOccluded=covered;
+    setStyle(badge.element,"visibility",covered?"hidden":"visible");
+  }
+
+  // ---- the ground mark ------------------------------------------------------
+
+  // A faint ring on the floor under the pointer: where a target placed from
+  // the context menu would go. `hit` and `handles` are what is under it.
+  placeGround(at, hit, handles) {
+    this.groundAt=at;
+    const camera=this.core.camera;
+    this.groundView.copy(camera.matrixWorld);this.groundProjection.copy(camera.projectionMatrix);
+    const marker=this.groundMarker,was=marker.visible,x=marker.position.x,y=marker.position.y,s=marker.scale.x;
+    marker.visible=false;
+    if(at&&!hit&&!handles.length&&!this.editing&&!this.core.gestures.active&&!this.core.drawingTool?.active) {
+      const ray=this.aim(at[0],at[1]).ray;
+      const k=ray.direction.z<-.001?-ray.origin.z/ray.direction.z:-1;
+      if(k>0&&k<(this.core.config.reach||1)*8) {
+        marker.position.copy(ray.origin).addScaledVector(ray.direction,k);marker.position.z=.0005;
+        marker.scale.setScalar(this.core.metresPerPixel(marker.position)*8);
+        marker.visible=true;
+      }
+    }
+    if(marker.visible!==was || marker.visible&&(x!==marker.position.x||y!==marker.position.y||s!==marker.scale.x))this.core.requestRender();
+  }
+
+  // The mark goes when a drag or an edit begins, and follows the camera.
+  followGround() {
+    const marker=this.groundMarker,camera=this.core.camera;
+    if(marker.visible&&(this.editing||this.core.gestures.active||this.core.drawingTool.active)){marker.visible=false;this.core.requestRender();}
+    if(!this.groundAt||this.groundView.equals(camera.matrixWorld)&&this.groundProjection.equals(camera.projectionMatrix))return;
+    const [x,y]=this.groundAt,handles=this.handlesAt(x,y);
+    this.placeGround(this.groundAt,handles.length?null:this.hit(x,y),handles);
+  }
+
+  recolor(colors) {
+    if(colors?.action)this.groundMarker.material.color.set(colors.action);
   }
 
   // ---- teardown -----------------------------------------------------------
 
   forget(rec) {
-    if (this.glowing && this.glowing.rec === rec) this.setGlow(null);
+    if (this.glowing?.records.includes(rec)) this.setGlow(null);
+    for (const [u, ring] of this.rings) {
+      if (ring.spec.frame !== rec.id && ring.spec.joint !== rec.id) continue;
+      if (ring === this.ring) this.hideRing();
+      ring.dispose();
+      this.rings.delete(u);
+    }
   }
 
   dispose() {
     clearTimeout(this.graceTimer);
-    this.hideRing();
+    this.forgetRings();
     this.setGlow(null);
+    this.groundMarker.removeFromParent();this.groundMarker.geometry.dispose();this.groundMarker.material.dispose();
+    this.badge.removeFromParent();this.badge.element.remove();
     for (const [target, type, fn, opts] of this.listeners) target.removeEventListener(type, fn, opts);
   }
-}
-
-function shown(object) {
-  for (let o = object; o; o = o.parent) if (!o.visible) return false;
-  return true;
 }

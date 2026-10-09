@@ -81,6 +81,11 @@ FIXED_COLOR: dict[str, str] = {
     "scene-shape-install": "#55606a",
     "scene-shape-proposed": "#8a7bb5",
     "scene-hover": "#ffffff",
+    "scene-light-sky": "#ffffff",
+    "scene-light-ground": "#1b2430",
+    "scene-light-key": "#ffffff",
+    "scene-light-fill": "#d6e4ff",
+    "scene-light-rim": "#ffffff",
     "axis-x": "#d94c3f",
     "axis-y": "#2faf7a",
     "axis-z": "#4a63e0",
@@ -314,8 +319,6 @@ def _derive(p: Palette) -> dict[str, str]:
         "path-timing-warning": _shift(p.yellow, L=0.85),
         "path-checkpoint": p.muted,
         "path-tool-action": FIXED_COLOR["scene-tool"],
-        "physics-on-track": _shift(p.green, L=0.8),
-        "physics-diverged": _shift(p.red, L=0.65),
         "physics-contact": _shift(p.red, L=0.7),
         "physics-com": _shift(p.text, L=0.92),
         "chart-1": p.blue,
@@ -635,6 +638,15 @@ PANEL_RESIZE_CONFIG: dict[str, Any] = {
         "controlPanel": ".overlay-br",
         "bottomCovers": [".status-footer", ".bottom-panel"],
         "columnCovers": [".bottom-panels-container"],
+        # Chrome the scene keeps its floating cards clear of.
+        "obstacles": [
+            ".side-tab-bar",
+            ".overlay-panel",
+            ".top-panels-container .overlay-card",
+            ".bottom-panels-container .overlay-card",
+            ".bottom-panel",
+            ".status-footer",
+        ],
     },
     "constraints": {
         "viewportMarginX": 80,
@@ -1394,6 +1406,14 @@ body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events:
 
 /* Persistent highlight on the line the running program is executing */
 .cm-line.cm-highlighted {
+  background-color: var(--wc-editor-exec-line);
+}
+
+.cm-line.cm-inspected {
+  box-shadow: inset 3px 0 var(--wc-action);
+  background-color: color-mix(in srgb, var(--wc-action) 15%, transparent);
+}
+.cm-line.cm-inspected.cm-highlighted {
   background-color: var(--wc-editor-exec-line);
 }
 

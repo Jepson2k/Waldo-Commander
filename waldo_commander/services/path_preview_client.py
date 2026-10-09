@@ -13,6 +13,7 @@ this client's notes line up with those blocks by index.
 import asyncio
 import inspect
 import linecache
+import ast
 import logging
 import math
 import re
@@ -33,11 +34,28 @@ logger = logging.getLogger(__name__)
 
 R = TypeVar("R")
 
+_MOTION_METHODS = frozenset(("move_j", "move_l", "move_c", "move_s", "move_p"))
 _LITERAL_LIST_RE = re.compile(
     r"(?:move_j|move_l|move_c|move_s|move_p)\s*\(\s*(?:\w+\s*=\s*)?\["
     r"\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
     r"(?:\s*,\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)*\s*\]"
 )
+
+
+def _literal_list(node: ast.expr | None) -> bool:
+    """Whether *node* is a list or tuple of finite number literals."""
+    if not isinstance(node, ast.List | ast.Tuple) or not node.elts:
+        return False
+    for element in node.elts:
+        try:
+            value = ast.literal_eval(element)
+        except (ValueError, TypeError, SyntaxError):
+            return False
+        if type(value) not in (int, float) or not math.isfinite(value):
+            return False
+    return True
+
+
 _DURATION_RE = re.compile(r"duration\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)")
 
 _COMMANDS = command_table()
@@ -170,6 +188,7 @@ class PathPreviewClient:
         # but cannot know where they came from — the program is ours.
         self.notes: list[CommandNote] = []
         self._last_attributed_line = 0
+        self._motion_lines: dict[int, tuple[str, bool]] | None = None
 
         logger.debug("PathPreviewClient initialized")
 
@@ -401,17 +420,55 @@ class PathPreviewClient:
             pass
         return 0
 
-    def _get_source_line(self, line_no: int) -> str:
-        try:
-            line = linecache.getline("simulation_script.py", line_no)
-            if line:
-                return line.strip()
-        except (OSError, ValueError, IndexError):
-            pass
-        return ""
+    def _motion_source(self, line_no: int) -> tuple[str, bool]:
+        """The motion call at *line_no* as written, and whether its first
+        argument is a literal coordinate list."""
+        if self._motion_lines is None:
+            self._motion_lines = self._index_motion_calls()
+        known = self._motion_lines.get(line_no)
+        if known is None:
+            text = linecache.getline("simulation_script.py", line_no).strip()
+            known = (text, bool(_LITERAL_LIST_RE.search(text)))
+            self._motion_lines[line_no] = known
+        return known
 
-    def _has_literal_list_args(self, line: str) -> bool:
-        return bool(_LITERAL_LIST_RE.search(line))
+    @staticmethod
+    def _index_motion_calls() -> dict[int, tuple[str, bool]]:
+        """Every line of every motion call in the script, read in one parse
+        a run; a line two calls share is read on its own."""
+        lines = linecache.getlines("simulation_script.py")
+        try:
+            tree = ast.parse("".join(lines))
+        except SyntaxError:
+            return {}
+        out: dict[int, tuple[str, bool]] = {}
+        shared: set[int] = set()
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _MOTION_METHODS
+            ):
+                continue
+            end = node.end_lineno or node.lineno
+            first = (
+                node.args[0]
+                if node.args
+                else node.keywords[0].value
+                if node.keywords
+                else None
+            )
+            entry = (
+                "".join(lines[node.lineno - 1 : end]).strip(),
+                _literal_list(first),
+            )
+            for line in range(node.lineno, end + 1):
+                if line in out:
+                    shared.add(line)
+                out[line] = entry
+        for line in shared:
+            del out[line]
+        return out
 
     @staticmethod
     def _extract_requested_duration(line: str) -> float | None:
@@ -523,10 +580,10 @@ class PathPreviewClient:
                 self._pending_sleep = 0.0
                 self._last_move_non_blocking = not kwargs.get("wait", True)
                 line_no = self._get_caller_line_number()
-                source_line = self._get_source_line(line_no)
+                source_line, literal = self._motion_source(line_no)
                 fields = {
                     "requested_duration": self._extract_requested_duration(source_line),
-                    "literal": self._has_literal_list_args(source_line),
+                    "literal": literal,
                 }
                 try:
                     result = method(*args, **kwargs)

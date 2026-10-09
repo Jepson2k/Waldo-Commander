@@ -1,10 +1,11 @@
 """Hover-revealed jog handles in the 3D view: a ring per joint and the TCP gizmo.
 
-Hovering a link reveals its joint's ring and hovering the last link or the
-tool reveals the gizmo; the browser does that on its own. The app tells it
+Hovering a link reveals its joint's ring and hovering the tool (or the TCP
+badge) reveals the gizmo; the browser does that on its own. The app tells it
 which objects reveal which handle and what each ring spans, and what the
-handles may do now: whether jogging is possible, the gizmo's mode, whether
-target editing has them suspended. A change to that ends any drag under way.
+handles may do now: whether jogging is possible, whether the gizmo shows,
+whether target editing has them suspended. A change to that ends any drag
+under way.
 
 A ring drag is the browser's proposal. The app admits it only while the ring
 may move the robot, and takes each target as the change since the grab added
@@ -20,27 +21,15 @@ import waldoctl
 from nicegui import background_tasks
 
 from waldo_commander.scene3d.interaction import Gesture, finite
+from waldo_commander.state import ui_state
 
 from .angle_pipeline import urdf_to_panel
 
 GIZMO = "gizmo"
-#: Hovering the last link shows the gizmo. Set to False to give the last joint
-#: a ring too and leave the gizmo to the tool.
-LAST_LINK_SHOWS_GIZMO = True
 
 #: Ring radius per joint as a fraction of the arm's reach; the last value
 #: serves any further joints.
 _DIAL_RADIUS_FRACTION = (0.16, 0.14, 0.12, 0.10, 0.09, 0.08)
-
-#: (camera distance above which the band applies [m], joint step [°],
-#: cartesian step [mm]), coarse to fine: how far the rings and gizmo snap.
-#: The default view, 0.66 m from its target, lands in the second band.
-SNAP_BANDS: tuple[tuple[float, float, float], ...] = (
-    (1.2, 5.0, 10.0),
-    (0.5, 1.0, 5.0),
-    (0.3, 0.5, 1.0),
-    (0.0, 0.1, 0.5),
-)
 
 
 def _z_onto(axis: np.ndarray) -> list[list[float]]:
@@ -76,7 +65,6 @@ class JogHandlesMixin:
         self._joint_q = np.zeros(len(self.joint_names), dtype=np.float64)
         self._hover_suspended = False
         self._handles_available = False
-        self._gizmo_mode = "translate"
         self._ring_begin: Callable[[int], int | None] | None = None
         self._ring_target: Callable[[int, float], None] | None = None
         self._ring_end: Callable[[int], Awaitable[None]] | None = None
@@ -102,20 +90,15 @@ class JogHandlesMixin:
 
     def _hover_sources(self) -> dict[int, str]:
         """Which objects reveal which handle: each revolute joint's child link
-        its ring, and the last link and the tool the gizmo."""
+        its ring, and the tool the gizmo."""
         joints = {j.name: j for j in self.urdf_model.joints}
-        last = len(self.joint_names) - 1
         sources: dict[int, str] = {}
         for u, joint_name in enumerate(self.joint_names):
             joint = joints[joint_name]
-            if u == last and LAST_LINK_SHOWS_GIZMO:
-                target = GIZMO
-            elif joint.joint_type in ("revolute", "continuous"):
-                target = f"ring:{u}"
-            else:
+            if joint.joint_type not in ("revolute", "continuous"):
                 continue
             for mesh in self._link_to_meshes.get(joint.child, []):
-                sources[mesh.id] = target
+                sources[mesh.id] = f"ring:{u}"
         if self._tool_meshes_group is not None:
             sources[self._tool_meshes_group.id] = GIZMO
         return sources
@@ -133,10 +116,7 @@ class JogHandlesMixin:
             joint = self.joint_groups.get(joint_name)
             if frame is None or joint is None:
                 continue
-            limits = self.joint_pos_limits.get(joint_name, {})
-            lo, hi = limits.get("min"), limits.get("max")
-            if lo is None or hi is None or hi - lo >= 2 * math.pi:
-                lo = hi = None
+            lo, hi = self._joint_travel(u)
             panel, sign, offset = self._panel_mapping(u)
             fraction = _DIAL_RADIUS_FRACTION[min(u, len(_DIAL_RADIUS_FRACTION) - 1)]
             specs[u] = {
@@ -160,6 +140,24 @@ class JogHandlesMixin:
         robot = ui_state.active_robot
         return list(robot.joints.names) if robot is not None else []
 
+    def _joint_travel(self, u: int) -> tuple[float | None, float | None]:
+        """Joint *u*'s travel in URDF radians, None where it has no end: the
+        URDF's limits, or the backend's where the URDF gives no travel (par6
+        ships every arm joint as 0/0)."""
+        joint_name = self.joint_names[u]
+        if self.urdf_model.joint_map[joint_name].joint_type == "continuous":
+            return None, None
+        limits = self.joint_pos_limits.get(joint_name, {})
+        lo, hi = limits.get("min"), limits.get("max")
+        if lo is None or hi is None or hi > lo:
+            return lo, hi
+        panel, sign, offset = self._panel_mapping(u)
+        ends = sorted(
+            math.radians(float(v) * sign + offset)
+            for v in ui_state.active_robot.joints.limits.position.deg[panel]
+        )
+        return ends[0], ends[1]
+
     @staticmethod
     def _panel_mapping(u: int) -> tuple[int, float, float]:
         """(panel index, sign, offset °) of URDF joint *u*, from two points
@@ -173,9 +171,7 @@ class JogHandlesMixin:
 
     def _handle_rules(self) -> dict[str, Any]:
         gizmo = (
-            self._gizmo_mode
-            if waldoctl.commander.settings.view.gizmo_visible
-            else "hidden"
+            "combined" if waldoctl.commander.settings.view.gizmo_visible else "hidden"
         )
         return {
             "available": self._handles_available,
@@ -265,4 +261,4 @@ class JogHandlesMixin:
             background_tasks.create(self._ring_end(token), name="ring drag end")
 
 
-__all__ = ["GIZMO", "LAST_LINK_SHOWS_GIZMO", "SNAP_BANDS", "JogHandlesMixin"]
+__all__ = ["GIZMO", "JogHandlesMixin"]

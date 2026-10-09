@@ -61,8 +61,8 @@ async def test_a_predicted_pass_never_locks_the_bar_and_draws_only_against_its_p
     A predicted record that does differ is drawn only against the plan it
     answers. One that answers an older revision is not on screen at all —
     not in the scene, not in the layer toggles, not in the legend; its
-    layer toggle shows and hides it without a rebuild; and one that is the
-    plan itself has nothing to add.
+    comparison data is retired when it is stale; a prediction identical
+    to the plan has nothing to add.
     """
     from waldo_commander.components.physics_legend import physics_legend
     from waldo_commander.components.playback import layers_available, playback
@@ -124,39 +124,35 @@ async def test_a_predicted_pass_never_locks_the_bar_and_draws_only_against_its_p
     commanded, predicted = _pair(waldoctl.commander.status.joints.angles.rad)
     overlay = scene.physics_overlay
     legend = physics_legend._root
-    toggle = playback._layer_checks["predicted_visible"]
     try:
+        drawn = scene.inspection.generation
         dry_run.commanded = commanded
+        dry_run.revision = 2
         dry_run.commanded_revision = 2
         dry_run.path_segments = segments_from_record(commanded, [])
         dry_run.predicted = predicted
         dry_run.predicted_revision = 1
         simulation_state.notify_changed()
-        await asyncio.sleep(0)
+        assert await wait_until(lambda: scene.inspection.generation > drawn)
         assert dry_run.predicted_current is None
-        assert not overlay.is_built, "an answer to an older plan must not be drawn"
-        assert not layers_available(dry_run)["predicted_visible"]
-        assert not legend.visible
+        assert len(scene.inspection.data["records"]) == 1, (
+            "an answer to an older plan must not be drawn"
+        )
 
         dry_run.predicted_revision = 2
         simulation_state.notify_changed()
-        assert await wait_until(lambda: overlay.is_built)
+        assert await wait_until(
+            lambda: scene.inspection.data is not None
+            and len(scene.inspection.data["records"]) == 2
+        )
         assert dry_run.predicted_current is predicted
-        assert layers_available(dry_run)["predicted_visible"]
-        assert toggle.enabled
-        assert legend.visible
-
-        toggle.set_value(False)
-        assert await wait_until(lambda: not overlay._predicted.visible_)
-        assert overlay.is_built, "a toggle must not tear the geometry down"
-        toggle.set_value(True)
-        assert await wait_until(lambda: overlay._predicted.visible_)
+        assert not overlay.is_built, "no contact/COM channels means no annotation pool"
+        assert not any(layers_available(dry_run).values())
+        assert not legend.visible
 
         dry_run.predicted = commanded
         simulation_state.notify_changed()
-        assert await wait_until(lambda: not overlay.is_built), (
-            "a prediction that is the plan draws nothing the plan does not"
-        )
+        assert await wait_until(lambda: len(scene.inspection.data["records"]) == 1)
         assert not legend.visible
     finally:
         dry_run.commanded = None

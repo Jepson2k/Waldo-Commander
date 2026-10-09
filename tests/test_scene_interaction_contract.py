@@ -24,7 +24,7 @@ from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
 from waldoctl import Box
 
-from tests.helpers.scene_events import Drag, ball, held_until, right_click, ring
+from tests.helpers.scene_events import Drag, ball, gizmo, held_until, right_click, ring
 from tests.helpers.wait import (
     JOG_SAFE_POSE_DEG,
     ensure_robot_ready_for_motion,
@@ -288,10 +288,20 @@ async def test_edits_from_an_ended_session_change_nothing(user: User) -> None:
         return scene.interaction["edit"]["session"]
 
     first = edit_target()
-    assert await wait_until(lambda: waldoctl.commander.status.editing_mode, 5)
+    assert await wait_until(lambda: ui_state.editing_target, 5)
+    live_angles = waldoctl.commander.status.joints.angles.rad.copy()
+    live_pose = tuple(
+        getattr(waldoctl.commander.status.pose, key)
+        for key in ("x", "y", "z", "rx", "ry", "rz")
+    )
     q0 = urdf._editing_angles[0]
     old = Drag(user, scene, "joint").begin(session=first, joint=0, q=q0)
     old.move(session=first, joint=0, q=q0 + 0.2)
+    assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live_angles)
+    assert tuple(
+        getattr(waldoctl.commander.status.pose, key)
+        for key in ("x", "y", "z", "rx", "ry", "rz")
+    ) == pytest.approx(live_pose)
     user.find(marker="edit-bar-cancel").click()
     session = edit_target()
     assert session != first
@@ -312,6 +322,19 @@ async def test_edits_from_an_ended_session_change_nothing(user: User) -> None:
     assert len(vectors[-1]) == len(urdf.joint_names), "only part of the arm was sent"
     assert vectors[-1][0] == pytest.approx(fresh + 0.3, abs=1e-6)
     assert urdf._editing_angles[0] == pytest.approx(fresh + 0.3)
+    preview_start = urdf.get_editing_angles()
+    tcp_start = urdf._get_editing_tcp_pose()
+    translating = gizmo(user, scene).move(**ball(x=0.005))
+    assert await held_until(
+        translating,
+        lambda: np.linalg.norm(np.subtract(urdf.get_editing_angles(), preview_start))
+        > 1e-4,
+        5,
+    )
+    assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live_angles)
+    translating.abort()
+    assert urdf.get_editing_angles() == pytest.approx(preview_start)
+    assert urdf._get_editing_tcp_pose() == pytest.approx(tcp_start)
     user.find(marker="edit-bar-cancel").click()
 
 

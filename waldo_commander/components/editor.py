@@ -3,7 +3,6 @@
 import ast
 import asyncio
 import logging
-import re
 from pathlib import Path
 from collections.abc import Iterator
 from typing import Any, Callable
@@ -22,6 +21,7 @@ from waldo_commander.components.log_panel import (
     log_panel,
 )
 from waldo_commander.components.playback import playback
+from waldo_commander.components.scene_code_editor import SceneCodeEditor
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.simulation_engine import (
     default_python_snippet,
@@ -62,6 +62,7 @@ from waldo_commander.services.python_source import (
     preamble_statements,
     program_setup,
 )
+from waldo_commander.services.scene_source import target_binding, replace_target
 from waldo_commander.services.skill_library import library
 from waldo_commander.setup import SetupStore, add_save_listener
 from waldo_commander.state import (
@@ -233,6 +234,19 @@ class EditorPanel(FileOperationsMixin):
         advance_active_cursor(first_line + count - 1)
         logger.info("Added Python snippet at line %d: %s", first_line, snippet)
 
+    def target_edit_reason(self, target_id: str) -> str | None:
+        textarea = ui_state.active_textarea
+        line = self._target_line(target_id)
+        if textarea is None or line is None:
+            return "This target no longer has a source binding."
+        try:
+            target_binding(
+                str(textarea.value or ""), line, ui_state.active_robot.joints.count
+            )
+        except ValueError as error:
+            return str(error)
+        return None
+
     def sync_code_from_target(
         self,
         target_id: str,
@@ -240,95 +254,32 @@ class EditorPanel(FileOperationsMixin):
         *,
         move_type: str | None = None,
         joint_angles_deg: list[float] | None = None,
-    ) -> None:
-        """Update the program code with the new pose for a specific target.
-
-        Uses CM6 StateField position tracking to find the target line.
-        Positions are tracked through edits, so this works even after
-        the user inserts/deletes lines.
-
-        Note: pose is in scene units (meters for position, degrees for rotation).
-        Code uses user units (mm for position, degrees for rotation).
-
-        If move_type is provided (e.g. "joints"), the move command is also
-        converted (move_l→move_j or vice versa). joint_angles_deg must be
-        provided when converting to move_j.
-        """
+    ) -> bool:
+        """Commit one structural target edit; position is in metres, angles in degrees."""
         textarea = ui_state.active_textarea
-        if not textarea:
-            return
-
+        line = self._target_line(target_id)
+        if textarea is None or line is None:
+            return False
         try:
-            current_value = textarea.value
-            if current_value is None:
-                logger.debug("Sync skipped: codemirror value is None")
-                return
-        except (AttributeError, RuntimeError) as e:
-            logger.debug("Sync skipped: codemirror not ready - %s", e)
-            return
-
-        line_number = self._target_line(target_id)
-        if line_number is None:
-            logger.warning("Sync failed: Target %s not found", target_id)
-            return
-
-        lines = current_value.split("\n")
-        found_line_idx = line_number - 1
-
-        if found_line_idx < 0 or found_line_idx >= len(lines):
-            logger.warning("Sync failed: Line %d out of range", line_number)
-            return
-
-        line = lines[found_line_idx]
-
-        # Match the coordinate list (a bracketed list of numbers) in the line.
-        match = re.search(r"(\[[\d\.\,\-\s]+\])", line)
-
-        if match:
-            if move_type == "joints" and joint_angles_deg is not None:
-                new_values_str = (
-                    "[" + ", ".join(f"{v:.3f}" for v in joint_angles_deg) + "]"
-                )
-                new_line = line[: match.start()] + new_values_str + line[match.end() :]
-                new_line = new_line.replace("rbt.move_l(", "rbt.move_j(")
-                new_line = new_line.replace("rbt.move_c(", "rbt.move_j(")
-            else:
-                # Convert from scene units (meters) to user units (mm) for position
-                pose_mm = [
-                    pose[0] * 1000.0 if len(pose) > 0 else 0.0,
-                    pose[1] * 1000.0 if len(pose) > 1 else 0.0,
-                    pose[2] * 1000.0 if len(pose) > 2 else 0.0,
-                    pose[3] if len(pose) > 3 else 0.0,
-                    pose[4] if len(pose) > 4 else 0.0,
-                    pose[5] if len(pose) > 5 else 0.0,
-                ]
-                new_values_str = "[" + ", ".join(f"{v:.3f}" for v in pose_mm) + "]"
-                new_line = line[: match.start()] + new_values_str + line[match.end() :]
-
-            lines[found_line_idx] = new_line
-            textarea.value = "\n".join(lines)
-            logger.info(
-                "Synced code for target %s at line %d: %s",
-                target_id,
-                line_number,
-                new_values_str,
+            updated = replace_target(
+                str(textarea.value or ""),
+                line,
+                ui_state.active_robot.joints.count,
+                pose=[v * 1000 if i < 3 else v for i, v in enumerate(pose)],
+                joints=joint_angles_deg,
+                as_joints=move_type == "joints",
             )
-        else:
-            logger.warning(
-                "Sync failed: Could not find coordinate list in line: %s", line
-            )
+        except ValueError as error:
+            ui.notify(str(error), color="warning")
+            return False
+        textarea.commit_scene_value(updated)
+        return True
 
-    # Single-pose targets only: multi-pose lines (move_c via+end) can't be
-    # re-taught from one pose — sync would overwrite just the first bracket.
     _RETEACHABLE_MOVE_TYPES = ("joints", "cartesian", "pose")
-    # sync_code_from_target rewrites only the bracketed list and keeps every
-    # kwarg — absolute current-position values under rel=/frame=/pose=
-    # semantics would corrupt the move (e.g. a 250mm relative lunge).
-    _RETEACH_KWARG_RE = re.compile(r"\b(?:rel|frame|pose)\s*=")
     _CAPTURE_TIP_INSERT = "Capture pose: insert a move at the current robot position"
     _CAPTURE_TIP_RETEACH = "Capture pose: re-teach this step in place"
     _CAPTURE_TIP_BLOCKED = (
-        "Capture pose: this step uses rel=, frame=, or pose= — inserts instead"
+        "Capture pose: this step has no directly editable target — inserts instead"
     )
     _CAPTURE_TIP_REPLACE = "Capture pose: replace the selected lines with one move"
 
@@ -355,9 +306,7 @@ class EditorPanel(FileOperationsMixin):
                 and t.move_type in self._RETEACHABLE_MOVE_TYPES
                 and anchors.get(t.id) == line
             ):
-                lines = str(textarea.value or "").split("\n")
-                text = lines[line - 1] if line <= len(lines) else ""
-                if self._RETEACH_KWARG_RE.search(text):
+                if self.target_edit_reason(t.id) is not None:
                     return None, True
                 return t, False
         return None, False
@@ -502,9 +451,8 @@ class EditorPanel(FileOperationsMixin):
     def _reteach_at_cursor(self) -> None:
         """Overwrite the move at the cursor with the robot's current position.
 
-        move_j lines get the current joint angles; move_l lines get the
-        current WRF pose — passing a pose against a joint-angle list (or vice
-        versa) would corrupt the line.
+        The source binding chooses joint angles or WRF pose without changing
+        the motion method or its argument kind.
         """
         target = self._target_at_cursor()
         if target is None:
@@ -515,24 +463,19 @@ class EditorPanel(FileOperationsMixin):
             # No status frames yet — overwriting would replace the taught
             # values with zeros (pose) or a truncated list (joints).
             return
-        if target.move_type == "joints":
-            self.sync_code_from_target(
-                target.id, target.pose, move_type="joints", joint_angles_deg=angles
-            )
-        else:
-            pose = waldoctl.commander.status.pose
-            # sync_code_from_target expects scene units (m); status pose is mm.
-            self.sync_code_from_target(
-                target.id,
-                [
-                    pose.x / 1000.0,
-                    pose.y / 1000.0,
-                    pose.z / 1000.0,
-                    pose.rx,
-                    pose.ry,
-                    pose.rz,
-                ],
-            )
+        pose = waldoctl.commander.status.pose
+        self.sync_code_from_target(
+            target.id,
+            [
+                pose.x / 1000.0,
+                pose.y / 1000.0,
+                pose.z / 1000.0,
+                pose.rx,
+                pose.ry,
+                pose.rz,
+            ],
+            joint_angles_deg=angles,
+        )
 
     def _target_line(self, target_id: str) -> int | None:
         """The 1-indexed line of a target in the active program."""
@@ -1027,7 +970,7 @@ class EditorPanel(FileOperationsMixin):
 
                 # Flex-fills the panel and uses CodeMirror's own internal
                 # scrolling; min-h-0 lets it shrink within the fixed height.
-                textarea = ui.codemirror(
+                textarea = SceneCodeEditor(
                     value=tab.source,
                     language="Python",
                     line_wrapping=True,

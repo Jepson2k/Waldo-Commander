@@ -9,17 +9,26 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
 import { CameraMove } from "./camera.js";
+import { CameraTools } from "./camera_tools.js";
 import { Fx } from "./fx.js";
 import { Gestures } from "./gestures.js";
 import { Gizmos } from "./gizmo.js";
 import { Inset } from "./inset.js";
+import { Inspection } from "./inspection.js";
 import { Menu } from "./menu.js";
 import { Nodes } from "./nodes.js";
+import { Overlays } from "./overlays.js";
+import { PrimitiveResize } from "./primitive_resize.js";
+import { PrimitiveDrawing } from "./primitive_drawing.js";
 import { Pointer } from "./pointer.js";
+import { Selection } from "./selection.js";
+import { SectionView } from "./section.js";
 import { surface } from "./testing.js";
 
 const COVERED_FRAME_MS = 250;
 const RESTORE_WAIT_MS = 5000;
+
+const viewed = new THREE.Vector3();
 
 export class SceneCore {
   constructor(root, emit, remount) {
@@ -28,6 +37,9 @@ export class SceneCore {
     this.remount = remount;
     this.canvas = root.querySelector("canvas");
     this.lostNotice = root.querySelector(".wc-scene-lost");
+    this.onRemount = null; // the notice's click, while it offers a remount
+    this.coveredAt = -Infinity;
+    this.coveredBy = false;
     this.config = { max_fps: 30, reach: 1 };
     this.live = false;
     this.lost = false;
@@ -48,7 +60,7 @@ export class SceneCore {
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(0, -3, 5);
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, canvas: this.canvas });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference:"high-performance", canvas: this.canvas });
     // No tone mapping, so unlit token colours render as their hex.
     this.renderer.toneMapping = THREE.NoToneMapping;
     const shadows = this.renderer.shadowMap;
@@ -59,29 +71,33 @@ export class SceneCore {
     this.casters = NaN;
     this.labels = new CSS2DRenderer({ element: root.querySelector(".wc-scene-labels") });
     this.controls = new OrbitControls(this.camera, this.canvas);
-    this.controls.addEventListener("change", () => {
-      this.pointer.updateSnap();
-      this.requestRender();
-    });
+    this.controls.addEventListener("change", () => this.requestRender());
 
     this.ix = {};
-    this.snap = [1, 5];
     this.nodes = new Nodes(this);
+    this.overlays = new Overlays(this);
     this.fx = new Fx(this);
     this.cameraMove = new CameraMove(this);
     this.inset = new Inset(this);
     this.gestures = new Gestures(this);
     this.pointer = new Pointer(this);
     this.gizmos = new Gizmos(this);
+    this.resizeHandles = new PrimitiveResize(this);
+    this.drawingTool = new PrimitiveDrawing(this);
     this.menu = new Menu(this);
+    this.inspection = new Inspection(this);
+    this.navigation = new CameraTools(this);
+    this.selection = new Selection(this);
+    this.section = new SectionView(this);
+    this.pointer.tools = [this.drawingTool, this.resizeHandles, this.gizmos, this.pointer.ringTool, this.inspection];
     this.surface = surface(this);
 
     // A drag must not outlive the page's attention.
-    this.onBlur = () => this.gestures.abort("blur");
+    this.onBlur = () => this.pointer.interrupt("blur");
     this.onVisibility = () => {
-      if (document.visibilityState === "hidden") this.gestures.abort("hidden");
+      if (document.visibilityState === "hidden") this.pointer.interrupt("hidden");
     };
-    this.onPageHide = () => this.gestures.abort("pagehide");
+    this.onPageHide = () => this.pointer.interrupt("pagehide");
     window.addEventListener("blur", this.onBlur);
     document.addEventListener("visibilitychange", this.onVisibility);
     window.addEventListener("pagehide", this.onPageHide);
@@ -102,90 +118,125 @@ export class SceneCore {
 
   apply(ops) {
     for (const op of ops) {
-      const code = op[0];
-      if (code === "reset") {
-        this.reset();
-        continue;
+      // One change that fails must not cost the rest of its batch.
+      try {
+        this.applyOne(op);
+      } catch (err) {
+        console.error(`scene: op ${op[0]} failed`, err);
       }
-      // Changes queued for an earlier mount: this one's reset has the scene.
-      if (!this.live) continue;
-      switch (code) {
-        case "c":
-          this.nodes.create(op[1], op[2], op[3], op[4], op[5]);
-          break;
-        case "u": {
-          const rec = this.nodes.get(op[1]);
-          if (rec) this.nodes.update(rec, op[2]);
-          break;
-        }
-        case "d":
-          this.nodes.delete(op[1]);
-          break;
-        case "J":
-          this.nodes.defineJoints(op[1]);
-          break;
-        case "q":
-          this.nodes.setJoints(op[1]);
-          break;
-        case "cfg":
-          this.configure(op[1]);
-          break;
-        case "cam":
-          this.cameraMove.start(op[1], op[2], op[3]);
-          break;
-        case "fx":
-          this.fx.run(op[1], op.slice(2));
-          break;
-        case "epoch":
-          this.gestures.setEpoch(op[1]);
-          break;
-        case "reject":
-          this.gestures.reject(op[1]);
-          break;
-        case "ix":
-          this.interact(op[1]);
-          break;
-        case "tcp":
-          this.gizmos.place(op[1], op[2], op[3]);
-          break;
-        case "miss":
-          this.gizmos.setMiss(!!op[1]);
-          break;
-        case "menu":
-          this.menu.open(op[1], op[2], op[3]);
-          break;
-        default:
-          console.warn(`scene: unknown op ${code}`);
-      }
+    }
+    if (this.nodes.objectsChanged) {
+      this.nodes.objectsChanged = false;
+      this.selection.prune();
     }
     if (this.live) this.root.setAttribute("data-ready", "");
   }
 
+  applyOne(op) {
+    const code = op[0];
+    if (code === "reset") {
+      this.reset();
+      return;
+    }
+    // Changes queued for an earlier mount: this one's reset has the scene.
+    if (!this.live) return;
+    switch (code) {
+      case "c":
+        this.nodes.create(op[1], op[2], op[3], op[4], op[5]);
+        break;
+      case "u": {
+        const rec = this.nodes.get(op[1]);
+        if (rec) this.nodes.update(rec, op[2]);
+        break;
+      }
+      case "d":
+        this.nodes.delete(op[1]);
+        break;
+      case "J":
+        this.nodes.defineJoints(op[1]);
+        break;
+      case "q":
+        this.nodes.setJoints(op[1]);
+        break;
+      case "cfg":
+        this.configure(op[1]);
+        break;
+      case "cam":
+        this.navigation.home ??= op[1];
+        // A drag must not re-project against a moving camera.
+        this.pointer.abortDrag("camera");
+        this.cameraMove.start(op[1], op[2], op[3]);
+        break;
+      case "fx":
+        this.fx.run(op[1], op.slice(2));
+        break;
+      case "epoch":
+        this.gestures.setEpoch(op[1]);
+        this.drawingTool.cancel();
+        this.menu.resend();
+        break;
+      case "reject":
+        this.gestures.reject(op[1]);
+        break;
+      case "ix":
+        this.interact(op[1]);
+        break;
+      case "tcp":
+        this.gizmos.place(op[1], op[2], op[3]);
+        break;
+      case "miss":
+        this.gizmos.setMiss(!!op[1]);
+        break;
+      case "menu":
+        this.menu.open(op[1], op[2], op[3]);
+        break;
+      default:
+        console.warn(`scene: unknown op ${code}`);
+    }
+  }
+
   reset() {
+    this.inspection.load(null);
+    this.selection.load(null);
+    this.resizeHandles.load(null);
+    this.drawingTool.load(null);
     this.gestures.abort("reset");
-    this.pointer.hideRing();
+    this.pointer.forgetRings();
     this.pointer.forgetHover();
     this.nodes.reset();
+    this.gestures.reset();
     this.fx.tweens.clear();
     this.fx.stopPulse();
     this.ix = {};
     this.live = true;
     this.resets++;
-    if (!this.lost) this.gestures.unblock();
+    this.navigation.notify();
+    this.gestures.unblock("disconnect");
     this.requestRender();
   }
 
   // What the pointer handling works from: hover sources, rings, handle
-  // rules, edit and keep-out move state, colours and snap bands.
+  // rules, edit and keep-out move state, colours.
   interact(changes) {
     Object.assign(this.ix, changes);
-    if ("bands" in changes) {
-      this.snap = [NaN, NaN];
-      this.pointer.updateSnap();
+    if ("entities" in changes) this.selection.load(changes.entities);
+    if ("shapeDraw" in changes) this.drawingTool.load(changes.shapeDraw);
+    if ("colors" in changes) {
+      this.gizmos.precision.prepare();
+      this.pointer.recolor(changes.colors);
+      this.selection.recolor(changes.colors);
     }
-    if ("rings" in changes && this.pointer.ring) this.pointer.hideRing();
-    if ("edit" in changes) this.gizmos.setJoints(this.ix.edit);
-    if ("shapeMove" in changes) this.gizmos.setShape(this.ix.shapeMove);
+    if ("pathData" in changes) this.inspection.load(changes.pathData);
+    if ("comparisonData" in changes) this.inspection.comparison.load(changes.comparisonData);
+    if ("comparisonStatus" in changes) this.inspection.comparison.status(changes.comparisonStatus);
+    if ("playbackCursor" in changes) this.inspection.follow(changes.playbackCursor);
+    if ("comparisonVisible" in changes) this.inspection.comparison.setVisible(changes.comparisonVisible);
+    if ("pathScrubAvailable" in changes || "simulator" in changes || "edit" in changes) this.inspection.availabilityChanged();
+    if ("rings" in changes || "colors" in changes) this.pointer.forgetRings();
+    if ("shapeMove" in changes) {
+      this.resizeHandles.load(this.ix.shapeMove);
+      this.gizmos.setShape(this.ix.shapeMove?.mode === "resize" ? null : this.ix.shapeMove);
+    }
     this.pointer.refresh();
     this.requestRender();
   }
@@ -196,6 +247,8 @@ export class SceneCore {
     if ("background" in changes && c.background) {
       this.renderer.setClearColor(c.background);
       this.fog.color.set(c.background);
+      // The rings' halos are the background's colour.
+      this.pointer.forgetRings();
     }
     if ("inset" in changes || "labels" in changes) this.inset.configure(c.inset, c.labels);
     this.requestRender();
@@ -206,6 +259,7 @@ export class SceneCore {
     this.fx.forget(rec);
     this.gizmos.forget(rec);
     this.pointer.forget(rec);
+    this.resizeHandles.forget(rec);
   }
 
   // ---- drawing ----------------------------------------------------------
@@ -231,7 +285,7 @@ export class SceneCore {
   frame(now) {
     this.raf = 0;
     if (this.lost || !this.size[0] || !this.size[1]) return;
-    const covered = !!document.querySelector(".q-dialog__backdrop");
+    const covered = this.covered;
     const gap = covered ? COVERED_FRAME_MS : 1000 / (this.config.max_fps || 30);
     const wait = this.lastFrame + gap - now;
     if (wait > 1) {
@@ -241,6 +295,7 @@ export class SceneCore {
       }, wait);
       return;
     }
+    this.overlays.measure();
     const delta = this.clock.getDelta();
     this.fx.step(now);
     this.cameraMove.step(now);
@@ -248,21 +303,75 @@ export class SceneCore {
     this.pointer.follow();
     this.pointer.syncGlow();
     this.wantFrame = false;
-    this.draw(delta);
-    this.lastFrame = now;
-    if (this.wantFrame || this.animating) this.schedule();
+    try {
+      this.draw(delta);
+    } finally {
+      this.overlays.framing = false;
+      this.lastFrame = now;
+      if (this.wantFrame || this.animating) this.schedule();
+    }
   }
 
+  // The scene's 3D parts are brought up to date and drawn, then the cards
+  // and labels over it are placed where the drawing leaves them room.
   draw(delta) {
+    this.fitNear();
+    for(const tc of this.gizmos.all())tc.update();
     const reach = this.config.reach || 1;
     // The fog starts past the floor's edge wherever the camera is.
     this.fog.near = this.camera.position.length() + reach * 1.5;
     this.fog.far = this.fog.near + reach * 3;
+    this.selection.outlineSelected();
+    this.resizeHandles.layoutHandles();
+    this.drawingTool.layoutHandle();
     this.updateShadows();
     this.renderer.render(this.scene, this.camera);
     this.labels.render(this.scene, this.camera);
+    this.gizmos.layout();
+    this.selection.layout();
+    this.resizeHandles.layout();
+    this.drawingTool.layout();
+    this.pointer.ring?.layoutLabels();
+    this.pointer.occludeBadge();
+    this.inspection.layout();
+    this.gizmos.precision.layout();
+    this.overlays.layoutEditBar();
+    this.gizmos.precision.layoutLabels();
+    this.overlays.layoutTeaching();
+    this.inspection.comparison.layout();
     this.inset.render(this.renderer, delta);
     this.frameCount++;
+  }
+
+  // Whether a dialog covers the page: a walk of the whole document, so it is
+  // looked up at most every 100 ms rather than on every frame.
+  get covered() {
+    const now = performance.now();
+    if (now - this.coveredAt > 100) {
+      this.coveredAt = now;
+      this.coveredBy = !!document.querySelector(".q-dialog__backdrop");
+    }
+    return this.coveredBy;
+  }
+
+  // The near plane follows the camera's distance to what it looks at: close
+  // enough not to clip a focused part, far enough to keep depth precision.
+  fitNear() {
+    const camera = this.camera;
+    if (camera.isOrthographicCamera) return;
+    const near = THREE.MathUtils.clamp(camera.position.distanceTo(this.controls.target) / 100, 0.001, 0.1);
+    if (Math.abs(near - camera.near) <= camera.near * 0.25) return;
+    camera.near = near;
+    camera.updateProjectionMatrix();
+  }
+
+  // How many metres one pixel spans at `position`: what a handle's size and
+  // a drag's snapping follow.
+  metresPerPixel(position) {
+    const camera = this.camera;
+    camera.updateMatrixWorld();
+    const depth = camera.isOrthographicCamera ? 1 : Math.max(0.001, -viewed.copy(position).applyMatrix4(camera.matrixWorldInverse).z);
+    return (2 * depth) / (camera.projectionMatrix.elements[5] * Math.max(1, this.size[1]));
   }
 
   // The shadow map is redrawn only when a shadow caster moves, appears or hides.
@@ -299,6 +408,8 @@ export class SceneCore {
   // on the part they leave uncovered.
   follow(layout) {
     this.layoutInset = { left: Math.max(0, layout.columnRight), bottom: Math.max(0, layout.bottomCover) };
+    this.overlays.follow(layout);
+    this.inspection.comparison.follow();
     this.applyView();
     this.requestRender();
   }
@@ -308,6 +419,11 @@ export class SceneCore {
     if (!W || !H) return;
     const cam = this.camera;
     const { left, bottom } = this.layoutInset;
+    if (cam.isOrthographicCamera) {
+      const half = this.navigation.height / 2;
+      cam.top = half; cam.bottom = -half;
+      cam.right = half * (W + left) / (H + bottom); cam.left = -cam.right;
+    }
     if (left <= 0 && bottom <= 0) {
       if (cam.view && cam.view.enabled) cam.clearViewOffset();
       cam.aspect = W / H;
@@ -321,6 +437,8 @@ export class SceneCore {
   // ---- WebGL context ------------------------------------------------------
 
   contextLost() {
+    this.inspection.clear();
+    this.pointer.setGlow(null);
     this.lost = true;
     this.gestures.block("context lost");
     this.root.setAttribute("data-gl", "lost");
@@ -335,23 +453,42 @@ export class SceneCore {
     this.lost = false;
     this.root.removeAttribute("data-gl");
     this.lostNotice.style.display = "none";
+    this.withdrawRemount();
     if (this.config.background) this.renderer.setClearColor(this.config.background);
     this.renderer.shadowMap.needsUpdate = true;
     this.casters = NaN;
-    if (this.live) this.gestures.unblock();
+    this.gizmos.precision.prepare(true);
+    this.gestures.unblock("context lost");
     this.requestRender();
   }
 
   // The socket dropped: no drag goes on, and none starts until the app has
   // sent the scene again.
   disconnected() {
+    this.inspection.clear(false);
+    this.pointer.setGlow(null);
     this.gestures.block("disconnect");
   }
 
+  // One offer at a time: a second remount from the same click would leave
+  // the view unmounted.
   offerRemount() {
+    if (this.onRemount) return;
+    this.onRemount = () => {
+      this.withdrawRemount();
+      this.remount();
+    };
     this.lostNotice.textContent = "The 3D view stopped drawing. Click to restore it.";
     this.lostNotice.style.cursor = "pointer";
-    this.lostNotice.addEventListener("click", () => this.remount(), { once: true });
+    this.lostNotice.addEventListener("click", this.onRemount);
+  }
+
+  withdrawRemount() {
+    if (!this.onRemount) return;
+    this.lostNotice.removeEventListener("click", this.onRemount);
+    this.onRemount = null;
+    this.lostNotice.textContent = "";
+    this.lostNotice.style.cursor = "";
   }
 
   dispose() {
@@ -365,6 +502,11 @@ export class SceneCore {
     document.removeEventListener("visibilitychange", this.onVisibility);
     window.removeEventListener("pagehide", this.onPageHide);
     this.menu.dispose();
+    this.inspection.dispose();
+    this.section.dispose();
+    this.selection.dispose();
+    this.resizeHandles.dispose();
+    this.drawingTool.dispose();
     this.pointer.dispose();
     this.gizmos.dispose();
     window.removeEventListener("wc:layout", this.onLayout);

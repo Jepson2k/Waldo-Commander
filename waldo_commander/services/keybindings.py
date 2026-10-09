@@ -380,6 +380,23 @@ def _register_default_keybindings() -> None:
         )
     )
 
+    from waldo_commander.components.scene_camera import camera_action
+
+    for shifted, action, description in (
+        (False, "focus", "Focus inspected pose, edited object, or robot"),
+        (True, "previous", "Restore previous camera view"),
+    ):
+        keybindings_manager.register(
+            Keybinding(
+                key="f",
+                display="F",
+                requires_shift=shifted,
+                description=description,
+                action=lambda a=action: camera_action(a),
+                category="Camera",
+            )
+        )
+
     # Holdable jog keys: click = single step, hold = continuous jog.
     _register_cartesian_jog_keybindings(cp)
 

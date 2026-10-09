@@ -14,6 +14,7 @@ export class Menu {
   constructor(core) {
     this.core = core;
     this.gen = 0;
+    this.pending = null; // the request the app has not answered yet
     this.press = null;
     this.released = false;
     this.long = null;
@@ -44,7 +45,8 @@ export class Menu {
     this.cancelLongPress();
     const mac = /Mac/.test(navigator.platform);
     if (e.button === 0 && e.ctrlKey && mac) {
-      // A ctrl+click is macOS's right-click: it neither orbits nor grabs.
+      // A ctrl+click is macOS's right-click: it neither orbits, grabs nor selects.
+      this.core.pointer.suppressTap(e.pointerId);
       e.stopImmediatePropagation();
       return;
     }
@@ -103,23 +105,44 @@ export class Menu {
     this.long = null;
   }
 
-  // Abandon a press that has turned into a drag of something.
+  // Abandon a press that has turned into a drag of something, and any menu
+  // still on its way: none opens over a drag.
   cancel() {
     this.cancelLongPress();
+    this.gen++;
+    this.pending = null;
+  }
+
+  get dragging() {
+    return this.core.gestures.active || !!this.core.pointer.drag;
   }
 
   request(cx, cy) {
     const core = this.core;
-    if (core.gestures.blocked || !core.live) return;
+    if (core.gestures.blocked || !core.live || this.dragging) return;
     const gen = ++this.gen;
-    const { hits, ground } = core.pointer.contextAt(cx, cy);
-    core.emit("context", { epoch: core.gestures.epoch, gen, hits, ground, cx, cy });
+    const { hits, ground, surface } = core.pointer.contextAt(cx, cy);
+    core.selection.anchor={x:cx,y:cy};
+    this.pending = { gen, hits, ground, surface, cx, cy, resent: false };
+    core.emit("context", { epoch: core.gestures.epoch, gen, hits, ground, surface, cx, cy });
+  }
+
+  // The app drops a request carrying an epoch it has just left; one sent as
+  // the epoch changed is asked again under the new one.
+  resend() {
+    const p = this.pending;
+    if (!p || p.resent || p.gen !== this.gen) return;
+    p.resent = true;
+    const { resent, ...fields } = p;
+    this.core.emit("context", { epoch: this.core.gestures.epoch, ...fields });
   }
 
   // The app filled the menu for request `gen`: open it there, unless a newer
-  // request has come since.
+  // request has come since or a drag has begun.
   open(gen, cx, cy) {
     if (gen !== this.gen) return;
+    this.pending = null;
+    if (this.dragging) return;
     const menu = this.menu;
     if (!menu || !menu.show) return;
     menu.show(new MouseEvent("contextmenu", { clientX: cx, clientY: cy }));

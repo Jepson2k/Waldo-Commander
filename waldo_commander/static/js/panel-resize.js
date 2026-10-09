@@ -21,7 +21,8 @@
             bottomContainer: null,
             controlPanel: null,
             bottomCovers: [],
-            columnCovers: []
+            columnCovers: [],
+            obstacles: []
         },
         constraints: {
             viewportMarginX: 80,
@@ -247,15 +248,16 @@
     }
 
     // ========== Shell geometry ==========
-    // What covers the 3D view: the column's right edge and the height the
-    // footer and bottom panel take from the bottom. The scene frames itself
-    // from the `wc:layout` event; CSS reads --wc-column-cover (the column
-    // stops above it and above the bottom plugin panels) and
+    // What covers the 3D view: the column's right edge, the height the
+    // footer and bottom panel take from the bottom, and the boxes of the
+    // `obstacles`, which the scene places its cards clear of. The scene
+    // frames itself from the `wc:layout` event; CSS reads --wc-column-cover
+    // (the column stops above it and above the bottom plugin panels) and
     // --wc-control-inset (the bottom panel stops short of the control panel).
 
     let columnOpen = false;
     let coupled = false;
-    let layout = { columnRight: 0, bottomCover: 0 };
+    let layout = { columnRight: 0, bottomCover: 0, obstacles: [] };
     let layoutFrame = 0;
 
     function setRootPx(name, value) {
@@ -278,6 +280,19 @@
         return cover;
     }
 
+    function obstacleBoxes() {
+        const boxes = [];
+        for (const selector of config.selectors.obstacles) {
+            for (const element of document.querySelectorAll(selector)) {
+                const rect = element.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0 && getComputedStyle(element).visibility !== 'hidden') {
+                    boxes.push({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom });
+                }
+            }
+        }
+        return boxes;
+    }
+
     function publishLayout() {
         layoutFrame = 0;
         let columnRight = 0;
@@ -294,7 +309,7 @@
         if (controlPanel) setRootPx('--wc-control-height', Math.ceil(controlPanel.getBoundingClientRect().height));
         setRootPx('--wc-control-inset', inset);
         setRootPx('--wc-column-cover', columnCover);
-        layout = { columnRight: columnRight, bottomCover: bottomCover };
+        layout = { columnRight: columnRight, bottomCover: bottomCover, obstacles: obstacleBoxes() };
         window.dispatchEvent(new CustomEvent('wc:layout', { detail: { ...layout } }));
     }
 
@@ -848,10 +863,15 @@
             if (container) containerObserver.observe(container);
         });
         const layoutObserver = new ResizeObserver(scheduleLayout);
-        const watched = [config.selectors.controlPanel, ...config.selectors.bottomCovers];
-        for (const selector of watched) {
+        const watched = new Set();
+        for (const selector of [config.selectors.controlPanel, ...config.selectors.bottomCovers]) {
             const element = selector ? document.querySelector(selector) : null;
-            if (!element) continue;
+            if (element) watched.add(element);
+        }
+        for (const selector of config.selectors.obstacles) {
+            for (const element of document.querySelectorAll(selector)) watched.add(element);
+        }
+        for (const element of watched) {
             layoutObserver.observe(element);
             // A transform scales what is published without resizing the
             // box, so a resize can publish a size mid-transition and nothing

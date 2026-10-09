@@ -79,15 +79,21 @@ export function paint(drawable, material) {
       mat.needsUpdate = true;
     }
     mat.opacity = opacity;
-    mat.side = side === "back" ? THREE.BackSide : side === "both" ? THREE.DoubleSide : THREE.FrontSide;
+    mat.side = sideOf(side);
   }
 }
 
-export function clip(drawable, planes) {
+export const sideOf = (side) => (side === "back" ? THREE.BackSide : side === "both" ? THREE.DoubleSide : THREE.FrontSide);
+
+// `section`, a plane the view cuts with besides the node's own, also cuts
+// the shadow, so the opened object casts what is left of it.
+export function clip(drawable, planes, section = null) {
   const clipping = planes.map(([nx, ny, nz, d]) => new THREE.Plane(new THREE.Vector3(nx, ny, nz).normalize(), d));
+  if (section) clipping.push(section);
   for (const mat of materials(drawable)) {
     mat.clippingPlanes = clipping;
     mat.clipIntersection = false;
+    mat.clipShadows = !!section;
     mat.needsUpdate = true;
   }
 }
@@ -304,13 +310,18 @@ function floor(reach, sectors, rings, color, gridColor) {
 // Hemisphere ambient plus key, fill and rim lights. The key casts shadows
 // over a square of half-width `radius` around the scene origin. The scene is
 // z-up, so the sky comes from +z and every light sits above the floor.
+// A light's colour is a theme token, read from the page's --wc-* variables.
+function token(name) {
+  return new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue(`--wc-${name}`).trim());
+}
+
 function lights(radius) {
   const group = new THREE.Group();
-  const sky = new THREE.HemisphereLight(0xffffff, 0x1b2430, 0.6 * Math.PI);
+  const sky = new THREE.HemisphereLight(token("scene-light-sky"), token("scene-light-ground"), 0.6 * Math.PI);
   sky.position.set(0, 0, 1);
   group.add(sky);
 
-  const key = new THREE.DirectionalLight(0xffffff, 0.8 * Math.PI);
+  const key = new THREE.DirectionalLight(token("scene-light-key"), 0.8 * Math.PI);
   key.position.set(4, -6, 9);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
@@ -325,11 +336,11 @@ function lights(radius) {
   cam.updateProjectionMatrix();
   group.add(key, key.target);
 
-  const fill = new THREE.DirectionalLight(0xd6e4ff, 0.25 * Math.PI);
+  const fill = new THREE.DirectionalLight(token("scene-light-fill"), 0.25 * Math.PI);
   fill.position.set(-7, 3, 4);
   group.add(fill, fill.target);
 
-  const rim = new THREE.DirectionalLight(0xffffff, 0.35 * Math.PI);
+  const rim = new THREE.DirectionalLight(token("scene-light-rim"), 0.35 * Math.PI);
   rim.position.set(1, 8, 5);
   group.add(rim, rim.target);
   return group;

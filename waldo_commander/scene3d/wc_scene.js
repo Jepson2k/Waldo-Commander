@@ -54,6 +54,12 @@ export default {
   },
 
   methods: {
+    camera_action(action, surface=null) {
+      this.core.navigation.action(action, surface);
+    },
+    clear_inspection(revision) {
+      if (revision === this.core.inspection.data?.revision) this.core.inspection.clear();
+    },
     apply(ops) {
       this.core.apply(ops);
     },

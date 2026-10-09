@@ -68,9 +68,8 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
     assert obj_a.color == before_a
     assert obj_b.color == before_b
 
-    # The floor a robot stands on is an ordinary installation fixture: it
-    # tints like any keep-out, survives a repaint, and displaces the
-    # placeholder disc simply by existing.
+    # Controller ground keeps its collision identity without replacing the
+    # workspace floor used in other robot modes.
     assert scene._floor is not None and scene._floor.visible_
     floor_shape = Box(
         name="floor",
@@ -86,22 +85,23 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
     )
     floor = scene._shape_objects["install:floor"]
     assert floor.color == SceneColors.SHAPE_INSTALL_HEX
-    assert not scene._floor.visible_, (
-        "a described installation displaces the placeholder disc"
-    )
+    assert scene._floor.visible_
+    assert not floor.visible_
     assert scene._shape_objects["shape:wall"].args[:3] == [0.1, 2.0, 1.0]
+    # The reported ground tints the floor that is drawn, not the hidden node.
+    disc = scene._floor.color
     coll.pairs = [(a, "install:floor")]
     coll.active = True
     scene.update_from_robot_state()
-    assert floor.color == SceneColors.COLLISION_HEX
+    assert scene._floor.color == SceneColors.COLLISION_HEX
     coll.active = False
     coll.pairs = []
     scene.update_from_robot_state()
+    assert scene._floor.color == disc
     assert floor.color == SceneColors.SHAPE_INSTALL_HEX
     scene.set_appearance_mode(RobotAppearanceMode.EDITING)
     assert floor.color == SceneColors.SHAPE_INSTALL_HEX
     scene.set_appearance_mode(RobotAppearanceMode.LIVE)
-    # A backend describing no installation gets the placeholder back.
     scene.render_shapes([])
     assert "install:floor" not in scene._shape_objects
     assert scene._floor.visible_
@@ -540,17 +540,24 @@ async def test_installation_proposal_is_drawn_exported_and_cleared_by_readback(
     async def _enforced() -> ShapeWorld:
         return ShapeWorld(installation=(enforced_wall,), program=())
 
+    real_shapes = waldoctl.commander.client.shapes
     monkeypatch.setattr(waldoctl.commander.client, "shapes", _enforced)
     await handle.refresh_from_backend()
     assert handle.installation_draft == ()
     assert "draft:wall" not in scene._shape_objects
     assert scene._shape_objects["install:wall"].color == SceneColors.SHAPE_INSTALL_HEX
 
-    # A withdrawn proposal is a program keep-out again.
+    # A withdrawn proposal is a program keep-out again; its commit reads back
+    # what the controller now holds.
+    monkeypatch.setattr(waldoctl.commander.client, "shapes", real_shapes)
     post = Box(name="post", x=0.05, y=0.05, z=0.2, pose=(0.4, 0.0, 0.1, 0, 0, 0))
     handle.shapes = [post]
     handle.propose_installation(["post"])
-    scene._withdraw_proposal("post")
+    for _ in range(200):
+        if handle.confirmed:
+            break
+        await asyncio.sleep(0.05)
+    await scene._withdraw_proposal("post")
     assert handle.installation_draft == () and [s.name for s in handle.shapes] == [
         "post"
     ]
@@ -758,7 +765,7 @@ async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world
     """The program layer travels through the REAL client to the REAL
     (fake-serial) controller: a world a program sets reaches the display via
     the epoch readback, an edit is a draft until acked and read back, a lost
-    ack leaves it a draft, and no delayed readback or push can bring back a
+    lost ack is reconciled by readback, and no delayed readback or push can bring back a
     world a newer edit replaced."""
     import waldoctl
     from waldoctl import Box
@@ -806,8 +813,7 @@ async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world
         await _until(lambda: handle.confirmed, "clear never confirmed")
         assert "shape:rb" not in scene._shape_objects
 
-        # The real client answers 0 when no ack arrives (it does not raise):
-        # the edit stays a draft and the push says it is not enforced.
+        # Readback remains authoritative after an unacknowledged request.
         async def _unacked(shapes):
             client.set_shapes = real_set_shapes
             return 0
@@ -817,11 +823,11 @@ async def test_shape_pushes_confirm_by_readback_and_never_restore_an_older_world
         async with asyncio.timeout(5):
             while handle._pushes_inflight:
                 await asyncio.sleep(0)
-        assert handle.confirmed is False
-        assert scene._shape_objects["shape:lost"].color == SceneColors.SHAPE_DRAFT_HEX
+        assert handle.confirmed is True
+        assert handle.shapes == []
+        assert "shape:lost" not in scene._shape_objects
         records = caplog.get_records("call")
-        assert any("NOT enforced" in r.getMessage() for r in records)
-        records[:] = [r for r in records if "NOT enforced" not in r.getMessage()]
+        assert any("not acknowledged" in r.getMessage() for r in records)
         handle.shapes = []
         await _until(
             lambda: handle.confirmed and not handle._pushes_inflight,
@@ -946,7 +952,12 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     name_el = list(user.find(marker="shape-dialog-name").elements)[-1]
     name_el.set_value("bench")
     user.find(marker="shape-dialog-save").click()
-    await asyncio.sleep(0)
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and any(s.name == "bench" for s in handle.shapes),
+        "creation was not confirmed",
+    )
 
     bench = next(s for s in handle.shapes if s.name == "bench")
     assert bench.kind == "box"
@@ -955,11 +966,18 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     assert "shape:bench" in scene._shape_objects
 
     # Drag — its arrows, as the browser reports the drag let go.
+    user.find(marker="object-close").click()
     menu(["shape:bench"], "shape-menu-move")
     arrows = scene.scene.interaction["shapeMove"]
     assert arrows["node"] == scene._shape_objects["shape:bench"].id
     Drag(user, scene.scene, "shape").begin(**arrows).release(
         **arrows, x=0.25, y=-0.1, z=0.05
+    )
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and handle.shapes[0].pose[0] == 0.25,
+        "movement was not confirmed",
     )
     bench = next(s for s in handle.shapes if s.name == "bench")
     assert bench.pose[:3] == pytest.approx((0.25, -0.1, 0.05))
@@ -971,25 +989,34 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     menu(["shape:bench"], "shape-menu-stop-move")
     assert scene.scene.interaction["shapeMove"] is None
 
-    # Edit — grow x to 300 mm through the dialog. A negative dimension must
-    # be refused by the shape's own validation, leaving the world untouched.
     menu(["shape:bench"], "shape-menu-edit")
     await asyncio.sleep(0)
-    dim_x = list(user.find(marker="shape-dialog-dim-x").elements)[-1]
+    assert scene._selected_objects == ["shape:bench"]
+    dim_x = list(user.find(marker="object-dim-x").elements)[-1]
     dim_x.set_value(-50)
-    user.find(marker="shape-dialog-save").click()
+    user.find(marker="object-dim-x").trigger("blur")
     await asyncio.sleep(0)
     assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.1)
     dim_x.set_value(300)
-    user.find(marker="shape-dialog-save").click()
-    await asyncio.sleep(0)
+    user.find(marker="object-dim-x").trigger("blur")
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and handle.shapes[0].x == 0.3,
+        "dimension edit was not confirmed",
+    )
     assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.3)
 
     # Delete — with confirmation.
     menu(["shape:bench"], "shape-menu-delete")
     await user.should_see(marker="shape-delete-confirm")
     user.find(marker="shape-delete-confirm").click()
-    await asyncio.sleep(0)
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and not handle.shapes,
+        "deletion was not confirmed",
+    )
     assert all(s.name != "bench" for s in handle.shapes)
     assert "shape:bench" not in scene._shape_objects
     await _until(

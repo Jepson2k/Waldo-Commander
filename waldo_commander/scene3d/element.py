@@ -23,12 +23,15 @@ from nicegui import ui
 from nicegui.dependencies import register_esm
 
 from .interaction import Gestures
-from .node import ClipPlane, Node, _finite, current_parent
+from .node import ClipPlane, Node, _finite, current_parent, enter_parent, exit_parent
 from .protocol import fixed, fixed_all, quaternion
 
 logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
+_CSS = "\n".join(
+    (_HERE / name).read_text() for name in ("path_inspection.css", "precision.css")
+)
 
 
 def _register(name: str, directory: Path) -> None:
@@ -57,6 +60,7 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
 
     def __init__(self, **config: Any) -> None:
         super().__init__()
+        ui.add_css(_CSS)
         self._ids = itertools.count()
         self.objects: dict[int, Node] = {}
         self.root = Node(self, "root", [], None)
@@ -73,14 +77,15 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         self._commands: list[Callable[[], list[Any] | None]] = []
         self._flush_handle: asyncio.Handle | None = None
         self._loop = asyncio.get_running_loop()
-        self._token: list[Any] = []
         self.fx = Effects(self)
         self.gestures = Gestures(self)
         self._interaction: dict[str, Any] = {}
         self._tcp_rev = 0
         self._tcp_history: dict[int, tuple[list[float], list[list[float]]]] = {}
         self._context_handler: Callable[[dict[str, Any]], None] | None = None
+        self._camera_handlers: list[Callable[[dict[str, Any]], None]] = []
         self.on("init", self._handle_init)
+        self.on("camera", self._handle_camera)
         self.on("gesture", lambda e: self.gestures.handle(e.args))
         self.on("context", self._handle_context)
         self.client.on_disconnect(self._handle_disconnect)
@@ -88,11 +93,11 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
     # -- parenting ----------------------------------------------------------
 
     def __enter__(self) -> WcScene:  # type: ignore[override]
-        self._token.append(current_parent.set(self.root))
+        enter_parent(self.root)
         return self
 
     def __exit__(self, *_: object) -> None:  # type: ignore[override]
-        current_parent.reset(self._token.pop())
+        exit_parent()
 
     def _parent(self) -> Node:
         parent = current_parent.get()
@@ -300,7 +305,7 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
 
     def set_interaction(self, **changes: Any) -> None:
         """What the browser's pointer handling needs: hover sources, rings,
-        handle rules, edit and keep-out move state, colours and snap bands."""
+        handle rules, edit and keep-out move state, colours."""
         self._own()
         changed = {k: v for k, v in changes.items() if self._interaction.get(k) != v}
         if not changed:
@@ -340,6 +345,17 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         """Whether the drag's last pose was out of reach: its spring back is tinted."""
         self._command(lambda: ["miss", int(missed)])
 
+    def on_camera(self, handler: Callable[[dict[str, Any]], None]) -> None:
+        """Call *handler* with each camera status the browser reports. Unlike
+        a listener added with ``on``, it can be added after the view is sent
+        without the view being mounted again."""
+        self._camera_handlers.append(handler)
+
+    def _handle_camera(self, e: Any) -> None:
+        args = e.args if isinstance(e.args, dict) else {}
+        for handler in list(self._camera_handlers):
+            handler(args)
+
     def on_context(self, handler: Callable[[dict[str, Any]], None]) -> None:
         """Call *handler* with a right-click's ``hits``, ``ground`` and request ``gen``."""
         self._context_handler = handler
@@ -350,14 +366,16 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
 
     def _handle_context(self, e: Any) -> None:
         args = e.args if isinstance(e.args, dict) else {}
-        authorized = self.gestures.authorized()
-        if args.get("epoch") != self.gestures.epoch or not authorized:
+        # Authorizing can start a new epoch; that ends drags, not this menu.
+        if args.get("epoch") != self.gestures.epoch or not self.gestures.authorized():
             return
         if self._context_handler is not None:
             self._context_handler(args)
 
     def _handle_disconnect(self) -> None:
-        if not self.is_deleted:
+        # A socket reaped after the browser reconnected on another leaves the
+        # client connected: the open gestures are the new socket's.
+        if not self.is_deleted and not self.client.has_socket_connection:
             self.gestures.bump()
 
     def _command(self, build: Callable[[], list[Any] | None]) -> None:
@@ -498,10 +516,26 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         self._send(self._snapshot())
 
     def _send(self, ops: list[list[Any]]) -> None:
-        payload = json.dumps(
-            ops, separators=(",", ":"), allow_nan=False, default=_plain
-        )
+        payload = _encode(ops)
+        if payload is None:
+            # A value JSON cannot carry would fail every later snapshot too:
+            # it is dropped and the browser is sent the whole scene again.
+            logger.error("3D scene update not sent: a value is not JSON")
+            self._drop_unencodable()
+            payload = _encode(self._snapshot())
+            if payload is None:
+                return
         self.client.run_javascript(f"runMethod({self.id},'apply',[{payload}])")
+
+    def _drop_unencodable(self) -> None:
+        for key, value in list(self._interaction.items()):
+            if _encode(value) is None:
+                logger.error("interaction %r dropped: not JSON", key)
+                del self._interaction[key]
+        for key, value in self.config.items():
+            if _encode(value) is None:
+                logger.error("scene setting %r reset: not JSON", key)
+                self.config[key] = DEFAULT_CONFIG[key]
 
     def _handle_delete(self) -> None:
         if self._flush_handle is not None:
@@ -513,6 +547,14 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
         with contextlib.suppress(ValueError):
             self.client.disconnect_handlers.remove(self._handle_disconnect)
         super()._handle_delete()
+
+
+def _encode(value: Any) -> str | None:
+    """*value* as compact JSON, or None when it holds something JSON cannot."""
+    try:
+        return json.dumps(value, separators=(",", ":"), allow_nan=False, default=_plain)
+    except (TypeError, ValueError):
+        return None
 
 
 def _plain(value: Any) -> Any:

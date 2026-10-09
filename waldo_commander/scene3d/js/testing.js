@@ -9,10 +9,7 @@ import { GIZMO } from "./handles.js";
 export function surface(core) {
   const { canvas } = core;
   const rect = () => canvas.getBoundingClientRect();
-  const pixel = (v) => {
-    const r = rect();
-    return [r.left + ((v.x + 1) / 2) * r.width, r.top + ((1 - v.y) / 2) * r.height];
-  };
+  const pixel = (v) => core.pointer.screen(v);
   // A node, or an object the view itself drew (the gizmo, a ring, a label).
   const byName = (name) => {
     const rec = core.nodes.byName(name);
@@ -57,6 +54,25 @@ export function surface(core) {
     },
     byName,
     frames: () => core.frameCount,
+    inspection() {
+      const inspect = core.inspection, hit = inspect.current;
+      return {revision:inspect.data?.revision, pinned:inspect.pinned, dragging:inspect.dragging,
+        current:hit,
+        comparison:{state:inspect.comparison.data?"ready":"unavailable",visibility:inspect.comparison.visibility},
+        time:hit ? (inspect.data.records[hit.record].blocks[hit.block]?.instant ? inspect.data.records[hit.record].blocks[hit.block].at : inspect.data.records[hit.record].source[hit.row]*inspect.data.records[hit.record].dt) : null,
+        records:inspect.data?.records.map((r)=>({label:r.label,rows:r.rows,dt:r.dt,blocks:r.blocks}))};
+    },
+    pathPixels(record, command) {
+      const inspect=core.inspection;
+      inspect.project();
+      const data=inspect.data?.records[record], points=inspect.projected?.[record];
+      const block=data?.blocks.find((b)=>b.command===command);
+      if (!block || !points) return null;
+      return Array.from({length:block.end-block.start},(_,i)=>{
+        const row=block.start+i; return [points[row*3],points[row*3+1],row];
+      });
+    },
+    section() { return {...core.section.status(),plane:[...core.section.plane.normal.toArray(),core.section.plane.constant],materials:core.section.materials}; },
     requestRender: () => core.requestRender(),
     idle: () => core.nodes.idle(),
     project(name, points) {
@@ -72,13 +88,45 @@ export function surface(core) {
       const [px, py] = pixel(o.getWorldPosition(new THREE.Vector3()).project(core.camera));
       return document.elementFromPoint(px, py) === canvas ? [px, py] : null;
     },
+    drawing() {
+      const d=core.drawingTool;
+      return {active:d.active,phase:d.phase,width:d.width,depth:d.depth,height:d.height};
+    },
+    drawingPlane(points) {
+      const d=core.drawingTool;
+      if(!d.active)return null;
+      return points.map(([u,v])=>pixel(new THREE.Vector3(u,v,0).applyQuaternion(d.rotation).add(d.origin).project(core.camera)));
+    },
+    drawingHeight() {
+      const d=core.drawingTool;
+      if(!d.handle.visible)return null;
+      const a=pixel(d.handle.position.clone().project(core.camera));
+      const b=pixel(d.handle.position.clone().addScaledVector(d.normal,.05).project(core.camera));
+      const dx=b[0]-a[0],dy=b[1]-a[1],length=Math.hypot(dx,dy);
+      return length>2 && document.elementFromPoint(...a)===canvas ? [...a,dx/length,dy/length] : null;
+    },
+    resizeHandle(axis=null) {
+      const resize=core.resizeHandles;
+      if(!resize.group.visible)return null;
+      const rec=core.nodes.get(resize.spec.node);
+      const center=rec.obj.getWorldPosition(new THREE.Vector3()).project(core.camera);
+      const c=pixel(center);
+      for(const handle of resize.handles) {
+        if(!handle.visible || axis!==null && handle.userData.axis!==axis)continue;
+        const p=pixel(handle.position.clone().project(core.camera));
+        if(document.elementFromPoint(...p)!==canvas || resize.hit(...p)!==handle)continue;
+        const dx=p[0]-c[0],dy=p[1]-c[1],length=Math.hypot(dx,dy);
+        if(length>10)return [...p,dx/length,dy/length,handle.userData.axis,handle.userData.sign];
+      }
+      return null;
+    },
     // What a press at (px, py) would grab: whether something covers the
     // canvas there, the names from the first object the pointer acts on up
     // to the root, and every gizmo handle under it.
     pick(px, py) {
       const covered = document.elementFromPoint(px, py) !== canvas;
       const hit = core.pointer.hit(px, py);
-      const handles = core.pointer.handlesAt(px, py).map(({ tc, axis }) => ({ name: tc.object.name, axis }));
+      const handles = core.pointer.handlesAt(px, py).map(({ tc, axis, mode }) => ({ name: tc.object.name, axis, mode }));
       return { covered, names: hit ? names(hit.object) : [], handles };
     },
     ground(px, py) {
@@ -92,7 +140,14 @@ export function surface(core) {
       if (core.gizmos.gizmoShown) shown.push(GIZMO);
       return shown;
     },
-    snap: () => ({ joint_deg: core.snap[0], cart_mm: core.snap[1] }),
+    // The steps a drag snaps to at the camera's distance now.
+    snap() {
+      const spec = core.pointer.ring?.spec || Object.values(core.ix.rings || {})[0];
+      return {
+        joint_deg: spec ? core.pointer.jointStep(spec) : 1,
+        cart_mm: core.gizmos.precision.incrementAt(core.gizmos.frame.position, "translate") * 1000,
+      };
+    },
     gizmo(name, mark) {
       const tc = gizmoFor(name);
       if (!tc) return null;
@@ -101,7 +156,7 @@ export function surface(core) {
     },
     dial(u) {
       const ring = core.pointer.ring;
-      return ring && ring.u === u ? { q: ring.q, r: ring.spec.radius, lo: ring.spec.lo, hi: ring.spec.hi } : null;
+      return ring && ring.u === u ? { q: ring.q, step:ring.stepDeg, r: ring.spec.radius, lo: ring.spec.lo, hi: ring.spec.hi } : null;
     },
     label(name) {
       const o = byName(name);
@@ -204,7 +259,8 @@ export function surface(core) {
     const obj = tc.object;
     obj.updateWorldMatrix(true, false);
     const origin = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
-    const axis = new THREE.Vector3(1, 0, 0).applyQuaternion(obj.getWorldQuaternion(new THREE.Quaternion()));
+    const axis = new THREE.Vector3(1, 0, 0);
+    if(tc.space !== "world")axis.applyQuaternion(obj.getWorldQuaternion(new THREE.Quaternion()));
     const toPixel = (d) => {
       const v = origin.clone().addScaledVector(axis, d).project(core.camera);
       return [v.x, v.y, ...pixel(v)];
@@ -214,8 +270,8 @@ export function surface(core) {
       const [x, y, px, py] = toPixel(d);
       if (Math.abs(x) > 0.95 || Math.abs(y) > 0.95) continue;
       const hit = S.pick(px, py);
-      if (hit.covered || hit.names.length) continue;
-      if (hit.handles.length !== 1 || hit.handles[0].name !== name || hit.handles[0].axis !== "X") continue;
+      if (hit.covered) continue;
+      if (hit.handles.length !== 1 || hit.handles[0].name !== name || hit.handles[0].axis !== "X" || hit.handles[0].mode!=="translate") continue;
       outside.push(d);
     }
     if (!outside.length) return null;
@@ -228,47 +284,37 @@ export function surface(core) {
 
   // A pixel on the rotate gizmo's ring about `axis`, past the tool, and the
   // ring's direction on screen there.
-  S.ringSpot = (axis) => {
-    const tc = core.gizmos.tcp;
-    if (!tc.object || tc.mode !== "rotate") return null;
+  S.ringSpot = (axis, name = "tcp:ball") => {
+    const tc = gizmoFor(name);
+    if (!tc?.object) return null;
     const [cx, cy] = pixel(tc.object.getWorldPosition(new THREE.Vector3()).project(core.camera));
     for (let rad = 20; rad <= 200; rad += 4) {
       for (let a = 0; a < 360; a += 5) {
         const t = (a * Math.PI) / 180;
-        const px = cx + rad * Math.cos(t);
-        const py = cy + rad * Math.sin(t);
-        const hit = S.pick(px, py);
-        if (hit.covered || hit.names.length) continue;
-        if (!hit.handles.some((h) => h.name === "tcp:ball" && h.axis === axis)) continue;
+        const px = Math.round(cx + rad * Math.cos(t));
+        const py = Math.round(cy + rad * Math.sin(t));
+        // Reject empty handle pixels before raycasting the detailed robot meshes.
+        if (!core.pointer.handlesAt(px, py).some(h => h.tc === tc && h.axis === axis && h.mode==="rotate")) continue;
+        if (document.elementFromPoint(px, py) !== canvas) continue;
         return [px, py, -Math.sin(t), Math.cos(t)];
       }
     }
     return null;
   };
 
-  // A pixel on the rotate control of edit joint `index`, past the arm, and
-  // the control's direction on screen there.
-  S.jointSpot = (index) => {
-    const entry = [...core.gizmos.joints.values()].find((j) => j.index === index);
-    if (!entry || !entry.tc.object) return null;
-    const [cx, cy] = pixel(entry.tc.object.getWorldPosition(new THREE.Vector3()).project(core.camera));
-    for (let rad = 20; rad <= 240; rad += 4) {
-      for (let a = 0; a < 360; a += 5) {
-        const t = (a * Math.PI) / 180;
-        const px = cx + rad * Math.cos(t);
-        const py = cy + rad * Math.sin(t);
-        if (document.elementFromPoint(px, py) !== canvas) continue;
-        const handles = core.pointer.handlesAt(px, py);
-        if (handles.length !== 1 || handles[0].tc !== entry.tc) continue;
-        if (core.pointer.hit(px, py)) continue;
-        return [px, py, -Math.sin(t), Math.cos(t)];
-      }
-    }
-    return null;
+  S.planeSpot = (axis, name = "tcp:ball") => {
+    const tc=gizmoFor(name);if(!tc?.object)return null;
+    tc.update();
+    const plane=tc.groups.translate.children.find(o=>o.name===axis);if(!plane)return null;
+    const point=plane.getWorldPosition(new THREE.Vector3()),[x,y]=pixel(point.clone().project(core.camera));
+    if(document.elementFromPoint(x,y)!==canvas || !core.pointer.handlesAt(x,y).some(h=>h.tc===tc&&h.axis===axis&&h.mode==="translate"))return null;
+    const direction=new THREE.Vector3(..."XYZ".split("").map(a=>axis.includes(a)?1:0)).normalize().applyQuaternion(tc.helper.quaternion);
+    const [qx,qy]=pixel(point.clone().addScaledVector(direction,.01).project(core.camera)),length=Math.hypot(qx-x,qy-y);
+    return [x,y,(qx-x)/length,(qy-y)/length];
   };
 
   // Pixels where something covers the canvas, each with the angle (radians)
-  // at which a pointer there meets the plane of joint u's shown ring.
+  // at which a pointer there lies in the plane of joint u's shown ring.
   S.coveredSpots = (u) => {
     const ring = core.pointer.ring;
     if (!ring || ring.u !== u) return null;
@@ -276,7 +322,7 @@ export function surface(core) {
     for (let y = 8; y < innerHeight - 4; y += 24) {
       for (let x = 8; x < innerWidth - 4; x += 24) {
         if (document.elementFromPoint(x, y) === canvas) continue;
-        const at = ring.onPlane(core.pointer.aim(x, y));
+        const at = ring.at(core.pointer, x, y);
         if (at && Math.hypot(at[0], at[1]) > ring.spec.radius) out.push([x, y, Math.atan2(at[1], at[0])]);
       }
     }

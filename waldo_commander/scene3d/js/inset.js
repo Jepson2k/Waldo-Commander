@@ -2,6 +2,7 @@
 // with the camera. Clicking one of its axes turns the camera to look along
 // it, about the orbit target.
 
+import { reducedMotion } from "./fx.js";
 import { ViewHelper } from "three/addons/helpers/ViewHelper.js";
 
 export class Inset {
@@ -9,7 +10,19 @@ export class Inset {
     this.core = core;
     this.helper = null;
     this.onPointerDown = (event) => {
+      // A drag in progress re-projects against the camera, which must not turn.
+      if (this.core.pointer.drag || this.core.gestures.active) return;
+      const before = this.core.navigation?.snapshot();
       if (this.helper && this.helper.handleClick(event)) {
+        this.core.cameraMove.move = null;
+        this.core.navigation.remember(before);
+        // The turn is timed from now, not from the last frame drawn before
+        // an idle view.
+        this.core.clock.getDelta();
+        if (reducedMotion()) {
+          this.helper.update(10);
+          this.core.controls.update();
+        }
         // The click is the inset's; the orbit controls must not see it.
         event.stopImmediatePropagation();
         this.core.animate();
@@ -54,7 +67,10 @@ export class Inset {
     renderer.autoClear = false;
     this.helper.render(renderer);
     renderer.autoClear = autoClear;
-    if (this.helper.animating) this.helper.update(delta);
+    if (this.helper.animating) {
+      this.helper.update(delta);
+      this.core.controls.update();
+    }
   }
 
   step() {

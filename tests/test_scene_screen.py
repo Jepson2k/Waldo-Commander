@@ -4,7 +4,7 @@ physics overlay of a predicted run, and the view outliving its GPU context.
 
 The tests share one page through ``class_screen``. Each puts back the camera,
 shapes, appearance mode and window size it changes. The gizmo test checks the
-gizmo is absent until L6 is hovered, so it runs first; the physics overlay
+gizmo is absent until TCP is hovered, so it runs first; the physics overlay
 leaves the program column open, so it runs late, and losing the GPU context
 runs last.
 """
@@ -14,22 +14,19 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 import waldoctl
 from nicegui import core
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.actions.mouse_button import MouseButton
 from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
 from waldoctl import Box
 
 from tests.helpers.browser_helpers import (
@@ -44,6 +41,23 @@ from tests.helpers.browser_helpers import (
     tap,
 )
 from tests.helpers.browser_session import no_visible, wait, window_size
+from tests.helpers.scene_screen import (
+    camera_kept,
+    camera_pose,
+    choose,
+    drag_dial,
+    frame_mm,
+    gizmo,
+    grab_ring,
+    joint_deg,
+    joint_settled,
+    poll,
+    probe,
+    program_previewed,
+    tcp_mm,
+    teleport_jog_pose,
+    zoom,
+)
 from tests.helpers.scene_surface import (
     emits_during,
     frames_at_rest,
@@ -55,10 +69,11 @@ from tests.helpers.scene_surface import (
     scene_object,
     scene_object_pixel,
     shown_handles,
+    wait_for_scene_idle,
     snap_deg,
     timed_emits_during,
 )
-from tests.helpers.wait import JOG_SAFE_POSE_DEG, screen_wait_for_scene_ready
+from tests.helpers.wait import screen_wait_for_scene_ready
 from tests.test_scene3d_screen import _touch
 from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 from waldo_commander.constants import DEFAULT_CAMERA
@@ -72,25 +87,6 @@ if TYPE_CHECKING:
 
 #: How long a shown handle outlasts the pointer leaving it (``pointer.js``).
 _HOVER_GRACE_S = 0.2
-
-
-def _probe(screen: Screen, name: str, *args):
-    """A probe of the scene's surface: a pixel where a press grabs what is
-    asked for, or None while there is none."""
-    return scene_js(screen, f"return S.{name}(...arguments)", *args)
-
-
-def _camera(screen: Screen) -> list[float]:
-    return scene_js(screen, "return S.cameraPose()")
-
-
-def _zoom(screen: Screen, distance: float) -> None:
-    scene_js(screen, "S.zoom(arguments[0])", distance)
-
-
-def _gizmo(screen: Screen, name: str, mark: bool = False) -> dict | None:
-    """The snaps of the gizmo on ``name``; ``mark`` tags it so a re-attach shows."""
-    return scene_js(screen, "return S.gizmo(arguments[0], arguments[1])", name, mark)
 
 
 _MENU_ITEMS = """
@@ -120,21 +116,14 @@ return o.matrixWorld.elements;
 _OVERLAY_JS = """
 const group = S.byName('simulation:physics');
 if (!group) return {found: false};
-let lines = 0, meshes = 0, shown = 0, vertexColored = 0, points = 0;
+let meshes = 0, shown = 0;
 group.traverse((o) => {
-  if (o === group) return;
-  if (o.isLine || o.isLineSegments) {
-    lines += 1;
-    if (o.geometry && o.geometry.getAttribute('color')) {
-      vertexColored += 1;
-      points = Math.max(points, o.geometry.getAttribute('position').count);
-    }
-  } else if (o.isMesh) {
+  if (o !== group && o.isMesh) {
     meshes += 1;
     if (o.visible) shown += 1;
   }
 });
-return {found: true, lines, meshes, shown, vertexColored, points};
+return {found: true, meshes, shown};
 """
 
 _VIEW_FLAGS = (
@@ -143,105 +132,6 @@ _VIEW_FLAGS = (
     "contacts_visible",
     "com_visible",
 )
-
-
-def _wait(predicate, timeout: float, what: str):
-    deadline = time.monotonic() + timeout
-    while True:
-        value = predicate()
-        if value:
-            return value
-        if time.monotonic() > deadline:
-            raise AssertionError(f"timed out waiting for {what}")
-        time.sleep(0.05)
-
-
-def _joint(i: int) -> float:
-    return float(waldoctl.commander.status.joints.angles.deg[i])
-
-
-def _settled(i: int, timeout: float = 20.0) -> float:
-    """The joint's value once it has stopped moving."""
-    deadline = time.monotonic() + timeout
-    last = _joint(i)
-    while time.monotonic() < deadline:
-        time.sleep(0.3)
-        now = _joint(i)
-        if abs(now - last) < 0.005:
-            return now
-        last = now
-    raise AssertionError(f"J{i + 1} never settled")
-
-
-def _teleport_to_jog_pose() -> None:
-    assert core.loop is not None
-    client = ui_state.control_panel.client
-    asyncio.run_coroutine_threadsafe(
-        client.teleport(JOG_SAFE_POSE_DEG), core.loop
-    ).result(10)
-    _wait(lambda: abs(_joint(1) - JOG_SAFE_POSE_DEG[1]) < 0.5, 10.0, "teleport")
-
-
-@contextmanager
-def _camera_kept(screen: Screen) -> Iterator[None]:
-    """Give the next test the camera this one found, and take the pointer off
-    the arm so no handle stays revealed."""
-    saved = _camera(screen)
-    try:
-        yield
-    finally:
-        scene_js(screen, "S.setCameraPose(arguments[0])", saved)
-        screen.selenium.execute_cdp_cmd(
-            "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
-        )
-        # Out of their grace, so the next test starts with none shown.
-        deadline = time.monotonic() + 2.0
-        while shown_handles(screen) and time.monotonic() < deadline:
-            time.sleep(0.05)
-
-
-@contextmanager
-def _program_previewed(source: str) -> Iterator[list[str]]:
-    """Preview ``source`` in the scene and yield its target ids; the program
-    that was there comes back afterwards, each through the editor as an edit
-    would come."""
-    from waldo_commander.components.simulation_engine import simulation
-
-    def edit(text: str) -> None:
-        ui_state.active_textarea.value = text  # schedules the preview
-
-    def previewing() -> bool:
-        return (
-            simulation._simulation_debounce_timer is not None
-            or simulation._physics_timer is not None
-        )
-
-    def saved() -> tuple[str, object]:
-        tab = waldoctl.commander.programs.active
-        assert tab is not None
-        return ui_state.active_textarea.value, tab.dry_run.last_sim_joints_deg
-
-    text, sim_joints = run_in_app(saved)
-    run_in_app(lambda: edit(source))
-    _wait(lambda: not run_in_app(previewing), 30.0, "the program's preview")
-    try:
-        yield run_in_app(
-            lambda: [t.id for t in waldoctl.commander.programs.active.dry_run.targets]
-        )
-    finally:
-        run_in_app(lambda: edit(text))
-        # A preview still running when the next test injects its records
-        # would overwrite them.
-        _wait(lambda: not run_in_app(previewing), 30.0, "the restored preview")
-        # A previewed program re-previews whenever the arm moves; the program
-        # that was there had not been previewed.
-        run_in_app(
-            lambda: setattr(
-                waldoctl.commander.programs.active.dry_run,
-                "last_sim_joints_deg",
-                sim_joints,
-            )
-        )
 
 
 def _preview_settled() -> bool:
@@ -272,25 +162,6 @@ def _caught_up() -> None:
     asyncio.run_coroutine_threadsafe(round_trips(), core.loop).result(15)
 
 
-def _tcp_mm() -> np.ndarray:
-    pose = waldoctl.commander.status.pose
-    return np.array([pose.x, pose.y, pose.z], dtype=float)
-
-
-def _frame_mm(screen: Screen) -> np.ndarray:
-    """Where the browser draws the gizmo's frame, in mm."""
-    return (
-        np.array(
-            scene_js(
-                screen,
-                "const f = S.byName('tcp:ball_frame');"
-                "return f.getWorldPosition(f.position.clone()).toArray();",
-            )
-        )
-        * 1000.0
-    )
-
-
 def _drawn_at_fk(screen: Screen, urdf, link: str, q: list[float]) -> bool:
     """Whether ``link:<link>`` is drawn where the URDF's FK puts it at *q*."""
     model = urdf.urdf_model
@@ -312,37 +183,6 @@ def _drawn_at_fk(screen: Screen, urdf, link: str, q: list[float]) -> bool:
     )
 
 
-def _grab_ring(screen: Screen, link: str, u: int) -> tuple[dict, float]:
-    """Reveal joint *u*'s ring by hovering *link*; its dial, and the first
-    angle from its knob where a press grabs the ring. A hover aimed while a
-    pose is still being drawn can land beside the link, so aim again."""
-    deadline = time.monotonic() + 10.0
-    while True:
-        hover_scene_object(screen, link)
-        try:
-            dial = _wait(lambda: _probe(screen, "dial", u), 2.0, f"J{u + 1}'s ring")
-            grab = _probe(screen, "ringGrab", u)
-        except AssertionError:
-            dial = grab = None
-        if grab is not None:
-            return dial, grab
-        if time.monotonic() > deadline:
-            cover = _probe(screen, "ringGrab", u, True)
-            shown = shown_handles(screen)
-            state = scene_js(
-                screen,
-                "const c = getElement(S.root).core; const h = c.pointer.hover;"
-                "return {target: h.target, shown: h.shown, pinned: h.pinned,"
-                " rules: c.ix.rules, edit: c.ix.edit && c.ix.edit.active,"
-                " active: c.gestures.active, hovered: c.pointer.hovered};",
-            )
-            raise AssertionError(
-                f"no part of J{u + 1}'s ring is uncovered: {cover}, showing {shown},"
-                f" hover {state}"
-            )
-        time.sleep(0.2)
-
-
 def _drag_along(
     screen: Screen, x: float, y: float, dx: float, dy: float, length: float = 40
 ) -> None:
@@ -356,45 +196,6 @@ def _drag_along(
         )
     actions.release()
     actions.perform()
-
-
-def _choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
-    """Right-click at (x, y), pick ``item`` from the scene's menu and return
-    the items the menu offered."""
-    actions = ActionChains(screen.selenium, duration=0)
-    pointer_to(screen, x, y, actions)
-    actions.context_click()
-    actions.perform()
-
-    offered: list[str] = []
-
-    def shown_item(driver):
-        shown = [
-            e
-            for e in driver.find_elements(By.CSS_SELECTOR, ".q-menu .q-item")
-            if e.is_displayed()
-        ]
-        texts = [e.text.strip() for e in shown]
-        # The menu fills in after it opens; pick from it once it stops changing.
-        settled, offered[:] = texts == offered, texts
-        if not settled or item not in texts:
-            return False
-        choice = shown[texts.index(item)]
-        assert choice.get_attribute("aria-disabled") != "true", f"{item!r} is disabled"
-        choice.click()
-        return True
-
-    # The menu is filled in after it opens, so its items can go stale while read.
-    WebDriverWait(
-        screen.selenium,
-        5,
-        poll_frequency=0.05,
-        ignored_exceptions=(StaleElementReferenceException,),
-    ).until(shown_item, message=f"no {item!r} in the menu")
-    # A closing menu still covers the canvas and would swallow the next press.
-    # The app closes it, after whatever the item set off.
-    wait(screen, 10).until(lambda _: no_visible(screen, ".q-menu"))
-    return offered
 
 
 def _records(
@@ -460,48 +261,48 @@ def _records(
     )
 
 
+def _tcp_badge(screen):
+    """The shown 'Move TCP' badge, which is what reveals the gizmo, or None."""
+    return next(
+        (
+            b
+            for b in screen.selenium.find_elements(
+                By.CSS_SELECTOR, '.wc-tcp-affordance button[aria-label="Move TCP"]'
+            )
+            if b.is_displayed()
+        ),
+        None,
+    )
+
+
+def _hover_tcp(screen):
+    # The badge follows the camera on the next frame drawn.
+    wait_for_scene_idle(screen)
+    button = wait(screen).until(lambda _: _tcp_badge(screen))
+    ActionChains(screen.selenium).move_to_element(button).perform()
+
+
 @pytest.mark.browser
 class TestScene:
-    def test_gizmo_snap_follows_the_zoom_without_reattaching(
-        self, class_screen: Screen
-    ) -> None:
+    def test_gizmo_snap_follows_the_zoom_without_reattaching(self, class_screen):
         screen = class_screen
-        screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        _teleport_to_jog_pose()
-        assert shown_handles(screen) == [], "the gizmo waits for a hover"
-        urdf = ui_state.urdf_scene
-        assert urdf is not None
-        with _camera_kept(screen):
-            _zoom(screen, 1.3)
-            _wait(lambda: snap_deg(screen) == 5.0, 1.0, "the 5° band")
-            # A hover aimed while the teleported pose is still being drawn
-            # can land beside the link, so aim again until the gizmo comes.
-            deadline = time.monotonic() + 10.0
-            while True:
-                hover_scene_object(screen, "link:L6")
-                try:
-                    snap = _wait(lambda: _gizmo(screen, "tcp:ball", True), 1.5, "")
-                    break
-                except AssertionError:
-                    if time.monotonic() > deadline:
-                        raise AssertionError("the gizmo never attached on hover")
-            assert snap["translationSnap"] == pytest.approx(0.010) and snap[
-                "rotationSnap"
-            ] == pytest.approx(math.radians(5.0))
-            ball = _wait(lambda: scene_object(screen, "tcp:ball"), 5.0, "the ball")
-            assert ball["type"] == "Mesh" and ball["visible"], ball
-
-            _zoom(screen, 0.4)
-            # Translation and rotation snaps can land a frame apart.
-            snap = _wait(
-                lambda: (s := _gizmo(screen, "tcp:ball"))
-                and s["translationSnap"] == pytest.approx(0.001)
-                and s["rotationSnap"] == pytest.approx(math.radians(0.5))
+        screen_wait_for_scene_ready(screen, timeout_s=40)
+        teleport_jog_pose()
+        with camera_kept(screen):
+            zoom(screen, 1.3)
+            _hover_tcp(screen)
+            far = poll(lambda: gizmo(screen, "tcp:ball", True), 5, "the gizmo")
+            assert far["translationSnap"] > 0 and far["rotationSnap"] > 0
+            zoom(screen, 0.4)
+            near = poll(
+                lambda: (s := gizmo(screen, "tcp:ball"))
+                and s["translationSnap"] < far["translationSnap"]
+                and s["rotationSnap"] < far["rotationSnap"]
                 and s,
-                2.0,
-                "the 1 mm and 0.5° bands on the gizmo",
+                5,
+                "finer translation and rotation increments",
             )
-            assert snap["probe"], "the gizmo was re-attached instead of updated"
+            assert near["probe"], "zoom replaced the gizmo"
 
     def test_ring_drag_moves_the_joint_by_whole_steps_and_leaves_the_camera(
         self, class_screen: Screen
@@ -512,18 +313,17 @@ class TestScene:
         app only each new step, with keep-alives while the pointer rests."""
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        _teleport_to_jog_pose()
+        teleport_jog_pose()
 
-        with _camera_kept(screen):
-            # Pulled out past 1.2 m, the handles snap in 5° steps.
-            _zoom(screen, 1.3)
-            _wait(lambda: snap_deg(screen) == 5.0, 1.0, "the 5° band")
+        with camera_kept(screen):
+            zoom(screen, 1.3)
 
-            dial, grab = _grab_ring(screen, "link:L1", 0)
+            dial, grab = grab_ring(screen, "link:L1", 0)
+            step = snap_deg(screen)
             label = scene_js(screen, "return S.label('jog:dial:0:label')")
-            assert label and "step 5°" in label and "Δ" not in label, label
-            start = _settled(0)
-            camera = _camera(screen)
+            assert label and "step" not in label and "Δ" not in label, label
+            start = joint_settled(0)
+            camera = camera_pose(screen)
 
             # Let go over something covering the canvas, 18° to 35° round
             # the ring from the grab, the way the joint has room to turn.
@@ -535,7 +335,7 @@ class TestScene:
 
             spots = [
                 spot
-                for spot in _probe(screen, "coveredSpots", 0) or []
+                for spot in probe(screen, "coveredSpots", 0) or []
                 if math.radians(18) <= abs(turn(spot)) <= math.radians(35)
                 and (lo is None or lo <= q + turn(spot) <= hi)
             ]
@@ -571,20 +371,20 @@ class TestScene:
                 _caught_up()
 
             sent = emits_during(screen, drag)
-            _wait(lambda: abs(_joint(0) - start) > 4.0, 15.0, "J1 to move")
-            moved = abs(_settled(0) - start)
-            steps = moved / 5.0
+            poll(lambda: abs(joint_deg(0) - start) > 4.0, 15.0, "J1 to move")
+            moved = abs(joint_settled(0) - start)
+            steps = moved / step
             assert moved >= 15.0 and abs(steps - round(steps)) < 0.02, (
-                f"J1 moved {moved:.3f}°, not 15° or more in whole 5° steps"
+                f"J1 moved {moved:.3f}°, not 15° or more in whole {step}° steps"
             )
-            assert _camera(screen) == pytest.approx(camera, abs=1e-9), (
+            assert camera_pose(screen) == pytest.approx(camera, abs=1e-9), (
                 "the drag orbited the camera"
             )
             # One begin, a move per new step, keep-alives, and one release.
             assert sent[0] == "begin" and sent[-1] == "end", sent
             assert set(sent[1:-1]) <= {"move", "keep"}, sent
             assert "keep" in sent, sent
-            assert sent.count("move") <= round(moved / 5.0) + 2, sent
+            assert sent.count("move") <= round(moved / step) + 2, sent
 
     def test_axes_inset_preserves_main_scene_render(self, class_screen: Screen) -> None:
         """``viewHelper.render()`` clears the framebuffer when
@@ -626,16 +426,14 @@ class TestScene:
     ) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen)
-        with _camera_kept(screen):
-            x, y, axis = _wait(
-                lambda: _probe(screen, "insetAxis"), 5.0, "an inset axis"
-            )
+        with camera_kept(screen):
+            x, y, axis = poll(lambda: probe(screen, "insetAxis"), 5.0, "an inset axis")
             actions = ActionChains(screen.selenium, duration=0)
             pointer_to(screen, x, y, actions)
             actions.click()
             actions.perform()
-            _wait(
-                lambda: np.dot(_probe(screen, "viewDirection"), axis) > 0.999,
+            poll(
+                lambda: np.dot(probe(screen, "viewDirection"), axis) > 0.999,
                 5.0,
                 f"the camera to look along {axis}",
             )
@@ -695,7 +493,7 @@ class TestScene:
             "S.camera.position.set(0, -6, 6); S.controls.update();"
             "return {near: S.scene.fog.near, d: S.camera.position.length()};"
         )
-        with _camera_kept(screen):
+        with camera_kept(screen):
             try:
                 fog = wait(screen, 5).until(
                     lambda _: (m := scene_js(screen, read))
@@ -715,7 +513,7 @@ class TestScene:
         scene closes the menu."""
         screen = class_screen
         screen_wait_for_scene_ready(screen)
-        x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
+        x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
 
         def press_order() -> None:
             for kind in ("mousePressed", "mouseReleased"):
@@ -751,15 +549,13 @@ class TestScene:
 
             def opened(ask=ask) -> None:
                 ask()
-                _wait(
-                    lambda: js(screen, _MENU_ITEMS), 5.0, f"the menu ({ask.__name__})"
-                )
+                poll(lambda: js(screen, _MENU_ITEMS), 5.0, f"the menu ({ask.__name__})")
                 _caught_up()
 
             sent = emits_during(screen, opened)
             assert sent.count("context") == 1, (ask.__name__, sent)
             items = js(screen, _MENU_ITEMS)
-            assert "Place Target at Robot Position..." in items, (ask.__name__, items)
+            assert "Target at robot position…" in items, (ask.__name__, items)
 
             ActionChains(screen.selenium).move_to_element(
                 scene_canvas(screen)
@@ -774,21 +570,21 @@ class TestScene:
     ) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen)
-        _teleport_to_jog_pose()
-        with _camera_kept(screen), _program_previewed(_TARGET_PROGRAM) as targets:
+        teleport_jog_pose()
+        with camera_kept(screen), program_previewed(_TARGET_PROGRAM) as targets:
             assert targets, "the program shows no targets"
             group = f"targetgroup:{targets[-1]}"
-            _wait(lambda: scene_object(screen, group), 15.0, "the target")
+            poll(lambda: scene_object(screen, group), 15.0, "the target")
             x, y = scene_object_pixel(screen, group)
             before = frames_at_rest(screen, 0.5)
             actions = ActionChains(screen.selenium, duration=0)
             pointer_to(screen, x, y, actions)
             actions.perform()
-            _wait(lambda: _probe(screen, "glowing", group), 5.0, "the target to glow")
+            poll(lambda: probe(screen, "glowing", group), 5.0, "the target to glow")
             assert frames_at_rest(screen, 0.5) > before, "the glow was never drawn"
 
             ActionChains(screen.selenium).context_click().perform()
-            items = _wait(lambda: js(screen, _MENU_ITEMS), 5.0, "the target's menu")
+            items = poll(lambda: js(screen, _MENU_ITEMS), 5.0, "the target's menu")
             assert "Edit Target..." in items and "Delete Target" in items, items
             canvas = scene_canvas(screen)
             ActionChains(screen.selenium).move_to_element(canvas).click().perform()
@@ -798,7 +594,7 @@ class TestScene:
             screen.selenium.execute_cdp_cmd(
                 "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
             )
-            _wait(lambda: not _probe(screen, "glowing", group), 5.0, "the glow to go")
+            poll(lambda: not probe(screen, "glowing", group), 5.0, "the glow to go")
             assert frames_at_rest(screen, 0.5) > before, "the glow stayed drawn"
 
     def test_the_gizmo_arrow_jogs_on_a_drag_and_a_tap_keeps_it_pinned(
@@ -806,20 +602,20 @@ class TestScene:
     ) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        _teleport_to_jog_pose()
+        teleport_jog_pose()
         urdf = ui_state.urdf_scene
         assert urdf is not None
 
         def shown() -> list[str]:
             return shown_handles(screen)
 
-        with _camera_kept(screen):
+        with camera_kept(screen):
             # A mouse drag along the arrow, from where it sticks out past the
             # tool, jogs the tool.
-            hover_scene_object(screen, "link:L6")
-            _wait(lambda: _gizmo(screen, "tcp:ball"), 5.0, "the gizmo")
-            x, y, dx, dy = _wait(
-                lambda: _probe(screen, "arrowTip", "tcp:ball"), 5.0, "the X arrow"
+            _hover_tcp(screen)
+            poll(lambda: gizmo(screen, "tcp:ball"), 5.0, "the gizmo")
+            x, y, dx, dy = poll(
+                lambda: probe(screen, "arrowTip", "tcp:ball"), 5.0, "the X arrow"
             )
             # The gizmo stays while the pointer rests on its arrow, off the arm.
             actions = ActionChains(screen.selenium, duration=0)
@@ -829,8 +625,8 @@ class TestScene:
             time.sleep(_HOVER_GRACE_S + 0.3)
             _caught_up()
             assert shown() == ["gizmo"], "the gizmo went from under the pointer"
-            start = _tcp_mm()
-            camera = _camera(screen)
+            start = tcp_mm()
+            camera = camera_pose(screen)
 
             # Sixty pointer moves along the arrow, a frame apart as a mouse
             # sends them: the label names the axis while it is held, the app
@@ -841,8 +637,8 @@ class TestScene:
                 "const seen = window.__gizmoLabels = new Set();"
                 "window.__sampling = true;"
                 "(function sample() {"
-                "  const o = S.byName('tcp:label');"
-                "  if (o) seen.add(o.element.textContent);"
+                "  const o = document.querySelector('.wc-gizmo-readout');"
+                "  if (o && !o.hidden) seen.add(o.textContent);"
                 "  if (window.__sampling) requestAnimationFrame(sample);"
                 "})();",
             )
@@ -873,41 +669,46 @@ class TestScene:
             assert sent[-1] == "end", sent
             assert scene_js(screen, "return S.label('tcp:label')") is None
             assert scene_object(screen, "tcp:ticks") is None, "the marks stayed"
-            _wait(
-                lambda: np.linalg.norm(_tcp_mm() - start) > 2.0,
+            poll(
+                lambda: np.linalg.norm(tcp_mm() - start) > 2.0,
                 15.0,
                 "the tool to move",
             )
             assert shown() == ["gizmo"], "the drag hid the gizmo"
-            assert _camera(screen) == pytest.approx(camera, abs=1e-6), (
+            assert camera_pose(screen) == pytest.approx(camera, abs=1e-6), (
                 "the drag orbited the camera"
             )
             # Once the arm comes to rest, the gizmo's frame is drawn where the
             # tool is.
-            _wait(
-                lambda: np.linalg.norm(_frame_mm(screen) - _tcp_mm()) < 0.5,
+            poll(
+                lambda: np.linalg.norm(frame_mm(screen) - tcp_mm()) < 0.5,
                 15.0,
                 "the gizmo's frame on the tool",
             )
 
-            # Touch has no hover: a tap on the arm pins the gizmo, and a tap
-            # on its arrow grabs the arrow, so it must not count as a tap on
-            # empty space that unpins it.
+            # Touch uses the TCP badge; an arrow tap must retain that selection.
             screen.selenium.execute_cdp_cmd(
                 "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
             )
-            _wait(lambda: shown() == [], 5.0, "the gizmo to hide")
-            tap(screen, *scene_object_pixel(screen, "link:L6"))
-            _wait(lambda: _gizmo(screen, "tcp:ball"), 5.0, "the pinned gizmo")
-            x, y, _, _ = _wait(
-                lambda: _probe(screen, "arrowTip", "tcp:ball"), 5.0, "the X arrow"
+            poll(lambda: shown() == [], 5.0, "the gizmo to hide")
+            badge = screen.selenium.find_element(
+                By.CSS_SELECTOR, '.wc-tcp-affordance button[aria-label="Move TCP"]'
+            ).rect
+            tap(
+                screen,
+                badge["x"] + badge["width"] / 2,
+                badge["y"] + badge["height"] / 2,
+            )
+            poll(lambda: gizmo(screen, "tcp:ball"), 5.0, "the pinned gizmo")
+            x, y, _, _ = poll(
+                lambda: probe(screen, "arrowTip", "tcp:ball"), 5.0, "the X arrow"
             )
             tap(screen, x, y)
             _caught_up()
             assert shown() == ["gizmo"], "a tap on the gizmo's arrow unpinned it"
 
-            tap(screen, *_wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space"))
-            _wait(lambda: shown() == [], 5.0, "a tap on empty space to unpin")
+            tap(screen, *poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space"))
+            poll(lambda: shown() == [], 5.0, "a tap on empty space to unpin")
 
     def test_a_right_drag_pans_without_opening_the_menu(
         self, class_screen: Screen
@@ -924,20 +725,20 @@ class TestScene:
             actions.pointer_action.pointer_up(button=MouseButton.RIGHT)
             actions.perform()
 
-        with _camera_kept(screen):
-            x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
+        with camera_kept(screen):
+            x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
             # A menu left open by a right-click must not come back with a pan.
             # A press may show the menu for a moment; its release closes it.
             actions = ActionChains(screen.selenium, duration=0)
             pointer_to(screen, x, y, actions)
             actions.context_click()
             actions.perform()
-            _wait(lambda: js(screen, _MENU_ITEMS), 5.0, "the menu")
-            camera = _camera(screen)
+            poll(lambda: js(screen, _MENU_ITEMS), 5.0, "the menu")
+            camera = camera_pose(screen)
 
             def pan() -> None:
                 right_drag(x, y, [10, 20, 30, 40, 50, 60])
-                _wait(lambda: _camera(screen) != camera, 5.0, "the camera to pan")
+                poll(lambda: camera_pose(screen) != camera, 5.0, "the camera to pan")
                 _caught_up()
 
             sent = emits_during(screen, pan)
@@ -949,7 +750,7 @@ class TestScene:
             )
 
             # A pan that comes back to where it started is still a pan.
-            x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
+            x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
 
             def pan_back() -> None:
                 right_drag(x, y, [20, 40, 60, 40, 20, 0])
@@ -964,7 +765,7 @@ class TestScene:
             # The menu key or a long press opens the menu with no right press
             # before it; headless Chrome makes no contextmenu from a synthetic
             # long press, so the event comes straight to the canvas.
-            x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
+            x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
             scene_js(
                 screen,
                 "S.canvas.dispatchEvent(new MouseEvent('contextmenu', {clientX:"
@@ -972,9 +773,7 @@ class TestScene:
                 x,
                 y,
             )
-            _wait(
-                lambda: js(screen, _MENU_ITEMS), 5.0, "the menu without a right press"
-            )
+            poll(lambda: js(screen, _MENU_ITEMS), 5.0, "the menu without a right press")
             ActionChains(screen.selenium).move_to_element(
                 scene_canvas(screen)
             ).click().perform()
@@ -989,99 +788,109 @@ class TestScene:
         target edit suspends the handles, and leaving it leaves no gizmo."""
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        _teleport_to_jog_pose()
+        teleport_jog_pose()
 
         def off_the_arm() -> None:
             screen.selenium.execute_cdp_cmd(
                 "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 1, "y": 1}
             )
 
-        with _camera_kept(screen):
+        with camera_kept(screen):
 
             def tour() -> None:
                 for link, shown in (
                     ("L2", "ring:1"),
                     ("L3", "ring:2"),
-                    ("L6", "gizmo"),
+                    ("L6", "ring:5"),
                 ):
                     hover_scene_object(screen, f"link:{link}")
-                    _wait(lambda: shown_handles(screen) == [shown], 5.0, shown)
+                    poll(lambda: shown_handles(screen) == [shown], 5.0, shown)
                 off_the_arm()
-                _wait(lambda: shown_handles(screen) == [], 5.0, "the handles to go")
+                poll(lambda: shown_handles(screen) == [], 5.0, "the handles to go")
 
             sent = emits_during(screen, tour)
             assert sent == [], f"hovering sent the app {len(sent)} events: {sent[:5]}"
 
-            # Hidden: the gizmo stays away until it is allowed again.
-            click_marked(screen, "gizmo-mode-hidden")
+            # Hidden: the gizmo stays away until it is allowed again. The TCP
+            # badge is what reveals it, so its spot is where Hidden is tried,
+            # and the same spot brings the gizmo back once allowed.
+            wait_for_scene_idle(screen)
+            badge = wait(screen).until(lambda _: _tcp_badge(screen)).rect
+            click_marked(screen, "gizmo-visibility")
             try:
-                hover_scene_object(screen, "link:L6")
+                action = ActionChains(screen.selenium)
+                pointer_to(
+                    screen,
+                    badge["x"] + badge["width"] / 2,
+                    badge["y"] + badge["height"] / 2,
+                    action,
+                )
+                action.perform()
                 _caught_up()
                 time.sleep(_HOVER_GRACE_S + 0.1)
-                assert shown_handles(screen) == [], "Hidden showed the gizmo"
+                assert _tcp_badge(screen) is None, "Hidden left the TCP badge shown"
+                assert "gizmo" not in shown_handles(screen), "Hidden showed the gizmo"
             finally:
-                click_marked(screen, "gizmo-mode-move")
-            hover_scene_object(screen, "link:L6")
-            _wait(lambda: shown_handles(screen) == ["gizmo"], 5.0, "the gizmo back")
+                click_marked(screen, "gizmo-visibility")
+            _hover_tcp(screen)
+            poll(lambda: shown_handles(screen) == ["gizmo"], 5.0, "the gizmo back")
             off_the_arm()
-            _wait(lambda: shown_handles(screen) == [], 5.0, "the gizmo to go")
+            poll(lambda: shown_handles(screen) == [], 5.0, "the gizmo to go")
 
-            # A target edit has its own gizmo and no rings; leaving it leaves
-            # nothing behind.
-            x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
-            _choose(screen, x, y, "Place Target at Robot Position...")
+            # Editing uses contextual preview dials; leaving clears those controls.
+            x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
+            choose(screen, x, y, "Target at robot position…")
             try:
-                _wait(lambda: _gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
+                poll(lambda: gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
                 hover_scene_object(screen, "link:L2")
                 _caught_up()
                 time.sleep(_HOVER_GRACE_S + 0.1)
-                assert "ring:1" not in shown_handles(screen), "the edit showed a ring"
+                assert "ring:1" in shown_handles(screen), (
+                    "the edit did not reveal its preview dial"
+                )
             finally:
                 click_marked(screen, "edit-bar-cancel")
             off_the_arm()
-            _wait(lambda: shown_handles(screen) == [], 5.0, "no gizmo after the edit")
+            poll(lambda: shown_handles(screen) == [], 5.0, "no gizmo after the edit")
 
     def test_the_rotate_gizmo_turns_the_tool_and_leaves_the_camera(
         self, class_screen: Screen
     ) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        _teleport_to_jog_pose()
+        teleport_jog_pose()
 
         def rpy() -> np.ndarray:
             pose = waldoctl.commander.status.pose
             return np.array([pose.rx, pose.ry, pose.rz], dtype=float)
 
-        click_marked(screen, "gizmo-mode-rotate")
         try:
-            with _camera_kept(screen):
-                hover_scene_object(screen, "link:L6")
+            with camera_kept(screen):
+                _hover_tcp(screen)
                 deadline = time.monotonic() + 5.0
                 while not (
                     spot := next(
-                        (s for a in "ZXY" if (s := _probe(screen, "ringSpot", a))), None
+                        (s for a in "ZXY" if (s := probe(screen, "ringSpot", a))), None
                     )
                 ):
                     assert time.monotonic() < deadline, "no ring of the gizmo is free"
                     time.sleep(0.1)
                 x, y, dx, dy = spot
                 start = rpy()
-                camera = _camera(screen)
+                camera = camera_pose(screen)
                 _drag_along(screen, x, y, dx, dy)
-                _wait(
+                poll(
                     lambda: np.abs(rpy() - start).max() > 2.0,
                     15.0,
                     "the tool to turn",
                 )
-                assert _camera(screen) == pytest.approx(camera, abs=1e-6), (
+                assert camera_pose(screen) == pytest.approx(camera, abs=1e-6), (
                     "the drag orbited the camera"
                 )
         finally:
-            click_marked(screen, "gizmo-mode-move")
+            teleport_jog_pose()
 
-    def test_orbit_wheel_and_reset_move_the_camera_and_its_snap(
-        self, class_screen: Screen
-    ) -> None:
+    def test_orbit_wheel_and_reset_move_the_camera(self, class_screen: Screen) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen)
         urdf = ui_state.urdf_scene
@@ -1094,51 +903,53 @@ class TestScene:
             0.0,
             DEFAULT_CAMERA["look_at_z"],
         ]
-        with _camera_kept(screen):
+        with camera_kept(screen):
+            click_marked(screen, "camera-menu")
             click_marked(screen, "reset-camera")
-            _wait(
-                lambda: _camera(screen) == pytest.approx(default, abs=1e-6),
+            poll(
+                lambda: camera_pose(screen) == pytest.approx(default, abs=1e-6),
                 5.0,
                 "the default view",
             )
-            _wait(lambda: snap_deg(screen) == 1.0, 5.0, "the 1° band")
 
-            x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
+            x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
             _drag_along(screen, x, y, 1, 0, 80)
-            orbited = _camera(screen)
+            orbited = camera_pose(screen)
             assert orbited[:3] != pytest.approx(default[:3], abs=1e-3), "no orbit"
             assert orbited[3:] == pytest.approx(default[3:], abs=1e-6), (
                 "orbiting moved the target"
             )
 
             canvas = scene_canvas(screen)
-            deadline = time.monotonic() + 10.0
-            while snap_deg(screen) != 5.0:
-                assert time.monotonic() < deadline, "zooming out never reached 5°"
-                ActionChains(screen.selenium).scroll_from_origin(
-                    ScrollOrigin.from_element(canvas), 0, 200
-                ).perform()
-                time.sleep(0.2)
+            ActionChains(screen.selenium).scroll_from_origin(
+                ScrollOrigin.from_element(canvas), 0, 500
+            ).perform()
+            poll(
+                lambda: math.dist(camera_pose(screen)[:3], camera_pose(screen)[3:])
+                > math.dist(orbited[:3], orbited[3:]),
+                5,
+                "the camera to zoom out",
+            )
 
+            click_marked(screen, "camera-menu")
             click_marked(screen, "reset-camera")
-            _wait(
-                lambda: _camera(screen) == pytest.approx(default, abs=1e-6),
+            poll(
+                lambda: camera_pose(screen) == pytest.approx(default, abs=1e-6),
                 5.0,
                 "the default view again",
             )
             # Once there, the camera is free to orbit at once.
             _drag_along(screen, x, y, 1, 0, 80)
-            assert _camera(screen)[:3] != pytest.approx(default[:3], abs=1e-3), (
+            assert camera_pose(screen)[:3] != pytest.approx(default[:3], abs=1e-3), (
                 "the reset held the camera at the default view"
             )
-            _wait(lambda: snap_deg(screen) == 1.0, 5.0, "the 1° band again")
 
     def test_a_target_is_placed_edited_and_deleted_from_the_scene(
         self, class_screen: Screen
     ) -> None:
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40.0)
-        _teleport_to_jog_pose()
+        teleport_jog_pose()
         urdf = ui_state.urdf_scene
         assert urdf is not None
 
@@ -1149,17 +960,18 @@ class TestScene:
             return run_in_app(lambda: list(urdf._editing_angles))
 
         def drag_the_gizmo_and_confirm() -> None:
-            _wait(lambda: _gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
+            poll(lambda: gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
             start = editing_angles()
-            x, y, dx, dy = _wait(
-                lambda: _probe(screen, "arrowTip", "tcp:ball"), 5.0, "the X arrow"
+            x, y, dx, dy = poll(
+                lambda: probe(screen, "arrowTip", "tcp:ball"), 5.0, "the X arrow"
             )
             _drag_along(screen, x, y, dx, dy)
-            _wait(lambda: editing_angles() != start, 10.0, "the arm to follow")
+            poll(lambda: editing_angles() != start, 10.0, "the arm to follow")
             click_marked(screen, "edit-bar-confirm")
-            _wait(
+            # The confirm can queue behind a re-simulation under load.
+            poll(
                 lambda: not run_in_app(lambda: urdf._editing_unified_target),
-                5.0,
+                15.0,
                 "the edit to end",
             )
 
@@ -1179,21 +991,21 @@ class TestScene:
                         return f"targetgroup:{target.id}"
                 return None
 
-            group = _wait(
+            group = poll(
                 lambda: run_in_app(find), 15.0, f"a target on line {line_number}"
             )
-            _wait(lambda: scene_object(screen, group), 15.0, group)
+            poll(lambda: scene_object(screen, group), 15.0, group)
             return group
 
-        with _camera_kept(screen), _program_previewed(_TARGET_PROGRAM):
+        with camera_kept(screen), program_previewed(_TARGET_PROGRAM):
             try:
                 before = lines()
 
                 # Place a target at the arm, drag it away, and keep it.
-                x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
-                _choose(screen, x, y, "Place Target at Robot Position...")
+                x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
+                choose(screen, x, y, "Target at robot position…")
                 drag_the_gizmo_and_confirm()
-                after = _wait(
+                after = poll(
                     lambda: len(now := lines()) == len(before) + 1 and now,
                     10.0,
                     "a new line",
@@ -1203,29 +1015,26 @@ class TestScene:
 
                 # Edit it: dragging its gizmo rewrites its line.
                 group = target_on(added + 1)
-                _choose(screen, *scene_object_pixel(screen, group), "Edit Target...")
+                choose(screen, *scene_object_pixel(screen, group), "Edit Target...")
                 drag_the_gizmo_and_confirm()
-                _wait(
-                    lambda: lines()[added] != after[added], 10.0, "the line to change"
-                )
+                poll(lambda: lines()[added] != after[added], 10.0, "the line to change")
                 assert "move_l(" in lines()[added], lines()[added]
 
                 # Escape in the code editor is the editor's own; anywhere else
                 # it cancels a new placement, and neither stops the arm. The
                 # target placed above may now cover the first empty spot.
-                x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
-                _choose(screen, x, y, "Place Target at Robot Position...")
-                _wait(lambda: _gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
+                x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
+                choose(screen, x, y, "Target at robot position…")
+                poll(lambda: gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
 
                 # Turning J1's own control turns the arm about its base: the
                 # edit takes the new angle, and L2 is drawn where FK puts it.
                 q0 = editing_angles()[0]
-                jx, jy, jdx, jdy = _wait(
-                    lambda: _probe(screen, "jointSpot", 0), 5.0, "J1's control"
-                )
-                _drag_along(screen, jx, jy, jdx, jdy)
-                _wait(lambda: abs(editing_angles()[0] - q0) > 0.01, 10.0, "J1 to turn")
-                _wait(
+
+                drag_dial(screen, -10)
+                ActionChains(screen.selenium).release().perform()
+                poll(lambda: abs(editing_angles()[0] - q0) > 0.01, 10.0, "J1 to turn")
+                poll(
                     lambda: _drawn_at_fk(screen, urdf, "L2", editing_angles()),
                     5.0,
                     "L2 where FK puts it",
@@ -1234,7 +1043,7 @@ class TestScene:
                 click_tab(screen, "program")
                 try:
                     editor = focus_editor(screen)
-                    _wait(
+                    poll(
                         lambda: keybindings_manager.editor_focused,
                         5.0,
                         "the editor to have the keyboard",
@@ -1248,7 +1057,7 @@ class TestScene:
                     close_panel(screen, "program-panel")
                 defocus_editor(screen)
                 send_global_key(screen, Keys.ESCAPE)
-                _wait(
+                poll(
                     lambda: not run_in_app(lambda: urdf._editing_unified_target),
                     5.0,
                     "Escape to cancel",
@@ -1259,11 +1068,11 @@ class TestScene:
 
                 # Delete it, straight from the menu.
                 group = target_on(added + 1)
-                _choose(screen, *scene_object_pixel(screen, group), "Delete Target")
-                _wait(lambda: lines() == before, 10.0, "the line to go")
+                choose(screen, *scene_object_pixel(screen, group), "Delete Target")
+                poll(lambda: lines() == before, 10.0, "the line to go")
                 # Its marker goes with it, not a second later with the next
                 # preview, so it cannot be deleted twice.
-                _wait(
+                poll(
                     lambda: scene_object(screen, group) is None,
                     0.3,
                     "the marker to go",
@@ -1283,45 +1092,46 @@ class TestScene:
             return run_in_app(lambda: {s.name: tuple(s.pose) for s in handle.shapes})
 
         def gizmo_on(name: str) -> bool:
-            return _gizmo(screen, name) is not None
+            return gizmo(screen, name) is not None
 
         before = shapes()
-        with _camera_kept(screen):
+        with camera_kept(screen):
             try:
-                x, y, *floor = _wait(
-                    lambda: _probe(screen, "floorSpot"), 5.0, "floor near the arm"
+                x, y, *floor = poll(
+                    lambda: probe(screen, "floorSpot"), 5.0, "floor near the arm"
                 )
-                offered = _choose(screen, x, y, "Box Here...")
+                offered = choose(screen, x, y, "Box Here...")
                 assert any(i.startswith("Place Target Here") for i in offered), offered
                 click_marked(screen, "shape-dialog-save")
-                (name,) = _wait(
+                (name,) = poll(
                     lambda: set(shapes()) - set(before), 5.0, "the new keep-out"
                 )
                 assert shapes()[name][:2] == pytest.approx(floor, abs=0.003), (
                     "the keep-out is not where the floor was clicked"
                 )
                 obj = f"shape:{name}"
-                centre = _wait(lambda: _probe(screen, "pixelOf", obj), 10.0, obj)
+                centre = poll(lambda: probe(screen, "pixelOf", obj), 10.0, obj)
 
                 # Move it by its gizmo's arrow; the drop is its new pose.
-                _choose(screen, *centre, "Move (drag arrows)")
-                _wait(lambda: gizmo_on(obj), 5.0, "the keep-out's gizmo")
+                click_marked(screen, "object-close")
+                choose(screen, *centre, "Move (drag arrows)")
+                poll(lambda: gizmo_on(obj), 5.0, "the keep-out's gizmo")
                 start = shapes()[name]
-                x, y, dx, dy = _wait(
-                    lambda: _probe(screen, "arrowTip", obj), 5.0, "the X arrow"
+                x, y, dx, dy = poll(
+                    lambda: probe(screen, "arrowTip", obj), 5.0, "the X arrow"
                 )
                 _drag_along(screen, x, y, dx, dy)
-                _wait(
+                poll(
                     lambda: shapes()[name][0] != start[0], 10.0, "the keep-out to move"
                 )
                 assert shapes()[name][1:] == pytest.approx(start[1:], abs=1e-6)
-                centre = _wait(lambda: _probe(screen, "pixelOf", obj), 10.0, obj)
-                _choose(screen, *centre, "Stop Moving")
-                _wait(lambda: not gizmo_on(obj), 5.0, "the gizmo to go")
+                centre = poll(lambda: probe(screen, "pixelOf", obj), 10.0, obj)
+                choose(screen, *centre, "Stop Moving")
+                poll(lambda: not gizmo_on(obj), 5.0, "the gizmo to go")
 
-                _choose(screen, *centre, "Delete Keep-out")
+                choose(screen, *centre, "Delete Keep-out")
                 click_marked(screen, "shape-delete-confirm")
-                _wait(lambda: name not in shapes(), 5.0, "the keep-out to go")
+                poll(lambda: name not in shapes(), 5.0, "the keep-out to go")
             finally:
                 run_in_app(
                     lambda: setattr(
@@ -1388,11 +1198,11 @@ class TestScene:
             ).result(10)
             run_in_app(lambda: scene.set_appearance_mode(RobotAppearanceMode.LIVE))
 
-    def test_a_simulated_run_paints_its_path_contacts_and_com(
+    def test_a_simulated_run_paints_its_contacts_and_com(
         self, class_screen: Screen
     ) -> None:
-        """The predicted path, the contact arrows and the centre-of-mass marker
-        are three.js geometry: whether they exist in Python says nothing about
+        """The contact arrows and the centre-of-mass marker are three.js
+        geometry: whether they exist in Python says nothing about
         whether anything reaches the canvas. The installed backend plans and
         does not simulate, so the commanded/predicted pair is injected, shaped
         as a backend produces it; everything downstream is the shipping code."""
@@ -1465,9 +1275,7 @@ class TestScene:
             try:
                 try:
                     wait(screen, 15).until(
-                        lambda _: (i := overlay())
-                        and i.get("found")
-                        and i.get("vertexColored")
+                        lambda _: (i := overlay()) and i.get("meshes")
                     )
                 except TimeoutException:
                     pass
@@ -1484,17 +1292,35 @@ class TestScene:
                 assert info.get("found"), (
                     "the physics overlay group never reached the scene"
                 )
-                assert info["vertexColored"] >= 1, (
-                    f"the predicted path must carry per-vertex colours — a uniform "
-                    f"colour shows no following error at all: {info}"
-                )
-                assert info["points"] >= 40, f"the path is missing rows: {info}"
                 assert info["meshes"] >= 2, (
                     f"the per-frame pool was never created: {info}"
                 )
                 assert info["shown"] >= 2, (
                     f"expected contact arrows and the centre-of-mass marker to be "
                     f"shown at a frame that has contacts: {info}"
+                )
+
+                # An unchanged pair keeps its pool, or the arrows would blink at
+                # every change notice; a prediction that is the plan annotates
+                # nothing.
+                from waldo_commander.state import simulation_state
+
+                overlay_service = ui_state.urdf_scene.physics_overlay
+                built = run_in_app(lambda: overlay_service._group)
+                run_in_app(simulation_state.notify_changed)
+                _caught_up()
+                assert run_in_app(lambda: overlay_service._group) is built, (
+                    "an unchanged prediction rebuilt the pool"
+                )
+
+                def plan_as_prediction() -> None:
+                    dry_run = waldoctl.commander.programs.active.dry_run
+                    dry_run.predicted = dry_run.commanded
+                    simulation_state.notify_changed()
+
+                run_in_app(plan_as_prediction)
+                wait(screen).until(
+                    lambda _: not run_in_app(lambda: overlay_service.is_built)
                 )
             finally:
                 run_in_app(restore)
@@ -1512,7 +1338,7 @@ class TestScene:
             "return !!S.renderer.getContext().getExtension('WEBGL_lose_context')",
         ):
             pytest.skip("this browser cannot lose a WebGL context on request")
-        _teleport_to_jog_pose()
+        teleport_jog_pose()
         pixels = """
             const at = S.hoverPixel('link:L3');
             S.renderer.render(S.scene, S.camera);
@@ -1525,11 +1351,11 @@ class TestScene:
               return Array.from(out).slice(0, 3); };
             return {link: at && read(at[0], at[1])};
         """
-        with _camera_kept(screen):
-            before = _wait(lambda: scene_js(screen, pixels)["link"], 10.0, "L3 drawn")
+        with camera_kept(screen):
+            before = poll(lambda: scene_js(screen, pixels)["link"], 10.0, "L3 drawn")
             resets = scene_js(screen, "return S.resets")
             scene_js(screen, "S.renderer.forceContextLoss()")
-            _wait(
+            poll(
                 lambda: js(
                     screen, "return !!document.querySelector('.wc-scene[data-gl]')"
                 ),
@@ -1537,39 +1363,39 @@ class TestScene:
                 "the view to know its context is gone",
             )
             scene_js(screen, "S.renderer.forceContextRestore()")
-            _wait(
+            poll(
                 lambda: js(
                     screen, "return !document.querySelector('.wc-scene[data-gl]')"
                 ),
                 5.0,
                 "the context back",
             )
-            after = _wait(lambda: scene_js(screen, pixels)["link"], 10.0, "L3 again")
+            after = poll(lambda: scene_js(screen, pixels)["link"], 10.0, "L3 again")
             assert after == pytest.approx(before, abs=6), (before, after)
             assert scene_js(screen, "return S.resets") == resets, (
                 "restoring the context had the app send the scene again"
             )
 
             # The gizmo still comes on a hover.
-            hover_scene_object(screen, "link:L6")
-            _wait(lambda: _gizmo(screen, "tcp:ball"), 5.0, "the gizmo")
+            _hover_tcp(screen)
+            poll(lambda: gizmo(screen, "tcp:ball"), 5.0, "the gizmo")
 
             # The camera still orbits under a drag on empty space.
-            camera = _camera(screen)
-            x, y = _wait(lambda: _probe(screen, "emptySpot"), 5.0, "empty space")
+            camera = camera_pose(screen)
+            x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
             _drag_along(screen, x, y, 1, 0, 80)
-            assert _camera(screen) != pytest.approx(camera, abs=1e-6), "no orbit"
+            assert camera_pose(screen) != pytest.approx(camera, abs=1e-6), "no orbit"
 
             # The inset still turns the camera.
-            ix, iy, axis = _wait(
-                lambda: _probe(screen, "insetAxis"), 5.0, "an inset axis"
+            ix, iy, axis = poll(
+                lambda: probe(screen, "insetAxis"), 5.0, "an inset axis"
             )
             actions = ActionChains(screen.selenium, duration=0)
             pointer_to(screen, ix, iy, actions)
             actions.click()
             actions.perform()
-            _wait(
-                lambda: np.dot(_probe(screen, "viewDirection"), axis) > 0.999,
+            poll(
+                lambda: np.dot(probe(screen, "viewDirection"), axis) > 0.999,
                 5.0,
                 f"the camera to look along {axis}",
             )

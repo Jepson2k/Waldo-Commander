@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import logging
 import time
 
@@ -29,7 +30,7 @@ from waldo_commander.services.preview_segments import (
     command_segments,
     preceding_segment,
 )
-from waldo_commander.services.timeline import Timeline
+from waldo_commander.services.timeline import Cursor, Timeline, selection_before
 from waldo_commander.services.programs import (
     is_any_program_recording,
     is_any_program_running,
@@ -54,7 +55,6 @@ def _line_of(segments, index: int) -> int:
 #: The playback bar's layer toggles: the view flag each drives, its label
 #: and its marker.
 _LAYERS = (
-    ("predicted_visible", "Predicted path", "layer-predicted"),
     ("contacts_visible", "Contacts", "layer-contacts"),
     ("com_visible", "Centre of mass", "layer-com"),
 )
@@ -64,8 +64,7 @@ _SPEED_FILL = "color=wc-control text-color=wc-text"
 
 def layers_available(dry_run) -> dict[str, bool]:
     """Which layers the program's predicted record can draw, keyed by the
-    view flag that shows each: the predicted path only where it differs
-    from the commanded one, contacts and the centre of mass only when the
+    view flag that shows each: contacts and the centre of mass only when the
     record carries those channels. A predicted record answering an older
     plan than the one on screen counts as none."""
     none = {flag: False for flag, _, _ in _LAYERS}
@@ -75,8 +74,6 @@ def layers_available(dry_run) -> dict[str, bool]:
     if predicted is None:
         return none
     return {
-        "predicted_visible": predicted.rows > 1
-        and predicted.digest != dry_run.commanded.digest,
         "contacts_visible": "contact_starts" in predicted.channels,
         "com_visible": "com" in predicted.channels,
     }
@@ -352,7 +349,7 @@ class PlaybackController:
         active = waldoctl.commander.programs.active
         scene = ui_state.urdf_scene
         tl = self._timeline
-        if flag == "predicted_visible" or scene is None or active is None or not tl:
+        if scene is None or active is None or not tl:
             return
         predicted = active.dry_run.predicted_current
         if predicted is None:
@@ -599,7 +596,17 @@ class PlaybackController:
             max(active.dry_run.playback.current_step + delta, 0),
             len(self._timeline.segments) - 1,
         )
-        self._apply_time(self._timeline.cumulative_times[idx])
+        cursor = self._timeline.segment_start(idx)
+        inspection = ui_state.urdf_scene.inspection if ui_state.urdf_scene else None
+        self._apply_time(
+            self._timeline.cumulative_times[idx],
+            cursor=cursor,
+            block=inspection.block_index(
+                cursor.record, *self._timeline.segment_key(idx)
+            )
+            if inspection
+            else None,
+        )
 
     def sync_mode(self) -> None:
         """Sync slider/speed controls to current robot mode (simulator vs robot)."""
@@ -846,13 +853,63 @@ class PlaybackController:
             # Update snapshot so position-change checker doesn't re-sim after scrub
             self._snapshot_joints()
 
-    def _apply_time(self, t: float, *, update_slider: bool = True, active=None) -> None:
+    def inspect_path(
+        self, inspection, line: int, *, program: str | None = None
+    ) -> None:
+        if not inspection.pinned:
+            decorations.highlight_inspected_line(0, program)
+            return
+        if (
+            not waldoctl.commander.status.simulator_active
+            or is_any_program_running()
+            or ui_state.editing_target
+        ):
+            inspection.clear_cursor()
+            return
+        if not require_browser_control(ui_state.active_client_id, notify=False):
+            inspection.clear_cursor()
+            return
+        active = waldoctl.commander.programs.active
+        tl = self._ensure_timeline()
+        pick = inspection.cursor
+        if active is None or tl is None or pick is None:
+            inspection.clear_cursor()
+            return
+        record = tl.record(pick.record)
+        if record is None or pick.row >= record.rows:
+            return
+        if active.dry_run.playback.is_active:
+            self._pause_sim_playback()
+        cursor, t = tl.cursor_of(pick.record, pick.row, pick.command, pick.occurrence)
+        self._set_slider_time(t)
+        if (
+            pick.valid
+            and np.all(np.isfinite(record.joints_rad[pick.row]))
+            and (record.valid is None or record.valid[pick.row])
+        ):
+            self._apply_time(t, update_slider=False, cursor=cursor, block=pick.block)
+        self._snapshot_joints()
+        decorations.highlight_inspected_line(line, active.id)
+        self.update_play_button()
+
+    def _apply_time(
+        self,
+        t: float,
+        *,
+        update_slider: bool = True,
+        active=None,
+        cursor: Cursor | None = None,
+        block: int | None = None,
+    ) -> None:
         """Apply a time position to the simulation: update pose, highlights, slider.
 
         Args:
             t: Time position in seconds.
             update_slider: If False, skip programmatic slider update (caller
                 already has the right value, e.g. during user scrubbing).
+            cursor: The row to show when it is not the one playback reaches
+                at *t*: a picked path point or a segment's first row.
+            block: The drawn path block *cursor* lies in.
         """
         if is_any_program_running():
             return
@@ -862,16 +919,49 @@ class PlaybackController:
         _apply_active = (
             active if active is not None else waldoctl.commander.programs.active
         )
+        picked = cursor is not None
+        if cursor is None:
+            cursor = tl.cursor_at(t)
+        record = tl.record(cursor.record)
+        assert record is not None
         if _apply_active is not None:
             _apply_active.dry_run.playback.playback_time = t
-        sample = tl.sample(t)
+        sample = tl.sample(t, cursor)
+        # The browser follows playback only along a pinned path point.
+        if ui_state.urdf_scene and ui_state.urdf_scene.inspection.pinned:
+            inspection = ui_state.urdf_scene.inspection
+            # Rows as the browser numbers them; idealRow is the commanded row
+            # the scrub bar is at, what the comparison pairs the arm with.
+            position = {
+                "time": t,
+                "record": cursor.record,
+                "row": inspection.view_row(cursor.record, cursor.row),
+                "idealRow": inspection.view_row(0, tl.commanded_row(t)),
+            }
+            if block is not None:
+                position["block"] = block
+            ui_state.urdf_scene.scene.set_interaction(
+                playbackCursor=dict(
+                    position,
+                    inspectionSeq=inspection.sequence,
+                    revision=inspection.generation,
+                )
+            )
 
         # Sample tool position once (used for both teleport and URDF animation)
         tool_pos = tl.sample_tool(t) if tl.tool_keyframes else ()
         selection = tl.sample_tool_selection(t)
-        tool_key = (
-            selection.tool_key if selection else waldoctl.commander.status.tool.key
-        )
+        tool = (selection.tool_key, selection.variant_key) if selection else None
+        if picked:
+            closed = float(record.tool_closed[cursor.row])
+            tool_pos = (closed,) if math.isfinite(closed) else ()
+            if _apply_active is not None:
+                chosen = selection_before(
+                    _apply_active.dry_run.tool_selections,
+                    tl.segments[cursor.segment].command,
+                )
+                tool = (chosen.tool_key, chosen.variant_key) if chosen else None
+        tool_key = tool[0] if tool else waldoctl.commander.status.tool.key
         motions = ui_state.active_robot.tools[tool_key or "NONE"].motions
         if not motions or len(tool_pos) != len(motions):
             tool_pos = ()
@@ -892,25 +982,24 @@ class PlaybackController:
                     self._teleport(
                         waldoctl.commander.status.joints.angles.deg.tolist(),
                         list(tool_pos) if tool_pos else None,
-                        (selection.tool_key, selection.variant_key)
-                        if selection
-                        else None,
+                        tool,
                     )
                 )
 
         predicted = tl.predicted
-        if predicted is not None and predicted.objects and ui_state.urdf_scene:
-            ui_state.urdf_scene.set_object_poses(tl.sample_objects(t))
+        if ui_state.urdf_scene and record.objects:
+            ui_state.urdf_scene.set_object_poses(tl.sample_objects(t, cursor))
 
         # The predicted record's annotations for this instant, in the same
         # pass, so contacts and the arm reach the browser in one message.
         if ui_state.urdf_scene is not None and predicted is not None:
             view = waldoctl.commander.settings.view
+            on_predicted = bool(cursor.record)
             ui_state.urdf_scene.physics_overlay.update_frame(
                 predicted,
-                tl.predicted_row(t),
-                show_contacts=view.contacts_visible,
-                show_com=view.com_visible,
+                cursor.row if on_predicted else tl.predicted_row(t),
+                show_contacts=view.contacts_visible and on_predicted,
+                show_com=view.com_visible and on_predicted,
             )
 
         if (
@@ -937,15 +1026,11 @@ class PlaybackController:
                 ui_state.urdf_scene.update_playback_opacity()
 
         # Swap tool mesh when crossing a select_tool boundary
-        if tl.tool_selection_keyframes and ui_state.urdf_scene:
-            sel = tl.sample_tool_selection(t)
-            if sel is not None:
-                sel_pair = (sel.tool_key, sel.variant_key)
-                if sel_pair != self._last_tool_selection:
-                    self._last_tool_selection = sel_pair
-                    ui_state.urdf_scene.apply_tool_everywhere(
-                        sel.tool_key, variant_key=sel.variant_key or None
-                    )
+        if tool and ui_state.urdf_scene and tool != self._last_tool_selection:
+            self._last_tool_selection = tool
+            ui_state.urdf_scene.apply_tool_everywhere(
+                tool[0], variant_key=tool[1] or None
+            )
 
         # Drive tool animation from timeline keyframes
         if (
@@ -998,18 +1083,24 @@ class PlaybackController:
         try:
             client = ui_state.control_panel.client
             tool = waldoctl.commander.status.tool
+            playback_coordination.preview_tool_selection = selection
             if selection is not None and selection != (tool.key, tool.variant_key):
                 index = await client.select_tool(selection[0], variant_key=selection[1])
                 if index < 0 or not await client.wait_command(index, timeout=5.0):
+                    playback_coordination.preview_tool_selection = None
                     return
             if not allowed():
                 return
+            motion_guard.note_command()
             await client.teleport(
                 joints_deg,
                 tool_positions=tool_pos,
             )
         except Exception as exc:
+            playback_coordination.preview_tool_selection = None
             logger.warning("teleport failed: %s", exc)
+        finally:
+            playback_coordination.last_teleport_ts = time.monotonic()
 
     def snapshot_joints_to(self, tab) -> None:
         """Record the current joint angles on ``tab.dry_run`` so the position-

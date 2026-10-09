@@ -23,7 +23,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from tests.helpers.browser_helpers import js, run_in_app
 from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.scene_surface import scene_js
-from waldo_commander.common.theme import SceneColors, hex_of, linear_rgb
+from waldo_commander.common.theme import SceneColors, hex_of
 from waldo_commander.scene3d import ClipPlane, Node, WcScene
 
 if TYPE_CHECKING:
@@ -146,9 +146,6 @@ def _world(screen: Screen, names: list[str]) -> dict[str, np.ndarray]:
     }
 
 
-_SNAP_BANDS = [[1.2, 5.0, 10.0], [0.5, 1.0, 5.0], [0.3, 0.5, 1.0], [0.0, 0.1, 0.5]]
-
-
 class _Recorder:
     """What the scene hands the app for one kind of gesture."""
 
@@ -227,17 +224,12 @@ def _arm() -> dict[str, Any]:
         sources=sources,
         rings=rings,
         rules={"available": True, "gizmo": "translate", "suspended": False},
-        bands=_SNAP_BANDS,
         menu=menu.id,
         colors={
             "action": hex_of("action"),
-            "muted": hex_of("text-muted"),
             "ball": SceneColors.EDIT_GRAY_HEX,
             "active": SceneColors.TCP_ACTIVE_HEX,
             "miss": SceneColors.COLLISION_HEX,
-            "axisXLinear": linear_rgb("axis-x"),
-            "axisYLinear": linear_rgb("axis-y"),
-            "axisZLinear": linear_rgb("axis-z"),
         },
     )
     _page["arm"] = {"recorders": recorders, "contexts": contexts, "sources": sources}
@@ -250,9 +242,17 @@ def _rest_pointer(screen: Screen) -> None:
     )
 
 
-def _mouse_to(screen: Screen, x: float, y: float) -> None:
+def _mouse_to(screen: Screen, x: float, y: float, held: bool = False) -> None:
+    """Move the mouse; *held* with the left button down, as during a drag."""
     screen.selenium.execute_cdp_cmd(
-        "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": round(x), "y": round(y)}
+        "Input.dispatchMouseEvent",
+        {
+            "type": "mouseMoved",
+            "x": round(x),
+            "y": round(y),
+            "button": "left" if held else "none",
+            "buttons": int(held),
+        },
     )
 
 
@@ -304,11 +304,24 @@ class TestSceneElement:
     ) -> None:
         frames = wait(page, 10).until(lambda _: scene_js(page, "return S.frames()"))
         assert frames > 0
-        fetched = js(
-            page,
-            "return performance.getEntriesByType('resource').map(e => e.name)"
-            ".filter(n => n.includes('nicegui-scene'))",
-        )
+        # NiceGUI serves its scene's three.js under a hashed module path, and
+        # its ui.scene component as scene.js.
+        from nicegui import dependencies
+        from nicegui.elements.scene.scene import Scene  # noqa: F401  registers it
+
+        bundles = [
+            f"/esm/{key}/"
+            for key, module in dependencies.esm_modules.items()
+            if module.name == "nicegui-scene"
+        ]
+        assert bundles
+        fetched = [
+            name
+            for name in js(
+                page, "return performance.getEntriesByType('resource').map(e => e.name)"
+            )
+            if any(b in name for b in bundles) or name.endswith("/scene.js")
+        ]
         assert fetched == [], "the view loaded NiceGUI's three.js too"
 
         synthetic = tmp_path / "synthetic.urdf"
@@ -607,24 +620,9 @@ class TestSceneElement:
               hover.tap('ring:3'); hover.leave('ring:3', 1800); hover.tick(2100);
               out.pinned = hover.shown; hover.miss(); out.unpinned = hover.shown;
 
-              // The gizmo's marks.
-              const t = h.gizmoTicks('translate', 'X', 10, 5);
-              out.translateTicks = [t.points.length, t.points[11][0] - t.points[10][0],
-                                    t.points.every((p) => p[1] === 0 && p[2] === 0)];
-              out.translateLabel = h.gizmoLabel('translate', 'X', [0.02, 0, 0],
-                [[1, 0, 0], [0, 1, 0], [0, 0, 1]], 10, 5);
-              const r = h.gizmoTicks('rotate', 'Z', 10, 5);
-              const radii = r.points.map((p) => Math.hypot(p[0], p[1]));
-              const angles = r.points.map((p) => Math.atan2(p[1], p[0]));
-              out.rotateTicks = [r.points.length, Math.max(...radii) - Math.min(...radii),
-                                 angles[11] - angles[10], r.points.every((p) => p[2] === 0)];
-              const c = Math.cos(rad(10)), s = Math.sin(rad(10));
-              out.rotateLabel = h.gizmoLabel('rotate', 'Z', [0, 0, 0],
-                [[c, -s, 0], [s, c, 0], [0, 0, 1]], 10, 5);
-
               // A late refusal of an earlier drag leaves the open one alone.
               const sent = [];
-              const g = new gs.Gestures({ emit: (n, a) => sent.push(a) });
+              const g = new gs.Gestures({ emit: (n, a) => sent.push(a), pointer: { ended() {} } });
               const first = g.begin('ring', {}, 1, null);
               g.release(first, { delta: 5 });
               const second = g.begin('ring', {}, 1, null);
@@ -650,13 +648,6 @@ class TestSceneElement:
         assert out["hidden"] is None and out["revealed"] == "gizmo", out
         assert out["suspended"] is None, out
         assert out["pinned"] == "ring:3" and out["unpinned"] is None, out
-        count, spacing, on_axis = out["translateTicks"]
-        assert count == 21 and spacing == pytest.approx(0.010) and on_axis, out
-        assert out["translateLabel"] == "Tool X  Δ+20.0 mm  step 10 mm", out
-        count, spread, spacing, flat = out["rotateTicks"]
-        assert count == 21 and spread < 1e-12 and flat, out
-        assert spacing == pytest.approx(np.radians(5.0)), out
-        assert out["rotateLabel"] == "Tool RZ  Δ+10.0°  step 5°", out
         assert out["secondOpen"], out
 
     def test_a_drag_ends_once_and_belongs_to_its_finger(self, page: Screen) -> None:
@@ -714,10 +705,11 @@ class TestSceneElement:
                     "x": round(x),
                     "y": round(y),
                     "button": "left",
+                    "buttons": 1,
                     "clickCount": 1,
                 },
             )
-            _mouse_to(page, x + dx * 10, y + dy * 10)
+            _mouse_to(page, x + dx * 10, y + dy * 10, held=True)
             scene_js(page, "S.renderer.forceContextLoss()")
             wait(page, 5).until(lambda _: ("end", True) in tcp.log)
             page.selenium.execute_cdp_cmd(
@@ -745,10 +737,11 @@ class TestSceneElement:
                     "x": round(x),
                     "y": round(y),
                     "button": "left",
+                    "buttons": 1,
                     "clickCount": 1,
                 },
             )
-            _mouse_to(page, x + dx * 10, y + dy * 10)
+            _mouse_to(page, x + dx * 10, y + dy * 10, held=True)
             page.selenium.execute_cdp_cmd(
                 "Input.dispatchMouseEvent",
                 {

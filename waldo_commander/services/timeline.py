@@ -12,13 +12,62 @@ counts the program's own time.
 from __future__ import annotations
 
 import bisect
+from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
 from numpy.typing import NDArray
-from waldoctl import TickIndex, align_rows
+from waldoctl import TickBlock, TickIndex, align_rows
 
 from waldo_commander.state import PathSegment, ToolSelection
+
+
+def distinct_prediction(
+    commanded: TickIndex, predicted: TickIndex | None
+) -> TickIndex | None:
+    """*predicted*, unless it is the commanded record itself or its copy."""
+    if predicted is commanded or (
+        predicted is not None
+        and predicted.digest
+        and predicted.digest == commanded.digest
+    ):
+        return None
+    return predicted
+
+
+def selection_before(
+    selections: Sequence[ToolSelection], command: int
+) -> ToolSelection | None:
+    """The tool selection in effect when command *command* runs."""
+    chosen = None
+    for selection in selections:
+        if selection.command <= command and (
+            chosen is None or selection.command >= chosen.command
+        ):
+            chosen = selection
+    return chosen
+
+
+def _occurrences(commands: Iterable[int]) -> list[tuple[int, int]]:
+    """Each command with how many times it ran before: a run's identity
+    across records that number their rows differently."""
+    seen: defaultdict[int, int] = defaultdict(int)
+    keys = []
+    for command in commands:
+        keys.append((command, seen[command]))
+        seen[command] += 1
+    return keys
+
+
+@dataclass(frozen=True, slots=True)
+class Cursor:
+    """A point of the timeline: which record shows it (0 commanded, 1
+    predicted), that record's row, and the segment it belongs to."""
+
+    record: int
+    row: int
+    segment: int
 
 
 @dataclass(slots=True)
@@ -140,6 +189,13 @@ class Timeline:
     #: For each commanded row, the predicted row at the same point of the
     #: same command. None without a predicted record.
     _align: NDArray[np.intp] | None = None
+    #: Each segment's (command, occurrence), and the reverse.
+    _segment_keys: list[tuple[int, int]] = field(default_factory=list)
+    _segment_of: dict[tuple[int, int], int] = field(default_factory=dict)
+    #: Per record (commanded, predicted), its blocks by (command, occurrence).
+    _blocks: tuple[dict[tuple[int, int], TickBlock], ...] = field(
+        default_factory=lambda: ({}, {})
+    )
 
     @property
     def segments(self) -> list[PathSegment]:
@@ -168,6 +224,7 @@ class Timeline:
         jaw column, checkpoints from the segments, and *predicted* — when
         it answers this very plan — supplies the poses played back.
         """
+        predicted = distinct_prediction(commanded, predicted)
         dt = commanded.row_dt_s
         cum = [seg.start_row * dt for seg in segments]
         cum.append(commanded.rows * dt)
@@ -197,6 +254,9 @@ class Timeline:
         align = None
         if predicted is not None and predicted.rows > 0 and commanded.rows > 0:
             align = align_rows(commanded, predicted)
+        if align is None:
+            predicted = None
+        segment_keys = _occurrences(seg.command for seg in segments)
 
         return cls(
             cumulative_times=cum,
@@ -210,11 +270,19 @@ class Timeline:
             _tool_sel_times=[k.time for k in sel_kf],
             checkpoints=cps,
             tool_spans=tool_spans,
-            _predicted=predicted if align is not None else None,
+            _predicted=predicted,
             _align=align,
+            _segment_keys=segment_keys,
+            _segment_of={key: i for i, key in enumerate(segment_keys)},
+            _blocks=tuple(
+                dict(zip(_occurrences(b.command for b in r.blocks), r.blocks))
+                if r is not None
+                else {}
+                for r in (commanded, predicted)
+            ),
         )
 
-    def _row(self, t: float) -> int:
+    def commanded_row(self, t: float) -> int:
         """The commanded row at time *t*, clamped to the record."""
         rows = self._commanded.rows
         if rows == 0:
@@ -225,13 +293,72 @@ class Timeline:
         """The predicted record's row for time *t*: the row at the same
         point of the same command, or the commanded row itself without a
         predicted record."""
-        row = self._row(t)
+        row = self.commanded_row(t)
         if self._align is None:
             return row
         return int(self._align[row])
 
-    def sample(self, t: float) -> TimelineSample:
-        """Sample the timeline at time t (seconds).
+    def record(self, index: int) -> TickIndex | None:
+        """The commanded record (0) or the predicted one (1)."""
+        return self._predicted if index else self._commanded
+
+    def _segment_at(self, t: float) -> int:
+        idx = bisect.bisect_right(self.cumulative_times, t) - 1
+        return max(0, min(idx, len(self._segments) - 1))
+
+    def cursor_at(self, t: float) -> Cursor:
+        """Where playback is at *t*: the predicted row when there is one."""
+        index = int(self._predicted is not None)
+        row = self.predicted_row(t) if index else self.commanded_row(t)
+        return Cursor(index, row, self._segment_at(t))
+
+    def segment_key(self, segment: int) -> tuple[int, int]:
+        """*segment*'s command and how many times that command ran before."""
+        return self._segment_keys[segment]
+
+    def segment_start(self, segment: int) -> Cursor:
+        """The first row of *segment*'s command run, in the record playback
+        shows; a segment several share an instant with stays itself."""
+        key = self.segment_key(segment)
+        for index in dict.fromkeys((int(self._predicted is not None), 0)):
+            record = self.record(index)
+            block = self._blocks[index].get(key)
+            if record is not None and block is not None and record.rows:
+                return Cursor(index, min(block.start_row, record.rows - 1), segment)
+        cursor = self.cursor_at(self.cumulative_times[segment])
+        return Cursor(cursor.record, cursor.row, segment)
+
+    def cursor_of(
+        self, index: int, row: int, command: int, occurrence: int
+    ) -> tuple[Cursor, float]:
+        """A picked row of *command*'s *occurrence*-th run, and its playback
+        time: a predicted row maps to the same elapsed point of that run's
+        commanded rows."""
+        key = (command, occurrence)
+        record = self.record(index)
+        assert record is not None
+        own = self._blocks[index].get(key)
+        peer = self._blocks[0].get(key) if index else None
+        dt = self._commanded.row_dt_s
+        if own is not None and peer is not None:
+            if own.rows:
+                elapsed = (row - min(own.start_row, record.rows - 1)) * record.row_dt_s
+                start = min(peer.start_row, self._commanded.rows - 1)
+                t = start * dt + min((max(1, peer.rows) - 1) * dt, elapsed)
+            else:
+                t = peer.start_row * dt
+        elif own is not None and not own.rows:
+            t = own.start_row * record.row_dt_s
+        else:
+            t = row * record.row_dt_s
+        segment = self._segment_of.get(key)
+        return Cursor(
+            index, row, self._segment_at(t) if segment is None else segment
+        ), t
+
+    def sample(self, t: float, cursor: Cursor | None = None) -> TimelineSample:
+        """Sample the timeline at time t (seconds), at *cursor* when the row
+        shown is not simply the one playback reaches at t.
 
         Returns the pose to show, the segment index, and the fractional
         position within the segment. Uses binary search for O(log N) lookup.
@@ -240,10 +367,9 @@ class Timeline:
             return TimelineSample(segment_index=0, joints=None, fraction=0.0, time=0.0)
 
         t = max(0.0, min(t, self.total_duration))
-
-        # Binary search: find rightmost cum_time <= t
-        idx = bisect.bisect_right(self.cumulative_times, t) - 1
-        idx = max(0, min(idx, len(self._segments) - 1))
+        if cursor is None:
+            cursor = self.cursor_at(t)
+        idx = cursor.segment
 
         seg_start = self.cumulative_times[idx]
         motion_dur = self.segment_durations[idx]
@@ -251,11 +377,9 @@ class Timeline:
         fraction = max(0.0, min(1.0, fraction))
 
         # Measured, not interpolated: the row IS where the arm is.
-        if self._predicted is not None:
-            source = self._predicted.joints_rad[self.predicted_row(t)]
-        else:
-            source = self._commanded.joints_rad[self._row(t)]
-        joints = [float(v) for v in source]
+        record = self.record(cursor.record)
+        assert record is not None
+        joints = [float(v) for v in record.joints_rad[cursor.row]]
 
         return TimelineSample(
             segment_index=idx,
@@ -288,17 +412,21 @@ class Timeline:
         frac = max(0.0, min(1.0, frac))
         return tuple(a + (b - a) * frac for a, b in zip(k0.positions, k1.positions))
 
-    def sample_objects(self, t: float) -> dict[str, ObjectSample]:
-        """Every tracked object's pose at time t, off the predicted record:
-        an object that never moved holds its one row, one that did is read
-        at the row playback is on. A NaN row is an object the simulation
+    def sample_objects(
+        self, t: float, cursor: Cursor | None = None
+    ) -> dict[str, ObjectSample]:
+        """Every tracked object's pose at time t off the predicted record, or
+        at *cursor*: an object that never moved holds its one row, one that
+        did is read at the row shown. A NaN row is an object the simulation
         lost, and is left out."""
-        predicted = self._predicted
-        if predicted is None:
+        if cursor is None:
+            record, row = self._predicted, self.predicted_row(t)
+        else:
+            record, row = self.record(cursor.record), cursor.row
+        if record is None:
             return {}
-        row = self.predicted_row(t)
         out: dict[str, ObjectSample] = {}
-        for obj in predicted.objects:
+        for obj in record.objects:
             poses = obj.poses
             if poses.shape[0] == 0:
                 continue

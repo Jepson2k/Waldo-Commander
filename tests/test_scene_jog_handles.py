@@ -258,9 +258,9 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
         # Right-click the floor and place a target at the robot, then leave.
         right_click(user, scene, [], [0.3, 0.1, 0.0])
         user.find(marker="scene-target-at-robot").click()
-        assert await wait_until(lambda: waldoctl.commander.status.editing_mode, 5)
+        assert await wait_until(lambda: ui_state.editing_target, 5)
         user.find(marker="edit-bar-cancel").click()
-        assert not waldoctl.commander.status.editing_mode
+        assert not ui_state.editing_target
 
     for interrupt in (lease, editing, simulator, stop):
         await teleport_to_jog_pose(panel.client)
@@ -321,7 +321,6 @@ async def test_gizmo_drags_move_the_tool_in_its_own_frame_and_nothing_else(
 
     # Rotate about the tool's Z: the result is the frame's orientation turned
     # about its own Z, not the drag's angles taken as a world orientation.
-    user.find(marker="gizmo-mode-rotate").click()
     _, R_frame = await _frame_on_tcp(urdf)
     drag = gizmo(user, scene, "rotate", "Z").move(**ball(rz=math.radians(10.0)))
     expected = R_frame @ _rz(10.0)
@@ -335,7 +334,6 @@ async def test_gizmo_drags_move_the_tool_in_its_own_frame_and_nothing_else(
     )
     drag.release(**ball(rz=math.radians(10.0)))
     assert await panel.client.wait_motion(timeout=10, settle_window=0.5)
-    user.find(marker="gizmo-mode-move").click()
 
     # Nothing here may move the arm: a grab let go where it was taken, a
     # drag the app never heard begin, and samples after a drag ended.
@@ -356,7 +354,7 @@ async def test_gizmo_drags_move_the_tool_in_its_own_frame_and_nothing_else(
     origin, R_frame = await _frame_on_tcp(urdf)
     right_click(user, scene, [], [0.3, 0.1, 0.0])
     user.find(marker="scene-target-at-robot").click()
-    assert await wait_until(lambda: waldoctl.commander.status.editing_mode, 5)
+    assert await wait_until(lambda: ui_state.editing_target, 5)
     try:
         solver = urdf._ik_solver
         solves = 0

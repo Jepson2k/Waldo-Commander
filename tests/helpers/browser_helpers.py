@@ -131,16 +131,26 @@ def viewport(
 ) -> Iterator[None]:
     """Emulate a viewport of exactly ``width`` × ``height`` CSS pixels.
 
-    The driver is shared across tests, so the override is always cleared.
+    Nested captures restore the enclosing viewport; the outermost clears it.
     """
-    screen.selenium.execute_cdp_cmd(
-        "Emulation.setDeviceMetricsOverride",
-        {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": mobile},
-    )
+    driver = screen.selenium
+    previous = getattr(driver, "_wc_viewport", None)
+    settings = {
+        "width": width,
+        "height": height,
+        "deviceScaleFactor": 1,
+        "mobile": mobile,
+    }
+    driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", settings)
+    driver._wc_viewport = settings
     try:
         yield
     finally:
-        screen.selenium.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
+        driver._wc_viewport = previous
+        if previous is None:
+            driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
+        else:
+            driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", previous)
 
 
 # Footer buttons and the gear that replaced the rail tabs: marker, and the

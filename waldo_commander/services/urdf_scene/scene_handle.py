@@ -67,6 +67,36 @@ class WcSceneHandle:
         self._refresh_seq = 0
         self._pushes_inflight = 0
         self._push_lock = asyncio.Lock()
+        self.revision = 0
+        self.last_error: str | None = None
+        # The revision whose push ended with neither an ack nor a readback.
+        self._failed_revision: int | None = None
+        self._world_changed = asyncio.Event()
+
+    def _signal_world_change(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if core.loop is not None and core.loop.is_running() and loop is not core.loop:
+            core.loop.call_soon_threadsafe(self._signal_world_change)
+            return
+        self._world_changed.set()
+        self._world_changed = asyncio.Event()
+
+    async def wait_for_confirmation(self, revision: int) -> None:
+        while (
+            not self._confirmed
+            and self.revision == revision
+            and self._failed_revision != revision
+        ):
+            await self._world_changed.wait()
+        if self._failed_revision == revision and not self._confirmed:
+            raise ValueError(
+                self.last_error or "The controller did not answer the object edit"
+            )
+        if not self._confirmed:
+            raise ValueError("Object edit superseded by another world change")
 
     @property
     def shapes(self) -> list[Shape]:
@@ -76,10 +106,10 @@ class WcSceneHandle:
     def installation_draft(self) -> tuple[Shape, ...]:
         return self._installation_draft
 
-    def propose_installation(self, names: list[str]) -> None:
-        """Move program shapes into the installation proposal: they leave the
-        layer the backend enforces, and this process keeps checking them so
-        the design can be flown against before the config declares it."""
+    def proposal_layers(
+        self, names: list[str]
+    ) -> tuple[list[Shape], tuple[Shape, ...]]:
+        """The program layer and proposal after moving *names* into the proposal."""
         wanted = set(names)
         moving = [s for s in self._shapes if s.name in wanted]
         missing = sorted(wanted - {s.name for s in moving})
@@ -89,14 +119,13 @@ class WcSceneHandle:
             raise ValueError(
                 "detach held geometry before proposing installation shapes"
             )
-        self._assign(
+        return (
             [s for s in self._shapes if s.name not in wanted],
             (*self._installation_draft, *moving),
-            push=True,
         )
 
-    def withdraw_proposal(self, name: str) -> None:
-        """Return a proposed shape to the program layer, in one move.
+    def withdrawal_layers(self, name: str) -> tuple[list[Shape], tuple[Shape, ...]]:
+        """The program layer and proposal after *name* returns to the program.
 
         Both layers change together so a refusal leaves neither touched —
         discarding first and re-adding after would destroy the drafted
@@ -106,11 +135,20 @@ class WcSceneHandle:
         shape = next((s for s in self._installation_draft if s.name == name), None)
         if shape is None:
             raise ValueError(f"no proposed shape named {name!r}")
-        self._assign(
+        return (
             [*self._shapes, shape],
             tuple(s for s in self._installation_draft if s.name != name),
-            push=True,
         )
+
+    def propose_installation(self, names: list[str]) -> None:
+        """Move program shapes into the installation proposal: they leave the
+        layer the backend enforces, and this process keeps checking them so
+        the design can be flown against before the config declares it."""
+        self._assign(*self.proposal_layers(names), push=True)
+
+    def withdraw_proposal(self, name: str) -> None:
+        """Return a proposed shape to the program layer, in one move."""
+        self._assign(*self.withdrawal_layers(name), push=True)
 
     def discard_installation_draft(self, names: list[str] | None = None) -> None:
         drop = None if names is None else set(names)
@@ -154,8 +192,13 @@ class WcSceneHandle:
         return [*self._shapes, *self._installation_draft]
 
     def _assign(
-        self, shapes: list[Shape], draft: tuple[Shape, ...], *, push: bool
-    ) -> None:
+        self,
+        shapes: list[Shape],
+        draft: tuple[Shape, ...],
+        *,
+        push: bool,
+        record: bool = True,
+    ) -> asyncio.Task | None:
         """Move both layers at once, validating before either changes.
 
         The local checker takes program plus proposal in one call: a
@@ -174,17 +217,23 @@ class WcSceneHandle:
             )
         # Validates first: invalid input raises with nothing mutated anywhere.
         ui_state.active_robot.apply_shapes([*shapes, *draft])
+        if shapes != self._shapes or draft != self._installation_draft:
+            self.revision += 1
         self._shapes = shapes
         self._installation_draft = draft
+        task = None
         if push:
             self._confirmed = False
+            self.last_error = None
             self._refresh_seq += 1  # in-flight readbacks predate this edit
             # Enforcement before cosmetics: the backend push must never be
             # lost to a scene/render problem.
-            self._push_shapes()
+            task = self._push_shapes()
         self.render()
-        if push:
+        if push and record:
             self._record_snippet(shapes)
+        self._signal_world_change()
+        return task
 
     def render(self) -> None:
         """(Re)draw both layers on the live scene (no-op without one).
@@ -223,7 +272,7 @@ class WcSceneHandle:
         except Exception:
             logger.exception("set_shapes code generation failed")
 
-    def _push_shapes(self) -> None:
+    def _push_shapes(self) -> asyncio.Task | None:
         # The pushed world is bound HERE and the in-flight count bumped HERE,
         # synchronously: a refresh task created before this edit must see the
         # gate closed when it runs, and the push coroutine must not re-read
@@ -244,7 +293,7 @@ class WcSceneHandle:
                 )
             return  # no app loop at all — local render only
         self._pushes_inflight += 1
-        loop.create_task(self._push_shapes_async(shapes))
+        return loop.create_task(self._push_shapes_async(shapes))
 
     async def _push_shapes_async(self, shapes: list[Shape]) -> None:
         """One acknowledged push; readback confirms or the draft styling stays.
@@ -260,21 +309,34 @@ class WcSceneHandle:
                 try:
                     code = await waldoctl.commander.client.set_shapes(shapes)
                 except NotImplementedError:
-                    return  # backend without shape support — local render only
+                    self.last_error = "This backend does not acknowledge object edits"
+                    code = None
                 except Exception as e:
                     code = -1
                     err = e
                 if shapes is not self._shapes:
                     return  # superseded by a newer assignment
-                if code > 0:
-                    await self._adopt_backend_world()
-                    return
-                logger.error(
-                    "set_shapes push unconfirmed (code=%s%s) — displayed keep-outs are "
-                    "NOT enforced by the controller until readback confirms",
-                    code,
-                    f": {err}" if err is not None else "",
-                )
+                if code is not None and code <= 0:
+                    self.last_error = (
+                        str(err)
+                        if err is not None
+                        else "Object edit was not acknowledged (code 0)"
+                        if code == 0
+                        else f"Object edit refused (code {code})"
+                    )
+                    logger.warning("set_shapes not confirmed: %s", self.last_error)
+                await self._adopt_backend_world()
+                if code is None or code <= 0:
+                    self.render()
+                if not self._confirmed and shapes is self._shapes:
+                    # Nothing read back either: whoever waits on this edit
+                    # hears it failed rather than waiting for a readback.
+                    self.last_error = (
+                        self.last_error
+                        or "The controller did not answer the object edit"
+                    )
+                    self._failed_revision = self.revision
+                    self._signal_world_change()
         finally:
             self._pushes_inflight -= 1
 
@@ -307,10 +369,15 @@ class WcSceneHandle:
             return  # unreachable — keep current display, re-query on reconnect
         if seq != self._refresh_seq:
             return  # superseded by a newer edit or readback — that one adopts
+        if self._shapes != list(world.program) or self._installation != tuple(
+            world.installation
+        ):
+            self.revision += 1
         self._installation = tuple(world.installation)
         self._attachment_epoch = world.attachment_epoch
         self._shapes = list(world.program)
         self._confirmed = True
+        self._signal_world_change()
         # A proposal the backend now enforces is no longer a proposal. By
         # name: the config is authored by hand from the exported TOML, so the
         # enforced shape rarely compares equal to the drafted one field for

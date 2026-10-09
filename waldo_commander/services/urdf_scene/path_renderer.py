@@ -14,7 +14,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as ScipyRotation
 
 from waldo_commander import scene3d as s3d
-from waldo_commander.common.theme import hex_of
+from waldo_commander.common.theme import _srgb_eotf, hex_of
 
 if TYPE_CHECKING:
     from waldo_commander.state import PathSegment, ToolAction
@@ -24,10 +24,11 @@ _PI_ROTATION_RPY = [math.pi, 0.0, 0.0]
 _ZERO_ROTATION_RPY = [0.0, 0.0, 0.0]
 
 
-def _hex_to_rgb(hex_color: str) -> list[float]:
-    """Convert '#RRGGBB' to [r, g, b] floats in 0-1 range."""
+def _hex_to_linear_rgb(hex_color: str) -> list[float]:
+    """'#RRGGBB' as linear-light [r, g, b] in 0–1: three.js takes vertex
+    colours as linear, where a material's hex is sRGB."""
     h = hex_color.lstrip("#")
-    return [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    return [_srgb_eotf(int(h[i : i + 2], 16) / 255.0) for i in (0, 2, 4)]
 
 
 def _extract_tcp_rotation(tcp_pose: list[float]) -> ScipyRotation | None:
@@ -85,8 +86,8 @@ class PathRenderer:
             # vertex reuses the last pair's color.
             vertex_colors = []
             for i, hex_c in enumerate(point_pair_colors):
-                vertex_colors.append(_hex_to_rgb(hex_c))
-            vertex_colors.append(_hex_to_rgb(point_pair_colors[-1]))
+                vertex_colors.append(_hex_to_linear_rgb(hex_c))
+            vertex_colors.append(_hex_to_linear_rgb(point_pair_colors[-1]))
 
         line = s3d.polyline(
             pts_list,

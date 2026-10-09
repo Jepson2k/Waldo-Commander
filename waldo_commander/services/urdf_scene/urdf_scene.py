@@ -19,13 +19,14 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Coroutine
 from typing import Any, Mapping, NamedTuple, Sequence
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 import numpy as np
 import waldoctl
-from nicegui import app, ui
+from nicegui import app, background_tasks, ui
 from scipy.spatial.transform import Rotation
 from waldoctl import LinearMotion, MeshRole, PartMotion, RotaryMotion
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, TOOL_PREFIX, pose_matrix
@@ -35,7 +36,6 @@ from waldo_commander.common.theme import (
     SceneColors,
     get_color_for_move_type,
     hex_of,
-    linear_rgb,
 )
 from waldo_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
 from waldo_commander.services.control_lease import control_lease
@@ -50,8 +50,9 @@ from waldo_commander.state import robot_state, simulation_state, ui_state
 
 from .config import DRAFT_PREFIX, RobotAppearanceMode, ToolPose, UrdfSceneConfig
 from .editing_mixin import EditingMixin
+from .object_editing_mixin import ObjectEditingMixin
 from .envelope_renderer import EnvelopeRenderer
-from .jog_handles_mixin import SNAP_BANDS, JogHandlesMixin
+from .jog_handles_mixin import JogHandlesMixin
 from .loader import (
     get_transl_and_rpy,
     load_urdf,
@@ -59,6 +60,7 @@ from .loader import (
     resolve_meshes_dir,
 )
 from .path_renderer import PathRenderer
+from waldo_commander.services.trajectory_inspection import TrajectoryInspection
 from .tcp_controls_mixin import TCPControlsMixin
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
@@ -80,6 +82,7 @@ _Y_UP_KINDS = ("cylinder", "capsule", "cone")
 # three.js cylinders/cones extend along +Y; coal's primitives are Z-aligned.
 # Rx(+90°) maps +Y -> +Z so the drawn shape matches the enforced volume.
 _Y_TO_Z_UP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+_Y_TO_Z_UP_ROTATION = Rotation.from_matrix(_Y_TO_Z_UP)
 
 
 def _is_ground(shape) -> bool:
@@ -87,8 +90,8 @@ def _is_ground(shape) -> bool:
 
     A solid counts when its top face is at or below the robot's base and
     it spans the origin — a floor slab does, a table beside the robot does
-    not, and the placeholder disc has to stay for the table so it is not
-    left floating in nothing.
+    not. Ground is enforced but drawn as the placeholder disc, not as a
+    slab reaching past the view.
     """
     x, y, z = (float(v) for v in shape.pose[:3])
     params = shape.params() if callable(shape.params) else shape.params
@@ -115,6 +118,20 @@ def _object_render_pose(
     if kind in _Y_UP_KINDS:
         R = R @ _Y_TO_Z_UP
     return (float(pose7[0]), float(pose7[1]), float(pose7[2])), R.tolist()
+
+
+def object_render_poses(kind: str, poses: np.ndarray) -> np.ndarray:
+    """A tracked object's ``(rows, 7)`` ``[x, y, z, qw, qx, qy, qz]`` poses
+    as the scene draws them: the Y-up correction applied where it holds, a
+    non-finite row left as it is."""
+    out = np.array(poses, dtype=np.float64, copy=True)
+    if kind not in _Y_UP_KINDS or not len(out):
+        return out
+    rows = np.isfinite(out).all(axis=1)
+    if rows.any():
+        turned = Rotation.from_quat(out[rows][:, [4, 5, 6, 3]]) * _Y_TO_Z_UP_ROTATION
+        out[rows, 3:7] = turned.as_quat()[:, [3, 0, 1, 2]]
+    return out
 
 
 def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]]:
@@ -258,6 +275,7 @@ def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
 
 
 class UrdfScene(
+    ObjectEditingMixin,
     EditingMixin,
     TCPControlsMixin,
     JogHandlesMixin,
@@ -381,6 +399,8 @@ class UrdfScene(
         self._link_to_meshes: dict[str, list[Any]] = {}
         self._shape_objects: dict[str, Any] = {}
         self._floor: Node | None = None
+        #: Installation shapes that are the ground: drawn as the floor disc.
+        self._install_ground: set[str] = set()
         self._drawn: dict[str, _Drawn] = {}
         self._shapes_group: Any | None = None
         self._colliding_meshes: set[Any] = set()  # objects currently tinted red
@@ -395,23 +415,20 @@ class UrdfScene(
         # Editing mode state
         n = len(self.joint_names)
         self._editing_angles: list[float] = [0.0] * n  # Joint angles during editing
-        self._pre_edit_angles: list[float] = [
-            0.0
-        ] * n  # Saved angles to restore on exit
-        self._editing_target_type: str = "cartesian"  # "cartesian" or "joint"
-        self._joint_ring_touched: bool = False  # True if user rotated any joint ring
 
         self._scene_wrapper: Any | None = None  # hosts positioned overlays
         self._drag_context: tuple | None = None
 
         self._init_editing_state()
         self._init_shape_editing()
+        self._init_object_editing()
         self._init_tcp_controls_state()
         self._init_jog_handles_state()
         self._init_envelope_state()
         # The value each joint group was last drawn at; NaN until drawn.
         self._shown_q = np.full(len(self.joint_names), np.nan)
         self.path_renderer = PathRenderer()
+        self.inspection = TrajectoryInspection(self)
 
         # Event-driven updates on simulation state changes.
         simulation_state.add_change_listener(self._update_simulation_view)
@@ -449,8 +466,8 @@ class UrdfScene(
                 .style("margin: 0; display: block;")
             )
             with self.scene:
-                # The floor stands in until a backend describes where its
-                # installation floor is.
+                # The floor disc stands for the ground, whether or not the
+                # installation declares it.
                 self._floor = self.scene.floor(
                     reach, 12, 6, self.config.ground_color, self.config.grid_color
                 )
@@ -487,12 +504,34 @@ class UrdfScene(
 
         self.scene.define_joints([self.joint_groups[n] for n in self.joint_names])
         self.scene.on_context(self._on_context)
+        self.scene.on("select", self._on_object_selection)
+        self.scene.on("camera", self._on_isolation_view)
+        self.scene.on("inspect", lambda e: self.inspection.handle(e.args))
+        self.scene.on("init", self.inspection.remount)
+        self.scene.client.on_disconnect(self.inspection.clear)
+        self.scene.client.on_disconnect(self.cancel_target_edit)
+        self.scene.client.on_disconnect(lambda: self._cancel_shape_drawing())
+        self.scene.on("draw_cancel", self._cancel_shape_drawing)
         self.scene.gestures.authorized = self._has_control
         self._register_gestures()
         self._push_interaction()
         # A closed page's scene would otherwise keep listening, and be redrawn
         # on every program change, for as long as the app runs.
         self.scene.client.on_delete(self.cleanup)
+
+    def _notify(self, message: str, *, warning: bool = False) -> None:
+        """Tell this view's page, whichever element's handler is asking."""
+        with self.scene.client:
+            ui.notify(message, type="warning" if warning else None)
+
+    def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
+        """Run *work* for this view's page, with its failures logged."""
+
+        async def run() -> None:
+            with self.scene.client:
+                await work
+
+        background_tasks.create(run(), name="scene edit")
 
     def _has_control(self) -> bool:
         """Whether this scene's page is the one with control of the robot.
@@ -521,7 +560,21 @@ class UrdfScene(
 
     def check_drag_context(self) -> None:
         """Start a new epoch if a Stop, a simulator switch or a change of
-        control has happened since the last check."""
+        control has happened since the last check, and end authoring that
+        the program, world, tool or run state has moved out from under."""
+        if (
+            self._edit_active
+            or self._teaching is not None
+            or self._shape_move_active is not None
+            or self._drawing is not None
+            or self._object_dialogs
+        ):
+            self.check_edit_context()
+            self.check_object_context()
+            self.check_drawing_context()
+        # Undo must not offer to overwrite what changed elsewhere.
+        if self.object_history.expected is not None and self.object_history.validate():
+            self._refresh_object_inspector()
         context = self._drag_context_now()
         if context != self._drag_context and self.scene is not None:
             if self._drag_context is not None:
@@ -545,10 +598,13 @@ class UrdfScene(
         handlers["shape"] = Handlers(
             self._shape_admit, lambda _g, _a: None, self._shape_finish
         )
+        handlers["draw"] = Handlers(
+            self._draw_admit, lambda _g, _a: None, self._draw_finish
+        )
 
     def _push_interaction(self) -> None:
         """Send the browser what its pointer handling works from."""
-        if self.scene is None:
+        if self.scene is None or self.scene.is_deleted:
             return
         self.scene.set_interaction(
             sources=self._hover_sources(),
@@ -556,17 +612,17 @@ class UrdfScene(
             rules=self._handle_rules(),
             edit=self._edit_state(),
             shapeMove=self._shape_move_state(),
-            bands=[list(b) for b in SNAP_BANDS],
+            shapeDraw=self._shape_draw_state(),
+            entities=self._object_entities(),
             menu=self.context_menu.id if self.context_menu else None,
             colors={
                 "action": hex_of("action"),
-                "muted": hex_of("text-muted"),
                 "ball": SceneColors.EDIT_GRAY_HEX,
                 "active": SceneColors.TCP_ACTIVE_HEX,
                 "miss": SceneColors.COLLISION_HEX,
-                "axisXLinear": linear_rgb("axis-x"),
-                "axisYLinear": linear_rgb("axis-y"),
-                "axisZLinear": linear_rgb("axis-z"),
+                "axisX": hex_of("axis-x"),
+                "axisY": hex_of("axis-y"),
+                "axisZ": hex_of("axis-z"),
             },
         )
 
@@ -586,6 +642,7 @@ class UrdfScene(
             isinstance(v, int | float) and math.isfinite(v) for v in (cx, cy)
         ):
             return
+        self._resolve_draw_surface(args)
         self._populate_context_menu(hits, ground)
         if self.scene is not None:
             self.scene.open_menu(gen, cx, cy)
@@ -629,6 +686,7 @@ class UrdfScene(
         # among them, e.g. from MCP).
         self.refresh_handles()
         self._do_update_simulation_view_body()
+        self.inspection.update()
         self._flush_reveals()
 
     def _do_update_simulation_view_body(self) -> None:
@@ -647,15 +705,10 @@ class UrdfScene(
             self.targets_group.visible(True)
 
         active = waldoctl.commander.programs.active
-        view = waldoctl.commander.settings.view
-        # The predicted path, where a pass produced one that differs from
-        # the commanded path. Its own group, so a rebuild never disturbs
-        # the commanded-path diff below, and keyed on both records'
-        # digests so an identical pair is left alone.
+        # Per-frame physics annotations share the record used by path inspection.
         self.physics_overlay.render(
             active.dry_run.commanded if active is not None else None,
             active.dry_run.predicted_current if active is not None else None,
-            show_predicted=view.predicted_visible,
         )
         if active is not None:
             all_segments = active.dry_run.path_segments
@@ -688,8 +741,10 @@ class UrdfScene(
             )
 
         # --- Per-segment diff rendering ---
-        first_cmd_idx = -1  # first non-travel segment
-        last_cmd_idx = -1  # last non-travel segment
+        # The first and last drawn segments: travel and point-less markers
+        # (a trailing select_tool) carry no start or end square.
+        first_cmd_idx = -1
+        last_cmd_idx = -1
 
         if new_count == 0 and old_count > 0:
             if TRACE_ENABLED:
@@ -707,9 +762,10 @@ class UrdfScene(
                     fp: tuple = ()
                 else:
                     fp = _segment_fingerprint(all_segments, i, blend_range)
-                    if first_cmd_idx == -1:
-                        first_cmd_idx = i
-                    last_cmd_idx = i
+                    if segment.points:
+                        if first_cmd_idx == -1:
+                            first_cmd_idx = i
+                        last_cmd_idx = i
 
                 old_rs = self._rendered_segments[i]
                 old_fp = old_rs.fingerprint if old_rs is not None else None
@@ -776,9 +832,10 @@ class UrdfScene(
                                 segment.line_number,
                             )
                         )
-                        if first_cmd_idx == -1:
-                            first_cmd_idx = i
-                        last_cmd_idx = i
+                        if segment.points:
+                            if first_cmd_idx == -1:
+                                first_cmd_idx = i
+                            last_cmd_idx = i
                     if TRACE_ENABLED:
                         rs = self._rendered_segments[-1]
                         logger.trace(
@@ -1304,6 +1361,7 @@ class UrdfScene(
 
         Call when switching tabs or when path data has completely changed.
         """
+        self.inspection.clear()
         self._clear_path_state()
 
     def update_playback_opacity(self) -> None:
@@ -1443,6 +1501,8 @@ class UrdfScene(
         collision meshes with no 1:1 visual counterpart, so a tool collision
         tints the whole attached tool.
         """
+        if name in self._install_ground and self._floor is not None:
+            return (self._floor,)
         if name.startswith((SHAPE_PREFIX, INSTALL_PREFIX, DRAFT_PREFIX)):
             obj = self._shape_objects.get(name)
             return (obj,) if obj is not None else ()
@@ -1524,8 +1584,9 @@ class UrdfScene(
         confirmed by backend readback), slate once confirmed. ``installation``
         shapes come from the backend's robot config and render in their own
         muted color; they are never draft — the floor is one of them, an
-        ordinary static fixture the config declares. The placeholder ground
-        disc hides once the installation actually describes ground.
+        ordinary static fixture the config declares. Installation ground is
+        not drawn: the floor disc stands for it, and a collision with it
+        lights the disc.
         ``installation_draft`` shapes are proposals for the robot config,
         drawn in their own colour since nothing enforces them yet.
         """
@@ -1547,13 +1608,6 @@ class UrdfScene(
                 )
                 desired[f"{prefix}{s.name}"] = (s, shape_color, SHAPE_OPACITY)
         changed = False
-        # The floor is a placeholder for a backend that describes no
-        # ground. A declared floor replaces it — but an installation
-        # of a table and nothing else does not, and hiding the floor
-        # for that leaves the table floating in the void.
-        show_floor = not any(_is_ground(s) for s in installation)
-        if self._floor is not None and self._floor.visible_ != show_floor:
-            self._floor.visible(show_floor)
         with self.scene:
             for key in [k for k in self._shape_objects if k not in desired]:
                 self._forget_shape_object(key)
@@ -1595,6 +1649,8 @@ class UrdfScene(
                         if obj is None:
                             continue
                         obj.with_name(key)
+                        if not (key.startswith(INSTALL_PREFIX) and _is_ground(s)):
+                            obj.hover_effect("glow")
                         self._shape_objects[key] = obj
                         # One redrawn for new geometry, or grasped or
                         # released, was on screen already.
@@ -1634,6 +1690,19 @@ class UrdfScene(
                         self._paint_shape(obj, key)
                         changed = True
         self._flush_reveals()
+        self._install_ground = {
+            f"{INSTALL_PREFIX}{shape.name}"
+            for shape in installation
+            if _is_ground(shape)
+        }
+        for key in self._install_ground:
+            if node := self._shape_objects.get(key):
+                node.visible(False)
+        for name in self._hidden_objects:
+            if node := self._shape_objects.get(name):
+                node.visible(False)
+        self._push_interaction()
+        self._refresh_object_inspector()
         if not changed:
             return
         # The world changed — force the highlight to recompute next tick.
@@ -1690,6 +1759,15 @@ class UrdfScene(
             if drawn.guess != guess:
                 drawn.guess = guess
                 self._paint_shape(obj, key)
+
+    @staticmethod
+    def tool_parts(tool_key: str, variant_key: str | None) -> tuple[Any, Any]:
+        """The meshes and motions of a tool, or of its variant when named."""
+        spec = ui_state.active_robot.tools[tool_key]
+        variant = next((v for v in spec.variants if v.key == variant_key), None)
+        if variant is not None:
+            return variant.meshes, variant.motions
+        return spec.meshes, spec.motions
 
     def _object_entry(self, name: str) -> tuple[str, _Drawn | None]:
         """A tracked object's render key and record. A world object may be
@@ -1790,6 +1868,7 @@ class UrdfScene(
 
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             self._apply_joint_angles(self._editing_angles)
+            self._refresh_editing_pose()
             self._push_tcp_pose()
             # The status loop skips scene updates in EDITING, so the collision
             # highlight is driven from here (per scrub/pose change).
@@ -1914,21 +1993,10 @@ class UrdfScene(
         self._editing_collision_q = None
 
         try:
-            tool_spec = ui_state.active_robot.tools[tool_key]
+            meshes, motions = self.tool_parts(tool_key, variant_key)
         except (KeyError, AttributeError):
             logger.debug("No tool spec for '%s'; tool meshes cleared", tool_key)
             return
-
-        meshes = getattr(tool_spec, "meshes", ())
-        motions = getattr(tool_spec, "motions", ())
-
-        # Override with variant meshes/motions if specified.
-        if variant_key:
-            for v in getattr(tool_spec, "variants", ()):
-                if v.key == variant_key:
-                    meshes = v.meshes
-                    motions = v.motions
-                    break
 
         if not meshes:
             return

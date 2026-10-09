@@ -282,7 +282,6 @@ async def initialize_urdf_scene() -> None:
 
     scene_config = UrdfSceneConfig(
         tool_pose_resolver=tool_pose_resolver,
-        gizmo_scale=1.35,  # 1.0 = default STL scale
         package_map={robot.backend_package: mesh_dir},
         material=material_color,
         background_color=bg_color,
@@ -291,6 +290,10 @@ async def initialize_urdf_scene() -> None:
         # Kinematic-mapping defaults are correct for PAROL6, so none are set here.
     )
 
+    # A page taken over keeps its client alive behind the overlay; its scene
+    # must stop redrawing every plan the new page draws.
+    if ui_state.urdf_scene is not None:
+        ui_state.urdf_scene.cleanup()
     ui_state.urdf_scene = UrdfScene(urdf_path, config=scene_config)
     ui_state.urdf_scene.show(
         material=scene_config.material,
@@ -526,11 +529,9 @@ async def check_ping() -> None:
 
 def update_ui_from_status() -> None:
     """Update UI elements from robot_state (called from multicast consumer)"""
-    # Editing sync handles position/angle updates in editing mode.
-    skip_position_updates = waldoctl.commander.status.editing_mode
     # Teleport syncs backend during sim playback/scrubbing.
     skip_scene_updates = (
-        skip_position_updates or playback_coordination.sim_pose_override
+        ui_state.editing_target or playback_coordination.sim_pose_override
     )
 
     if ui_state.urdf_scene:
@@ -543,27 +544,25 @@ def update_ui_from_status() -> None:
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.update_from_robot_state()
 
-    if not skip_position_updates:
-        # robot_state.pose is already numpy float64; pass directly to numba.
-        pose_extraction_pipeline(
-            robot_state.pose,
-            _rotation_matrix_buffer,
-            _rpy_rad_buffer,
-            _pose_result_buffer,
-        )
+    # robot_state.pose is already numpy float64; pass directly to numba.
+    pose_extraction_pipeline(
+        robot_state.pose,
+        _rotation_matrix_buffer,
+        _rpy_rad_buffer,
+        _pose_result_buffer,
+    )
 
-        _pose = waldoctl.commander.status.pose
-        _pose.x = _pose_result_buffer[0]
-        _pose.y = _pose_result_buffer[1]
-        _pose.z = _pose_result_buffer[2]
-        _pose.rx = _pose_result_buffer[3]
-        _pose.ry = _pose_result_buffer[4]
-        _pose.rz = _pose_result_buffer[5]
-        # Orientation array is kept on robot_state for rad access from FK
-        # consumers (IK solver, motion recorder). Scalars above are the
-        # public surface.
-        robot_state.orientation.set_deg(_pose_result_buffer[3:6])
-
+    _pose = waldoctl.commander.status.pose
+    _pose.x = _pose_result_buffer[0]
+    _pose.y = _pose_result_buffer[1]
+    _pose.z = _pose_result_buffer[2]
+    _pose.rx = _pose_result_buffer[3]
+    _pose.ry = _pose_result_buffer[4]
+    _pose.rz = _pose_result_buffer[5]
+    # Orientation array is kept on robot_state for rad access from FK
+    # consumers (IK solver, motion recorder). Scalars above are the
+    # public surface.
+    robot_state.orientation.set_deg(_pose_result_buffer[3:6])
     # Push IO derived fields into ``commander.status.io`` for public
     # consumers (UI panels, MCP, future plugins).
     n_in = ui_state.active_robot.digital_inputs
@@ -1612,6 +1611,7 @@ def _maybe_clear_sim_pose_override() -> None:
     is_active = active_pb is not None and active_pb.dry_run.playback.is_active
     if (
         not is_active
+        and (playback._teleport_task is None or playback._teleport_task.done())
         and playback_coordination.last_teleport_ts > 0
         and (time.monotonic() - playback_coordination.last_teleport_ts) > 0.1
     ):
@@ -1711,7 +1711,7 @@ def _cycle_start_tick(page_client: Client | None) -> None:
         and robot_state.homed
         and (st.connected or st.simulator_active)
         and io.estop == 1
-        and not st.editing_mode
+        and not ui_state.editing_target
         and waldoctl.commander.programs.active is not None
     ):
         a._cycle_last_fire = time.monotonic()
@@ -1723,8 +1723,7 @@ def _home_output_tick() -> None:
     home pose".
 
     ``status.homed`` is only the referencing flag, so the distance is
-    computed here. Editing/scrub windows hold the last state — the published
-    angles then show a preview pose, not the robot. Disabling with the
+    computed here. Simulator scrubbing holds the last output state. Disabling with the
     output still on issues one final clearing write.
     """
     a = automation_state
@@ -1734,7 +1733,7 @@ def _home_output_tick() -> None:
         return
     desired = False
     if a.home_output_enabled:
-        if st.editing_mode or playback_coordination.sim_pose_override:
+        if playback_coordination.sim_pose_override:
             return
         robot = ui_state.active_robot
         if robot.digital_outputs < 2:
@@ -1816,10 +1815,7 @@ async def _status_consumer() -> None:
                 with global_phase_timer.phase("status"):
                     st = waldoctl.commander.status
                     # Copy status data (in-place fills to avoid allocations)
-                    if (
-                        not st.editing_mode
-                        and not playback_coordination.sim_pose_override
-                    ):
+                    if not playback_coordination.sim_pose_override:
                         st.joints.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io

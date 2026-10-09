@@ -80,6 +80,7 @@ class Gestures:
         self._ended: set[int] = set()
         self._watch: Any = None
         self._watch_due = 0.0
+        self._watch_skipped = False
 
     @property
     def open(self) -> list[Gesture]:
@@ -183,8 +184,13 @@ class Gestures:
         self._watch = None
         now = time.monotonic()
         # A check that ran late found the loop stalled, with keep-alives
-        # perhaps still queued behind it: they get one more round.
-        if now - self._watch_due <= _WATCH_S:
+        # perhaps still queued behind it: they get one more round, but only
+        # one, or a loop that stays stalled would keep every drag alive.
+        late = now - self._watch_due > _WATCH_S
+        if late and not self._watch_skipped:
+            self._watch_skipped = True
+        else:
+            self._watch_skipped = False
             for gesture in list(self._open.values()):
                 if now - gesture.seen > LIVENESS_S:
                     logger.info("a %s drag went quiet; ending it", gesture.kind)

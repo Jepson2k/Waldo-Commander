@@ -11,6 +11,8 @@ authoring is config authoring: the GUI and MCP draft it, the config enforces it.
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import keyword
 import logging
@@ -24,6 +26,8 @@ from waldoctl.shapes import Shape, ShapeWorld
 from waldoctl.world import world_from_dict, world_to_dict
 
 from waldo_commander.constants import default_program_dir
+from waldo_commander.services.python_source import literal_argument
+from waldo_commander.setup import file_revision
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +109,51 @@ def load_entry(name: str) -> ShapeWorld:
             f"world module {path.name} must define `world = ...` as a ShapeWorld"
         )
     return world
+
+
+def entry_revision(name: str) -> str | None:
+    return file_revision(_entry_path(name))
+
+
+def read_literal_entry(name: str) -> tuple[ShapeWorld, str]:
+    """Preview saved data without executing a world module in the UI process."""
+    data = _entry_path(name).read_bytes()
+    try:
+        tree = ast.parse(data)
+        for node in tree.body:
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                continue
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module == "waldoctl.world"
+                and node.level == 0
+                and all(
+                    n.name == "world_from_dict" and n.asname is None for n in node.names
+                )
+            ):
+                continue
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "world"
+            ):
+                continue
+            raise ValueError("The module contains executable or computed definitions")
+        payload = literal_argument(tree, "world", "world_from_dict")
+        if not isinstance(payload, dict):
+            raise ValueError("World data must be a dictionary")
+        world = world_from_dict(payload)
+    except (SyntaxError, TypeError, KeyError, ValueError, OverflowError) as error:
+        raise ValueError(
+            f"{name}: direct library loading requires a literal world_from_dict(...). "
+            f"Load computed worlds through the program. {error}"
+        ) from error
+    return world, hashlib.sha256(data).hexdigest()
 
 
 def delete_entry(name: str) -> None:

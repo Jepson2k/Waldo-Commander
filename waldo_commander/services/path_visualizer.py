@@ -831,6 +831,7 @@ class PathVisualizer:
         # time it does, its predicted pass is not run again. Observed, not
         # asked: nothing on the wire says what a pass will carry.
         self._predicted_diverges: dict[str, bool] = {}
+        self._prediction_status: dict[str, tuple[int, str, str]] = {}
 
     def reset_for_test(self) -> None:
         """Rebuild loop-bound state so the next test's event loop starts clean.
@@ -853,6 +854,31 @@ class PathVisualizer:
     def physics_in_flight(self, tab_id: str | None) -> bool:
         """Whether a predicted pass is running for *tab_id*."""
         return tab_id is not None and tab_id in self._physics_tabs
+
+    def prediction_status(self, tab) -> dict[str, str]:
+        if tab is None or not tab.source.strip():
+            return {"state": "unavailable", "reason": ""}
+        if self._predicted_diverges.get(ui_state.active_robot.backend_package) is False:
+            return {
+                "state": "unavailable",
+                "reason": "No independent physics prediction",
+            }
+        dry = tab.dry_run
+        if dry.commanded_revision != dry.revision:
+            return {"state": "stale", "reason": "Waiting for current program preview"}
+        status = self._prediction_status.get(tab.id)
+        if status is not None and status[0] == dry.revision:
+            return {"state": status[1], "reason": status[2]}
+        if dry.predicted_current is not None:
+            return {"state": "ready", "reason": ""}
+        return {"state": "pending", "reason": "Computing physics prediction"}
+
+    def _prediction_outcome(self, tab, revision: int, state: str, reason="") -> None:
+        previous = self._prediction_status.get(tab.id)
+        if previous is not None and previous[0] > revision:
+            return
+        self._prediction_status[tab.id] = (revision, state, reason)
+        simulation_state.notify_changed()
 
     def _simulation_args(
         self,
@@ -1158,6 +1184,9 @@ class PathVisualizer:
         args = bound.args
 
         self._physics_tabs.add(tab.id)
+        self._prediction_outcome(
+            tab, revision, "pending", "Computing physics prediction"
+        )
         # The playback bar shows a pass in flight off this set; tell it now
         # and again when the pass is over, whichever way it ends.
         simulation_state.notify_changed()
@@ -1169,13 +1198,18 @@ class PathVisualizer:
         except asyncio.CancelledError:
             # Not an outcome. Superseded work must unwind, not return and
             # let the caller carry on mutating state that has moved on.
+            self._prediction_outcome(tab, revision, "stale", "Prediction superseded")
             raise
         except asyncio.TimeoutError:
             self._physics.cancel()
             logger.warning("Physics simulation timed out; the worker was killed")
+            self._prediction_outcome(
+                tab, revision, "failed", "Physics simulation timed out"
+            )
             return "Physics simulation timed out"
         except Exception as e:
             logger.warning("Physics simulation failed: %s", e)
+            self._prediction_outcome(tab, revision, "failed", str(e))
             return str(e)
         finally:
             self._physics_tabs.discard(tab.id)
@@ -1183,10 +1217,17 @@ class PathVisualizer:
 
         predicted: TickIndex | None = (result or {}).get("predicted")
         if predicted is None:
-            return (result or {}).get("error") or (result or {}).get("physics_error")
+            error = (result or {}).get("error") or (result or {}).get("physics_error")
+            self._prediction_outcome(
+                tab, revision, "failed", error or "No prediction returned"
+            )
+            return error
         dry_run = tab.dry_run
         if dry_run.commanded_revision != (result or {}).get("revision"):
             logger.debug("Predicted record answers a superseded plan; dropped")
+            self._prediction_outcome(
+                tab, revision, "stale", "Prediction answers an older program"
+            )
             return None
         commanded = dry_run.commanded
         # The pass re-runs the program: one that draws random targets, or
@@ -1195,9 +1236,16 @@ class PathVisualizer:
         rerun: TickIndex | None = (result or {}).get("commanded")
         if commanded is None or rerun is None or rerun.digest != commanded.digest:
             logger.debug("Predicted record answers other commands than the plan")
+            self._prediction_outcome(
+                tab,
+                revision,
+                "stale",
+                "Prediction inputs differ from the ideal preview",
+            )
             return None
         diverges = predicted.digest != commanded.digest or bool(predicted.channels)
         self._predicted_diverges[backend] = diverges
+        self._prediction_status[tab.id] = (revision, "ready", "")
         # The backend guarantees the same program gives a bit-identical
         # record, so an equal digest means an identical picture and the
         # scene keeps what it has. This is the flash guard.
@@ -1233,6 +1281,7 @@ class PathVisualizer:
     def forget_plan(self, tab_id: str) -> None:
         """Drop a tab's stored plan arguments — there is no plan to answer."""
         self._planned_args.pop(tab_id, None)
+        self._prediction_status.pop(tab_id, None)
 
 
 path_visualizer = PathVisualizer()

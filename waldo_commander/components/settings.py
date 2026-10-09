@@ -37,7 +37,13 @@ from waldo_commander.services.control_lease import (
 from waldo_commander.services.motion_guard import motion_guard
 from waldo_commander.services.motion_recorder import JOG_BLEND_R_MAX, jog_blend_r
 from waldo_commander.services.tcp_calibration import ToolChanged, read_applied_tcp
-from waldo_commander.state import automation_state, simulation_state, ui_state
+from waldo_commander.state import (
+    automation_state,
+    playback_coordination,
+    simulation_state,
+    ui_state,
+)
+from waldo_commander.services.programs import is_any_program_running
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +74,7 @@ TCP_AXIS_LABELS = {
 
 def adopt_applied_tcp(calibration: TcpCalibration) -> None:
     """Publish a confirmed controller transform to storage and local kinematics."""
+    playback_coordination.preview_tool_selection = None
     values = dict(zip(TCP_AXES, calibration.values))
     ng_app.storage.general[f"tcp_offset_{calibration.tool_key}"] = {
         **values,
@@ -597,7 +604,6 @@ class SettingsContent:
             self._apply_tool_scene(
                 tool_key, variant_key=self._get_variant_key(tool_key)
             )
-            self._notify_and_resimulate()
 
     # ── Section builders ─────────────────────────────────────────────
 
@@ -786,6 +792,17 @@ class SettingsContent:
             ):
                 return
             variant = status.tool.variant_key or ""
+            # Recorded tools belong to the preview, not the authored calibration.
+            if (
+                status.simulator_active
+                and not is_any_program_running()
+                and playback_coordination.preview_tool_selection is not None
+                and (
+                    playback_coordination.sim_pose_override
+                    or playback_coordination.preview_tool_selection == (tool, variant)
+                )
+            ):
+                return
             if tool not in tool_options or (
                 tool == tool_select.value
                 and variant == (self._get_variant_key(tool) or "")

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import numbers
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Self
 
 import numpy as np
@@ -24,6 +24,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 current_parent: ContextVar[Node | None] = ContextVar("wc_scene_parent", default=None)
+# Each task's own stack of parents entered, so blocks entered by different
+# tasks never reset each other's.
+_entered: ContextVar[tuple[Token[Node | None], ...]] = ContextVar(
+    "wc_scene_entered", default=()
+)
+
+
+def enter_parent(node: Node) -> None:
+    """Make *node* the parent of nodes created until the matching exit."""
+    _entered.set((*_entered.get(), current_parent.set(node)))
+
+
+def exit_parent() -> None:
+    """Restore the parent from before the last enter_parent in this task."""
+    *rest, token = _entered.get()
+    _entered.set(tuple(rest))
+    current_parent.reset(token)
+
 
 POSITION = 1
 ROTATION = 2
@@ -93,7 +111,6 @@ class Node:
         "clipping_planes",
         "q",
         "deleted",
-        "_token",
     )
 
     def __init__(
@@ -126,7 +143,6 @@ class Node:
         self.clipping_planes: list[ClipPlane] = []
         self.q = 0.0
         self.deleted = False
-        self._token: list[Any] = []
         if parent is not None:
             scene._created_node(self)
             parent.children.append(self)
@@ -135,11 +151,11 @@ class Node:
         return f"<Node {self.kind} {self.id} {self.name or ''}>".replace(" >", ">")
 
     def __enter__(self) -> Self:
-        self._token.append(current_parent.set(self))
+        enter_parent(self)
         return self
 
     def __exit__(self, *_: object) -> None:
-        current_parent.reset(self._token.pop())
+        exit_parent()
 
     def _changed(self, bits: int) -> None:
         if self.deleted:
@@ -228,12 +244,6 @@ class Node:
 
     def clear_clipping_planes(self) -> Self:
         return self.set_clipping_planes([])
-
-    def adopt_position(self, x: float, y: float, z: float) -> Self:
-        """Take a position the browser already shows, without sending it back."""
-        _finite(x, y, z)
-        self.x, self.y, self.z = float(x), float(y), float(z)
-        return self
 
     def resend_pose(self) -> Self:
         """Send the position and rotation again, over whatever the browser shows."""

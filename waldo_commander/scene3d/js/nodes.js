@@ -1,12 +1,19 @@
 // The scene's nodes as the browser holds them: each record keeps the three.js
-// object and the base state Python last sent. An effect running on a
-// property holds it, and ops then change only the base, which the effect
-// returns to when it ends.
+// object and the base state Python last sent. An effect or a drag holding a
+// property owns it, and ops then change only the base, which the property
+// returns to when the last hold lets go.
+//
+// The view also changes what objects show, without touching their base:
+// isolating objects hides the others, and a section cuts every object open.
+// Both are applied here, where the base is written, so neither undoes the
+// other.
 
 import * as THREE from "three";
-import { build, clip, dispose, loadStl, paint } from "./kinds.js";
+import { build, clip, dispose, loadStl, materials, paint } from "./kinds.js";
 
 const DRAWN = new Set(["box", "sphere", "cylinder", "capsule", "lathe", "line", "polyline"]);
+// The workcell's objects: what the view isolates and the section cuts.
+const OBJECT = /^(shape|install):/;
 
 export class Nodes {
   constructor(core) {
@@ -15,6 +22,9 @@ export class Nodes {
     this.records = new Map();
     this.records.set(0, this.record(0, "root", core.scene, null));
     this.joints = [];
+    this.isolated = null; // names of the objects shown while isolating
+    this.section = null; // the plane cutting objects open
+    this.objectsChanged = false;
   }
 
   record(id, kind, obj, parent) {
@@ -25,9 +35,12 @@ export class Nodes {
       parent,
       children: new Set(),
       name: "",
+      object: false,
+      cut: false,
       drawable: null,
       base: { p: [0, 0, 0], r: [0, 0, 0, 1], s: [1, 1, 1], m: null, v: 1, l: [] },
-      holds: { scale: 0, position: 0, opacity: 0 },
+      holds: { scale: 0, position: 0, rotation: 0, opacity: 0 },
+      held: null, // the drag holding it, until the app answers that drag
       glow: false,
       q: 0,
       axis: null,
@@ -58,6 +71,7 @@ export class Nodes {
     const obj = build(kind, args, !!state.w);
     const rec = this.record(id, kind, obj, parent);
     obj.userData.wcId = id;
+    rec.cut = parent.cut;
     if (DRAWN.has(kind)) rec.drawable = obj;
     if (kind === "joint") {
       rec.axis = new THREE.Vector3(...args[0]);
@@ -66,6 +80,8 @@ export class Nodes {
     this.records.set(id, rec);
     parent.children.add(rec);
     this.update(rec, state);
+    if (!("v" in state)) this.show(rec);
+    if (this.section && rec.cut && !("l" in state)) this.clip(rec);
     if (kind === "joint") this.setJoint(rec, state.q || 0);
     parent.obj.add(obj);
     if (kind === "stl") rec.ready = this.load(rec, args[0], !!state.w);
@@ -86,8 +102,8 @@ export class Nodes {
       return false;
     }
     rec.drawable = drawable;
-    if (rec.base.m) paint(drawable, rec.base.m);
-    if (rec.base.l.length) this.clip(rec, rec.base.l);
+    this.paint(rec);
+    this.clip(rec);
     rec.obj.add(drawable);
     this.core.requestRender();
     return true;
@@ -95,14 +111,14 @@ export class Nodes {
 
   update(rec, state) {
     const obj = rec.obj;
-    if ("n" in state) obj.name = rec.name = state.n;
+    if ("n" in state) this.rename(rec, state.n);
     if ("p" in state) {
       rec.base.p = state.p;
       if (!rec.holds.position && !rec.dragging) obj.position.fromArray(state.p);
     }
     if ("r" in state) {
       rec.base.r = state.r;
-      obj.quaternion.fromArray(state.r);
+      if (!rec.holds.rotation && !rec.dragging) obj.quaternion.fromArray(state.r);
     }
     if ("s" in state) {
       rec.base.s = state.s;
@@ -110,23 +126,103 @@ export class Nodes {
     }
     if ("m" in state) {
       rec.base.m = state.m;
-      if (rec.drawable) {
-        const [color, opacity, side] = state.m;
-        paint(rec.drawable, [color, rec.holds.opacity ? rec.drawable.material.opacity : opacity, side]);
-      }
+      this.paint(rec);
     }
-    if ("v" in state) obj.visible = !!(rec.base.v = state.v);
+    if ("v" in state) {
+      rec.base.v = state.v;
+      this.show(rec);
+    }
     if ("g" in state) rec.glow = !!state.g;
     if ("l" in state) {
       rec.base.l = state.l;
-      if (rec.drawable) this.clip(rec, state.l);
+      this.clip(rec);
+    }
+    if (rec.held !== null && ("p" in state || "r" in state || "s" in state)) this.core.gestures.confirm(rec);
+    this.core.requestRender();
+  }
+
+  rename(rec, name) {
+    rec.obj.name = rec.name = name;
+    const object = OBJECT.test(name);
+    if (object !== rec.object) this.objectsChanged = true;
+    rec.object = object;
+    const recut = (r) => {
+      const cut = r.object || !!r.parent?.cut;
+      if (cut === r.cut) return;
+      r.cut = cut;
+      this.paint(r);
+      this.clip(r);
+      for (const child of r.children) recut(child);
+    };
+    recut(rec);
+    this.show(rec);
+  }
+
+  // ---- holds --------------------------------------------------------------
+
+  hold(rec, ...properties) {
+    for (const property of properties) rec.holds[property]++;
+  }
+
+  release(rec, ...properties) {
+    for (const property of properties) {
+      if (--rec.holds[property] > 0 || rec.deleted) continue;
+      if (property === "position") rec.obj.position.fromArray(rec.base.p);
+      else if (property === "rotation") rec.obj.quaternion.fromArray(rec.base.r);
+      else if (property === "scale") rec.obj.scale.fromArray(rec.base.s);
     }
     this.core.requestRender();
   }
 
-  clip(rec, planes) {
-    clip(rec.drawable, planes);
-    if (planes.length) this.core.renderer.localClippingEnabled = true;
+  // ---- what the view changes ----------------------------------------------
+
+  hidden(rec) {
+    return rec.object && this.isolated !== null && !this.isolated.has(rec.name);
+  }
+
+  show(rec) {
+    const visible = !!rec.base.v && !this.hidden(rec);
+    if (rec.obj.visible === visible) return;
+    rec.obj.visible = visible;
+    this.core.casters = NaN;
+  }
+
+  paint(rec) {
+    if (!rec.drawable || !rec.base.m) return;
+    const [color, opacity, side] = rec.base.m;
+    const shown = rec.holds.opacity ? materials(rec.drawable)[0].opacity : opacity;
+    // A section shows the inside of what it cuts.
+    paint(rec.drawable, [color, shown, this.section && rec.cut ? "both" : side]);
+  }
+
+  clip(rec) {
+    if (!rec.drawable) return;
+    const cut = this.section && rec.cut ? this.section : null;
+    if (!rec.base.l.length && !cut && !materials(rec.drawable)[0].clippingPlanes?.length) return;
+    clip(rec.drawable, rec.base.l, cut);
+    if (rec.base.l.length || cut) this.core.renderer.localClippingEnabled = true;
+  }
+
+  setIsolated(names) {
+    this.isolated = names;
+    for (const rec of this.records.values()) if (rec.object && !rec.deleted) this.show(rec);
+    this.core.requestRender();
+  }
+
+  setSection(plane) {
+    if (plane === this.section) return;
+    this.section = plane;
+    for (const rec of this.cutRecords()) {
+      this.paint(rec);
+      this.clip(rec);
+    }
+    this.core.casters = NaN;
+    this.core.requestRender();
+  }
+
+  // The drawables a section cuts: the objects and everything drawn under them.
+  *cutRecords() {
+    for (const rec of this.records.values()) if (rec.cut && rec.drawable && !rec.deleted) yield rec;
   }
 
   delete(id) {
@@ -136,6 +232,7 @@ export class Nodes {
     rec.obj.removeFromParent();
     const forget = (r) => {
       r.deleted = true;
+      if (r.object) this.objectsChanged = true;
       this.records.delete(r.id);
       this.core.forget(r);
       for (const child of r.children) forget(child);
@@ -163,10 +260,10 @@ export class Nodes {
     if (!rec.dragging) this.applyJoint(rec);
   }
 
-  applyJoint(rec) {
+  applyJoint(rec, node = rec.obj, q = rec.q) {
     if (rec.kind !== "joint") return;
-    if (rec.prismatic) rec.obj.position.copy(rec.axis).multiplyScalar(rec.q);
-    else rec.obj.quaternion.setFromAxisAngle(rec.axis, rec.q);
+    if (rec.prismatic) node.position.copy(rec.axis).multiplyScalar(q);
+    else node.quaternion.setFromAxisAngle(rec.axis, q);
     this.core.requestRender();
   }
 
@@ -176,6 +273,7 @@ export class Nodes {
     for (const rec of [...root.children]) this.delete(rec.id);
     root.children.clear();
     this.joints = [];
+    this.objectsChanged = false;
   }
 
   idle() {

@@ -1,6 +1,5 @@
 // The jog handles' logic, apart from the DOM and three.js: which handle
-// shows as the pointer moves over the arm, a ring drag's angle, the snap step
-// at a camera distance, and the drag marks' text. Times are passed in, so a
+// shows as the pointer moves over the arm, a ring drag's angle, and its text. Times are passed in, so a
 // test can drive it with its own clock.
 
 export const GIZMO = "gizmo";
@@ -8,19 +7,12 @@ export const GIZMO = "gizmo";
 export const minus = (s) => s.replace(/-/g, "−");
 export const signed = (v, digits = 1) => minus(`${v >= 0 && !Object.is(v, -0) ? "+" : ""}${v.toFixed(digits)}`);
 export const unsigned = (v, digits = 1) => minus(v.toFixed(digits));
+// Metres as millimetres the way a number input shows them: no trailing zero.
+export const mm = (v) => String(Number((v * 1000).toFixed(1)));
+export const finite = (v) => v !== null && Number.isFinite(v);
+// A recorded value, or a dash where the record has none.
+export const reading = (v, digits = 1) => (finite(v) ? unsigned(v, digits) : "—");
 const step = (v) => String(Number(v.toPrecision(6)));
-
-// (joint step °, cartesian step mm) for a camera-to-target distance, from
-// bands of [distance above which a band applies, joint °, cartesian mm],
-// coarse to fine. A band's lower bound belongs to it, except the first
-// band's. Before any distance, the second band applies.
-export function snapFor(distance, bands) {
-  if (distance === null || !Number.isFinite(distance) || distance < 0) return [bands[1][1], bands[1][2]];
-  if (distance > bands[0][0]) return [bands[0][1], bands[0][2]];
-  for (const [lower, joint, cart] of bands.slice(1, -1)) if (distance >= lower) return [joint, cart];
-  const last = bands[bands.length - 1];
-  return [last[1], last[2]];
-}
 
 // One handle at a time: the ring of the link under the pointer, or the
 // gizmo. A handle goes, or gives way to the next one, `graceMs` after the
@@ -130,11 +122,20 @@ export class Hover {
   }
 }
 
-// A ring drag: the pointer's angle around the joint axis, accumulated across
-// the ±π seam, snapped to the step and clamped to the joint's travel. A
-// pointer too near the axis has no meaningful angle and is ignored.
-const DEAD_ZONE = 0.15;
+// A snapped value holds until the raw one is HYSTERESIS of a step past the
+// halfway mark, so a pointer resting on a step boundary cannot flip it. A
+// value off the current step's grid (the step changed) does not hold.
+const HYSTERESIS = 0.15;
 
+export function stickySnap(raw, step, last) {
+  if (!step) return raw;
+  const onGrid = last !== null && Math.abs(last / step - Math.round(last / step)) < 1e-6;
+  if (onGrid && Math.abs(raw - last) < step * (0.5 + HYSTERESIS)) return last;
+  return Math.round(raw / step) * step;
+}
+
+// A ring drag: the pointer's angle around the joint axis, accumulated across
+// the ±π seam, snapped to the step and clamped to the joint's travel.
 export class RingDrag {
   constructor(q0, x, y, radius, lo, hi) {
     this.q0 = q0;
@@ -147,7 +148,6 @@ export class RingDrag {
 
   track(x, y) {
     if (x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y)) return;
-    if (x * x + y * y < (DEAD_ZONE * this.radius) ** 2) return;
     const theta = Math.atan2(y, x);
     let d = theta - this.theta;
     if (d > Math.PI) d -= 2 * Math.PI;
@@ -171,70 +171,4 @@ export function ringLabel(name, panel, q, q0, stepDeg) {
   let text = `${name}  ${unsigned(deg)}°`;
   if (q0 !== null) text += `  Δ${signed(deg - panelDegrees(panel, q0))}°`;
   return `${text}  step ${step(stepDeg)}°`;
-}
-
-// The gizmo's drag marks: dots at whole steps along the dragged axis (or
-// around it, rotating), and the delta in the tool frame.
-const GIZMO_TICKS_EACH_SIDE = 10;
-export const GIZMO_TICK_RING_M = 0.06;
-
-export function gizmoTicks(mode, axis, cartMm, jointDeg) {
-  const n = GIZMO_TICKS_EACH_SIDE;
-  const points = [];
-  const axes = [];
-  let size = 0.003;
-  if (mode === "translate") {
-    const s = cartMm / 1000;
-    size = Math.max(0.0008, Math.min(0.003, 0.4 * s));
-    for (const letter of axis) {
-      const i = "XYZ".indexOf(letter);
-      if (i < 0) continue;
-      for (let k = -n; k <= n; k++) {
-        const p = [0, 0, 0];
-        p[i] = k * s;
-        points.push(p);
-        axes.push(letter);
-      }
-    }
-  } else if (mode === "rotate" && "XYZ".includes(axis) && axis.length === 1) {
-    const s = (jointDeg * Math.PI) / 180;
-    const r = GIZMO_TICK_RING_M;
-    size = Math.max(0.0008, Math.min(0.003, 0.4 * r * s));
-    const i = "XYZ".indexOf(axis);
-    const a = (i + 1) % 3;
-    const b = (i + 2) % 3;
-    for (let k = -n; k <= n; k++) {
-      const p = [0, 0, 0];
-      p[a] = r * Math.cos(k * s);
-      p[b] = r * Math.sin(k * s);
-      points.push(p);
-      axes.push(axis);
-    }
-  }
-  return { points, axes, size };
-}
-
-// `local` is the ball's pose in its frame: position [m] and rotation matrix
-// (row-major 3×3).
-export function gizmoLabel(mode, axis, position, R, cartMm, jointDeg) {
-  if (mode === "translate") {
-    const letters = [...axis].filter((c) => "XYZ".includes(c)).join("");
-    const deltas = [...letters].map((c) => signed(position["XYZ".indexOf(c)] * 1000)).join(" ");
-    return `Tool ${letters}  Δ${deltas} mm  step ${step(cartMm)} mm`;
-  }
-  if (axis.length === 1 && "XYZ".includes(axis)) {
-    const angle = localAngle(R, axis);
-    const tenths = Math.round(((angle * 180) / Math.PI) * 10);
-    return `Tool R${axis}  Δ${signed(tenths / 10)}°  step ${step(jointDeg)}°`;
-  }
-  const trace = R[0][0] + R[1][1] + R[2][2];
-  const angle = Math.acos(Math.min(1, Math.max(-1, (trace - 1) / 2)));
-  return `Tool  Δ${((angle * 180) / Math.PI).toFixed(1)}°  step ${step(jointDeg)}°`;
-}
-
-// The signed angle of a rotation about one of its own axes.
-export function localAngle(R, axis) {
-  if (axis === "X") return Math.atan2(R[2][1], R[1][1]);
-  if (axis === "Y") return Math.atan2(R[0][2], R[2][2]);
-  return Math.atan2(R[1][0], R[0][0]);
 }

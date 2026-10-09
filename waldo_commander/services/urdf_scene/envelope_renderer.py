@@ -612,7 +612,9 @@ class EnvelopeRenderer:
             logger.error("Failed to create envelope hull: %s", e)
             return False
 
-    def _update_envelope_from_robot_state(self) -> None:
+    def _update_envelope_from_robot_state(
+        self, preview_tcp: tuple[float, float, float] | None = None
+    ) -> None:
         """Update envelope visibility based on mode and robot TCP position.
 
         For OFF/ON modes, only acts on mode transitions (not every tick).
@@ -631,7 +633,7 @@ class EnvelopeRenderer:
             return
 
         # Auto — show with proximity clipping when near the boundary
-        tcp = (
+        tcp = preview_tcp or (
             waldoctl.commander.status.pose.x / 1000.0,
             waldoctl.commander.status.pose.y / 1000.0,
             waldoctl.commander.status.pose.z / 1000.0,

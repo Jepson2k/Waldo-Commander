@@ -43,6 +43,7 @@ class EditorDecorations:
         # Tracked per launching tab so the highlight persists when the user
         # switches away mid-run.
         self._executing_line_by_tab: dict[str, int] = {}
+        self._inspected_line_by_tab: dict[str, int] = {}
         self._last_script_running: bool = False
         simulation_state.add_change_listener(self._on_state_change)
 
@@ -53,6 +54,7 @@ class EditorDecorations:
         (process-wide single instance — nothing to deregister)."""
         self._active_flashes.clear()
         self._executing_line_by_tab.clear()
+        self._inspected_line_by_tab.clear()
         self._flash_token = 0
 
     def reset_for_test(self) -> None:
@@ -98,6 +100,11 @@ class EditorDecorations:
                     "line": executing_line,
                     "class": "cm-highlighted",
                 }
+            )
+        inspected_line = self._inspected_line_by_tab.get(tab_id)
+        if inspected_line is not None:
+            specs.append(
+                {"kind": "line", "line": inspected_line, "class": "cm-inspected"}
             )
         specs.extend(self._diff_decoration_specs(tab_id))
         specs.extend(self._staged_decoration_specs(tab_id, textarea))
@@ -299,6 +306,18 @@ class EditorDecorations:
         ]
         if len(self._active_flashes) != before:
             self._apply_active_tab_decorations()
+
+    def highlight_inspected_line(self, line_number: int, tab_id: str) -> None:
+        if self._inspected_line_by_tab.get(tab_id, 0) == line_number:
+            return
+        if line_number:
+            self._inspected_line_by_tab[tab_id] = line_number
+        else:
+            self._inspected_line_by_tab.pop(tab_id, None)
+        self._apply_decorations_to_tab(tab_id)
+        textarea = ui_state.textareas_by_tab.get(tab_id)
+        if textarea and line_number:
+            textarea.reveal_line(line_number)
 
     def highlight_executing_line(self, line_number: int, tab_id: str) -> None:
         """Highlight *line_number* on the launching tab; 0 clears it.
