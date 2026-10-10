@@ -49,6 +49,7 @@ class TCPControlsMixin:
     _teaching: Any
     _edit_active: bool
     _edit_target_first: bool
+    _edit_marker: Any
 
     def _refresh_editing_pose(self) -> tuple[float, ...] | None: ...
 
@@ -160,6 +161,8 @@ class TCPControlsMixin:
             target = self._requested_edit_pose
             if target is not None and (force or target is not self._tcp_placed_pose):
                 self._place_frame(target)
+                if self._edit_marker is not None:
+                    self._edit_marker.move(target[0], target[1], target[2])
             return
         n = len(self.joint_names)
         angles_changed = False

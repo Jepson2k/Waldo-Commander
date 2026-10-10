@@ -8,6 +8,7 @@ import sys
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Generator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -638,6 +639,13 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"
     )
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """The review demos only record; they run under --evidence alone."""
+    if collection_path.name == "test_review_demos_screen.py":
+        return not config.getoption("evidence") or None
+    return None
 
 
 def pytest_collection_modifyitems(

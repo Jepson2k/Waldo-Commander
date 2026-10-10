@@ -253,15 +253,15 @@ export function surface(core) {
     return null;
   };
 
-  // The middle of the stretch of the named object's X arrow that sticks out
-  // past every object, and the arrow's direction on screen.
-  S.arrowTip = (name) => {
+  // The middle of the stretch of the named object's `letter` arrow that
+  // sticks out past every object, and the arrow's direction on screen.
+  S.arrowTip = (name, letter = "X") => {
     const tc = gizmoFor(name);
     if (!tc || !tc.object) return null;
     const obj = tc.object;
     obj.updateWorldMatrix(true, false);
     const origin = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
-    const axis = new THREE.Vector3(1, 0, 0);
+    const axis = new THREE.Vector3(letter === "X" ? 1 : 0, letter === "Y" ? 1 : 0, letter === "Z" ? 1 : 0);
     if(tc.space !== "world")axis.applyQuaternion(obj.getWorldQuaternion(new THREE.Quaternion()));
     const toPixel = (d) => {
       const v = origin.clone().addScaledVector(axis, d).project(core.camera);
@@ -273,7 +273,7 @@ export function surface(core) {
       if (Math.abs(x) > 0.95 || Math.abs(y) > 0.95) continue;
       const hit = S.pick(px, py);
       if (hit.covered) continue;
-      if (hit.handles.length !== 1 || hit.handles[0].name !== name || hit.handles[0].axis !== "X" || hit.handles[0].mode!=="translate") continue;
+      if (hit.handles.length !== 1 || hit.handles[0].name !== name || hit.handles[0].axis !== letter || hit.handles[0].mode!=="translate") continue;
       outside.push(d);
     }
     if (!outside.length) return null;

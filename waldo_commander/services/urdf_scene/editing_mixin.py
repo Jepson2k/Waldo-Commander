@@ -4,7 +4,7 @@ Editing Mixin for UrdfScene.
 Provides target editing functionality:
 - Enter/exit editing mode: a target edit moves a marker at the target with
   the gizmo while the arm stays live; surface teaching previews the arm
-- Context menu, the confirm/cancel pair beside the marker, and target CRUD
+- Context menu, the edit's command bar, and target CRUD
 """
 
 import ast
@@ -27,8 +27,12 @@ from waldo_commander.services.timeline import selection_before
 from waldo_commander.services.keybindings import keybindings_manager
 from waldo_commander.services.programs import is_any_program_running, preview_is_current
 
+from waldo_commander.common.theme import get_color_for_move_type
+from waldo_commander.constants import WAYPOINT_SIZE_LARGE
+
 from .config import RobotAppearanceMode
 from .ik_solver import EditingIKSolver
+from .path_renderer import create_waypoint_marker
 from .shape_editing_mixin import ShapeEditingMixin
 
 logger = logging.getLogger(__name__)
@@ -115,6 +119,13 @@ class EditingMixin(ShapeEditingMixin):
         # The target pose the edit started at (m, rad): a confirm that left
         # it there writes nothing.
         self._edit_start_pose: tuple[float, ...] | None = None
+        # The marker the edit moves with the gizmo: the target's own, or a
+        # new target's, drawn for the edit. Unsaved, it goes back home.
+        self._edit_marker: Any | None = None
+        self._edit_marker_new = False
+        self._edit_marker_home: tuple[float, float, float] | None = None
+        # A saved new target's marker, kept until the target is drawn.
+        self._saved_new_marker: Any | None = None
 
         self._edit_bar: Any | None = None
         self._edit_confirm: Any | None = None
@@ -226,7 +237,12 @@ class EditingMixin(ShapeEditingMixin):
         """The open target edit, whose marker the browser draws the gizmo on."""
         if not self._edit_active or self._teaching is not None:
             return None
-        return {"active": True, "session": self._edit_session}
+        marker = self._edit_marker
+        return {
+            "active": True,
+            "session": self._edit_session,
+            "marker": marker.id if marker is not None else None,
+        }
 
     def _get_joint_limits(self) -> list[tuple[float, float]]:
         """Get joint limits in radians."""
@@ -461,6 +477,7 @@ class EditingMixin(ShapeEditingMixin):
 
         self._editing_unified_target = True
         self._editing_target_id = edit_target_id
+        self._take_edit_marker(edit_target_id, start_pose)
         self.enter_editing_mode(initial_angles, preview_arm=False)
         self._requested_edit_pose = start_pose
         self._edit_start_pose = start_pose
@@ -470,6 +487,41 @@ class EditingMixin(ShapeEditingMixin):
         self._push_tcp_pose(force=True)
         self._push_interaction()
         self._create_edit_bar("pose_edit" if edit_target_id else "unified")
+
+    def _take_edit_marker(self, target_id: str | None, pose: tuple[float, ...]) -> None:
+        """The marker this edit moves: the target's own, or one drawn for a
+        new target where it starts."""
+        drawn = self._target_objects.get(target_id) if target_id else None
+        if drawn is not None:
+            group = drawn["group"]
+            self._edit_marker = group
+            self._edit_marker_new = False
+            self._edit_marker_home = (group.x, group.y, group.z)
+            return
+        with self.scene, self.targets_group:
+            group = self.scene.group().with_name("targetgroup:new")
+            with group:
+                create_waypoint_marker(
+                    "square", WAYPOINT_SIZE_LARGE, get_color_for_move_type("cartesian")
+                ).with_name("target:new")
+        group.move(pose[0], pose[1], pose[2])
+        self._edit_marker = group
+        self._edit_marker_new = True
+        self._edit_marker_home = None
+
+    def _release_edit_marker(self, saved: bool) -> None:
+        """An existing target's marker stays where it was saved or goes back;
+        a new target's is dropped, or kept until the saved target is drawn."""
+        marker, self._edit_marker = self._edit_marker, None
+        if marker is None or marker.deleted:
+            return
+        if not self._edit_marker_new:
+            if not saved and self._edit_marker_home is not None:
+                marker.move(*self._edit_marker_home)
+        elif saved:
+            self._saved_new_marker = marker
+        else:
+            marker.delete()
 
     def _delete_target(self, target_id: str) -> None:
         program = waldoctl.commander.programs.active
@@ -616,20 +668,19 @@ class EditingMixin(ShapeEditingMixin):
                     joint_angles_deg=[math.degrees(q) for q in self._editing_angles],
                 ):
                     return
-                if self._editing_target_id in self._target_objects:
-                    group = self._target_objects[self._editing_target_id].get("group")
-                    if group:
-                        group.move(pose[0], pose[1], pose[2])
+                if self._edit_marker is not None:
+                    self._edit_marker.move(pose[0], pose[1], pose[2])
         else:
             self._add_target_with_pose(pose, "cartesian")
 
-        self._end_editing_session()
+        self._end_editing_session(saved=True)
 
-    def _end_editing_session(self) -> None:
+    def _end_editing_session(self, saved: bool = False) -> None:
         """End editing and clean up."""
         if self._teaching is not None:
             teaching, self._teaching = self._teaching, None
             teaching.close()
+        self._release_edit_marker(saved)
         self._editing_unified_target = False
         self._editing_target_id = None
         self._edit_start_pose = None
@@ -657,7 +708,9 @@ class EditingMixin(ShapeEditingMixin):
     # -------------------------------------------------------------------------
 
     def _create_edit_bar(self, editing_type: str) -> None:
-        """The save/cancel pair the view seats beside the target's marker."""
+        """The edit's command bar, docked at the view's top right like a CAD
+        command dialog: what is being edited, whether the arm can reach it,
+        save and cancel. It never covers the gizmo it confirms."""
         self._current_editing_type = editing_type
         if self._edit_bar:
             self._update_edit_bar_values()
@@ -667,13 +720,27 @@ class EditingMixin(ShapeEditingMixin):
             self._edit_bar_container = ui.element("div").classes(
                 "wc-target-edit-bar absolute z-50 pointer-events-auto"
             )
+        target = (
+            self._find_target_by_id(self._editing_target_id)
+            if self._editing_target_id
+            else None
+        )
+        title = f"Target · line {target.line_number}" if target else "New target"
         with self._edit_bar_container:
             # A card, not a plain row: its state follows drags, and a bare-div
             # ancestor re-renders the whole page each time.
             self._edit_bar = ui.card().classes(
-                "overlay-card flex-row items-center flex-nowrap gap-0 p-0"
+                "overlay-card flex-row items-center flex-nowrap gap-0 p-0 pl-3"
             )
             with self._edit_bar:
+                ui.label(title).classes(
+                    "text-sm text-wc-text whitespace-nowrap pr-2"
+                ).mark("edit-bar-title")
+                self._edit_validity = (
+                    ui.label("Unreachable")
+                    .classes("text-xs text-wc-error whitespace-nowrap pr-1")
+                    .mark("edit-bar-unreachable")
+                )
                 self._edit_confirm = (
                     ui.button(icon="check", on_click=self._on_edit_bar_confirm)
                     .props("flat round dense size=sm color=wc-action")
@@ -683,11 +750,6 @@ class EditingMixin(ShapeEditingMixin):
                 ui.button(icon="close", on_click=self._on_edit_bar_cancel).props(
                     "flat round dense size=sm color=wc-text-muted"
                 ).tooltip("Cancel · Esc").mark("edit-bar-cancel")
-                self._edit_validity = (
-                    ui.label("Unreachable")
-                    .classes("text-xs text-wc-error pr-2")
-                    .mark("edit-bar-unreachable")
-                )
         self._update_edit_bar_values()
 
     def _update_edit_bar_values(self) -> None:

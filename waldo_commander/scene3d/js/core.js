@@ -232,6 +232,7 @@ export class SceneCore {
     if ("playbackCursor" in changes) this.inspection.follow(changes.playbackCursor);
     if ("comparisonVisible" in changes) this.inspection.comparison.setVisible(changes.comparisonVisible);
     if ("pathScrubAvailable" in changes || "simulator" in changes || "edit" in changes) this.inspection.availabilityChanged();
+    if ("edit" in changes) this.gizmos.paintBall();
     if ("rings" in changes || "colors" in changes) this.pointer.forgetRings();
     if ("shapeMove" in changes) {
       this.resizeHandles.load(this.ix.shapeMove);

@@ -57,6 +57,17 @@ def zoom(screen: Screen, distance: float) -> None:
     scene_js(screen, "S.zoom(arguments[0])", distance)
 
 
+def marker_mm(screen: Screen, name: str) -> np.ndarray:
+    """Where the named scene object is in the world, in mm."""
+    position = scene_js(
+        screen,
+        "const o=S.byName(arguments[0]);o.updateWorldMatrix(true,false);"
+        "return o.getWorldPosition(o.position.clone()).toArray();",
+        name,
+    )
+    return np.array(position) * 1000
+
+
 def gizmo(screen: Screen, name: str, mark: bool = False) -> dict | None:
     """The snaps of the gizmo on ``name``; ``mark`` tags it so a re-attach shows."""
     return scene_js(screen, "return S.gizmo(arguments[0], arguments[1])", name, mark)

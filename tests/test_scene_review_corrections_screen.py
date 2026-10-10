@@ -31,6 +31,7 @@ from tests.helpers.scene_screen import (
     gizmo_field,
     grab_ring,
     hold,
+    marker_mm,
     path_point,
     probe,
     program_previewed,
@@ -47,8 +48,10 @@ def _marker_missed(screen) -> bool:
     """Whether the edited target's marker is drawn in the miss colour."""
     return scene_js(
         screen,
-        "const c=getElement(S.root).core,g=c.gizmos,color=g.ball.material.color;"
-        "return g.miss && color.getHex() === color.clone().set(c.ix.colors.miss).getHex();",
+        "const c=getElement(S.root).core,m=c.gizmos.editMarker();let hit=false;"
+        "m?.obj.traverse(o=>{const k=o.material?.color;"
+        "if(k&&k.getHex()===k.clone().set(c.ix.colors.miss).getHex())hit=true;});"
+        "return hit;",
     )
 
 
@@ -124,6 +127,14 @@ class TestReviewCorrections:
                     < 0.5
                 )
                 assert scene._appearance_mode != RobotAppearanceMode.EDITING
+                # The new target's marker is drawn where it lands.
+                assert (
+                    np.linalg.norm(
+                        marker_mm(screen, "targetgroup:new")
+                        - np.array([gx, gy, 0]) * 1000
+                    )
+                    < 0.5
+                )
                 wait_for_scene_idle(screen)
                 evidence.capture("03-ground-target-1920")
 

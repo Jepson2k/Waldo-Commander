@@ -18,6 +18,7 @@ from tests.helpers.browser_helpers import (
 from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
+    marker_mm,
     TCP_VIEW,
     at_start,
     camera_kept,
@@ -111,6 +112,15 @@ class TestSceneEditing:
                     )
                     < 0.5
                 )
+                # The target's own marker rides the drag; no other ball is drawn.
+                marker = f"targetgroup:{targets[-1]}"
+                wait(screen).until(
+                    lambda _: np.linalg.norm(
+                        marker_mm(screen, marker) - ball_mm(screen)
+                    )
+                    < 0.5
+                )
+                assert not scene_js(screen, "return S.byName('tcp:ball').visible")
                 wait_for_scene_idle(screen)
                 evidence.capture("01-preview-drag-1920")
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
@@ -121,6 +131,12 @@ class TestSceneEditing:
                     lambda _: run_in_app(lambda: scene._requested_edit_pose) == initial
                 )
                 assert run_in_app(lambda: scene._edit_active)
+                wait(screen).until(
+                    lambda _: np.linalg.norm(
+                        marker_mm(screen, marker) - np.array(initial[:3]) * 1000
+                    )
+                    < 0.5
+                )
                 evidence.capture("02-cancelled-drag-1920")
 
                 spot = wait(screen).until(

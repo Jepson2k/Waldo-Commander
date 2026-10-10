@@ -23,6 +23,22 @@ const released = new THREE.Vector3();
 const SPRINGING = Symbol("springing");
 const labelAt = new THREE.Vector3();
 const projected = [0, 0, 0];
+const riding = new THREE.Vector3();
+
+// A node's materials in `color`, or back in their own.
+function paint(rec, color) {
+  rec.obj.traverse((o) => {
+    const c = o.material?.color;
+    if (!c) return;
+    if (color) {
+      o.userData.wcOwnColor ??= c.getHex();
+      c.set(color);
+    } else if (o.userData.wcOwnColor !== undefined) {
+      c.setHex(o.userData.wcOwnColor);
+      delete o.userData.wcOwnColor;
+    }
+  });
+}
 
 const easeOutBack = (t) => {
   const c1 = 1.70158;
@@ -54,6 +70,7 @@ export class Gizmos {
     this.pressed = null; // the handle a press landed on
     this.precision = new Precision(this);
     this.spring = null;
+    this.tinted = null; // the edit marker drawn in the miss colour
   }
 
   get active() {
@@ -189,11 +206,30 @@ export class Gizmos {
     this.core.requestRender();
   }
 
-  // An edited target is drawn in the miss colour while the arm cannot reach it.
+  // Editing, the target's own marker is what moves, so the ball is not
+  // drawn; the marker takes the miss colour while the arm cannot reach it.
   paintBall() {
     const colors = this.core.ix.colors || {};
-    const editing = this.core.ix.edit?.active;
-    this.ball.material.color.set(editing ? (this.miss ? colors.miss : colors.active) : colors.ball);
+    const editing = !!this.core.ix.edit?.active;
+    this.ball.visible = !editing;
+    this.ball.material.color.set(colors.ball);
+    const marker = this.editMarker();
+    if (this.tinted && this.tinted !== marker) paint(this.tinted, null);
+    this.tinted = editing && this.miss ? marker : null;
+    if (marker) paint(marker, this.tinted ? colors.miss : null);
+  }
+
+  // The marker of the target being edited.
+  editMarker() {
+    const id = this.core.ix.edit?.marker;
+    return id === undefined || id === null ? null : this.core.nodes.get(id) || null;
+  }
+
+  // The edited target's marker rides on the ball while it is dragged.
+  follow(rec) {
+    const obj = rec.obj;
+    this.ball.getWorldPosition(riding);
+    obj.position.copy(obj.parent ? obj.parent.worldToLocal(riding) : riding);
   }
 
   get gizmoShown() {
@@ -250,6 +286,7 @@ export class Gizmos {
     if (kind === "tcp") {
       this.endSpring();
       fields = { mode: tc.mode, axis: tc.axis, rev: this.rev };
+      extra.marker = this.editMarker();
     } else {
       rec = core.nodes.get(this.shape.node);
       if (!rec) return;
@@ -270,6 +307,7 @@ export class Gizmos {
     drag.g = g;
     this.drag = drag;
     if (rec) for (const moved of new Set([rec, ...(drag.members || []).map((item) => item.rec)])) core.gestures.hold(g, moved, "position", "rotation");
+    if (drag.marker) core.gestures.hold(g, drag.marker, "position");
     for (const other of this.all()) if (other !== tc) {
       other.enabled = false;
       other.getHelper().visible = false;
@@ -283,8 +321,8 @@ export class Gizmos {
     const g = drag.g;
     if (kind === "tcp") {
       this.core.gestures.sample(g, this.ballPose());
+      if (drag.marker) this.follow(drag.marker);
       this.precision.update();
-
     } else {
       if(drag.members) {
         for(const item of drag.members) {

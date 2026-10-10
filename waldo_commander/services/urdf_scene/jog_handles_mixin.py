@@ -30,6 +30,9 @@ GIZMO = "gizmo"
 #: Ring radius per joint as a fraction of the arm's reach; the last value
 #: serves any further joints.
 _DIAL_RADIUS_FRACTION = (0.16, 0.14, 0.12, 0.10, 0.09, 0.08)
+#: The move/rotate gizmo's size on the same footing: its rotation arcs, at
+#: three quarters of it, sit where the wrist dials do.
+_GIZMO_RADIUS_FRACTION = 0.12
 
 
 def _z_onto(axis: np.ndarray) -> list[list[float]]:
@@ -176,6 +179,7 @@ class JogHandlesMixin:
         return {
             "available": self._handles_available,
             "gizmo": gizmo,
+            "gizmoRadius": _GIZMO_RADIUS_FRACTION * self._chain_reach(),
             "suspended": self._hover_suspended,
         }
 

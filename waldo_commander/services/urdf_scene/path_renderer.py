@@ -38,6 +38,26 @@ def _extract_tcp_rotation(tcp_pose: list[float]) -> ScipyRotation | None:
     return ScipyRotation.from_euler("XYZ", [tcp_pose[3], tcp_pose[4], tcp_pose[5]])
 
 
+def create_waypoint_marker(shape: str, size: float, color: str) -> Any:
+    """Create a waypoint marker: diamond (lathe bicone), square (box), or sphere."""
+    if shape == "diamond":
+        # Bicone: a diamond profile revolved around the Y axis.
+        r = size
+        h = size * 1.5
+        obj = s3d.lathe([[0, -h], [r, 0], [0, h]], segments=8)
+        obj.material(color)
+        return obj
+    elif shape == "square":
+        side = size * 2
+        box = s3d.box(side, side, side)
+        box.material(color)
+        return box
+    else:
+        sphere = s3d.sphere(size)
+        sphere.material(color)
+        return sphere
+
+
 class PathRenderer:
     """Renders path segments and tool action arrows inside an active scene context."""
 

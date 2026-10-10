@@ -77,8 +77,8 @@ export class SceneTransform extends THREE.EventDispatcher {
     else {
       this.object.getWorldPosition(this.helper.position);
       if(this.space==="local")this.object.getWorldQuaternion(this.helper.quaternion);else this.helper.quaternion.identity();
-      const pixel=this.core.metresPerPixel(this.helper.position);
-      this.radius=Math.max(pixel*65,Math.min(pixel*115,.085));
+      // Sized with the arm, as its joint dials are, so the two zoom together.
+      this.radius=this.core.ix.rules?.gizmoRadius ?? .05;
     }
     this.helper.scale.setScalar(this.radius);
     this.restyle();

@@ -59,7 +59,7 @@ from .loader import (
     normalize_axis,
     resolve_meshes_dir,
 )
-from .path_renderer import PathRenderer
+from .path_renderer import PathRenderer, create_waypoint_marker
 from waldo_commander.services.trajectory_inspection import TrajectoryInspection
 from .tcp_controls_mixin import TCPControlsMixin
 
@@ -252,26 +252,6 @@ def _tool_action_fingerprint(action) -> tuple:
         tuple(tuple(sorted(m.items())) for m in action.motions),
         len(action.tcp_path or []),
     )
-
-
-def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
-    """Create a waypoint marker: diamond (lathe bicone), square (box), or sphere."""
-    if shape == "diamond":
-        # Bicone: a diamond profile revolved around the Y axis.
-        r = size
-        h = size * 1.5
-        obj = s3d.lathe([[0, -h], [r, 0], [0, h]], segments=8)
-        obj.material(color)
-        return obj
-    elif shape == "square":
-        side = size * 2
-        box = s3d.box(side, side, side)
-        box.material(color)
-        return box
-    else:
-        sphere = s3d.sphere(size)
-        sphere.material(color)
-        return sphere
 
 
 class UrdfScene(
@@ -980,7 +960,7 @@ class UrdfScene(
             elif self.path_group and self.scene:
                 with self.scene:
                     with self.path_group:
-                        mk = _create_waypoint_marker(shape, WAYPOINT_SIZE_SMALL, color)
+                        mk = create_waypoint_marker(shape, WAYPOINT_SIZE_SMALL, color)
                         mk.move(pos[0], pos[1], pos[2])
                 self._reveal_markers.append(mk)
                 drawn_waypoints.append(
@@ -1037,7 +1017,7 @@ class UrdfScene(
                             .hover_effect("glow")
                         )
                         with grp:
-                            mk = _create_waypoint_marker(
+                            mk = create_waypoint_marker(
                                 shape, WAYPOINT_SIZE_LARGE, color
                             )
                             mk.with_name(f"target:{target.id}")
@@ -1064,7 +1044,7 @@ class UrdfScene(
                                 .hover_effect("glow")
                             )
                             with grp:
-                                mk = _create_waypoint_marker(
+                                mk = create_waypoint_marker(
                                     shape, WAYPOINT_SIZE_LARGE, color
                                 )
                                 mk.with_name(f"target:{target.id}")
@@ -1084,6 +1064,13 @@ class UrdfScene(
                 self._safe_delete(td["group"])
                 if self._editing_target_id == tid:
                     self._editing_target_id = None
+        saved = self._saved_new_marker
+        if saved is not None and any(
+            np.allclose(t.pose[:3], (saved.x, saved.y, saved.z), atol=1e-6)
+            for t in targets
+        ):
+            self._saved_new_marker = None
+            self._safe_delete(saved)
 
     def _safe_delete(self, obj: Node) -> None:
         """Delete a scene object; deleting one already gone does nothing."""
@@ -1271,6 +1258,9 @@ class UrdfScene(
             self._safe_delete(td["group"])
         self._target_objects.clear()
         self._editing_target_id = None
+        if self._saved_new_marker is not None:
+            self._safe_delete(self._saved_new_marker)
+            self._saved_new_marker = None
 
     def invalidate_paths(self) -> None:
         """Clear rendered paths and reset cache, forcing a full re-render next update.
