@@ -27,9 +27,9 @@ from waldo_commander.services.control_lease import (
     control_lease,
     control_mode,
     has_approved_action,
+    mcp_consented,
     recently_denied,
     reset_consent,
-    session_consented,
     take_approved_action,
 )
 from waldo_commander.state import ui_state
@@ -67,10 +67,10 @@ def require_control() -> None:
     Implicitly acquires a free lease (the first action claims it), and
     inherits one held by another MCP session — session ids churn on every
     reconnect, so MCP sessions form one interchangeable holder class (two
-    genuinely concurrent AI clients would trade the lease rather than fight;
-    the per-session hardware-consent floor still applies to each). Refuses
-    only when a live Browser holder has it — the caller must ``take_control``
-    to seize from the human.
+    genuinely concurrent AI clients would trade the lease rather than fight,
+    and share the hardware consent the same way). Refuses only when a live
+    Browser holder has it — the caller must ``take_control`` to seize from the
+    human.
     """
     sid = _session_id()
     if control_lease.held_by(MCP, sid):
@@ -86,22 +86,22 @@ def require_control() -> None:
     )
 
 
-def require_session_consent() -> None:
-    """Gate the first hardware (non-simulator) move of an MCP session on a
-    one-time human acknowledgement in the GUI.
+def require_hardware_consent() -> None:
+    """Gate the AI's hardware (non-simulator) moves on a one-time human
+    acknowledgement in the GUI.
 
     Un-consented moves are refused and a prompt is armed; the user approves it
     and the client retries. Refused outright when no GUI page is connected — no
     one could consent, so a hardware-affecting action must not proceed.
     """
-    sid = _session_id()
-    if session_consented(sid):
+    if mcp_consented():
         return
+    sid = _session_id()
     if recently_denied(sid):
         # Terminal for the cooldown: no prompt is re-armed, so the deny can't
         # be nagged away by an immediate retry loop.
         refuse(
-            "the user denied hardware motion for this session just now — do "
+            "the user denied hardware motion just now — do "
             "not retry immediately; work in simulator mode or wait for the "
             "user to initiate"
         )
@@ -113,7 +113,7 @@ def require_session_consent() -> None:
         )
     arm_consent_prompt(sid, _label(sid))
     refuse(
-        "first hardware move of this session needs GUI consent — call "
+        "the AI's first hardware move needs GUI consent — call "
         "control.wait_approval, then retry once it reports allowed"
     )
 
@@ -147,14 +147,14 @@ def require_actuation(description: str) -> None:
     """Full actuation gate, mode-aware. Always requires the control lease, then:
 
     - **Autopilot**: motion is auto-approved; real hardware still needs the
-      one-time per-session consent floor (simulator needs only the lease).
+      one-time consent floor (simulator needs only the lease).
     - **Inspect / Auto-edits**: every move needs per-action GUI approval
       (this subsumes the hardware floor — a human is in the loop each time).
     """
     require_control()
     if control_mode().auto_approves_motion:
         if not waldoctl.commander.status.simulator_active:
-            require_session_consent()
+            require_hardware_consent()
     else:
         require_action_approval(description)
 
@@ -176,7 +176,8 @@ async def take_control() -> dict:
 
 @mcp.tool(name="control.release_control")
 async def release_control() -> dict:
-    """Release the lease if this MCP session holds it (and clear its consent)."""
+    """Release the lease if this MCP session holds it; hardware motion then
+    needs GUI consent again."""
     sid = _session_id()
     control_lease.release(MCP, sid)
     reset_consent(sid)
@@ -204,7 +205,7 @@ async def wait_approval(timeout: float = 60.0) -> dict:
         kind = "consent"
     else:
         # The human may have decided before this wait started.
-        if has_approved_action(sid) or session_consented(sid):
+        if has_approved_action(sid) or mcp_consented():
             return {"outcome": "allowed"}
         if recently_denied(sid):
             return {"outcome": "denied"}
@@ -214,9 +215,7 @@ async def wait_approval(timeout: float = 60.0) -> dict:
     while True:
         if recently_denied(sid):
             return {"outcome": "denied"}
-        granted = (
-            has_approved_action(sid) if kind == "action" else session_consented(sid)
-        )
+        granted = has_approved_action(sid) if kind == "action" else mcp_consented()
         if granted:
             return {"outcome": "allowed"}
         if loop.time() >= deadline:
