@@ -232,6 +232,9 @@ def demo_screen(class_screen):
     screen = class_screen
     screen_wait_for_scene_ready(screen, timeout_s=40)
     at_start(screen)
+    # Objects an earlier test left would crowd the demo's floor and view.
+    run_in_app(lambda: setattr(waldoctl.commander.scene, "shapes", []))
+    confirmed(screen, lambda: not waldoctl.commander.scene.shapes)
     with viewport(screen, 1920, 1080), camera_kept(screen):
         yield screen
     # A demo that failed keeps what it recorded, to show where it went wrong.
@@ -240,6 +243,9 @@ def demo_screen(class_screen):
 
 
 @pytest.mark.browser
+# Frame-stepped recording takes a minute or two a demo; demos run only
+# under --evidence, outside the suite's time.
+@pytest.mark.timeout(300)
 class TestReviewDemos:
     def test_gizmo_moves_along_an_arrow(self, demo_screen):
         screen = demo_screen
@@ -798,7 +804,8 @@ class TestReviewDemos:
         with motion(screen), program_previewed(EDIT_PROGRAM):
             wait_for_scene_idle(screen)
             video = DemoVideo(screen, "view-cube")
-            corner = spot([1, -1, 1])
+            toward = probe(screen, "viewDirection")
+            corner = spot([1 if toward[0] >= 0 else -1, 1 if toward[1] >= 0 else -1, 1])
             video.jump(corner[0] - 320, corner[1] + 220)
             video.caption("The view cube, top right, turns with the camera")
             video.pause(0.8)
@@ -813,12 +820,12 @@ class TestReviewDemos:
             video.pause(0.5)
             video.click()
             video.live(1.2)
-            front = spot([0, -1, 0])
+            top = spot([0, 0, 1])
             video.caption("Drag the cube to orbit")
-            video.glide(front, 0.8)
+            video.glide(top, 0.8)
             before = probe(screen, "viewDirection")
             video.press()
-            video.glide((front[0] + 70, front[1] + 20), 2.0)
+            video.glide((top[0] + 50, top[1] + 60), 2.0)
             video.release()
             assert probe(screen, "viewDirection") != before
             video.pause(0.6)

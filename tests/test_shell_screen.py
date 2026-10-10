@@ -24,6 +24,7 @@ from nicegui import Client, core
 from tests.helpers.browser_helpers import (
     click_tab,
     close_panel,
+    focus_editor,
     js,
     marked_element,
     run_in_app,
@@ -709,6 +710,32 @@ class TestShellLayout:
 
         close_panel(screen, "bottom-panel")
         wait(screen, 5).until(lambda _: js(screen, saved) is None)
+
+    def test_shortcuts_work_on_a_page_opened_after_one_closed_while_typing(
+        self, class_screen
+    ) -> None:
+        """The app hears from the page whether typing has focus; a page
+        closed while the editor had it must not leave the next page's
+        shortcuts muted."""
+        from waldo_commander.services.keybindings import keybindings_manager
+
+        screen = class_screen
+        screen_wait_for_scene_ready(screen, timeout_s=40.0)
+        click_tab(screen, "program")
+        focus_editor(screen)
+        wait(screen).until(
+            lambda _: run_in_app(lambda: keybindings_manager.editor_focused)
+        )
+        try:
+            screen.selenium.refresh()
+            screen_wait_for_scene_ready(screen, timeout_s=40.0)
+            speed = waldoctl.commander.settings.jog.speed
+            ActionChains(screen.selenium).send_keys(
+                "[" if speed > 10 else "]"
+            ).perform()
+            wait(screen).until(lambda _: waldoctl.commander.settings.jog.speed != speed)
+        finally:
+            close_panel(screen, "program-panel")
 
     def test_controls_only_layout_keeps_all_footer_readings_and_restores_the_editor(
         self, class_screen

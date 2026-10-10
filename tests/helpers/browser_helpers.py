@@ -15,6 +15,7 @@ from selenium.common.exceptions import (
     ElementNotInteractableException,
     NoSuchElementException,
     StaleElementReferenceException,
+    TimeoutException,
 )
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.actions import interaction
@@ -108,6 +109,8 @@ def click_marked(screen: "Screen", marker: str, timeout: float = 10.0) -> None:
     """Click the marked element once it takes the click: a control still
     sliding or fading in can be covered, or not yet interactable."""
 
+    last: list[str] = []
+
     def clicked(_) -> bool:
         try:
             marked_element(screen, marker).click()
@@ -116,13 +119,17 @@ def click_marked(screen: "Screen", marker: str, timeout: float = 10.0) -> None:
             ElementNotInteractableException,
             NoSuchElementException,
             StaleElementReferenceException,
-        ):
+        ) as error:
+            last[:] = [f"{type(error).__name__}: {error.msg}"]
             return False
         return True
 
-    WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(
-        clicked, message=f"{marker} never took a click"
-    )
+    try:
+        WebDriverWait(screen.selenium, timeout, poll_frequency=0.05).until(clicked)
+    except TimeoutException:
+        raise TimeoutException(
+            f"{marker} never took a click ({last[0] if last else 'no attempt'})"
+        ) from None
 
 
 @contextmanager
