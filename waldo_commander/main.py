@@ -51,6 +51,7 @@ from waldo_commander.components.io import IoPage
 from waldo_commander.components.physics_legend import physics_legend
 from waldo_commander.components.playback import playback
 from waldo_commander.components.readout import StatusFooter
+from waldo_commander.components.scene_camera import build_camera_menu
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.components.waldo import Mood, Waldo
 from waldo_commander.components.settings import (
@@ -311,6 +312,7 @@ async def initialize_urdf_scene() -> None:
     if ui_state.urdf_scene.scene:
         scene = ui_state.urdf_scene.scene
         scene.move_camera(**DEFAULT_CAMERA, duration=0.0)
+        build_camera_menu(scene)
 
         # World coordinate frame at origin (fixed).
         world_axes_size = 0.30

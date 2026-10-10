@@ -471,6 +471,14 @@ def choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
     return offered
 
 
+def end_target_edit(screen) -> None:
+    """Put a target edit away with Escape, keeping what it wrote."""
+    ActionChains(screen.selenium).send_keys(Keys.ESCAPE).perform()
+    wait(screen).until(
+        lambda _: not run_in_app(lambda: ui_state.urdf_scene._edit_active)
+    )
+
+
 def fill(screen, marker, value):
     """Type ``value`` into the input marked ``marker`` and press Enter. A
     card being rebuilt or seated can briefly hold an input that takes no

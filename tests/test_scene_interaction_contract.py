@@ -305,7 +305,7 @@ async def test_edits_from_an_ended_session_change_nothing(user: User) -> None:
         getattr(waldoctl.commander.status.pose, key)
         for key in ("x", "y", "z", "rx", "ry", "rz")
     ) == pytest.approx(live_pose)
-    user.find(marker="edit-bar-cancel").click()
+    urdf.cancel_target_edit()
     session = edit_target()
     assert session != first
     fresh = urdf._requested_edit_pose
@@ -319,7 +319,7 @@ async def test_edits_from_an_ended_session_change_nothing(user: User) -> None:
     translating.abort()
     assert urdf._requested_edit_pose == fresh
     assert urdf._tcp_placed_pose == pytest.approx(fresh)
-    user.find(marker="edit-bar-cancel").click()
+    urdf.cancel_target_edit()
 
 
 @pytest.mark.integration

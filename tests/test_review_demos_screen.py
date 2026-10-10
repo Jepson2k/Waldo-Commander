@@ -9,12 +9,13 @@ recording it.
 import asyncio
 import math
 import time
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
 import waldoctl
 from nicegui import core
-from waldoctl.shapes import Box, Sphere
+from waldoctl.shapes import Box
 from selenium.common.exceptions import (
     StaleElementReferenceException,
     TimeoutException,
@@ -22,7 +23,13 @@ from selenium.common.exceptions import (
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
-from tests.helpers.browser_helpers import marked_element, run_in_app, viewport
+from tests.helpers.browser_helpers import (
+    click_tab,
+    close_panel,
+    marked_element,
+    run_in_app,
+    viewport,
+)
 from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.demo_video import DemoVideo
 from tests.helpers.scene_screen import (
@@ -46,6 +53,7 @@ from tests.helpers.scene_surface import (
 )
 from tests.helpers.wait import screen_wait_for_scene_ready
 from tests.test_par6_backend import par6_env, requires_par6  # noqa: F401
+from waldo_commander.services import world_files
 from waldo_commander.state import ui_state
 
 #: The floor in front of the arm, close enough to see a target land there.
@@ -70,6 +78,33 @@ def _jog_ended(screen) -> None:
         or ui_state.control_panel._jog_end_wait_task.done()
     )
     _arm_still()
+
+
+@contextmanager
+def program_panel(screen):
+    """The program editor open beside the scene, so a demo shows its source."""
+    click_tab(screen, "program")
+    try:
+        yield
+    finally:
+        close_panel(screen, "program-panel")
+
+
+@contextmanager
+def motion(screen):
+    """Animations on, as a user without reduced motion sees them."""
+
+    def emulate(value: str) -> None:
+        screen.selenium.execute_cdp_cmd(
+            "Emulation.setEmulatedMedia",
+            {"features": [{"name": "prefers-reduced-motion", "value": value}]},
+        )
+
+    emulate("no-preference")
+    try:
+        yield
+    finally:
+        emulate("reduce")
 
 
 def _center(element) -> tuple[float, float]:
@@ -329,7 +364,7 @@ class TestReviewDemos:
     def test_editing_a_target_moves_the_target(self, demo_screen):
         screen = demo_screen
         scene = ui_state.urdf_scene
-        with program_previewed(EDIT_PROGRAM) as targets:
+        with program_previewed(EDIT_PROGRAM) as targets, program_panel(screen):
             scene_js(screen, "S.setCameraPose(arguments[0])", TCP_VIEW)
             wait_for_scene_idle(screen)
             live = waldoctl.commander.status.joints.angles.rad.copy()
@@ -359,22 +394,26 @@ class TestReviewDemos:
                     lambda _: run_in_app(lambda: scene._requested_edit_pose) != initial
                 )
             )
-            video.pause(0.8)
-            confirm = marked_element(screen, "edit-bar-confirm")
-            video.caption("✓ saves it into the program")
-            video.glide(_center(confirm), 1.2)
-            video.pause(0.3)
-            video.click(
-                settle=lambda: wait(screen).until(lambda _: not scene._edit_active)
+            video.caption("Let go and it is kept: its line in the program is rewritten")
+            video.pause(2.0)
+            video.caption("Ctrl+Z takes it back")
+            video.chord(
+                Keys.CONTROL,
+                "z",
+                settle=lambda: wait(screen).until(
+                    lambda _: run_in_app(lambda: ui_state.active_textarea.value)
+                    == EDIT_PROGRAM
+                ),
             )
-            video.pause(1.5)
+            video.live(1.5)
+            video.pause(1.0)
             video.save()
             assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
 
     def test_placing_a_target_on_the_floor(self, demo_screen):
         screen = demo_screen
         scene = ui_state.urdf_scene
-        with program_previewed(EDIT_PROGRAM):
+        with program_previewed(EDIT_PROGRAM), program_panel(screen):
             scene_js(screen, "S.setCameraPose(arguments[0])", PLACEMENT_VIEW)
             wait_for_scene_idle(screen)
             live = waldoctl.commander.status.joints.angles.rad.copy()
@@ -390,7 +429,7 @@ class TestReviewDemos:
             video.pause(0.6)
             video.glide(_center(item), 0.7)
             video.click(settle=lambda: wait(screen).until(lambda _: scene._edit_active))
-            video.caption("The new target lands there; the arm does not move")
+            video.caption("A new target lands there, in the program at once")
             video.pause(1.5)
             tx, ty, dx, dy = wait(screen).until(
                 lambda _: probe(screen, "arrowTip", "tcp:ball", "Z")
@@ -408,15 +447,13 @@ class TestReviewDemos:
             )
             video.release()
             assert reached, "no reachable height above the floor spot"
-            video.pause(1.0)
-            confirm = marked_element(screen, "edit-bar-confirm")
-            video.caption("✓ adds the move to the program")
-            video.glide(_center(confirm), 1.2)
-            video.pause(0.3)
-            video.click(
-                settle=lambda: wait(screen).until(lambda _: not scene._edit_active)
+            video.caption("Let go and it is kept; Escape puts the edit away")
+            video.pause(1.5)
+            video.key(
+                Keys.ESCAPE,
+                settle=lambda: wait(screen).until(lambda _: not scene._edit_active),
             )
-            video.live(2.5)
+            video.live(2.0)
             video.pause(1.0)
             video.save()
             assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
@@ -455,7 +492,7 @@ class TestReviewDemos:
                 points += [(p[0], p[1]) for p in pixels[:: max(1, len(pixels) // 40)]]
             video = DemoVideo(screen, "path-scrub")
             video.jump(*_outward(points[0], _arm_pixel(screen)))
-            video.caption("Hovering a path changes nothing")
+            video.caption("Hover a path: it lights up, ready to drag")
             video.pause(0.6)
             video.glide(points[0], 1.0)
             video.pause(0.6)
@@ -641,81 +678,6 @@ class TestReviewDemos:
         video.pause(1.5)
         video.save()
 
-    def test_section_plane(self, demo_screen):
-        screen = demo_screen
-        center = np.array([0.38, 0.05, 0.2])
-        camera = np.array([0.64, -0.275, 0.4])
-        normal = (center - camera) / np.linalg.norm(center - camera)
-        shapes = [
-            Box(
-                name="Fixture shell",
-                x=0.3,
-                y=0.3,
-                z=0.3,
-                pose=(*center, 0, 0, 0),
-                collision=False,
-            ),
-            Sphere(
-                name="Internal part",
-                radius=0.025,
-                pose=(*(center + normal * 0.07), 0, 0, 0),
-                collision=False,
-            ),
-        ]
-        handle = waldoctl.commander.scene
-        run_in_app(lambda: setattr(handle, "shapes", shapes))
-        confirmed(screen, lambda: handle.shapes == shapes)
-        scene_js(screen, "S.setCameraPose(arguments[0])", [*camera, *center])
-        wait_for_scene_idle(screen)
-        menu = marked_element(screen, "camera-menu")
-        video = DemoVideo(screen, "section-plane")
-        video.jump(900, 700)
-        video.caption("A part hidden inside a fixture")
-        video.pause(1.2)
-        video.caption("Camera menu, Section objects")
-        video.glide(_center(menu), 1.0)
-        video.click()
-        video.pause(0.4)
-        expansion = marked_element(screen, "camera-section-options").find_element(
-            By.CSS_SELECTOR, ".q-item"
-        )
-        video.glide(_center(expansion), 0.6)
-        video.click()
-        enable = wait(screen).until(
-            lambda _: (
-                e := marked_element(screen, "camera-section-enabled")
-            ).is_displayed()
-            and e
-        )
-        video.pause(0.3)
-        video.glide(_center(enable), 0.6)
-        video.click(
-            settle=lambda: wait(screen).until(
-                lambda _: probe(screen, "section")["section"]
-            )
-        )
-        video.caption("The plane cuts the fixture open")
-        video.pause(1.2)
-        thumb = marked_element(screen, "camera-section-slider").find_element(
-            By.CSS_SELECTOR, ".q-slider__thumb"
-        )
-        tx, ty = _center(thumb)
-        video.caption("Slide it to move the cut")
-        video.glide((tx, ty), 0.8)
-        video.press()
-        video.glide((tx + 70, ty), 3.0)
-        video.release()
-        video.pause(1.5)
-        video.save()
-        assert probe(screen, "section")["sectionOffset"] > 5
-        # The next demo needs the whole scene again.
-        run_in_app(
-            lambda: ui_state.urdf_scene.scene.run_method(
-                "camera_action", "section", False
-            )
-        )
-        wait(screen).until(lambda _: not probe(screen, "section")["section"])
-
     def test_isolating_objects(self, demo_screen):
         screen = demo_screen
         view = ui_state.urdf_scene
@@ -744,9 +706,12 @@ class TestReviewDemos:
         b = scene_object_pixel(screen, "shape:Fixture B")
         video = DemoVideo(screen, "isolate")
         video.jump(*_outward(a, _arm_pixel(screen)))
-        video.caption("Click a keep-out, then shift-click another")
+        video.caption("Hovering a keep-out lights it")
         video.pause(0.6)
         video.glide(a, 1.0)
+        video.pause(1.2)
+        video.caption("Click it, then shift-click another")
+        video.pause(0.6)
         video.click(
             settle=lambda: wait(screen).until(
                 lambda _: run_in_app(lambda: len(view._selected_objects)) == 1
@@ -775,7 +740,7 @@ class TestReviewDemos:
         video.caption("Isolate them: the rest of the cell fades out")
         from_actions("object-isolate", lambda: run_in_app(lambda: view._isolated_view))
         video.pause(2.0)
-        video.caption("Restore brings the rest back")
+        video.caption("Show all objects brings the rest back")
         from_actions(
             "object-isolate", lambda: not run_in_app(lambda: view._isolated_view)
         )
@@ -784,15 +749,7 @@ class TestReviewDemos:
 
     def test_camera_tools(self, demo_screen):
         screen = demo_screen
-        screen.selenium.execute_cdp_cmd(
-            "Emulation.setEmulatedMedia",
-            {
-                "features": [
-                    {"name": "prefers-reduced-motion", "value": "no-preference"}
-                ]
-            },
-        )
-        try:
+        with motion(screen):
             with program_previewed(EDIT_PROGRAM):
                 wait_for_scene_idle(screen)
                 video = DemoVideo(screen, "camera-tools")
@@ -830,11 +787,134 @@ class TestReviewDemos:
                 )
                 video.pause(1.0)
                 video.save()
-        finally:
-            screen.selenium.execute_cdp_cmd(
-                "Emulation.setEmulatedMedia",
-                {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
+
+    def test_view_cube(self, demo_screen):
+        screen = demo_screen
+
+        def spot(direction):
+            x, y, _ = wait(screen).until(lambda _: probe(screen, "cubeSpot", direction))
+            return x, y
+
+        with motion(screen), program_previewed(EDIT_PROGRAM):
+            wait_for_scene_idle(screen)
+            video = DemoVideo(screen, "view-cube")
+            corner = spot([1, -1, 1])
+            video.jump(corner[0] - 320, corner[1] + 220)
+            video.caption("The view cube, top right, turns with the camera")
+            video.pause(0.8)
+            video.glide(corner, 1.2)
+            video.caption("Hover a corner, edge or face; click it to look from there")
+            video.pause(1.0)
+            video.click()
+            video.live(1.2)
+            top = spot([0, 0, 1])
+            video.caption("A face looks straight on: here, from the top")
+            video.glide(top, 0.8)
+            video.pause(0.5)
+            video.click()
+            video.live(1.2)
+            front = spot([0, -1, 0])
+            video.caption("Drag the cube to orbit")
+            video.glide(front, 0.8)
+            before = probe(screen, "viewDirection")
+            video.press()
+            video.glide((front[0] + 70, front[1] + 20), 2.0)
+            video.release()
+            assert probe(screen, "viewDirection") != before
+            video.pause(0.6)
+            video.caption("Home puts the camera back")
+            video.glide(_center(marked_element(screen, "camera-home")), 0.8)
+            video.click()
+            video.live(1.2)
+            video.caption("The menu beside it holds the rest of the camera tools")
+            video.glide(_center(marked_element(screen, "camera-menu")), 0.7)
+            video.click()
+            video.pause(2.0)
+            video.save()
+
+    def test_workcell_library(self, demo_screen, tmp_path, monkeypatch):
+        screen = demo_screen
+        monkeypatch.setattr(world_files, "library_dir", lambda: tmp_path)
+        handle = waldoctl.commander.scene
+        shapes = [
+            Box(name=name, x=0.065, y=0.065, z=0.09, pose=(*point, 0, 0, 0))
+            for name, point in (
+                ("Fixture", (0.35, -0.18, 0.045)),
+                ("Stock", (0.4, 0.05, 0.045)),
             )
+        ]
+        run_in_app(lambda: setattr(handle, "shapes", shapes))
+        confirmed(screen, lambda: handle.shapes == shapes)
+        view = ui_state.urdf_scene
+        with program_previewed(EDIT_PROGRAM), program_panel(screen):
+            scene_js(
+                screen,
+                "S.setCameraPose(arguments[0])",
+                [0.685, -0.4, 0.295, 0.42, -0.05, 0.05],
+            )
+            wait_for_scene_idle(screen)
+            floor = wait(screen).until(lambda _: probe(screen, "floorSpot"))[:2]
+            video = DemoVideo(screen, "workcell-library")
+            video.jump(floor[0] + 200, floor[1] + 120)
+            video.caption("Right-click the floor, Workcell library…")
+            video.glide(floor, 1.0)
+            video.context_click()
+            item = _menu_item(screen, "Workcell library")
+            video.pause(0.4)
+            video.glide(_center(item), 0.6)
+            video.click(
+                settle=lambda: wait(screen).until(
+                    lambda _: marked_element(screen, "workcell-library").is_displayed()
+                )
+            )
+            video.caption("It opens beside the scene, which stays live")
+            video.pause(1.2)
+            video.caption("Name the objects and save them")
+            video.glide(_center(marked_element(screen, "workcell-name")), 0.8)
+            video.click()
+            video.type("bench")
+            video.glide(_center(marked_element(screen, "workcell-save")), 0.6)
+            video.click(
+                settle=lambda: wait(screen).until(
+                    lambda _: "Saved bench"
+                    in marked_element(screen, "workcell-feedback").text
+                )
+            )
+            video.pause(1.2)
+            video.caption("Delete one of them")
+            video.glide(scene_object_pixel(screen, "shape:Stock"), 1.0)
+            video.click(
+                settle=lambda: wait(screen).until(
+                    lambda _: run_in_app(lambda: view._selected_objects)
+                    == ["shape:Stock"]
+                )
+            )
+            video.glide(_center(marked_element(screen, "object-actions")), 0.8)
+            video.click()
+            delete = _settled(screen, lambda: marked_element(screen, "object-delete"))
+            video.pause(0.3)
+            video.glide(_center(delete), 0.6)
+            video.click(
+                settle=lambda: confirmed(screen, lambda: len(handle.shapes) == 1)
+            )
+            video.pause(0.8)
+            video.caption("Load bench puts the saved objects back")
+            video.glide(_center(marked_element(screen, "workcell-load:bench")), 1.0)
+            video.click(
+                settle=lambda: confirmed(screen, lambda: handle.shapes == shapes)
+            )
+            video.pause(1.4)
+            video.caption("Or insert them into the program as code")
+            video.glide(_center(marked_element(screen, "workcell-insert")), 0.8)
+            video.click(
+                settle=lambda: wait(screen).until(
+                    lambda _: "set_shapes("
+                    in run_in_app(lambda: ui_state.active_textarea.value)
+                )
+            )
+            video.pause(2.5)
+            video.save()
+            marked_element(screen, "workcell-close").click()
 
 
 @requires_par6

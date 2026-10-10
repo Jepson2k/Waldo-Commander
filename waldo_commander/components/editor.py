@@ -236,7 +236,7 @@ class EditorPanel(FileOperationsMixin):
 
     def target_edit_reason(self, target_id: str) -> str | None:
         textarea = ui_state.active_textarea
-        line = self._target_line(target_id)
+        line = self.target_line(target_id)
         if textarea is None or line is None:
             return "This target no longer has a source binding."
         try:
@@ -256,9 +256,24 @@ class EditorPanel(FileOperationsMixin):
         joint_angles_deg: list[float] | None = None,
     ) -> bool:
         """Commit one structural target edit; position is in metres, angles in degrees."""
+        line = self.target_line(target_id)
+        if line is None:
+            return False
+        return self.sync_code_at_line(
+            line, pose, move_type=move_type, joint_angles_deg=joint_angles_deg
+        )
+
+    def sync_code_at_line(
+        self,
+        line: int,
+        pose: list[float],
+        *,
+        move_type: str | None = None,
+        joint_angles_deg: list[float] | None = None,
+    ) -> bool:
+        """``sync_code_from_target`` for the target on *line*."""
         textarea = ui_state.active_textarea
-        line = self._target_line(target_id)
-        if textarea is None or line is None:
+        if textarea is None:
             return False
         try:
             updated = replace_target(
@@ -477,7 +492,7 @@ class EditorPanel(FileOperationsMixin):
             joint_angles_deg=angles,
         )
 
-    def _target_line(self, target_id: str) -> int | None:
+    def target_line(self, target_id: str) -> int | None:
         """The 1-indexed line of a target in the active program."""
         tab = waldoctl.commander.programs.active
         if tab is None:
@@ -501,7 +516,7 @@ class EditorPanel(FileOperationsMixin):
         if not textarea or tab is None:
             return
 
-        line_number = self._target_line(target_id)
+        line_number = self.target_line(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
@@ -542,8 +557,8 @@ class EditorPanel(FileOperationsMixin):
         new_content, new_line_number, count = insert_below_line(
             textarea.value or "", code_line, active_cursor_line()
         )
-        # Assigning triggers a debounced simulation run.
-        textarea.value = new_content
+        # One undoable edit; assigning triggers a debounced simulation run.
+        textarea.commit_scene_value(new_content)
 
         advance_active_cursor(new_line_number + count - 1)
         decorations.flash_editor_lines([new_line_number])

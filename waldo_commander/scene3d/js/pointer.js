@@ -17,11 +17,23 @@ import { Ring, label } from "./rings.js";
 import { niceStep } from "./precision.js";
 import { overlap } from "./overlays.js";
 import { setStyle } from "./dom.js";
-import { shown, visibleHit } from "./section.js";
 
 const NONE = [];
 const place = new THREE.Vector3();
 const at = [0, 0, 0];
+
+export function shown(object) {
+  for (let o = object; o; o = o.parent) if (!o.visible) return false;
+  return true;
+}
+
+// A hit on something drawn and not clipped away; an object isolating faded
+// is context, not something to pick.
+export function visibleHit(hit) {
+  if(!shown(hit.object) || hit.object.userData.faded)return false;
+  const list=Array.isArray(hit.object.material)?[hit.object.material[hit.face?.materialIndex||0]]:[hit.object.material];
+  return list.every(mat=>!mat || mat.visible!==false && !(mat.clippingPlanes||[]).some(plane=>plane.distanceToPoint(hit.point)<-1e-7));
+}
 
 // The plane through `point` that holds `axis` and faces along `ray`, the one
 // a drag along the axis moves on; null where the axis points at the eye.
@@ -535,9 +547,10 @@ export class Pointer {
     if (live) this.core.gizmos.highlight(handles);
     const hit = live && !handles.length ? this.hit(x, y) : null;
     this.placeGround(live && !e.buttons ? [x, y] : null, hit, handles);
+    // Over a path a press would scrub, the path is what the pointer is on.
+    const scrub = this.core.inspection.hoverAt(live && !handles.length && !hit?.ring ? [x, y] : null);
     if (!live) return;
-    const inspection=this.core.inspection;
-    if(inspection.current && inspection.pick(x,y,true).length) {
+    if (scrub) {
       this.forgetHover();return;
     }
     const now = performance.now();
@@ -577,6 +590,7 @@ export class Pointer {
 
   leaveCanvas() {
     this.placeGround(null, null, NONE);
+    this.core.inspection.hoverAt(null);
     this.core.gizmos.highlight(NONE);
     const now = performance.now();
     this.hover.gizmo(false, now);
@@ -655,8 +669,7 @@ export class Pointer {
       if(mesh.material.clippingPlanes!==planes){mesh.material.clippingPlanes=planes;mesh.material.needsUpdate=true;}
       src.updateWorldMatrix(true, false);
       src.matrixWorld.decompose(mesh.position, mesh.quaternion, mesh.scale);
-      // A glow larger than a sectioned node would show past its cut.
-      mesh.scale.multiplyScalar(!g.source && planes?.includes(this.core.nodes.section)?1.005:scale);
+      mesh.scale.multiplyScalar(scale);
     }
   }
 

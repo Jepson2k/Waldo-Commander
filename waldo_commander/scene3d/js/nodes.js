@@ -3,17 +3,18 @@
 // property owns it, and ops then change only the base, which the property
 // returns to when the last hold lets go.
 //
-// The view also changes what objects show, without touching their base:
-// isolating objects hides the others, and a section cuts every object open.
-// Both are applied here, where the base is written, so neither undoes the
-// other.
+// Isolating objects fades the others without touching their base: it is
+// applied here, where the base is written, so an edit does not undo it.
 
 import * as THREE from "three";
 import { build, clip, dispose, loadStl, materials, paint } from "./kinds.js";
 
 const DRAWN = new Set(["box", "sphere", "cylinder", "capsule", "lathe", "line", "polyline"]);
-// The workcell's objects: what the view isolates and the section cuts.
+// The workcell's objects: what isolating fades.
 const OBJECT = /^(shape|install):/;
+// What is left of an object isolating leaves out: enough to keep it in place
+// as context, too little to read as something to pick.
+const FADED = 0.12;
 
 export class Nodes {
   constructor(core) {
@@ -22,8 +23,7 @@ export class Nodes {
     this.records = new Map();
     this.records.set(0, this.record(0, "root", core.scene, null));
     this.joints = [];
-    this.isolated = null; // names of the objects shown while isolating
-    this.section = null; // the plane cutting objects open
+    this.isolated = null; // names of the objects isolating leaves unfaded
     this.objectsChanged = false;
   }
 
@@ -36,7 +36,6 @@ export class Nodes {
       children: new Set(),
       name: "",
       object: false,
-      cut: false,
       drawable: null,
       base: { p: [0, 0, 0], r: [0, 0, 0, 1], s: [1, 1, 1], m: null, v: 1, l: [] },
       holds: { scale: 0, position: 0, rotation: 0, opacity: 0 },
@@ -70,7 +69,6 @@ export class Nodes {
     const obj = build(kind, args, !!state.w);
     const rec = this.record(id, kind, obj, parent);
     obj.userData.wcId = id;
-    rec.cut = parent.cut;
     if (DRAWN.has(kind)) rec.drawable = obj;
     if (kind === "joint") {
       rec.axis = new THREE.Vector3(...args[0]);
@@ -80,7 +78,6 @@ export class Nodes {
     parent.children.add(rec);
     this.update(rec, state);
     if (!("v" in state)) this.show(rec);
-    if (this.section && rec.cut && !("l" in state)) this.clip(rec);
     if (kind === "joint") this.setJoint(rec, state.q || 0);
     parent.obj.add(obj);
     if (kind === "stl") rec.ready = this.load(rec, args[0], !!state.w);
@@ -145,16 +142,6 @@ export class Nodes {
     const object = OBJECT.test(name);
     if (object !== rec.object) this.objectsChanged = true;
     rec.object = object;
-    const recut = (r) => {
-      const cut = r.object || !!r.parent?.cut;
-      if (cut === r.cut) return;
-      r.cut = cut;
-      this.paint(r);
-      this.clip(r);
-      for (const child of r.children) recut(child);
-    };
-    recut(rec);
-    this.show(rec);
   }
 
   // ---- holds --------------------------------------------------------------
@@ -175,12 +162,14 @@ export class Nodes {
 
   // ---- what the view changes ----------------------------------------------
 
-  hidden(rec) {
-    return rec.object && this.isolated !== null && !this.isolated.has(rec.name);
+  // The object the record is, or is drawn under.
+  objectOf(rec) {
+    for (let r = rec; r; r = r.parent) if (r.object) return r;
+    return null;
   }
 
   show(rec) {
-    const visible = !!rec.base.v && !this.hidden(rec);
+    const visible = !!rec.base.v;
     if (rec.obj.visible === visible) return;
     rec.obj.visible = visible;
     this.core.casters = NaN;
@@ -189,39 +178,29 @@ export class Nodes {
   paint(rec) {
     if (!rec.drawable || !rec.base.m) return;
     const [color, opacity, side] = rec.base.m;
-    const shown = rec.holds.opacity ? materials(rec.drawable)[0].opacity : opacity;
-    // A section shows the inside of what it cuts.
-    paint(rec.drawable, [color, shown, this.section && rec.cut ? "both" : side]);
+    const object = this.objectOf(rec);
+    const faded = !!object && this.isolated !== null && !this.isolated.has(object.name);
+    const shown = rec.holds.opacity ? materials(rec.drawable)[0].opacity : faded ? Math.min(opacity, FADED) : opacity;
+    paint(rec.drawable, [color, shown, side]);
+    if (!object) return;
+    const drawable = rec.drawable;
+    drawable.userData.casts ??= drawable.castShadow;
+    drawable.userData.faded = faded;
+    drawable.castShadow = !faded && drawable.userData.casts;
+    for (const mat of materials(drawable)) mat.depthWrite = !faded;
   }
 
   clip(rec) {
     if (!rec.drawable) return;
-    const cut = this.section && rec.cut ? this.section : null;
-    if (!rec.base.l.length && !cut && !materials(rec.drawable)[0].clippingPlanes?.length) return;
-    clip(rec.drawable, rec.base.l, cut);
-    if (rec.base.l.length || cut) this.core.renderer.localClippingEnabled = true;
+    if (!rec.base.l.length && !materials(rec.drawable)[0].clippingPlanes?.length) return;
+    clip(rec.drawable, rec.base.l);
+    if (rec.base.l.length) this.core.renderer.localClippingEnabled = true;
   }
 
   setIsolated(names) {
     this.isolated = names;
-    for (const rec of this.records.values()) if (rec.object && !rec.deleted) this.show(rec);
+    for (const rec of this.records.values()) if (rec.drawable && !rec.deleted) this.paint(rec);
     this.core.requestRender();
-  }
-
-  setSection(plane) {
-    if (plane === this.section) return;
-    this.section = plane;
-    for (const rec of this.cutRecords()) {
-      this.paint(rec);
-      this.clip(rec);
-    }
-    this.core.casters = NaN;
-    this.core.requestRender();
-  }
-
-  // The drawables a section cuts: the objects and everything drawn under them.
-  *cutRecords() {
-    for (const rec of this.records.values()) if (rec.cut && rec.drawable && !rec.deleted) yield rec;
   }
 
   delete(id) {

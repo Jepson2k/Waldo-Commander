@@ -21,6 +21,7 @@ from tests.helpers.browser_helpers import (
 from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
+    end_target_edit,
     PATH_PROGRAM,
     PATH_VIEW,
     at_start,
@@ -127,11 +128,17 @@ class TestReviewCorrections:
                     < 0.5
                 )
                 assert scene._appearance_mode != RobotAppearanceMode.EDITING
-                # The new target's marker is drawn where it lands.
+                # The target is in the program at once, its marker where it
+                # landed.
+                marker = wait(screen).until(
+                    lambda _: run_in_app(
+                        lambda: scene._edit_marker is not None
+                        and f"targetgroup:{scene._editing_target_id}"
+                    )
+                )
                 assert (
                     np.linalg.norm(
-                        marker_mm(screen, "targetgroup:new")
-                        - np.array([gx, gy, 0]) * 1000
+                        marker_mm(screen, marker) - np.array([gx, gy, 0]) * 1000
                     )
                     < 0.5
                 )
@@ -255,30 +262,21 @@ class TestReviewCorrections:
                 assert np.degrees(turned) == pytest.approx(5, abs=0.2)
                 assert after_turn[:3] == pytest.approx(before_turn[:3], abs=0.001)
 
-                # Typed far out of reach: the marker turns the miss colour and
-                # the target cannot be saved until it comes back.
+                # Typed far out of reach, the change is not kept: the target
+                # goes back to where it was written, and nothing is written.
+                source = run_in_app(lambda: ui_state.active_textarea.value)
                 arrow = wait(screen).until(
                     lambda _: probe(screen, "arrowTip", "tcp:ball")
                 )
                 click_spot(screen, arrow)
                 wait(screen).until(lambda _: (f := gizmo_field(screen)) and f["typing"])
                 ActionChains(screen.selenium).send_keys("2000", Keys.ENTER).perform()
-                wait(screen).until(lambda _: run_in_app(lambda: scene._tcp_ik_missed))
-                wait(screen).until(lambda _: _marker_missed(screen))
                 wait(screen).until(
-                    lambda _: not marked_element(
-                        screen, "edit-bar-confirm"
-                    ).is_enabled()
-                    and marked_element(screen, "edit-bar-unreachable").is_displayed()
+                    lambda _: run_in_app(lambda: scene._requested_edit_pose)
+                    == after_turn
                 )
-                click_marked(screen, "btn-home")
                 wait(screen).until(lambda _: not _marker_missed(screen))
-                wait(screen).until(
-                    lambda _: marked_element(screen, "edit-bar-confirm").is_enabled()
-                    and not marked_element(
-                        screen, "edit-bar-unreachable"
-                    ).is_displayed()
-                )
+                assert run_in_app(lambda: ui_state.active_textarea.value) == source
                 if evidence.enabled:
                     with viewport(screen, 1366, 768):
                         zoom(screen, 0.4)
@@ -299,7 +297,7 @@ class TestReviewCorrections:
                 evidence.stop()
                 ActionChains(screen.selenium).release().perform()
                 if run_in_app(lambda: scene._edit_active):
-                    click_marked(screen, "edit-bar-cancel")
+                    end_target_edit(screen)
 
     def test_path_uses_the_simulator_and_shared_timeline(self, class_screen):
         screen = class_screen

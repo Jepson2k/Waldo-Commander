@@ -85,15 +85,11 @@ export function paint(drawable, material) {
 
 export const sideOf = (side) => (side === "back" ? THREE.BackSide : side === "both" ? THREE.DoubleSide : THREE.FrontSide);
 
-// `section`, a plane the view cuts with besides the node's own, also cuts
-// the shadow, so the opened object casts what is left of it.
-export function clip(drawable, planes, section = null) {
+export function clip(drawable, planes) {
   const clipping = planes.map(([nx, ny, nz, d]) => new THREE.Plane(new THREE.Vector3(nx, ny, nz).normalize(), d));
-  if (section) clipping.push(section);
   for (const mat of materials(drawable)) {
     mat.clippingPlanes = clipping;
     mat.clipIntersection = false;
-    mat.clipShadows = !!section;
     mat.needsUpdate = true;
   }
 }

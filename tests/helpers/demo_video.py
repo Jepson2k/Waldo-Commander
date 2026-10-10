@@ -228,10 +228,19 @@ class DemoVideo:
             self.key(key)
             self.pause(per_key_s)
 
-    def key(self, key: str) -> None:
+    def key(self, key: str, settle: Callable[[], object] | None = None) -> None:
         """Press one key (a character or a selenium ``Keys`` value)."""
         ActionChains(self.screen.selenium).send_keys(key).perform()
-        self.frame()
+        self.frame(settle)
+
+    def chord(
+        self, modifier: str, key: str, settle: Callable[[], object] | None = None
+    ) -> None:
+        """Press ``key`` with ``modifier`` held, as Ctrl+Z."""
+        ActionChains(self.screen.selenium).key_down(modifier).send_keys(key).key_up(
+            modifier
+        ).perform()
+        self.frame(settle)
 
     # ---- real time ----------------------------------------------------------
 

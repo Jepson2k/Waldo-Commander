@@ -14,7 +14,6 @@ export class CameraTools {
   // A camera turn or tween stops where it is.
   halt() {
     this.core.cameraMove.move = null;
-    if (this.core.inset.helper) this.core.inset.helper.animating = false;
   }
 
   snapshot() {
@@ -30,7 +29,7 @@ export class CameraTools {
   }
 
   notify() {
-    this.core.emit("camera", {orthographic:!!this.core.camera.isOrthographicCamera, back:this.history.length > 0,...this.core.section?.status(),...this.core.selection?.isolationStatus()});
+    this.core.emit("camera", {orthographic:!!this.core.camera.isOrthographicCamera, back:this.history.length > 0,...this.core.selection?.isolationStatus()});
   }
 
   install(ortho, height, zoom=1) {
@@ -41,7 +40,6 @@ export class CameraTools {
     this.height=height;
     core.camera=camera;
     core.controls.object=camera;
-    core.inset.dispose(); core.inset.configure(core.config.inset,core.config.labels);
     core.applyView(); core.controls.update();
     core.requestRender();
   }
@@ -98,20 +96,40 @@ export class CameraTools {
     core.cameraMove.start([...position.toArray(),...center.toArray()],0.35,true);
   }
 
-  action(action, surface=null) {
+  // The camera turns to look from `direction` at what it orbits. Straight
+  // down or up it keeps the heading it had, squared to the nearest axis, so
+  // the view neither spins nor flips at the pole.
+  view(direction) {
+    const core=this.core, target=core.controls.target;
+    const offset=core.camera.position.clone().sub(target), distance=offset.length();
+    const to=new THREE.Vector3(...direction).normalize();
+    if (Math.hypot(to.x,to.y) < 1e-9) {
+      const up=Math.sign(to.z), heading=new THREE.Vector3(offset.x,offset.y,0);
+      // Looking straight down, the screen's up is the way ahead; straight up, behind.
+      if (heading.lengthSq() <= 1e-24*distance*distance)
+        heading.set(0,1,0).applyQuaternion(core.camera.quaternion).setZ(0).multiplyScalar(offset.z > 0 ? -1 : 1);
+      const alongX=Math.abs(heading.x) > Math.abs(heading.y);
+      to.set(alongX ? Math.sign(heading.x) : 0, alongX ? 0 : Math.sign(heading.y) || -1, 0)
+        .multiplyScalar(1e-9).setZ(up).normalize();
+    }
+    if (offset.normalize().dot(to) > 1-1e-12) return;
+    this.remember();
+    core.cameraMove.startOrbit([...to.multiplyScalar(distance).add(target).toArray(),...target.toArray()]);
+  }
+
+  action(action, value=null) {
     const core=this.core;
     if (action === "status") { this.notify(); return; }
     if(action==="isolate" || action==="restore_objects") {core.gestures.abort("view isolation");core.selection.isolate(action==="isolate");return;}
-    if(action.startsWith("section")){core.gestures.abort("section change");core.section.set(action,surface);return;}
-    if(action === "surface" && (!surface || !Array.isArray(surface.origin) || !Array.isArray(surface.normal)
-      || surface.origin.length !== 3 || surface.normal.length !== 3
-      || ![...surface.origin,...surface.normal].every(Number.isFinite)
-      || Math.hypot(...surface.normal) < 1e-6)) return;
+    if(action === "surface" && (!value || !Array.isArray(value.origin) || !Array.isArray(value.normal)
+      || value.origin.length !== 3 || value.normal.length !== 3
+      || ![...value.origin,...value.normal].every(Number.isFinite)
+      || Math.hypot(...value.normal) < 1e-6)) return;
+    if(action === "view" && (!Array.isArray(value) || value.length !== 3 || !value.every(Number.isFinite) || Math.hypot(...value) < 1e-6)) return;
     // Any drag re-projects against the camera, which is about to move.
     core.pointer.abortDrag("camera action");
     core.gestures.abort("camera action");
     core.cameraMove.finish();
-    if (core.inset.helper) core.inset.helper.animating=false;
     if (action === "previous") {
       const saved=this.history.pop();
       if (!saved) return;
@@ -129,16 +147,12 @@ export class CameraTools {
       core.cameraMove.startOrbit(this.home,0.5);
     } else if (action === "surface") {
       this.remember();
-      const target=new THREE.Vector3(...surface.origin);
+      const target=new THREE.Vector3(...value.origin);
       const distance=core.camera.position.distanceTo(core.controls.target);
-      const position=new THREE.Vector3(...surface.normal).normalize().multiplyScalar(distance).add(target);
+      const position=new THREE.Vector3(...value.normal).normalize().multiplyScalar(distance).add(target);
       core.cameraMove.startOrbit([...position.toArray(),...target.toArray()]);
-    } else if (DIRECTIONS[action]) {
-      this.remember();
-      const target=core.controls.target, distance=core.camera.position.distanceTo(target);
-      const position=new THREE.Vector3(...DIRECTIONS[action]).multiplyScalar(distance).add(target);
-      core.cameraMove.startOrbit([...position.toArray(),...target.toArray()]);
-    }
+    } else if (action === "view") this.view(value);
+    else if (DIRECTIONS[action]) this.view(DIRECTIONS[action]);
     this.notify();
   }
 }

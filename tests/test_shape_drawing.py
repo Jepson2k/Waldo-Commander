@@ -113,7 +113,7 @@ async def test_draw_floor_face_cancel_stale_and_recorded_undo(user):
     user.find(marker="scene-target-at-robot").click()
     assert view._drawing is None
     assert view._edit_active and view._hover_suspended
-    user.find(marker="edit-bar-cancel").click()
+    view.cancel_target_edit()
     right_click(user, view.scene, [], [0.4, 0.1, 0])
     user.find(marker="scene-draw-box").click()
     state = view.scene.interaction["shapeDraw"]

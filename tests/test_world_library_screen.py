@@ -1,8 +1,8 @@
-"""Save/reload a populated workcell and insert it as one editor transaction."""
+"""Save/reload a populated workcell beside a scene that stays editable, and
+insert it as one editor transaction."""
 
 import pytest
 import waldoctl
-from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
@@ -71,39 +71,28 @@ class TestWorldLibrary:
                 )
                 try:
                     _library(screen)
+                    # Enter saves, as the Save button beside the name does.
                     fill(screen, "workcell-name", "bench-cell")
-                    evidence.capture("01-save-workcell-1920")
-                    click_marked(screen, "workcell-save")
                     wait(screen).until(
                         lambda _: "Saved bench-cell"
                         in marked_element(screen, "workcell-feedback").text
                     )
-                    click_marked(screen, "workcell-close")
+                    wait(screen).until(
+                        lambda _: "Fixture, Stock"
+                        in marked_element(screen, "workcell-preview:bench-cell").text
+                    )
+                    evidence.capture("01-saved-workcell-1920")
+                    # The library is no dialog: the scene beside it stays live.
                     click_object(screen, "shape:Fixture")
                     fill(screen, "object-x", 550)
                     confirmed(screen, lambda: handle.shapes[0].pose[0] == 0.55)
-                    _library(screen)
-                    click_marked(screen, "workcell-saved-tab")
-                    click_marked(screen, "workcell-saved")
-                    wait(screen).until(
-                        lambda _: next(
-                            (
-                                e
-                                for e in screen.selenium.find_elements(
-                                    By.CSS_SELECTOR, ".q-menu .q-item"
-                                )
-                                if e.is_displayed() and e.text.strip() == "bench-cell"
-                            ),
-                            None,
-                        )
-                    ).click()
-                    wait(screen).until(
-                        lambda _: "Fixture · box"
-                        in marked_element(screen, "workcell-preview").text
-                    )
-                    evidence.capture("02-saved-preview-1920")
-                    click_marked(screen, "workcell-load")
+                    evidence.capture("02-edited-beside-library-1920")
+                    click_marked(screen, "workcell-load:bench-cell")
                     confirmed(screen, lambda: handle.shapes == original)
+                    wait(screen).until(
+                        lambda _: "Loaded"
+                        in marked_element(screen, "workcell-note:bench-cell").text
+                    )
                     evidence.capture("03-reloaded-world-1920")
                     click_tab(screen, "program")
                     editor = focus_editor(screen)
@@ -116,7 +105,6 @@ class TestWorldLibrary:
                         )
                         == 2
                     )
-                    _library(screen)
                     click_marked(screen, "workcell-insert")
                     wait(screen).until(
                         lambda _: "set_shapes("
@@ -124,6 +112,9 @@ class TestWorldLibrary:
                     )
                     updated = run_in_app(lambda: ui_state.active_textarea.value)
                     assert updated.index("set_shapes(") < updated.index("rbt.move_j(")
+                    assert (
+                        updated.splitlines()[1] == "from waldoctl import Box, Cylinder"
+                    )
                     wait_for_scene_idle(screen)
                     evidence.capture("04-inserted-source-1920")
                     editor = focus_editor(screen)
@@ -141,11 +132,12 @@ class TestWorldLibrary:
                     close_panel(screen, "program-panel")
                     if evidence.enabled:
                         with viewport(screen, 1366, 768):
-                            _library(screen)
                             evidence.capture("05-library-1366")
                             click_marked(screen, "workcell-close")
                             click_object(screen, "shape:Fixture")
                             evidence.capture("06-reloaded-inspector-1366")
+                    else:
+                        click_marked(screen, "workcell-close")
                     evidence.finish()
                 finally:
                     evidence.stop()

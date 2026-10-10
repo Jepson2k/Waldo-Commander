@@ -76,10 +76,14 @@ FIXED_COLOR: dict[str, str] = {
     "scene-tool-edit": "#3d6b65",
     "scene-tool-moving-edit": "#4d7e77",
     "scene-collision": "#b00020",
-    "scene-shape": "#6d8ea0",
-    "scene-shape-draft": "#9db8c8",
-    "scene-shape-install": "#55606a",
+    # Keep-outs read as "stay out": red, lighter while the backend has not
+    # confirmed them, darker where the robot config fixes them. Shapes that
+    # do not collide (things the arm will handle) stay neutral.
+    "scene-shape": "#c2574d",
+    "scene-shape-draft": "#de8f86",
+    "scene-shape-install": "#7c4844",
     "scene-shape-proposed": "#8a7bb5",
+    "scene-object": "#6d8ea0",
     "scene-hover": "#ffffff",
     "scene-light-sky": "#ffffff",
     "scene-light-ground": "#1b2430",
@@ -416,6 +420,7 @@ class SceneColors:
     SHAPE_DRAFT_HEX = FIXED_COLOR["scene-shape-draft"]
     SHAPE_INSTALL_HEX = FIXED_COLOR["scene-shape-install"]
     SHAPE_PROPOSED_HEX = FIXED_COLOR["scene-shape-proposed"]
+    OBJECT_HEX = FIXED_COLOR["scene-object"]
 
     TOOL_BODY_HEX = FIXED_COLOR["scene-tool"]
     TOOL_BODY_SIM_HEX = TOOL_BODY_HEX

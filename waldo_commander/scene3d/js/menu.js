@@ -122,7 +122,6 @@ export class Menu {
     if (core.gestures.blocked || !core.live || this.dragging) return;
     const gen = ++this.gen;
     const { hits, ground, surface } = core.pointer.contextAt(cx, cy);
-    core.selection.anchor={x:cx,y:cy};
     this.pending = { gen, hits, ground, surface, cx, cy, resent: false };
     core.emit("context", { epoch: core.gestures.epoch, gen, hits, ground, surface, cx, cy });
   }

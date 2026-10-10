@@ -24,7 +24,6 @@ FILES = {
     "build/three.core.min.js": "three.core.min.js",
     "examples/jsm/controls/OrbitControls.js": "addons/controls/OrbitControls.js",
     "examples/jsm/controls/TransformControls.js": "addons/controls/TransformControls.js",
-    "examples/jsm/helpers/ViewHelper.js": "addons/helpers/ViewHelper.js",
     "examples/jsm/loaders/STLLoader.js": "addons/loaders/STLLoader.js",
     "examples/jsm/renderers/CSS2DRenderer.js": "addons/renderers/CSS2DRenderer.js",
     "LICENSE": "LICENSE",

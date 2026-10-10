@@ -259,7 +259,7 @@ async def test_ring_drag_handoffs_and_interruptions(user: User) -> None:
         right_click(user, scene, [], [0.3, 0.1, 0.0])
         user.find(marker="scene-target-at-robot").click()
         assert await wait_until(lambda: ui_state.editing_target, 5)
-        user.find(marker="edit-bar-cancel").click()
+        ui_state.urdf_scene.cancel_target_edit()
         assert not ui_state.editing_target
 
     for interrupt in (lease, editing, simulator, stop):
@@ -384,7 +384,7 @@ async def test_gizmo_drags_move_the_tool_in_its_own_frame_and_nothing_else(
             landed,
         )
     finally:
-        user.find(marker="edit-bar-cancel").click()
+        urdf.cancel_target_edit()
 
 
 @pytest.mark.integration

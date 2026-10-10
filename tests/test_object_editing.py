@@ -24,10 +24,12 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
     textarea = await _start_recording(user)
     source_before = textarea.value
 
-    right_click(user, view.scene, [], [0.4, 0.1, 0])
+    right_click(user, view.scene, [], [0.40037, 0.09981, 0])
     user.find(marker="scene-add-box").click()
     await confirmed(view, lambda: len(handle.shapes) == 1)
     assert view._selected_objects == [f"shape:{handle.shapes[0].name}"]
+    assert handle.shapes[0].pose[:2] == (0.4, 0.1)
+    await user.should_see(marker="object-title", content="Keep-out")
     assert "set_shapes(" in textarea.value
     source_created = textarea.value
     original = handle.shapes[0]

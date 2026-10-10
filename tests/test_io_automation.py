@@ -98,7 +98,9 @@ async def test_cycle_start_input_runs_active_program(user: User) -> None:
     await _settle()
     assert not is_any_program_running()
     assert script_exec.last_exit_code is None
-    user.find(marker="edit-bar-cancel").click()
+    # The placement went into the program; Ctrl+Z takes it back out.
+    ui_state.urdf_scene.undo_edit()
+    assert ui_state.active_textarea.value == script
 
     # Guard: e-stop not clear blocks the trigger. The injected estop=0 is
     # consumed with the pulse on the same tick, then re-published clear.

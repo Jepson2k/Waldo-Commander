@@ -8,7 +8,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
-    click_marked,
     click_tab,
     close_panel,
     focus_editor,
@@ -18,6 +17,7 @@ from tests.helpers.browser_helpers import (
 from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
+    end_target_edit,
     marker_mm,
     TCP_VIEW,
     at_start,
@@ -152,6 +152,15 @@ class TestSceneEditing:
                 wait(screen).until(
                     lambda _: not scene_js(screen, "return !!S.byName('tcp:ticks')")
                 )
+                # The release is kept: written into the program at once.
+                released = wait(screen).until(
+                    lambda _: (
+                        value := run_in_app(lambda: ui_state.active_textarea.value)
+                    )
+                    != EDIT_PROGRAM
+                    and value
+                )
+                assert run_in_app(lambda: scene._edit_active)
                 # The drag's value, retyped, replaces the drag: the target ends
                 # exactly that far from where it started.
                 dragged = wait(screen).until(lambda _: gizmo_field(screen))
@@ -179,9 +188,14 @@ class TestSceneEditing:
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
                     live
                 )
-                click_marked(screen, "edit-bar-confirm")
-                wait(screen).until(lambda _: not run_in_app(lambda: scene._edit_active))
-                updated = run_in_app(lambda: ui_state.active_textarea.value)
+                updated = wait(screen).until(
+                    lambda _: (
+                        value := run_in_app(lambda: ui_state.active_textarea.value)
+                    )
+                    != released
+                    and value
+                )
+                end_target_edit(screen)
                 assert updated != EDIT_PROGRAM
                 assert (
                     "# TCP position · mm" in updated
@@ -205,25 +219,32 @@ class TestSceneEditing:
                 )
                 assert len(expected_anchors) == 2
                 evidence.capture("04-committed-source-1920")
+                # Each write is its own undo step.
                 editor = focus_editor(screen)
-                editor.send_keys(Keys.CONTROL, "z")
-                wait(screen).until(
-                    lambda _: run_in_app(lambda: ui_state.active_textarea.value)
-                    == EDIT_PROGRAM
-                )
+                for expected in (released, EDIT_PROGRAM):
+                    editor.send_keys(Keys.CONTROL, "z")
+                    wait(screen).until(
+                        lambda _, expected=expected: run_in_app(
+                            lambda: ui_state.active_textarea.value
+                        )
+                        == expected
+                    )
                 evidence.capture("05-undo-1920")
-                editor.send_keys(Keys.CONTROL, Keys.SHIFT, "z")
-                wait(screen).until(
-                    lambda _: run_in_app(lambda: ui_state.active_textarea.value)
-                    == updated
-                )
+                for expected in (released, updated):
+                    editor.send_keys(Keys.CONTROL, Keys.SHIFT, "z")
+                    wait(screen).until(
+                        lambda _, expected=expected: run_in_app(
+                            lambda: ui_state.active_textarea.value
+                        )
+                        == expected
+                    )
                 evidence.capture("06-redo-1920")
                 evidence.finish()
             finally:
                 evidence.stop()
                 ActionChains(screen.selenium).release().perform()
                 if run_in_app(lambda: scene._edit_active):
-                    click_marked(screen, "edit-bar-cancel")
+                    end_target_edit(screen)
                 # A failure before the panel opened must not hide behind this.
                 if screen.selenium.find_elements(By.CSS_SELECTOR, ".program-panel"):
                     close_panel(screen, "program-panel")

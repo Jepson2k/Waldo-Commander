@@ -17,6 +17,11 @@ class SceneCodeEditor(
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._mounted = False
+        # The scene's own edits, (before, after), newest last: Ctrl+Z in the
+        # scene walks these, whether or not the editor is open, since closing
+        # the editor takes its own history with it.
+        self._done: list[tuple[str, str]] = []
+        self._undone: list[tuple[str, str]] = []
         self.on("scene-mounted", self._on_scene_mounted)
         self.on("scene-unmounted", self._on_scene_unmounted)
 
@@ -29,10 +34,46 @@ class SceneCodeEditor(
     def _on_scene_unmounted(self) -> None:
         self._mounted = False
 
+    def undo(self) -> None:
+        """Take back the scene's last edit, unless the source has changed
+        since in some other way."""
+        self._step(self._done, self._undone, back=True)
+
+    def redo(self) -> None:
+        """Make the scene's last undone edit again."""
+        self._step(self._undone, self._done, back=False)
+
+    def _step(
+        self,
+        stack: list[tuple[str, str]],
+        other: list[tuple[str, str]],
+        *,
+        back: bool,
+    ) -> None:
+        current = str(self.value or "")
+        if not stack:
+            return
+        before, after = stack[-1]
+        if current != (after if back else before):
+            # Typed over since: the scene's history no longer describes it.
+            self._done.clear()
+            self._undone.clear()
+            return
+        other.append(stack.pop())
+        self._apply(before if back else after)
+
     def commit_scene_value(self, value: str) -> None:
+        """Set the source as one undoable scene edit."""
         before = str(self.value or "")
         if before == value:
             return
+        self._done.append((before, value))
+        del self._done[:-50]
+        self._undone.clear()
+        self._apply(value)
+
+    def _apply(self, value: str) -> None:
+        before = str(self.value or "")
         if not self._mounted:
             history = self._props.get("scene-history", [])
             if not history or history[-1][1] != before:

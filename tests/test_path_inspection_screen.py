@@ -373,6 +373,13 @@ class TestPathInspection:
                 assert not screen.selenium.find_elements(
                     By.CSS_SELECTOR, ".wc-path-card"
                 )
+                # It does show that it can be grabbed.
+                assert scene_js(
+                    screen,
+                    "return !!S.byName('inspection:hover')?.visible"
+                    " && S.byName('inspection:grip').visible"
+                    " && S.canvas.style.cursor === 'grab'",
+                )
                 evidence.capture("01-hover-unchanged-1920")
                 camera = camera_pose(screen)
                 action = ActionChains(screen.selenium, duration=80)

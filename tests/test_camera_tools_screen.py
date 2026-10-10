@@ -17,6 +17,7 @@ from tests.helpers.browser_helpers import (
 )
 from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
+    end_target_edit,
     EDIT_PROGRAM,
     at_start,
     camera_action,
@@ -165,10 +166,7 @@ class TestCameraTools:
                         lambda _: run_in_app(lambda: scene._requested_edit_pose)
                         == initial
                     )
-                    click_marked(screen, "edit-bar-cancel")
-                    wait(screen).until(
-                        lambda _: not run_in_app(lambda: scene._edit_active)
-                    )
+                    end_target_edit(screen)
                     camera_menu(screen)
                     evidence.capture("07-camera-menu-1366")
                     click_marked(screen, "reset-camera")
@@ -189,9 +187,8 @@ class TestCameraTools:
                 if scene._edit_active:
                     run_in_app(scene.cancel_target_edit)
 
-    def test_inset_restoration_recovery_and_touch(self, camera_screen):
+    def test_view_cube_restoration_recovery_and_touch(self, camera_screen):
         from tests.test_scene3d_screen import _touch
-        from tests.helpers.scene_surface import pointer_to
 
         screen = camera_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
@@ -236,12 +233,15 @@ class TestCameraTools:
                         By.CSS_SELECTOR, ".q-menu"
                     )
                 )
-                axis = scene_js(screen, "return S.insetAxis()")
-                assert axis
-                action = ActionChains(screen.selenium, duration=0)
-                pointer_to(screen, *axis[:2], action)
-                action.click().perform()
+                x, y, face = wait(screen).until(
+                    lambda _: scene_js(screen, "return S.cubeSpot()")
+                )
+                _touch(screen, "touchStart", [(1, x, y)])
+                _touch(screen, "touchEnd", [])
                 camera_settled(screen)
+                assert (
+                    np.dot(scene_js(screen, "return S.viewDirection()"), face) > 0.999
+                )
                 before = scene_js(
                     screen,
                     "return {pose:S.cameraPose(),q:S.camera.quaternion.toArray()}",
@@ -259,7 +259,7 @@ class TestCameraTools:
                     1, abs=1e-6
                 )
                 wait_for_scene_idle(screen)
-                evidence.capture("01-inset-restored-touch-1024")
+                evidence.capture("01-cube-restored-touch-1024")
                 evidence.stop()
                 scene_js(screen, "S.renderer.forceContextLoss()")
                 notice = screen.selenium.find_element(By.CSS_SELECTOR, ".wc-scene-lost")

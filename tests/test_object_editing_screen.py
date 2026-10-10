@@ -3,6 +3,7 @@
 import pytest
 import waldoctl
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
@@ -26,7 +27,6 @@ from tests.helpers.scene_screen import (
     program_previewed,
 )
 from tests.helpers.scene_surface import (
-    scene_js,
     scene_object_pixel,
     wait_for_scene_idle,
 )
@@ -75,28 +75,19 @@ class TestObjectEditing:
                     )
                 )
                 wait_for_scene_idle(screen)
+                # The inspector docks above the control panel, right edges
+                # aligned, however the object sits on screen.
                 card = marked_element(screen, "object-inspector").rect
-                distance = max(card["x"] - px, 0, px - card["x"] - card["width"])
-                vertical = max(card["y"] - py, 0, py - card["y"] - card["height"])
-                assert (distance**2 + vertical**2) ** 0.5 <= 160, (card, px, py)
-                handles = scene_js(
-                    screen,
-                    """
-                    const c=getElement(S.root).core, helper=c.gizmos.shape.tc.helper;
-                    const r=S.canvas.getBoundingClientRect();
-                    return [[0,0,0],[.85,0,0],[0,.85,0],[0,0,.85]].map(v=>{
-                        const p=helper.localToWorld(helper.position.clone().fromArray(v)).project(c.camera);
-                        return [r.left+(p.x+1)*r.width/2,r.top+(1-p.y)*r.height/2];
-                    });
-                """,
+                panel = screen.selenium.find_element(
+                    By.CSS_SELECTOR, ".overlay-br"
+                ).rect
+                assert card["x"] + card["width"] == pytest.approx(
+                    panel["x"] + panel["width"], abs=2
+                ), (card, panel)
+                assert 0 < panel["y"] - (card["y"] + card["height"]) <= 24, (
+                    card,
+                    panel,
                 )
-                assert all(
-                    not (
-                        card["x"] <= x <= card["x"] + card["width"]
-                        and card["y"] <= y <= card["y"] + card["height"]
-                    )
-                    for x, y in handles
-                ), (card, handles)
                 evidence.capture("01-right-click-inspector-1920")
                 initial = handle.shapes[0]
                 spot = wait(screen).until(

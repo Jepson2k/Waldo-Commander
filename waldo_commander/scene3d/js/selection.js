@@ -1,28 +1,24 @@
 import * as THREE from "three";
 import { setStyle } from "./dom.js";
 import { GAP } from "./overlays.js";
-import { visibleHit } from "./section.js";
+import { visibleHit } from "./pointer.js";
 
 const normals = new THREE.Matrix3();
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-// The least of the inspector worth showing.
-// Room for the header, the Move/Resize toggle, the fields and the actions.
+// The least of the inspector worth showing: room for the header, the
+// Move/Resize toggle, the fields and the actions.
 const SHORTEST = 280;
 
 // What is selected, outlined, and isolated: a tap on an object selects it
 // (shift adds to the selection), a tap on nothing clears it. The inspector
-// Python builds for the selection sits beside where it was asked for.
+// Python builds for the selection docks above the control panel.
 export class Selection {
   constructor(core) {
     this.core=core;
-    this.entities=new Map(); this.selected=[]; this.isolated=null; this.renames=[]; this.anchor=null;
-    this.bounds=new THREE.Box3();
-    this.outline=new THREE.Box3Helper(this.bounds);
-    this.outline.name="selection:outline";
-    this.outline.material.depthTest=false;
-    this.outline.renderOrder=20;
-    this.outline.visible=false;
-    core.scene.add(this.outline);
+    this.entities=new Map(); this.selected=[]; this.isolated=null; this.renames=[];
+    // One box per selected object, so a selection of several reads as those
+    // objects rather than one box around the lot.
+    this.outlines=[];
+    this.outlineMaterial=new THREE.LineBasicMaterial({depthTest:false,toneMapped:false});
   }
 
   load(data) {
@@ -91,60 +87,66 @@ export class Selection {
   // A tap at (x, y) that the pointer found `hit` under.
   tap(x,y,extend,hit) {
     const hits=this.hits(x,y);
-    if(hits.length)this.anchor={x,y};
     if(hits.length || !hit)this.core.emit("select",{revision:this.revision,hits,extend});
   }
 
   outlineSelected() {
-    this.bounds.makeEmpty();
+    let shown=0;
     for(const entity of this.entities.values()) {
       if(!this.selected.includes(entity.id))continue;
       const obj=this.core.nodes.get(entity.node)?.obj;
-      if(obj?.visible)this.bounds.expandByObject(obj);
+      if(!obj?.visible)continue;
+      const outline=this.outlines[shown++]??this.addOutline();
+      outline.box.setFromObject(obj);
+      outline.visible=!outline.box.isEmpty();
     }
-    this.outline.visible=!this.bounds.isEmpty();
+    for(const outline of this.outlines.slice(shown))outline.visible=false;
+  }
+
+  addOutline() {
+    const outline=new THREE.Box3Helper(new THREE.Box3());
+    outline.material.dispose();outline.material=this.outlineMaterial;
+    outline.name="selection:outline";outline.renderOrder=20;
+    this.core.scene.add(outline);this.outlines.push(outline);
+    return outline;
   }
 
   recolor(colors) {
-    if(colors?.action)this.outline.material.color.set(colors.action);
+    if(colors?.action)this.outlineMaterial.color.set(colors.action);
   }
 
-  // The inspector sits beside where it was asked for, as tall as it can be
-  // in the free stretch there, clear of the panels and the object's handles.
+  // The inspector docks above the control panel, as a CAD properties
+  // panel does, right edges aligned, as tall as the room under the view's
+  // own controls allows.
   layout() {
     const overlays=this.core.overlays,card=overlays.card("inspector");
     if(!card)return;
-    const view=overlays.view;
-    const [ax,ay]=this.anchor?[this.anchor.x-view.left,this.anchor.y-view.top]:[view.width/2,view.height/2];
-    const w=card.w,height=card.scroll+2;
-    const bounds={left:this.core.layoutInset.left+GAP,top:GAP,right:view.width-GAP,bottom:view.height-GAP};
-    const obstacles=overlays.obstacles(["handles","resizeHandles"]);
-    const columns=[ax+18,ax-w-18,bounds.left,bounds.right-w];
-    for(const name of ["handles","resizeHandles"]) {
-      const handles=overlays.marks.get(name)?.[0];
-      if(handles)columns.push(handles.right+GAP,handles.left-w-GAP);
-    }
-    const candidates=[];
-    for(const column of columns) {
-      const x=clamp(column,bounds.left,bounds.right-w);
-      for(const [top,bottom] of overlays.spans(x,x+w,obstacles,bounds)) {
-        const h=Math.min(height,bottom-top);
-        if(h>=SHORTEST)candidates.push([x,clamp(ay-24,top,bottom-h),h]);
-      }
-    }
-    const seat=candidates.length?overlays.seat(candidates,w,height,{bounds,obstacles:[],cost:(x,y,i)=>{
-      const h=candidates[i][2];
-      const dx=Math.max(x-ax,0,ax-x-w),dy=Math.max(y-ay,0,ay-y-h);
-      const covers=ax>x-10 && ax<x+w+10 && ay>y-10 && ay<y+h+10;
-      return Math.hypot(dx,dy)+(height-h)*2+(covers?1000:0);
-    }}):{x:bounds.left,y:GAP,h:Math.max(SHORTEST,view.height-64)};
-    overlays.place(card,seat.x,seat.y);
-    setStyle(card.node,"maxHeight",`${seat.h}px`);
+    const view=overlays.view,height=card.scroll+2;
+    const panel=this.controlPanel(view);
+    const right=panel?panel.right:view.width-GAP;
+    const bottom=(panel?panel.top:view.height-this.core.layoutInset.bottom)-GAP;
+    let top=GAP;
+    for(const b of overlays.chrome)if(b.bottom<bottom && b.left<right && b.right>right-card.w)top=Math.max(top,b.bottom+GAP);
+    const h=Math.min(height,Math.max(SHORTEST,bottom-top));
+    overlays.place(card,Math.max(GAP,right-card.w),Math.max(GAP,bottom-h));
+    setStyle(card.node,"maxHeight",`${h}px`);
     setStyle(card.node,"visibility","visible");
+  }
+
+  // The control panel among the app's chrome: the box nearest the view's
+  // bottom right that is not a bar across it.
+  controlPanel(view) {
+    let best=null;
+    for(const b of this.core.overlays.chrome) {
+      if(b.right-b.left>view.width*.6 || b.left<view.width/2 || b.top<view.height/2)continue;
+      if(!best || b.right+b.bottom>best.right+best.bottom)best=b;
+    }
+    return best;
   }
 
   dispose() {
     this.isolated=null;this.core.nodes.setIsolated(null);
-    this.outline.removeFromParent();this.outline.geometry.dispose();this.outline.material.dispose();
+    for(const outline of this.outlines){outline.removeFromParent();outline.geometry.dispose();}
+    this.outlines=[];this.outlineMaterial.dispose();
   }
 }

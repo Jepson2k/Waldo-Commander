@@ -124,9 +124,17 @@ def test_predicted_deviations_and_paired_inspection(screen):
                             )
                         )
             _, peak_record, peak = max(candidates, key=lambda candidate: candidate[0])
-            selected_record = (
-                comparison.predicted_current if peak_record else comparison.commanded
-            )
+
+            def arm_shows(record: int, row: int):
+                # The arm shows the prediction; a point on the ideal path
+                # shows the prediction paired with it.
+                if record == 0:
+                    paired = expected["idealSamples"]["predictedRows"][row]
+                    if paired is None or paired < 0:
+                        return comparison.commanded.joints_rad[row]
+                    row = paired
+                return comparison.predicted_current.joints_rad[row]
+
             ideal_peak = expected["idealRows"][peak] if peak_record else peak
             wait_for_scene_idle(screen)
             evidence.capture("01-deviation-overview-1920")
@@ -157,7 +165,7 @@ def test_predicted_deviations_and_paired_inspection(screen):
             wait(screen).until(
                 lambda _: np.allclose(
                     waldoctl.commander.status.joints.angles.rad,
-                    selected_record.joints_rad[peak],
+                    arm_shows(peak_record, peak),
                     atol=1e-4,
                 )
             )
@@ -170,7 +178,7 @@ def test_predicted_deviations_and_paired_inspection(screen):
             wait(screen).until(
                 lambda _: np.allclose(
                     waldoctl.commander.status.joints.angles.rad,
-                    selected_record.joints_rad[peak + 1],
+                    arm_shows(peak_record, peak + 1),
                     atol=1e-4,
                 )
             )
@@ -198,11 +206,12 @@ def test_predicted_deviations_and_paired_inspection(screen):
             wait(screen).until(
                 lambda _: np.allclose(
                     waldoctl.commander.status.joints.angles.rad,
-                    comparison.commanded.joints_rad[ideal_row],
+                    arm_shows(0, ideal_row),
                     atol=1e-4,
                 )
             )
-            evidence.capture("03b-commanded-simulator-1920")
+            assert scene_js(screen, "return S.inspection().current.record") == 0
+            evidence.capture("03b-ideal-pick-shows-prediction-1920")
             screen.selenium.find_element(
                 By.XPATH, "//button[normalize-space()='Peak']"
             ).click()
@@ -224,7 +233,7 @@ def test_predicted_deviations_and_paired_inspection(screen):
             wait(screen).until(
                 lambda _: np.allclose(
                     waldoctl.commander.status.joints.angles.rad,
-                    selected_record.joints_rad[selected["row"]],
+                    arm_shows(selected["record"], selected["row"]),
                     atol=1e-4,
                 )
             )

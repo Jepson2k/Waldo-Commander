@@ -183,7 +183,7 @@ async def test_joint_jog_steps_numeric_entry_and_editing(user: User) -> None:
             f"Initial: {initial:.2f}°, Current: {_j1():.2f}°"
         )
     finally:
-        user.find(marker="edit-bar-cancel").click()
+        ui_state.urdf_scene.cancel_target_edit()
 
     # Step precision with a small step under the TOPPRA profile (the app's
     # own client, not session_client).

@@ -53,9 +53,8 @@ class TCPControlsMixin:
 
     def _refresh_editing_pose(self) -> tuple[float, ...] | None: ...
 
-    def _update_edit_bar_values(self) -> None: ...
+    def _write_target_edit(self) -> None: ...
 
-    _current_editing_type: str | None
     # Defined later in the MRO (JogHandlesMixin), so annotations only: a stub
     # here would shadow the real method.
     _rules_changed: Callable[[], None]
@@ -158,6 +157,10 @@ class TCPControlsMixin:
         if self.scene is None or not (force or self._gizmo_shown()):
             return
         if self._edit_active and self._edit_target_first:
+            # The browser moves what it drags; placing it meanwhile would make
+            # the dragged pose the one an aborted drag goes back to.
+            if self._tcp_drag is not None and not force:
+                return
             target = self._requested_edit_pose
             if target is not None and (force or target is not self._tcp_placed_pose):
                 self._place_frame(target)
@@ -299,14 +302,15 @@ class TCPControlsMixin:
                 self._requested_edit_pose = requested
                 self._tcp_ik_missed = missed
                 self._refresh_editing_pose()
-                if self._current_editing_type:
-                    self._update_edit_bar_values()
             else:
                 self._compose_tcp_pose(pose)
                 self._handle_tcp_transform_for_ik()
             self.scene.set_gizmo_miss(self._tcp_ik_missed)
             self._gizmo_miss_sent = self._tcp_ik_missed
             self._push_tcp_pose(force=True)
+            if pose is not None:
+                # Each release is kept, one undoable edit at a time.
+                self._write_target_edit()
             return
         if pose is None:
             self._tcp_drag_start_rot_deg = None
@@ -407,5 +411,3 @@ class TCPControlsMixin:
         if self._tcp_ik_missed != self._gizmo_miss_sent:
             self._gizmo_miss_sent = self._tcp_ik_missed
             self.scene.set_gizmo_miss(self._tcp_ik_missed)
-        if self._current_editing_type:
-            self._update_edit_bar_values()

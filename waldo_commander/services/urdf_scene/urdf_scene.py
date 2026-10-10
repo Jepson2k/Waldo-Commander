@@ -438,9 +438,12 @@ class UrdfScene(
                 WcScene(
                     background=background_color,
                     reach=reach,
-                    glow={"color": hex_of("scene-hover"), "opacity": 0.2, "scale": 1.5},
-                    inset={"anchor": "bottom-left", "margin_x": 48, "margin_y": -12},
-                    labels={"color": hex_of("scene-bg")},
+                    glow={
+                        "color": hex_of("scene-hover"),
+                        "opacity": 0.3,
+                        "scale": 1.04,
+                    },
+                    view_cube=True,
                 )
                 .classes("w-full h-full")
                 .style("margin: 0; display: block;")
@@ -1064,13 +1067,7 @@ class UrdfScene(
                 self._safe_delete(td["group"])
                 if self._editing_target_id == tid:
                     self._editing_target_id = None
-        saved = self._saved_new_marker
-        if saved is not None and any(
-            np.allclose(t.pose[:3], (saved.x, saved.y, saved.z), atol=1e-6)
-            for t in targets
-        ):
-            self._saved_new_marker = None
-            self._safe_delete(saved)
+        self.adopt_edit_marker()
 
     def _safe_delete(self, obj: Node) -> None:
         """Delete a scene object; deleting one already gone does nothing."""
@@ -1258,9 +1255,6 @@ class UrdfScene(
             self._safe_delete(td["group"])
         self._target_objects.clear()
         self._editing_target_id = None
-        if self._saved_new_marker is not None:
-            self._safe_delete(self._saved_new_marker)
-            self._saved_new_marker = None
 
     def invalidate_paths(self) -> None:
         """Clear rendered paths and reset cache, forcing a full re-render next update.
@@ -1464,12 +1458,13 @@ class UrdfScene(
             return sc.box(s.x, s.y, s.z)
         if k == "sphere":
             return sc.sphere(s.radius)
+        # Round enough that a cylinder's outline reads as round up close.
         if k == "cylinder":
-            return sc.cylinder(s.radius, s.radius, s.length)
+            return sc.cylinder(s.radius, s.radius, s.length, radial_segments=48)
         if k == "capsule":
-            return sc.capsule(s.radius, s.length)
+            return sc.capsule(s.radius, s.length, cap_segments=8, radial_segments=48)
         if k == "cone":
-            return sc.cylinder(0.0, s.radius, s.length)
+            return sc.cylinder(0.0, s.radius, s.length, radial_segments=48)
         if k == "ellipsoid":
             # Degenerate radii render as a hair-thin ellipsoid instead of
             # dividing by zero (the checker accepts them; keep parity).
@@ -1494,15 +1489,16 @@ class UrdfScene(
         that changes nothing, and the group is created once, so a dragged
         object survives the readback that confirms its new pose.
 
-        ``shapes`` is the program layer — pale slate while ``draft`` (not yet
-        confirmed by backend readback), slate once confirmed. ``installation``
-        shapes come from the backend's robot config and render in their own
-        muted color; they are never draft — the floor is one of them, an
+        ``shapes`` is the program layer — pale red while ``draft`` (not yet
+        confirmed by backend readback), red once confirmed. ``installation``
+        shapes come from the backend's robot config and render in a darker
+        red; they are never draft — the floor is one of them, an
         ordinary static fixture the config declares. Installation ground is
         not drawn: the floor disc stands for it, and a collision with it
         lights the disc.
         ``installation_draft`` shapes are proposals for the robot config,
-        drawn in their own colour since nothing enforces them yet.
+        drawn in their own colour since nothing enforces them yet. A shape
+        that does not collide is no keep-out and is drawn neutral.
         """
         if not self.scene:
             return
@@ -1519,6 +1515,8 @@ class UrdfScene(
                     if s.attachment is not None
                     and s.attachment.epoch != attachment_epoch
                     else color
+                    if s.collision
+                    else SceneColors.OBJECT_HEX
                 )
                 desired[f"{prefix}{s.name}"] = (s, shape_color, SHAPE_OPACITY)
         changed = False

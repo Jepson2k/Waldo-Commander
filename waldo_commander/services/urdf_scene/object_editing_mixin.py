@@ -8,17 +8,27 @@ from collections.abc import Callable
 from typing import Any
 
 from .shape_drawing_mixin import ShapeDrawingMixin
-from .shape_editing_mixin import RESIZE_AXES
+from .shape_editing_mixin import RESIZE_AXES, object_label
 
-from nicegui import ui
+from nicegui import background_tasks, ui
 from waldoctl.shapes import INSTALL_PREFIX, SHAPE_PREFIX, param_names
 
 from waldo_commander.services.scene_history import SceneHistory
+from waldo_commander.state import ui_state
 
 
 def _shown(value: float, scale: float) -> float:
     """*value* as an inspector field shows it."""
     return round(value * scale, 3)
+
+
+def _selection_title(shapes) -> str:
+    """What the selection is, in the words the scene's menus use."""
+    if len(shapes) == 1:
+        return object_label(shapes[0])
+    if all(object_label(s) == "Keep-out" for s in shapes):
+        return f"{len(shapes)} keep-outs"
+    return f"{len(shapes)} objects"
 
 
 class _InspectorControls:
@@ -47,6 +57,8 @@ class ObjectEditingMixin(ShapeDrawingMixin):
     inspection: Any
     _scene_wrapper: Any
     cancel_target_edit: Any
+    _editing_unified_target: bool
+    _end_editing_session: Any
 
     def _init_object_editing(self) -> None:
         self.object_history = SceneHistory(self)
@@ -75,26 +87,24 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             self._isolated_view = isolated
             self._refresh_object_inspector()
 
+    def _toggle_isolation(self):
+        self.scene.run_method(
+            "camera_action", "restore_objects" if self._isolated_view else "isolate"
+        )
+
     def _isolation_action(self):
-        if self._isolated_view or self._selected_objects:
-            ui.button(
-                "Restore surrounding objects"
-                if self._isolated_view
-                else "Isolate selected objects",
-                icon="filter_center_focus",
-                on_click=lambda: self.scene.run_method(
-                    "camera_action",
-                    "restore_objects" if self._isolated_view else "isolate",
-                ),
-            ).props("flat dense no-caps color=wc-text").mark(
-                "object-isolate"
-            ).set_enabled(
-                self._isolated_view
-                or any(
-                    item["id"] in self._selected_objects
-                    for item in self._object_entities()["items"]
-                )
+        """The actions menu's entry that isolates the selection, or shows
+        every object again."""
+        ui.menu_item(
+            "Show all objects" if self._isolated_view else "Isolate selection",
+            on_click=self._toggle_isolation,
+        ).mark("object-isolate").set_enabled(
+            self._isolated_view
+            or any(
+                item["id"] in self._selected_objects
+                for item in self._object_entities()["items"]
             )
+        )
 
     def _object_entities(self) -> dict:
         handle = self._shape_handle()
@@ -134,6 +144,9 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             if isinstance(h, dict) and h.get("id") in self._shape_objects
         ]
         self._object_overlaps = list(dict.fromkeys(hits))
+        if not hits and self._editing_unified_target:
+            # A click on nothing puts a target edit away, keeping it.
+            self._end_editing_session()
         selected = hits[:1]
         if args.get("extend") and selected:
             selected = (
@@ -259,9 +272,9 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                     self._object_inspector = (
                         ui.row()
                         .classes(
-                            "overlay-card absolute right-3 top-3 p-2 pointer-events-auto items-center"
+                            "wc-object-inspector overlay-card absolute p-2 pointer-events-auto items-center"
                         )
-                        .style("z-index:35")
+                        .style("z-index:35;visibility:hidden")
                     )
                     with self._object_inspector:
                         if history_visible:
@@ -280,7 +293,14 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                                 icon="close", on_click=lambda: self._select_objects([])
                             ).props("flat round dense color=wc-text").tooltip("Dismiss")
                         self._show_hidden_action()
-                        self._isolation_action()
+                        if self._isolated_view:
+                            ui.button(
+                                "Show all objects",
+                                icon="select_all",
+                                on_click=self._toggle_isolation,
+                            ).props("flat dense no-caps color=wc-text").mark(
+                                "object-isolate"
+                            )
             return
         controls.locked = any(
             not k.startswith(SHAPE_PREFIX)
@@ -300,11 +320,14 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             )
             with self._object_inspector:
                 with ui.row().classes("w-full items-center no-wrap"):
-                    ui.label(
-                        selected[0][1].kind.capitalize()
-                        if len(selected) == 1
-                        else f"{len(selected)} objects"
-                    ).classes("font-medium flex-1")
+                    with ui.row().classes("flex-1 items-baseline no-wrap gap-1"):
+                        ui.label(_selection_title([s for _, s in selected])).classes(
+                            "font-medium"
+                        ).mark("object-title")
+                        if len(selected) == 1:
+                            ui.label(selected[0][1].kind).classes(
+                                "text-xs text-wc-text-muted"
+                            )
                     ui.button(
                         icon="center_focus_strong",
                         on_click=lambda: self.scene.run_method(
@@ -330,7 +353,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                         " · ".join(s.name for _, s in selected)
                     ).classes("text-sm")
                     ui.label(
-                        "World axes · rotation about selection center. Select one object to resize."
+                        "They move and turn together. Select one to resize it."
                     ).classes("text-xs text-wc-text-muted")
                 if len(selected) == 1:
                     entity, shape = selected[0]
@@ -505,12 +528,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                             .mark("object-actions")
                         ):
                             with ui.menu():
-                                controls.editable(
-                                    ui.menu_item(
-                                        "Delete", on_click=self._delete_objects
-                                    ).mark("object-delete"),
-                                    readonly,
-                                )
+                                self._isolation_action()
                                 hidden = all(
                                     k in self._hidden_objects for k, _ in selected
                                 )
@@ -526,8 +544,15 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                                     on_click=self._toggle_object_lock,
                                 ).mark("object-lock")
                                 self._attachment_actions(selected, history.busy)
-                                if not self._isolated_view:
-                                    self._isolation_action()
+                                ui.separator()
+                                controls.editable(
+                                    ui.menu_item(
+                                        "Delete", on_click=self._delete_objects
+                                    )
+                                    .classes("text-wc-error")
+                                    .mark("object-delete"),
+                                    readonly,
+                                )
                         ui.space()
                         controls.undo = (
                             ui.button(
@@ -557,8 +582,6 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                             "Hidden in this view · collision remains active"
                         ).classes("text-xs text-wc-text-muted")
                     self._show_hidden_action()
-                    if self._isolated_view:
-                        self._isolation_action()
         self._update_object_inspector(selected, status, True)
 
     def _attachment_actions(self, selected, busy) -> None:
@@ -798,6 +821,21 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         if await self._commit_objects("Delete objects", shapes, revision):
             self._show_object_history = True
             self._refresh_object_inspector()
+
+    def undo_edit(self, *, redo: bool = False) -> None:
+        """Ctrl+Z (Ctrl+Shift+Z or Ctrl+Y to redo) in the scene: a keep-out
+        edit while there is one to undo, else the program's last edit, which
+        a target edit is. A program edit clears the keep-out history, so the
+        two never interleave."""
+        self.cancel_target_edit()
+        history = self.object_history
+        history.validate()
+        if not history.busy and (history.redo_stack if redo else history.undo_stack):
+            background_tasks.create(self._restore_objects(redo))
+            return
+        textarea = ui_state.active_textarea
+        if textarea is not None:
+            textarea.redo() if redo else textarea.undo()
 
     async def _restore_objects(self, redo):
         previous = {s.name for s in self._shape_handle().shapes}

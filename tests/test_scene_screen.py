@@ -44,7 +44,9 @@ from tests.helpers.browser_session import no_visible, wait, window_size
 from tests.helpers.scene_screen import (
     camera_kept,
     camera_pose,
+    camera_settled,
     choose,
+    end_target_edit,
     frame_mm,
     gizmo,
     grab_ring,
@@ -385,57 +387,109 @@ class TestScene:
             assert "keep" in sent, sent
             assert sent.count("move") <= round(moved / step) + 2, sent
 
-    def test_axes_inset_preserves_main_scene_render(self, class_screen: Screen) -> None:
-        """``viewHelper.render()`` clears the framebuffer when
-        ``renderer.autoClear`` is true; without the scene-loop guard, WC's URDF
-        scene (which always enables ``set_axes_inset``) gets wiped each frame
-        and the user sees a blank canvas.
-        """
-        screen = class_screen
-        screen_wait_for_scene_ready(screen)
-        scene_js(
-            screen,
-            "const vh = S.viewHelper;"
-            'if (!vh) throw new Error("axes inset not active");'
-            "window.__viewHelperRender = vh.render;"
-            "const orig = vh.render.bind(vh);"
-            "window.__autoClearLog = [];"
-            "vh.render = function (renderer) {"
-            "  window.__autoClearLog.push(renderer.autoClear);"
-            "  return orig(renderer);"
-            "};",
-        )
-        try:
-            # A few frames of the render loop; the scene draws only when asked.
-            wait(screen, 5).until(
-                lambda _: scene_js(
-                    screen, "S.requestRender(); return window.__autoClearLog.length"
-                )
-                >= 2
-            )
-            log = js(screen, "return window.__autoClearLog")
-            assert all(v is False for v in log), (
-                f"renderer.autoClear must be false during viewHelper.render; got {log}"
-            )
-        finally:
-            scene_js(screen, "S.viewHelper.render = window.__viewHelperRender;")
-
-    def test_clicking_an_axis_in_the_inset_turns_the_camera_to_it(
+    def test_the_view_cube_draws_over_the_scene_without_wiping_it(
         self, class_screen: Screen
     ) -> None:
+        """The cube is drawn after the scene, into its own corner: the scene
+        stays drawn around it and the cube shows over what is behind it."""
         screen = class_screen
         screen_wait_for_scene_ready(screen)
-        with camera_kept(screen):
-            x, y, axis = poll(lambda: probe(screen, "insetAxis"), 5.0, "an inset axis")
+        pixels = """
+            const link = S.hoverPixel('link:L3');
+            const box = document.querySelector('.wc-viewcube')?.getBoundingClientRect();
+            if (!link || !box) return null;
+            const cube = [box.left + box.width / 2, box.top + box.height / 2];
+            const gl = S.renderer.getContext();
+            const r = S.canvas.getBoundingClientRect();
+            const dpr = S.renderer.getPixelRatio();
+            const read = (px, py) => { const out = new Uint8Array(4);
+              gl.readPixels(Math.round((px - r.left) * dpr), Math.round((r.bottom - py) * dpr),
+                            1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+              return Array.from(out).slice(0, 3); };
+            S.renderer.render(S.scene, S.camera);
+            const scene = {link: read(...link), cube: read(...cube)};
+            S.drawFrame();
+            return {scene, frame: {link: read(...link), cube: read(...cube)}};
+        """
+        drawn = poll(lambda: scene_js(screen, pixels), 10.0, "L3 and the cube")
+        assert drawn["frame"]["link"] == pytest.approx(drawn["scene"]["link"], abs=6), (
+            "drawing the cube wiped the scene"
+        )
+        assert (
+            np.abs(np.subtract(drawn["frame"]["cube"], drawn["scene"]["cube"])).sum()
+            > 12
+        ), "the cube is not drawn over the scene"
+
+    def test_the_view_cube_turns_and_orbits_the_camera(
+        self, class_screen: Screen
+    ) -> None:
+        """A click on one of the cube's corners, edges or faces turns the
+        camera to look from there; a drag on it orbits the camera about its
+        target, and letting go of the drag turns it no further."""
+        screen = class_screen
+        screen_wait_for_scene_ready(screen)
+
+        def click(x: float, y: float) -> None:
             actions = ActionChains(screen.selenium, duration=0)
             pointer_to(screen, x, y, actions)
             actions.click()
             actions.perform()
-            poll(
-                lambda: np.dot(probe(screen, "viewDirection"), axis) > 0.999,
-                5.0,
-                f"the camera to look along {axis}",
+
+        def looks_from(direction: list[float]) -> bool:
+            return np.dot(probe(screen, "viewDirection"), direction) > 0.999
+
+        def turn_to(wanted: list[int] | None, what: str) -> list[float]:
+            x, y, direction = poll(
+                lambda: probe(screen, "cubeSpot", wanted), 5.0, f"{what} on the cube"
             )
+            click(x, y)
+            poll(lambda: looks_from(direction), 5.0, f"the camera to look from {what}")
+            camera_settled(screen)
+            return direction
+
+        with camera_kept(screen):
+            corner = [1 if v >= 0 else -1 for v in probe(screen, "viewDirection")]
+            turn_to(corner, "the corner nearest the viewer")
+            turn_to([corner[0], corner[1], 0], "the upright edge nearest the viewer")
+            face = turn_to(None, "a side face")
+
+            before = camera_pose(screen)
+            x, y, _ = poll(
+                lambda: probe(screen, "cubeSpot", [round(v) for v in face]),
+                5.0,
+                "the face looked at",
+            )
+            _drag_along(screen, x, y, 1, 0, 40)
+            camera_settled(screen)
+            after = camera_pose(screen)
+            assert after[:3] != pytest.approx(before[:3], abs=1e-3), "no orbit"
+            assert after[3:] == pytest.approx(before[3:], abs=1e-9), (
+                "orbiting moved the target"
+            )
+            assert math.dist(after[:3], after[3:]) == pytest.approx(
+                math.dist(before[:3], before[3:]), rel=1e-6
+            )
+            assert not looks_from(face), "letting go of the drag turned the camera"
+
+            # From the front top edge to the back top edge, a turn straight
+            # over the top would flip the camera as it passed overhead.
+            turn_to([0, -1, 1], "the front top edge")
+            motion = "Emulation.setEmulatedMedia"
+            screen.selenium.execute_cdp_cmd(
+                motion,
+                {
+                    "features": [
+                        {"name": "prefers-reduced-motion", "value": "no-preference"}
+                    ]
+                },
+            )
+            try:
+                elevations = probe(screen, "turnElevations", [0, 1, 1])
+            finally:
+                screen.selenium.execute_cdp_cmd(motion, {"features": []})
+            assert elevations is not None, "the turn was not animated"
+            assert max(elevations) < 50, elevations
+            assert looks_from([0, 1 / math.sqrt(2), 1 / math.sqrt(2)])
 
     def test_the_scene_draws_only_when_something_in_it_moves(
         self, class_screen: Screen
@@ -850,7 +904,7 @@ class TestScene:
                     "the edit revealed a joint dial"
                 )
             finally:
-                click_marked(screen, "edit-bar-cancel")
+                end_target_edit(screen)
             off_the_arm()
             poll(lambda: shown_handles(screen) == [], 5.0, "no gizmo after the edit")
 
@@ -932,8 +986,7 @@ class TestScene:
                 "the camera to zoom out",
             )
 
-            click_marked(screen, "camera-menu")
-            click_marked(screen, "reset-camera")
+            click_marked(screen, "camera-home")
             poll(
                 lambda: camera_pose(screen) == pytest.approx(default, abs=1e-6),
                 5.0,
@@ -960,24 +1013,25 @@ class TestScene:
         def requested() -> tuple[float, ...] | None:
             return run_in_app(lambda: urdf._requested_edit_pose)
 
-        def drag_the_gizmo_and_confirm() -> None:
-            """Drag the target's arrow: the target moves, the arm does not."""
+        def drag_the_gizmo() -> None:
+            """Drag the target's arrow: the target moves and is kept, the arm
+            does not move; then put the edit away."""
             poll(lambda: gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
             start = requested()
+            source = run_in_app(lambda: ui_state.active_textarea.value)
             live = waldoctl.commander.status.joints.angles.rad.copy()
             x, y, dx, dy = poll(
                 lambda: probe(screen, "arrowTip", "tcp:ball"), 5.0, "the X arrow"
             )
             _drag_along(screen, x, y, dx, dy)
             poll(lambda: requested() != start, 10.0, "the target to move")
-            assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
-            click_marked(screen, "edit-bar-confirm")
-            # The confirm can queue behind a re-simulation under load.
             poll(
-                lambda: not run_in_app(lambda: urdf._editing_unified_target),
-                15.0,
-                "the edit to end",
+                lambda: run_in_app(lambda: ui_state.active_textarea.value) != source,
+                10.0,
+                "the release to be written",
             )
+            assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
+            end_target_edit(screen)
 
         def target_on(line_number: int) -> str:
             """The marker of the target on *line_number*, once the preview
@@ -1008,7 +1062,7 @@ class TestScene:
                 # Place a target at the arm, drag it away, and keep it.
                 x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
                 choose(screen, x, y, "Target at robot position…")
-                drag_the_gizmo_and_confirm()
+                drag_the_gizmo()
                 after = poll(
                     lambda: len(now := lines()) == len(before) + 1 and now,
                     10.0,
@@ -1020,13 +1074,15 @@ class TestScene:
                 # Edit it: dragging its gizmo rewrites its line.
                 group = target_on(added + 1)
                 choose(screen, *scene_object_pixel(screen, group), "Edit Target...")
-                drag_the_gizmo_and_confirm()
+                drag_the_gizmo()
                 poll(lambda: lines()[added] != after[added], 10.0, "the line to change")
                 assert "move_l(" in lines()[added], lines()[added]
 
                 # Escape in the code editor is the editor's own; anywhere else
-                # it cancels a new placement, and neither stops the arm. The
-                # target placed above may now cover the first empty spot.
+                # it puts a new placement away, keeping it, and neither stops
+                # the arm. The target placed above may now cover the first
+                # empty spot.
+                edited = lines()
                 x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
                 choose(screen, x, y, "Target at robot position…")
                 poll(lambda: gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
@@ -1059,11 +1115,16 @@ class TestScene:
                 poll(
                     lambda: not run_in_app(lambda: urdf._editing_unified_target),
                     5.0,
-                    "Escape to cancel",
+                    "Escape to put the edit away",
                 )
                 _caught_up()
                 assert motion_guard.stop_generation == stops, "Escape stopped the arm"
-                assert len(lines()) == len(after), "the cancelled target was kept"
+                assert len(lines()) == len(after) + 1, "the placed target was lost"
+                # Ctrl+Z from the scene takes the placement back out.
+                ActionChains(screen.selenium).key_down(Keys.CONTROL).send_keys(
+                    "z"
+                ).key_up(Keys.CONTROL).perform()
+                poll(lambda: lines() == edited, 10.0, "Ctrl+Z to undo the placement")
 
                 # Delete it, straight from the menu.
                 group = target_on(added + 1)
@@ -1078,7 +1139,7 @@ class TestScene:
                 )
             finally:
                 if run_in_app(lambda: urdf._editing_unified_target):
-                    click_marked(screen, "edit-bar-cancel")
+                    end_target_edit(screen)
 
     def test_a_keep_out_is_placed_moved_and_deleted_from_the_scene(
         self, class_screen: Screen
@@ -1127,7 +1188,7 @@ class TestScene:
                 choose(screen, *centre, "Stop Moving")
                 poll(lambda: not gizmo_on(obj), 5.0, "the gizmo to go")
 
-                choose(screen, *centre, "Delete Keep-out")
+                choose(screen, *centre, "Delete")
                 poll(lambda: name not in shapes(), 5.0, "the keep-out to go")
             finally:
                 run_in_app(
@@ -1327,7 +1388,7 @@ class TestScene:
     ) -> None:
         """The GPU taking the view's context away and giving it back: the view
         is drawn again as it was, without the app resending it, and the
-        camera, the gizmo and the axes inset still answer the pointer."""
+        camera, the gizmo and the view cube still answer the pointer."""
         screen = class_screen
         screen_wait_for_scene_ready(screen)
         if not scene_js(
@@ -1383,16 +1444,16 @@ class TestScene:
             _drag_along(screen, x, y, 1, 0, 80)
             assert camera_pose(screen) != pytest.approx(camera, abs=1e-6), "no orbit"
 
-            # The inset still turns the camera.
-            ix, iy, axis = poll(
-                lambda: probe(screen, "insetAxis"), 5.0, "an inset axis"
+            # The view cube still turns the camera.
+            cx, cy, face = poll(
+                lambda: probe(screen, "cubeSpot"), 5.0, "a face of the view cube"
             )
             actions = ActionChains(screen.selenium, duration=0)
-            pointer_to(screen, ix, iy, actions)
+            pointer_to(screen, cx, cy, actions)
             actions.click()
             actions.perform()
             poll(
-                lambda: np.dot(probe(screen, "viewDirection"), axis) > 0.999,
+                lambda: np.dot(probe(screen, "viewDirection"), face) > 0.999,
                 5.0,
-                f"the camera to look along {axis}",
+                f"the camera to look from {face}",
             )

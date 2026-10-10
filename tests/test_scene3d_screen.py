@@ -86,10 +86,7 @@ def _build() -> None:
             .with_name("box")
         )
     scene.move_camera(1.2, 1.2, 0.9, 0.0, 0.0, 0.1, duration=0)
-    scene.configure(
-        inset={"anchor": "bottom-left", "margin_x": 48, "margin_y": -12},
-        labels={"color": hex_of("scene-bg")},
-    )
+    scene.configure(view_cube=True)
     _page["scene"] = scene
 
 

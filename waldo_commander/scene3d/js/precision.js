@@ -127,7 +127,7 @@ const ROTATIONS={X:"Rx",Y:"Ry",Z:"Rz"};
 const unitOf=(mode)=>mode==="rotate"?"°":"mm";
 const nameOf=(mode,letter)=>mode==="rotate"?ROTATIONS[letter]:letter;
 // What a value on a handle keeps clear of.
-export const FIELD_AVOIDS=["inspector","teaching"];
+export const FIELD_AVOIDS=["inspector","teaching","library"];
 
 // The gizmos' instrument and values: a drag draws its scale in the scene and
 // its change on the handle it moves; a handle clicked, or the value clicked
@@ -395,7 +395,7 @@ export class Precision {
     const m=this.instrument;
     if(!m)return;
     const overlays=this.core.overlays;
-    const boxes=overlays.boxes(["edit","gizmoValue","drawing","resizeValue"]);
+    const boxes=overlays.boxes(["gizmoValue","drawing","resizeValue"]);
     for(const letter of m.tc.letters) {
       if(!letter.visible)continue;
       const [x,y]=overlays.project(letter.getWorldPosition(scratch),at),[w,h]=sizeOf(letter);

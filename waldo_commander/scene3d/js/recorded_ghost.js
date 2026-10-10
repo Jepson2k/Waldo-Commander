@@ -6,9 +6,15 @@ const linear = new THREE.Vector3();
 // The app turns a mesh by Rz·Ry·Rx, three.js's "ZYX" order.
 const ORDER = "ZYX";
 
+// The ghost lies this far behind where it is drawn, so where it and the arm
+// coincide the arm wins.
+const BEHIND = 2;
+
 // A see-through copy of the arm, its tools and the objects it carries, posed
-// from a recorded sample. It is built from the scene's nodes once they have
-// loaded; `onReady` hears when there is something to pose.
+// from a recorded sample. It is one layer, its own hidden surfaces left out,
+// and whatever is in front of it covers it: where it matches the arm, only
+// the arm shows. It is built from the scene's nodes once they have loaded;
+// `onReady` hears when there is something to pose.
 export class RecordedGhost {
   constructor(core, name, onReady) {
     this.core = core;
@@ -17,6 +23,7 @@ export class RecordedGhost {
     this.data = null;
     this.root = null;
     this.material = null;
+    this.depth = null;
     this.clones = new Map();
     this.toolGroups = new Map();
     this.objectClones = new Map();
@@ -30,7 +37,9 @@ export class RecordedGhost {
     if (this.data === data) return;
     this.dispose();
     this.data = data;
-    this.material = new THREE.MeshBasicMaterial({ transparent: true, opacity: .32, depthTest: false, depthWrite: false });
+    const behind = { polygonOffset: true, polygonOffsetFactor: BEHIND, polygonOffsetUnits: BEHIND };
+    this.material = new THREE.MeshLambertMaterial({ transparent: true, opacity: .4, depthWrite: false, ...behind });
+    this.depth = new THREE.MeshBasicMaterial({ transparent: true, colorWrite: false, ...behind });
     this.root = new THREE.Group();
     this.root.name = this.name;
     this.root.visible = false;
@@ -44,13 +53,25 @@ export class RecordedGhost {
         if (!rec?.drawable) continue;
         // Recorded object poses are world poses, even for a currently held object.
         // The live node may be mid reveal, so its authored scale is taken.
-        const copy = rec.drawable.clone(); copy.material = this.material; copy.scale.fromArray(rec.base.s);
-        copy.castShadow = false; copy.renderOrder = 900; copy.visible = false;
+        const copy = this.dress(rec.drawable.clone()); copy.scale.fromArray(rec.base.s);
+        copy.visible = false;
         this.root.add(copy); this.objectClones.set(obj.node, copy);
       }
       for (const [key, tool] of Object.entries(data.tools)) this.loadTool(key, tool, data);
       this.onReady();
     });
+  }
+
+  // A copy drawn as the ghost: its depth first, then its colour where that
+  // depth is what is nearest.
+  dress(mesh) {
+    mesh.material = this.material; mesh.castShadow = false; mesh.receiveShadow = false; mesh.renderOrder = 901;
+    if (mesh.isMesh) {
+      const depth = new THREE.Mesh(mesh.geometry, this.depth);
+      depth.renderOrder = 900; depth.raycast = () => {};
+      mesh.add(depth);
+    }
+    return mesh;
   }
 
   clone(id) {
@@ -62,8 +83,7 @@ export class RecordedGhost {
     copy.position.fromArray(rec.base.p); copy.quaternion.fromArray(rec.base.r); copy.scale.fromArray(rec.base.s);
     copy.name = `${this.name}:${rec.name || id}`;
     if (rec.drawable) {
-      const mesh = rec.drawable.clone(); mesh.material = this.material; mesh.castShadow = false; mesh.receiveShadow = false;
-      mesh.renderOrder = 900;
+      const mesh = this.dress(rec.drawable.clone());
       if (rec.drawable === rec.obj) { mesh.position.set(0,0,0); mesh.quaternion.identity(); mesh.scale.set(1,1,1); }
       copy.add(mesh);
     }
@@ -82,8 +102,7 @@ export class RecordedGhost {
       try {
         const mesh = await loadStl(spec.url, false);
         if (this.data !== data) { dispose(mesh); return; }
-        mesh.material.dispose(); mesh.material = this.material;
-        mesh.castShadow = false; mesh.renderOrder = 900; mesh.scale.setScalar(data.scale);
+        mesh.material.dispose(); this.dress(mesh); mesh.scale.setScalar(data.scale);
         mesh.position.fromArray(spec.origin); mesh.rotation.set(...spec.rpy, ORDER);
         const motion = tool.motions.find((m) => m.role === spec.role);
         mesh.userData.inspection = {spec, motion, sign:motion?.symmetric && count % 2 ? -1 : 1};
@@ -137,8 +156,8 @@ export class RecordedGhost {
   dispose() {
     this.root?.removeFromParent();
     for (const group of this.toolGroups.values()) group.traverse((o) => o.geometry?.dispose());
-    this.material?.dispose();
-    this.data = this.root = this.material = null;
+    this.material?.dispose(); this.depth?.dispose();
+    this.data = this.root = this.material = this.depth = null;
     this.clones.clear(); this.toolGroups.clear(); this.objectClones.clear();
   }
 }

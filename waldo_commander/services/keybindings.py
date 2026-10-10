@@ -337,6 +337,27 @@ def _register_default_keybindings() -> None:
 
     cp = ui_state.control_panel
 
+    def scene_undo(redo: bool = False) -> None:
+        if ui_state.urdf_scene is not None:
+            ui_state.urdf_scene.undo_edit(redo=redo)
+
+    for key, shift, redo, display in (
+        ("z", False, False, "Ctrl+Z"),
+        ("z", True, True, "Ctrl+Shift+Z"),
+        ("y", False, True, "Ctrl+Y"),
+    ):
+        keybindings_manager.register(
+            Keybinding(
+                key=key,
+                display=display,
+                requires_ctrl=True,
+                requires_shift=shift,
+                description="Redo" if redo else "Undo the last scene or program edit",
+                action=lambda redo=redo: scene_undo(redo),
+                category="Editing",
+            )
+        )
+
     keybindings_manager.register(
         Keybinding(
             key="h",

@@ -251,14 +251,13 @@ export class Comparison {
       return {name:`J${index+1}`,value:q*180/Math.PI*sign};
     }).sort((a,b)=>Math.abs(b.value)-Math.abs(a.value)).slice(0,3);
     setText(this.joints,differences.map(d=>`${d.name} ${signed(d.value,2)}°`).join(" · "));
+    // The arm shows the prediction, and the ghost the ideal it was meant to follow.
     if(!this.ghost.ready) {this.hidePair();return;}
-    const other=hit.record===1?ideal:pred,otherRow=hit.record===1?idealRow:row;
-    const block=other.blocks.find(b=>!b.instant && b.start<=otherRow && otherRow<b.end);if(!block) {this.hidePair();return;}
-    this.ghost.articulate(other,otherRow,block);this.ghost.visible=true;this.key.hidden=false;
-    const simulator=this.core.ix.simulator;
-    setText(this.idealKey,`Ideal · ${simulator && hit.record===0?"simulator":"overlay"}`);
-    setText(this.predictedKey,`Predicted · ${simulator && hit.record===1?"simulator":"overlay"}`);
-    this.ghost.material.color.set(hit.record===1?i.data.color:i.data.predictedColor);
+    const block=ideal.blocks.find(b=>!b.instant && b.start<=idealRow && idealRow<b.end);if(!block) {this.hidePair();return;}
+    this.ghost.articulate(ideal,idealRow,block);this.ghost.visible=true;this.key.hidden=false;
+    setText(this.idealKey,"Ideal · ghost");
+    setText(this.predictedKey,`Predicted · ${this.core.ix.simulator?"simulator arm":"path"}`);
+    this.ghost.material.color.set(i.data.color);
     if(!this.ruler) {
       const geometry=new THREE.BufferGeometry().setAttribute("position",new THREE.BufferAttribute(new Float32Array(6),3));
       this.ruler=new THREE.Line(geometry,new THREE.LineBasicMaterial({color:i.data.predictedColor,depthTest:false}));this.ruler.renderOrder=960;this.ruler.name="comparison:separation";this.core.scene.add(this.ruler);

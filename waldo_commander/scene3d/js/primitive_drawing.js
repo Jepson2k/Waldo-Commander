@@ -3,6 +3,7 @@ import { mm } from "./handles.js";
 import { setStyle } from "./dom.js";
 import { GAP } from "./overlays.js";
 import { facingPlane } from "./pointer.js";
+import { FIELD_AVOIDS } from "./precision.js";
 
 const box=new THREE.Box3();
 const at=[0,0,0];
@@ -200,7 +201,7 @@ export class PrimitiveDrawing {
     const view=overlays.view;
     const [ox,oy]=this.cardOrigin?[this.cardOrigin[0]-view.left,this.cardOrigin[1]-view.top]:overlays.project(this.origin,at);
     const candidates=[[overlays.clearLeft(MARGIN,MARGIN+h),MARGIN],[right,MARGIN],[overlays.clearLeft(bottom,bottom+h),bottom],[right,bottom]];
-    const seat=overlays.seat(candidates,w,h,{bounds:{left:0,top:0,right:width,bottom:height},obstacles:overlays.obstacles(["inspector","teaching"],extra),pad:GAP,
+    const seat=overlays.seat(candidates,w,h,{bounds:{left:0,top:0,right:width,bottom:height},obstacles:overlays.obstacles(FIELD_AVOIDS,extra),pad:GAP,
       cost:(x,y)=>-Math.hypot(x+w/2-ox,y+h/2-oy)});
     this.cardAnchor=[seat.x,seat.y];
   }

@@ -3080,7 +3080,7 @@ class ControlPanel:
 
     def _build_action_row(self) -> None:
         """Build the action row: Home, Robot/Sim toggle, freedrive, gizmo
-        controls, camera reset, step input, E-Stop."""
+        controls, step input, E-Stop."""
         # The E-Stop rides the row's right edge out of flow; the padding
         # reserves its 72px footprint so no control grows underneath it.
         with ui.row().classes("gap-1 items-center relative w-full pr-20"):
@@ -3140,9 +3140,6 @@ class ControlPanel:
                 .mark("gizmo-visibility")
             )
 
-            from waldo_commander.components.scene_camera import build_camera_menu
-
-            build_camera_menu()
             with ui.row(align_items="center").classes("gap-0 no-wrap"):
                 self._step_input = (
                     ui.number(

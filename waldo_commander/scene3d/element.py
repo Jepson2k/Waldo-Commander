@@ -50,8 +50,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_fps": 30,
     "raycast_threshold": 0.005,
     "glow": {"color": None, "opacity": 0.2, "scale": 1.5},
-    "inset": None,
-    "labels": None,
+    "view_cube": False,
 }
 
 
@@ -273,7 +272,7 @@ class WcScene(ui.element, component="wc_scene.js", default_classes="wc-scene"):
 
     def configure(self, **changes: Any) -> None:
         """Change view settings: background, reach (sets the fog), max_fps,
-        raycast_threshold, glow, inset, labels."""
+        raycast_threshold, glow, view_cube."""
         self._own()
         for key, value in changes.items():
             if key not in DEFAULT_CONFIG:

@@ -25,9 +25,10 @@ from tests.helpers.scene_screen import (
     confirmed,
     fill,
     menu_fits,
+    probe,
     program_previewed,
 )
-from tests.helpers.scene_surface import scene_js, wait_for_scene_idle
+from tests.helpers.scene_surface import pointer_to, scene_js, wait_for_scene_idle
 from tests.helpers.visual_evidence import VisualEvidence, preserve_capture_buffers
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.services.control_lease import control_lease
@@ -36,8 +37,13 @@ from waldo_commander.state import ui_state
 
 
 def _visibility(screen, names):
+    """How each object shows: in full, faded by isolation, or hidden."""
     return scene_js(
-        screen, "return arguments[0].map(n=>!!S.byName('shape:'+n)?.visible)", names
+        screen,
+        "return arguments[0].map(n=>{const o=S.byName('shape:'+n);let faded=false;"
+        "o?.traverse(c=>{faded||=!!c.userData.faded});"
+        "return !o?.visible?'hidden':faded?'faded':'shown'})",
+        names,
     )
 
 
@@ -83,7 +89,8 @@ class TestObjectIsolation:
 
                 def isolate_enabled(_) -> list[bool] | None:
                     try:
-                        return [marked_element(screen, "object-isolate").is_enabled()]
+                        item = marked_element(screen, "object-isolate")
+                        return ["disabled" not in item.get_attribute("class").split()]
                     except StaleElementReferenceException:
                         return None
 
@@ -110,7 +117,12 @@ class TestObjectIsolation:
                     wait(screen).until(
                         lambda _: run_in_app(lambda: view._isolated_view)
                     )
-                    assert _visibility(screen, names) == [True, True, False, False]
+                    assert _visibility(screen, names) == [
+                        "shown",
+                        "shown",
+                        "hidden",
+                        "faded",
+                    ]
                     evidence.capture("02-isolated-pair-1920")
                     assert tuple(waldoctl.commander.scene.shapes) == before
                     assert ui_state.active_textarea.value == source
@@ -128,14 +140,27 @@ class TestObjectIsolation:
                             "return !!c && getComputedStyle(c).visibility==='visible'"
                         )
                     )
-                    click_marked(screen, "object-close")
+                    # A faded object is context, not something to pick: a
+                    # click on one is a click on nothing.
+                    x, y = probe(screen, "pixelOf", "shape:Surrounding fixture")
+                    actions = ActionChains(screen.selenium)
+                    pointer_to(screen, x, y, actions)
+                    actions.click().perform()
+                    wait(screen).until(
+                        lambda _: run_in_app(lambda: view._selected_objects) == []
+                    )
                     wait_for_scene_idle(screen)
                     evidence.capture("03-clear-selection-restore-1920")
                     marked_element(screen, "object-isolate").send_keys(Keys.SPACE)
                     wait(screen).until(
                         lambda _: not run_in_app(lambda: view._isolated_view)
                     )
-                    assert _visibility(screen, names) == [True, True, False, True]
+                    assert _visibility(screen, names) == [
+                        "shown",
+                        "shown",
+                        "hidden",
+                        "shown",
+                    ]
                     click_object(screen, "shape:Fixture A")
                     click_marked(screen, "object-actions")
                     click_marked(screen, "object-isolate")
@@ -147,7 +172,12 @@ class TestObjectIsolation:
                         screen,
                         lambda: waldoctl.commander.scene.shapes[0].pose[0] == 0.37,
                     )
-                    assert _visibility(screen, names) == [True, False, False, False]
+                    assert _visibility(screen, names) == [
+                        "shown",
+                        "faded",
+                        "hidden",
+                        "faded",
+                    ]
                     fill(screen, "object-name", "Renamed fixture")
                     confirmed(
                         screen,
@@ -156,7 +186,12 @@ class TestObjectIsolation:
                     )
                     names[0] = "Renamed fixture"
                     assert run_in_app(lambda: view._isolated_view)
-                    assert _visibility(screen, names) == [True, False, False, False]
+                    assert _visibility(screen, names) == [
+                        "shown",
+                        "faded",
+                        "hidden",
+                        "faded",
+                    ]
                     click_marked(screen, "object-undo")
                     confirmed(
                         screen,
@@ -169,14 +204,19 @@ class TestObjectIsolation:
                         lambda: waldoctl.commander.scene.shapes[0].name
                         == "Renamed fixture",
                     )
-                    assert _visibility(screen, names) == [True, False, False, False]
+                    assert _visibility(screen, names) == [
+                        "shown",
+                        "faded",
+                        "hidden",
+                        "faded",
+                    ]
                     assert not hidden_can_isolate
                     click_marked(screen, "object-duplicate")
                     confirmed(screen, lambda: len(waldoctl.commander.scene.shapes) == 5)
                     assert _visibility(
                         screen,
                         ["Renamed fixture", "Renamed fixture-copy-1", "Fixture B"],
-                    ) == [True, True, False]
+                    ) == ["shown", "shown", "faded"]
                     run_in_app(
                         lambda: view.set_appearance_mode(RobotAppearanceMode.LIVE)
                     )
@@ -194,7 +234,12 @@ class TestObjectIsolation:
                         wait(screen).until(
                             lambda _: not run_in_app(lambda: view._isolated_view)
                         )
-                        assert _visibility(screen, names) == [True, True, False, True]
+                        assert _visibility(screen, names) == [
+                            "shown",
+                            "shown",
+                            "hidden",
+                            "shown",
+                        ]
                     click_object(screen, "shape:Fixture B")
                     click_marked(screen, "object-actions")
                     click_marked(screen, "object-isolate")
@@ -213,7 +258,7 @@ class TestObjectIsolation:
                     wait(screen).until(
                         lambda _: not run_in_app(lambda: view._isolated_view)
                     )
-                    assert _visibility(screen, [replacement.name]) == [True]
+                    assert _visibility(screen, [replacement.name]) == ["shown"]
                     evidence.capture("07-external-replacement-restores-1920")
                     evidence.finish()
                 finally:

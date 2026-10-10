@@ -12,9 +12,8 @@ import { setStyle } from "./dom.js";
 
 export const GAP = 12;
 // The cards Python builds over the view; the view places them.
-const HOSTED = { inspector: ".wc-object-inspector", edit: ".wc-target-edit-bar", teaching: ".wc-surface-teaching" };
+const HOSTED = { inspector: ".wc-object-inspector", teaching: ".wc-surface-teaching", library: ".wc-workcell-library" };
 const HOSTED_ANY = Object.values(HOSTED).join(",");
-// How far from the edited target its confirm pill sits, in pixels.
 
 const point = new THREE.Vector3();
 const corner = new THREE.Vector3();
@@ -34,6 +33,7 @@ export class Overlays {
   constructor(core) {
     this.core = core;
     this.layout = [];
+    this.controls = new Map(); // name -> where the view's own controls are
     this.chrome = [];
     this.view = { left: 0, top: 0, width: 0, height: 0 };
     this.cards = new Map(); // name -> {node, w, h, scroll, offset, box}
@@ -65,6 +65,17 @@ export class Overlays {
   relative() {
     const { left, top } = this.view;
     this.chrome = this.layout.map((b) => ({ left: b.left - left, top: b.top - top, right: b.right - left, bottom: b.bottom - top }));
+    for (const box of this.controls.values()) this.chrome.push(box);
+  }
+
+  // One of the view's own controls, at `box` or gone: cards keep clear of it
+  // as they do of the app's panels.
+  control(name, box) {
+    const was = this.controls.get(name);
+    if (box ? was && was.left === box.left && was.top === box.top && was.right === box.right && was.bottom === box.bottom : !was) return;
+    if (box) this.controls.set(name, { left: box.left, top: box.top, right: box.right, bottom: box.bottom });
+    else this.controls.delete(name);
+    this.relative();
   }
 
   // A card the view places.
@@ -231,26 +242,20 @@ export class Overlays {
 
   // ---- Python's cards -----------------------------------------------------
 
-  // The surface-teaching card sits top left, as tall as the space below it.
-  layoutTeaching() {
-    const card = this.card("teaching");
-    if (!card) return;
-    const left = this.clearLeft(GAP, GAP + card.h);
-    setStyle(card.node, "maxWidth", `${Math.max(180, this.view.width - left - GAP)}px`);
-    let bottom = this.view.height - this.core.layoutInset.bottom - GAP;
-    for (const b of this.chrome) if (b.right > left && b.left < left + card.w && b.top > GAP) bottom = Math.min(bottom, b.top - GAP);
-    setStyle(card.node, "maxHeight", `${Math.max(120, bottom - GAP)}px`);
-    this.place(card, left, GAP);
-  }
-
-  // A target edit's command bar docks at the view's top right, as a CAD
-  // command dialog does: never over the gizmo it confirms.
-  layoutEditBar() {
-    const card = this.card("edit");
-    if (!card) return;
-    setStyle(card.node, "width", "max-content");
-    const b = this.bounds();
-    const seat = this.seat([[b.right - card.w, b.top]], card.w, card.h, { obstacles: this.obstacles(["inspector"]) });
-    this.place(card, seat.x, seat.y);
+  // The surface-teaching card and the workcell library sit top left, in
+  // that order down, each as tall as the space below it allows.
+  layoutTopLeft() {
+    let top = GAP;
+    for (const name of ["teaching", "library"]) {
+      const card = this.card(name);
+      if (!card) continue;
+      const left = this.clearLeft(top, top + card.h);
+      setStyle(card.node, "maxWidth", `${Math.max(180, this.view.width - left - GAP)}px`);
+      let bottom = this.view.height - this.core.layoutInset.bottom - GAP;
+      for (const b of this.chrome) if (b.right > left && b.left < left + card.w && b.top > top) bottom = Math.min(bottom, b.top - GAP);
+      setStyle(card.node, "maxHeight", `${Math.max(120, bottom - top)}px`);
+      this.place(card, left, top);
+      top += Math.min(card.h, Math.max(120, bottom - top)) + GAP;
+    }
   }
 }

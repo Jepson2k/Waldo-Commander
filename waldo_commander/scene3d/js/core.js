@@ -13,7 +13,6 @@ import { CameraTools } from "./camera_tools.js";
 import { Fx } from "./fx.js";
 import { Gestures } from "./gestures.js";
 import { Gizmos } from "./gizmo.js";
-import { Inset } from "./inset.js";
 import { Inspection } from "./inspection.js";
 import { Menu } from "./menu.js";
 import { Nodes } from "./nodes.js";
@@ -22,8 +21,8 @@ import { PrimitiveResize } from "./primitive_resize.js";
 import { PrimitiveDrawing } from "./primitive_drawing.js";
 import { Pointer } from "./pointer.js";
 import { Selection } from "./selection.js";
-import { SectionView } from "./section.js";
 import { surface } from "./testing.js";
+import { ViewCube } from "./viewcube.js";
 
 const COVERED_FRAME_MS = 250;
 const RESTORE_WAIT_MS = 5000;
@@ -52,7 +51,6 @@ export class SceneCore {
     this.retry = 0;
     this.lastFrame = -Infinity;
     this.wantFrame = false;
-    this.clock = new THREE.Clock();
 
     this.scene = new THREE.Scene();
     this.fog = new THREE.Fog(0, 0, 1);
@@ -78,7 +76,7 @@ export class SceneCore {
     this.overlays = new Overlays(this);
     this.fx = new Fx(this);
     this.cameraMove = new CameraMove(this);
-    this.inset = new Inset(this);
+    this.cube = new ViewCube(this);
     this.gestures = new Gestures(this);
     this.pointer = new Pointer(this);
     this.gizmos = new Gizmos(this);
@@ -88,7 +86,6 @@ export class SceneCore {
     this.inspection = new Inspection(this);
     this.navigation = new CameraTools(this);
     this.selection = new Selection(this);
-    this.section = new SectionView(this);
     this.pointer.tools = [this.drawingTool, this.resizeHandles, this.gizmos, this.pointer.ringTool, this.inspection];
     this.surface = surface(this);
 
@@ -225,6 +222,7 @@ export class SceneCore {
       this.gizmos.precision.prepare();
       this.pointer.recolor(changes.colors);
       this.selection.recolor(changes.colors);
+      this.cube.recolor();
     }
     if ("pathData" in changes) this.inspection.load(changes.pathData);
     if ("comparisonData" in changes) this.inspection.comparison.load(changes.comparisonData);
@@ -251,7 +249,7 @@ export class SceneCore {
       // The rings' halos are the background's colour.
       this.pointer.forgetRings();
     }
-    if ("inset" in changes || "labels" in changes) this.inset.configure(c.inset, c.labels);
+    if ("view_cube" in changes) this.cube.configure(c.view_cube);
     this.requestRender();
   }
 
@@ -275,7 +273,7 @@ export class SceneCore {
   }
 
   get animating() {
-    return this.fx.active || this.cameraMove.active || this.inset.active || this.gizmos.active;
+    return this.fx.active || this.cameraMove.active || this.gizmos.active;
   }
 
   schedule() {
@@ -297,7 +295,6 @@ export class SceneCore {
       return;
     }
     this.overlays.measure();
-    const delta = this.clock.getDelta();
     this.fx.step(now);
     this.cameraMove.step(now);
     this.gizmos.step(now);
@@ -305,7 +302,7 @@ export class SceneCore {
     this.pointer.syncGlow();
     this.wantFrame = false;
     try {
-      this.draw(delta);
+      this.draw();
     } finally {
       this.overlays.framing = false;
       this.lastFrame = now;
@@ -315,7 +312,7 @@ export class SceneCore {
 
   // The scene's 3D parts are brought up to date and drawn, then the cards
   // and labels over it are placed where the drawing leaves them room.
-  draw(delta) {
+  draw() {
     this.fitNear();
     for(const tc of this.gizmos.all())tc.update();
     const reach = this.config.reach || 1;
@@ -336,11 +333,10 @@ export class SceneCore {
     this.pointer.occludeBadge();
     this.inspection.layout();
     this.gizmos.precision.layout();
-    this.overlays.layoutEditBar();
     this.gizmos.precision.layoutLabels();
-    this.overlays.layoutTeaching();
+    this.overlays.layoutTopLeft();
     this.inspection.comparison.layout();
-    this.inset.render(this.renderer, delta);
+    this.cube.render(this.renderer);
     this.frameCount++;
   }
 
@@ -505,7 +501,6 @@ export class SceneCore {
     this.menu.dispose();
     this.overlays.dispose();
     this.inspection.dispose();
-    this.section.dispose();
     this.selection.dispose();
     this.resizeHandles.dispose();
     this.drawingTool.dispose();
@@ -514,7 +509,7 @@ export class SceneCore {
     window.removeEventListener("wc:layout", this.onLayout);
     this.canvas.removeEventListener("webglcontextlost", this.onLost);
     this.canvas.removeEventListener("webglcontextrestored", this.onRestored);
-    this.inset.destroy();
+    this.cube.dispose();
     this.controls.dispose();
     this.nodes.reset();
     this.renderer.dispose();

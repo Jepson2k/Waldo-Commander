@@ -43,10 +43,10 @@ rbt.move_j(
     right_click(user, urdf.scene, [f"target:{target.id}"])
     user.find(marker="scene-edit-target").click()
     assert await wait_until(lambda: urdf._edit_active, 5)
+    # A release writes the target, and the edit stays open for the next.
     gizmo(user, urdf.scene).move(**ball(x=0.005)).release(**ball(x=0.005))
     assert not urdf._tcp_ik_missed
     reached = [math.degrees(q) for q in urdf.get_editing_angles()]
-    user.find(marker="edit-bar-confirm").click()
     updated = textarea.value
     assert updated != source
     call = ast.parse(updated).body[2].value
@@ -59,7 +59,13 @@ rbt.move_j(
     assert "speed=0.5,  # gentle approach" in updated
     assert "# Fixture approach · µm notes stay intact" in updated
     assert len(updated.splitlines()) == len(source.splitlines())
-    assert not urdf._edit_active
+    assert urdf._edit_active
+    # Its own write does not end the edit: the next release writes again.
+    gizmo(user, urdf.scene).move(**ball(x=0.005)).release(**ball(x=0.005))
+    assert urdf._edit_active and textarea.value not in (source, updated)
+    updated = textarea.value
+    urdf.cancel_target_edit()
+    assert not urdf._edit_active and textarea.value == updated
 
     await simulation.run_simulation()
     target = program.dry_run.targets[-1]
@@ -102,10 +108,14 @@ rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)
     assert await held_until(drag, lambda: urdf._requested_edit_pose != start, 5)
     drag.abort()
     assert urdf._requested_edit_pose == start
-    # A cancelled drag leaves the Cartesian command as written.
-    user.find(marker="edit-bar-confirm").click()
+    # A cancelled drag writes nothing.
+    assert textarea.value == source
+    # A released one keeps the target's Cartesian form.
+    gizmo(user, urdf.scene).move(**ball(x=0.005)).release(**ball(x=0.005))
+    assert textarea.value != source
     assert ast.parse(textarea.value).body[-1].value.func.attr == "move_l"
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
+    urdf.cancel_target_edit()
 
     await simulation.run_simulation()
     assert await wait_until(
@@ -116,15 +126,16 @@ rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)
     user.find(marker="scene-edit-target").click()
     assert urdf._edit_active
     before = textarea.value
+    written = urdf._requested_edit_pose
     impossible = gizmo(user, urdf.scene).move(**ball(x=10))
     impossible.release(**ball(x=10))
-    assert urdf._tcp_ik_missed
-    user.find(marker="edit-bar-confirm").click()
+    # Out of reach, the release goes back to where the target was written.
     assert urdf._edit_active and textarea.value == before
+    assert urdf._requested_edit_pose == written
     await ui_state.control_panel.move_joint_to_angle(0, math.degrees(live[0]) + 10)
     assert await ui_state.control_panel.client.wait_motion(timeout=5, settle_window=0.2)
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live, abs=0.002)
-    user.find(marker="edit-bar-cancel").click()
+    urdf.cancel_target_edit()
 
 
 @pytest.mark.integration

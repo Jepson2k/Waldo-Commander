@@ -57,6 +57,15 @@ RESIZE_AXES: dict[str, tuple[str, str, str]] = {
     "cylinder": ("radius", "radius", "length"),
 }
 
+
+def object_label(shape: Shape) -> str:
+    """What the scene calls *shape*: the arm keeps out of a colliding one,
+    and may reach into, or carry, one that does not collide."""
+    if shape.attachment is not None:
+        return "Flange attachment"
+    return "Keep-out" if shape.collision else "Object"
+
+
 # A released value this close to the authored one (m, rad) is the browser's
 # rounding, not a move.
 _UNMOVED = 1e-6
@@ -178,8 +187,7 @@ class ShapeEditingMixin:
         if shape is None:
             return
         locked = self._shape_locked(shape_name)
-        label = "Flange attachment" if shape.attachment is not None else "Keep-out"
-        ui.item(f"{label} '{shape_name}'").classes("font-bold text-sm")
+        ui.item(f"{object_label(shape)} '{shape_name}'").classes("font-bold text-sm")
         if shape.attachment is not None and not self._shape_handle().attachments_valid:
             ui.item("Reconciliation required before arm motion").classes(
                 "text-wc-warning text-xs"
@@ -214,10 +222,6 @@ class ShapeEditingMixin:
             ).mark("shape-menu-move").set_enabled(
                 shape.attachment is None and not locked
             )
-        ui.menu_item(
-            "Delete Keep-out",
-            on_click=lambda n=shape_name: self._delete_shape(n),
-        ).mark("shape-menu-delete").set_enabled(not locked)
         ui.separator()
         ui.menu_item(
             "Propose as Installation",
@@ -225,6 +229,11 @@ class ShapeEditingMixin:
         ).mark("shape-menu-propose").set_enabled(
             shape.attachment is None and not locked
         )
+        ui.separator()
+        ui.menu_item(
+            "Delete",
+            on_click=lambda n=shape_name: self._delete_shape(n),
+        ).classes("text-wc-error").mark("shape-menu-delete").set_enabled(not locked)
 
     def _populate_draft_menu(self, shape_name: str) -> None:
         """Menu items for a right-clicked proposed-installation shape."""
@@ -380,7 +389,8 @@ class ShapeEditingMixin:
             if kind == "cylinder"
             else dims["radius"]
         )
-        x, y, z = (float(v) for v in at)
+        # To the millimetre, as a position typed into the program would be.
+        x, y, z = (round(float(v), 3) for v in at)
         shape = _KINDS[kind](
             name=self._fresh_shape_name(kind),
             pose=(x, y, z + lift, 0.0, 0.0, 0.0),

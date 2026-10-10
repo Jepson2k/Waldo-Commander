@@ -5,6 +5,7 @@
 
 import * as THREE from "three";
 import { GIZMO } from "./handles.js";
+import { FACES } from "./viewcube.js";
 
 export function surface(core) {
   const { canvas } = core;
@@ -46,9 +47,6 @@ export function surface(core) {
     get renderer() {
       return core.renderer;
     },
-    get viewHelper() {
-      return core.inset.helper;
-    },
     get resets() {
       return core.resets;
     },
@@ -72,8 +70,9 @@ export function surface(core) {
         const row=block.start+i; return [points[row*3],points[row*3+1],row];
       });
     },
-    section() { return {...core.section.status(),plane:[...core.section.plane.normal.toArray(),core.section.plane.constant],materials:core.section.materials}; },
     requestRender: () => core.requestRender(),
+    // One whole frame drawn now, so its pixels can be read before the page shows it.
+    drawFrame: () => core.draw(),
     idle: () => core.nodes.idle(),
     project(name, points) {
       const o = byName(name);
@@ -360,31 +359,52 @@ export function surface(core) {
     return seen;
   };
 
-  // A pixel on the orientation inset's sprite for the level axis that faces
-  // the viewer most, and that axis.
-  S.insetAxis = () => {
-    const vh = core.inset.helper;
-    if (!vh) return null;
-    const r = rect();
-    const loc = vh.location;
-    const dim = 128;
-    const left = r.left + (loc.left !== null ? loc.left : canvas.offsetWidth - dim - loc.right);
-    const top = r.top + (loc.top !== null ? loc.top : canvas.offsetHeight - dim - loc.bottom);
-    const toInset = core.camera.quaternion.clone().invert();
-    let best = null;
-    for (const axis of [
-      [1, 0, 0],
-      [-1, 0, 0],
-      [0, 1, 0],
-      [0, -1, 0],
-    ]) {
-      const v = new THREE.Vector3(...axis).applyQuaternion(toInset);
-      const x = left + ((v.x / 2 + 1) / 2) * dim;
-      const y = top + ((1 - v.y / 2) / 2) * dim;
-      if (document.elementFromPoint(x, y) !== canvas) continue;
-      if (!best || v.z > best.z) best = { x, y, z: v.z, axis };
+  // The camera's elevation above its target, in degrees, at `count` even
+  // steps through the turn the view action starts toward `direction`, which
+  // ends it there. Null when the view jumps there instead.
+  S.turnElevations = (direction, count = 32) => {
+    core.navigation.action("view", direction);
+    const move = core.cameraMove.move;
+    if (!move) return null;
+    const out = [];
+    for (let i = 0; i <= count; i++) {
+      core.cameraMove.step(move.start + (move.ms * i) / count);
+      const o = core.camera.position.clone().sub(core.controls.target);
+      out.push((Math.atan2(o.z, Math.hypot(o.x, o.y)) * 180) / Math.PI);
     }
-    return best && [best.x, best.y, best.axis];
+    return out;
+  };
+
+  // A pixel where a press on the view cube picks `direction` (a face, edge
+  // or corner, as -1, 0 and 1 along each axis), and that direction made
+  // unit. With no direction, the face turned most toward the viewer that
+  // the camera does not already look from.
+  S.cubeSpot = (direction = null) => {
+    const cube = core.cube;
+    if (!cube.at) return null;
+    const view = new THREE.Vector3(...S.viewDirection());
+    const wanted = direction
+      ? [direction]
+      : FACES.map((f) => f.n)
+          .filter((n) => view.dot(new THREE.Vector3(...n)) < 0.99)
+          .sort((a, b) => view.dot(new THREE.Vector3(...b)) - view.dot(new THREE.Vector3(...a)));
+    const r = cube.box.getBoundingClientRect();
+    for (const d of wanted) {
+      const picks = (x, y) => {
+        if (document.elementFromPoint(r.left + x, r.top + y) !== cube.box) return false;
+        const region = cube.regionAt(x, y);
+        return !!region && region.every((v, i) => v === d[i]);
+      };
+      const found = [];
+      for (let y = 1; y < r.height; y += 2) for (let x = 1; x < r.width; x += 2) if (picks(x, y)) found.push([x, y]);
+      if (!found.length) continue;
+      // The middle of the pixels found, or the found pixel nearest it.
+      const mx = found.reduce((a, [x]) => a + x, 0) / found.length;
+      const my = found.reduce((a, [, y]) => a + y, 0) / found.length;
+      const [x, y] = picks(mx, my) ? [mx, my] : found.reduce((best, p) => (Math.hypot(p[0] - mx, p[1] - my) < Math.hypot(best[0] - mx, best[1] - my) ? p : best));
+      return [r.left + x, r.top + y, new THREE.Vector3(...d).normalize().toArray()];
+    }
+    return null;
   };
 
   return S;

@@ -8,6 +8,11 @@ import { finite, reading } from "./handles.js";
 const COVERS = ["comparison", "separation"];
 const PICK_PX = 10;
 const CHUNK = 128;
+// The hovered path's glow and grip, in pixels.
+const GLOW_PX = 3;
+const GRIP_PX = 6;
+// Points a hovered move's glow follows at most.
+const GLOW_POINTS = 160;
 const sample = new THREE.Vector3();
 const rowAt = [0, 0, 0];
 
@@ -45,6 +50,10 @@ export class Inspection {
     this.spans = new Map(); // a path's spans by content key, as the app sent them
     this.seq = 0; this.lastSend = 0; this.timer = 0;
     this.cursor = null; this.markers = [];
+    this.hovered = null; this.glow = null; // the move under the pointer, lit
+    this.grip = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), new THREE.MeshBasicMaterial({depthTest:false, transparent:true, opacity:.95}));
+    this.grip.name = "inspection:grip"; this.grip.renderOrder = 951; this.grip.visible = false;
+    core.scene.add(this.grip);
     this.projected = []; this.chunks = []; this.alternatives = []; this.radius = 13;
     this.seenWorld = new THREE.Matrix4(); this.seenProjection = new THREE.Matrix4(); this.seenView = [NaN, NaN, NaN, NaN];
     this.choices = element("div", "wc-path-choices", core.root);
@@ -80,7 +89,7 @@ export class Inspection {
       }
     }
     this.comparison.reset();
-    this.clear(false); this.removeCursor();
+    this.clear(false); this.removeCursor(); this.hoverAt(null);
     for (const m of this.markers) { m.element.remove(); m.leader.remove(); }
     this.markers = []; this.data = data; this.projected = []; this.seq = 0;
     this.seenView[0] = NaN;
@@ -226,10 +235,61 @@ export class Inspection {
     return this.hits.length > 0;
   }
 
+  // A move a press would scrub lights up under the pointer, with a grip at
+  // the moment a press would take, and the pointer becomes a hand: what
+  // can be dragged says so before it is pressed. Whether it is one.
+  hoverAt(at) {
+    const hit = at && this.data && this.available && !this.core.gestures.active ? this.pick(at[0], at[1])[0] || null : null;
+    const key = hit ? `${hit.record}:${hit.block}` : null;
+    if (key !== this.hovered) {
+      this.hovered = key;
+      this.removeGlow();
+      if (hit) this.glow = this.makeGlow(hit);
+    }
+    this.grip.visible = !!hit;
+    if (hit) {
+      const r = this.data.records[hit.record], i = hit.row * 6;
+      this.grip.position.set(r.tcp[i], r.tcp[i+1], r.tcp[i+2]);
+      this.grip.scale.setScalar(this.core.metresPerPixel(this.grip.position) * GRIP_PX);
+    }
+    this.core.canvas.style.cursor = hit ? "grab" : this.dragging ? "grabbing" : "";
+    this.core.requestRender();
+    return !!hit;
+  }
+
+  makeGlow(hit) {
+    const r = this.data.records[hit.record], block = r.blocks[hit.block];
+    const step = Math.max(1, Math.ceil((block.end - block.start) / GLOW_POINTS));
+    const points = [];
+    for (let row = block.start; row < block.end; row += step) {
+      const i = row * 6;
+      if (finite(r.tcp[i]) && finite(r.tcp[i+1]) && finite(r.tcp[i+2])) points.push(new THREE.Vector3(r.tcp[i], r.tcp[i+1], r.tcp[i+2]));
+    }
+    if (points.length < 2) return null;
+    const middle = points[points.length >> 1];
+    const radius = this.core.metresPerPixel(middle) * GLOW_PX;
+    const color = this.core.ix.colors?.action;
+    const glow = new THREE.Mesh(
+      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), points.length * 2, radius, 6, false),
+      new THREE.MeshBasicMaterial({color, transparent:true, opacity:.45, depthTest:false, depthWrite:false}),
+    );
+    glow.name = "inspection:hover"; glow.renderOrder = 949;
+    this.grip.material.color.set(color);
+    this.core.scene.add(glow);
+    return glow;
+  }
+
+  removeGlow() {
+    if (!this.glow) return;
+    this.glow.removeFromParent(); this.glow.geometry.dispose(); this.glow.material.dispose();
+    this.glow = null;
+  }
+
   begin() {
     this.choices.hidden=true;this.core.canvas.focus({preventScroll:true});
     this.inspect((this.current && this.hits.find(h=>this.samePass(h))) || this.hits[0]);
     this.dragging = true;
+    this.core.canvas.style.cursor = "grabbing";
     return {
       move: (e) => {
         const hits=this.pick(e.clientX,e.clientY,true);
@@ -405,7 +465,13 @@ export class Inspection {
       return;
     }
     clearTimeout(this.timer); this.timer=0; this.lastSend=performance.now();
-    this.core.emit("inspect",{revision:this.data.revision,seq:++this.seq,record:this.current.record,block:this.current.block,row:this.current.row,pinned});
+    let {record,block,row}=this.current;
+    // The arm shows what it will do: a point on the ideal path pins the
+    // prediction paired with it, which the ghost of the ideal is set against.
+    const paired=record===0 && this.comparison.visibility!=="off"?this.comparison.predictedRow(this.current):-1;
+    const at=paired<0?-1:this.data.records[1].blocks.findIndex(b=>!b.instant && b.start<=paired && paired<b.end);
+    if(at>=0){record=1;row=paired;block=at;}
+    this.core.emit("inspect",{revision:this.data.revision,seq:++this.seq,record,block,row,pinned});
   }
 
   seekRow(row) {
@@ -418,6 +484,9 @@ export class Inspection {
     if(!this.current || this.dragging || this.timer || !this.data || !this.core.ix.simulator)return;
     if(cursor.revision!==this.data.revision || (cursor.inspectionSeq ?? -1)<this.seq)return;
     const record=this.data.records[cursor.record];if(!record)return;
+    // A point picked on the ideal path stays picked while the arm shows the
+    // prediction paired with it.
+    if(this.current.record===0 && cursor.record===1 && cursor.row===this.comparison.predictedRow(this.current))return;
     const row=Math.max(0,Math.min(record.rows-1,cursor.row));
     const ideal=this.data.records[0].rows;
     this.show({record:cursor.record,row,block:cursor.block ?? -1,idealRow:Math.max(0,Math.min(ideal-1,cursor.idealRow ?? row))},false);
@@ -436,7 +505,8 @@ export class Inspection {
 
   dispose() {
     this.comparison.dispose();
-    this.clear(false); this.removeCursor();
+    this.clear(false); this.removeCursor(); this.hoverAt(null);
+    this.grip.removeFromParent(); this.grip.geometry.dispose(); this.grip.material.dispose();
     for (const m of this.markers) { m.element.remove(); m.leader.remove(); }
     this.choices.remove();this.other.remove();
     document.removeEventListener("pointerdown", this.onDocumentDown, true);

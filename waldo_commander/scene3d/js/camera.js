@@ -25,14 +25,18 @@ export class CameraMove {
     else this.core.animate();
   }
 
+  // A turn about the target, by heading and elevation: a straight path over
+  // the top would flip the Z-up camera as it passed overhead.
   startOrbit(pose, durationS=0.35) {
     this.start(pose,durationS,true);
     const m=this.move;
     if (!m) return;
     const from=new THREE.Vector3(...m.from.slice(0,3)).sub(new THREE.Vector3(...m.from.slice(3)));
     const to=new THREE.Vector3(...pose.slice(0,3)).sub(new THREE.Vector3(...pose.slice(3)));
-    m.orbit={radius:from.length(), endRadius:to.length(), direction:from.normalize(),
-      rotation:new THREE.Quaternion().setFromUnitVectors(from,to.normalize())};
+    const heading=(v)=>Math.atan2(v.y,v.x), elevation=(v)=>Math.atan2(v.z,Math.hypot(v.x,v.y));
+    const turn=heading(to)-heading(from);
+    m.orbit={radius:from.length(), endRadius:to.length(), heading:heading(from),
+      turn:turn-2*Math.PI*Math.round(turn/(2*Math.PI)), elevation:elevation(from), rise:elevation(to)-elevation(from)};
   }
 
   finish() {
@@ -55,12 +59,12 @@ export class CameraMove {
     if (!m) return false;
     const t = Math.min(1, (now - m.start) / m.ms);
     const k = m.ease ? easeInOutCubic(t) : t;
-    if (m.orbit) {
+    if (m.orbit && t < 1) {
       const o=m.orbit, target=m.from.slice(3).map((a,i)=>a+(m.to[i+3]-a)*k);
-      const position=o.direction.clone().applyQuaternion(new THREE.Quaternion().slerp(o.rotation,k))
-        .multiplyScalar(o.radius+(o.endRadius-o.radius)*k).add(new THREE.Vector3(...target));
-      this.apply([...position.toArray(),...target]);
-    } else this.apply(m.from.map((a, i) => a + (m.to[i] - a) * k));
+      const h=o.heading+o.turn*k, e=o.elevation+o.rise*k, r=o.radius+(o.endRadius-o.radius)*k;
+      this.apply([target[0]+r*Math.cos(e)*Math.cos(h),target[1]+r*Math.cos(e)*Math.sin(h),target[2]+r*Math.sin(e),...target]);
+    } else if (m.orbit) this.apply(m.to);
+    else this.apply(m.from.map((a, i) => a + (m.to[i] - a) * k));
     if (t >= 1) this.move = null;
     return this.move !== null;
   }
