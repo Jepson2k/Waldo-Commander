@@ -1,12 +1,10 @@
 """Target preview ownership and structural source editing in the real workspace."""
 
-import ast
-import math
-
 import numpy as np
 import pytest
 import waldoctl
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
@@ -20,12 +18,12 @@ from tests.helpers.browser_helpers import (
 from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
-    assert_dial_readable,
     at_start,
     camera_kept,
     choose,
-    drag_dial,
-    grab_ring,
+    field_number,
+    ball_mm,
+    gizmo_field,
     hold,
     probe,
     program_previewed,
@@ -57,7 +55,7 @@ class TestSceneEditing:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.55, 0.65, 0.65, 0, 0.17, 0.16],
+                    [0.396, 0.516, 0.513, 0, 0.17, 0.16],
                 )
                 wait_for_scene_idle(screen)
                 choose(
@@ -66,7 +64,7 @@ class TestSceneEditing:
                     "Edit Target...",
                 )
                 wait(screen).until(lambda _: run_in_app(lambda: scene._edit_active))
-                initial = run_in_app(scene.get_editing_angles)
+                initial = run_in_app(lambda: scene._requested_edit_pose)
                 live = waldoctl.commander.status.joints.angles.rad.copy()
                 timeline = run_in_app(
                     lambda: waldoctl.commander.programs.active.dry_run.playback.playback_time
@@ -95,15 +93,22 @@ class TestSceneEditing:
                     )
                     == timeline
                 )
-                assert run_in_app(scene.get_editing_angles) == pytest.approx(initial)
+                assert run_in_app(lambda: scene._requested_edit_pose) == initial
                 spot = wait(screen).until(
                     lambda _: probe(screen, "arrowTip", "tcp:ball")
                 )
                 hold(screen, spot, 20)
+                # The drag moves the target and its marker; the arm stays put.
                 wait(screen).until(
-                    lambda _: not np.allclose(
-                        run_in_app(scene.get_editing_angles), initial
+                    lambda _: run_in_app(lambda: scene._requested_edit_pose) != initial
+                )
+                wait(screen).until(
+                    lambda _: np.linalg.norm(
+                        ball_mm(screen)
+                        - np.array(run_in_app(lambda: scene._requested_edit_pose[:3]))
+                        * 1000
                     )
+                    < 0.5
                 )
                 wait_for_scene_idle(screen)
                 evidence.capture("01-preview-drag-1920")
@@ -112,7 +117,7 @@ class TestSceneEditing:
                 )
                 ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
                 wait(screen).until(
-                    lambda _: np.allclose(run_in_app(scene.get_editing_angles), initial)
+                    lambda _: run_in_app(lambda: scene._requested_edit_pose) == initial
                 )
                 assert run_in_app(lambda: scene._edit_active)
                 evidence.capture("02-cancelled-drag-1920")
@@ -121,13 +126,41 @@ class TestSceneEditing:
                     lambda _: probe(screen, "arrowTip", "tcp:ball")
                 )
                 hold(screen, spot, 20)
-                with viewport(screen, 1366, 768):
-                    wait_for_scene_idle(screen)
-                    evidence.capture("03-preview-drag-1366")
+                if evidence.enabled:
+                    with viewport(screen, 1366, 768):
+                        wait_for_scene_idle(screen)
+                        evidence.capture("03-preview-drag-1366")
                 wait_for_scene_idle(screen)
                 ActionChains(screen.selenium).release().perform()
                 wait(screen).until(
                     lambda _: not scene_js(screen, "return !!S.byName('tcp:ticks')")
+                )
+                # The drag's value, retyped, replaces the drag: the target ends
+                # exactly that far from where it started.
+                dragged = wait(screen).until(lambda _: gizmo_field(screen))
+                assert not dragged["typing"] and dragged["unit"] == "mm", dragged
+                screen.selenium.find_element(
+                    By.CSS_SELECTOR,
+                    ".wc-gizmo-field:not([hidden]) .wc-gizmo-field-value",
+                ).click()
+                wait(screen).until(lambda _: (f := gizmo_field(screen)) and f["typing"])
+                assert field_number(gizmo_field(screen)["input"]) == pytest.approx(
+                    field_number(dragged["value"])
+                )
+                ActionChains(screen.selenium).key_down(Keys.CONTROL).send_keys(
+                    "a"
+                ).key_up(Keys.CONTROL).send_keys("25", Keys.ENTER).perform()
+                wait(screen).until(
+                    lambda _: np.linalg.norm(
+                        np.subtract(
+                            run_in_app(lambda: scene._requested_edit_pose[:3]),
+                            initial[:3],
+                        )
+                    )
+                    == pytest.approx(0.025, abs=0.0002)
+                )
+                assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
+                    live
                 )
                 click_marked(screen, "edit-bar-confirm")
                 wait(screen).until(lambda _: not run_in_app(lambda: scene._edit_active))
@@ -174,90 +207,6 @@ class TestSceneEditing:
                 ActionChains(screen.selenium).release().perform()
                 if run_in_app(lambda: scene._edit_active):
                     click_marked(screen, "edit-bar-cancel")
-                close_panel(screen, "program-panel")
-
-    def test_joint_preview_dial_cancel_and_commit(self, class_screen):
-        screen = class_screen
-        screen_wait_for_scene_ready(screen, timeout_s=40)
-        at_start(screen)
-        scene = ui_state.urdf_scene
-        with (
-            viewport(screen, 1920, 1080),
-            camera_kept(screen),
-            program_previewed(EDIT_PROGRAM) as targets,
-        ):
-            evidence = VisualEvidence(
-                screen, "target-joint-hover", synchronized_frames=True
-            )
-            try:
-                scene_js(
-                    screen,
-                    "S.setCameraPose(arguments[0])",
-                    [0.36, -0.42, 0.5, 0, 0.06, 0.13],
-                )
-                wait_for_scene_idle(screen)
-                choose(
-                    screen,
-                    *scene_object_pixel(screen, f"targetgroup:{targets[-1]}"),
-                    "Edit Target...",
-                )
-                wait(screen).until(lambda _: run_in_app(lambda: scene._edit_active))
-                initial = run_in_app(scene.get_editing_angles)
-                live = waldoctl.commander.status.joints.angles.rad.copy()
-                grab_ring(screen, "link:L1", 0)
-                wait(screen).until(
-                    lambda _: scene_js(screen, "return S.glowing('link:L1')")
-                )
-                assert_dial_readable(screen)
-                evidence.capture("01-preview-dial-1920")
-                drag_dial(screen, 15)
-                wait(screen).until(
-                    lambda _: abs(run_in_app(scene.get_editing_angles)[0] - initial[0])
-                    > 0.1
-                )
-                assert_dial_readable(screen)
-                evidence.capture("02-preview-drag-1920")
-                assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
-                    live
-                )
-                ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
-                wait(screen).until(
-                    lambda _: np.allclose(run_in_app(scene.get_editing_angles), initial)
-                )
-                evidence.capture("03-cancelled-drag-1920")
-                with viewport(screen, 1366, 768):
-                    grab_ring(screen, "link:L1", 0)
-                    wait_for_scene_idle(screen)
-                    drag_dial(screen, 15)
-                    assert_dial_readable(screen)
-                    evidence.capture("04-preview-drag-1366")
-                    ActionChains(screen.selenium).release().perform()
-                    accepted_delta = (
-                        run_in_app(scene.get_editing_angles)[0] - initial[0]
-                    )
-                    click_marked(screen, "edit-bar-confirm")
-                    wait(screen).until(
-                        lambda _: not run_in_app(lambda: scene._edit_active)
-                    )
-                source = run_in_app(lambda: ui_state.active_textarea.value)
-                assert "rbt.move_l(" in source and "# TCP position · mm" in source
-                call = ast.parse(source).body[-1].value
-                pose = ast.literal_eval(
-                    next(k.value for k in call.keywords if k.arg == "pose")
-                )
-                assert pose[:2] == pytest.approx(
-                    [-280 * math.sin(accepted_delta), 280 * math.cos(accepted_delta)],
-                    abs=0.1,
-                )
-                assert abs(pose[0]) > 10
-                assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
-                    live
-                )
-                wait_for_scene_idle(screen)
-                evidence.capture("05-committed-1920")
-                evidence.finish()
-            finally:
-                evidence.stop()
-                ActionChains(screen.selenium).release().perform()
-                if run_in_app(lambda: scene._edit_active):
-                    click_marked(screen, "edit-bar-cancel")
+                # A failure before the panel opened must not hide behind this.
+                if screen.selenium.find_elements(By.CSS_SELECTOR, ".program-panel"):
+                    close_panel(screen, "program-panel")

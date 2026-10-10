@@ -215,15 +215,6 @@ async def test_scene_tints_repaints_and_redraws_links_tools_and_shapes(
         assert scene._shape_objects["shape:block"].color == SceneColors.COLLISION_HEX
         assert scene._link_to_meshes[link][0].color == SceneColors.COLLISION_HEX
 
-        # A joint-ring drag must also refresh the highlight — the status loop
-        # is skipped in EDITING.
-        session = scene._edit_session
-        turn = Drag(user, scene.scene, "joint").begin(session=session, joint=0, q=0.0)
-        turn.move(session=session, joint=0, q=0.3)
-        assert scene._editing_angles[0] == pytest.approx(0.3)
-        assert scene._editing_collision_q == tuple(scene._editing_angles)
-        turn.release(session=session, joint=0, q=0.3)
-
         # A command whose rows pass through the box is reported with its first
         # colliding row; a command that owns no rows is never checked. The
         # passed world is applied explicitly (a reused pool worker's checker
@@ -947,16 +938,23 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
         right_click(user, scene.scene, hits, ground)
         user.find(marker=item).click()
 
+    # Placed at once with a default size, then named in its inspector.
     menu([], "scene-add-box", [0.4, 0.1, 0.0])
-    await user.should_see(marker="shape-dialog-save")
-    name_el = list(user.find(marker="shape-dialog-name").elements)[-1]
+    await _until(
+        lambda: handle.confirmed
+        and not scene.object_history.busy
+        and len(handle.shapes) == 1
+        and scene._selected_objects == [f"shape:{handle.shapes[0].name}"],
+        "creation was not confirmed",
+    )
+    name_el = list(user.find(marker="object-name").elements)[-1]
     name_el.set_value("bench")
-    user.find(marker="shape-dialog-save").click()
+    user.find(marker="object-name").trigger("blur")
     await _until(
         lambda: handle.confirmed
         and not scene.object_history.busy
         and any(s.name == "bench" for s in handle.shapes),
-        "creation was not confirmed",
+        "the rename was not confirmed",
     )
 
     bench = next(s for s in handle.shapes if s.name == "bench")
@@ -1007,10 +1005,8 @@ async def test_keepout_editor_places_moves_edits_and_deletes(user: User) -> None
     )
     assert next(s for s in handle.shapes if s.name == "bench").x == pytest.approx(0.3)
 
-    # Delete — with confirmation.
+    # Delete — at once; undo brings it back.
     menu(["shape:bench"], "shape-menu-delete")
-    await user.should_see(marker="shape-delete-confirm")
-    user.find(marker="shape-delete-confirm").click()
     await _until(
         lambda: handle.confirmed
         and not scene.object_history.busy

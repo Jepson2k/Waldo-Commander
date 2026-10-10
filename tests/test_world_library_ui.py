@@ -42,9 +42,9 @@ async def test_workcell_library_save_load_undo_stale_file_and_insert(
     editor = await _start_recording(user)
     right_click(user, view.scene, [], [0.4, 0.1, 0])
     user.find(marker="scene-add-box").click()
-    field(user, "shape-dialog-name", "Fixture")
-    user.find(marker="shape-dialog-save").click()
     await confirmed(view, lambda: len(handle.shapes) == 1)
+    field(user, "object-name", "Fixture")
+    await confirmed(view, lambda: handle.shapes[0].name == "Fixture")
     original = handle.shapes[0]
 
     library(user, view)

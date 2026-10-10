@@ -3,7 +3,6 @@
 import pytest
 import waldoctl
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from tests.helpers.browser_helpers import (
@@ -13,6 +12,7 @@ from tests.helpers.browser_helpers import (
 )
 from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
+    gizmo_field,
     EDIT_PROGRAM,
     at_start,
     confirmed,
@@ -38,9 +38,9 @@ def _hold_resize(screen, axis=None, symmetric=False):
     for k in range(1, 11):
         pointer_to(screen, x + dx * k * 3, y + dy * k * 3, action)
     action.perform()
+    # The size change rides on the dragged handle.
     wait(screen).until(
-        lambda _: "Δ"
-        in screen.selenium.find_element(By.CSS_SELECTOR, ".wc-resize-value").text
+        lambda _: (f := gizmo_field(screen)) and not f["typing"] and f["unit"] == "mm"
     )
     return axis, sign
 
@@ -88,9 +88,10 @@ class TestPrimitiveResize:
                     edited, "xyz"[axis]
                 )
                 evidence.stop()
-                with viewport(screen, 1366, 768):
-                    wait_for_scene_idle(screen)
-                    evidence.capture("05-resize-inspector-1366")
+                if evidence.enabled:
+                    with viewport(screen, 1366, 768):
+                        wait_for_scene_idle(screen)
+                        evidence.capture("05-resize-inspector-1366")
                 evidence.finish()
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
                     live
@@ -166,10 +167,10 @@ class TestPrimitiveResize:
                 ActionChains(screen.selenium).release().perform()
                 wait(screen).until(lambda _: any(a.get("t") == "end" for a in queued))
                 wait(screen).until(
-                    lambda _: "Confirming resize"
-                    in screen.selenium.find_element(
-                        By.CSS_SELECTOR, ".wc-resize-readout"
-                    ).text
+                    lambda _: scene_js(
+                        screen,
+                        "return !!getElement(S.root).core.resizeHandles.confirming",
+                    )
                 )
 
                 def deliver_stale_events():

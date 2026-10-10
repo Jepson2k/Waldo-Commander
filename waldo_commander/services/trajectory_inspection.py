@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections import defaultdict
 from dataclasses import asdict, dataclass
@@ -32,18 +33,47 @@ _DECIMALS = 6
 MAX_SENT_ROWS = 3000
 
 
+def _cuts(record) -> np.ndarray:
+    """Where *record* is cut into spans for the browser: every block's first
+    row and the row after its last."""
+    rows = record.rows
+    cuts = {0, rows}
+    for b in record.blocks:
+        start = min(b.start_row, rows)
+        cuts.add(start)
+        cuts.add(min(start + b.rows, rows))
+    return np.array(sorted(cuts))
+
+
 def kept_rows(record) -> np.ndarray:
-    """The rows of *record* the browser is sent: every stride-th row, and
-    each block's first and last row so markers and block bounds stay exact."""
+    """The rows of *record* the browser is sent: each span between block
+    bounds thinned on a grid of its own, with its last row, so a block that
+    did not change keeps the same rows wherever it now starts."""
     rows = record.rows
     stride = -(-rows // MAX_SENT_ROWS)
     if stride <= 1:
         return np.arange(rows)
-    marks = [np.arange(0, rows, stride), np.array([rows - 1])]
-    for b in record.blocks:
-        start = min(b.start_row, rows - 1)
-        marks.append(np.array([start, min(start + max(1, b.rows), rows) - 1]))
+    cuts = _cuts(record)
+    marks = [
+        np.array([min(b.start_row, rows - 1)]) for b in record.blocks if not b.rows
+    ]
+    for a, b in zip(cuts[:-1], cuts[1:], strict=True):
+        if b > a:
+            marks += [np.arange(a, b, stride), np.array([b - 1])]
     return np.unique(np.concatenate(marks))
+
+
+def _chunk_payload(arrays: tuple) -> dict:
+    """One span's rows as the browser reads them."""
+    offsets, q, tcp, closed, valid, objects = arrays
+    return {
+        "offsets": offsets.tolist(),
+        "q": finite_list(q, _DECIMALS),
+        "tcp": finite_list(tcp, _DECIMALS),
+        "closed": finite_list(closed, _DECIMALS),
+        "valid": valid.tolist() if valid is not None else None,
+        "objects": [finite_list(p, _DECIMALS) for p in objects],
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,14 +105,23 @@ class TrajectoryInspection:
         self._comparison_task: asyncio.Task | None = None
         self._status_key = None
         #: The commanded record's entry, kept while only the prediction changes.
-        self._commanded: tuple[tuple, dict, np.ndarray] | None = None
+        self._commanded: tuple[tuple, dict, np.ndarray, dict] | None = None
+        #: Each span the paths are made of, by its content's key, as sent.
+        self._payloads: dict[str, dict] = {}
+        #: The spans the browser holds.
+        self._sent: set[str] = set()
 
     def remount(self) -> None:
-        """A view mounted again has the current paths from its snapshot; it
-        starts with no pin and numbers its events afresh."""
+        """A view mounted again holds no spans: it is sent the current paths
+        whole, starts with no pin and numbers its events afresh."""
         self.pinned = False
         self.cursor = None
         self.sequence = -1
+        if self.data is not None and self.owner.scene:
+            self._sent = set(self._payloads)
+            self.owner.scene.set_interaction(
+                pathData=dict(self.data, chunks=self._payloads)
+            )
         self.update()
 
     def clear(self) -> None:
@@ -164,15 +203,25 @@ class TrajectoryInspection:
             kept = kept_rows(record)
             self._commanded = (
                 commanded_key,
-                self._record(record, dry, "Commanded", kept),
-                kept,
+                *self._record(record, dry, "Commanded", kept),
             )
         records = [self._commanded[1]]
         self._kept = [self._commanded[2]]
+        spans = dict(self._commanded[3])
         if predicted is not None and predicted.rows:
             kept = kept_rows(predicted)
-            records.append(self._record(predicted, dry, "Predicted", kept))
+            entry, kept, predicted_spans = self._record(
+                predicted, dry, "Predicted", kept
+            )
+            records.append(entry)
             self._kept.append(kept)
+            spans.update(predicted_spans)
+        self._payloads = {
+            k: self._payloads.get(k) or _chunk_payload(arrays)
+            for k, arrays in spans.items()
+        }
+        unsent = {k: v for k, v in self._payloads.items() if k not in self._sent}
+        self._sent = set(self._payloads)
         self._block_index = [
             {
                 (b["command"], b["commandOccurrence"]): i
@@ -220,7 +269,7 @@ class TrajectoryInspection:
             "predictedColor": hex_of("physics-contact"),
             "predictionVisible": view.predicted_visible,
         }
-        scene.set_interaction(pathData=self.data)
+        scene.set_interaction(pathData=dict(self.data, chunks=unsent))
         self._status_key = None
         update_status()
         if predicted is not None and predicted.rows:
@@ -250,7 +299,11 @@ class TrajectoryInspection:
 
             self._comparison_task = background_tasks.create(compare())
 
-    def _record(self, record, dry, label: str, kept: np.ndarray) -> dict:
+    def _record(
+        self, record, dry, label: str, kept: np.ndarray
+    ) -> tuple[dict, np.ndarray, dict[str, tuple]]:
+        """*record*'s entry for the browser, the rows it keeps, and its spans'
+        rows by each span's content key."""
         from waldo_commander.services.urdf_scene.urdf_scene import object_render_poses
 
         blocks = []
@@ -292,41 +345,58 @@ class TrajectoryInspection:
                     },
                 }
             )
-        objects = []
+        nodes: list[int] = []
+        poses: list[np.ndarray] = []
         for obj in record.objects:
             key, drawn = self.owner._object_entry(obj.name)
             node = self.owner._shape_objects.get(key) if drawn else None
-            if node is not None:
-                poses = (
-                    obj.poses[np.minimum(kept, len(obj.poses) - 1)]
-                    if len(obj.poses)
-                    else obj.poses
+            if node is not None and len(obj.poses):
+                nodes.append(node.id)
+                at = obj.poses[np.minimum(kept, len(obj.poses) - 1)]
+                poses.append(
+                    np.round(object_render_poses(drawn.geometry[0], at), _DECIMALS)
                 )
-                objects.append(
-                    {
-                        "node": node.id,
-                        "poses": finite_list(
-                            object_render_poses(drawn.geometry[0], poses), _DECIMALS
-                        ),
-                    }
-                )
-        return {
+        q = np.round(record.joints_rad[kept], _DECIMALS)
+        tcp = np.round(record.tcp[kept], _DECIMALS)
+        closed = np.round(record.tool_closed[kept], _DECIMALS)
+        valid = record.valid[kept] if record.valid is not None else None
+        spans: list[dict] = []
+        arrays: dict[str, tuple] = {}
+        cuts = _cuts(record)
+        for a, b in zip(cuts[:-1], cuts[1:], strict=True):
+            i, j = np.searchsorted(kept, [a, b])
+            if j <= i:
+                continue
+            part = (
+                (kept[i:j] - a).astype(np.int64),
+                q[i:j],
+                tcp[i:j],
+                closed[i:j],
+                valid[i:j] if valid is not None else None,
+                tuple(p[i:j] for p in poses),
+            )
+            digest = hashlib.blake2b(repr(nodes).encode(), digest_size=12)
+            for values in (*part[:5], *part[5]):
+                if values is not None:
+                    digest.update(str(values.shape).encode())
+                    digest.update(np.ascontiguousarray(values).tobytes())
+            span_key = digest.hexdigest()
+            arrays.setdefault(span_key, part)
+            spans.append({"key": span_key, "base": int(a)})
+        entry = {
             "label": label,
             "dt": record.row_dt_s,
             "rows": len(kept),
-            "source": kept.tolist(),
             "dof": record.joints_rad.shape[1],
-            "q": finite_list(record.joints_rad[kept], _DECIMALS),
-            "tcp": finite_list(record.tcp[kept], _DECIMALS),
-            "closed": finite_list(record.tool_closed[kept], _DECIMALS),
-            "valid": record.valid[kept].tolist() if record.valid is not None else None,
             "continuous": [
                 self.owner.urdf_model.joint_map[n].joint_type == "continuous"
                 for n in self.owner.joint_names
             ],
             "blocks": blocks,
-            "objects": objects,
+            "objects": nodes,
+            "spans": spans,
         }
+        return entry, kept, arrays
 
     def view_row(self, record: int, row: int) -> int:
         """The sent row of *record* standing for its row *row*."""

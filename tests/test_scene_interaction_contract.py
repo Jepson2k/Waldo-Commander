@@ -226,9 +226,9 @@ async def test_a_drag_gone_quiet_ends_and_a_frame_the_arm_has_left_is_refused(
 async def test_edits_from_an_ended_session_change_nothing(user: User) -> None:
     """A keep-out let go after the AI or a program replaced it stays as they
     left it, and one let go of other than by its release never moves.
-    A joint turned for a target edit that has since ended leaves the next
-    edit alone, and when a joint turn ends the browser is sent every joint
-    as the edit has it, over anything older still on its way."""
+    A target dragged in an edit that has since ended leaves the next edit
+    alone; dragging a target moves it, never the arm, and letting go other
+    than by its release puts it and its frame back."""
     urdf = await _open(user)
     scene = urdf.scene
     handle = waldoctl.commander.scene
@@ -294,9 +294,12 @@ async def test_edits_from_an_ended_session_change_nothing(user: User) -> None:
         getattr(waldoctl.commander.status.pose, key)
         for key in ("x", "y", "z", "rx", "ry", "rz")
     )
-    q0 = urdf._editing_angles[0]
-    old = Drag(user, scene, "joint").begin(session=first, joint=0, q=q0)
-    old.move(session=first, joint=0, q=q0 + 0.2)
+    start = urdf._requested_edit_pose
+    old = gizmo(user, scene).move(**ball(x=0.02))
+    assert await held_until(old, lambda: urdf._requested_edit_pose != start, 5)
+    assert np.linalg.norm(
+        np.subtract(urdf._requested_edit_pose[:3], start[:3])
+    ) == pytest.approx(0.02)
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live_angles)
     assert tuple(
         getattr(waldoctl.commander.status.pose, key)
@@ -305,36 +308,17 @@ async def test_edits_from_an_ended_session_change_nothing(user: User) -> None:
     user.find(marker="edit-bar-cancel").click()
     session = edit_target()
     assert session != first
-    fresh = urdf._editing_angles[0]
-    old.move(session=first, joint=0, q=q0 + 0.5)
-    old.release(session=first, joint=0, q=q0 + 0.5)
-    assert urdf._editing_angles[0] == pytest.approx(fresh)
+    fresh = urdf._requested_edit_pose
+    old.move(**ball(x=0.05))
+    old.release(**ball(x=0.05))
+    assert urdf._requested_edit_pose == fresh
 
-    UserInteraction(user, {scene}, None).trigger("init")
-    await asyncio.sleep(0)
-    turn = Drag(user, scene, "joint").begin(session=session, joint=0, q=fresh)
-    with patch.object(scene.client, "run_javascript") as sent:
-        turn.move(session=session, joint=0, q=fresh + 0.2)
-        turn.release(session=session, joint=0, q=fresh + 0.3)
-        await asyncio.sleep(0)
-    vectors = [op[1] for op in _ops(sent) if op[0] == "q"]
-    assert vectors, "the edit's joints were never sent"
-    assert len(vectors[-1]) == len(urdf.joint_names), "only part of the arm was sent"
-    assert vectors[-1][0] == pytest.approx(fresh + 0.3, abs=1e-6)
-    assert urdf._editing_angles[0] == pytest.approx(fresh + 0.3)
-    preview_start = urdf.get_editing_angles()
-    tcp_start = urdf._get_editing_tcp_pose()
     translating = gizmo(user, scene).move(**ball(x=0.005))
-    assert await held_until(
-        translating,
-        lambda: np.linalg.norm(np.subtract(urdf.get_editing_angles(), preview_start))
-        > 1e-4,
-        5,
-    )
+    assert await held_until(translating, lambda: urdf._requested_edit_pose != fresh, 5)
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live_angles)
     translating.abort()
-    assert urdf.get_editing_angles() == pytest.approx(preview_start)
-    assert urdf._get_editing_tcp_pose() == pytest.approx(tcp_start)
+    assert urdf._requested_edit_pose == fresh
+    assert urdf._tcp_placed_pose == pytest.approx(fresh)
     user.find(marker="edit-bar-cancel").click()
 
 

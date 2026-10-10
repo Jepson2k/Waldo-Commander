@@ -45,7 +45,6 @@ export class Nodes {
       q: 0,
       axis: null,
       prismatic: false,
-      dragging: false,
       ready: Promise.resolve(true),
       gen: this.generation,
       deleted: false,
@@ -114,11 +113,11 @@ export class Nodes {
     if ("n" in state) this.rename(rec, state.n);
     if ("p" in state) {
       rec.base.p = state.p;
-      if (!rec.holds.position && !rec.dragging) obj.position.fromArray(state.p);
+      if (!rec.holds.position) obj.position.fromArray(state.p);
     }
     if ("r" in state) {
       rec.base.r = state.r;
-      if (!rec.holds.rotation && !rec.dragging) obj.quaternion.fromArray(state.r);
+      if (!rec.holds.rotation) obj.quaternion.fromArray(state.r);
     }
     if ("s" in state) {
       rec.base.s = state.s;
@@ -254,10 +253,10 @@ export class Nodes {
     this.core.requestRender();
   }
 
-  // The app's value for a joint; a joint being dragged shows the drag's.
+  // The app's value for a joint.
   setJoint(rec, value) {
     rec.q = value;
-    if (!rec.dragging) this.applyJoint(rec);
+    this.applyJoint(rec);
   }
 
   applyJoint(rec, node = rec.obj, q = rec.q) {

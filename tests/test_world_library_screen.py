@@ -139,12 +139,13 @@ class TestWorldLibrary:
                     )
                     evidence.stop()
                     close_panel(screen, "program-panel")
-                    with viewport(screen, 1366, 768):
-                        _library(screen)
-                        evidence.capture("05-library-1366")
-                        click_marked(screen, "workcell-close")
-                        click_object(screen, "shape:Fixture")
-                        evidence.capture("06-reloaded-inspector-1366")
+                    if evidence.enabled:
+                        with viewport(screen, 1366, 768):
+                            _library(screen)
+                            evidence.capture("05-library-1366")
+                            click_marked(screen, "workcell-close")
+                            click_object(screen, "shape:Fixture")
+                            evidence.capture("06-reloaded-inspector-1366")
                     evidence.finish()
                 finally:
                     evidence.stop()

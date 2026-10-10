@@ -145,6 +145,8 @@ export class Menu {
     if (this.dragging) return;
     const menu = this.menu;
     if (!menu || !menu.show) return;
+    // A menu that never finished closing ignores show(); close it first.
+    menu.hide();
     menu.show(new MouseEvent("contextmenu", { clientX: cx, clientY: cy }));
   }
 

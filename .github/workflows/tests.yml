@@ -180,12 +180,15 @@ jobs:
           python -V
           pip list
 
+      # Review screenshots and videos are opt-in (--evidence); one leg
+      # records them for the uploaded review media.
       - name: Run tests
         env:
           PYTHONUNBUFFERED: '1'
           PYTHONUTF8: '1'
+          EVIDENCE: ${{ (runner.os == 'Linux' && matrix.python == '3.13') && '--evidence' || '' }}
         run: |
-          pytest -vv --tb=long --log-cli-level=DEBUG
+          pytest -vv --tb=long --log-cli-level=DEBUG $EVIDENCE
 
       - name: Preserve test report
         if: always()
@@ -196,7 +199,7 @@ jobs:
           retention-days: 7
 
       - name: Preserve scene review media
-        if: always()
+        if: ${{ !cancelled() && runner.os == 'Linux' && matrix.python == '3.13' }}
         uses: actions/upload-artifact@v4
         with:
           name: scene-review-${{ matrix.os }}-python-${{ matrix.python }}
@@ -433,7 +436,7 @@ jobs:
         env:
           WALDO_PAR6_E2E: '1'
           PAR6D_BIN: ${{ github.workspace }}/par6/target/release/par6d
-        run: pytest -vv --tb=long --junitxml=test-results-comparison.xml tests/test_physics_comparison_screen.py
+        run: pytest -vv --tb=long --evidence --junitxml=test-results-comparison.xml tests/test_physics_comparison_screen.py
 
       - name: Preserve physics comparison evidence
         if: always()

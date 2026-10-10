@@ -138,10 +138,8 @@ export class Ring {
     return mesh;
   }
 
-  // On the joint's frame at `q`, snapping by `stepDeg`; `preview` while it
-  // turns an edited target's joint, not the arm's.
-  show(frame, q, stepDeg, preview) {
-    this.spec.preview = preview;
+  // On the joint's frame at `q`, snapping by `stepDeg`.
+  show(frame, q, stepDeg) {
     this.stepDeg = stepDeg;
     this.q0 = null;
     frame.add(this.group);
@@ -248,7 +246,7 @@ export class Ring {
 
   relabel() {
     const deg = panelDegrees(this.spec.panel, this.q);
-    const title = `${this.spec.name} · ${this.spec.preview ? "preview" : this.q0 === null ? "actual" : "target"}`;
+    const title = `${this.spec.name} · ${this.q0 === null ? "actual" : "target"}`;
     setText(this.title, title);
     setText(this.value, `${unsigned(deg)}°`);
     setText(this.delta, this.q0 === null ? "" : `Δ ${signed(deg - panelDegrees(this.spec.panel, this.q0))}°`);

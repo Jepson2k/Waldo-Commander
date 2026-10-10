@@ -1,7 +1,6 @@
 import * as THREE from "three";
-import { mm, signed } from "./handles.js";
-import { setText } from "./dom.js";
-import { GAP } from "./overlays.js";
+import { TAP_PX } from "./handles.js";
+import { FIELD_AVOIDS, HandleField, amount } from "./precision.js";
 import { facingPlane } from "./pointer.js";
 
 const axisVector = (axis, out) => out.set(0, 0, 0).setComponent(axis, 1);
@@ -10,19 +9,22 @@ const normal = new THREE.Vector3();
 const eye = new THREE.Vector3();
 const rotation = new THREE.Quaternion();
 const at = [0, 0, 0];
-// The card sits off the object's centre, past its handles.
-const ACROSS = 45, DOWN = 55;
+const from = [0, 0, 0];
 // How far round a handle's centre a card keeps clear, in pixels.
 const HANDLE_PAD = 14;
 
 // Handles on a selected primitive's faces that resize it along its own axes:
 // the opposite face stays put, or with shift the size grows from the centre.
+// The change rides on the handle; a handle clicked, or that value clicked
+// after a drag, takes a typed change.
 export class PrimitiveResize {
   constructor(core) {
     this.core = core;
     this.spec = null;
     this.drag = null;
     this.confirming = null; // a released resize, until the app answers it
+    this.entry = null; // a change being typed: {mesh, symmetric, base}
+    this.settled = null; // the last drag's change: {mesh, symmetric, change, key, text}
     this.screenBox = { left: 0, top: 0, right: 0, bottom: 0 };
     this.screenBoxes = [this.screenBox];
     this.group = new THREE.Group();
@@ -40,21 +42,16 @@ export class PrimitiveResize {
       this.group.add(mesh);
       this.handles.push(mesh);
     }
-    this.card = document.createElement("div");
-    this.card.className = "wc-gizmo-readout wc-resize-readout";
-    this.card.hidden = true;
-    this.card.innerHTML = '<div class="wc-gizmo-title">Resize · local axes</div><div class="wc-resize-value"></div><div class="wc-gizmo-hint">Dimensions in the inspector · Esc cancels</div>';
-    core.root.append(this.card);
-    core.overlays.track("resize", this.card);
-    this.title = this.card.querySelector(".wc-gizmo-title");
-    this.value = this.card.querySelector(".wc-resize-value");
+    this.field = new HandleField(core, "resizeValue", {open: () => this.reopen(), commit: (v) => this.commit(v),
+      cancel: () => this.closeEntry(), cycle: (step) => this.cycle(step)});
   }
 
   load(spec) {
     const next = spec?.mode==="resize" && spec.axes ? spec : null;
     if(this.drag && (!next || next.node!==this.spec.node || next.session!==this.spec.session || next.revision!==this.spec.revision))this.core.gestures.abort("shape changed");
+    if(!next || next.node!==this.spec?.node || next.session!==this.spec?.session){this.closeEntry();this.settled=null;}
     this.spec=next;
-    if(!next){this.group.visible=false;this.card.hidden=true;}
+    if(!next){this.group.visible=false;this.field.hide();}
     this.core.requestRender();
   }
 
@@ -70,7 +67,6 @@ export class PrimitiveResize {
   layoutHandles() {
     const core=this.core, spec=this.spec, rec=spec && core.nodes.get(spec.node);
     this.group.visible=!!rec?.obj.visible;
-    this.card.hidden=!this.group.visible;
     if(!this.group.visible) {
       core.overlays.mark("resizeHandles",null);
       return;
@@ -105,21 +101,77 @@ export class PrimitiveResize {
     core.overlays.mark("resizeHandles",box.left<box.right?this.screenBoxes:null);
   }
 
-  // The card reads the size, and the change while dragging, beside the object.
+  // The change rides on its handle: the one being dragged, typed along, or
+  // last let go.
   layout() {
-    if(!this.group.visible)return;
-    const spec=this.spec,dimensions=this.dimensions;
-    if(this.drag) {
-      const d=this.drag, change=d.dimensions[d.key]-spec.dimensions[d.key];
-      setText(this.value,`${d.key.toUpperCase()} ${mm(d.dimensions[d.key])} mm · Δ ${signed(change*1000)}`);
-    } else setText(this.value,Object.entries(dimensions).map(([key,value])=>`${key.toUpperCase()} ${mm(value)}`).join(" · ")+" mm");
-    setText(this.title,this.confirming && !this.drag?"Confirming resize":this.drag ? (this.drag.symmetric?"Resize · from center":"Resize · fixed opposite face") : "Resize · local axes");
-    const overlays=this.core.overlays,card=overlays.sized("resize");
-    if(!card)return;
-    const [x,y]=overlays.project(center,at),{w,h}=card;
-    const bounds={...overlays.bounds(),left:this.core.layoutInset.left+GAP};
-    const seat=overlays.seat([[x+ACROSS,y+DOWN],[x-ACROSS-w,y+DOWN],[x+ACROSS,y-DOWN-h],[x-ACROSS-w,y-DOWN-h]],w,h,{bounds,obstacles:overlays.obstacles(["inspector"])});
-    overlays.place(card,seat.x,seat.y);
+    if(!this.group.visible){this.field.hide();return;}
+    const d=this.drag,e=this.entry,s=this.settled;
+    let mesh;
+    if(d){mesh=d.mesh;this.field.show(d.text,"mm",d.key);}
+    else if(e)mesh=e.mesh;
+    else if(s){mesh=s.mesh;this.field.show(s.text,"mm",s.key);}
+    else {this.field.hide();return;}
+    const overlays=this.core.overlays;
+    overlays.project(mesh.position,at);overlays.project(center,from);
+    this.field.place(at,from,overlays.obstacles(FIELD_AVOIDS));
+  }
+
+  // A handle let go where it was pressed, or the value left by a drag
+  // clicked: a change to type along it, from what the drag did.
+  openEntry(mesh,symmetric,base) {
+    this.entry={mesh,symmetric,base};
+    this.field.edit(base?String(Number(base.toFixed(2))):"","mm",this.dimension(mesh.userData.axis));
+    this.core.requestRender();
+  }
+
+  reopen() {
+    const s=this.settled;
+    if(s && !this.drag && !this.confirming)this.openEntry(s.mesh,s.symmetric,s.change*1000);
+  }
+
+  // Tab: the next of the primitive's dimensions, from the handle on the same side.
+  cycle(step) {
+    const e=this.entry;if(!e)return;
+    const {axis,sign}=e.mesh.userData,key=this.dimension(axis);
+    for(let k=1;k<3;k++) {
+      const next=(axis+step*k+3)%3,nextKey=this.dimension(next);
+      if(nextKey===key)continue;
+      const mesh=this.handles.find(h=>h.userData.axis===next&&h.userData.sign===sign);
+      this.openEntry(mesh,nextKey==="radius"||e.symmetric&&key!=="radius",0);
+      return;
+    }
+  }
+
+  closeEntry() {
+    if(!this.entry)return;
+    this.entry=null;this.field.close();
+    this.core.requestRender();
+  }
+
+  // Anything else pressed: the change on the handles goes.
+  dismiss() {
+    this.closeEntry();this.settled=null;
+  }
+
+  // The typed change replaces what the last drag did along that dimension.
+  commit(value) {
+    const e=this.entry,spec=this.spec;
+    if(!e || !spec || this.drag || this.confirming){this.closeEntry();return;}
+    const key=this.dimension(e.mesh.userData.axis),change=(value-e.base)/1000;
+    const size=spec.dimensions[key]+change;
+    if(!(size>0)){this.field.invalid();return;}
+    this.closeEntry();
+    if(change!==0) {
+      const d=this.start(e.mesh,e.symmetric,this.core.pointer.lastPointerId);
+      if(!d)return;
+      this.resizeTo(d,size);this.release();
+    }
+    this.settle(e.mesh,e.symmetric,value/1000,null);
+  }
+
+  // The change a resize leaves on its handle, until anything else is pressed.
+  settle(mesh,symmetric,change,step) {
+    this.settled={mesh,symmetric,change,key:this.dimension(mesh.userData.axis),text:amount(change*1000,step&&step*1000)};
   }
 
   // ---- the pointer's tool ---------------------------------------------------
@@ -133,23 +185,37 @@ export class PrimitiveResize {
   begin(e) {
     const mesh=this.hit(e.clientX,e.clientY);
     if(!mesh)return null;
-    const core=this.core,spec=this.spec,rec=core.nodes.get(spec.node);
-    const {axis,sign}=mesh.userData, key=this.dimension(axis);
-    const direction=axisVector(axis,new THREE.Vector3()).applyQuaternion(rotation.fromArray(spec.quaternion)).multiplyScalar(sign);
-    const ray=core.pointer.aim(e.clientX,e.clientY).ray;
+    const ray=this.core.pointer.aim(e.clientX,e.clientY).ray;
+    const direction=this.direction(mesh,new THREE.Vector3());
     const plane=facingPlane(ray,direction,mesh.position,new THREE.Plane(),1e-4);
     const start=plane && ray.intersectPlane(plane,new THREE.Vector3());
     if(!start)return null;
-    const symmetric=key==="radius" || e.shiftKey;
-    const g=core.gestures.begin("shape",{session:spec.session,node:spec.node,revision:spec.revision,axis,sign,symmetric},e.pointerId,()=>this.finish(false));
+    const d=this.start(mesh,this.dimension(mesh.userData.axis)==="radius" || e.shiftKey,e.pointerId);
+    if(!d)return null;
+    Object.assign(d,{plane,start,x:e.clientX,y:e.clientY,step:this.core.gizmos.precision.incrementAt(mesh.position,"translate")});
+    return {g:d.g,move:(event)=>this.move(event),release:(event)=>this.release(event),cancel:(reason)=>this.core.gestures.abort(reason)};
+  }
+
+  // Outward through `mesh`'s face, in the world.
+  direction(mesh,out) {
+    const {axis,sign}=mesh.userData;
+    return axisVector(axis,out).applyQuaternion(rotation.fromArray(this.spec.quaternion)).multiplyScalar(sign);
+  }
+
+  // A resize gesture through `mesh`, or null if none may begin.
+  start(mesh,symmetric,pointerId) {
+    const core=this.core,spec=this.spec,rec=core.nodes.get(spec.node);
+    if(!rec)return null;
+    const {axis,sign}=mesh.userData;
+    const g=core.gestures.begin("shape",{session:spec.session,node:spec.node,revision:spec.revision,axis,sign,symmetric},pointerId,()=>this.finish(false));
     if(!g)return null;
     core.fx.finish(rec);
     core.gestures.hold(g,rec,"scale","position");
-    this.drag={g,mesh,rec,axis,sign,key,direction,plane,start,symmetric,
-      dimensions:{...spec.dimensions},position:rec.obj.position.clone(),scale:rec.obj.scale.clone(),
-      step:core.gizmos.precision.incrementAt(mesh.position,"translate")};
+    this.dismiss();
+    this.drag={g,mesh,rec,axis,sign,key:this.dimension(axis),direction:this.direction(mesh,new THREE.Vector3()),symmetric,step:null,
+      dimensions:{...spec.dimensions},position:rec.obj.position.clone(),scale:rec.obj.scale.clone(),text:amount(0,null)};
     core.requestRender();
-    return {g,move:(event)=>this.move(event),release:()=>this.release(),cancel:(reason)=>core.gestures.abort(reason)};
+    return this.drag;
   }
 
   move(e) {
@@ -160,7 +226,12 @@ export class PrimitiveResize {
     const factor=d.key!=="radius" && d.symmetric?2:1;
     let change=at.sub(d.start).dot(d.direction)*factor;
     if(d.step)change=Math.round(change/d.step)*d.step;
-    const size=Math.max(.0001,this.spec.dimensions[d.key]+change);
+    this.resizeTo(d,Math.max(.0001,this.spec.dimensions[d.key]+change));
+  }
+
+  // The object drawn at `size` along the drag's dimension.
+  resizeTo(d,size) {
+    if(size!==d.dimensions[d.key])d.text=amount((size-this.spec.dimensions[d.key])*1000,d.step&&d.step*1000);
     d.dimensions[d.key]=size;
     const ratio=size/this.spec.dimensions[d.key];
     d.rec.obj.scale.copy(d.scale);
@@ -174,20 +245,34 @@ export class PrimitiveResize {
     this.core.requestRender();
   }
 
-  release() {
+  // Let go where it was pressed, a handle resizes nothing: its change is typed.
+  release(e=null) {
     const d=this.drag;
     if(!d)return;
+    if(e && Math.hypot(e.clientX-d.x,e.clientY-d.y)<=TAP_PX) {
+      this.core.gestures.abort("click");
+      this.openEntry(d.mesh,d.symmetric,0);
+      return;
+    }
     const fields={session:this.spec.session,node:this.spec.node,size:d.dimensions[d.key]};
     this.finish(true);
-    this.core.gestures.release(d.g,fields,()=>{this.confirming=null;this.core.requestRender();});
+    this.core.gestures.release(d.g,fields,(confirmed)=>{
+      this.confirming=null;
+      if(!confirmed)this.settled=null;
+      this.core.requestRender();
+    });
   }
 
-  // A released resize shows its size until the app answers; an aborted one
-  // goes back as the gesture lets go of the object.
+  // A released resize shows its size until the app answers, and leaves its
+  // change on the handle; an aborted one goes back as the gesture lets go of
+  // the object.
   finish(released) {
     const d=this.drag;if(!d)return;
     this.drag=null;
-    if(released)this.confirming={rec:d.rec,dimensions:d.dimensions};
+    if(released) {
+      this.confirming={rec:d.rec,dimensions:d.dimensions};
+      this.settle(d.mesh,d.symmetric,d.dimensions[d.key]-this.spec.dimensions[d.key],d.step);
+    }
     this.core.requestRender();
   }
 
@@ -197,6 +282,6 @@ export class PrimitiveResize {
   }
 
   dispose() {
-    this.group.removeFromParent();this.geometry.dispose();this.material.dispose();this.card.remove();
+    this.group.removeFromParent();this.geometry.dispose();this.material.dispose();this.field.node.remove();
   }
 }

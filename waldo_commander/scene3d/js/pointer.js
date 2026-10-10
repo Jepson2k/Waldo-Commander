@@ -12,14 +12,13 @@
 // the shown ring's grip and the gizmo, and nodes that glow.
 
 import * as THREE from "three";
-import { GIZMO, Hover, RingDrag, panelDegrees } from "./handles.js";
+import { GIZMO, Hover, RingDrag, TAP_PX, panelDegrees } from "./handles.js";
 import { Ring, label } from "./rings.js";
 import { niceStep } from "./precision.js";
 import { overlap } from "./overlays.js";
 import { setStyle } from "./dom.js";
 import { shown, visibleHit } from "./section.js";
 
-const TAP_PX = 6;
 const NONE = [];
 const place = new THREE.Vector3();
 const at = [0, 0, 0];
@@ -104,9 +103,11 @@ export class Pointer {
     return this.core.ix.rules || {};
   }
 
+  // While a target is edited only its gizmo answers; the dials are the arm's.
   allowed(target) {
     const rules = this.rules;
-    if (!this.editing && (rules.suspended || !rules.available)) return false;
+    if (this.editing) return target === GIZMO;
+    if (rules.suspended || !rules.available) return false;
     if (target === GIZMO) return rules.gizmo !== "hidden";
     const u = Number(target.slice(5));
     return !!(this.core.ix.rings || {})[u];
@@ -114,7 +115,7 @@ export class Pointer {
 
   refresh() {
     if(this.glowing?.source && !this.allowed(this.glowing.source))this.setGlow(null);
-    if (this.rules.suspended && !this.editing) {
+    if (this.rules.suspended) {
       this.hover.target = null;
       this.hover.pinned = false;
       this.hover.graceAt = null;
@@ -151,7 +152,7 @@ export class Pointer {
     if (!joint || !frame) return;
     let ring = this.rings.get(u);
     if (!ring) this.rings.set(u, (ring = new Ring(this.core, { ...spec, u })));
-    ring.show(frame.obj, joint.q, this.jointStep(spec), this.editing);
+    ring.show(frame.obj, joint.q, this.jointStep(spec));
     this.ring = ring;
   }
 
@@ -335,6 +336,9 @@ export class Pointer {
   down(e) {
     if (e.button !== 0 || e.ctrlKey || this.drag || this.core.gestures.blocked) return;
     const x = e.clientX, y = e.clientY;
+    // A press anywhere in the view puts away the values riding on the handles.
+    this.core.gizmos.precision.dismiss();
+    this.core.resizeHandles.dismiss();
     for (const tool of this.tools) {
       if (!tool.hit(x, y)) continue;
       this.suppressTap(e.pointerId);
@@ -480,16 +484,9 @@ export class Pointer {
     if (!at) return null;
     const spec = this.core.ix.rings[ring.u];
     const drag = new RingDrag(ring.q, at[0], at[1], spec.radius, spec.lo, spec.hi);
-    const edit = this.editing ? this.core.ix.edit : null;
-    const fields = edit ? {session: edit.session, joint: ring.u, q: ring.q} : {joint: spec.panel[0]};
-    const g = this.core.gestures.begin(edit ? "joint" : "ring", fields, e.pointerId, () => this.endRing(false));
+    const g = this.core.gestures.begin("ring", {joint: spec.panel[0]}, e.pointerId, () => this.endRing(false));
     if (!g) return null;
-    const rec = edit ? this.core.nodes.get(spec.joint) : null;
-    this.ringDrag = { g, drag, ring, rec, session: edit?.session, step: ring.stepDeg };
-    if (rec) {
-      rec.dragging = true;
-      this.core.gizmos.showGizmo(false);
-    }
+    this.ringDrag = { g, drag, ring, step: ring.stepDeg };
     ring.grab();
     return { g, move: (event) => this.trackRing(event), release: (event) => this.releaseRing(event), cancel: (reason) => this.core.gestures.abort(reason) };
   }
@@ -503,24 +500,16 @@ export class Pointer {
     const q = rd.drag.value(rd.step * Math.PI / 180);
     if (q === rd.ring.q) return;
     rd.ring.place(q);
-    if (rd.rec) {
-      rd.rec.obj.quaternion.setFromAxisAngle(rd.rec.axis, q);
-      this.core.requestRender();
-    }
-    this.core.gestures.sample(rd.g, this.ringFields(rd));
+    this.core.gestures.sample(rd.g, {delta: this.ringDelta(rd)});
   }
 
   releaseRing(e) {
     const rd = this.ringDrag;
     if (!rd) return;
     this.trackRing(e);
-    const fields = this.ringFields(rd);
+    const fields = {delta: this.ringDelta(rd)};
     this.endRing(true);
     this.core.gestures.release(rd.g, fields);
-  }
-
-  ringFields(rd) {
-    return rd.rec ? {session: rd.session, joint: rd.ring.u, q: rd.ring.q} : {delta: this.ringDelta(rd)};
   }
 
   ringDelta(rd) {
@@ -532,12 +521,6 @@ export class Pointer {
     const rd = this.ringDrag;
     if (!rd) return;
     this.ringDrag = null;
-    if (rd.rec) {
-      rd.rec.dragging = false;
-      rd.rec.q = released ? rd.ring.q : rd.drag.q0;
-      this.core.nodes.applyJoint(rd.rec);
-      this.core.gizmos.showGizmo(this.editing);
-    }
     rd.ring.letGo();
     rd.ring.setStep(this.jointStep(rd.ring.spec));
     if (!released) this.followRing();

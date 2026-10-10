@@ -141,14 +141,18 @@ PATH_PROGRAM = """from parol6 import RobotClient
 import time
 rbt = RobotClient()
 rbt.move_j([85, -85, 175, 5, 5, 175], speed=0.5)
-rbt.move_l([0, 280, 250, 90, 0, 90], speed=0.5)
-rbt.move_l([-45, 245, 250, 90, 0, 90], speed=0.5)
-rbt.move_l([45, 310, 250, 90, 0, 90], speed=0.5)
+rbt.move_l([0, 260, 300, 90, 0, 90], speed=0.5)
+rbt.move_l([-110, 210, 250, 90, 0, 90], speed=0.5)
+rbt.move_l([90, 330, 250, 90, 0, 90], speed=0.5)
 time.sleep(0.8)
-rbt.move_l([-45, 310, 250, 90, 0, 90], speed=0.5)
-rbt.move_l([45, 245, 250, 90, 0, 90], speed=0.5)
-rbt.move_l([45, 245, 250, 90, 0, 105], speed=0.5)
+rbt.move_l([-90, 330, 250, 90, 0, 90], speed=0.5)
+rbt.move_l([110, 210, 250, 90, 0, 90], speed=0.5)
+rbt.move_l([110, 210, 250, 90, 0, 105], speed=0.5)
 """
+
+
+#: A camera on the middle of PATH_PROGRAM's path, close enough to follow it.
+PATH_VIEW = [0.316, 0.546, 0.532, 0, 0.27, 0.25]
 
 
 @contextmanager
@@ -200,6 +204,21 @@ def tcp_mm() -> np.ndarray:
     return np.array([pose.x, pose.y, pose.z], dtype=float)
 
 
+def ball_mm(screen: Screen) -> np.ndarray:
+    """Where the browser draws the gizmo's ball, in mm: during a drag, where
+    the drag has taken it; the frame stays where the drag began."""
+    return (
+        np.array(
+            scene_js(
+                screen,
+                "const b = S.byName('tcp:ball');"
+                "return b.getWorldPosition(b.position.clone()).toArray();",
+            )
+        )
+        * 1000.0
+    )
+
+
 def frame_mm(screen: Screen) -> np.ndarray:
     """Where the browser draws the gizmo's frame, in mm."""
     return (
@@ -240,6 +259,37 @@ def hold(screen, spot, length=20, *, kind="tcp"):
     wait(screen).until(
         lambda _: scene_js(screen, "return !!S.byName(arguments[0])", f"{kind}:ticks")
     )
+
+
+def click_spot(screen, spot) -> None:
+    """Press and release the handle at ``spot`` without moving: a click."""
+    action = ActionChains(screen.selenium, duration=0)
+    pointer_to(screen, spot[0], spot[1], action)
+    action.click()
+    action.perform()
+
+
+def gizmo_field(screen) -> dict | None:
+    """The value riding on a gizmo handle, or None when none shows: whether
+    it is being typed, its shown value and unit, what it names (its
+    aria-label), and the typed text."""
+    return scene_js(
+        screen,
+        """
+        const f = [...document.querySelectorAll('.wc-gizmo-field')].find((e) => !e.hidden);
+        if (!f) return null;
+        const v = f.querySelector('.wc-gizmo-field-value'), i = f.querySelector('input');
+        return {typing: !i.hidden, value: v.textContent,
+                unit: f.querySelector('.wc-gizmo-field-unit').textContent,
+                label: (i.hidden ? v : i).getAttribute('aria-label') || '',
+                input: i.value};
+        """,
+    )
+
+
+def field_number(text: str) -> float:
+    """A value as the field shows it ("+12", "−3.5") as a number."""
+    return float(text.replace("−", "-"))
 
 
 def grab_ring(screen: Screen, link: str, u: int) -> tuple[dict, float]:
@@ -350,7 +400,7 @@ def choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
             if e.is_displayed()
         ]
         texts = [e.text.strip() for e in shown]
-        if item not in texts and (" Here..." in item or item.startswith("Draw ")):
+        if item not in texts and (item.endswith(" here") or item.startswith("Draw ")):
             # Empty space files keep-outs under "Create keep-out", an object's
             # face under "Draw keep-out".
             submenu = next(
@@ -385,7 +435,22 @@ def choose(screen: Screen, x: float, y: float, item: str) -> list[str]:
             ignored_exceptions=(StaleElementReferenceException,),
         ).until(shown_item)
     except TimeoutException:
-        raise AssertionError(f"no {item!r} in the menu: {offered}") from None
+        browser = scene_js(
+            screen,
+            "const c=getElement(S.root).core;"
+            "return {blocks:[...c.gestures.blocks],live:c.live,"
+            "gesture:c.gestures.active,drag:!!c.pointer.drag,gen:c.menu.gen,"
+            "pending:c.menu.pending&&c.menu.pending.gen,epoch:c.gestures.epoch}",
+        )
+        app = run_in_app(
+            lambda: {
+                "epoch": ui_state.urdf_scene.scene.gestures.epoch,
+                "control": ui_state.urdf_scene._has_control(),
+            }
+        )
+        raise AssertionError(
+            f"no {item!r} in the menu: {offered}; browser {browser}, app {app}"
+        ) from None
     # A closing menu still covers the canvas and would swallow the next press.
     # The app closes it, after whatever the item set off.
     wait(screen, 10).until(lambda _: no_visible(screen, ".q-menu"))
@@ -460,16 +525,51 @@ def confirmed(screen, predicate=lambda: True):
     wait_for_scene_idle(screen)
 
 
-def create_shape(screen, kind, name):
-    """Create a ``kind`` keep-out named ``name`` on the floor, turn it and
-    open its resize handles."""
-    point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
-    choose(screen, *point[:2], f"{kind.capitalize()} Here...")
-    fill(screen, "shape-dialog-name", name)
-    click_marked(screen, "shape-dialog-save")
-    confirmed(
-        screen, lambda: any(s.name == name for s in waldoctl.commander.scene.shapes)
+def place_shape(screen, kind, x, y, name=None):
+    """Place a default ``kind`` keep-out at viewport (x, y) from the menu,
+    wait until it is selected and, given ``name``, rename it. Its name."""
+    before = {s.name for s in waldoctl.commander.scene.shapes}
+    choose(screen, x, y, f"{kind.capitalize()} here")
+    placed = poll(
+        lambda: next(
+            (
+                s.name
+                for s in run_in_app(lambda: list(waldoctl.commander.scene.shapes))
+                if s.name not in before
+            ),
+            None,
+        ),
+        10.0,
+        f"the placed {kind}",
     )
+    wait(screen).until(
+        lambda _: run_in_app(
+            lambda: ui_state.urdf_scene._selected_objects == [f"shape:{placed}"]
+        )
+    )
+    confirmed(screen)
+    if name is not None:
+        fill(screen, "object-name", name)
+        confirmed(
+            screen,
+            lambda: any(s.name == name for s in waldoctl.commander.scene.shapes),
+        )
+        placed = name
+    return placed
+
+
+def create_shape(screen, kind, name):
+    """Place a ``kind`` keep-out named ``name`` on the floor, turn it and
+    open its resize handles."""
+    # An earlier object left selected keeps its handles out over the floor.
+    if run_in_app(lambda: bool(ui_state.urdf_scene._selected_objects)):
+        click_marked(screen, "object-close")
+        wait(screen).until(
+            lambda _: not run_in_app(lambda: ui_state.urdf_scene._selected_objects)
+        )
+        wait_for_scene_idle(screen)
+    point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
+    place_shape(screen, kind, *point[:2], name)
     object_mode(screen, "Move")
     fill(screen, "object-rz", 30)
     confirmed(screen, lambda: waldoctl.commander.scene.shapes[-1].pose[5] > 0.5)
@@ -485,11 +585,17 @@ def object_mode(screen, label):
 
     def clicked(_) -> bool:
         try:
-            marked_element(screen, "object-transform").find_element(
+            button = marked_element(screen, "object-transform").find_element(
                 By.XPATH, f".//button[.//*[normalize-space()='{label}']]"
-            ).click()
+            )
+            # A short card scrolls, and its other rows can cover the toggle.
+            screen.selenium.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'})", button
+            )
+            button.click()
         except (
             ElementClickInterceptedException,
+            ElementNotInteractableException,
             NoSuchElementException,
             StaleElementReferenceException,
         ):

@@ -1,4 +1,9 @@
-"""Inspectable screenshots and animation from real browser interactions."""
+"""Inspectable screenshots and animation from real browser interactions.
+
+Recording is opt-in: ``pytest --evidence`` turns it on. Without the flag a
+``VisualEvidence`` records nothing and ``preserve_capture_buffers`` leaves the
+page alone, so a normal run pays nothing for the review captures.
+"""
 
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,6 +22,14 @@ from urllib.request import urlopen
 
 from PIL import Image
 
+#: Set from ``--evidence`` by tests/conftest.py.
+ENABLED = False
+
+
+def enabled() -> bool:
+    """Whether this run records review evidence."""
+    return ENABLED
+
 
 @contextmanager
 def preserve_capture_buffers(screen):
@@ -25,6 +38,9 @@ def preserve_capture_buffers(screen):
     Only visual evidence uses this context. Performance measurements use the
     ordinary renderer; preserving a drawing buffer changes its GPU costs.
     """
+    if not ENABLED:
+        yield
+        return
     driver = screen.selenium
     registration = driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
@@ -49,6 +65,11 @@ def preserve_capture_buffers(screen):
 class VisualEvidence:
     def __init__(self, screen, name: str, *, synchronized_frames=False):
         self.screen = screen
+        self.enabled = ENABLED
+        self.video_thread = None
+        self.video_stop = threading.Event()
+        if not self.enabled:
+            return
         self.root = Path(".scene-evidence") / name
         self.root.mkdir(parents=True, exist_ok=True)
         for pattern in (
@@ -66,7 +87,6 @@ class VisualEvidence:
         self.video_frames = []
         self.video_error = None
         self.synchronized_frames = synchronized_frames
-        self.video_stop = threading.Event()
         screen.selenium.execute_script("""
         if (!window.__sceneEvidencePointer) {
           const pointer = document.createElement('div');
@@ -79,7 +99,6 @@ class VisualEvidence:
         address = screen.selenium.capabilities.get("goog:chromeOptions", {}).get(
             "debuggerAddress"
         )
-        self.video_thread = None
         if address:
             with urlopen(f"http://{address}/json", timeout=5) as response:
                 pages = json.load(response)
@@ -210,6 +229,8 @@ class VisualEvidence:
                 connection.close()
 
     def capture(self, name: str) -> None:
+        if not self.enabled:
+            return
         import waldoctl
         from waldo_commander.state import ui_state
 
@@ -231,6 +252,8 @@ class VisualEvidence:
         )
 
     def finish(self) -> None:
+        if not self.enabled:
+            return
         self.stop()
         assert self.video_error is None, (
             f"Browser video recording failed: {self.video_error}"

@@ -16,7 +16,7 @@ from tests.helpers.browser_helpers import (
     run_in_app,
     viewport,
 )
-from tests.helpers.browser_session import wait
+from tests.helpers.browser_session import no_visible, wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     at_start,
@@ -65,7 +65,7 @@ class TestObjectIsolation:
             scene_js(
                 screen,
                 "S.setCameraPose(arguments[0])",
-                [0.9, -0.9, 0.75, 0.22, 0, 0.12],
+                [0.628, -0.54, 0.498, 0.22, 0, 0.12],
             )
             with program_previewed(EDIT_PROGRAM):
                 view = ui_state.urdf_scene
@@ -118,6 +118,15 @@ class TestObjectIsolation:
                     assert control_lease.generation == lease
                     np.testing.assert_allclose(
                         waldoctl.commander.status.joints.angles.rad, live, atol=1e-6
+                    )
+                    # Isolating rebuilds the inspector; its actions menu is
+                    # still closing over it until it is seated again.
+                    wait(screen).until(lambda _: no_visible(screen, ".q-menu"))
+                    wait(screen).until(
+                        lambda _: screen.selenium.execute_script(
+                            "const c=document.querySelector('.wc-object-inspector');"
+                            "return !!c && getComputedStyle(c).visibility==='visible'"
+                        )
                     )
                     click_marked(screen, "object-close")
                     wait_for_scene_idle(screen)

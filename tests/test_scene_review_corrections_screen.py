@@ -5,6 +5,7 @@ import json
 import numpy as np
 import pytest
 import waldoctl
+from scipy.spatial.transform import Rotation
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -21,11 +22,13 @@ from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     PATH_PROGRAM,
+    PATH_VIEW,
     at_start,
     camera_kept,
     choose,
-    drag_dial,
-    fill,
+    click_spot,
+    frame_mm,
+    gizmo_field,
     grab_ring,
     hold,
     path_point,
@@ -36,7 +39,17 @@ from tests.helpers.scene_screen import (
 from tests.helpers.scene_surface import pointer_to, scene_js, wait_for_scene_idle
 from tests.helpers.visual_evidence import VisualEvidence
 from tests.helpers.wait import screen_wait_for_scene_ready
+from waldo_commander.services.urdf_scene.config import RobotAppearanceMode
 from waldo_commander.state import ui_state
+
+
+def _marker_missed(screen) -> bool:
+    """Whether the edited target's marker is drawn in the miss colour."""
+    return scene_js(
+        screen,
+        "const c=getElement(S.root).core,g=c.gizmos,color=g.ball.material.color;"
+        "return g.miss && color.getHex() === color.clone().set(c.ix.colors.miss).getHex();",
+    )
 
 
 @pytest.mark.browser
@@ -59,7 +72,7 @@ class TestReviewCorrections:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.55, 0.65, 0.65, 0, 0.17, 0.16],
+                    [0.396, 0.516, 0.513, 0, 0.17, 0.16],
                 )
                 wait_for_scene_idle(screen)
                 assert (
@@ -83,12 +96,14 @@ class TestReviewCorrections:
                         screen, "return S.byName('placement:ground').visible"
                     )
                 )
+                # The recorded pointer would cover the ring; it exists only
+                # when evidence is captured.
                 screen.selenium.execute_script(
-                    "window.__sceneEvidencePointer.hidden=true"
+                    "const p=window.__sceneEvidencePointer;if(p)p.hidden=true"
                 )
                 evidence.capture("02-ground-indicator-1920")
                 screen.selenium.execute_script(
-                    "window.__sceneEvidencePointer.hidden=false"
+                    "const p=window.__sceneEvidencePointer;if(p)p.hidden=false"
                 )
                 choose(
                     screen,
@@ -97,40 +112,21 @@ class TestReviewCorrections:
                     f"Place Target Here ({gx * 1000:.0f}, {gy * 1000:.0f})...",
                 )
                 wait(screen).until(lambda _: run_in_app(lambda: scene._edit_active))
+                # The target starts on the floor and its gizmo sits there; the
+                # arm stays where it is.
                 assert run_in_app(
                     lambda: scene._requested_edit_pose[:3]
                 ) == pytest.approx([gx, gy, 0], abs=0.00001)
+                wait(screen).until(
+                    lambda _: np.linalg.norm(
+                        frame_mm(screen) - np.array([gx, gy, 0]) * 1000
+                    )
+                    < 0.5
+                )
+                assert scene._appearance_mode != RobotAppearanceMode.EDITING
                 wait_for_scene_idle(screen)
                 evidence.capture("03-ground-target-1920")
-                field = marked_element(screen, "target-coordinate-x")
-                before_card = field.rect
-                fill(screen, "target-coordinate-x", 2000)
-                wait(screen).until(lambda _: run_in_app(lambda: scene._tcp_ik_missed))
-                wait(screen).until(
-                    lambda _: not marked_element(
-                        screen, "edit-bar-confirm"
-                    ).is_enabled()
-                )
-                assert field.rect["x"] == pytest.approx(before_card["x"], abs=2)
-                assert field.rect["y"] == pytest.approx(before_card["y"], abs=2)
-                invalid_request = run_in_app(lambda: scene._requested_edit_pose)
-                drag_dial(screen, 10)
-                ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
-                wait(screen).until(lambda _: run_in_app(lambda: scene._tcp_ik_missed))
-                assert run_in_app(lambda: scene._requested_edit_pose) == pytest.approx(
-                    invalid_request
-                )
-                wait(screen).until(
-                    lambda _: not marked_element(
-                        screen, "edit-bar-confirm"
-                    ).is_enabled()
-                )
-                fill(screen, "target-coordinate-x", round(gx * 1000, 1))
-                fill(screen, "target-coordinate-z", 20)
-                wait(screen).until(
-                    lambda _: not run_in_app(lambda: scene._tcp_ik_missed)
-                )
-                wait_for_scene_idle(screen)
+
                 before_plane = run_in_app(lambda: scene._requested_edit_pose)
                 plane_axis, plane = wait(screen).until(
                     lambda _: next(
@@ -164,39 +160,47 @@ class TestReviewCorrections:
                     lambda _: run_in_app(lambda: scene._requested_edit_pose)
                     == before_plane
                 )
-                initial = run_in_app(scene.get_editing_angles)
                 spot = wait(screen).until(
                     lambda _: probe(screen, "arrowTip", "tcp:ball")
                 )
                 hold(screen, spot, 20)
                 wait(screen).until(
-                    lambda _: not np.allclose(
-                        run_in_app(scene.get_editing_angles), initial
-                    )
+                    lambda _: run_in_app(lambda: scene._requested_edit_pose)
+                    != before_plane
+                )
+                assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
+                    live
                 )
                 evidence.capture("04-translation-1920")
                 ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
                 wait(screen).until(
-                    lambda _: np.allclose(run_in_app(scene.get_editing_angles), initial)
+                    lambda _: run_in_app(lambda: scene._requested_edit_pose)
+                    == before_plane
                 )
                 far = scene_js(screen, "return S.gizmo('tcp:ball').translationSnap")
-                zoom(screen, 0.45)
+                view = scene_js(screen, "return S.cameraPose()")
+                zoom(screen, 0.25)
                 wait(screen).until(
                     lambda _: scene_js(
                         screen, "return S.gizmo('tcp:ball').translationSnap"
                     )
                     < far
                 )
+                scene_js(screen, "S.setCameraPose(arguments[0])", view)
+                wait_for_scene_idle(screen)
+                # Home moves the target to the arm's home pose.
                 click_marked(screen, "btn-home")
+                home = run_in_app(
+                    lambda: tuple(
+                        float(v)
+                        for v in scene._ik_solver.forward_kinematics(
+                            ui_state.active_robot.joints.home.rad.tolist()
+                        )[:6]
+                    )
+                )
                 wait(screen).until(
-                    lambda _: run_in_app(lambda: scene._requested_edit_pose is None)
-                )
-                displayed = run_in_app(
-                    lambda: [n.value for n, _ in scene._edit_coordinates[:3]]
-                )
-                assert displayed == pytest.approx(
-                    run_in_app(scene._get_editing_tcp_pose)[:3] * np.array([1000] * 3),
-                    abs=0.2,
+                    lambda _: run_in_app(lambda: scene._requested_edit_pose)
+                    == pytest.approx(home, abs=1e-6)
                 )
                 spot = wait(screen).until(
                     lambda _: next(
@@ -205,39 +209,65 @@ class TestReviewCorrections:
                 )
                 hold(screen, spot, 40)
                 wait(screen).until(
-                    lambda _: "Δ"
-                    in scene_js(
-                        screen,
-                        "return S.byName('tcp:ticks').children.filter(o=>o.element).map(o=>o.element.textContent).join(' ')",
-                    )
-                )
-                assert all(
-                    n._props.get("suffix") == "°"
-                    for n, _ in scene._edit_coordinates[3:]
+                    lambda _: (f := gizmo_field(screen)) and f["unit"] == "°"
                 )
                 evidence.capture("05-rotation-1920")
                 ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
                 wait(screen).until(
                     lambda _: not scene_js(screen, "return !!S.byName('tcp:ticks')")
                 )
-                before_number = run_in_app(lambda: scene._tcp_placed_pose)
-                angle = np.degrees(before_number[5]) + 5
-                fill(screen, "target-coordinate-rz", angle)
-                wait(screen).until(
-                    lambda _: not run_in_app(lambda: scene._tcp_ik_missed)
-                    and abs(
-                        np.degrees(run_in_app(lambda: scene._requested_edit_pose[5]))
-                        - angle
+
+                # A typed turn about an arc turns the target in place.
+                before_turn = run_in_app(lambda: scene._requested_edit_pose)
+                ring = wait(screen).until(
+                    lambda _: next(
+                        (p for a in "ZYX" if (p := probe(screen, "ringSpot", a))), None
                     )
-                    < 0.2
                 )
-                assert run_in_app(
-                    lambda: scene._requested_edit_pose[:3]
-                ) == pytest.approx(before_number[:3], abs=0.001)
-                with viewport(screen, 1366, 768):
-                    zoom(screen, 0.6)
-                    wait_for_scene_idle(screen)
-                    evidence.capture("06-compact-1366")
+                click_spot(screen, ring)
+                wait(screen).until(lambda _: (f := gizmo_field(screen)) and f["typing"])
+                ActionChains(screen.selenium).send_keys("5", Keys.ENTER).perform()
+                wait(screen).until(
+                    lambda _: run_in_app(lambda: scene._requested_edit_pose)
+                    != before_turn
+                )
+                after_turn = run_in_app(lambda: scene._requested_edit_pose)
+                turned = (
+                    Rotation.from_euler("XYZ", after_turn[3:])
+                    * Rotation.from_euler("XYZ", before_turn[3:]).inv()
+                ).magnitude()
+                assert np.degrees(turned) == pytest.approx(5, abs=0.2)
+                assert after_turn[:3] == pytest.approx(before_turn[:3], abs=0.001)
+
+                # Typed far out of reach: the marker turns the miss colour and
+                # the target cannot be saved until it comes back.
+                arrow = wait(screen).until(
+                    lambda _: probe(screen, "arrowTip", "tcp:ball")
+                )
+                click_spot(screen, arrow)
+                wait(screen).until(lambda _: (f := gizmo_field(screen)) and f["typing"])
+                ActionChains(screen.selenium).send_keys("2000", Keys.ENTER).perform()
+                wait(screen).until(lambda _: run_in_app(lambda: scene._tcp_ik_missed))
+                wait(screen).until(lambda _: _marker_missed(screen))
+                wait(screen).until(
+                    lambda _: not marked_element(
+                        screen, "edit-bar-confirm"
+                    ).is_enabled()
+                    and marked_element(screen, "edit-bar-unreachable").is_displayed()
+                )
+                click_marked(screen, "btn-home")
+                wait(screen).until(lambda _: not _marker_missed(screen))
+                wait(screen).until(
+                    lambda _: marked_element(screen, "edit-bar-confirm").is_enabled()
+                    and not marked_element(
+                        screen, "edit-bar-unreachable"
+                    ).is_displayed()
+                )
+                if evidence.enabled:
+                    with viewport(screen, 1366, 768):
+                        zoom(screen, 0.6)
+                        wait_for_scene_idle(screen)
+                        evidence.capture("06-compact-1366")
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
                     live
                 )
@@ -245,7 +275,8 @@ class TestReviewCorrections:
                     screen,
                     "const gl=S.renderer.getContext(),ext=gl.getExtension('WEBGL_debug_renderer_info');return {renderer:ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER),attributes:gl.getContextAttributes()};",
                 )
-                (evidence.root / "gpu.json").write_text(json.dumps(gpu, indent=2))
+                if evidence.enabled:
+                    (evidence.root / "gpu.json").write_text(json.dumps(gpu, indent=2))
                 assert gpu["attributes"]["powerPreference"] == "high-performance"
                 evidence.finish()
             finally:
@@ -268,7 +299,7 @@ class TestReviewCorrections:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.55, 0.65, 0.65, 0, 0.17, 0.16],
+                    PATH_VIEW,
                 )
                 wait_for_scene_idle(screen)
                 blocks = scene_js(screen, "return S.inspection().records[0].blocks")
@@ -304,12 +335,25 @@ class TestReviewCorrections:
                 action.move_to_element_with_offset(
                     timeline, -timeline.size["width"] / 2 + 3, 0
                 ).click().perform()
-                wait(screen).until(
-                    lambda _: scene_js(screen, "return S.inspection().time") < 0.1
-                )
+
+                # The pinned point follows the scrub bar back to near the start.
+                def followed(_) -> bool:
+                    shown = scene_js(screen, "return S.inspection().time")
+                    playback = run_in_app(
+                        lambda: waldoctl.commander.programs.active.dry_run.playback.playback_time
+                    )
+                    return (
+                        shown is not None
+                        and shown < state["time"]
+                        and abs(shown - playback) < 0.05
+                    )
+
+                wait(screen).until(followed)
                 evidence.capture("03-shared-timeline-1920")
                 evidence.finish()
             finally:
                 evidence.stop()
                 ActionChains(screen.selenium).send_keys(Keys.ESCAPE).perform()
-                close_panel(screen, "program-panel")
+                # A failure before the panel opened must not hide behind this.
+                if screen.selenium.find_elements(By.CSS_SELECTOR, ".program-panel"):
+                    close_panel(screen, "program-panel")

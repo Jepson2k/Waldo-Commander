@@ -25,11 +25,15 @@ async def test_primitive_resize_faces_center_radius_cancel_and_history(user):
         ("cylinder", 2, "length"),
         ("sphere", 1, "radius"),
     ):
+        count = len(handle.shapes)
         right_click(user, view.scene, [], [0.4, 0.1, 0])
         user.find(marker=f"scene-add-{kind}").click()
-        field(user, "shape-dialog-name", kind)
-        user.find(marker="shape-dialog-save").click()
-        await confirmed(view, lambda: any(s.name == kind for s in handle.shapes))
+        await confirmed(
+            view,
+            lambda: len(handle.shapes) == count + 1
+            and handle.shapes[-1].kind == kind
+            and view._selected_objects == [f"shape:{handle.shapes[-1].name}"],
+        )
         user.find(marker="object-transform").elements.pop().set_value("translate")
         field(user, "object-rx", 20)
         await confirmed(

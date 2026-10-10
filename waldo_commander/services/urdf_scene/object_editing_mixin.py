@@ -150,6 +150,10 @@ class ObjectEditingMixin(ShapeDrawingMixin):
         self._selected_objects = [
             key for key in selected if self._object_shape(key) is not None
         ]
+        if self._attachment_form and self._selected_objects != [
+            self._attachment_form[0]
+        ]:
+            self._attachment_form = None
         if self._object_mode == "resize" and (
             len(self._selected_objects) != 1
             or any(
@@ -225,6 +229,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
             self._object_mode,
             self._show_object_history,
             tuple(self._object_overlaps),
+            self._attachment_form,
             None if selected else status,
         )
         if structure == self._object_inspector_key:
@@ -355,7 +360,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                         )
                     elif shape.attachment is not None:
                         ui.label(
-                            "Flange attachment · edit through its context menu"
+                            "Flange attachment · reconcile or detach from Object actions"
                         ).classes("text-xs text-wc-text-muted")
                     mode = (
                         ui.toggle(
@@ -476,6 +481,8 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                                 optional=True,
                             ),
                         )
+                    if self._attachment_form and self._attachment_form[0] == entity:
+                        self._attachment_section(entity, shape)
                 with (
                     ui.column()
                     .classes("w-full sticky bottom-0 bg-wc-surface")
@@ -518,6 +525,7 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                                     "Unlock" if locked else "Lock",
                                     on_click=self._toggle_object_lock,
                                 ).mark("object-lock")
+                                self._attachment_actions(selected, history.busy)
                                 if not self._isolated_view:
                                     self._isolation_action()
                         ui.space()
@@ -552,6 +560,27 @@ class ObjectEditingMixin(ShapeDrawingMixin):
                     if self._isolated_view:
                         self._isolation_action()
         self._update_object_inspector(selected, status, True)
+
+    def _attachment_actions(self, selected, busy) -> None:
+        """Object actions that open the attachment form for one object."""
+        if len(selected) != 1 or not selected[0][0].startswith(SHAPE_PREFIX):
+            return
+        entity, shape = selected[0]
+        enabled = not busy and entity not in self._locked_objects
+        if shape.attachment is None:
+            ui.menu_item(
+                "Attach to flange",
+                on_click=lambda: self._open_attachment_form(shape.name),
+            ).mark("object-attach").set_enabled(enabled)
+            return
+        ui.menu_item(
+            "Reconcile attachment",
+            on_click=lambda: self._open_attachment_form(shape.name),
+        ).mark("object-reconcile").set_enabled(enabled)
+        ui.menu_item(
+            "Detach to world",
+            on_click=lambda: self._open_attachment_form(shape.name, detach=True),
+        ).mark("object-detach").set_enabled(enabled)
 
     def _update_object_inspector(self, selected, status, reset_values) -> None:
         """Bring the built card up to *status* and the selection's values."""

@@ -5,9 +5,7 @@ import pytest
 import waldoctl
 from scipy.spatial.transform import Rotation
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import Select
 from waldoctl.shapes import Box, Cylinder
 
 from tests.helpers.browser_helpers import (
@@ -19,15 +17,18 @@ from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
     at_start,
-    choose,
     click_object,
+    click_spot,
     confirmed,
+    field_number,
     fill,
+    gizmo_field,
     hold,
+    place_shape,
     probe,
     program_previewed,
 )
-from tests.helpers.scene_surface import pointer_to, scene_js, wait_for_scene_idle
+from tests.helpers.scene_surface import scene_js, wait_for_scene_idle
 from tests.helpers.visual_evidence import VisualEvidence, preserve_capture_buffers
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.state import ui_state
@@ -78,9 +79,7 @@ class TestSelectionTransform:
         live = waldoctl.commander.status.joints.angles.rad.copy()
         with viewport(screen, 1920, 1080), program_previewed(EDIT_PROGRAM):
             point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
-            choose(screen, *point[:2], "Box Here...")
-            fill(screen, "shape-dialog-name", "Fixture A")
-            click_marked(screen, "shape-dialog-save")
+            place_shape(screen, "box", *point[:2], "Fixture A")
             confirmed(screen, lambda: len(handle.shapes) == 1)
             fill(screen, "object-rz", 20)
             confirmed(screen, lambda: handle.shapes[0].pose[5] > 0.3)
@@ -115,7 +114,8 @@ class TestSelectionTransform:
                 )
                 deltas = np.asarray(preview) - np.asarray([s.pose[:3] for s in before])
                 assert np.linalg.norm(deltas[0]) > 0.005
-                assert deltas[0] == pytest.approx(deltas[1])
+                # The members move together; positions carry float noise.
+                assert deltas[0] == pytest.approx(deltas[1], abs=1e-6)
                 assert tuple(handle.shapes) == before
                 ActionChains(screen.selenium).send_keys(Keys.ESCAPE).release().perform()
                 wait_for_scene_idle(screen)
@@ -123,8 +123,8 @@ class TestSelectionTransform:
                     screen,
                     "return ['Fixture A','Fixture B'].map(n=>S.byName('shape:'+n).position.toArray())",
                 )
-                assert restored == pytest.approx(
-                    np.asarray([s.pose[:3] for s in before])
+                np.testing.assert_allclose(
+                    restored, [s.pose[:3] for s in before], rtol=0, atol=1e-6
                 )
                 spot = wait(screen).until(
                     lambda _: probe(screen, "arrowTip", "selection:center")
@@ -138,18 +138,13 @@ class TestSelectionTransform:
                 spot = wait(screen).until(
                     lambda _: probe(screen, "ringSpot", "Z", "selection:center")
                 )
-                action = ActionChains(screen.selenium)
-                pointer_to(screen, *spot[:2], action)
-                action.perform()
-                screen.selenium.find_element(By.CSS_SELECTOR, ".wc-gizmo-value").click()
-                Select(
-                    screen.selenium.find_element(
-                        By.CSS_SELECTOR, ".wc-gizmo-entry select"
-                    )
-                ).select_by_value("Rz")
-                screen.selenium.find_element(
-                    By.CSS_SELECTOR, ".wc-gizmo-entry input"
-                ).send_keys("30", Keys.ENTER)
+                # A click on the arc opens a field for an exact turn about Z.
+                click_spot(screen, spot)
+                wait(screen).until(lambda _: (f := gizmo_field(screen)) and f["typing"])
+                assert gizmo_field(screen)["label"].startswith("Rz "), gizmo_field(
+                    screen
+                )
+                ActionChains(screen.selenium).send_keys("30", Keys.ENTER).perform()
                 confirmed(
                     screen, lambda: len(view.object_history.undo_stack) == history + 2
                 )
@@ -194,11 +189,9 @@ class TestSelectionTransform:
                     lambda _: probe(screen, "ringSpot", "X", "shape:Fixture A")
                 )
                 hold(screen, spot, 25, kind="shape")
-                value = screen.selenium.find_element(
-                    By.CSS_SELECTOR, ".wc-gizmo-value"
-                ).text
-                assert value.startswith("X ")
-                angle = float(value.split()[1].removesuffix("°").replace("−", "-"))
+                field = gizmo_field(screen)
+                assert field["label"].startswith("Rx "), field
+                angle = field_number(field["value"])
                 assert abs(angle) > 1
                 ActionChains(screen.selenium).release().perform()
                 confirmed(screen, lambda: handle.shapes[0] != before_turn)

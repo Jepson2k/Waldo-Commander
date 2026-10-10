@@ -23,13 +23,13 @@ export class SceneTransform extends THREE.EventDispatcher {
     this.plane=new THREE.Plane();this.startHit=null;this.worldAxes=[];this.snapped=[0,0];
     this.arcX=new THREE.Vector3();this.arcY=new THREE.Vector3();this.theta=0;
     this.helper=new THREE.Group();this.helper.name="movement:handles";this.helper.visible=false;
-    this.groups={};this.pickers=[];this.letters=[];
+    this.groups={};this.roots={translate:{},rotate:{}};this.pickers=[];this.letters=[];
     for(const mode of ["translate","rotate"]) {
       const group=new THREE.Group();this.groups[mode]=group;this.helper.add(group);
       for(const [letter,axis] of Object.entries(axes)) {
         const root=new THREE.Group();root.name=letter;
         const u=axes[{X:"Y",Y:"Z",Z:"X"}[letter]],v=axes[{X:"Z",Y:"X",Z:"Y"}[letter]];
-        root.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(u,v,axis));group.add(root);
+        root.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(u,v,axis));group.add(root);this.roots[mode][letter]=root;
         const material=new THREE.MeshBasicMaterial({depthTest:false,depthWrite:false,transparent:true});
         const halo=new THREE.MeshBasicMaterial({depthTest:false,depthWrite:false,transparent:true,opacity:.4});
         root.userData={letter,material,halo};
@@ -55,7 +55,7 @@ export class SceneTransform extends THREE.EventDispatcher {
     for(const [normal,letters] of [["Z","XY"],["X","YZ"],["Y","XZ"]]) {
       const root=new THREE.Group();root.name=letters;root.quaternion.setFromUnitVectors(axes.Z,axes[normal]);
       const center=axes[letters[0]].clone().add(axes[letters[1]]).multiplyScalar(.26);
-      root.position.copy(center);this.groups.translate.add(root);
+      root.position.copy(center);this.groups.translate.add(root);this.roots.translate[letters]=root;
       const material=new THREE.MeshBasicMaterial({transparent:true,opacity:.22,side:THREE.DoubleSide,depthTest:false,depthWrite:false,forceSinglePass:true});
       const patch=new THREE.Mesh(new THREE.PlaneGeometry(.18,.18),material);patch.renderOrder=1001;root.add(patch);
       const border=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([[-.09,-.09,0],[.09,-.09,0],[.09,.09,0],[-.09,.09,0]].map(p=>new THREE.Vector3(...p))),new THREE.LineBasicMaterial({transparent:true,depthTest:false,depthWrite:false}));border.renderOrder=1002;root.add(border);
@@ -109,6 +109,14 @@ export class SceneTransform extends THREE.EventDispatcher {
     this.update();this.raycaster.setFromCamera(point,this.core.camera);
     const picked=this.raycaster.intersectObjects(this.pickers,false)[0]?.object;
     return picked?{axis:picked.name,mode:picked.userData.mode}:null;
+  }
+
+  // Where handle `axis` in `mode` is in the world: an arrow's or arc's
+  // letter, or a plane patch's centre; null for no such handle.
+  anchor(axis,mode,out) {
+    const root=this.roots[mode]?.[axis];
+    if(!root)return null;
+    return (root.userData.label||root).getWorldPosition(out);
   }
 
   // The handle under the pointer is drawn lit.

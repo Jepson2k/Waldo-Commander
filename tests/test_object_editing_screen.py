@@ -21,6 +21,7 @@ from tests.helpers.scene_screen import (
     fill,
     hold,
     object_mode,
+    place_shape,
     probe,
     program_previewed,
 )
@@ -58,14 +59,13 @@ class TestObjectEditing:
             )
             try:
                 x, y, *_ = wait(screen).until(lambda _: probe(screen, "floorSpot"))
-                choose(screen, x, y, "Box Here...")
-                fill(screen, "shape-dialog-name", "Fixture")
-                fill(screen, "shape-dialog-dim-x", 180)
-                fill(screen, "shape-dialog-dim-y", 130)
-                click_marked(screen, "shape-dialog-save")
-                confirmed(
-                    screen, lambda: any(s.name == "Fixture" for s in handle.shapes)
-                )
+                place_shape(screen, "box", x, y, "Fixture")
+                object_mode(screen, "Resize")
+                fill(screen, "object-dim-x", 180)
+                confirmed(screen, lambda: handle.shapes[0].x == 0.18)
+                fill(screen, "object-dim-y", 130)
+                confirmed(screen, lambda: handle.shapes[0].y == 0.13)
+                object_mode(screen, "Move")
                 click_marked(screen, "object-close")
                 px, py = scene_object_pixel(screen, "shape:Fixture")
                 choose(screen, px, py, "Edit object")
@@ -139,9 +139,10 @@ class TestObjectEditing:
                     )
                 )
                 evidence.stop()
-                with viewport(screen, 1366, 768):
-                    wait_for_scene_idle(screen)
-                    evidence.capture("07-inspector-1366")
+                if evidence.enabled:
+                    with viewport(screen, 1366, 768):
+                        wait_for_scene_idle(screen)
+                        evidence.capture("07-inspector-1366")
                 evidence.finish()
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
                     live

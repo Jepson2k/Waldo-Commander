@@ -207,7 +207,7 @@ def _arm() -> dict[str, Any]:
     ]
     scene.set_tcp(tcp[:3, 3].tolist(), tcp[:3, :3].tolist())
     scene.move_camera(0.55, -0.55, 0.5, 0.12, 0.0, 0.2, duration=0)
-    recorders = {kind: _Recorder() for kind in ("tcp", "ring", "joint", "shape")}
+    recorders = {kind: _Recorder() for kind in ("tcp", "ring", "shape")}
     scene.gestures.handlers.update(recorders)
     contexts: list[dict[str, Any]] = []
 

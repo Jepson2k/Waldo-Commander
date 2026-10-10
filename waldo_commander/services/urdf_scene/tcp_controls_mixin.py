@@ -7,8 +7,9 @@ tool's axes.
 
 The app admits a drag only if the frame the browser showed is where the TCP
 is now; the drag's poses are then taken from the app's own frame. While live
-or simulating, a drag streams Cartesian jogs; while editing a target, it
-solves IK, at most 30 times a second, always for the last pose.
+or simulating, a drag streams Cartesian jogs. While editing a target the
+frame sits on the target, a drag moves the target, and IK, at most 30 times a
+second for the last pose, only says whether the arm can reach it.
 """
 
 import logging
@@ -46,18 +47,16 @@ class TCPControlsMixin:
     _handles_available: bool
     _hover_suspended: bool
     _teaching: Any
-    _edit_orientation: Any
+    _edit_active: bool
+    _edit_target_first: bool
 
     def _refresh_editing_pose(self) -> tuple[float, ...] | None: ...
 
     def _update_edit_bar_values(self) -> None: ...
 
-    def _update_collision_highlight(self) -> None: ...
-
     _current_editing_type: str | None
     # Defined later in the MRO (JogHandlesMixin), so annotations only: a stub
     # here would shadow the real method.
-    _apply_joint_angles: Callable[[list[float]], None]
     _rules_changed: Callable[[], None]
     _admitted: Callable[[], None]
 
@@ -88,8 +87,6 @@ class TCPControlsMixin:
         self._ik_solver: EditingIKSolver | None = None
         self._ik_handle: Any = None
         self._ik_last = 0.0
-        self._editing_rotation: list[float] = [0.0, 0.0, 0.0]
-        self._editing_rotation_set: bool = False
 
         # Pre-allocated buffers to avoid per-call allocations.
         self._target_pos_buffer: np.ndarray = np.zeros(3, dtype=np.float64)
@@ -135,7 +132,9 @@ class TCPControlsMixin:
 
     def _gizmo_shown(self) -> bool:
         """Whether the gizmo can be on screen now, so its frame needs placing."""
-        if self._appearance_mode == RobotAppearanceMode.EDITING:
+        if self._appearance_mode == RobotAppearanceMode.EDITING or (
+            self._edit_active and self._edit_target_first
+        ):
             return True
         return (
             self._handles_available
@@ -149,12 +148,18 @@ class TCPControlsMixin:
         self._push_tcp_pose(force=True)
 
     def _push_tcp_pose(self, force: bool = False) -> None:
-        """Place the gizmo's frame on the TCP from FK.
+        """Place the gizmo's frame on the TCP from FK, or on the target a
+        target edit moves.
 
         Recomputes FK only when joint angles change, and sends a placement
         only when FK produced a pose the frame has not been placed at.
         """
         if self.scene is None or not (force or self._gizmo_shown()):
+            return
+        if self._edit_active and self._edit_target_first:
+            target = self._requested_edit_pose
+            if target is not None and (force or target is not self._tcp_placed_pose):
+                self._place_frame(target)
             return
         n = len(self.joint_names)
         angles_changed = False
@@ -195,6 +200,9 @@ class TCPControlsMixin:
         )
         if p is None or (p is self._tcp_placed_pose and not force):
             return
+        self._place_frame(p)
+
+    def _place_frame(self, p: tuple[float, ...]) -> None:
         self._tcp_placed_pose = p
         so3_from_rpy(p[3], p[4], p[5], self._placed_R)
         self.scene.set_tcp(p[:3], self._placed_R.tolist())
@@ -220,7 +228,7 @@ class TCPControlsMixin:
         self._tcp_frame_R[:] = self._placed_R
         self._tcp_drag_mode = mode
         self._gizmo_miss_sent = None
-        if self._appearance_mode != RobotAppearanceMode.EDITING:
+        if not self._edit_active:
             self._tcp_ik_missed = False
             self.scene.set_gizmo_miss(False)
             start = self._tcp_cartesian_move_start_callback
@@ -231,12 +239,8 @@ class TCPControlsMixin:
             self._tcp_drag_start_rot_deg = tuple(robot_state.orientation.deg)
             self._admitted()
         else:
-            if mode == "rotate" and self._edit_orientation:
-                self._edit_orientation.open()
-            gesture.data["preview"] = (
+            gesture.data["target"] = (
                 self._editing_angles.copy(),
-                self._editing_rotation.copy(),
-                self._editing_rotation_set,
                 self._requested_edit_pose,
                 self._tcp_ik_missed,
             )
@@ -262,7 +266,7 @@ class TCPControlsMixin:
         self._compose_tcp_pose(pose)
         if "token" in gesture.data:
             self._handle_tcp_transform_for_cartesian()
-        elif self._appearance_mode == RobotAppearanceMode.EDITING:
+        elif "target" in gesture.data:
             self._queue_ik()
 
     def _tcp_finish(
@@ -283,27 +287,22 @@ class TCPControlsMixin:
         # mode has become since.
         token = gesture.data.get("token")
         if token is None:
-            if aborted and self._appearance_mode == RobotAppearanceMode.EDITING:
-                angles, rotation, rotation_set, requested, missed = gesture.data[
-                    "preview"
-                ]
+            # A target edit: an edit closed since leaves the new one alone.
+            if not self._edit_active:
+                return
+            if pose is None:
+                angles, requested, missed = gesture.data["target"]
+                self._editing_angles[:] = angles
                 self._requested_edit_pose = requested
                 self._tcp_ik_missed = missed
-                self._editing_angles[:] = angles
-                self._editing_rotation[:] = rotation
-                self._editing_rotation_set = rotation_set
-                self._apply_joint_angles(angles)
                 self._refresh_editing_pose()
-                self._update_collision_highlight()
                 if self._current_editing_type:
                     self._update_edit_bar_values()
-            if (
-                pose is not None
-                and self._appearance_mode == RobotAppearanceMode.EDITING
-            ):
+            else:
                 self._compose_tcp_pose(pose)
                 self._handle_tcp_transform_for_ik()
             self.scene.set_gizmo_miss(self._tcp_ik_missed)
+            self._gizmo_miss_sent = self._tcp_ik_missed
             self._push_tcp_pose(force=True)
             return
         if pose is None:
@@ -374,48 +373,34 @@ class TCPControlsMixin:
         callback(buf)
 
     def _handle_tcp_transform_for_ik(self) -> None:
-        """A gizmo drag while editing a target: solve IK for its pose."""
+        """A gizmo drag while editing a target: move the target there."""
         if not self._ensure_ik_solver():
             return
-        assert self._ik_solver is not None
         self._ik_last = time.monotonic()
         self._requested_edit_pose = tuple(self._tcp_world_p) + tuple(
             self._tcp_world_rpy
         )
+        self._solve_target_reach()
+        self._refresh_editing_pose()
 
-        target_orientation = None
-        target_pos = self._target_pos_buffer
-
-        if self._tcp_drag_mode == "rotate":
-            rpy = self._tcp_world_rpy
-            orient_buf = self._target_orientation_buffer
-            orient_buf[:] = rpy
-            target_orientation = orient_buf
-            # Hold the requested position, so rotating doesn't translate the target.
-            target_pos[:] = self._tcp_world_p
-        else:
-            target_pos[:] = self._tcp_world_p
-            # Carry forward any orientation set in a prior rotate-mode drag.
-            if self._editing_rotation_set:
-                orient_buf = self._target_orientation_buffer
-                orient_buf[:] = self._editing_rotation
-                target_orientation = orient_buf
-
+    def _solve_target_reach(self) -> None:
+        """Whether the arm can reach the requested target, and the joints it
+        would reach it with, for a joint target's literals. The arm itself
+        stays where it is."""
+        pose = self._requested_edit_pose
+        if pose is None or self._ik_solver is None:
+            return
+        self._target_pos_buffer[:] = pose[:3]
+        self._target_orientation_buffer[:] = pose[3:6]
         result = self._ik_solver.solve(
-            target_pos=target_pos,
+            target_pos=self._target_pos_buffer,
             current_angles=self._editing_angles,
-            target_orientation=target_orientation,
+            target_orientation=self._target_orientation_buffer,
         )
         self._tcp_ik_missed = not result.success
         if result.success:
-            if self._tcp_drag_mode == "rotate":
-                self._editing_rotation[:] = [float(v) for v in self._tcp_world_rpy]
-                self._editing_rotation_set = True
             n = len(self.joint_names)
             self._editing_angles[:n] = result.angles[:n]
-            self._apply_joint_angles(self._editing_angles)
-            self._requested_edit_pose = self._refresh_editing_pose()
-            self._update_collision_highlight()
         if self._tcp_ik_missed != self._gizmo_miss_sent:
             self._gizmo_miss_sent = self._tcp_ik_missed
             self.scene.set_gizmo_miss(self._tcp_ik_missed)

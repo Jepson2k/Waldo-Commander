@@ -43,9 +43,31 @@ from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.state import ui_state
 
 
+# A free floor point whose surrounding 10 cm square is inside the view with a
+# margin, so a footprint drawn around it stays on screen at any camera.
+_ROOMY_FLOOR_SPOT = """
+const c = getElement(S.root).core, r = c.canvas.getBoundingClientRect();
+const v = new (c.camera.position.constructor)();
+const at = (x, y) => c.pointer.screen(v.set(x, y, 0).project(c.camera));
+const inside = ([sx, sy]) =>
+  sx > r.left + 40 && sx < r.right - 40 && sy > r.top + 40 && sy < r.bottom - 40;
+for (let rad = 0.2; rad <= 0.45; rad += 0.05) {
+  for (let a = 0; a < 360; a += 15) {
+    const t = (a * Math.PI) / 180, x = rad * Math.cos(t), y = rad * Math.sin(t);
+    const square = [[-0.1, -0.1], [0.1, -0.1], [-0.1, 0.1], [0.1, 0.1]];
+    if (!square.every(([dx, dy]) => inside(at(x + dx, y + dy)))) continue;
+    const [px, py] = at(x, y).map(Math.round);
+    const hit = S.pick(px, py);
+    if (!hit.covered && !hit.names.length && !hit.handles.length) return [px, py];
+  }
+}
+return null;
+"""
+
+
 def _draw_floor(screen, kind):
     wait_for_scene_idle(screen)
-    point = wait(screen).until(lambda _: probe(screen, "floorSpot"))
+    point = wait(screen).until(lambda _: scene_js(screen, _ROOMY_FLOOR_SPOT))
     choose(screen, *point[:2], f"Draw {kind.capitalize()}…")
     wait(screen).until(lambda _: probe(screen, "drawing")["active"])
 
@@ -231,9 +253,10 @@ class TestShapeDrawing:
                 assert shape.pose[2] == pytest.approx(shape.z / 2)
                 evidence.capture("04-created-resize-handles-1920")
                 evidence.stop()
-                with viewport(screen, 1366, 768):
-                    wait_for_scene_idle(screen)
-                    evidence.capture("05-created-1366")
+                if evidence.enabled:
+                    with viewport(screen, 1366, 768):
+                        wait_for_scene_idle(screen)
+                        evidence.capture("05-created-1366")
                 evidence.finish()
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
                     live

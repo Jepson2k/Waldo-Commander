@@ -110,8 +110,9 @@ class _Config:
         return 1.0 / max(self.webapp_control_rate_hz, 1.0)
 
 
-# Default 3D scene camera position
-DEFAULT_CAMERA = dict(x=0.45, y=0.45, z=0.38, look_at_z=0.2)
+# Default 3D scene camera position: close enough that the arm fills most of
+# the view at its home and jog poses.
+DEFAULT_CAMERA = dict(x=0.34, y=0.34, z=0.335, look_at_z=0.2)
 
 # Gripper camera feed resolution
 CAMERA_FEED_W = 640

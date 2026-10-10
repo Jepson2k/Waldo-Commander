@@ -20,6 +20,7 @@ from tests.helpers.browser_helpers import (
 from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     PATH_PROGRAM,
+    PATH_VIEW,
     camera_kept,
     camera_pose,
     path_point,
@@ -115,7 +116,7 @@ class TestPathInspection:
             scene_js(
                 screen,
                 "S.setCameraPose(arguments[0])",
-                [0.55, 0.65, 0.65, 0, 0.17, 0.16],
+                [0.396, 0.516, 0.513, 0, 0.17, 0.16],
             )
             click_tab(screen, "program")
             wait_for_scene_idle(screen)
@@ -253,7 +254,7 @@ class TestPathInspection:
             scene_js(
                 screen,
                 "S.setCameraPose(arguments[0])",
-                [0.55, 0.65, 0.65, 0, 0.17, 0.16],
+                PATH_VIEW,
             )
             wait_for_scene_idle(screen)
             command = next(
@@ -345,7 +346,7 @@ class TestPathInspection:
             scene_js(
                 screen,
                 "S.setCameraPose(arguments[0])",
-                [0.55, 0.65, 0.65, 0, 0.17, 0.16],
+                PATH_VIEW,
             )
             click_tab(screen, "program")
             wait_for_scene_idle(screen)
@@ -407,9 +408,10 @@ class TestPathInspection:
                 )
                 wait(screen).until(lambda _: _matches_record(screen))
                 evidence.capture("04-stationary-rotation-1920")
-                with viewport(screen, 1366, 768):
-                    wait_for_scene_idle(screen)
-                    evidence.capture("05-shared-readouts-1366")
+                if evidence.enabled:
+                    with viewport(screen, 1366, 768):
+                        wait_for_scene_idle(screen)
+                        evidence.capture("05-shared-readouts-1366")
                 wait_for_scene_idle(screen)
                 evidence.capture("06-shared-readouts-1920")
                 evidence.finish()

@@ -45,7 +45,6 @@ from tests.helpers.scene_screen import (
     camera_kept,
     camera_pose,
     choose,
-    drag_dial,
     frame_mm,
     gizmo,
     grab_ring,
@@ -629,16 +628,17 @@ class TestScene:
             camera = camera_pose(screen)
 
             # Sixty pointer moves along the arrow, a frame apart as a mouse
-            # sends them: the label names the axis while it is held, the app
-            # hears at most thirty targets a second, and the marks go with
-            # the release.
+            # sends them: the value on the handle names the axis while it is
+            # held, the app hears at most thirty targets a second, and the
+            # marks go with the release.
             scene_js(
                 screen,
                 "const seen = window.__gizmoLabels = new Set();"
                 "window.__sampling = true;"
                 "(function sample() {"
-                "  const o = document.querySelector('.wc-gizmo-readout');"
-                "  if (o && !o.hidden) seen.add(o.textContent);"
+                "  const f = document.querySelector('.wc-gizmo-field');"
+                "  const v = f && !f.hidden && f.querySelector('.wc-gizmo-field-value');"
+                "  if (v && !v.hidden) seen.add(v.getAttribute('aria-label'));"
                 "  if (window.__sampling) requestAnimationFrame(sample);"
                 "})();",
             )
@@ -663,7 +663,7 @@ class TestScene:
             labels = js(
                 screen, "window.__sampling = false; return [...window.__gizmoLabels];"
             )
-            assert any(text.startswith("Tool X") for text in labels), labels
+            assert any(text and text.startswith("X ") for text in labels), labels
             gaps = np.diff([t for what, t in timed if what == "move"])
             assert (gaps >= 30.0).all(), f"targets {gaps.min():.1f} ms apart"
             assert sent[-1] == "end", sent
@@ -837,7 +837,8 @@ class TestScene:
             off_the_arm()
             poll(lambda: shown_handles(screen) == [], 5.0, "the gizmo to go")
 
-            # Editing uses contextual preview dials; leaving clears those controls.
+            # Editing a target moves the target: the arm's links reveal no
+            # dials while it is open, and leaving clears its gizmo.
             x, y = poll(lambda: probe(screen, "emptySpot"), 5.0, "empty space")
             choose(screen, x, y, "Target at robot position…")
             try:
@@ -845,8 +846,8 @@ class TestScene:
                 hover_scene_object(screen, "link:L2")
                 _caught_up()
                 time.sleep(_HOVER_GRACE_S + 0.1)
-                assert "ring:1" in shown_handles(screen), (
-                    "the edit did not reveal its preview dial"
+                assert "ring:1" not in shown_handles(screen), (
+                    "the edit revealed a joint dial"
                 )
             finally:
                 click_marked(screen, "edit-bar-cancel")
@@ -956,17 +957,20 @@ class TestScene:
         def lines() -> list[str]:
             return run_in_app(lambda: ui_state.active_textarea.value).splitlines()
 
-        def editing_angles() -> list[float]:
-            return run_in_app(lambda: list(urdf._editing_angles))
+        def requested() -> tuple[float, ...] | None:
+            return run_in_app(lambda: urdf._requested_edit_pose)
 
         def drag_the_gizmo_and_confirm() -> None:
+            """Drag the target's arrow: the target moves, the arm does not."""
             poll(lambda: gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
-            start = editing_angles()
+            start = requested()
+            live = waldoctl.commander.status.joints.angles.rad.copy()
             x, y, dx, dy = poll(
                 lambda: probe(screen, "arrowTip", "tcp:ball"), 5.0, "the X arrow"
             )
             _drag_along(screen, x, y, dx, dy)
-            poll(lambda: editing_angles() != start, 10.0, "the arm to follow")
+            poll(lambda: requested() != start, 10.0, "the target to move")
+            assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
             click_marked(screen, "edit-bar-confirm")
             # The confirm can queue behind a re-simulation under load.
             poll(
@@ -1027,17 +1031,12 @@ class TestScene:
                 choose(screen, x, y, "Target at robot position…")
                 poll(lambda: gizmo(screen, "tcp:ball"), 10.0, "the editing gizmo")
 
-                # Turning J1's own control turns the arm about its base: the
-                # edit takes the new angle, and L2 is drawn where FK puts it.
-                q0 = editing_angles()[0]
-
-                drag_dial(screen, -10)
-                ActionChains(screen.selenium).release().perform()
-                poll(lambda: abs(editing_angles()[0] - q0) > 0.01, 10.0, "J1 to turn")
+                # While the target is open the arm is drawn where it is.
+                live = list(waldoctl.commander.status.joints.angles.rad)
                 poll(
-                    lambda: _drawn_at_fk(screen, urdf, "L2", editing_angles()),
+                    lambda: _drawn_at_fk(screen, urdf, "L2", live),
                     5.0,
-                    "L2 where FK puts it",
+                    "L2 at the live pose",
                 )
                 stops = motion_guard.stop_generation
                 click_tab(screen, "program")
@@ -1100,9 +1099,8 @@ class TestScene:
                 x, y, *floor = poll(
                     lambda: probe(screen, "floorSpot"), 5.0, "floor near the arm"
                 )
-                offered = choose(screen, x, y, "Box Here...")
+                offered = choose(screen, x, y, "Box here")
                 assert any(i.startswith("Place Target Here") for i in offered), offered
-                click_marked(screen, "shape-dialog-save")
                 (name,) = poll(
                     lambda: set(shapes()) - set(before), 5.0, "the new keep-out"
                 )
@@ -1130,7 +1128,6 @@ class TestScene:
                 poll(lambda: not gizmo_on(obj), 5.0, "the gizmo to go")
 
                 choose(screen, *centre, "Delete Keep-out")
-                click_marked(screen, "shape-delete-confirm")
                 poll(lambda: name not in shapes(), 5.0, "the keep-out to go")
             finally:
                 run_in_app(

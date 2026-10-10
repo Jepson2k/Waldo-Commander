@@ -1,21 +1,21 @@
 import * as THREE from "three";
 import { label } from "./rings.js";
 import { signed } from "./handles.js";
-import { element } from "./dom.js";
-import { GAP, overlap } from "./overlays.js";
+import { element, setAttr, setHidden, setText } from "./dom.js";
+import { overlap } from "./overlays.js";
 
 const RAD=Math.PI/180;
 const MAX_TRANSLATION=.010,MAX_ROTATION=5*RAD;
 const axes={X:new THREE.Vector3(1,0,0),Y:new THREE.Vector3(0,1,0),Z:new THREE.Vector3(0,0,1)};
+const LETTERS="XYZ";
 const NICE=[1,2,5,10];
 const ORIGIN=new THREE.Vector3();
-const a=new THREE.Vector3(),b=new THREE.Vector3(),delta=new THREE.Vector3(),across=new THREE.Vector3(),scratch=new THREE.Vector3(),turn=new THREE.Quaternion();
-const anchor=[0,0,0],at=[0,0,0];
-// Where the card may sit around its handle, and the offsets a scale label
-// may take to stay readable.
-const BESIDE=115,ABOVE=110;
+const a=new THREE.Vector3(),b=new THREE.Vector3(),delta=new THREE.Vector3(),across=new THREE.Vector3(),scratch=new THREE.Vector3(),turn=new THREE.Quaternion(),spin=new THREE.Quaternion();
+const at=[0,0,0],from=[0,0,0];
+// The offsets a scale label may take to stay readable.
 const NUDGES=[[0,0],[0,-26],[0,26],[-48,0],[48,0],[0,-52],[0,52],[-48,-26],[48,26]];
-const OCCLUSION=[[.5,.5],[.2,.2],[.8,.8]];
+// How far past its handle a value sits, in pixels.
+const FIELD_PAD=10;
 
 // A label's size, read once its text is laid out.
 function sizeOf(item) {
@@ -31,36 +31,115 @@ export const niceStep=(value)=>{
   return best;
 };
 
+// A signed change to the precision of the snap `step`, or as typed without one.
+export const amount=(v,step)=>signed(v,step?(step>=1?0:step>=.1?1:2):decimals(v));
+const decimals=(v)=>(String(Number(Math.abs(v).toFixed(2))).split(".")[1]||"").length;
+// A value as the field offers it for retyping.
+const typed=(v)=>String(Number(v.toFixed(2)));
+
+// A value riding on a handle: what a drag changes, and, clicked, a field to
+// type the change into. Enter applies it, Esc puts it away, Tab moves it on
+// to the next axis.
+export class HandleField {
+  constructor(core,name,{open,commit,cancel,cycle,hover=null}) {
+    this.core=core;this.name=name;this.text=null;this.candidates=[[0,0],[0,0],[0,0]];
+    const node=this.node=element("form","wc-gizmo-field",core.root);node.hidden=true;node.noValidate=true;
+    this.value=element("button","wc-gizmo-field-value",node);this.value.type="button";
+    this.input=element("input","",node);this.input.hidden=true;this.input.type="text";
+    this.input.inputMode="decimal";this.input.autocomplete="off";this.input.spellcheck=false;
+    this.unit=element("span","wc-gizmo-field-unit",node);
+    core.overlays.track(name,node);
+    this.value.onclick=()=>open();
+    node.onsubmit=(e)=>{
+      e.preventDefault();
+      const text=this.input.value.trim().replace(/\u2212/g,"-");
+      if(!text){cancel();return;}
+      const value=Number(text);
+      if(Number.isFinite(value))commit(value);
+      else this.invalid();
+    };
+    node.onkeydown=(e)=>{
+      if(this.typing&&e.key==="Escape"){cancel();e.preventDefault();}
+      else if(this.typing&&e.key==="Tab"){cycle(e.shiftKey?-1:1);e.preventDefault();}
+      e.stopPropagation();
+    };
+    if(hover){node.onpointerenter=()=>hover(true);node.onpointerleave=()=>hover(false);}
+  }
+
+  get typing() {
+    return !this.input.hidden;
+  }
+
+  // Shows `text` in `unit` for the change `what` names.
+  show(text,unit,what) {
+    if(this.typing)this.close();
+    if(text!==this.text) {
+      this.text=text;setText(this.value,text);setText(this.unit,unit);
+      setAttr(this.value,"aria-label",`${what} ${text} ${unit}, click to type`);
+    }
+    setHidden(this.node,false);
+  }
+
+  // A field for the change `what` names, holding `initial`.
+  edit(initial,unit,what) {
+    this.text=null;
+    setHidden(this.node,false);setHidden(this.value,true);setHidden(this.input,false);
+    this.input.removeAttribute("aria-invalid");this.input.value=initial;
+    setText(this.unit,unit);setAttr(this.input,"aria-label",`${what} change in ${unit==="°"?"degrees":"millimetres"}`);
+    this.input.focus();this.input.select();
+  }
+
+  invalid() {
+    setAttr(this.input,"aria-invalid","true");this.input.select();
+  }
+
+  close() {
+    setHidden(this.input,true);setHidden(this.value,false);this.text=null;
+  }
+
+  hide() {
+    this.close();setHidden(this.node,true);
+  }
+
+  // Past the handle at `anchor` on screen, away from the handles' `center`,
+  // inside the view and off `obstacles`.
+  place(anchor,center,obstacles) {
+    const overlays=this.core.overlays,card=overlays.sized(this.name);
+    if(!card)return;
+    const {w,h}=card;
+    let ux=anchor[0]-center[0],uy=anchor[1]-center[1];
+    const length=Math.hypot(ux,uy);
+    if(length<1){ux=1;uy=0;}else{ux/=length;uy/=length;}
+    this.beside(0,anchor,ux,uy,w,h);this.beside(1,anchor,-uy,ux,w,h);this.beside(2,anchor,uy,-ux,w,h);
+    const seat=overlays.seat(this.candidates,w,h,{obstacles,pad:4});
+    overlays.place(card,seat.x,seat.y);
+  }
+
+  // Candidate `i`: the field just clear of `anchor` in direction (dx, dy).
+  beside(i,anchor,dx,dy,w,h) {
+    const reach=Math.abs(dx)*w/2+Math.abs(dy)*h/2+FIELD_PAD,c=this.candidates[i];
+    c[0]=anchor[0]+dx*reach-w/2;c[1]=anchor[1]+dy*reach-h/2;
+  }
+}
+
+// What a handle's change is called and measured in.
+const ROTATIONS={X:"Rx",Y:"Ry",Z:"Rz"};
+const unitOf=(mode)=>mode==="rotate"?"°":"mm";
+const nameOf=(mode,letter)=>mode==="rotate"?ROTATIONS[letter]:letter;
+// What a value on a handle keeps clear of.
+export const FIELD_AVOIDS=["inspector","teaching"];
+
+// The gizmos' instrument and values: a drag draws its scale in the scene and
+// its change on the handle it moves; a handle clicked, or the value clicked
+// after a drag, takes a typed change through the same gesture a drag makes.
 export class Precision {
   constructor(gizmos) {
     this.gizmos=gizmos; this.core=gizmos.core;
-    this.instrument=null; this.editing=false; this.seat=null; this.solved=null;
-    this.card=element("div","wc-gizmo-readout",this.core.root); this.card.hidden=true;
-    this.card.setAttribute("aria-label","Precision movement");
-    this.core.overlays.track("precision",this.card);
-    this.title=element("div","wc-gizmo-title",this.card);
-    this.value=element("button","wc-gizmo-value",this.card);
-    this.value.onclick=()=>this.enterNumber();
-    this.entry=element("form","wc-gizmo-entry",this.card); this.entry.hidden=true;
-    this.axis=element("select","",this.entry); this.axis.setAttribute("aria-label","Movement axis");
-    for (const a of ["X","Y","Z","Rx","Ry","Rz"]) this.axis.add(new Option(a,a));
-    this.axis.onchange=()=>{this.unit.textContent=this.axis.value.length===1?"mm":"°";};
-    this.input=element("input","",this.entry); this.input.type="number"; this.input.step="any";
-    this.input.required=true; this.input.setAttribute("aria-label","Exact displacement");
-    this.unit=element("span","",this.entry);
-    this.apply=element("button","",this.entry,"Apply"); this.apply.type="submit";
-    this.entry.onsubmit=e=>{e.preventDefault();this.commitNumber();};
-    this.hint=element("div","wc-gizmo-hint",this.card);
-    this.card.onpointerenter=()=>{if(this.control()===this.gizmos.tcp)this.core.pointer.hover.gizmo(true,performance.now());};
-    this.card.onpointerleave=()=>{if(!this.editing && this.control()===this.gizmos.tcp){this.core.pointer.hover.gizmo(false,performance.now());this.core.pointer.settle();}};
-    this.card.onkeydown=e=>{
-      if (e.key==="Escape" && this.editing) {this.leaveNumber();e.preventDefault();}
-      e.stopPropagation();
-    };
-  }
-
-  control() {
-    return this.gizmos.drag?.tc || (this.gizmos.shape?.tc.object ? this.gizmos.shape.tc : this.gizmos.gizmoShown?this.gizmos.tcp:null);
+    this.instrument=null;
+    this.entry=null; // a change being typed: {tc, object, session, mode, letter, base}
+    this.settled=null; // the last drag's change, until anything else is pressed
+    this.field=new HandleField(this.core,"gizmoValue",{open:()=>this.reopen(),commit:(v)=>this.commit(v),
+      cancel:()=>this.cancel(),cycle:(step)=>this.cycle(step),hover:(on)=>this.hovered(on)});
   }
 
   increment(tc,mode=tc.mode) {
@@ -112,7 +191,7 @@ export class Precision {
   // The instrument for a drag through `tc`: its scale is drawn here once,
   // and each move redraws only what moved.
   begin(tc,exact=false) {
-    this.end(); this.leaveNumber();this.prepare();
+    this.end(); this.dismiss(); this.prepare();
     if(tc.mode==="rotate" && !exact)tc.rotationAngle=0;
     const origin=tc.object.getWorldPosition(new THREE.Vector3());
     const quaternion=tc.space==="local"?tc.object.getWorldQuaternion(new THREE.Quaternion()):new THREE.Quaternion();
@@ -125,7 +204,9 @@ export class Precision {
     this.core.scene.add(group);
     const snap=exact?null:tc.mode==="translate"?tc.translationSnap:tc.rotationSnap;
     const m={tc,group,lines,fill,labels:[],pixel,origin,quaternion,inverse:quaternion.clone().invert(),snap,exact,
-      startInverse:tc.object.getWorldQuaternion(new THREE.Quaternion()).invert(),statics:0,fixedLabels:0,steps:0};
+      startInverse:tc.object.getWorldQuaternion(new THREE.Quaternion()).invert(),statics:0,fixedLabels:0,steps:0,
+      record:this.record(tc),handle:tc.axis,mode:tc.mode,byLetter:{},text:"",
+      shownStep:snap&&(tc.mode==="translate"?snap*1000:snap/RAD)};
     this.instrument=m;
     if(tc.mode==="translate") {
       m.spacing=snap || niceStep(pixel*10);
@@ -140,7 +221,6 @@ export class Precision {
     }
     this.update();
   }
-
   point(m,angle,r=m.radius,out=a) {
     return out.copy(m.u).multiplyScalar(Math.cos(angle)*r).addScaledVector(m.v,Math.sin(angle)*r);
   }
@@ -189,13 +269,13 @@ export class Precision {
   update() {
     const m=this.instrument;if(!m)return;
     const {tc,pixel}=m;
-    let count=m.statics,labels=m.fixedLabels,values="";
+    let count=m.statics,labels=m.fixedLabels;
     if(tc.mode==="translate") {
       tc.object.getWorldPosition(delta).sub(m.origin).applyQuaternion(m.inverse);
       const steps=Math.max(5,Math.min(40,Math.ceil(Math.max(pixel*90,delta.length())/m.spacing)));
       if(steps!==m.steps){m.steps=steps;this.drawStatic(m);count=m.statics;labels=m.fixedLabels;}
       count=this.stroke(m,count,ORIGIN,delta);
-      values=m.letters.map(a=>`${a} ${signed(delta[a.toLowerCase()]*1000)}`).join(" · ")+" mm";
+      for(const letter of m.letters)m.byLetter[letter]=delta[letter.toLowerCase()]*1000;
     } else {
       const q=tc.object.getWorldQuaternion(turn).premultiply(m.startInverse);
       const value=m.exact?2*Math.atan2(q.x*m.axis.x+q.y*m.axis.y+q.z*m.axis.z,q.w):tc.dragging?tc.rotationAngle:0;
@@ -208,53 +288,105 @@ export class Precision {
         attr.setXYZ(k*3+2,(m.u.x*Math.cos(t1)+m.v.x*Math.sin(t1))*r,(m.u.y*Math.cos(t1)+m.v.y*Math.sin(t1))*r,(m.u.z*Math.cos(t1)+m.v.z*Math.sin(t1))*r);
       }
       attr.needsUpdate=true;m.fill.geometry.setDrawRange(0,384);
-      values=`${tc.axis} ${signed(value/RAD)}°`;
-      if(Math.abs(value)>m.step/2)labels=this.scaleLabel(m,labels,`${tc.axis} Δ ${signed(value/RAD)}°`,this.point(m,value,m.radius+pixel*18));
+      m.byLetter[m.handle]=value/RAD;
     }
+    m.text=this.describe(m.handle,m.byLetter,m.shownStep);
     for(let i=labels;i<m.labels.length;i++)m.labels[i].visible=false;
     m.lines.geometry.attributes.position.needsUpdate=true;m.lines.geometry.setDrawRange(0,count);
-    this.value.textContent=values; this.core.requestRender();
+    this.core.requestRender();
   }
 
-  enterNumber() {
-    const tc=this.control();if(!tc||this.gizmos.drag)return;
-    this.editing=true;this.entry.hidden=false;this.value.hidden=true;
-    this.draft={tc,object:tc.object,session:this.core.ix.edit?.session};
-    const axis=axes[tc.axis]?tc.axis:"X";
-    this.axis.value=tc.mode==="rotate"?`R${axis.toLowerCase()}`:axis;this.input.value="";
-    this.unit.textContent=tc.mode==="translate"?"mm":"°";
+  // The change along handle `axis`: one value, or a plane's two.
+  describe(axis,byLetter,step) {
+    if(axis.length===1)return amount(byLetter[axis],step);
+    return `${axis[0]} ${amount(byLetter[axis[0]],step)} · ${axis[1]} ${amount(byLetter[axis[1]],step)}`;
+  }
+
+  sessionOf(tc) {
+    return tc===this.gizmos.tcp?this.core.ix.edit?.session:this.gizmos.shape?.session;
+  }
+
+  record(tc) {
+    return {tc,object:tc.object,session:this.sessionOf(tc)};
+  }
+
+  // Whether `r` is still on the handles it was made on, and they show.
+  live(r) {
+    return r.tc.object===r.object && r.tc.getHelper().visible && r.session===this.sessionOf(r.tc);
+  }
+
+  // A handle let go where it was pressed: a change to type along it.
+  click(tc,axis,mode) {
+    this.settled=null;
+    this.open(tc,mode,axis[0],{});
+  }
+
+  // The value left by a drag, clicked: what the drag did, to retype.
+  reopen() {
+    const s=this.settled;
+    if(s && this.live(s) && !this.gizmos.drag)this.open(s.tc,s.mode,s.axis[0],s.byLetter);
+  }
+
+  open(tc,mode,letter,base) {
+    this.entry={...this.record(tc),mode,letter,base};
     if(tc===this.gizmos.tcp)this.core.pointer.hover.pinned=true;
-    this.input.focus();this.core.requestRender();
+    tc.setHover({axis:letter,mode});
+    const value=base[letter];
+    this.field.edit(value===undefined?"":typed(value),unitOf(mode),nameOf(mode,letter));
+    this.core.requestRender();
   }
 
-  leaveNumber() {
-    this.editing=false;this.draft=null;this.entry.hidden=true;this.value.hidden=false;
+  // Tab: the same kind of change along the next axis.
+  cycle(step) {
+    const e=this.entry;if(!e)return;
+    this.open(e.tc,e.mode,LETTERS[(LETTERS.indexOf(e.letter)+step+3)%3],e.base);
   }
 
-  draftMatches(tc) {
-    const d=this.draft;
-    return d && d.tc===tc && d.object===tc?.object && d.session===this.core.ix.edit?.session;
+  close() {
+    const e=this.entry;if(!e)return;
+    this.entry=null;this.field.close();
+    e.tc.setHover(null);
   }
 
-  commitNumber() {
-    const tc=this.control(),value=this.input.valueAsNumber;
-    if(!this.draftMatches(tc)){this.leaveNumber();return;}
-    if(!Number.isFinite(value)||this.gizmos.drag)return;
-    const coordinate=this.axis.value,axis=coordinate.slice(-1).toUpperCase();this.leaveNumber();
-    tc.mode=coordinate.length===1?"translate":"rotate";
-    tc.axis=axis;this.gizmos.down(tc.wcKind,tc,true);
-    if(!this.gizmos.drag)return;
-    if(tc.mode==="translate") {
-      const move=axes[axis].clone().multiplyScalar(value/1000);
-      if(tc.space==="local")move.applyQuaternion(tc.object.getWorldQuaternion(new THREE.Quaternion()));
-      const position=tc.object.getWorldPosition(new THREE.Vector3()).add(move);
-      tc.object.position.copy(tc.object.parent.worldToLocal(position));
-    } else {
-      const turn=new THREE.Quaternion().setFromAxisAngle(axes[axis],value*RAD);
-      if(tc.space==="world")tc.object.quaternion.premultiply(turn);
-      else tc.object.quaternion.multiply(turn);
+  cancel() {
+    this.close();this.core.pointer.settle();
+  }
+
+  // Anything else pressed: the values on the handles go.
+  dismiss() {
+    this.close();this.settled=null;
+  }
+
+  // The typed value replaces what was there: the change along that axis
+  // since the last drag began, or from here when nothing was.
+  commit(value) {
+    const e=this.entry;
+    if(!e || !this.live(e) || this.gizmos.drag){this.cancel();return;}
+    const {tc,mode,letter}=e,change=value-(e.base[letter]??0);
+    const s=this.settled,axis=s?.tc===tc && s.mode===mode && s.axis.includes(letter)?s.axis:letter;
+    const byLetter={...e.base,[letter]:value};
+    this.close();
+    if(change!==0 && !this.apply(tc,mode,letter,change))return;
+    this.settled={...this.record(tc),axis,mode,byLetter,text:this.describe(axis,byLetter,null)};
+    this.core.pointer.settle();this.core.requestRender();
+  }
+
+  // `change` (mm or degrees) along handle `letter`, as one gesture; whether
+  // the gesture began.
+  apply(tc,mode,letter,change) {
+    tc.mode=mode;tc.axis=letter;this.gizmos.down(tc.wcKind,tc,true);
+    if(!this.gizmos.drag)return false;
+    const object=tc.object,q=object.getWorldQuaternion(spin);
+    a.copy(axes[letter]);
+    if(tc.space==="local")a.applyQuaternion(q);
+    if(mode==="translate")object.position.copy(object.parent.worldToLocal(object.getWorldPosition(b).addScaledVector(a,change/1000)));
+    else {
+      turn.setFromAxisAngle(a,change*RAD).multiply(q);
+      object.quaternion.copy(object.parent.getWorldQuaternion(q).invert().multiply(turn));
     }
-    this.gizmos.changed(tc.wcKind,tc);this.gizmos.up(tc.wcKind,tc);this.core.pointer.settle();this.core.requestRender();
+    object.updateWorldMatrix(true,false);
+    this.gizmos.changed(tc.wcKind,tc);this.gizmos.up(tc.wcKind,tc);
+    return true;
   }
 
   // The scale's labels keep clear of the cards and the axis letters, nearest
@@ -263,7 +395,7 @@ export class Precision {
     const m=this.instrument;
     if(!m)return;
     const overlays=this.core.overlays;
-    const boxes=overlays.boxes(["edit","precision","drawing","resize"]);
+    const boxes=overlays.boxes(["edit","gizmoValue","drawing","resizeValue"]);
     for(const letter of m.tc.letters) {
       if(!letter.visible)continue;
       const [x,y]=overlays.project(letter.getWorldPosition(scratch),at),[w,h]=sizeOf(letter);
@@ -287,61 +419,42 @@ export class Precision {
     }
   }
 
-  // The card sits beside the handle, off the panels and the inspector and,
-  // where it can, off the robot; it stays where it was while that still holds.
+  // The value rides on its handle: the one being dragged, typed along, or
+  // last let go.
   layout() {
     this.refresh();
-    const tc=this.control(); this.card.hidden=!tc;
-    if(!tc){this.leaveNumber();this.seat=null;return;}
-    if(this.editing && !this.draftMatches(tc))this.leaveNumber();
-    const active=!!this.instrument;
-    if(tc===this.gizmos.shape?.tc && !this.gizmos.shape.members && !active && !this.editing){this.card.hidden=true;return;}
-    this.value.setAttribute("aria-disabled",String(active));
-    if(this.core.ix.edit?.active && tc===this.gizmos.tcp){this.card.hidden=true;return;}
-    const frame=tc.space==="world"?"World":"Tool";
-    this.title.textContent=`${frame}${active?` ${tc.axis} · Requested Δ`:""}`;
-    if(!active)this.value.textContent="Adjust by…";
-    this.hint.textContent=this.editing?"Enter to apply · Esc to cancel":active?"Esc to cancel":"Drag an axis · click value to type";
-    const overlays=this.core.overlays,card=overlays.sized("precision");
-    if(!card)return;
-    const [x,y]=overlays.project(this.instrument?.origin || tc.object.getWorldPosition(scratch),anchor);
-    const {w,h}=card,{width,height}=overlays.view;
-    const candidates=[];
-    for(const left of [x+BESIDE,x-w-BESIDE,width-w-GAP,null])for(const top of [y-h/2,y+ABOVE,y-h-ABOVE,GAP])candidates.push([left??overlays.clearLeft(top,top+h),top]);
-    const options={bounds:{left:GAP,top:GAP,right:width-GAP,bottom:height-GAP},obstacles:overlays.obstacles(["inspector"]),pad:8,
-      cost:(cx,cy,i)=>Math.hypot(cx+w/2-x,cy+h/2-y)+i*3};
-    let seat=this.seat?.tc===tc?{...overlays.seat([candidates[this.seat.index]],w,h,{...options,cost:null}),index:this.seat.index}:null;
-    if(!seat || seat.covered) {
-      const inputs=[Math.round(x),Math.round(y),w,h,width,height,overlays.layout,...(overlays.cards.get("inspector")?.box ? Object.values(overlays.cards.get("inspector").box) : [])];
-      if(this.solved?.tc===tc && this.solved.inputs.length===inputs.length && this.solved.inputs.every((v,i)=>v===inputs[i]))seat=this.solved.seat;
-      else {
-        seat=this.choose(overlays.rank(candidates,w,h,options),w,h);
-        this.solved={tc,inputs,seat};
-      }
-    }
-    this.seat={tc,index:seat.index};
-    overlays.place(card,seat.x,seat.y);
+    if(this.entry && !this.live(this.entry))this.close();
+    if(this.settled && !this.live(this.settled))this.settled=null;
+    const m=this.instrument,e=this.entry,s=this.settled;
+    let tc,axis,mode;
+    if(m){({tc,handle:axis,mode}=m);this.field.show(m.text,unitOf(mode),nameOf(mode,axis));}
+    else if(e)({tc,letter:axis,mode}=e);
+    else if(s){({tc,axis,mode}=s);this.field.show(s.text,unitOf(mode),nameOf(mode,axis));}
+    else {this.field.hide();return;}
+    if(!tc.anchor(axis,mode,a))return;
+    const overlays=this.core.overlays;
+    overlays.project(a,at);overlays.project(tc.getHelper().position,from);
+    this.field.place(at,from,overlays.obstacles(FIELD_AVOIDS));
   }
 
-  // The best seat that does not hide the robot; the robot is looked for
-  // under each seat only until one is clear of it.
-  choose(ranked,w,h) {
-    const view=this.core.overlays.view;
-    for(const seat of ranked) {
-      if(seat.covered)break;
-      if(!OCCLUSION.some(([u,v])=>this.core.pointer.hit(view.left+seat.x+u*w,view.top+seat.y+v*h)))return seat;
-    }
-    return ranked.find(seat=>!seat.covered) || ranked[0];
+  // The pointer on the value is still on the TCP gizmo; while a change is
+  // typed the gizmo is pinned.
+  hovered(on) {
+    if(this.entry || (this.settled||this.instrument?.record)?.tc!==this.gizmos.tcp)return;
+    this.core.pointer.hover.gizmo(on,performance.now());
+    if(!on)this.core.pointer.settle();
   }
 
-  end() {
+  // A released drag leaves its change on the handle.
+  end(released=false) {
     const m=this.instrument;if(!m)return;this.instrument=null;
     m.group.removeFromParent();
     for(const l of m.labels){l.removeFromParent();l.element.remove();}
+    if(released && !m.exact)this.settled={...m.record,axis:m.handle,mode:m.mode,byLetter:m.byLetter,text:m.text};
   }
 
   dispose() {
-    this.end();this.card.remove();
+    this.end();this.field.node.remove();
     this.resources?.group.traverse(o=>{o.geometry?.dispose();o.material?.dispose();});
     this.resources=null;
   }

@@ -29,6 +29,7 @@ from tests.helpers.scene_surface import (
     scene_js,
     wait_for_scene_idle,
 )
+from tests.helpers import visual_evidence
 from tests.helpers.visual_evidence import VisualEvidence
 from tests.helpers.wait import screen_wait_for_scene_ready
 from waldo_commander.state import ui_state
@@ -40,7 +41,17 @@ from waldo_commander.services.urdf_scene.angle_pipeline import urdf_to_panel
 class TestJointDial:
     @pytest.mark.parametrize(
         "mode",
-        [RobotAppearanceMode.SIMULATOR, RobotAppearanceMode.LIVE],
+        [
+            RobotAppearanceMode.SIMULATOR,
+            # The grey arm runs the same flow; it is worth only its captures.
+            pytest.param(
+                RobotAppearanceMode.LIVE,
+                marks=pytest.mark.skipif(
+                    not visual_evidence.enabled(),
+                    reason="only recorded with --evidence",
+                ),
+            ),
+        ],
         ids=lambda mode: mode.value,
     )
     def test_joint_dial_appearances(self, class_screen, mode):
@@ -58,7 +69,7 @@ class TestJointDial:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.36, -0.42, 0.5, 0, 0.06, 0.13],
+                    [0.234, -0.252, 0.37, 0, 0.06, 0.13],
                 )
                 camera = camera_pose(screen)
                 teleport_jog_pose()
@@ -90,7 +101,7 @@ class TestJointDial:
                         scene_js(
                             screen,
                             "S.setCameraPose(arguments[0])",
-                            [0.45, 0.45, 0.38, 0, 0, 0.2],
+                            [0.34, 0.34, 0.335, 0, 0, 0.2],
                         )
                     assert not emits_during(
                         screen, lambda: grab_ring(screen, f"link:L{joint + 1}", joint)
@@ -185,13 +196,15 @@ class TestJointDial:
                 run_in_app(lambda: scene.set_appearance_mode(saved_mode))
                 teleport_jog_pose()
 
-    def test_visible_dial_handle_over_robot(self, class_screen, monkeypatch):
+    def test_visible_dial_handle_over_robot(self, class_screen):
         screen = class_screen
         screen_wait_for_scene_ready(screen, timeout_s=40)
         teleport_jog_pose()
         with viewport(screen, 1366, 768), camera_kept(screen):
             evidence = VisualEvidence(screen, "joint-dial-picking")
             try:
+                # This view puts J1's knob over the robot at 1366 px, which is
+                # what the grab below checks.
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
@@ -217,12 +230,7 @@ class TestJointDial:
                 evidence.capture("03-idle-cancel-cleared-sweep")
                 ActionChains(screen.selenium).release().perform()
                 joint_settled(0)
-                with monkeypatch.context() as patch:
-                    patch.setattr("tests.helpers.visual_evidence.which", lambda _: None)
-                    evidence.finish()
-                assert (evidence.root / "workflow.gif").is_file()
-                assert (evidence.root / "manifest.json").is_file()
-                assert not list(evidence.root.glob("*.mp4"))
+                evidence.finish()
             finally:
                 evidence.stop()
                 ActionChains(screen.selenium).release().perform()
@@ -234,6 +242,8 @@ class TestJointDial:
         with viewport(screen, 1366, 768), camera_kept(screen):
             evidence = VisualEvidence(screen, "joint-dial-views")
             try:
+                # Far enough out that every link up to L5 has a pixel to hover
+                # at 1366 px; the views below vary the distance themselves.
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
@@ -322,7 +332,7 @@ class TestJointDial:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.36, -0.42, 0.5, 0, 0.06, 0.13],
+                    [0.234, -0.252, 0.37, 0, 0.06, 0.13],
                 )
                 wait_for_scene_idle(screen)
                 drag_dial(screen, -50, duration=5)
@@ -411,7 +421,7 @@ class TestJointDial:
             scene_js(
                 screen,
                 "S.setCameraPose(arguments[0])",
-                [0.36, -0.42, 0.5, 0, 0.06, 0.13],
+                [0.234, -0.252, 0.37, 0, 0.06, 0.13],
             )
             wait_for_scene_idle(screen)
             evidence = VisualEvidence(screen, "joint-dial-review")

@@ -13,10 +13,14 @@ import { setStyle } from "./dom.js";
 export const GAP = 12;
 // The cards Python builds over the view; the view places them.
 const HOSTED = { inspector: ".wc-object-inspector", edit: ".wc-target-edit-bar", teaching: ".wc-surface-teaching" };
-const EDIT_OFFSET = 190;
+const HOSTED_ANY = Object.values(HOSTED).join(",");
+// How far from the edited target its confirm pill sits, in pixels.
+const EDIT_GAP = 18;
 
 const point = new THREE.Vector3();
 const corner = new THREE.Vector3();
+const marker = [0, 0, 0];
+const tip = [0, 0, 0];
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 export function overlap(box, obstacles, pad) {
@@ -38,7 +42,22 @@ export class Overlays {
     this.cards = new Map(); // name -> {node, w, h, scroll, offset, box}
     this.marks = new Map(); // name -> boxes in the scene others keep clear of
     this.readers = []; // what else a frame measures before writing
-    this.editSeat = null;
+    this.editSeats = [[0, 0], [0, 0], [0, 0]];
+    // The app's cards arrive hidden and are seated by a frame; the view only
+    // draws on demand, so a card added with nothing else changing asks for one.
+    this.hostObserver = new MutationObserver((records) => {
+      for (const record of records)
+        for (const node of record.addedNodes)
+          if (node.nodeType === 1 && (node.matches(HOSTED_ANY) || node.querySelector(HOSTED_ANY))) {
+            core.requestRender();
+            return;
+          }
+    });
+    this.watched = null;
+  }
+
+  dispose() {
+    this.hostObserver.disconnect();
   }
 
   // The panels' boxes, as `wc:layout` published them.
@@ -83,6 +102,11 @@ export class Overlays {
     this.view = view;
     if (moved) this.relative();
     const host = this.core.root.parentElement;
+    if (host && host !== this.watched) {
+      this.hostObserver.disconnect();
+      this.hostObserver.observe(host, { childList: true, subtree: true });
+      this.watched = host;
+    }
     for (const [name, selector] of Object.entries(HOSTED)) {
       const node = host?.querySelector(selector) || null;
       if (this.cards.get(name)?.node === node) continue;
@@ -223,35 +247,35 @@ export class Overlays {
     this.place(card, left, GAP);
   }
 
-  // The target's coordinate card sits beside the gizmo, or below it, and
-  // stays put while a value is typed or the gizmo is out of sight.
+  // The edited target's confirm pill sits by its marker, on the side its
+  // arrows do not point to, clear of the value riding on them.
   layoutEditBar() {
     const card = this.card("edit");
-    if (!card) {
-      this.editSeat = null;
-      return;
+    if (!card) return;
+    setStyle(card.node, "width", "max-content");
+    const tc = this.core.gizmos.tcp;
+    const [x, y] = this.project(this.core.gizmos.frame.getWorldPosition(point), marker);
+    let dx = 0, dy = 0;
+    if (tc.object) {
+      for (const letter of "XYZ") {
+        this.project(tc.anchor(letter, "translate", point), tip);
+        dx += tip[0] - x;
+        dy += tip[1] - y;
+      }
     }
-    const node = card.node;
-    const typing = node.contains(document.activeElement) && document.activeElement.matches("input");
-    const size = `${this.view.width}:${this.view.height}:${card.w}`;
-    if (typing && card.box && this.editSize === size) return;
-    this.editSize = size;
-    setStyle(node, "maxWidth", `${Math.max(180, this.view.width - 2 * GAP)}px`);
-    setStyle(node, "width", "max-content");
-    setStyle(node, "transform", "none");
-    setStyle(node, "bottom", "auto");
-    const bounds = this.bounds();
-    const gizmos = this.core.gizmos;
-    const [x, y, z] = this.project(gizmos.frame.getWorldPosition(point));
-    const offScreen = Math.abs(z) > 1 || x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom;
-    if (this.editSeat && (gizmos.miss || offScreen)) {
-      const seat = this.seat([this.editSeat], card.w, card.h, { obstacles: [] });
-      this.place(card, seat.x, seat.y);
-      return;
-    }
+    const length = Math.hypot(dx, dy);
+    const ux = length < 1 ? 1 : -dx / length, uy = length < 1 ? 0 : -dy / length;
     const { w, h } = card;
-    const seat = this.seat([[x + EDIT_OFFSET, y - h / 2], [x - EDIT_OFFSET - w, y - h / 2], [x - w / 2, y + EDIT_OFFSET]], w, h);
+    this.besideMarker(0, x, y, ux, uy, w, h);
+    this.besideMarker(1, x, y, -uy, ux, w, h);
+    this.besideMarker(2, x, y, uy, -ux, w, h);
+    const seat = this.seat(this.editSeats, w, h, { obstacles: this.obstacles(["inspector", "gizmoValue"]) });
     this.place(card, seat.x, seat.y);
-    if (!gizmos.miss) this.editSeat = [seat.x, seat.y];
+  }
+
+  besideMarker(i, x, y, dx, dy, w, h) {
+    const reach = (Math.abs(dx) * w) / 2 + (Math.abs(dy) * h) / 2 + EDIT_GAP, c = this.editSeats[i];
+    c[0] = x + dx * reach - w / 2;
+    c[1] = y + dy * reach - h / 2;
   }
 }

@@ -6,7 +6,8 @@ import { visibleHit } from "./section.js";
 const normals = new THREE.Matrix3();
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 // The least of the inspector worth showing.
-const SHORTEST = 150;
+// Room for the header, the Move/Resize toggle, the fields and the actions.
+const SHORTEST = 280;
 
 // What is selected, outlined, and isolated: a tap on an object selects it
 // (shift adds to the selection), a tap on nothing clears it. The inspector
@@ -135,7 +136,7 @@ export class Selection {
       const h=candidates[i][2];
       const dx=Math.max(x-ax,0,ax-x-w),dy=Math.max(y-ay,0,ay-y-h);
       const covers=ax>x-10 && ax<x+w+10 && ay>y-10 && ay<y+h+10;
-      return Math.hypot(dx,dy)+(height-h)*.5+(covers?1000:0);
+      return Math.hypot(dx,dy)+(height-h)*2+(covers?1000:0);
     }}):{x:bounds.left,y:GAP,h:Math.max(SHORTEST,view.height-64)};
     overlays.place(card,seat.x,seat.y);
     setStyle(card.node,"maxHeight",`${seat.h}px`);

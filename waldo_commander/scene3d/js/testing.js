@@ -245,6 +245,8 @@ export function surface(core) {
         const py = Math.round(fy);
         const hit = S.pick(px, py);
         if (hit.covered || hit.names.length || hit.handles.length) continue;
+        // The menu answers whatever a right-click there hits, keep-outs included.
+        if (core.pointer.contextAt(px, py).hits.length) continue;
         return [px, py, ...S.ground(px, py)];
       }
     }
@@ -288,7 +290,8 @@ export function surface(core) {
     const tc = gizmoFor(name);
     if (!tc?.object) return null;
     const [cx, cy] = pixel(tc.object.getWorldPosition(new THREE.Vector3()).project(core.camera));
-    for (let rad = 20; rad <= 200; rad += 4) {
+    // Presses near the centre on screen start no turn, so look past that.
+    for (let rad = 40; rad <= 200; rad += 4) {
       for (let a = 0; a < 360; a += 5) {
         const t = (a * Math.PI) / 180;
         const px = Math.round(cx + rad * Math.cos(t));

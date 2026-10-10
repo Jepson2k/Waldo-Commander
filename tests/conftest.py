@@ -35,6 +35,8 @@ from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
 from selenium import webdriver as _webdriver
 
+from tests.helpers import visual_evidence
+
 # SSH X11 forwarding gotcha: when pytest is run over SSH with X forwarding
 # enabled, DISPLAY is set to "localhost:N.0" pointing at the forwarded
 # tunnel. Headless Chromium honors DISPLAY even with --headless=new and
@@ -613,6 +615,14 @@ def _check_nicegui_pin() -> None:
     )
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--evidence",
+        action="store_true",
+        help="record review screenshots and videos into .scene-evidence/",
+    )
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers and run the screen plugin's configure hook
     (the screen fixtures are imported, not plugin-registered, so Screen.PORT /
@@ -623,6 +633,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if sys.platform == "win32":
         config.option.timeout_method = "thread"
     _check_nicegui_pin()
+    visual_evidence.ENABLED = config.getoption("evidence")
     nicegui_screen_plugin.pytest_configure(config)
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"
@@ -823,6 +834,12 @@ def reset_state(request: pytest.FixtureRequest):
     _install_test_commander()
 
     reset_all_state()
+
+    # The scene enforces its world on this process's collision checker, which
+    # in-process dry runs share; a fresh process starts with an empty one.
+    import parol6.PAROL6_ROBOT as robot_model
+
+    robot_model.apply_shapes([])
 
     # The keybindings manager is a module singleton: a browser test that
     # focuses the editor leaves _editor_focused=True behind (no blur event

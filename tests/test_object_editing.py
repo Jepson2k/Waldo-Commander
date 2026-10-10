@@ -26,10 +26,8 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
 
     right_click(user, view.scene, [], [0.4, 0.1, 0])
     user.find(marker="scene-add-box").click()
-    field(user, "shape-dialog-name", "fixture")
-    user.find(marker="shape-dialog-save").click()
     await confirmed(view, lambda: len(handle.shapes) == 1)
-    assert view._selected_objects == ["shape:fixture"]
+    assert view._selected_objects == [f"shape:{handle.shapes[0].name}"]
     assert "set_shapes(" in textarea.value
     source_created = textarea.value
     original = handle.shapes[0]
@@ -123,15 +121,17 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
     assert handle.shapes == duplicated
     assert not view.object_history.undo_stack
 
-    right_click(user, view.scene, ["shape:fixture-edited"])
-    user.find(marker="shape-menu-delete").click()
+    # A drawing chosen from a menu opened before an external change is
+    # refused: the world it was offered for is gone.
+    right_click(user, view.scene, [], [0.4, 0.1, 0])
     changed = replace(handle.shapes[0], x=0.3)
     await waldoctl.commander.client.set_shapes([changed, handle.shapes[1]])
     await handle.refresh_from_backend()
     # A readback already under way adopts the change instead of this one.
     assert await wait_until(lambda: handle.shapes[0] == changed, 5)
-    user.find(marker="shape-delete-confirm").click()
+    user.find(marker="scene-draw-box").click()
     await asyncio.sleep(0)
+    assert view._drawing is None
     assert handle.shapes[0] == changed
     assert len(handle.shapes) == 2
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)
@@ -161,7 +161,6 @@ async def test_object_edit_stays_pending_until_real_readback_and_preserves_new_s
     try:
         right_click(user, view.scene, [], [0.45, 0, 0])
         user.find(marker="scene-add-box").click()
-        user.find(marker="shape-dialog-save").click()
         await asyncio.wait_for(entered.wait(), 5)
         assert view.object_history.busy
         assert not handle.confirmed
@@ -187,7 +186,6 @@ async def test_scene_undo_redo_and_new_edits_remain_undoable_as_a_recording_take
     source = textarea.value
     right_click(user, view.scene, [], [0.4, 0.1, 0])
     user.find(marker="scene-add-box").click()
-    user.find(marker="shape-dialog-save").click()
     await confirmed(view, lambda: len(handle.shapes) == 1)
     original = handle.shapes[0]
     field(user, "object-x", 500)
@@ -230,7 +228,6 @@ async def test_capture_conversion_invalidates_object_history_and_keeps_live_bloc
 
     right_click(user, view.scene, [], [0.45, 0, 0])
     user.find(marker="scene-add-box").click()
-    user.find(marker="shape-dialog-save").click()
     await confirmed(view, lambda: bool(view.object_history.undo_stack))
     shapes = list(waldoctl.commander.scene.shapes)
     real_io_bound = run.io_bound

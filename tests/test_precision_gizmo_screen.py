@@ -12,7 +12,10 @@ from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     at_start,
     camera_kept,
+    click_spot,
+    field_number,
     gizmo,
+    gizmo_field,
     hold,
     probe,
     tcp_mm,
@@ -39,6 +42,14 @@ def _reveal(screen):
     wait(screen).until(lambda _: gizmo(screen, "tcp:ball"))
 
 
+def _jog_settled(screen):
+    """Wait until the jog a release or a typed change started has ended."""
+    wait(screen, 15).until(
+        lambda _: ui_state.control_panel._jog_end_wait_task is None
+        or ui_state.control_panel._jog_end_wait_task.done()
+    )
+
+
 @pytest.mark.browser
 class TestPrecisionGizmo:
     @pytest.mark.parametrize(
@@ -62,7 +73,7 @@ class TestPrecisionGizmo:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.55, 0.65, 0.65, 0, 0.17, 0.16],
+                    [0.396, 0.516, 0.513, 0, 0.17, 0.16],
                 )
                 _reveal(screen)
                 wait_for_scene_idle(screen)
@@ -73,12 +84,13 @@ class TestPrecisionGizmo:
                 )
                 hold(screen, spot)
                 wait_for_scene_idle(screen)
-                value = screen.selenium.find_element(
-                    By.CSS_SELECTOR, ".wc-gizmo-value"
-                ).text
-                assert "mm" in value and "X" in value
+                # The change rides on the dragged arrow, named for its axis.
+                field = gizmo_field(screen)
+                assert field and not field["typing"], field
+                assert field["unit"] == "mm" and field["label"].startswith("X "), field
                 evidence.capture("02-translation-drag-1920")
-                zoom(screen, 0.5)
+                # Close enough that the step would be finer if it followed the zoom.
+                zoom(screen, 0.25)
                 wait_for_scene_idle(screen)
                 assert gizmo(screen, "tcp:ball")["translationSnap"] == far_step
                 evidence.capture("03-frozen-step-zoom-1920")
@@ -90,38 +102,89 @@ class TestPrecisionGizmo:
                     lambda _: gizmo(screen, "tcp:ball")["translationSnap"] < far_step
                 )
 
+                # A click on the arrow opens a field for an exact change; Tab
+                # moves it to the next axis and back, Enter applies it.
                 at_start(screen)
                 zoom(screen, 0.8)
                 _reveal(screen)
                 wait_for_scene_idle(screen)
                 before = tcp_mm()
-                screen.selenium.find_element(By.CSS_SELECTOR, ".wc-gizmo-value").click()
-                entry = screen.selenium.find_element(
-                    By.CSS_SELECTOR, ".wc-gizmo-entry input"
+                arrow = wait(screen).until(
+                    lambda _: probe(screen, "arrowTip", "tcp:ball")
                 )
-                entry.send_keys("3")
+                click_spot(screen, arrow)
+                wait(screen).until(lambda _: (f := gizmo_field(screen)) and f["typing"])
+                assert gizmo_field(screen)["label"].startswith("X "), gizmo_field(
+                    screen
+                )
+                ActionChains(screen.selenium).send_keys(Keys.TAB).perform()
+                wait(screen).until(
+                    lambda _: gizmo_field(screen)["label"].startswith("Y ")
+                )
+                ActionChains(screen.selenium).key_down(Keys.SHIFT).send_keys(
+                    Keys.TAB
+                ).key_up(Keys.SHIFT).perform()
+                wait(screen).until(
+                    lambda _: gizmo_field(screen)["label"].startswith("X ")
+                )
+                assert tcp_mm() == pytest.approx(before, abs=0.05), "typing moved"
+                ActionChains(screen.selenium).send_keys("3").perform()
                 evidence.capture("04-exact-entry-1920")
-                entry.send_keys(Keys.ENTER)
+                ActionChains(screen.selenium).send_keys(Keys.ENTER).perform()
                 wait(screen, 15).until(
                     lambda _: np.linalg.norm(tcp_mm() - before) > 2.7
                 )
                 assert np.linalg.norm(tcp_mm() - before) < 3.5
-                wait(screen, 15).until(
-                    lambda _: ui_state.control_panel._jog_end_wait_task is None
-                    or ui_state.control_panel._jog_end_wait_task.done()
-                )
+                _jog_settled(screen)
+
+                # Escape puts the field away and nothing moves.
                 at_start(screen)
-                screen.selenium.find_element(By.CSS_SELECTOR, ".wc-gizmo-value").click()
-                screen.selenium.find_element(
-                    By.CSS_SELECTOR, ".wc-gizmo-entry input"
-                ).send_keys("30")
-                ActionChains(screen.selenium).send_keys(Keys.ESCAPE).perform()
                 _reveal(screen)
-                wait(screen).until(
-                    lambda _: not screen.selenium.find_element(
-                        By.CSS_SELECTOR, ".wc-gizmo-entry"
-                    ).is_displayed()
+                before = tcp_mm()
+                arrow = wait(screen).until(
+                    lambda _: probe(screen, "arrowTip", "tcp:ball")
                 )
+                click_spot(screen, arrow)
+                wait(screen).until(lambda _: (f := gizmo_field(screen)) and f["typing"])
+                ActionChains(screen.selenium).send_keys("30").send_keys(
+                    Keys.ESCAPE
+                ).perform()
+                wait(screen).until(
+                    lambda _: not (gizmo_field(screen) or {}).get("typing")
+                )
+                assert tcp_mm() == pytest.approx(before, abs=0.05), "Escape moved"
+
+                # After a drag its value can be retyped: what is typed replaces
+                # what the drag did along that axis.
+                _reveal(screen)
+                arrow = wait(screen).until(
+                    lambda _: probe(screen, "arrowTip", "tcp:ball")
+                )
+                hold(screen, arrow)
+                ActionChains(screen.selenium).release().perform()
+                wait(screen).until(
+                    lambda _: not scene_js(screen, "return !!S.byName('tcp:ticks')")
+                )
+                _jog_settled(screen)
+                dragged = gizmo_field(screen)
+                assert dragged and not dragged["typing"], dragged
+                after = tcp_mm()
+                base = field_number(dragged["value"])
+                screen.selenium.find_element(
+                    By.CSS_SELECTOR,
+                    ".wc-gizmo-field:not([hidden]) .wc-gizmo-field-value",
+                ).click()
+                wait(screen).until(lambda _: (f := gizmo_field(screen)) and f["typing"])
+                assert field_number(gizmo_field(screen)["input"]) == pytest.approx(base)
+                ActionChains(screen.selenium).key_down(Keys.CONTROL).send_keys(
+                    "a"
+                ).key_up(Keys.CONTROL).send_keys(f"{base + 3:g}", Keys.ENTER).perform()
+                wait(screen, 15).until(lambda _: np.linalg.norm(tcp_mm() - after) > 2.7)
+                assert np.linalg.norm(tcp_mm() - after) < 3.5
+                _jog_settled(screen)
+
+                at_start(screen)
+                _reveal(screen)
                 spot = wait(screen).until(
                     lambda _: next(
                         (s for a in "ZXY" if (s := probe(screen, "ringSpot", a))), None
@@ -129,16 +192,12 @@ class TestPrecisionGizmo:
                 )
                 hold(screen, spot, 15)
                 wait_for_scene_idle(screen)
-                assert (
-                    "°"
-                    in screen.selenium.find_element(
-                        By.CSS_SELECTOR, ".wc-gizmo-value"
-                    ).text
-                )
+                assert gizmo_field(screen)["unit"] == "°", gizmo_field(screen)
                 evidence.capture("05-rotation-drag-1920")
-                with viewport(screen, 1366, 768):
-                    wait_for_scene_idle(screen)
-                    evidence.capture("06-rotation-drag-1366")
+                if evidence.enabled:
+                    with viewport(screen, 1366, 768):
+                        wait_for_scene_idle(screen)
+                        evidence.capture("06-rotation-drag-1366")
                 wait_for_scene_idle(screen)
                 ActionChains(screen.selenium).release().perform()
                 wait(screen).until(
@@ -160,7 +219,7 @@ class TestPrecisionGizmo:
             scene_js(
                 screen,
                 "S.setCameraPose(arguments[0])",
-                [0.55, 0.65, 0.65, 0, 0.17, 0.16],
+                [0.396, 0.516, 0.513, 0, 0.17, 0.16],
             )
             try:
                 values = []
@@ -183,13 +242,9 @@ class TestPrecisionGizmo:
                     _reveal(screen)
                     spot = wait(screen).until(lambda _: probe(screen, "ringSpot", "Z"))
                     hold(screen, spot, direction * 20)
-                    text = screen.selenium.find_element(
-                        By.CSS_SELECTOR, ".wc-gizmo-value"
-                    ).text
-                    assert text.startswith("Z ")
-                    values.append(
-                        float(text.split()[1].removesuffix("°").replace("−", "-"))
-                    )
+                    field = gizmo_field(screen)
+                    assert field["label"].startswith("Rz "), field
+                    values.append(field_number(field["value"]))
                     ActionChains(screen.selenium).send_keys(
                         Keys.ESCAPE
                     ).release().perform()

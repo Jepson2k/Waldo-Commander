@@ -136,7 +136,7 @@ class TestCameraTools:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.55, 0.65, 0.65, 0, 0.17, 0.16],
+                    [0.396, 0.516, 0.513, 0, 0.17, 0.16],
                 )
                 set_projection(screen, "Orthographic")
                 choose(
@@ -145,7 +145,7 @@ class TestCameraTools:
                     "Edit Target...",
                 )
                 wait(screen).until(lambda _: run_in_app(lambda: scene._edit_active))
-                initial = run_in_app(scene.get_editing_angles)
+                initial = run_in_app(lambda: scene._requested_edit_pose)
                 with viewport(screen, 1366, 768):
                     wait_for_scene_idle(screen)
                     spot = wait(screen).until(
@@ -153,9 +153,8 @@ class TestCameraTools:
                     )
                     hold(screen, spot, 20)
                     wait(screen).until(
-                        lambda _: not np.allclose(
-                            run_in_app(scene.get_editing_angles), initial
-                        )
+                        lambda _: run_in_app(lambda: scene._requested_edit_pose)
+                        != initial
                     )
                     wait_for_scene_idle(screen)
                     evidence.capture("06-orthographic-drag-1366")
@@ -163,9 +162,8 @@ class TestCameraTools:
                         Keys.ESCAPE
                     ).release().perform()
                     wait(screen).until(
-                        lambda _: np.allclose(
-                            run_in_app(scene.get_editing_angles), initial
-                        )
+                        lambda _: run_in_app(lambda: scene._requested_edit_pose)
+                        == initial
                     )
                     click_marked(screen, "edit-bar-cancel")
                     wait(screen).until(

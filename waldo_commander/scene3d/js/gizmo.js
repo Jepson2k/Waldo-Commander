@@ -11,6 +11,7 @@ import * as THREE from "three";
 import { SceneTransform } from "./transform.js";
 import { reducedMotion } from "./fx.js";
 import { Precision } from "./precision.js";
+import { TAP_PX } from "./handles.js";
 
 const BALL_RADIUS_M = 0.008;
 const SPRING_MS = 520;
@@ -105,12 +106,25 @@ export class Gizmos {
     tc.axis = axis;
     tc.mode = mode;
     if (!tc.begin(e)) return null;
-    return { g: this.drag.g, move: (event) => tc.drag(event), release: (event) => tc.release(event), cancel: (reason) => this.core.gestures.abort(reason) };
+    const x = e.clientX, y = e.clientY;
+    const release = (event) => {
+      if (Math.hypot(event.clientX - x, event.clientY - y) > TAP_PX) tc.release(event);
+      else this.clicked(tc, axis, mode);
+    };
+    return { g: this.drag.g, move: (event) => tc.drag(event), release, cancel: (reason) => this.core.gestures.abort(reason) };
   }
 
-  // The handle under the pointer, on each control.
+  // A handle let go where it was pressed moves nothing: its change is typed.
+  clicked(tc, axis, mode) {
+    this.core.gestures.abort("click");
+    this.precision.click(tc, axis, mode);
+  }
+
+  // The handle under the pointer, on each control; a change being typed
+  // keeps its own handle lit.
   highlight(handles) {
-    for (const tc of this.all()) tc.setHover(handles.find((h) => h.tc === tc) || null);
+    const typing = this.precision.entry?.tc;
+    for (const tc of this.all()) if (tc !== typing) tc.setHover(handles.find((h) => h.tc === tc) || null);
   }
 
   // Where the selected objects' handles are on screen, for the cards to keep
@@ -168,19 +182,25 @@ export class Gizmos {
     this.tcp.setSpace(edit?.active ? "world" : "local");
     const visible = on && (edit?.active || rule !== "hidden") && !this.core.pointer?.ringDrag;
     this.frame.visible = visible || !!(rule!=="hidden" && this.core.ix.rules?.available && !this.core.ix.rules?.suspended);
-    const colors = this.core.ix.colors || {};
-    this.ball.material.color.set(edit && edit.active ? colors.active : colors.ball);
+    this.paintBall();
     if (visible) {
       this.attach(this.tcp, this.ball);
     } else this.detach(this.tcp, "hidden");
     this.core.requestRender();
   }
 
+  // An edited target is drawn in the miss colour while the arm cannot reach it.
+  paintBall() {
+    const colors = this.core.ix.colors || {};
+    const editing = this.core.ix.edit?.active;
+    this.ball.material.color.set(editing ? (this.miss ? colors.miss : colors.active) : colors.ball);
+  }
+
   get gizmoShown() {
     return this.frame.visible && !!this.tcp.object;
   }
 
-  // ---- edit-mode joint controls and the keep-out arrows -----------------
+  // ---- the selected objects' handles ------------------------------------
 
   setShape(move) {
     const current = this.shape;
@@ -297,8 +317,14 @@ export class Gizmos {
     }
     this.finishDrag(true);
     if (this.spring) this.tcp.enabled = false;
-    // Refused, the handles go back to where the app has the objects.
-    this.core.gestures.release(drag.g, fields, kind === "tcp" ? null : (confirmed) => confirmed || this.setShape(this.core.ix.shapeMove));
+    // Refused, the handles go back to where the app has the objects, and
+    // the change left on them goes.
+    const refused = (confirmed) => {
+      if (confirmed) return;
+      this.precision.settled = null;
+      this.setShape(this.core.ix.shapeMove);
+    };
+    this.core.gestures.release(drag.g, fields, kind === "tcp" ? null : refused);
   }
 
   // The drag ends other than by release: the controls let go of the pointer
@@ -333,7 +359,7 @@ export class Gizmos {
       tc.enabled = true;
       tc.getHelper().visible = !!tc.object;
     }
-    this.precision.end();
+    this.precision.end(released);
     if (drag.kind === "tcp") {
       if (this.placed) this.place(this.rev, ...this.placed);
     }
@@ -347,13 +373,17 @@ export class Gizmos {
   }
 
   // Whether the drag's last pose was out of reach, which tints its spring
-  // back, though the answer comes after the spring has begun.
+  // back, though the answer comes after the spring has begun; a jog that
+  // missed leaves no change on the handle. An edited target shows it.
   setMiss(missed) {
     this.miss = missed;
+    this.paintBall();
+    if (missed && !this.core.ix.edit?.active && this.precision.settled?.tc === this.tcp) this.precision.settled = null;
     const colors = this.core.ix.colors || {};
     if (this.spring && missed && !this.spring.hot && colors.miss) {
       this.spring.hot = new THREE.Color(colors.miss);
     }
+    this.core.requestRender();
   }
 
   // ---- marks and spring -------------------------------------------------

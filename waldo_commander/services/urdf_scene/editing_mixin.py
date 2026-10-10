@@ -2,11 +2,9 @@
 Editing Mixin for UrdfScene.
 
 Provides target editing functionality:
-- Enter/exit editing mode (changes robot appearance and joint control)
-- Joint angle manipulation via rotation rings
-- TCP ball for IK-driven positioning
-- Context menu and edit bar UI
-- Target CRUD operations
+- Enter/exit editing mode: a target edit moves a marker at the target with
+  the gizmo while the arm stays live; surface teaching previews the arm
+- Context menu, the confirm/cancel pair beside the marker, and target CRUD
 """
 
 import ast
@@ -18,7 +16,6 @@ import numpy as np
 import waldoctl
 from nicegui import ui
 
-from waldo_commander.scene3d.interaction import Gesture, finite
 from waldo_commander.state import (
     ProgramTarget,
     simulation_state,
@@ -78,6 +75,8 @@ class EditingMixin(ShapeEditingMixin):
     _last_fk_angles_tuple: tuple[float, ...] | None
     _last_fk_pose: tuple[float, ...] | None
     _handle_tcp_transform_for_ik: Any
+    _solve_target_reach: Any
+    _gizmo_miss_sent: bool | None
 
     # Methods from other mixins / main class
     set_editing_angles: Any
@@ -110,23 +109,16 @@ class EditingMixin(ShapeEditingMixin):
 
         self._editing_unified_target: bool = False
         self._editing_target_id: str | None = None
-        self._unified_target_mode: str = "cartesian"
-        self._joint_ring_touched: bool = False
-
-        # Where the edit started: the pose for the deltas (m, degrees) and
-        # the joints, so a confirm that changed nothing writes nothing.
-        self._original_editing_pose: list[float] | None = None
-        self._initial_editing_angles: list[float] | None = None
+        # A target edit moves the target, not the arm; surface teaching
+        # previews the arm at its joints.
+        self._edit_target_first: bool = False
+        # The target pose the edit started at (m, rad): a confirm that left
+        # it there writes nothing.
+        self._edit_start_pose: tuple[float, ...] | None = None
 
         self._edit_bar: Any | None = None
-        self._edit_bar_label: Any | None = None
-        self._edit_bar_values: Any | None = None
-        self._edit_coordinates: list[Any] = []
-        self._edit_orientation: Any = None
-        self._edit_deltas: list[Any] = []
         self._edit_confirm: Any | None = None
         self._edit_validity: Any | None = None
-        self._edit_bar_mode_toggle: Any | None = None
         self._edit_bar_container: Any | None = None
         self._current_editing_type: str | None = None
 
@@ -134,8 +126,11 @@ class EditingMixin(ShapeEditingMixin):
     # Core editing mode
     # -------------------------------------------------------------------------
 
-    def enter_editing_mode(self, joint_angles: list[float]) -> None:
-        """Enter editing mode at specified joint angles."""
+    def enter_editing_mode(
+        self, joint_angles: list[float], *, preview_arm: bool = True
+    ) -> None:
+        """Enter editing mode at *joint_angles*; with *preview_arm* the arm is
+        drawn at them, otherwise it stays live and only the target moves."""
         if self._teaching is not None:
             self.cancel_target_edit()
         self._cancel_shape_drawing()
@@ -146,13 +141,13 @@ class EditingMixin(ShapeEditingMixin):
         self._editing_angles = list(joint_angles) + [0.0] * (n - len(joint_angles))
         self._editing_angles = self._editing_angles[:n]
 
-        self._joint_ring_touched = False
-        self._editing_rotation_set = False
         self._requested_edit_pose = None
         self._tcp_ik_missed = False
+        self._edit_target_first = not preview_arm
 
-        self.set_appearance_mode(RobotAppearanceMode.EDITING)
-        self._apply_joint_angles(self._editing_angles)
+        if preview_arm:
+            self.set_appearance_mode(RobotAppearanceMode.EDITING)
+            self._apply_joint_angles(self._editing_angles)
 
         # Force FK recomputation — the cached pose is from LIVE mode
         self.invalidate_fk_cache()
@@ -176,17 +171,16 @@ class EditingMixin(ShapeEditingMixin):
             self.scene.gestures.bump()
         self._push_interaction()
 
-        self._apply_joint_angles(list(waldoctl.commander.status.joints.angles.rad))
         self._editing_tcp_pose = None
         self._requested_edit_pose = None
+        self._edit_target_first = False
 
-        if waldoctl.commander.status.simulator_active:
-            self.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
-        else:
-            self.set_appearance_mode(RobotAppearanceMode.LIVE)
-
-        self._joint_ring_touched = False
-        self._editing_rotation_set = False
+        if self._appearance_mode == RobotAppearanceMode.EDITING:
+            self._apply_joint_angles(list(waldoctl.commander.status.joints.angles.rad))
+            if waldoctl.commander.status.simulator_active:
+                self.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
+            else:
+                self.set_appearance_mode(RobotAppearanceMode.LIVE)
 
         # The cached FK pose is the editing one.
         self.invalidate_fk_cache()
@@ -229,7 +223,7 @@ class EditingMixin(ShapeEditingMixin):
             self._end_editing_session()
 
     def _edit_state(self) -> dict[str, Any] | None:
-        """The open target edit the browser draws joint dials for."""
+        """The open target edit, whose marker the browser draws the gizmo on."""
         if not self._edit_active or self._teaching is not None:
             return None
         return {"active": True, "session": self._edit_session}
@@ -244,91 +238,6 @@ class EditingMixin(ShapeEditingMixin):
             )
         return limits
 
-    # ---- Joint controls ----
-
-    def _joint_admit(self, gesture: Gesture, args: dict[str, Any]) -> bool:
-        index = args.get("joint")
-        if (
-            self._appearance_mode != RobotAppearanceMode.EDITING
-            or self._teaching is not None
-            or args.get("session") != self._edit_session
-            or not isinstance(index, int)
-            or not 0 <= index < len(self._editing_angles)
-            or self._tcp_drag is not None
-        ):
-            return False
-        gesture.data.update(
-            index=index,
-            q0=self._editing_angles[index],
-            requested_pose=self._requested_edit_pose,
-            ik_missed=self._tcp_ik_missed,
-            orientation=(self._editing_rotation_set, list(self._editing_rotation)),
-            edit_flags=(self._joint_ring_touched, self._unified_target_mode),
-        )
-        return True
-
-    def _joint_move(self, gesture: Gesture, args: dict[str, Any]) -> None:
-        values = finite(args, "q")
-        if values is None or args.get("session") != self._edit_session:
-            return
-        self._set_editing_joint(gesture.data["index"], values[0])
-
-    def _within_travel(self, index: int, q: float) -> float:
-        lo, hi = self._joint_travel(index)
-        if lo is not None:
-            q = max(lo, q)
-        if hi is not None:
-            q = min(hi, q)
-        return q
-
-    def _joint_finish(
-        self, gesture: Gesture, args: dict[str, Any] | None, aborted: bool
-    ) -> None:
-        index = gesture.data["index"]
-        values = None if aborted or args is None else finite(args, "q")
-        current = args is not None and args.get("session") == self._edit_session
-        if values is not None and current:
-            self._set_editing_joint(index, values[0])
-        elif self._appearance_mode == RobotAppearanceMode.EDITING:
-            self._set_editing_joint(index, gesture.data["q0"])
-            self._joint_ring_touched, self._unified_target_mode = gesture.data[
-                "edit_flags"
-            ]
-            self._requested_edit_pose = gesture.data["requested_pose"]
-            self._tcp_ik_missed = gesture.data["ik_missed"]
-            self._editing_rotation_set, self._editing_rotation = gesture.data[
-                "orientation"
-            ]
-            self._push_tcp_pose(force=True)
-            self.scene.set_gizmo_miss(self._tcp_ik_missed)
-            if self._current_editing_type:
-                self._update_edit_bar_values()
-        # Whatever the browser shows now, the joints are where the edit has them.
-        if (
-            self.scene is not None
-            and self._appearance_mode == RobotAppearanceMode.EDITING
-        ):
-            self.scene.resend_joints()
-
-    def _set_editing_joint(self, index: int, q: float) -> None:
-        if self._appearance_mode != RobotAppearanceMode.EDITING:
-            return
-        q = self._within_travel(index, q)
-        if not self._joint_ring_touched:
-            self._joint_ring_touched = True
-            if not self._editing_target_id:
-                self._unified_target_mode = "joint"
-        self._tcp_ik_missed = False
-        self._requested_edit_pose = None
-        self._editing_rotation_set = False
-        self._editing_angles[index] = q
-        self._apply_joint_angles(self._editing_angles)
-        self._push_tcp_pose()
-        self._refresh_editing_pose()
-        self._update_collision_highlight()
-        if self._current_editing_type:
-            self._update_edit_bar_values()
-
     def apply_editing_home(self) -> None:
         """Move editing robot to home position and sync state/UI."""
         if not self.check_edit_context():
@@ -337,32 +246,19 @@ class EditingMixin(ShapeEditingMixin):
             self._notify("Finish surface teaching before homing the preview.")
             return
         home_rad = ui_state.active_robot.joints.home.rad.tolist()
+        if self._ensure_ik_solver() is None or self._ik_solver is None:
+            return
+        self._editing_angles[:] = home_rad[: len(self._editing_angles)]
+        self._requested_edit_pose = tuple(
+            float(v)
+            for v in self._ik_solver.forward_kinematics(self._editing_angles)[:6]
+        )
         self._tcp_ik_missed = False
-        self._requested_edit_pose = None
-        self._editing_rotation_set = False
-        self.set_editing_angles(home_rad)
+        self.scene.set_gizmo_miss(False)
         self._refresh_editing_pose()
+        self._push_tcp_pose(force=True)
         if self._current_editing_type:
             self._update_edit_bar_values()
-
-    # -------------------------------------------------------------------------
-    # IK
-    # -------------------------------------------------------------------------
-
-    def _ik_for_position(self, target_pos: list[float]) -> list[float] | None:
-        """Solve IK for target position. Returns joint angles in radians."""
-        if not self._ensure_ik_solver():
-            return None
-        assert self._ik_solver is not None
-
-        current_angles = self._get_robot_angles_rad()
-        result = self._ik_solver.solve(
-            target_pos=np.array(target_pos, dtype=np.float64),
-            current_angles=current_angles,
-        )
-        if result and result.success:
-            return list(result.angles)
-        return None
 
     # -------------------------------------------------------------------------
     # Context menu
@@ -537,52 +433,43 @@ class EditingMixin(ShapeEditingMixin):
                 ui.notify(str(error), color="warning")
                 return
 
-        self._editing_unified_target = True
-        self._editing_target_id = edit_target_id
-        self._unified_target_mode = "cartesian"
-        self._joint_ring_touched = False
-
-        # Determine initial angles
+        solver = self._ensure_ik_solver()
+        if solver is None:
+            ui.notify(
+                "Target editing needs the robot model's kinematics.", color="warning"
+            )
+            return
+        live = self._get_robot_angles_rad()
+        initial_angles = live
+        start_pose: tuple[float, ...] | None = None
         if edit_target_id:
             target = self._find_target_by_id(edit_target_id)
             if target is not None and target.pose and endpoint is not None:
-                initial_angles, self._original_editing_pose = self._literal_start(
+                initial_angles, literal = self._literal_start(
                     target.line_number, endpoint
                 )
-            else:
-                initial_angles = self._get_robot_angles_rad()
-        elif use_click_position and self._last_click_coords:
-            click_pos = list(self._last_click_coords)
-            ik_result = self._ik_for_position(click_pos)
-            initial_angles = (
-                ik_result if ik_result is not None else self._get_robot_angles_rad()
-            )
-        else:
-            initial_angles = self._get_robot_angles_rad()
+                if literal is not None:
+                    start_pose = tuple(literal[:3]) + tuple(
+                        math.radians(v) for v in literal[3:6]
+                    )
+        if start_pose is None:
+            fk = solver.forward_kinematics(initial_angles)
+            start_pose = tuple(float(v) for v in fk[:6])
+            # A target placed on the floor keeps the tool's current orientation.
+            if not edit_target_id and use_click_position and self._last_click_coords:
+                start_pose = tuple(self._last_click_coords) + start_pose[3:6]
 
-        self.enter_editing_mode(initial_angles)
-        self._initial_editing_angles = list(self._editing_angles)
-        if use_click_position and self._last_click_coords is not None:
-            assert self._ik_solver is not None
-            fk = self._ik_solver.forward_kinematics(self._editing_angles)
-            self._requested_edit_pose = tuple(self._last_click_coords) + tuple(fk[3:6])
-            self._tcp_ik_missed = ik_result is None
-            self.scene.set_gizmo_miss(self._tcp_ik_missed)
-            self._push_tcp_pose(force=True)
+        self._editing_unified_target = True
+        self._editing_target_id = edit_target_id
+        self.enter_editing_mode(initial_angles, preview_arm=False)
+        self._requested_edit_pose = start_pose
+        self._edit_start_pose = start_pose
+        self._gizmo_miss_sent = None
+        self._solve_target_reach()
         self._refresh_editing_pose()
-        if self._original_editing_pose is None:
-            requested = self._requested_edit_pose
-            self._original_editing_pose = (
-                list(requested[:3]) + [math.degrees(v) for v in requested[3:]]
-                if requested
-                else self._get_editing_tcp_pose()
-            )
+        self._push_tcp_pose(force=True)
         self._push_interaction()
-
-        bar_type = "pose_edit" if edit_target_id else "unified"
-        self._create_edit_bar(bar_type)
-
-        self._refresh_editing_pose()
+        self._create_edit_bar("pose_edit" if edit_target_id else "unified")
 
     def _delete_target(self, target_id: str) -> None:
         program = waldoctl.commander.programs.active
@@ -700,16 +587,16 @@ class EditingMixin(ShapeEditingMixin):
         return self.check_edit_context() and self._editing_unified_target
 
     def _unchanged_existing_target(self) -> bool:
-        """An edit of an existing target that moved nothing: its literals stay
-        as written rather than being rewritten from the preview's row."""
+        """An edit of an existing target that left it where it was: its
+        literals stay as written."""
         return (
             self._editing_target_id is not None
-            and self._requested_edit_pose is None
-            and self._editing_angles == self._initial_editing_angles
+            and self._requested_edit_pose == self._edit_start_pose
         )
 
     def _confirm_unified_as_cartesian(self) -> None:
-        """Confirm as cartesian target."""
+        """Write the target: a new one as a Cartesian move; an existing one in
+        its own form, joint literals from the reach solution."""
         if not self._valid_edit_request():
             return
         if self._unchanged_existing_target():
@@ -738,32 +625,6 @@ class EditingMixin(ShapeEditingMixin):
 
         self._end_editing_session()
 
-    def _confirm_unified_as_joint(self) -> None:
-        """Confirm as joint target (converts move_l→move_j if editing existing)."""
-        if not self._valid_edit_request():
-            return
-        if self._unchanged_existing_target():
-            self._end_editing_session()
-            return
-
-        if self._editing_target_id:
-            target = self._find_target_by_id(self._editing_target_id)
-            angles_deg = [math.degrees(q) for q in self._editing_angles]
-            if target:
-                pose = target.pose
-                if not ui_state.editor_panel.sync_code_from_target(
-                    self._editing_target_id,
-                    pose,
-                    move_type="joints",
-                    joint_angles_deg=angles_deg,
-                ):
-                    return
-            self._end_editing_session()
-            return
-
-        self._insert_joint_target_from_editing()
-        self._end_editing_session()
-
     def _end_editing_session(self) -> None:
         """End editing and clean up."""
         if self._teaching is not None:
@@ -771,176 +632,65 @@ class EditingMixin(ShapeEditingMixin):
             teaching.close()
         self._editing_unified_target = False
         self._editing_target_id = None
-        self._unified_target_mode = "cartesian"
-        self._joint_ring_touched = False
-        self._original_editing_pose = None
-        self._initial_editing_angles = None
+        self._edit_start_pose = None
         self._hide_edit_bar()
         self.exit_editing_mode()
 
     def _handle_keyboard(self, e) -> None:
-        """Escape cancels a target edit or a keep-out move."""
+        """Escape cancels a target edit or a keep-out move; Enter saves the
+        target."""
         # In the editor, Escape closes the editor's own popups.
-        if keybindings_manager.editor_focused:
+        if keybindings_manager.editor_focused or not e.action.keydown:
             return
-        if e.key == "Escape" and e.action.keydown:
+        if e.key == "Escape":
             if self._edit_active:
                 self._end_editing_session()
             if self._shape_move_active:
                 self._end_shape_move()
+        elif (
+            e.key == "Enter" and self._editing_unified_target and self._teaching is None
+        ):
+            self._on_edit_bar_confirm()
 
     # -------------------------------------------------------------------------
     # Edit bar UI
     # -------------------------------------------------------------------------
 
     def _create_edit_bar(self, editing_type: str) -> None:
-        """Create the edit confirmation bar."""
-        if self._edit_bar:
-            self._update_edit_bar_content(editing_type)
-            return
-
-        if not self._edit_bar_container:
-            parent: Any = self._scene_wrapper if self._scene_wrapper else ui
-            with parent:
-                self._edit_bar_container = ui.element("div").classes(
-                    "wc-target-edit-bar absolute left-3 top-3 z-50 pointer-events-auto"
-                )
-
-        self._edit_coordinates = []
-        self._edit_deltas = []
-        with self._edit_bar_container:
-            # A card, not a plain column: its fields update at drag rate and
-            # a bare-div ancestor re-renders the whole page each time.
-            self._edit_bar = ui.card().classes("overlay-card gap-0 p-2")
-            with self._edit_bar:
-                with ui.row().classes("items-center w-full flex-nowrap"):
-                    self._edit_bar_label = ui.label("").classes("text-xs font-medium")
-                    ui.space()
-                    ui.button(icon="close", on_click=self._on_edit_bar_cancel).props(
-                        "flat dense size=sm color=wc-text-muted"
-                    ).mark("edit-bar-cancel")
-                    self._edit_confirm = (
-                        ui.button(icon="check", on_click=self._on_edit_bar_confirm)
-                        .props("flat dense size=sm color=wc-action")
-                        .mark("edit-bar-confirm")
-                    )
-                self._edit_bar_values = ui.column().classes("gap-0")
-                with self._edit_bar_values:
-                    with ui.row().classes("flex-nowrap gap-1"):
-                        for index in range(3):
-                            self._target_coordinate_field(index)
-                    self._edit_orientation = (
-                        ui.expansion("Orientation")
-                        .props("dense header-class=text-xs")
-                        .classes("w-full")
-                        .mark("target-orientation")
-                    )
-                    with self._edit_orientation, ui.row().classes("flex-nowrap gap-1"):
-                        for index in range(3, 6):
-                            self._target_coordinate_field(index)
-                self._edit_validity = ui.label("Unreachable · adjust position").classes(
-                    "text-xs text-wc-error"
-                )
-                self._edit_validity.set_visibility(False)
-
+        """The save/cancel pair the view seats beside the target's marker."""
         self._current_editing_type = editing_type
-        self._update_edit_bar_content(editing_type)
-        self._refresh_editing_pose()
-        self._update_edit_bar_values()
-
-    def _target_coordinate_field(self, index: int) -> None:
-        axis = ("x", "y", "z", "rx", "ry", "rz")[index]
-        with ui.column().classes("gap-0"):
-            number = (
-                ui.number(axis.upper(), format="%.1f", step=0.1)
-                .props(
-                    'dense borderless hide-bottom-space suffix="'
-                    + ("mm" if index < 3 else "°")
-                    + '"'
-                )
-                .classes("w-20")
-                .mark(f"target-coordinate-{axis}")
-            )
-            state = {"focused": False, "dirty": False, "updating": False}
-            number.on("focus", lambda: state.update(focused=True, dirty=False))
-            number.on_value_change(
-                lambda: state["focused"]
-                and not state["updating"]
-                and state.update(dirty=True)
-            )
-
-            def submit():
-                if state["dirty"]:
-                    state["dirty"] = False
-                    self._set_target_coordinate(index, number.value)
-
-            def blur():
-                state["focused"] = False
-                submit()
-
-            number.on("keydown.enter", submit)
-            number.on("blur", blur)
-            self._edit_coordinates.append((number, state))
-            self._edit_deltas.append(
-                ui.label("").classes("text-xs text-wc-text-muted font-mono")
-            )
-
-    def _update_edit_bar_content(self, editing_type: str) -> None:
-        """Update edit bar label."""
-        if not self._edit_bar_label:
-            return
-        labels = {
-            "joint": "Target · World",
-            "unified": "Target · World",
-            "pose_edit": "Target · World",
-        }
-        self._edit_bar_label.text = labels.get(editing_type, "Editing Target")
-
-    def _set_target_coordinate(self, index: int, value: float | None) -> None:
-        # A drag in progress owns the request until it lets go.
-        if (
-            value is None
-            or not math.isfinite(value)
-            or self._tcp_drag is not None
-            or not self.check_edit_context()
-        ):
+        if self._edit_bar:
             self._update_edit_bar_values()
             return
-        requested = self._requested_edit_pose or self._tcp_placed_pose
-        if requested is None:
-            return
-        self._tcp_world_p[:] = requested[:3]
-        self._tcp_world_rpy[:] = requested[3:6]
-        self._tcp_drag_mode = "translate" if index < 3 else "rotate"
-        if index >= 3:
-            self._tcp_world_rpy[index - 3] = math.radians(value)
-        else:
-            self._tcp_world_p[index] = value / 1000
-        self._handle_tcp_transform_for_ik()
-        self._push_tcp_pose(force=True)
+        parent: Any = self._scene_wrapper if self._scene_wrapper else ui
+        with parent:
+            self._edit_bar_container = ui.element("div").classes(
+                "wc-target-edit-bar absolute z-50 pointer-events-auto"
+            )
+        with self._edit_bar_container:
+            # A card, not a plain row: its state follows drags, and a bare-div
+            # ancestor re-renders the whole page each time.
+            self._edit_bar = ui.card().classes(
+                "overlay-card flex-row items-center flex-nowrap gap-0 p-0"
+            )
+            with self._edit_bar:
+                self._edit_confirm = (
+                    ui.button(icon="check", on_click=self._on_edit_bar_confirm)
+                    .props("flat round dense size=sm color=wc-action")
+                    .tooltip("Save target · Enter")
+                    .mark("edit-bar-confirm")
+                )
+                ui.button(icon="close", on_click=self._on_edit_bar_cancel).props(
+                    "flat round dense size=sm color=wc-text-muted"
+                ).tooltip("Cancel · Esc").mark("edit-bar-cancel")
+                self._edit_validity = (
+                    ui.label("Unreachable")
+                    .classes("text-xs text-wc-error pr-2")
+                    .mark("edit-bar-unreachable")
+                )
+        self._update_edit_bar_values()
 
     def _update_edit_bar_values(self) -> None:
-        if not self._edit_bar_values:
-            return
-        requested = self._requested_edit_pose or self._tcp_placed_pose
-        if requested is None:
-            return
-        original = self._original_editing_pose or requested
-        for index, (number, state) in enumerate(self._edit_coordinates):
-            rotation = index >= 3
-            value = (
-                math.degrees(requested[index]) if rotation else requested[index] * 1000
-            )
-            if not state["focused"] or not state["dirty"]:
-                state["updating"] = True
-                number.set_value(round(value, 1))
-                state["updating"] = False
-            delta = (
-                (value - original[index] + 180) % 360 - 180
-                if rotation
-                else value - original[index] * 1000
-            )
-            self._edit_deltas[index].set_text(f"Δ {delta:+.1f}")
         if self._edit_confirm:
             self._edit_confirm.set_enabled(not self._tcp_ik_missed)
         if self._edit_validity:
@@ -955,11 +705,6 @@ class EditingMixin(ShapeEditingMixin):
         if self._edit_bar_container:
             self._edit_bar_container.delete()
             self._edit_bar_container = None
-        self._edit_bar_label = None
-        self._edit_bar_values = None
-        self._edit_coordinates = []
-        self._edit_deltas = []
-        self._edit_orientation = None
         self._edit_confirm = None
         self._edit_validity = None
 
@@ -969,11 +714,7 @@ class EditingMixin(ShapeEditingMixin):
 
     def _on_edit_bar_confirm(self) -> None:
         """Handle confirm button."""
-        if not self._editing_unified_target:
-            return
-        if self._unified_target_mode == "joint":
-            self._confirm_unified_as_joint()
-        else:
+        if self._editing_unified_target:
             self._confirm_unified_as_cartesian()
 
     # -------------------------------------------------------------------------
@@ -1026,16 +767,21 @@ class EditingMixin(ShapeEditingMixin):
                 active.dry_run.targets = [*active.dry_run.targets, new_target]
             simulation_state.notify_changed()
 
-    def _insert_joint_target_from_editing(self) -> None:
-        ui_state.editor_panel.add_joint_target_code(
-            [math.degrees(q) for q in self._editing_angles]
-        )
-
     def _refresh_editing_pose(self) -> tuple[float, ...] | None:
-        """Follow the editing joints with the TCP readout and envelope; the
-        FK pose (m, rad) the gizmo's frame was placed from is reused."""
+        """Follow the edit with the TCP readout and envelope: the target pose
+        (m, rad) of a target edit, else the FK pose of the editing joints,
+        reused from the gizmo's placement."""
         if not self._edit_active or self._ik_solver is None:
             return None
+        if self._edit_target_first:
+            pose = self._requested_edit_pose
+            if pose is None:
+                return None
+            self._editing_tcp_pose = [float(v) for v in pose[:3]] + [
+                math.degrees(v) for v in pose[3:6]
+            ]
+            self._update_envelope_from_robot_state(tuple(self._editing_tcp_pose[:3]))
+            return pose
         key = tuple(self._editing_angles[: len(self.joint_names)])
         if key != self._last_fk_angles_tuple or self._last_fk_pose is None:
             self._last_fk_pose = tuple(

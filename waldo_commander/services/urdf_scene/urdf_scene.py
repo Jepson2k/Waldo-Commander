@@ -216,11 +216,12 @@ def _segment_fingerprint(
     seg_index: int,
     blend_range: int,
 ) -> tuple:
-    """Compute a rendering fingerprint for a path segment.
+    """What a path segment draws, which is how a redraw finds it again
+    wherever it now sits in the program.
 
     Includes neighbor validity within blend range so gradient colors
-    update correctly when a nearby segment changes validity.
-    ``line_number`` is excluded -- it doesn't affect visual output.
+    update correctly when a nearby segment changes validity. The segment's
+    position and ``line_number`` are excluded: neither changes what it draws.
     """
     seg = segments[seg_index]
     pts = seg.points
@@ -232,8 +233,7 @@ def _segment_fingerprint(
         neighbor_valid.append(before >= 0 and before < n and segments[before].is_valid)
         neighbor_valid.append(after >= 0 and after < n and segments[after].is_valid)
     return (
-        tuple(pts[0]) if pts else (),
-        tuple(pts[-1]) if pts else (),
+        hash(np.asarray(pts, dtype=np.float64).tobytes()) if pts else 0,
         len(pts),
         seg.color,
         seg.is_dashed,
@@ -592,9 +592,6 @@ class UrdfScene(
             self._ring_admit, self._ring_move, self._ring_finish
         )
         handlers["tcp"] = Handlers(self._tcp_admit, self._tcp_move, self._tcp_finish)
-        handlers["joint"] = Handlers(
-            self._joint_admit, self._joint_move, self._joint_finish
-        )
         handlers["shape"] = Handlers(
             self._shape_admit, lambda _g, _a: None, self._shape_finish
         )
@@ -752,178 +749,106 @@ class UrdfScene(
             self._clear_path_state()
         elif new_count > 0 and self.path_group and self.scene:
             blend_range = int(self._BLEND_RANGE)
-            rebuild_line_map = False
-
-            # Diff existing slots while tracking first/last non-travel segment.
-            limit = min(new_count, old_count)
-            for i in range(limit):
-                segment = all_segments[i]
+            # Drawn segments are found again by what they draw, not where they
+            # sit, so a line added or removed redraws only what it changed.
+            pool: dict[tuple, list[RenderedSegment]] = {}
+            for rs in self._rendered_segments:
+                if rs is not None and rs.fingerprint:
+                    pool.setdefault(rs.fingerprint, []).append(rs)
+            rendered: list[RenderedSegment | None] = []
+            for i, segment in enumerate(all_segments):
                 if segment.is_travel:
-                    fp: tuple = ()
-                else:
-                    fp = _segment_fingerprint(all_segments, i, blend_range)
-                    if segment.points:
-                        if first_cmd_idx == -1:
-                            first_cmd_idx = i
-                        last_cmd_idx = i
-
-                old_rs = self._rendered_segments[i]
-                old_fp = old_rs.fingerprint if old_rs is not None else None
-                old_ln = old_rs.line_number if old_rs is not None else -1
-
-                if fp == old_fp:
-                    # Same visuals — only the source line may have shifted.
-                    if segment.line_number != old_ln and old_rs is not None:
-                        self._rendered_segments[i] = old_rs._replace(
+                    rendered.append(
+                        RenderedSegment(
+                            objects=[],
+                            colors=[],
+                            uses_vc=False,
+                            fingerprint=(),
                             line_number=segment.line_number,
                         )
-                        rebuild_line_map = True
-                    continue
-
-                # Fingerprint differs — delete old objects, render new.
-                if old_rs is not None:
-                    for obj in old_rs.objects:
-                        self._safe_delete(obj)
-                if segment.is_travel:
-                    self._rendered_segments[i] = RenderedSegment(
-                        objects=[],
-                        colors=[],
-                        uses_vc=False,
-                        fingerprint=(),
-                        line_number=segment.line_number,
                     )
+                    continue
+                if segment.points:
+                    if first_cmd_idx == -1:
+                        first_cmd_idx = i
+                    last_cmd_idx = i
+                fp = _segment_fingerprint(all_segments, i, blend_range)
+                kept = pool.get(fp)
+                if kept:
+                    rs = kept.pop(0)
+                    if rs.line_number != segment.line_number:
+                        rs = rs._replace(line_number=segment.line_number)
+                    rendered.append(rs)
                 else:
-                    self._rendered_segments[i] = self._render_and_record_segment(
-                        all_segments,
-                        i,
-                        fp,
-                        segment.line_number,
+                    rendered.append(
+                        self._render_and_record_segment(
+                            all_segments, i, fp, segment.line_number
+                        )
                     )
-                rebuild_line_map = True
-                if TRACE_ENABLED:
-                    rs = self._rendered_segments[i]
-                    logger.trace(
-                        "SCENE: Re-rendered segment %d -> %d objects",
-                        i,
-                        len(rs.objects) if rs else 0,
-                    )
-
-            # Append new slots.
-            if new_count > old_count:
-                for i in range(old_count, new_count):
-                    segment = all_segments[i]
-                    if segment.is_travel:
-                        self._rendered_segments.append(
-                            RenderedSegment(
-                                objects=[],
-                                colors=[],
-                                uses_vc=False,
-                                fingerprint=(),
-                                line_number=segment.line_number,
-                            )
-                        )
-                    else:
-                        fp = _segment_fingerprint(all_segments, i, blend_range)
-                        self._rendered_segments.append(
-                            self._render_and_record_segment(
-                                all_segments,
-                                i,
-                                fp,
-                                segment.line_number,
-                            )
-                        )
-                        if segment.points:
-                            if first_cmd_idx == -1:
-                                first_cmd_idx = i
-                            last_cmd_idx = i
-                    if TRACE_ENABLED:
-                        rs = self._rendered_segments[-1]
-                        logger.trace(
-                            "SCENE: Appended segment %d -> %d objects",
-                            i,
-                            len(rs.objects) if rs else 0,
-                        )
-                rebuild_line_map = True
-
-            # Remove trailing slots.
-            if new_count < old_count:
-                for i in range(new_count, old_count):
-                    old_rs = self._rendered_segments[i]
-                    if old_rs is not None:
-                        for obj in old_rs.objects:
-                            self._safe_delete(obj)
-                del self._rendered_segments[new_count:]
-                rebuild_line_map = True
-                if TRACE_ENABLED:
-                    logger.trace(
-                        "SCENE: Removed trailing segments %d-%d",
-                        new_count,
-                        old_count - 1,
-                    )
-
-            if rebuild_line_map:
-                self._rebuild_line_to_segments()
-
-        # --- Per-item tool action diff rendering ---
-        new_ta_count = len(tool_actions)
-        old_ta_count = len(self._rendered_tool_actions)
-        if new_ta_count > 0 or old_ta_count > 0:
-            ta_limit = min(new_ta_count, old_ta_count)
-            for i in range(ta_limit):
-                action = tool_actions[i]
-                fp = _tool_action_fingerprint(action)
-                old_ri = self._rendered_tool_actions[i]
-                old_fp = old_ri.fingerprint if old_ri is not None else None
-                if fp == old_fp:
-                    if (
-                        old_ri is not None
-                        and action.segment_index != old_ri.segment_index
-                    ):
-                        self._rendered_tool_actions[i] = old_ri._replace(
-                            segment_index=action.segment_index,
-                        )
-                    continue
-                # Fingerprint differs — delete old, render new.
-                if old_ri is not None:
-                    for obj in old_ri.objects:
+            for unused in pool.values():
+                for rs in unused:
+                    for obj in rs.objects:
                         self._safe_delete(obj)
-                if self.path_group and self.scene:
+            old = self._rendered_segments
+            moved = len(old) != len(rendered) or any(
+                a is None
+                or b is None
+                or a.objects is not b.objects
+                or a.line_number != b.line_number
+                for a, b in zip(old, rendered, strict=False)
+            )
+            self._rendered_segments = rendered
+            if moved:
+                self._rebuild_line_to_segments()
+                self._repaint_playback_opacity()
+            if TRACE_ENABLED:
+                logger.trace(
+                    "SCENE: %d segments, %d drawn anew",
+                    new_count,
+                    sum(1 for rs in rendered if rs is not None and rs.objects)
+                    - sum(len(v) for v in pool.values()),
+                )
+
+        # --- Per-item tool action diff rendering, matched like segments ---
+        if tool_actions or self._rendered_tool_actions:
+            ta_pool: dict[tuple, list[RenderedItem]] = {}
+            for ri in self._rendered_tool_actions:
+                if ri is not None:
+                    ta_pool.setdefault(ri.fingerprint, []).append(ri)
+            drawn_actions: list[RenderedItem | None] = []
+            for action in tool_actions:
+                fp = _tool_action_fingerprint(action)
+                kept_items = ta_pool.get(fp)
+                if kept_items:
+                    ri = kept_items.pop(0)
+                    if ri.segment_index != action.segment_index:
+                        ri = ri._replace(segment_index=action.segment_index)
+                    drawn_actions.append(ri)
+                elif self.path_group and self.scene:
                     with self.scene:
                         with self.path_group:
                             objs = self.path_renderer.render_tool_action(action)
-                    self._rendered_tool_actions[i] = RenderedItem(
-                        objects=objs,
-                        fingerprint=fp,
-                        segment_index=action.segment_index,
+                    drawn_actions.append(
+                        RenderedItem(
+                            objects=objs,
+                            fingerprint=fp,
+                            segment_index=action.segment_index,
+                        )
                     )
                 else:
-                    self._rendered_tool_actions[i] = None
-            # Append new.
-            if new_ta_count > old_ta_count:
-                for i in range(old_ta_count, new_ta_count):
-                    action = tool_actions[i]
-                    fp = _tool_action_fingerprint(action)
-                    if self.path_group and self.scene:
-                        with self.scene:
-                            with self.path_group:
-                                objs = self.path_renderer.render_tool_action(action)
-                        self._rendered_tool_actions.append(
-                            RenderedItem(
-                                objects=objs,
-                                fingerprint=fp,
-                                segment_index=action.segment_index,
-                            )
-                        )
-                    else:
-                        self._rendered_tool_actions.append(None)
-            # Remove trailing.
-            if new_ta_count < old_ta_count:
-                for i in range(new_ta_count, old_ta_count):
-                    old_ri = self._rendered_tool_actions[i]
-                    if old_ri is not None:
-                        for obj in old_ri.objects:
-                            self._safe_delete(obj)
-                del self._rendered_tool_actions[new_ta_count:]
+                    drawn_actions.append(None)
+            for unused_items in ta_pool.values():
+                for ri in unused_items:
+                    for obj in ri.objects:
+                        self._safe_delete(obj)
+            if any(
+                a is None or b is None or a.objects is not b.objects
+                for a, b in zip(
+                    self._rendered_tool_actions, drawn_actions, strict=False
+                )
+            ) or len(self._rendered_tool_actions) != len(drawn_actions):
+                self._repaint_playback_opacity()
+            self._rendered_tool_actions = drawn_actions
 
         if waldoctl.commander.settings.view.paths_visible and self._rendered_segments:
             self.update_cursor_line_highlight()
@@ -1039,69 +964,43 @@ class UrdfScene(
             fp_w = (tuple(last_pos), "square", last_color)
             new_waypoints.append((fp_w, "square", last_color, last_pos, last_seg_idx))
 
-        new_wp_count = len(new_waypoints)
-        old_wp_count = len(self._rendered_waypoints)
-        wp_limit = min(new_wp_count, old_wp_count)
-
-        for i in range(wp_limit):
-            fp_w, shape, color, pos, seg_idx = new_waypoints[i]
-            old_ri = self._rendered_waypoints[i]
-            old_fp = old_ri.fingerprint if old_ri is not None else None
-            if fp_w == old_fp:
-                continue
-            # Fingerprint differs — delete old, render new.
-            if old_ri is not None:
-                for obj in old_ri.objects:
-                    self._safe_delete(obj)
-            if self.path_group and self.scene:
+        # Matched by what they show, like the segments.
+        wp_pool: dict[tuple, list[RenderedItem]] = {}
+        for ri in self._rendered_waypoints:
+            if ri is not None:
+                wp_pool.setdefault(ri.fingerprint, []).append(ri)
+        drawn_waypoints: list[RenderedItem | None] = []
+        for fp_w, shape, color, pos, seg_idx in new_waypoints:
+            kept_wp = wp_pool.get(fp_w)
+            if kept_wp:
+                ri = kept_wp.pop(0)
+                if ri.segment_index != seg_idx:
+                    ri = ri._replace(segment_index=seg_idx)
+                drawn_waypoints.append(ri)
+            elif self.path_group and self.scene:
                 with self.scene:
                     with self.path_group:
                         mk = _create_waypoint_marker(shape, WAYPOINT_SIZE_SMALL, color)
                         mk.move(pos[0], pos[1], pos[2])
                 self._reveal_markers.append(mk)
-                self._rendered_waypoints[i] = RenderedItem(
-                    objects=[mk],
-                    fingerprint=fp_w,
-                    segment_index=seg_idx,
+                drawn_waypoints.append(
+                    RenderedItem(objects=[mk], fingerprint=fp_w, segment_index=seg_idx)
                 )
+                self._repaint_playback_opacity()
             else:
-                self._rendered_waypoints[i] = None
-
-        # Append new waypoints.
-        if new_wp_count > old_wp_count:
-            for i in range(old_wp_count, new_wp_count):
-                fp_w, shape, color, pos, seg_idx = new_waypoints[i]
-                if self.path_group and self.scene:
-                    with self.scene:
-                        with self.path_group:
-                            mk = _create_waypoint_marker(
-                                shape, WAYPOINT_SIZE_SMALL, color
-                            )
-                            mk.move(pos[0], pos[1], pos[2])
-                    self._reveal_markers.append(mk)
-                    self._rendered_waypoints.append(
-                        RenderedItem(
-                            objects=[mk],
-                            fingerprint=fp_w,
-                            segment_index=seg_idx,
-                        )
-                    )
-                else:
-                    self._rendered_waypoints.append(None)
-
-        # Remove trailing waypoints.
-        if new_wp_count < old_wp_count:
-            for i in range(new_wp_count, old_wp_count):
-                old_ri = self._rendered_waypoints[i]
-                if old_ri is not None:
-                    for obj in old_ri.objects:
-                        self._safe_delete(obj)
-            del self._rendered_waypoints[new_wp_count:]
+                drawn_waypoints.append(None)
+        for unused_wp in wp_pool.values():
+            for ri in unused_wp:
+                for obj in ri.objects:
+                    self._safe_delete(obj)
+        self._rendered_waypoints = drawn_waypoints
 
         # --- Reconcile editable targets ---
-        active_ids: set[str] = set()
+        active_ids = {t.id for t in targets}
+        # A target's id follows its line, so a line added above renames it: a
+        # drawn target that no longer has an id is taken over, not redrawn.
+        stale = [tid for tid in self._target_objects if tid not in active_ids]
         for target in targets:
-            active_ids.add(target.id)
             shape = shape_for_line(target.line_number)
             color = (
                 hex_of("path-invalid")
@@ -1112,6 +1011,23 @@ class UrdfScene(
             seg_indices = self._line_to_segments.get(target.line_number)
             seg_idx = seg_indices[0] if seg_indices else -1
 
+            if target.id not in self._target_objects:
+                for tid in stale:
+                    td = self._target_objects[tid]
+                    grp = td["group"]
+                    if (
+                        td.get("shape_type") == shape
+                        and td.get("color") == color
+                        and (grp.x, grp.y, grp.z) == tuple(target.pose[:3])
+                    ):
+                        stale.remove(tid)
+                        del self._target_objects[tid]
+                        grp.with_name(f"targetgroup:{target.id}")
+                        td["marker"].with_name(f"target:{target.id}")
+                        self._target_objects[target.id] = td
+                        if self._editing_target_id == tid:
+                            self._editing_target_id = target.id
+                        break
             if target.id not in self._target_objects:
                 with self.scene:
                     with self.targets_group:
@@ -1363,6 +1279,14 @@ class UrdfScene(
         """
         self.inspection.clear()
         self._clear_path_state()
+
+    def _repaint_playback_opacity(self) -> None:
+        """Drawn items moved or appeared: while playback has dimmed part of
+        the path, the next opacity update repaints every item, since the
+        dimming follows each item's place in the path."""
+        active = waldoctl.commander.programs.active
+        if active is not None and active.dry_run.playback.current_step > 0:
+            self._rendered_playback_step = -1
 
     def update_playback_opacity(self) -> None:
         """Fade completed elements to 50% opacity based on the active program's

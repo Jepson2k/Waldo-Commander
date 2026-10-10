@@ -59,9 +59,13 @@ def test_predicted_deviations_and_paired_inspection(screen):
         target = start.copy()
         target[:3] = [v + delta for v, delta in zip(start[:3], changes)]
         waypoints.append(np.round(target, 2).tolist())
+    # Full speed and acceleration: the servo lag the prediction shows then
+    # reaches tens of millimetres, which the scene makes plain.
     source = (
         "from par6 import RobotClient\nrbt = RobotClient()\n"
-        + "\n".join(f"rbt.move_j({target}, speed=0.6)" for target in waypoints)
+        + "\n".join(
+            f"rbt.move_j({target}, speed=1.0, accel=1.0)" for target in waypoints
+        )
         + "\nrbt.delay(0.5)\n"
     )
     with (
@@ -78,7 +82,7 @@ def test_predicted_deviations_and_paired_inspection(screen):
             scene_js(
                 screen,
                 "S.setCameraPose(arguments[0])",
-                [0.14, -0.29, 0.53, 0, 0.2, 0.25],
+                [0.112, -0.192, 0.474, 0, 0.2, 0.25],
             )
             wait(screen, 30).until(
                 lambda _: screen.selenium.find_element(
@@ -240,7 +244,7 @@ def test_predicted_deviations_and_paired_inspection(screen):
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.30, -0.36, 0.60, 0.14, 0.2, 0.25],
+                    [0.268, -0.248, 0.53, 0.14, 0.2, 0.25],
                 )
                 wait_for_scene_idle(screen)
                 evidence.capture("05-paired-peak-1366")

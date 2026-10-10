@@ -7,7 +7,7 @@ import pytest
 import waldoctl
 from nicegui.testing import User
 
-from tests.helpers.scene_events import Drag, right_click
+from tests.helpers.scene_events import ball, gizmo, held_until, right_click
 from tests.helpers.wait import wait_until
 from tests.test_scene_jog_handles import _open
 from waldo_commander.components.simulation_engine import simulation
@@ -43,11 +43,9 @@ rbt.move_j(
     right_click(user, urdf.scene, [f"target:{target.id}"])
     user.find(marker="scene-edit-target").click()
     assert await wait_until(lambda: urdf._edit_active, 5)
-    session = urdf._edit_session
-    q0 = urdf.get_editing_angles()[0]
-    drag = Drag(user, urdf.scene, "joint").begin(session=session, joint=0, q=q0)
-    drag.move(session=session, joint=0, q=q0 + 0.1)
-    drag.release(session=session, joint=0, q=q0 + 0.1)
+    gizmo(user, urdf.scene).move(**ball(x=0.005)).release(**ball(x=0.005))
+    assert not urdf._tcp_ik_missed
+    reached = [math.degrees(q) for q in urdf.get_editing_angles()]
     user.find(marker="edit-bar-confirm").click()
     updated = textarea.value
     assert updated != source
@@ -55,7 +53,8 @@ rbt.move_j(
     coordinates = ast.literal_eval(
         next(k.value for k in call.keywords if k.arg == "angles")
     )
-    assert coordinates[0] == pytest.approx(math.degrees(q0 + 0.1), abs=0.001)
+    assert coordinates == pytest.approx(reached, abs=0.01)
+    assert coordinates != pytest.approx([85, -85, 175, 5, 5, 175], abs=0.01)
     assert "# J1 starts here" in updated
     assert "speed=0.5,  # gentle approach" in updated
     assert "# Fixture approach · µm notes stay intact" in updated
@@ -80,8 +79,6 @@ rbt.move_j(
 async def test_target_drag_keeps_motion_kind_and_live_robot_stationary(
     user: User,
 ) -> None:
-    from tests.helpers.scene_events import ball, gizmo
-
     urdf = await _open(user)
     textarea = ui_state.active_textarea
     source = """from parol6 import RobotClient
@@ -100,12 +97,12 @@ rbt.move_l(pose=[0, 280, 250, 90, 0, 90], speed=0.5)
     user.find(marker="scene-edit-target").click()
     assert urdf._edit_active
     live = waldoctl.commander.status.joints.angles.rad.copy()
-    session, q0 = urdf._edit_session, urdf.get_editing_angles()[0]
-    drag = Drag(user, urdf.scene, "joint").begin(session=session, joint=0, q=q0)
-    drag.move(session=session, joint=0, q=q0 + 0.1)
+    start = urdf._requested_edit_pose
+    drag = gizmo(user, urdf.scene).move(**ball(x=0.005))
+    assert await held_until(drag, lambda: urdf._requested_edit_pose != start, 5)
     drag.abort()
-    assert urdf.get_editing_angles()[0] == pytest.approx(q0)
-    # A cancelled joint edit must not convert the Cartesian command on confirmation.
+    assert urdf._requested_edit_pose == start
+    # A cancelled drag leaves the Cartesian command as written.
     user.find(marker="edit-bar-confirm").click()
     assert ast.parse(textarea.value).body[-1].value.func.attr == "move_l"
     assert waldoctl.commander.status.joints.angles.rad == pytest.approx(live)

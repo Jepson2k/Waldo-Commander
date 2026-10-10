@@ -11,6 +11,27 @@ const CHUNK = 128;
 const sample = new THREE.Vector3();
 const rowAt = [0, 0, 0];
 
+const place = (into, values, at) => { for (let i = 0; i < values.length; i++) into[at + i] = values[i]; };
+
+// A record as the rest of the view reads it, put back together from the
+// spans it is sent as; null while one of its spans has not arrived.
+function assemble(r, store) {
+  const n = r.rows, dof = r.dof;
+  const source = new Array(n), q = new Array(n * dof), tcp = new Array(n * 6), closed = new Array(n);
+  const objects = r.objects.map((node) => ({ node, poses: new Array(n * 7) }));
+  let valid = null, at = 0;
+  for (const span of r.spans) {
+    const c = store.get(span.key);
+    if (!c) return null;
+    for (let i = 0; i < c.offsets.length; i++) source[at + i] = span.base + c.offsets[i];
+    place(q, c.q, at * dof); place(tcp, c.tcp, at * 6); place(closed, c.closed, at);
+    if (c.valid) place(valid ??= new Array(n), c.valid, at);
+    objects.forEach((o, k) => place(o.poses, c.objects[k], at * 7));
+    at += c.offsets.length;
+  }
+  return { ...r, source, q, tcp, closed, valid, objects };
+}
+
 // The program's recorded paths as something to point at: a press on a path
 // scrubs the simulator to that moment and a drag along it scrubs on, the
 // timeline following. Stationary moments (a dwell, a turn on the spot, a
@@ -21,6 +42,7 @@ export class Inspection {
     core.canvas.tabIndex=0;
     core.canvas.setAttribute("aria-label","3D workspace");
     this.data = null; this.current = null; this.dragging = false; this.hits = [];
+    this.spans = new Map(); // a path's spans by content key, as the app sent them
     this.seq = 0; this.lastSend = 0; this.timer = 0;
     this.cursor = null; this.markers = [];
     this.projected = []; this.chunks = []; this.alternatives = []; this.radius = 13;
@@ -44,7 +66,19 @@ export class Inspection {
     return this.current !== null;
   }
 
-  load(data) {
+  // The app sends only the spans this view does not hold yet; those no
+  // longer used are let go once the paths are put together.
+  load(sent) {
+    let data = null;
+    if (sent) {
+      for (const [key, span] of Object.entries(sent.chunks || {})) this.spans.set(key, span);
+      const records = sent.records.map((r) => assemble(r, this.spans));
+      if (records.every(Boolean)) {
+        const used = new Set(sent.records.flatMap((r) => r.spans.map((s) => s.key)));
+        for (const key of this.spans.keys()) if (!used.has(key)) this.spans.delete(key);
+        data = { ...sent, chunks: undefined, records };
+      }
+    }
     this.comparison.reset();
     this.clear(false); this.removeCursor();
     for (const m of this.markers) { m.element.remove(); m.leader.remove(); }

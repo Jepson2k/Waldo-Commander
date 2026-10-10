@@ -502,6 +502,7 @@ export class SceneCore {
     document.removeEventListener("visibilitychange", this.onVisibility);
     window.removeEventListener("pagehide", this.onPageHide);
     this.menu.dispose();
+    this.overlays.dispose();
     this.inspection.dispose();
     this.section.dispose();
     this.selection.dispose();

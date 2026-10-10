@@ -1,8 +1,8 @@
 """Keep-out shape editing in the 3D viewer.
 
 Right-click empty space to place a Box/Sphere/Cylinder keep-out at the
-clicked point; right-click a program-layer shape to edit its numbers, drag
-it with translate controls, or delete it. Every mutation goes through
+clicked point; right-click a program-layer shape to select it for editing,
+drag it, attach it to the flange or delete it. Every mutation goes through
 ``commander.scene.shapes`` — the same request/readback path a program's
 ``set_shapes`` uses — so the backend push, draft styling and program
 recording all apply unchanged. Installation-layer shapes come from the
@@ -45,8 +45,8 @@ _KINDS: dict[str, type] = {
 
 logger = logging.getLogger(__name__)
 
-# Kinds offered for placement. The edit dialog handles every kind a program
-# may have created; these are just the ones worth a menu entry.
+# Kinds offered for placement; the inspector edits every kind a program may
+# have created.
 _PLACEABLE = ("box", "sphere", "cylinder")
 
 # The resizable kinds, and the dimension a handle on each local axis changes;
@@ -88,6 +88,8 @@ class ShapeEditingMixin:
     _selected_objects: list[str]
     _hidden_objects: set[str]
     _object_orientation: Any
+    _show_object_history: bool
+    _refresh_object_inspector: Any
 
     def _init_shape_editing(self) -> None:
         self._shape_move_active: str | None = None
@@ -96,6 +98,9 @@ class ShapeEditingMixin:
         self._shape_move_session = 0
         self._shape_move_document = None
         self._object_dialogs: list[tuple[Any, tuple]] = []
+        # The inspector's open attachment form: (object key, detach).
+        self._attachment_form: tuple[str, bool] | None = None
+        self._attachment_revision: tuple = ()
 
     def _shape_locked(self, name: str) -> bool:
         return f"{SHAPE_PREFIX}{name}" in self._locked_objects
@@ -182,26 +187,22 @@ class ShapeEditingMixin:
         ui.separator()
         ui.menu_item(
             "Edit object",
-            on_click=lambda s=shape: (
-                self._show_shape_dialog(shape=s)
-                if s.attachment is not None
-                else self._select_objects([f"{SHAPE_PREFIX}{s.name}"])
-            ),
+            on_click=lambda s=shape: self._select_objects([f"{SHAPE_PREFIX}{s.name}"]),
         ).mark("shape-menu-edit").set_enabled(not locked)
         if shape.attachment is not None:
             ui.menu_item(
-                "Reconcile Attachment...",
-                on_click=lambda: self._show_attachment_dialog(shape_name),
+                "Reconcile attachment",
+                on_click=lambda: self._open_attachment_form(shape_name),
             ).set_enabled(not locked)
             ui.menu_item(
-                "Detach to World...",
-                on_click=lambda: self._show_attachment_dialog(shape_name, detach=True),
+                "Detach to world",
+                on_click=lambda: self._open_attachment_form(shape_name, detach=True),
             ).set_enabled(not locked)
         else:
             ui.menu_item(
-                "Attach to Flange...",
-                on_click=lambda: self._show_attachment_dialog(shape_name),
-            ).set_enabled(not locked)
+                "Attach to flange",
+                on_click=lambda: self._open_attachment_form(shape_name),
+            ).mark("shape-menu-attach").set_enabled(not locked)
         if self._shape_move_active == shape_name:
             ui.menu_item("Stop Moving", on_click=self._end_shape_move).mark(
                 "shape-menu-stop-move"
@@ -362,202 +363,93 @@ class ShapeEditingMixin:
         ui.item("Add Keep-out").classes("font-bold text-sm")
         for kind in _PLACEABLE:
             ui.menu_item(
-                f"{kind.capitalize()} Here...",
-                on_click=lambda k=kind, p=click_point: self._show_shape_dialog(
-                    kind=k, at=p
-                ),
+                f"{kind.capitalize()} here",
+                on_click=lambda k=kind, p=click_point: self._place_shape(k, p),
             ).mark(f"scene-add-{kind}")
 
-    # ------------------------------------------------------------------
-    # Add / edit dialog
-    # ------------------------------------------------------------------
-
-    def _show_shape_dialog(
-        self,
-        kind: str | None = None,
-        shape: Shape | None = None,
-        at: tuple[float, float, float] | None = None,
-    ) -> None:
-        """One dialog for both placing (``kind`` + ``at``) and editing
-        (``shape``). Values display in mm / degrees; shapes store m / rad."""
-        editing = shape is not None
-        if shape is not None and self._shape_locked(shape.name):
+    async def _place_shape(self, kind: str, at: tuple[float, float, float]) -> None:
+        """A default-sized *kind* resting on the floor at *at*, selected."""
+        handle = self._shape_handle()
+        if handle is None or kind not in _PLACEABLE:
             return
-        revision = self.object_history.context()
-        if editing:
-            kind = shape.kind
-        assert kind is not None
-        cls = _KINDS[kind]
-        shape_params = param_names(cls)
-
-        if editing:
-            pose = shape.pose
-            dims = {p: getattr(shape, p) for p in shape_params}
-            name0 = shape.name
-            collision0 = shape.collision
-            margin0 = shape.margin
-        else:
-            x, y, z = at if at is not None else (0.3, 0.0, 0.0)
-            # Sit the birth shape on the clicked surface, not half inside it.
-            d = _DEFAULT_DIMS[kind]
-            lift = d.get("z", 0.0) / 2 if kind == "box" else d["radius"]
-            if kind == "cylinder":
-                lift = d["length"] / 2
-            pose = (x, y, z + lift, 0.0, 0.0, 0.0)
-            dims = dict(_DEFAULT_DIMS[kind])
-            name0 = self._fresh_shape_name(kind)
-            collision0 = True
-            margin0 = None
-
-        # Parent to the page, not the caller's slot: opened from a context
-        # menu item, the enclosing slot is the menu itself, and the menu's
-        # hide handler clears its children — taking the dialog with it.
-        with (
-            ui.context.client.content,
-            ui.dialog() as dialog,
-            ui.card().classes("w-80"),
+        dims = dict(_DEFAULT_DIMS[kind])
+        lift = (
+            dims["z"] / 2
+            if kind == "box"
+            else dims["length"] / 2
+            if kind == "cylinder"
+            else dims["radius"]
+        )
+        x, y, z = (float(v) for v in at)
+        shape = _KINDS[kind](
+            name=self._fresh_shape_name(kind),
+            pose=(x, y, z + lift, 0.0, 0.0, 0.0),
+            **dims,
+        )
+        if await self._commit_objects(
+            "Create object", [*handle.shapes, shape], self.object_history.context()
         ):
-            ui.label(f"{'Edit' if editing else 'Add'} {kind} keep-out").classes(
-                "text-lg font-bold"
-            )
-            if shape is not None and shape.attachment is not None:
-                ui.label("Pose relative to flange · declared model only").classes(
-                    "text-xs"
-                )
-            name_in = (
-                ui.input("Name", value=name0)
-                .classes("w-full")
-                .mark("shape-dialog-name")
-            )
-            with ui.row().classes("gap-1 w-full"):
-                pos_in = [
-                    ui.number(label, value=round(pose[i] * 1000, 1), suffix="mm")
-                    .classes("flex-1")
-                    .mark(f"shape-dialog-pos-{label.lower()}")
-                    for i, label in enumerate(("X", "Y", "Z"))
-                ]
-            with ui.row().classes("gap-1 w-full"):
-                rot_in = [
-                    ui.number(
-                        label, value=round(math.degrees(pose[3 + i]), 1), suffix="°"
-                    ).classes("flex-1")
-                    for i, label in enumerate(("Rx", "Ry", "Rz"))
-                ]
-            dim_in: dict[str, Any] = {}
-            with ui.row().classes("gap-1 w-full"):
-                for p in shape_params:
-                    dim_in[p] = (
-                        ui.number(p, value=round(dims[p] * 1000, 1), suffix="mm")
-                        .classes("flex-1")
-                        .mark(f"shape-dialog-dim-{p}")
-                    )
-            collision_in = ui.switch(
-                "Collision (off = visual marker)", value=collision0
-            )
-            margin_in = ui.number(
-                "Clearance margin (blank = robot default)",
-                value=None if margin0 is None else round(margin0 * 1000, 1),
-                suffix="mm",
-            ).classes("w-full")
+            self._select_objects([f"{SHAPE_PREFIX}{shape.name}"])
 
-            async def save() -> None:
-                handle = self._shape_handle()
-                if handle is None:
-                    dialog.close()
-                    return
-                try:
-                    params = {p: float(dim_in[p].value) / 1000 for p in shape_params}
-                    margin_v = margin_in.value
-                    new = cls(
-                        name=str(name_in.value).strip() or name0,
-                        pose=tuple(
-                            [float(w.value) / 1000 for w in pos_in]
-                            + [math.radians(float(w.value)) for w in rot_in]
-                        ),
-                        collision=bool(collision_in.value),
-                        margin=None
-                        if margin_v in (None, "")
-                        else float(margin_v) / 1000,
-                        # The dialog edits geometry; a body stays a body.
-                        physics=None if shape is None else shape.physics,
-                        attachment=None if shape is None else shape.attachment,
-                        **params,
-                    )
-                except (TypeError, ValueError) as err:
-                    self._notify(f"Keep-out rejected: {err}", warning=True)
-                    return
-                shapes = [s for s in handle.shapes if not (editing and s.name == name0)]
-                shapes.append(new)
-                if await self._commit_objects(
-                    "Edit object" if editing else "Create object", shapes, revision
-                ):
-                    dismiss()
-                    self._select_objects([f"{SHAPE_PREFIX}{new.name}"])
-
-            def dismiss() -> None:
-                # Synchronous removal: the hide event needs a client round
-                # trip, and a lingering dialog's identically-marked save
-                # button would shadow the next dialog's until it lands.
-                dialog.close()
-                if not dialog.is_deleted:
-                    dialog.delete()
-
-            with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dismiss).props("flat color=wc-text")
-                ui.button("Save", on_click=save).props(
-                    "unelevated color=wc-action text-color=wc-on-bright"
-                ).mark("shape-dialog-save")
-        # ESC / backdrop dismissal comes back as a hide event.
-        dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
-        self._object_dialogs.append((dialog, self.object_history.document()))
-        dialog.open()
-
-    def _show_attachment_dialog(self, name: str, *, detach: bool = False) -> None:
-        from waldo_commander.skills import attach_object, detach_object
-
-        shape = self._program_shape(name)
-        if shape is None or self._shape_locked(name):
+    def _open_attachment_form(self, name: str, *, detach: bool = False) -> None:
+        """Select *name* with its attach, reconcile or detach form open in
+        the inspector beside it."""
+        key = f"{SHAPE_PREFIX}{name}"
+        if self._program_shape(name) is None or self._shape_locked(name):
             return
-        revision = self.object_history.context()
+        self._select_objects([key])
+        self._attachment_form = (key, detach)
+        self._attachment_revision = self.object_history.context()
+        self._refresh_object_inspector()
+
+    def _close_attachment_form(self) -> None:
+        self._attachment_form = None
+        self._refresh_object_inspector()
+
+    def _attachment_section(self, entity: str, shape: Shape) -> None:
+        """The open attachment form: the declared pose, and for an attach
+        the collision partners the held object may touch."""
+        detach = self._attachment_form == (entity, True)
         initial = shape.pose if shape.attachment is not None and not detach else None
-        self._end_shape_move()
+        title = (
+            "Detach to world"
+            if detach
+            else "Reconcile attachment"
+            if shape.attachment is not None
+            else "Attach to flange"
+        )
         with (
-            ui.context.client.content,
-            ui.dialog() as dialog,
-            ui.card().classes("task-dialog w-96"),
+            ui.expansion(title, value=True)
+            .props("dense header-class=text-xs")
+            .classes("w-full")
+            .mark("object-attachment")
         ):
-            ui.label(f"{'Detach' if detach else 'Attach / reconcile'} {name}").classes(
-                "text-lg font-bold"
-            )
             ui.label(
-                "Declare the resting pose in the world frame."
+                "Resting pose in the world frame · mm, °"
                 if detach
-                else "Declare the object's pose relative to the flange, independent of TCP."
-            ).classes("text-sm")
-            ui.label(
-                "Model declaration only. Verify the object placement; this does not operate the gripper or confirm a grasp."
-            ).classes("text-xs opacity-70")
-            with ui.row().classes("w-full"):
+                else "Pose relative to the flange · mm, °"
+            ).classes("text-xs text-wc-text-muted")
+            with ui.row().classes("w-full no-wrap gap-1"):
                 pos = [
                     ui.number(
                         axis,
-                        value=None if initial is None else initial[i] * 1000,
-                        format="%.3f",
-                        suffix="mm",
+                        value=None if initial is None else round(initial[i] * 1000, 3),
                     )
-                    .classes("flex-1")
+                    .props("dense borderless hide-bottom-space")
+                    .classes("min-w-0 flex-1")
                     .mark(f"attachment-pos-{axis.lower()}")
                     for i, axis in enumerate(("X", "Y", "Z"))
                 ]
-            with ui.row().classes("w-full"):
+            with ui.row().classes("w-full no-wrap gap-1"):
                 rot = [
                     ui.number(
                         axis,
-                        value=0 if initial is None else math.degrees(initial[i + 3]),
-                        format="%.3f",
-                        suffix="°",
+                        value=0
+                        if initial is None
+                        else round(math.degrees(initial[i + 3]), 3),
                     )
-                    .classes("flex-1")
+                    .props("dense borderless hide-bottom-space")
+                    .classes("min-w-0 flex-1")
                     .mark(f"attachment-rot-{axis.lower()}")
                     for i, axis in enumerate(("Rx", "Ry", "Rz"))
                 ]
@@ -565,151 +457,139 @@ class ShapeEditingMixin:
             if not detach:
                 contacts = (
                     ui.textarea(
-                        "Allowed contact partners",
+                        "Allowed contacts",
                         value="\n".join(shape.attachment.allowed_contacts)
                         if shape.attachment
                         else "",
                     )
-                    .props('rows=3 hint="One exact collision-report name per line"')
+                    .props(
+                        'dense outlined rows=2 hint="One collision-report name per line, e.g. shape:fixture or L6"'
+                    )
                     .classes("w-full")
                     .mark("attachment-contacts")
                 )
-                ui.label(
-                    "Exact collision-report names, e.g. tool:SSG48:moving "
-                    "(tool:KEY:role), shape:fixture, install:bench, or a link "
-                    "name like L6. All other collision checks remain active."
-                ).classes("text-xs opacity-70")
+            ui.label(
+                "Declares the model only; it does not operate the gripper."
+            ).classes("text-xs text-wc-text-muted")
             feedback = (
                 ui.label()
-                .classes("text-sm text-wc-warning")
+                .classes("text-xs text-wc-warning")
                 .mark("attachment-feedback")
             )
-
-            async def apply() -> None:
-                button.disable()
-                started_at = time.time()
-                try:
-                    # Declaring is how a refused attachment is reconciled.
-                    self.object_history.guard(revision, confirmed=False)
-                    if self._shape_locked(name):
-                        raise ValueError(f"Unlock {name} before editing it")
-                    blank = [
-                        field._props.get("label", "")
-                        for field in (*pos, *rot)
-                        if field.value is None
-                    ]
-                    if blank:
-                        # float(None) would reach the feedback label as a raw
-                        # Python type error, which tells the operator nothing
-                        # about which box to fill in.
-                        raise ValueError(
-                            f"Fill in {', '.join(blank)} before declaring this "
-                            f"attachment"
-                        )
-                    pose = cast(
-                        Pose6,
-                        tuple(
-                            [float(v.value) / 1000 for v in pos]
-                            + [math.radians(float(v.value)) for v in rot]
-                        ),
-                    )
-                    client = waldoctl.commander.client
-                    if not require_browser_control(ui_state.active_client_id):
-                        return
-                    if detach:
-                        result = await detach_object.async_call(
-                            client, name=name, world_pose=pose, shape=shape
-                        )
-                        source = f"from waldo_commander.skills import detach_object\ndetach_object(rbt, name={name!r}, world_pose={pose!r})"
-                    else:
-                        names = (
-                            tuple(
-                                n.strip()
-                                for n in str(contacts.value).splitlines()
-                                if n.strip()
-                            )
-                            if contacts
-                            else ()
-                        )
-                        result = await attach_object.async_call(
-                            client,
-                            name=name,
-                            flange_pose=pose,
-                            allowed_contacts=names,
-                            shape=shape,
-                        )
-                        source = f"from waldo_commander.skills import attach_object\nattach_object(rbt, name={name!r}, flange_pose={pose!r}, allowed_contacts={names!r})"
-                    handle = self._shape_handle()
-                    if handle is not None:
-                        await handle.refresh_from_backend()
-                    from waldo_commander.services.motion_recorder import motion_recorder
-
-                    motion_recorder.record_completed_skill(
-                        source, started_at=started_at
-                    )
-                    self._notify(
-                        f"{'Detached' if result.attachment is None else 'Attachment confirmed'}: {name}"
-                    )
-                    dismiss()
-                except Exception as error:
-                    logger.info("Attachment declaration refused: %s", error)
-                    feedback.set_text(str(error))
-                finally:
-                    if not button.is_deleted:
-                        button.enable()
-
-            def dismiss() -> None:
-                dialog.close()
-                if not dialog.is_deleted:
-                    dialog.delete()
-
-            with ui.row().classes("w-full justify-end"):
-                ui.button("Cancel", on_click=dismiss).props("flat")
+            with ui.row().classes("w-full justify-end no-wrap").style("gap:4px"):
+                ui.button("Cancel", on_click=self._close_attachment_form).props(
+                    "flat dense no-caps color=wc-text"
+                )
                 button = (
-                    ui.button(
-                        "Declare detachment" if detach else "Declare attachment",
-                        on_click=apply,
+                    ui.button("Declare")
+                    .props(
+                        "unelevated dense no-caps color=wc-action text-color=wc-on-bright"
                     )
-                    .props("color=wc-action text-color=wc-on-bright")
                     .mark("attachment-apply")
                 )
-        dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
-        self._object_dialogs.append((dialog, self.object_history.document()))
-        dialog.open()
+                button.on_click(
+                    lambda: self._apply_attachment(
+                        shape.name, detach, pos, rot, contacts, feedback, button
+                    )
+                )
 
-    def _delete_shape(self, name: str) -> None:
+    async def _apply_attachment(
+        self,
+        name: str,
+        detach: bool,
+        pos: list[Any],
+        rot: list[Any],
+        contacts: Any,
+        feedback: Any,
+        button: Any,
+    ) -> None:
+        from waldo_commander.skills import attach_object, detach_object
+
+        shape = self._program_shape(name)
+        if shape is None:
+            return
+        button.disable()
+        started_at = time.time()
+        try:
+            # Declaring is how a refused attachment is reconciled.
+            self.object_history.guard(self._attachment_revision, confirmed=False)
+            if self._shape_locked(name):
+                raise ValueError(f"Unlock {name} before editing it")
+            blank = [
+                field._props.get("label", "")
+                for field in (*pos, *rot)
+                if field.value is None
+            ]
+            if blank:
+                # float(None) would reach the feedback label as a raw Python
+                # type error, which tells the operator nothing about which box
+                # to fill in.
+                raise ValueError(
+                    f"Fill in {', '.join(blank)} before declaring this attachment"
+                )
+            pose = cast(
+                Pose6,
+                tuple(
+                    [float(v.value) / 1000 for v in pos]
+                    + [math.radians(float(v.value)) for v in rot]
+                ),
+            )
+            client = waldoctl.commander.client
+            if not require_browser_control(ui_state.active_client_id):
+                return
+            if detach:
+                result = await detach_object.async_call(
+                    client, name=name, world_pose=pose, shape=shape
+                )
+                source = f"from waldo_commander.skills import detach_object\ndetach_object(rbt, name={name!r}, world_pose={pose!r})"
+            else:
+                names = (
+                    tuple(
+                        n.strip() for n in str(contacts.value).splitlines() if n.strip()
+                    )
+                    if contacts
+                    else ()
+                )
+                result = await attach_object.async_call(
+                    client,
+                    name=name,
+                    flange_pose=pose,
+                    allowed_contacts=names,
+                    shape=shape,
+                )
+                source = f"from waldo_commander.skills import attach_object\nattach_object(rbt, name={name!r}, flange_pose={pose!r}, allowed_contacts={names!r})"
+            handle = self._shape_handle()
+            if handle is not None:
+                await handle.refresh_from_backend()
+            from waldo_commander.services.motion_recorder import motion_recorder
+
+            motion_recorder.record_completed_skill(source, started_at=started_at)
+            self._notify(
+                f"{'Detached' if result.attachment is None else 'Attachment confirmed'}: {name}"
+            )
+            self._close_attachment_form()
+        except Exception as error:
+            logger.info("Attachment declaration refused: %s", error)
+            if not feedback.is_deleted:
+                feedback.set_text(str(error))
+        finally:
+            if not button.is_deleted:
+                button.enable()
+
+    async def _delete_shape(self, name: str) -> None:
+        """Delete *name* at once; the object history's Undo brings it back."""
         handle = self._shape_handle()
         if handle is None or self._shape_locked(name):
             return
-        revision = self.object_history.context()
         if self._shape_move_active == name:
             self._end_shape_move()
-
-        with ui.context.client.content, ui.dialog() as dialog, ui.card():
-            ui.label(f"Delete keep-out '{name}'?")
-
-            def dismiss() -> None:
-                dialog.close()
-                if not dialog.is_deleted:
-                    dialog.delete()
-
-            with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dismiss).props("flat color=wc-text")
-
-                async def confirm() -> None:
-                    if await self._commit_objects(
-                        "Delete object",
-                        [s for s in handle.shapes if s.name != name],
-                        revision,
-                    ):
-                        dismiss()
-
-                ui.button("Delete", on_click=confirm).props(
-                    "unelevated color=wc-control text-color=wc-error"
-                ).mark("shape-delete-confirm")
-        dialog.on("hide", lambda: dialog.is_deleted or dialog.delete())
-        self._object_dialogs.append((dialog, self.object_history.document()))
-        dialog.open()
+        if await self._commit_objects(
+            "Delete object",
+            [s for s in handle.shapes if s.name != name],
+            self.object_history.context(),
+        ):
+            self._show_object_history = True
+            self._refresh_object_inspector()
 
     # ------------------------------------------------------------------
     # Drag-to-move
