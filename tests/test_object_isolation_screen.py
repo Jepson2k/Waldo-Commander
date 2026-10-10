@@ -65,7 +65,7 @@ class TestObjectIsolation:
             scene_js(
                 screen,
                 "S.setCameraPose(arguments[0])",
-                [0.628, -0.54, 0.498, 0.22, 0, 0.12],
+                [0.685, -0.4, 0.295, 0.42, -0.05, 0.05],
             )
             with program_previewed(EDIT_PROGRAM):
                 view = ui_state.urdf_scene

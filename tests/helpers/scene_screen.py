@@ -152,7 +152,10 @@ rbt.move_l([110, 210, 250, 90, 0, 105], speed=0.5)
 
 
 #: A camera on the middle of PATH_PROGRAM's path, close enough to follow it.
-PATH_VIEW = [0.316, 0.546, 0.532, 0, 0.27, 0.25]
+PATH_VIEW = [0.169, 0.418, 0.401, 0, 0.27, 0.25]
+
+#: A camera close on the tool at the jog pose, where its gizmo sits.
+TCP_VIEW = [0.229, 0.409, 0.369, 0.015, 0.222, 0.179]
 
 
 @contextmanager

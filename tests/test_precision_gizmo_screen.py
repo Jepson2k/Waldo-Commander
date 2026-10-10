@@ -10,6 +10,7 @@ from selenium.webdriver.common.keys import Keys
 from tests.helpers.browser_helpers import run_in_app, viewport
 from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
+    TCP_VIEW,
     at_start,
     camera_kept,
     click_spot,
@@ -73,7 +74,7 @@ class TestPrecisionGizmo:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.396, 0.516, 0.513, 0, 0.17, 0.16],
+                    TCP_VIEW,
                 )
                 _reveal(screen)
                 wait_for_scene_idle(screen)
@@ -105,7 +106,7 @@ class TestPrecisionGizmo:
                 # A click on the arrow opens a field for an exact change; Tab
                 # moves it to the next axis and back, Enter applies it.
                 at_start(screen)
-                zoom(screen, 0.8)
+                zoom(screen, 0.45)
                 _reveal(screen)
                 wait_for_scene_idle(screen)
                 before = tcp_mm()

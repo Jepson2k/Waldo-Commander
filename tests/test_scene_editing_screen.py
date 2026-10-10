@@ -18,6 +18,7 @@ from tests.helpers.browser_helpers import (
 from tests.helpers.browser_session import wait
 from tests.helpers.scene_screen import (
     EDIT_PROGRAM,
+    TCP_VIEW,
     at_start,
     camera_kept,
     choose,
@@ -55,7 +56,7 @@ class TestSceneEditing:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.396, 0.516, 0.513, 0, 0.17, 0.16],
+                    TCP_VIEW,
                 )
                 wait_for_scene_idle(screen)
                 choose(

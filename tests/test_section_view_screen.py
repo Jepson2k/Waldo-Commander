@@ -77,7 +77,7 @@ class TestSectionView:
             screen_wait_for_scene_ready(screen, timeout_s=40)
             at_start(screen)
             center = np.array([0.38, 0.05, 0.2])
-            camera = np.array([0.9, -0.6, 0.6])
+            camera = np.array([0.64, -0.275, 0.4])
             normal = (center - camera) / np.linalg.norm(center - camera)
             part = center + normal * 0.07
             shapes = [

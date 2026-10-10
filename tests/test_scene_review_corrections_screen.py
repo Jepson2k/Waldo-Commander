@@ -72,7 +72,7 @@ class TestReviewCorrections:
                 scene_js(
                     screen,
                     "S.setCameraPose(arguments[0])",
-                    [0.396, 0.516, 0.513, 0, 0.17, 0.16],
+                    [0.333, 0.447, 0.402, 0.05, 0.2, 0.15],
                 )
                 wait_for_scene_idle(screen)
                 assert (
@@ -179,7 +179,12 @@ class TestReviewCorrections:
                 )
                 far = scene_js(screen, "return S.gizmo('tcp:ball').translationSnap")
                 view = scene_js(screen, "return S.cameraPose()")
-                zoom(screen, 0.25)
+                # Closer to the target on the floor, its step is finer.
+                scene_js(
+                    screen,
+                    "S.setCameraPose(arguments[0])",
+                    [gx + 0.12, gy + 0.1, 0.1, gx, gy, 0],
+                )
                 wait(screen).until(
                     lambda _: scene_js(
                         screen, "return S.gizmo('tcp:ball').translationSnap"
@@ -265,7 +270,7 @@ class TestReviewCorrections:
                 )
                 if evidence.enabled:
                     with viewport(screen, 1366, 768):
-                        zoom(screen, 0.6)
+                        zoom(screen, 0.4)
                         wait_for_scene_idle(screen)
                         evidence.capture("06-compact-1366")
                 assert waldoctl.commander.status.joints.angles.rad == pytest.approx(
