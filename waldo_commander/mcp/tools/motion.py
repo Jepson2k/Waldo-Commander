@@ -89,12 +89,17 @@ async def move_l(
 
 
 @mcp.tool(name="motion.home")
-async def home(wait: bool = False) -> int:
-    """Move to the robot's home position (runs the full homing/referencing
-    sequence first if the robot is unhomed)."""
+async def home(wait: bool = False, calibrate: bool = False) -> int:
+    """Move to the robot's home position. An unhomed robot first runs the
+    referencing seek, which drives each joint to its end stop and ignores the
+    collision world; ``calibrate=True`` repeats that seek on a homed robot."""
     _require_robot_free()
-    require_actuation("move to home position")
-    return _dispatched(await waldoctl.commander.client.home(wait=wait), "home")
+    require_actuation(
+        "re-reference all joints" if calibrate else "move to home position"
+    )
+    return _dispatched(
+        await waldoctl.commander.client.home(wait=wait, calibrate=calibrate), "home"
+    )
 
 
 @mcp.tool(name="motion.jog_j")

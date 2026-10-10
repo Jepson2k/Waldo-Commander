@@ -1515,8 +1515,8 @@ class ControlPanel:
                     card.classes(add="consent-hw")
                 desc_label.text = f"{label} wants to move the robot."
                 hint.text = (
-                    "First real hardware move of this AI session — make sure "
-                    "the workspace is clear before allowing."
+                    "The AI's first real hardware move — make sure the "
+                    "workspace is clear before allowing."
                 )
                 self._open_approval(dlg)
 
@@ -1548,7 +1548,8 @@ class ControlPanel:
             if granted:
                 grant_consent(sid)
                 ui.notify(
-                    "Hardware motion allowed for this AI session", color="positive"
+                    "Hardware motion allowed until you take control",
+                    color="positive",
                 )
             else:
                 deny_consent(sid)
@@ -1601,7 +1602,7 @@ class ControlPanel:
             self._mode_toggle.tooltip(
                 "Inspect: approve each edit and move · Auto-edits: edits apply "
                 "immediately, moves ask · Autopilot: all automatic (real hardware "
-                "asks once per session)"
+                "asks once until you take control)"
             )
 
     # ---- Joint jog methods ----

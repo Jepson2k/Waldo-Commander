@@ -87,8 +87,9 @@ async def test_control_modes_approvals_and_hardware_consent_gate_mcp(
 ) -> None:
     """The three control modes govern MCP edits and motion, a refused move's
     ``control.wait_approval`` resolves on the human's Allow/Deny, and on real
-    hardware the first move of a session needs GUI consent, whose denial is
-    terminal for a cooldown.
+    hardware the AI's first move needs GUI consent, whose denial is terminal for
+    a cooldown and whose grant outlives the session until the human takes
+    control back.
 
     - **Inspect**: a proposed edit stays pending and a move is refused until
       the human approves that specific action, after which the retry runs.
@@ -223,6 +224,10 @@ async def test_control_modes_approvals_and_hardware_consent_gate_mcp(
             await client.call_tool(
                 "motion.jog_j", {"joint": 2, "speed": 0.1, "duration": 0.01}
             )
+            homed = await client.call_tool(
+                "motion.home", {"calibrate": True, "wait": True}
+            )
+            assert _payload(homed) >= 0
         _reset_gates()
 
         # ---- Autopilot on real hardware: the session-consent floor ----------
@@ -259,6 +264,32 @@ async def test_control_modes_approvals_and_hardware_consent_gate_mcp(
                     "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
                 )
             assert pending_consents() != {}
+
+            with ng_client:
+                panel.refresh_control_indicator()
+                panel._resolve_approval(True)
+            await client.call_tool(
+                "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+            )
+
+        # A reconnect is a new session; the grant carries over.
+        async with Client(mcp) as client:
+            await client.call_tool(
+                "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+            )
+            assert pending_consents() == {}
+
+            with ng_client:
+                panel.refresh_control_indicator()
+            user.find(marker="btn-take-control").click()
+            assert await wait_until(
+                lambda: control_lease.held_by(cl.BROWSER, ui_state.active_client_id)
+            ), "Take control must hand the lease to the browser"
+            await client.call_tool("control.take_control")
+            with pytest.raises(ToolError, match="consent|prompt"):
+                await client.call_tool(
+                    "motion.jog_j", {"joint": 0, "speed": 0.1, "duration": 0.01}
+                )
     finally:
         waldoctl.commander.status.simulator_active = True
         _reset_gates()
