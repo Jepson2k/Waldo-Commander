@@ -112,7 +112,8 @@ class TestCameraTools:
                     focused, abs=1e-6
                 )
                 assert scene_js(screen, "return !!S.camera.isOrthographicCamera")
-                camera_action(screen, "back")
+                # The same, from the button under the cube.
+                click_marked(screen, "camera-back")
                 camera_settled(screen)
                 assert not scene_js(screen, "return !!S.camera.isOrthographicCamera")
                 assert scene_js(screen, "return S.cameraPose()") == pytest.approx(
@@ -257,7 +258,8 @@ class TestCameraTools:
                 )
                 camera_action(screen, "focus")
                 camera_settled(screen)
-                camera_action(screen, "back")
+                # No keyboard on a tablet: the previous view is a button.
+                tap(marked_element(screen, "camera-back"))
                 camera_settled(screen)
                 after = scene_js(
                     screen,

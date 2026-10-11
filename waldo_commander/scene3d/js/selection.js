@@ -16,7 +16,7 @@ export class Selection {
   }
 
   load(data) {
-    const before=this.isolationKey();
+    const before=!!this.isolated;
     if(!data)this.isolated=null;
     this.revision=data?.revision;
     this.entities=new Map((data?.items||[]).map(e=>[e.node,e]));
@@ -27,12 +27,10 @@ export class Selection {
     this.retainRenames();
     this.core.nodes.setIsolated(this.isolated);
     this.outlineSelected();
-    if(before!==this.isolationKey())this.core.navigation?.notify();
+    if(before!==!!this.isolated)this.core.navigation?.notify();
   }
 
-  isolationStatus() {return {isolated:!!this.isolated,canIsolate:this.selected.length>0};}
-
-  isolationKey() {return `${!!this.isolated}:${this.selected.length>0}`;}
+  isolationStatus() {return {isolated:!!this.isolated};}
 
   retainRenames() {
     if(this.isolated)for(const [from,to] of this.renames)if(this.isolated.has(from))this.isolated.add(to);

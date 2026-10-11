@@ -403,7 +403,7 @@ export class SceneCore {
   // The panels over the view cover some of it; the camera centres the image
   // on the part they leave uncovered.
   follow(layout) {
-    this.layoutInset = { left: Math.max(0, layout.columnRight), bottom: Math.max(0, layout.bottomCover) };
+    this.layoutInset = { left: Math.max(0, layout.leftCover ?? layout.columnRight), bottom: Math.max(0, layout.bottomCover) };
     this.overlays.follow(layout);
     this.inspection.comparison.follow();
     this.applyView();

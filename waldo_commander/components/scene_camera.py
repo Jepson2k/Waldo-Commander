@@ -17,7 +17,8 @@ def camera_action(action: str) -> None:
 
 
 def build_camera_menu(scene: WcScene) -> None:
-    """Reset, focus and the two projections, under *scene*'s view cube."""
+    """Reset, focus, the previous view and the two projections, under
+    *scene*'s view cube."""
 
     def act(action: str) -> None:
         scene.run_method("camera_action", action)
@@ -33,6 +34,12 @@ def build_camera_menu(scene: WcScene) -> None:
         ui.button(icon="center_focus_strong", on_click=lambda: act("focus")).props(
             flat
         ).tooltip("Focus · F").mark("camera-focus")
+        back = (
+            ui.button(icon="history", on_click=lambda: act("previous"))
+            .props(flat)
+            .tooltip("Previous view · Shift+F")
+            .mark("camera-back")
+        )
         ui.separator().props("vertical")
         projections = {
             name: ui.button(
@@ -46,6 +53,7 @@ def build_camera_menu(scene: WcScene) -> None:
         }
 
     def changed(status: dict[str, Any]) -> None:
+        back.set_enabled(bool(status.get("back")))
         shown = "orthographic" if status["orthographic"] else "perspective"
         for name, button in projections.items():
             on = name == shown

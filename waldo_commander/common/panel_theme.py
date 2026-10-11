@@ -159,7 +159,7 @@ def inject_panel_css() -> None:
 .scene-row-detail { min-width: 0; font-size: 12px; color: var(--wc-text-muted); }
 .scene-toggle { opacity: 0; color: var(--wc-text-muted); transition: opacity var(--wc-duration-fast); }
 .scene-row:hover .scene-toggle, .scene-group:hover .scene-toggle, .scene-toggle.on, .scene-toggle:focus-visible { opacity: 1; }
-@media (pointer: coarse) { .scene-toggle { opacity: 1; } .scene-row { min-height: 40px; } }
+@media (any-pointer: coarse) { .scene-toggle { opacity: 1; } .scene-row { min-height: 40px; } }
 .scene-empty { padding: 2px 8px 6px; font-size: 12px; color: var(--wc-text-muted); }
 .scene-properties { gap: 4px; padding: 8px 12px 0; border-top: 1px solid var(--wc-glass-border); margin-top: 6px; }
 .scene-properties:empty { display: none; }

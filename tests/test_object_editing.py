@@ -247,6 +247,73 @@ async def test_objects_record_undo_reload_and_recover_from_external_edits(
 
 
 @pytest.mark.integration
+async def test_the_scene_panel_leaves_alone_what_a_press_does_not_change(user):
+    view = await _open(user)
+    handle = waldoctl.commander.scene
+    await confirmed(view)
+    panel = ui_state.scene_panel
+    for count, point in enumerate(([0.4, 0.1, 0], [0.4, -0.15, 0]), 1):
+        right_click(user, view.scene, [], point)
+        user.find(marker="scene-add-box").click()
+        await confirmed(view, lambda n=count: len(handle.shapes) == n)
+    first, second = handle.shapes[0].name, handle.shapes[1].name
+    assert view._selected_objects == [f"shape:{second}"]
+
+    # The mode and isolation buttons change in place: the one pressed stays,
+    # with the keyboard focus it was pressed with.
+    for marker in ("object-mode-resize", "object-isolate"):
+        button = user.find(marker=marker).elements.pop()
+        user.find(marker=marker).click()
+        await asyncio.sleep(0)
+        assert not button.is_deleted, marker
+    assert view._object_mode == "resize"
+
+    # With one of two hidden the group's eye shows them all, and the tab
+    # says something is hidden while the panel is closed.
+    user.find(marker=f"scene-eye-{first}").trigger("click.stop")
+    assert view._hidden_objects == {f"shape:{first}"}
+    assert "alert" in panel.tab.props and "1 hidden" in panel.tip.text
+    user.find(marker="scene-hide-all-shape").click()
+    assert not view._hidden_objects
+    assert "alert" not in panel.tab.props
+
+    # Toggling a row the work in hand is not about leaves that work alone.
+    user.find(marker="scene-panel-draw-box").click()
+    drawing = view._drawing
+    assert drawing is not None
+    user.find(marker=f"scene-lock-{first}").trigger("click.stop")
+    user.find(marker=f"scene-eye-{first}").trigger("click.stop")
+    assert view._drawing is drawing
+    UserInteraction(user, {view.scene}, None).trigger(
+        "draw_cancel", {"session": view.scene.interaction["shapeDraw"]["session"]}
+    )
+    user.find(marker=f"scene-eye-{first}").trigger("click.stop")
+    user.find(marker=f"scene-lock-{first}").trigger("click.stop")
+
+    # A panel the user closed stays closed through an undo of the selected
+    # object's move; restoring a deleted object selects it, and opens it.
+    user.find(marker=f"scene-row-{second}").click()
+    user.find(marker="scene-close").click()
+    arrows = view.scene.interaction["shapeMove"]
+    moved = handle.shapes[1]
+    Drag(user, view.scene, "shape").begin(**arrows).release(
+        **arrows, x=0.5, y=-0.15, z=0.05
+    )
+    await confirmed(view, lambda: handle.shapes[1].pose[0] == 0.5)
+    view.undo_edit()
+    await confirmed(view, lambda: handle.shapes[1] == moved)
+    assert view._selected_objects == [f"shape:{second}"]
+    assert not panel.is_open
+    right_click(user, view.scene, [f"shape:{second}"])
+    user.find(marker="shape-menu-delete").click()
+    await confirmed(view, lambda: len(handle.shapes) == 1)
+    view.undo_edit()
+    await confirmed(view, lambda: len(handle.shapes) == 2)
+    assert view._selected_objects == [f"shape:{second}"]
+    assert panel.is_open
+
+
+@pytest.mark.integration
 async def test_object_edit_stays_pending_until_real_readback_and_preserves_new_source(
     user, monkeypatch
 ):

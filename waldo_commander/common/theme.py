@@ -1198,7 +1198,9 @@ body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events:
 
 .top-panels-container { top: var(--wc-space-3); }
 
-.bottom-panels-container { bottom: var(--wc-footer-clearance); }
+/* Over the footer's Log or Diagnostics panel when that is open, which
+   would otherwise cover it from the same corner. */
+.bottom-panels-container { bottom: max(var(--wc-footer-clearance), calc(var(--wc-bottom-cover, 0px) + var(--wc-space-3))); }
 
 .resizable-panel { overflow: hidden !important; }
 
@@ -1207,7 +1209,7 @@ body:has(.q-dialog__backdrop) .status-footer .btn-take-control { pointer-events:
    it (min-height: 0, overflow: auto) scrolls at the cap. */
 .left-panels-container > .q-panel > .resizable-panel { max-height: calc(100vh - 24px); }
 .bottom-panels-container > .q-panel > .resizable-panel {
-  max-height: calc(100vh - var(--wc-space-3) - var(--wc-footer-clearance));
+  max-height: calc(100vh - var(--wc-space-3) - max(var(--wc-footer-clearance), calc(var(--wc-bottom-cover, 0px) + var(--wc-space-3))));
 }
 
 /* The program column: full height between the top margin and whatever covers

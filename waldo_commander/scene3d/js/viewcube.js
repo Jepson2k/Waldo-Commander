@@ -129,9 +129,12 @@ export class ViewCube {
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-EXTENT, EXTENT, EXTENT, -EXTENT, 0.1, 10);
     // Lit from the viewer, so the rounding reads as an edge between faces.
-    this.scene.add(new THREE.AmbientLight(0xffffff, SHADE * Math.PI));
-    this.light = new THREE.DirectionalLight(0xffffff, (1 - SHADE) * Math.PI);
-    this.scene.add(this.light);
+    // White light: the faces' own colours come from the theme's tokens.
+    const ambient = new THREE.AmbientLight();
+    ambient.intensity = SHADE * Math.PI;
+    this.light = new THREE.DirectionalLight();
+    this.light.intensity = (1 - SHADE) * Math.PI;
+    this.scene.add(ambient, this.light);
     const anisotropy = Math.min(8, core.renderer.capabilities.getMaxAnisotropy());
     this.faces = BOX_ORDER.map((n) => {
       const spec = FACES.find((f) => f.n.every((v, i) => v === n[i]));
@@ -427,8 +430,10 @@ export class ViewCube {
     this.region = null;
     this.scene.traverse((o) => {
       o.geometry?.dispose();
-      o.material?.map?.dispose();
-      o.material?.dispose();
+      for (const material of [].concat(o.material ?? [])) {
+        material.map?.dispose();
+        material.dispose();
+      }
     });
     this.scene = null;
   }

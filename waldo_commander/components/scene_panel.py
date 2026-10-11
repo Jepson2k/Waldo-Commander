@@ -13,15 +13,35 @@ from nicegui import ui
 class ScenePanel:
     def __init__(self) -> None:
         self.tabs: ui.tabs | None = None
+        self.tab: ui.tab
+        self.tip: ui.tooltip
         self.tools: ui.row
         self.body: ui.column
+        self.noted: tuple[int, bool] = (0, False)
 
     def build_tab(self, tabs: ui.tabs) -> None:
         """The panel's tab in the bottom rail; call inside *tabs*."""
         self.tabs = tabs
-        ui.tab(name="scene", label="", icon="view_in_ar").tooltip("Scene").mark(
-            "tab-scene"
-        )
+        with ui.tab(name="scene", label="", icon="view_in_ar").mark("tab-scene") as tab:
+            self.tip = ui.tooltip("Scene")
+        self.tab = tab
+
+    def note(self, hidden: int, isolated: bool) -> None:
+        """Mark the tab while objects are hidden or isolated, so the way back
+        to them shows with the panel closed."""
+        if (hidden, isolated) == self.noted:
+            return
+        self.noted = (hidden, isolated)
+        parts = ["Scene"]
+        if hidden:
+            parts.append(f"{hidden} hidden")
+        if isolated:
+            parts.append("isolated")
+        self.tip.set_text(" · ".join(parts))
+        if hidden or isolated:
+            self.tab.props("alert=wc-action")
+        else:
+            self.tab.props(remove="alert")
 
     def build(self, close: Callable[[], None]) -> None:
         """The panel; call inside the bottom rail's tab panels."""
@@ -45,4 +65,7 @@ class ScenePanel:
     def open(self) -> None:
         if self.tabs is not None and not self.is_open:
             self.tabs.set_value("scene")
-            ui.run_javascript("PanelResize.onTabChange('bottom', 'scene')")
+            # Called from an undo's task too, which has no page of its own.
+            self.tabs.client.run_javascript(
+                "PanelResize.onTabChange('bottom', 'scene')"
+            )

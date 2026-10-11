@@ -257,7 +257,7 @@
 
     let columnOpen = false;
     let coupled = false;
-    let layout = { columnRight: 0, bottomCover: 0, obstacles: [] };
+    let layout = { columnRight: 0, leftCover: 0, bottomCover: 0, obstacles: [] };
     let layoutFrame = 0;
 
     function setRootPx(name, value) {
@@ -300,6 +300,16 @@
         if (container) {
             columnRight = Math.round(container.getBoundingClientRect().left + container.offsetWidth);
         }
+        // A panel open over the settings gear covers the view's left as the
+        // column does, so the view centres on what it leaves uncovered.
+        let leftCover = columnRight;
+        const bottomPanels = getContainer('bottom');
+        if (bottomPanels) {
+            for (const panel of bottomPanels.querySelectorAll(':scope > .q-panel > .q-tab-panel')) {
+                const rect = panel.getBoundingClientRect();
+                if (rect.width > 0) leftCover = Math.max(leftCover, Math.round(rect.right));
+            }
+        }
         const bottomCover = coverOf(config.selectors.bottomCovers);
         const columnCover = Math.max(bottomCover, coverOf(config.selectors.columnCovers));
         const controlPanel = config.selectors.controlPanel ? document.querySelector(config.selectors.controlPanel) : null;
@@ -309,7 +319,8 @@
         if (controlPanel) setRootPx('--wc-control-height', Math.ceil(controlPanel.getBoundingClientRect().height));
         setRootPx('--wc-control-inset', inset);
         setRootPx('--wc-column-cover', columnCover);
-        layout = { columnRight: columnRight, bottomCover: bottomCover, obstacles: obstacleBoxes() };
+        setRootPx('--wc-bottom-cover', bottomCover);
+        layout = { columnRight: columnRight, leftCover: leftCover, bottomCover: bottomCover, obstacles: obstacleBoxes() };
         window.dispatchEvent(new CustomEvent('wc:layout', { detail: { ...layout } }));
     }
 
@@ -670,6 +681,12 @@
 
     function onTabChange(group, toTab) {
         console.log('[PanelResize] Tab change:', group, '->', toTab);
+
+        // A panel put away stays mounted, so a tooltip showing on one of its
+        // buttons would stay on screen with nothing under it.
+        for (const tip of document.querySelectorAll('.q-tooltip[id^="c"]')) {
+            getElement(tip.id.slice(1))?.hide?.();
+        }
 
         rememberTab(group, toTab);
 

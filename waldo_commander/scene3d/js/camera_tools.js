@@ -53,7 +53,9 @@ export class CameraTools {
     this.install(ortho,height);
   }
 
-  bounds() {
+  // What focus frames: the selection, an object being moved, else the arm
+  // and what is compared with it; with `robot`, the arm whatever is selected.
+  bounds(robot=false) {
     const core=this.core, bounds=new THREE.Box3();
     const add=(object) => {
       if (!object) return;
@@ -64,9 +66,9 @@ export class CameraTools {
         if (mesh.geometry.boundingBox) bounds.union(mesh.geometry.boundingBox.clone().applyMatrix4(mesh.matrixWorld));
       });
     };
-    if (core.selection?.selected.length) {
+    if (!robot && core.selection?.selected.length) {
       for (const entity of core.selection.entities.values()) if (core.selection.selected.includes(entity.id)) add(core.nodes.get(entity.node)?.obj);
-    } else if (core.ix.shapeMove) add(core.nodes.get(core.ix.shapeMove.node)?.obj);
+    } else if (!robot && core.ix.shapeMove) add(core.nodes.get(core.ix.shapeMove.node)?.obj);
     else {
       // The arm shows the inspected pose; a compared one is beside it.
       for (const id of Object.keys(core.ix.sources || {})) add(core.nodes.get(Number(id))?.obj);
@@ -76,8 +78,8 @@ export class CameraTools {
     return bounds;
   }
 
-  focus() {
-    const bounds=this.bounds();
+  focus(robot=false) {
+    const bounds=this.bounds(robot);
     if (bounds.isEmpty()) return;
     const core=this.core, camera=core.camera;
     const center=bounds.getCenter(new THREE.Vector3());
@@ -140,8 +142,9 @@ export class CameraTools {
       if (ortho === !!core.camera.isOrthographicCamera) return;
       this.remember(); this.projection(ortho);
     } else if (action === "focus") {
-      if (this.bounds().isEmpty()) return;
-      this.remember(); this.focus();
+      const robot=value === "robot";
+      if (this.bounds(robot).isEmpty()) return;
+      this.remember(); this.focus(robot);
     } else if (action === "reset" && this.home) {
       this.remember(); this.install(false,1);
       core.cameraMove.startOrbit(this.home,0.5);

@@ -124,12 +124,19 @@ export class Gizmos {
     tc.mode = mode;
     if (!tc.begin(e)) return null;
     this.drag.mouse = e.pointerType === "mouse";
-    const x = e.clientX, y = e.clientY;
+    const x = e.clientX, y = e.clientY, slop = tapPx(e.pointerType);
+    // Nothing moves until the press has gone past a tap's slop: a live
+    // gizmo jogs the arm with each sample, and a tap must not have.
+    let moved = false;
+    const move = (event) => {
+      moved ||= Math.hypot(event.clientX - x, event.clientY - y) > slop;
+      if (moved) tc.drag(event);
+    };
     const release = (event) => {
-      if (Math.hypot(event.clientX - x, event.clientY - y) > tapPx(event.pointerType)) tc.release(event);
+      if (moved) tc.release(event);
       else this.clicked(tc, axis, mode);
     };
-    return { g: this.drag.g, move: (event) => tc.drag(event), release, cancel: (reason) => this.core.gestures.abort(reason) };
+    return { g: this.drag.g, move, release, cancel: (reason) => this.core.gestures.abort(reason) };
   }
 
   // A handle let go where it was pressed moves nothing: its change is typed.

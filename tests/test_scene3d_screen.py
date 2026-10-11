@@ -1137,6 +1137,7 @@ class TestSceneElement:
         assert len(contexts) == n, "a request under an old epoch was answered"
         run_in_app(lambda: (scene.gestures.bump(), scene.gestures.bump()))
         wait(page, 5).until(lambda _: len(contexts) == n + 1)
+        assert contexts[n]["epoch"] == epoch + 2, contexts[n]
         wait(page, 5).until(lambda _: js(page, items))
         scene_js(
             page, "getElement(" + str(run_in_app(lambda: _page["menu"].id)) + ").hide()"
@@ -1224,6 +1225,8 @@ class TestSceneElement:
             wait(page, 5).until(lambda _: _entry(page) == "X change in millimetres")
             wait(page, 5).until(lambda _: ("end", True) in tcp.log)
             assert [e for e in tcp.log if e[0] == "end"] == [("end", True)], tcp.log
+            # A live gizmo jogs the arm with each move: a tap must send none.
+            assert not [e for e in tcp.log if e[0] == "move"], tcp.log
             put_away()
         finally:
             _rest_pointer(page)

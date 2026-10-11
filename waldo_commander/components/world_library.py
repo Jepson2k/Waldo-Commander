@@ -172,6 +172,8 @@ class WorkcellLibrary:
                 .tooltip("Insert the objects into the program, below its cursor")
                 .mark("workcell-insert")
             )
+        self.held = ui.label().mark("workcell-held")
+        _say(self.held, "")
         self.feedback = ui.label().mark("workcell-feedback")
         _say(self.feedback, "")
         self.list = ui.column().classes("w-full gap-0").mark("workcell-saved")
@@ -189,7 +191,16 @@ class WorkcellLibrary:
 
     def _follow(self) -> None:
         """Keep Save and Insert true to the scene, which stays editable."""
-        self.has_objects = bool(_editable(_scene_shapes()))
+        shapes = _scene_shapes()
+        editable = _editable(shapes)
+        held = len(shapes) - len(editable)
+        _say(
+            self.held,
+            f"{_plural(held, 'flange attachment')} left out of Save and Insert"
+            if held
+            else "",
+        )
+        self.has_objects = bool(editable)
         self._enable()
 
     def _enable(self) -> None:

@@ -47,6 +47,7 @@ from tests.helpers.scene_screen import (
     camera_settled,
     choose,
     clear_selection,
+    settled_pixel,
     end_target_edit,
     frame_mm,
     gizmo,
@@ -1183,10 +1184,9 @@ class TestScene:
                     "the keep-out is not where the floor was clicked"
                 )
                 obj = f"shape:{name}"
-                centre = poll(lambda: probe(screen, "pixelOf", obj), 10.0, obj)
-
                 # Move it by its gizmo's arrow; the drop is its new pose.
                 clear_selection(screen)
+                centre = settled_pixel(screen, obj)
                 choose(screen, *centre, "Move (drag arrows)")
                 poll(lambda: gizmo_on(obj), 5.0, "the keep-out's gizmo")
                 start = shapes()[name]
@@ -1198,7 +1198,7 @@ class TestScene:
                     lambda: shapes()[name][0] != start[0], 10.0, "the keep-out to move"
                 )
                 assert shapes()[name][1:] == pytest.approx(start[1:], abs=1e-6)
-                centre = poll(lambda: probe(screen, "pixelOf", obj), 10.0, obj)
+                centre = settled_pixel(screen, obj)
                 choose(screen, *centre, "Stop Moving")
                 poll(lambda: not gizmo_on(obj), 5.0, "the gizmo to go")
 

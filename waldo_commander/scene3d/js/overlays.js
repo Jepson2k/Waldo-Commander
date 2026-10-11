@@ -36,7 +36,7 @@ export class Overlays {
     this.controls = new Map(); // name -> where the view's own controls are
     this.chrome = [];
     this.view = { left: 0, top: 0, width: 0, height: 0 };
-    this.cards = new Map(); // name -> {node, w, h, scroll, offset, box}
+    this.cards = new Map(); // name -> {node, w, h, offset, box}
     this.marks = new Map(); // name -> boxes in the scene others keep clear of
     this.readers = []; // what else a frame measures before writing
     // The app's cards arrive hidden and are seated by a frame; the view only
@@ -80,7 +80,7 @@ export class Overlays {
 
   // A card the view places.
   track(name, node) {
-    this.cards.set(name, { node, w: 0, h: 0, scroll: 0, offset: [0, 0], box: null });
+    this.cards.set(name, { node, w: 0, h: 0, offset: [0, 0], box: null });
   }
 
   // A tracked card that is showing.
@@ -97,7 +97,6 @@ export class Overlays {
     if (!card.w && !card.node.hidden) {
       card.w = card.node.offsetWidth;
       card.h = card.node.offsetHeight;
-      card.scroll = card.node.scrollHeight;
     }
     return card.w ? card : null;
   }
@@ -128,7 +127,6 @@ export class Overlays {
         continue;
       }
       card.h = node.offsetHeight;
-      card.scroll = node.scrollHeight;
       const parent = node.offsetParent?.getBoundingClientRect();
       card.offset = parent ? [parent.left - view.left, parent.top - view.top] : [0, 0];
     }

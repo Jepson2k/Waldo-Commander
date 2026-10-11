@@ -603,6 +603,21 @@ def object_mode(screen, label):
     wait(screen).until(clicked)
 
 
+def settled_pixel(screen, name, timeout: float = 10.0):
+    """Where the scene object ``name`` is drawn once the view has stopped
+    moving: a panel opening beside it re-centres the view."""
+    last: list = []
+
+    def still(_):
+        wait_for_scene_idle(screen)
+        at = probe(screen, "pixelOf", name)
+        settled = at is not None and bool(last) and last[-1] == at
+        last.append(at)
+        return at if settled else None
+
+    return wait(screen, timeout).until(still)
+
+
 def clear_selection(screen):
     """Clear the object selection with a click on empty space in the view."""
     if not run_in_app(lambda: bool(ui_state.urdf_scene._selected_objects)):

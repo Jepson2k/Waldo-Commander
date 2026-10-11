@@ -7,6 +7,8 @@
 // (Windows), so the event itself is always swallowed and the press decides at
 // its release. Each request has a generation: only the newest one opens.
 
+import { tapPx } from "./handles.js";
+
 const DRAG_PX = 5;
 const LONG_PRESS_MS = 500;
 
@@ -76,7 +78,8 @@ export class Menu {
     const p = this.press;
     if (p && e.pointerId === p.id) p.moved = Math.max(p.moved, Math.hypot(e.clientX - p.x, e.clientY - p.y));
     const l = this.long;
-    if (l && e.pointerId === l.id && Math.hypot(e.clientX - l.x, e.clientY - l.y) > DRAG_PX) this.cancelLongPress();
+    // A finger held for the menu may wander as far as a tap may.
+    if (l && e.pointerId === l.id && Math.hypot(e.clientX - l.x, e.clientY - l.y) > tapPx(e.pointerType)) this.cancelLongPress();
   }
 
   up(e) {

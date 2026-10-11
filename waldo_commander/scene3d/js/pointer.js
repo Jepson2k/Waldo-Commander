@@ -373,21 +373,28 @@ export class Pointer {
 
   down(e) {
     if (e.button !== 0 || e.ctrlKey || this.drag || this.core.gestures.blocked) return;
-    // A second finger pinches or turns the camera; it grabs nothing.
-    if (e.pointerType === "touch" && this.pressed.size > 1) return;
+    // A second finger pinches or turns the camera: it grabs nothing, and
+    // neither finger's lift is a tap.
+    if (e.pointerType === "touch" && this.pressed.size > 1) {
+      for (const id of this.pressed) this.suppressTap(id);
+      return;
+    }
     const x = e.clientX, y = e.clientY;
     // A press anywhere in the view puts away the values riding on the handles.
     this.core.gizmos.precision.dismiss();
     this.core.resizeHandles.dismiss();
-    for (const tool of this.tools) {
-      if (!tool.hit(x, y, e.pointerType)) continue;
-      this.suppressTap(e.pointerId);
-      e.stopImmediatePropagation();
-      // The drag re-projects against the camera, which must hold still.
-      this.core.navigation.halt();
-      const drag = tool.begin(e);
-      if (drag) this.start(e, drag);
-      return;
+    // A finger takes what is under it before what is only near it.
+    for (const kind of e.pointerType === "touch" ? ["mouse", "touch"] : [e.pointerType]) {
+      for (const tool of this.tools) {
+        if (!tool.hit(x, y, kind)) continue;
+        this.suppressTap(e.pointerId);
+        e.stopImmediatePropagation();
+        // The drag re-projects against the camera, which must hold still.
+        this.core.navigation.halt();
+        const drag = tool.begin(e);
+        if (drag) this.start(e, drag);
+        return;
+      }
     }
     this.core.inspection.missed(x, y);
   }

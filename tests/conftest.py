@@ -461,7 +461,11 @@ def class_screen(
             )
             # CodeMirror reports focused selections only in the active tab.
             class_driver.execute_cdp_cmd("Page.bringToFront", {})
-            _clear_world()
+            try:
+                _clear_world()
+            except BaseException:
+                screen_instance.stop_server()
+                raise
 
             yield screen_instance
 
